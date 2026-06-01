@@ -1,22 +1,38 @@
 # ==========================================================
 # FILE: app/database.py
-# PROJECT: AI WhatsApp Customer Service Agent Demo
+# PROJECT: AI WhatsApp Customer Service Agent
 # ==========================================================
+
+import os
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.orm import declarative_base
 
 # ==========================================================
-# DATABASE CONFIGURATION
+# DATABASE URL
 # ==========================================================
 
-# For Demo Version
-# Later replace with PostgreSQL Railway URL
-
-import os
-
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL environment variable is missing"
+    )
+
+# ==========================================================
+# RAILWAY POSTGRES FIX
+# ==========================================================
+
+# Railway sometimes provides postgres://
+# SQLAlchemy requires postgresql://
+
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace(
+        "postgres://",
+        "postgresql://",
+        1
+    )
 
 # ==========================================================
 # ENGINE
@@ -24,7 +40,10 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 
 engine = create_engine(
     DATABASE_URL,
-    connect_args={"check_same_thread": False}
+    pool_pre_ping=True,
+    pool_recycle=300,
+    echo=False,
+    future=True
 )
 
 # ==========================================================
@@ -56,3 +75,22 @@ def get_db():
 
     finally:
         db.close()
+
+# ==========================================================
+# DATABASE TEST
+# ==========================================================
+
+def test_connection():
+
+    try:
+
+        with engine.connect() as conn:
+            print("✅ PostgreSQL Connected Successfully")
+
+        return True
+
+    except Exception as e:
+
+        print(f"❌ Database Connection Failed: {e}")
+
+        return False
