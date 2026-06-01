@@ -1,6 +1,5 @@
 # ==========================================================
 # FILE: app/models.py
-# PROJECT: AI WhatsApp Customer Service Agent Demo
 # ==========================================================
 
 from sqlalchemy import (
@@ -27,12 +26,16 @@ class Customer(Base):
 
     id = Column(Integer, primary_key=True, index=True)
 
-    name = Column(String(255), nullable=False)
+    name = Column(
+        String(255),
+        nullable=False
+    )
 
     phone_number = Column(
         String(50),
         unique=True,
-        nullable=False
+        nullable=False,
+        index=True
     )
 
     email = Column(
@@ -45,9 +48,16 @@ class Customer(Base):
         default=datetime.utcnow
     )
 
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow
+    )
+
     conversations = relationship(
         "Conversation",
-        back_populates="customer"
+        back_populates="customer",
+        cascade="all, delete-orphan"
     )
 
 
@@ -62,7 +72,11 @@ class Conversation(Base):
 
     customer_id = Column(
         Integer,
-        ForeignKey("customers.id")
+        ForeignKey(
+            "customers.id",
+            ondelete="CASCADE"
+        ),
+        nullable=False
     )
 
     status = Column(
@@ -77,7 +91,8 @@ class Conversation(Base):
 
     updated_at = Column(
         DateTime,
-        default=datetime.utcnow
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow
     )
 
     customer = relationship(
@@ -88,6 +103,16 @@ class Conversation(Base):
     messages = relationship(
         "Message",
         back_populates="conversation",
+        cascade="all, delete-orphan"
+    )
+
+    images = relationship(
+        "UploadedImage",
+        cascade="all, delete-orphan"
+    )
+
+    ai_logs = relationship(
+        "AIResponseLog",
         cascade="all, delete-orphan"
     )
 
@@ -103,15 +128,21 @@ class Message(Base):
 
     conversation_id = Column(
         Integer,
-        ForeignKey("conversations.id")
+        ForeignKey(
+            "conversations.id",
+            ondelete="CASCADE"
+        ),
+        nullable=False
     )
 
     sender = Column(
-        String(50)
+        String(50),
+        nullable=False
     )
 
     content = Column(
-        Text
+        Text,
+        nullable=False
     )
 
     message_type = Column(
@@ -141,12 +172,22 @@ class UploadedImage(Base):
 
     conversation_id = Column(
         Integer,
-        ForeignKey("conversations.id")
+        ForeignKey(
+            "conversations.id",
+            ondelete="CASCADE"
+        ),
+        nullable=False
     )
 
-    image_url = Column(Text)
+    image_url = Column(
+        Text,
+        nullable=False
+    )
 
-    ai_analysis = Column(Text)
+    ai_analysis = Column(
+        Text,
+        nullable=True
+    )
 
     created_at = Column(
         DateTime,
@@ -165,16 +206,26 @@ class AIResponseLog(Base):
 
     conversation_id = Column(
         Integer,
-        ForeignKey("conversations.id")
+        ForeignKey(
+            "conversations.id",
+            ondelete="CASCADE"
+        ),
+        nullable=False
     )
 
-    prompt = Column(Text)
+    prompt = Column(
+        Text,
+        nullable=False
+    )
 
-    ai_response = Column(Text)
+    ai_response = Column(
+        Text,
+        nullable=False
+    )
 
     model_name = Column(
         String(100),
-        default="claude"
+        default="gpt-5.5"
     )
 
     success = Column(
