@@ -1,96 +1,131 @@
 # ==========================================================
+
 # FILE: app/database.py
+
 # PROJECT: AI WhatsApp Customer Service Agent
+
 # ==========================================================
 
 import os
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.orm import declarative_base
 
 # ==========================================================
+
 # DATABASE URL
+
 # ==========================================================
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not DATABASE_URL:
-    raise RuntimeError(
-        "DATABASE_URL environment variable is missing"
-    )
+raise RuntimeError(
+"DATABASE_URL environment variable is missing"
+)
 
 # ==========================================================
+
 # RAILWAY POSTGRES FIX
-# ==========================================================
 
-# Railway sometimes provides postgres://
-# SQLAlchemy requires postgresql://
+# ==========================================================
 
 if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace(
-        "postgres://",
-        "postgresql://",
-        1
-    )
+DATABASE_URL = DATABASE_URL.replace(
+"postgres://",
+"postgresql://",
+1
+)
+
+print("===================================")
+print("DATABASE_URL EXISTS:", bool(DATABASE_URL))
+print("===================================")
 
 # ==========================================================
+
 # ENGINE
+
 # ==========================================================
 
 engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True,
-    pool_recycle=300,
-    echo=False,
-    future=True
+DATABASE_URL,
+pool_pre_ping=True,
+pool_recycle=300,
+echo=True,
+future=True
 )
 
 # ==========================================================
+
 # SESSION
+
 # ==========================================================
 
 SessionLocal = sessionmaker(
-    autocommit=False,
-    autoflush=False,
-    bind=engine
+autocommit=False,
+autoflush=False,
+bind=engine
 )
 
 # ==========================================================
+
 # BASE
+
 # ==========================================================
 
 Base = declarative_base()
 
 # ==========================================================
+
 # DATABASE DEPENDENCY
+
 # ==========================================================
 
 def get_db():
 
-    db = SessionLocal()
+```
+db = SessionLocal()
 
-    try:
-        yield db
+try:
+    yield db
 
-    finally:
-        db.close()
+finally:
+    db.close()
+```
 
 # ==========================================================
+
 # DATABASE TEST
+
 # ==========================================================
 
 def test_connection():
 
-    try:
+```
+try:
 
-        with engine.connect() as conn:
-            print("✅ PostgreSQL Connected Successfully")
+    with engine.connect() as conn:
 
-        return True
+        conn.execute(text("SELECT 1"))
 
-    except Exception as e:
+        print(
+            "✅ PostgreSQL Connected Successfully"
+        )
 
-        print(f"❌ Database Connection Failed: {e}")
+    return True
 
-        return False
+except Exception as e:
+
+    print(
+        f"❌ Database Connection Failed: {e}"
+    )
+
+    return False
+```
+
+# ==========================================================
+
+# END OF FILE
+
+# ==========================================================
