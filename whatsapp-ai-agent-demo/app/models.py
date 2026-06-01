@@ -1,3 +1,8 @@
+# ==========================================================
+# FILE: app/models.py
+# PROJECT: AI WhatsApp Customer Service Agent Demo
+# ==========================================================
+
 from sqlalchemy import (
     Column,
     Integer,
@@ -103,7 +108,7 @@ class Message(Base):
 
     sender = Column(
         String(50)
-    )  # customer / ai
+    )
 
     content = Column(
         Text
@@ -150,7 +155,7 @@ class UploadedImage(Base):
 
 
 # ==========================================================
-# AI LOGS
+# AI RESPONSE LOGS
 # ==========================================================
 
 class AIResponseLog(Base):
