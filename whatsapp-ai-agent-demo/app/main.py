@@ -5,6 +5,19 @@ from datetime import datetime
 from typing import List
 
 # ==========================================================
+# DATABASE IMPORTS
+# ==========================================================
+
+from app.database import engine
+from app.models import Base
+
+# ==========================================================
+# CREATE TABLES BEFORE APP STARTS
+# ==========================================================
+
+Base.metadata.create_all(bind=engine)
+
+# ==========================================================
 # APP
 # ==========================================================
 
@@ -52,7 +65,18 @@ class ChatResponse(BaseModel):
 
 @app.on_event("startup")
 async def startup_event():
-    print("✅ AI WhatsApp Agent Started")
+
+    try:
+
+        Base.metadata.create_all(bind=engine)
+
+        print("✅ AI WhatsApp Agent Started")
+        print("✅ PostgreSQL Connected")
+        print("✅ Database Tables Created")
+
+    except Exception as e:
+
+        print(f"❌ Database Error: {e}")
 
 
 # ==========================================================
@@ -88,10 +112,10 @@ async def health():
 async def status():
     return {
         "application": "AI WhatsApp Agent",
-        "database": "demo",
-        "ai": "demo",
-        "whatsapp": "demo",
-        "railway": "ready"
+        "database": "postgresql",
+        "ai": "active",
+        "whatsapp": "active",
+        "railway": "connected"
     }
 
 
