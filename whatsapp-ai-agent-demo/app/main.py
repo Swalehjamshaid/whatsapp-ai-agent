@@ -13,7 +13,16 @@ from app.database import (
     DATABASE_URL
 )
 
-from app.models import Base
+import app.models
+
+from app.models import (
+    Base,
+    Customer,
+    Conversation,
+    Message,
+    UploadedImage,
+    AIResponseLog
+)
 
 # ==========================================================
 # APP
@@ -74,18 +83,13 @@ async def startup_event():
         print(bool(DATABASE_URL))
 
         print("========================================")
-        print("REGISTERED TABLES")
+        print("REGISTERED TABLES:")
+        print(list(Base.metadata.tables.keys()))
         print("========================================")
 
-        print(
-            list(
-                Base.metadata.tables.keys()
-            )
-        )
-
-        Base.metadata.create_all(
-            bind=engine
-        )
+        print("CREATING TABLES...")
+        Base.metadata.create_all(bind=engine)
+        print("TABLE CREATION COMPLETE")
 
         print("========================================")
         print("✅ PostgreSQL Connected")
