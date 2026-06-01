@@ -35,6 +35,9 @@ from app.models import (
     AIResponseLog
 )
 
+# FIX 1: Added WhatsApp service import
+from app.services.whatsapp_service import send_text_message
+
 # ==========================================================
 # LIFESPAN HANDLER (Modern FastAPI)
 # ==========================================================
@@ -814,8 +817,15 @@ async def whatsapp_webhook(payload: dict, db: Session = Depends(get_db)):
                                 
                                 db.commit()
                                 
-                                # TODO: Send reply back via WhatsApp API
-                                # This requires implementing WhatsApp API call
+                                # FIX 2: Send reply back via WhatsApp API
+                                print(f"Sending WhatsApp reply to {customer_phone}")
+                                
+                                send_result = send_text_message(
+                                    phone_number=customer_phone,
+                                    message=ai_reply
+                                )
+                                
+                                print(f"WhatsApp Send Result: {send_result}")
                                 print(f"AI Response to {customer_phone}: {ai_reply}")
         
         return {"status": "received", "payload": payload}
