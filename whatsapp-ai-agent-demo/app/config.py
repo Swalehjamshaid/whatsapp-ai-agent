@@ -112,3 +112,40 @@ SECRET_KEY = os.getenv(
     "SECRET_KEY",
     "demo_secret_key_change_in_production"
 )
+
+# ==========================================================
+# CONFIG CLASS AND LOAD FUNCTION (FIX FOR THE ERROR)
+# ==========================================================
+
+class Config:
+    """Configuration class to hold all settings"""
+    def __init__(self):
+        self.APP_NAME = APP_NAME
+        self.APP_VERSION = APP_VERSION
+        self.DEBUG = DEBUG
+        self.DATABASE_URL = DATABASE_URL
+        self.ANTHROPIC_API_KEY = ANTHROPIC_API_KEY
+        self.CLAUDE_MODEL = CLAUDE_MODEL
+        self.WHATSAPP_ACCESS_TOKEN = WHATSAPP_ACCESS_TOKEN
+        self.WHATSAPP_PHONE_NUMBER_ID = WHATSAPP_PHONE_NUMBER_ID
+        self.WHATSAPP_VERIFY_TOKEN = WHATSAPP_VERIFY_TOKEN
+        self.UPLOAD_FOLDER = UPLOAD_FOLDER
+        self.MAX_FILE_SIZE_MB = MAX_FILE_SIZE_MB
+        self.SYSTEM_PROMPT = SYSTEM_PROMPT
+        self.DASHBOARD_TITLE = DASHBOARD_TITLE
+        self.ENABLE_ANALYTICS = ENABLE_ANALYTICS
+        self.SECRET_KEY = SECRET_KEY
+    
+    def load(self):
+        """Load/reload configuration - useful for dynamic config updates"""
+        print("✅ Configuration loaded successfully")
+        print(f"   - Database: {self.DATABASE_URL.split('@')[-1] if '@' in self.DATABASE_URL else self.DATABASE_URL}")
+        print(f"   - WhatsApp: {'Configured' if self.WHATSAPP_ACCESS_TOKEN else 'Not configured'}")
+        print(f"   - Claude AI: {'Configured' if self.ANTHROPIC_API_KEY else 'Not configured'}")
+        return self
+
+# Create a global config instance
+config = Config()
+
+# Optional: Auto-load on import
+config.load()
