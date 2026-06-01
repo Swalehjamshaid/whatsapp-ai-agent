@@ -28,7 +28,7 @@ raise RuntimeError(
 
 # ==========================================================
 
-# RAILWAY POSTGRES FIX
+# RAILWAY POSTGRES COMPATIBILITY
 
 # ==========================================================
 
@@ -39,13 +39,19 @@ DATABASE_URL = DATABASE_URL.replace(
 1
 )
 
-print("===================================")
-print("DATABASE_URL EXISTS:", bool(DATABASE_URL))
-print("===================================")
+# ==========================================================
+
+# DATABASE DEBUG INFO
 
 # ==========================================================
 
-# ENGINE
+print("========================================")
+print("DATABASE_URL EXISTS:", bool(DATABASE_URL))
+print("========================================")
+
+# ==========================================================
+
+# SQLALCHEMY ENGINE
 
 # ==========================================================
 
@@ -53,13 +59,13 @@ engine = create_engine(
 DATABASE_URL,
 pool_pre_ping=True,
 pool_recycle=300,
-echo=True,
-future=True
+future=True,
+echo=False
 )
 
 # ==========================================================
 
-# SESSION
+# SESSION FACTORY
 
 # ==========================================================
 
@@ -71,7 +77,7 @@ bind=engine
 
 # ==========================================================
 
-# BASE
+# DECLARATIVE BASE
 
 # ==========================================================
 
@@ -97,7 +103,7 @@ finally:
 
 # ==========================================================
 
-# DATABASE TEST
+# DATABASE CONNECTION TEST
 
 # ==========================================================
 
@@ -112,9 +118,9 @@ try:
             text("SELECT 1")
         )
 
-        print(
-            "✅ PostgreSQL Connected Successfully"
-        )
+    print(
+        "✅ PostgreSQL Connected Successfully"
+    )
 
     return True
 
@@ -122,6 +128,38 @@ except Exception as e:
 
     print(
         f"❌ Database Connection Failed: {e}"
+    )
+
+    return False
+```
+
+# ==========================================================
+
+# DATABASE TABLE CREATION
+
+# ==========================================================
+
+def create_tables():
+
+```
+try:
+
+    from app import models
+
+    Base.metadata.create_all(
+        bind=engine
+    )
+
+    print(
+        "✅ Database Tables Created"
+    )
+
+    return True
+
+except Exception as e:
+
+    print(
+        f"❌ Table Creation Failed: {e}"
     )
 
     return False
