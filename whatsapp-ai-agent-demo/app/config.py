@@ -98,6 +98,17 @@ WHATSAPP_VERIFY_TOKEN = os.getenv(
     ""
 )
 
+# FIX 1: Added WhatsApp API Version and URL configuration
+WHATSAPP_API_VERSION = os.getenv(
+    "WHATSAPP_API_VERSION",
+    "v25.0"
+)
+
+WHATSAPP_API_URL = os.getenv(
+    "WHATSAPP_API_URL",
+    "https://graph.facebook.com"
+)
+
 # ==========================================================
 # FILES
 # ==========================================================
@@ -155,6 +166,10 @@ class Config:
     WHATSAPP_BUSINESS_ACCOUNT_ID = WHATSAPP_BUSINESS_ACCOUNT_ID
     WHATSAPP_VERIFY_TOKEN = WHATSAPP_VERIFY_TOKEN
     
+    # FIX 2: Added WhatsApp API Version and URL to Config class
+    WHATSAPP_API_VERSION = WHATSAPP_API_VERSION
+    WHATSAPP_API_URL = WHATSAPP_API_URL
+    
     UPLOAD_FOLDER = UPLOAD_FOLDER
     MAX_FILE_SIZE_MB = MAX_FILE_SIZE_MB
     
@@ -173,6 +188,8 @@ print("===================================")
 print("CONFIG LOADED")
 print("DATABASE:", bool(DATABASE_URL))
 print("WHATSAPP:", bool(WHATSAPP_ACCESS_TOKEN))
+print("WHATSAPP API VERSION:", WHATSAPP_API_VERSION)
+print("WHATSAPP API URL:", WHATSAPP_API_URL)
 print("OPENAI:", bool(OPENAI_API_KEY))
 print("ANTHROPIC:", bool(ANTHROPIC_API_KEY))
 print("===================================")
