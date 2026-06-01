@@ -5,6 +5,8 @@
 
 import os
 import re
+import uuid
+from contextlib import asynccontextmanager
 from typing import Optional
 from datetime import datetime
 from fastapi import FastAPI, Depends, HTTPException, Request, Query
@@ -13,7 +15,7 @@ from fastapi.responses import RedirectResponse, PlainTextResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import inspect, func
+from sqlalchemy import inspect, func, text
 
 from app.database import (
     engine,
@@ -34,13 +36,76 @@ from app.models import (
 )
 
 # ==========================================================
+# LIFESPAN HANDLER (Modern FastAPI)
+# ==========================================================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    print("========================================")
+    print("AI WHATSAPP AGENT STARTING")
+    print("========================================")
+
+    # Check environment variables
+    print("ENVIRONMENT VARIABLES CHECK:")
+    print("DATABASE_URL EXISTS:", bool(DATABASE_URL))
+    print("WHATSAPP TOKEN:", bool(os.getenv("WHATSAPP_ACCESS_TOKEN")))
+    print("WHATSAPP PHONE ID:", bool(os.getenv("WHATSAPP_PHONE_NUMBER_ID")))
+    print("WHATSAPP VERIFY TOKEN:", bool(os.getenv("WHATSAPP_VERIFY_TOKEN")))
+    print("OPENAI_API_KEY:", bool(os.getenv("OPENAI_API_KEY")))
+    print("ANTHROPIC_API_KEY:", bool(os.getenv("ANTHROPIC_API_KEY")))
+    print("========================================")
+
+    # Test database connection
+    print("TESTING DATABASE CONNECTION...")
+    if not test_connection():
+        raise Exception("Database Connection Failed - Check PostgreSQL on Railway")
+    
+    print("========================================")
+    print("REGISTERED TABLES (SQLAlchemy Models):")
+    print(list(Base.metadata.tables.keys()))
+    print("========================================")
+
+    # Create tables
+    print("CREATING TABLES...")
+    Base.metadata.create_all(bind=engine)
+    print("TABLE CREATION COMPLETE")
+    
+    # Show actual tables in database
+    print("========================================")
+    print("ACTUAL TABLES IN POSTGRESQL:")
+    inspector = inspect(engine)
+    tables = inspector.get_table_names()
+    print(tables)
+    print("========================================")
+    
+    # Expected tables check
+    expected_tables = ['customers', 'conversations', 'messages', 'uploaded_images', 'ai_response_logs']
+    print("EXPECTED TABLES:", expected_tables)
+    print("ALL TABLES CREATED:", set(expected_tables).issubset(set(tables)))
+    print("========================================")
+
+    print("✅ PostgreSQL Connected Successfully")
+    print("✅ Database Tables Created")
+    print("========================================")
+    
+    yield
+    
+    # Shutdown
+    print("========================================")
+    print("AI WHATSAPP AGENT SHUTTING DOWN")
+    print("========================================")
+
+
+# ==========================================================
 # APP
 # ==========================================================
 
 app = FastAPI(
     title="AI WhatsApp Agent",
     version="1.0.0",
-    description="AI WhatsApp Customer Service Agent"
+    description="AI WhatsApp Customer Service Agent",
+    lifespan=lifespan
 )
 
 # ==========================================================
@@ -97,101 +162,73 @@ def sanitize_email_name(name: str) -> str:
     safe_name = safe_name.strip('_')
     return safe_name
 
-def get_dashboard_conversations(db: Session, limit: int = 10):
-    """Get formatted conversations for dashboard template"""
-    # Use joinedload to avoid N+1 query problem
-    conversations = db.query(Conversation).options(
-        joinedload(Conversation.customer)
+def get_dashboard_conversations_optimized(db: Session, limit: int = 10):
+    """Get formatted conversations for dashboard template - OPTIMIZED version"""
+    # Single query with joins to get all data at once
+    conversations = db.query(
+        Conversation.id,
+        Conversation.customer_id,
+        Conversation.status,
+        Conversation.created_at,
+        Customer.name.label('customer_name'),
+        Customer.phone_number.label('customer_phone')
+    ).join(
+        Customer, Conversation.customer_id == Customer.id
     ).order_by(
         Conversation.created_at.desc()
     ).limit(limit).all()
     
+    # Get latest messages for all conversations in one query
+    conv_ids = [conv.id for conv in conversations]
+    
+    if conv_ids:
+        # Get latest user messages
+        user_messages = db.query(
+            Message.conversation_id,
+            Message.content,
+            Message.created_at
+        ).filter(
+            Message.conversation_id.in_(conv_ids),
+            Message.sender == "user"
+        ).distinct(Message.conversation_id).order_by(
+            Message.conversation_id, Message.created_at.desc()
+        ).all()
+        
+        # Get latest AI responses
+        ai_responses = db.query(
+            Message.conversation_id,
+            Message.content,
+            Message.created_at
+        ).filter(
+            Message.conversation_id.in_(conv_ids),
+            Message.sender == "assistant"
+        ).distinct(Message.conversation_id).order_by(
+            Message.conversation_id, Message.created_at.desc()
+        ).all()
+        
+        # Create lookup dictionaries
+        user_msg_dict = {msg.conversation_id: msg for msg in user_messages}
+        ai_response_dict = {msg.conversation_id: msg for msg in ai_responses}
+    else:
+        user_msg_dict = {}
+        ai_response_dict = {}
+    
     dashboard_conversations = []
     for conv in conversations:
-        # Get the latest user message for this conversation
-        latest_user_message = db.query(Message).filter(
-            Message.conversation_id == conv.id,
-            Message.sender == "user"
-        ).order_by(Message.created_at.desc()).first()
-        
-        # Get the latest AI response for this conversation
-        latest_ai_response = db.query(Message).filter(
-            Message.conversation_id == conv.id,
-            Message.sender == "assistant"
-        ).order_by(Message.created_at.desc()).first()
+        user_msg = user_msg_dict.get(conv.id)
+        ai_response = ai_response_dict.get(conv.id)
         
         dashboard_conversations.append({
             "id": conv.id,
-            "customer": conv.customer.name if conv.customer else "Unknown",
-            "customer_phone": conv.customer.phone_number if conv.customer else "Unknown",
-            "message": latest_user_message.content if latest_user_message else "No messages",
-            "reply": latest_ai_response.content if latest_ai_response else "No response",
+            "customer": conv.customer_name,
+            "customer_phone": conv.customer_phone,
+            "message": user_msg.content if user_msg else "No messages",
+            "reply": ai_response.content if ai_response else "No response",
             "timestamp": conv.created_at.isoformat() if conv.created_at else "",
             "status": conv.status
         })
     
     return dashboard_conversations
-
-
-# ==========================================================
-# STARTUP
-# ==========================================================
-
-@app.on_event("startup")
-async def startup_event():
-    try:
-        print("========================================")
-        print("AI WHATSAPP AGENT STARTING")
-        print("========================================")
-
-        # Check environment variables
-        print("ENVIRONMENT VARIABLES CHECK:")
-        print("DATABASE_URL EXISTS:", bool(DATABASE_URL))
-        print("WHATSAPP TOKEN:", bool(os.getenv("WHATSAPP_ACCESS_TOKEN")))
-        print("WHATSAPP PHONE ID:", bool(os.getenv("WHATSAPP_PHONE_NUMBER_ID")))
-        print("WHATSAPP VERIFY TOKEN:", bool(os.getenv("WHATSAPP_VERIFY_TOKEN")))
-        print("OPENAI_API_KEY:", bool(os.getenv("OPENAI_API_KEY")))
-        print("========================================")
-
-        # Test database connection
-        print("TESTING DATABASE CONNECTION...")
-        if not test_connection():
-            raise Exception("Database Connection Failed - Check PostgreSQL on Railway")
-        
-        print("========================================")
-        print("REGISTERED TABLES (SQLAlchemy Models):")
-        print(list(Base.metadata.tables.keys()))
-        print("========================================")
-
-        # Create tables
-        print("CREATING TABLES...")
-        Base.metadata.create_all(bind=engine)
-        print("TABLE CREATION COMPLETE")
-        
-        # Show actual tables in database
-        print("========================================")
-        print("ACTUAL TABLES IN POSTGRESQL:")
-        inspector = inspect(engine)
-        tables = inspector.get_table_names()
-        print(tables)
-        print("========================================")
-        
-        # Expected tables check
-        expected_tables = ['customers', 'conversations', 'messages', 'uploaded_images', 'ai_response_logs']
-        print("EXPECTED TABLES:", expected_tables)
-        print("ALL TABLES CREATED:", set(expected_tables).issubset(set(tables)))
-        print("========================================")
-
-        print("✅ PostgreSQL Connected Successfully")
-        print("✅ Database Tables Created")
-        print("========================================")
-
-    except Exception as e:
-        print("========================================")
-        print("❌ DATABASE ERROR")
-        print(str(e))
-        print("========================================")
-        raise e
 
 
 # ==========================================================
@@ -220,6 +257,29 @@ async def health():
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat()
     }
+
+
+# ==========================================================
+# DATABASE HEALTH - Specific PostgreSQL check
+# ==========================================================
+
+@app.get("/db-health", tags=["Health"])
+async def db_health(db: Session = Depends(get_db)):
+    """Check database connectivity with SELECT 1"""
+    try:
+        # Perform simple query to verify database is responsive
+        result = db.execute(text("SELECT 1")).scalar()
+        return {
+            "status": "healthy",
+            "database": "connected",
+            "query_result": result == 1,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Database connection failed: {str(e)}"
+        )
 
 
 # ==========================================================
@@ -302,8 +362,8 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
         total_messages = db.query(Message).count()
         total_ai_responses = db.query(Message).filter(Message.sender == "assistant").count()
         
-        # Get formatted dashboard conversations (matches template expectations)
-        dashboard_conversations = get_dashboard_conversations(db, limit=10)
+        # Get optimized dashboard conversations
+        dashboard_conversations = get_dashboard_conversations_optimized(db, limit=10)
         
         # Get message stats by day (last 7 days with correct order)
         stats = db.query(
@@ -313,6 +373,11 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
             func.date(Message.created_at).desc()
         ).limit(7).all()
         
+        # Check service statuses for dashboard
+        whatsapp_token = os.getenv("WHATSAPP_ACCESS_TOKEN")
+        anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+        openai_key = os.getenv("OPENAI_API_KEY")
+        
         return templates.TemplateResponse(
             "dashboard.html",
             {
@@ -321,12 +386,18 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
                 "total_customers": total_customers,
                 "total_messages": total_messages,
                 "total_ai_responses": total_ai_responses,
-                "conversations": dashboard_conversations,  # Now formatted correctly
+                "conversations": dashboard_conversations,
                 "stats": stats,
-                "status": "running"
+                "status": "running",
+                # Added missing status variables
+                "whatsapp_status": "Online" if whatsapp_token else "Offline",
+                "claude_status": "Online" if anthropic_key or openai_key else "Offline",
+                "vision_status": "Online" if anthropic_key or openai_key else "Offline",
+                "timestamp": datetime.utcnow().isoformat()
             }
         )
     except Exception as e:
+        print(f"Dashboard error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -343,8 +414,12 @@ async def dashboard_api(db: Session = Depends(get_db)):
         total_messages = db.query(Message).count()
         total_ai_responses = db.query(Message).filter(Message.sender == "assistant").count()
         
-        # Get formatted conversations
-        dashboard_conversations = get_dashboard_conversations(db, limit=10)
+        # Get optimized conversations
+        dashboard_conversations = get_dashboard_conversations_optimized(db, limit=10)
+        
+        whatsapp_token = os.getenv("WHATSAPP_ACCESS_TOKEN")
+        anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+        openai_key = os.getenv("OPENAI_API_KEY")
         
         return {
             "total_conversations": total_conversations,
@@ -352,7 +427,10 @@ async def dashboard_api(db: Session = Depends(get_db)):
             "total_messages": total_messages,
             "total_ai_responses": total_ai_responses,
             "conversations": dashboard_conversations,
-            "status": "running"
+            "status": "running",
+            "whatsapp_status": "Online" if whatsapp_token else "Offline",
+            "claude_status": "Online" if anthropic_key or openai_key else "Offline",
+            "vision_status": "Online" if anthropic_key or openai_key else "Offline"
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -392,19 +470,19 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
             customer = Customer(
                 name=request.customer_name,
                 phone_number=request.phone_number,
-                email=f"{safe_name}@temp.com"  # Now valid email format
+                email=f"{safe_name}@temp.com"
             )
             db.add(customer)
             db.commit()
             db.refresh(customer)
         elif not request.phone_number:
-            # If no phone number provided, create with temporary unique phone
-            unique_phone = f"temp_{int(datetime.utcnow().timestamp())}"
+            # Generate truly unique phone number using UUID
+            unique_phone = f"temp_{uuid.uuid4().hex[:12]}"
             safe_name = sanitize_email_name(request.customer_name)
             customer = Customer(
                 name=request.customer_name,
                 phone_number=unique_phone,
-                email=f"{safe_name}@temp.com"  # Now valid email format
+                email=f"{safe_name}@temp.com"
             )
             db.add(customer)
             db.commit()
@@ -641,7 +719,10 @@ async def verify_webhook(
         return PlainTextResponse(content=hub_challenge)
     
     print("❌ Webhook verification failed")
-    return {"error": "Verification failed"}
+    raise HTTPException(
+        status_code=403,
+        detail="Verification failed - Invalid or missing verification token"
+    )
 
 
 @app.post("/webhook", tags=["Webhook"])
@@ -650,14 +731,7 @@ async def whatsapp_webhook(payload: dict, db: Session = Depends(get_db)):
     try:
         print("WhatsApp webhook received:", payload)
         
-        # TODO: Parse WhatsApp message
-        # Extract customer phone number
-        # Extract message content
-        # Store in database
-        # Generate AI response
-        # Send reply via WhatsApp API
-        
-        # Basic structure for WhatsApp message processing
+        # Process WhatsApp messages
         if "entry" in payload:
             for entry in payload["entry"]:
                 for change in entry.get("changes", []):
@@ -668,17 +742,86 @@ async def whatsapp_webhook(payload: dict, db: Session = Depends(get_db)):
                                 # Extract message details
                                 customer_phone = message.get("from")
                                 message_text = message.get("text", {}).get("body", "")
+                                # Note: message_id extracted but not stored (matches current model)
                                 
                                 print(f"Message from {customer_phone}: {message_text}")
                                 
-                                # TODO: Store in database
-                                # TODO: Generate AI response
-                                # TODO: Send reply back
-                                pass
+                                # Find or create customer
+                                customer = db.query(Customer).filter(
+                                    Customer.phone_number == customer_phone
+                                ).first()
+                                
+                                if not customer:
+                                    # Create new customer with phone number
+                                    customer = Customer(
+                                        name=f"Customer_{customer_phone[-6:]}",
+                                        phone_number=customer_phone,
+                                        email=f"{customer_phone}@whatsapp.temp"
+                                    )
+                                    db.add(customer)
+                                    db.commit()
+                                    db.refresh(customer)
+                                
+                                # Create new conversation
+                                conversation = Conversation(
+                                    customer_id=customer.id,
+                                    status="active"
+                                )
+                                db.add(conversation)
+                                db.commit()
+                                db.refresh(conversation)
+                                
+                                # Store incoming message - FIXED: Removed whatsapp_message_id
+                                user_msg = Message(
+                                    conversation_id=conversation.id,
+                                    sender="user",
+                                    content=message_text,
+                                    message_type="text"
+                                )
+                                db.add(user_msg)
+                                
+                                # Generate AI response
+                                user_message_lower = message_text.lower()
+                                if "order" in user_message_lower:
+                                    ai_reply = "Your order is currently in transit and expected tomorrow."
+                                elif "delivery" in user_message_lower:
+                                    ai_reply = "Your shipment is scheduled for delivery within 24 hours."
+                                elif "refund" in user_message_lower:
+                                    ai_reply = "Your refund request has been received and is under review."
+                                elif "hello" in user_message_lower or "hi" in user_message_lower:
+                                    ai_reply = f"Hello {customer.name}, how may I assist you today?"
+                                else:
+                                    ai_reply = "Thank you for contacting support. Our AI assistant has received your message."
+                                
+                                # Store AI response
+                                ai_msg = Message(
+                                    conversation_id=conversation.id,
+                                    sender="assistant",
+                                    content=ai_reply,
+                                    message_type="text"
+                                )
+                                db.add(ai_msg)
+                                
+                                # Log AI response
+                                ai_log = AIResponseLog(
+                                    conversation_id=conversation.id,
+                                    prompt=message_text,
+                                    ai_response=ai_reply,
+                                    model_name="rule-based",
+                                    success=True
+                                )
+                                db.add(ai_log)
+                                
+                                db.commit()
+                                
+                                # TODO: Send reply back via WhatsApp API
+                                # This requires implementing WhatsApp API call
+                                print(f"AI Response to {customer_phone}: {ai_reply}")
         
         return {"status": "received", "payload": payload}
     except Exception as e:
         print(f"Webhook error: {str(e)}")
+        db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
 
