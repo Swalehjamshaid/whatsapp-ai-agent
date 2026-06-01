@@ -1,1 +1,202 @@
-<h1>Conversations</h1>
+<!-- ===================================================== -->
+<!-- FILE: app/templates/conversations.html -->
+<!-- PROJECT: AI WhatsApp Customer Service Agent Demo -->
+<!-- ===================================================== -->
+
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1.0">
+
+    <title>
+        AI WhatsApp Agent - Conversations
+    </title>
+
+    <style>
+
+        body {
+            font-family: Arial, sans-serif;
+            background: #f4f6f9;
+            margin: 0;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: auto;
+        }
+
+        .header {
+            background: #25D366;
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0px 2px 8px rgba(0,0,0,0.1);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th {
+            background: #2c3e50;
+            color: white;
+            padding: 12px;
+            text-align: left;
+        }
+
+        td {
+            padding: 12px;
+            border-bottom: 1px solid #ddd;
+        }
+
+        tr:hover {
+            background: #f5f5f5;
+        }
+
+        .empty {
+            text-align: center;
+            color: gray;
+            padding: 30px;
+        }
+
+        .customer {
+            color: #3498db;
+            font-weight: bold;
+        }
+
+        .ai {
+            color: #27ae60;
+            font-weight: bold;
+        }
+
+        .footer {
+            text-align: center;
+            color: gray;
+            margin-top: 20px;
+        }
+
+    </style>
+
+</head>
+
+<body>
+
+<div class="container">
+
+    <div class="header">
+
+        <h1>
+            🤖 AI WhatsApp Customer Service Agent
+        </h1>
+
+        <p>
+            Conversation Monitoring Dashboard
+        </p>
+
+    </div>
+
+    <div class="card">
+
+        <h2>
+            Customer Conversations
+        </h2>
+
+        {% if conversations %}
+
+        <table>
+
+            <thead>
+
+            <tr>
+                <th>Customer</th>
+                <th>Message</th>
+                <th>AI Response</th>
+                <th>Timestamp</th>
+            </tr>
+
+            </thead>
+
+            <tbody>
+
+            {% for item in conversations %}
+
+            <tr>
+
+                <td class="customer">
+                    {{ item.customer }}
+                </td>
+
+                <td>
+                    {{ item.message }}
+                </td>
+
+                <td class="ai">
+                    {{ item.reply }}
+                </td>
+
+                <td>
+                    {{ item.timestamp }}
+                </td>
+
+            </tr>
+
+            {% endfor %}
+
+            </tbody>
+
+        </table>
+
+        {% else %}
+
+        <div class="empty">
+
+            No conversations found.
+
+        </div>
+
+        {% endif %}
+
+    </div>
+
+    <div class="card">
+
+        <h2>
+            Demo Features
+        </h2>
+
+        <ul>
+            <li>WhatsApp Cloud API Integration</li>
+            <li>Claude AI Customer Support</li>
+            <li>Conversation Memory</li>
+            <li>Image Analysis Support</li>
+            <li>Admin Dashboard</li>
+            <li>Railway Deployment</li>
+        </ul>
+
+    </div>
+
+    <div class="footer">
+
+        AI WhatsApp Agent Demo v1.0
+
+    </div>
+
+</div>
+
+</body>
+</html>
