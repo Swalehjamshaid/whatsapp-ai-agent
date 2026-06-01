@@ -1,30 +1,28 @@
+# ==========================================================
+# FILE: app/main.py
+# PROJECT: AI WhatsApp Customer Service Agent
+# ==========================================================
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from datetime import datetime
-from typing import List
 
-# ==========================================================
-# DATABASE IMPORTS
-# ==========================================================
+from app.database import (
+    engine,
+    DATABASE_URL
+)
 
-from app.database import engine
 from app.models import Base
-
-# ==========================================================
-# CREATE TABLES BEFORE APP STARTS
-# ==========================================================
-
-Base.metadata.create_all(bind=engine)
 
 # ==========================================================
 # APP
 # ==========================================================
 
 app = FastAPI(
-    title="AI WhatsApp Agent Demo",
+    title="AI WhatsApp Agent",
     version="1.0.0",
-    description="Customer Service AI Demo"
+    description="AI WhatsApp Customer Service Agent"
 )
 
 # ==========================================================
@@ -46,7 +44,7 @@ app.add_middleware(
 conversations = []
 
 # ==========================================================
-# MODELS
+# REQUEST / RESPONSE MODELS
 # ==========================================================
 
 class ChatRequest(BaseModel):
@@ -68,15 +66,38 @@ async def startup_event():
 
     try:
 
-        Base.metadata.create_all(bind=engine)
+        print("========================================")
+        print("AI WHATSAPP AGENT STARTING")
+        print("========================================")
 
-        print("✅ AI WhatsApp Agent Started")
+        print("DATABASE URL EXISTS:")
+        print(bool(DATABASE_URL))
+
+        print("========================================")
+        print("REGISTERED TABLES")
+        print("========================================")
+
+        print(
+            list(
+                Base.metadata.tables.keys()
+            )
+        )
+
+        Base.metadata.create_all(
+            bind=engine
+        )
+
+        print("========================================")
         print("✅ PostgreSQL Connected")
         print("✅ Database Tables Created")
+        print("========================================")
 
     except Exception as e:
 
-        print(f"❌ Database Error: {e}")
+        print("========================================")
+        print("❌ DATABASE ERROR")
+        print(str(e))
+        print("========================================")
 
 
 # ==========================================================
@@ -85,20 +106,23 @@ async def startup_event():
 
 @app.get("/")
 async def root():
+
     return {
         "status": "ok",
-        "application": "AI WhatsApp Agent Demo",
+        "application": "AI WhatsApp Agent",
         "version": "1.0.0",
+        "database": "postgresql",
         "timestamp": datetime.utcnow().isoformat()
     }
 
 
 # ==========================================================
-# HEALTH CHECK
+# HEALTH
 # ==========================================================
 
 @app.get("/health")
 async def health():
+
     return {
         "status": "healthy"
     }
@@ -110,6 +134,7 @@ async def health():
 
 @app.get("/status")
 async def status():
+
     return {
         "application": "AI WhatsApp Agent",
         "database": "postgresql",
@@ -142,16 +167,24 @@ async def dashboard():
 # CHAT
 # ==========================================================
 
-@app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
+@app.post(
+    "/chat",
+    response_model=ChatResponse
+)
+async def chat(
+    request: ChatRequest
+):
 
-    user_message = request.message.lower()
+    user_message = (
+        request.message.lower()
+    )
 
     if "order" in user_message:
 
         ai_reply = (
-            "Your order is currently in transit "
-            "and expected tomorrow."
+            "Your order is currently "
+            "in transit and expected "
+            "tomorrow."
         )
 
     elif "delivery" in user_message:
@@ -164,8 +197,9 @@ async def chat(request: ChatRequest):
     elif "refund" in user_message:
 
         ai_reply = (
-            "Your refund request has been received "
-            "and is under review."
+            "Your refund request has "
+            "been received and is "
+            "under review."
         )
 
     elif "hello" in user_message:
@@ -178,8 +212,9 @@ async def chat(request: ChatRequest):
     else:
 
         ai_reply = (
-            "Thank you for contacting support. "
-            "Our AI assistant has received your message."
+            "Thank you for contacting "
+            "support. Our AI assistant "
+            "has received your message."
         )
 
     record = {
@@ -211,7 +246,7 @@ async def get_conversations():
 
 
 # ==========================================================
-# CUSTOMER DETAILS
+# CUSTOMERS
 # ==========================================================
 
 @app.get("/customers")
@@ -231,7 +266,7 @@ async def customers():
 
 
 # ==========================================================
-# WHATSAPP WEBHOOK DEMO
+# WEBHOOK
 # ==========================================================
 
 @app.get("/webhook")
@@ -243,7 +278,9 @@ async def verify_webhook():
 
 
 @app.post("/webhook")
-async def whatsapp_webhook(payload: dict):
+async def whatsapp_webhook(
+    payload: dict
+):
 
     return {
         "received": True,
@@ -260,7 +297,9 @@ async def analytics():
 
     return {
         "total_messages": len(conversations),
-        "total_ai_responses": len(conversations),
+        "total_ai_responses": len(
+            conversations
+        ),
         "total_customers": len(
             set(
                 item["customer"]
@@ -278,6 +317,6 @@ async def analytics():
 async def version():
 
     return {
-        "name": "AI WhatsApp Agent Demo",
+        "name": "AI WhatsApp Agent",
         "version": "1.0.0"
     }
