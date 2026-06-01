@@ -14,7 +14,9 @@ from sqlalchemy.orm import declarative_base
 # For Demo Version
 # Later replace with PostgreSQL Railway URL
 
-DATABASE_URL = "sqlite:///./whatsapp_agent.db"
+import os
+
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 # ==========================================================
 # ENGINE
