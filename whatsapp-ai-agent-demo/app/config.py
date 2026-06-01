@@ -1,151 +1,213 @@
 # ==========================================================
+
 # FILE: app/config.py
-# PROJECT: AI WhatsApp Customer Service Agent Demo
+
+# PROJECT: AI WhatsApp Customer Service Agent
+
 # ==========================================================
 
 import os
 from dotenv import load_dotenv
 
 # ==========================================================
+
 # LOAD ENVIRONMENT VARIABLES
+
 # ==========================================================
 
 load_dotenv()
 
 # ==========================================================
-# APPLICATION SETTINGS
+
+# APPLICATION
+
 # ==========================================================
 
 APP_NAME = "AI WhatsApp Customer Service Agent"
-
 APP_VERSION = "1.0.0"
 
-DEBUG = True
+DEBUG = os.getenv(
+"DEBUG",
+"False"
+).lower() == "true"
 
 # ==========================================================
-# DATABASE SETTINGS
+
+# DATABASE
+
 # ==========================================================
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "sqlite:///./whatsapp_agent.db"
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+raise RuntimeError(
+"DATABASE_URL environment variable is missing"
+)
+
+if DATABASE_URL.startswith("postgres://"):
+DATABASE_URL = DATABASE_URL.replace(
+"postgres://",
+"postgresql://",
+1
 )
 
 # ==========================================================
-# ANTHROPIC CLAUDE SETTINGS
+
+# SECURITY
+
+# ==========================================================
+
+SECRET_KEY = os.getenv(
+"SECRET_KEY",
+"change-this-secret-key"
+)
+
+# ==========================================================
+
+# OPENAI
+
+# ==========================================================
+
+OPENAI_API_KEY = os.getenv(
+"OPENAI_API_KEY",
+""
+)
+
+# ==========================================================
+
+# ANTHROPIC
+
 # ==========================================================
 
 ANTHROPIC_API_KEY = os.getenv(
-    "ANTHROPIC_API_KEY",
-    ""
+"ANTHROPIC_API_KEY",
+""
 )
 
 CLAUDE_MODEL = os.getenv(
-    "CLAUDE_MODEL",
-    "claude-sonnet-4-20250514"
+"CLAUDE_MODEL",
+"claude-sonnet-4-20250514"
 )
 
 # ==========================================================
-# WHATSAPP CLOUD API SETTINGS
+
+# WHATSAPP CLOUD API
+
 # ==========================================================
 
 WHATSAPP_ACCESS_TOKEN = os.getenv(
-    "WHATSAPP_ACCESS_TOKEN",
-    ""
+"WHATSAPP_ACCESS_TOKEN",
+""
 )
 
 WHATSAPP_PHONE_NUMBER_ID = os.getenv(
-    "WHATSAPP_PHONE_NUMBER_ID",
-    ""
+"WHATSAPP_PHONE_NUMBER_ID",
+""
+)
+
+WHATSAPP_BUSINESS_ACCOUNT_ID = os.getenv(
+"WHATSAPP_BUSINESS_ACCOUNT_ID",
+""
 )
 
 WHATSAPP_VERIFY_TOKEN = os.getenv(
-    "WHATSAPP_VERIFY_TOKEN",
-    "demo_verify_token"
+"WHATSAPP_VERIFY_TOKEN",
+""
 )
 
 # ==========================================================
-# FILE UPLOAD SETTINGS
+
+# FILES
+
 # ==========================================================
 
 UPLOAD_FOLDER = "uploads"
-
 MAX_FILE_SIZE_MB = 10
 
 # ==========================================================
-# AI SYSTEM PROMPT
+
+# DASHBOARD
+
+# ==========================================================
+
+DASHBOARD_TITLE = "AI Customer Service Dashboard"
+ENABLE_ANALYTICS = True
+
+# ==========================================================
+
+# SYSTEM PROMPT
+
 # ==========================================================
 
 SYSTEM_PROMPT = """
 You are an AI Customer Support Agent.
 
-Your responsibilities:
+Responsibilities:
 
-- Answer customer questions professionally.
-- Help customers track orders.
-- Assist with delivery questions.
-- Assist with refund requests.
-- Analyze uploaded images.
-- Remain polite and professional.
-- Provide concise answers.
+* Customer support
+* Order tracking
+* Delivery assistance
+* Refund handling
+* WhatsApp communication
+* Image analysis
 
-Always respond as a customer service representative.
+Always be professional,
+helpful and concise.
 """
 
 # ==========================================================
-# DASHBOARD SETTINGS
-# ==========================================================
 
-DASHBOARD_TITLE = "AI Customer Service Dashboard"
+# CONFIG CLASS
 
-# ==========================================================
-# ANALYTICS SETTINGS
-# ==========================================================
-
-ENABLE_ANALYTICS = True
-
-# ==========================================================
-# SECURITY SETTINGS
-# ==========================================================
-
-SECRET_KEY = os.getenv(
-    "SECRET_KEY",
-    "demo_secret_key_change_in_production"
-)
-
-# ==========================================================
-# CONFIG CLASS AND LOAD FUNCTION (FIX FOR THE ERROR)
 # ==========================================================
 
 class Config:
-    """Configuration class to hold all settings"""
-    def __init__(self):
-        self.APP_NAME = APP_NAME
-        self.APP_VERSION = APP_VERSION
-        self.DEBUG = DEBUG
-        self.DATABASE_URL = DATABASE_URL
-        self.ANTHROPIC_API_KEY = ANTHROPIC_API_KEY
-        self.CLAUDE_MODEL = CLAUDE_MODEL
-        self.WHATSAPP_ACCESS_TOKEN = WHATSAPP_ACCESS_TOKEN
-        self.WHATSAPP_PHONE_NUMBER_ID = WHATSAPP_PHONE_NUMBER_ID
-        self.WHATSAPP_VERIFY_TOKEN = WHATSAPP_VERIFY_TOKEN
-        self.UPLOAD_FOLDER = UPLOAD_FOLDER
-        self.MAX_FILE_SIZE_MB = MAX_FILE_SIZE_MB
-        self.SYSTEM_PROMPT = SYSTEM_PROMPT
-        self.DASHBOARD_TITLE = DASHBOARD_TITLE
-        self.ENABLE_ANALYTICS = ENABLE_ANALYTICS
-        self.SECRET_KEY = SECRET_KEY
-    
-    def load(self):
-        """Load/reload configuration - useful for dynamic config updates"""
-        print("✅ Configuration loaded successfully")
-        print(f"   - Database: {self.DATABASE_URL.split('@')[-1] if '@' in self.DATABASE_URL else self.DATABASE_URL}")
-        print(f"   - WhatsApp: {'Configured' if self.WHATSAPP_ACCESS_TOKEN else 'Not configured'}")
-        print(f"   - Claude AI: {'Configured' if self.ANTHROPIC_API_KEY else 'Not configured'}")
-        return self
 
-# Create a global config instance
+```
+APP_NAME = APP_NAME
+APP_VERSION = APP_VERSION
+DEBUG = DEBUG
+
+DATABASE_URL = DATABASE_URL
+
+SECRET_KEY = SECRET_KEY
+
+OPENAI_API_KEY = OPENAI_API_KEY
+
+ANTHROPIC_API_KEY = ANTHROPIC_API_KEY
+CLAUDE_MODEL = CLAUDE_MODEL
+
+WHATSAPP_ACCESS_TOKEN = WHATSAPP_ACCESS_TOKEN
+WHATSAPP_PHONE_NUMBER_ID = WHATSAPP_PHONE_NUMBER_ID
+WHATSAPP_BUSINESS_ACCOUNT_ID = WHATSAPP_BUSINESS_ACCOUNT_ID
+WHATSAPP_VERIFY_TOKEN = WHATSAPP_VERIFY_TOKEN
+
+UPLOAD_FOLDER = UPLOAD_FOLDER
+MAX_FILE_SIZE_MB = MAX_FILE_SIZE_MB
+
+DASHBOARD_TITLE = DASHBOARD_TITLE
+ENABLE_ANALYTICS = ENABLE_ANALYTICS
+
+SYSTEM_PROMPT = SYSTEM_PROMPT
+```
+
+# ==========================================================
+
+# GLOBAL CONFIG
+
+# ==========================================================
+
 config = Config()
 
-# Optional: Auto-load on import
-config.load()
+print("===================================")
+print("CONFIG LOADED")
+print("DATABASE:", bool(DATABASE_URL))
+print("WHATSAPP:", bool(WHATSAPP_ACCESS_TOKEN))
+print("OPENAI:", bool(OPENAI_API_KEY))
+print("===================================")
+
+# ==========================================================
+
+# END FILE
+
+# ==========================================================
