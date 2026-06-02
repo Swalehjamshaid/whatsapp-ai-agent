@@ -11,7 +11,7 @@ from typing import Optional
 from datetime import datetime
 from fastapi import FastAPI, Depends, HTTPException, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, PlainTextResponse
+from fastapi.responses import RedirectResponse, PlainTextResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
@@ -40,7 +40,7 @@ from app.models import (
     SystemSetting
 )
 
-# Import schema service functions - verify these exist in schema_service.py
+# Import schema service functions
 from app.services.schema_service import (
     check_schema_version,
     get_schema_info,
@@ -50,11 +50,11 @@ from app.services.schema_service import (
 # WhatsApp service import
 from app.services.whatsapp_service import send_text_message
 
-# Import upload router
+# Import routers
 from app.routes.upload import router as upload_router
 
 # ==========================================================
-# LIFESPAN HANDLER (Modern FastAPI)
+# LIFESPAN HANDLER
 # ==========================================================
 
 @asynccontextmanager
@@ -92,11 +92,9 @@ async def lifespan(app: FastAPI):
     print("CHECKING SCHEMA VERSION...")
     db = SessionLocal()
     try:
-        # Call schema check (function doesn't return value)
         check_schema_version(db)
         print("✅ Schema check completed")
         
-        # Get schema info for logging
         schema_info = get_schema_info(db)
         print(f"📊 Schema Info: App Version={schema_info['app_version']}, "
               f"DB Version={schema_info['db_version']}, "
@@ -114,7 +112,7 @@ async def lifespan(app: FastAPI):
     print("✅ Schema Check Complete")
     print("========================================")
 
-    # Create tables if they don't exist (after schema check)
+    # Create tables if they don't exist
     print("CREATING TABLES (IF NOT EXISTS)...")
     Base.metadata.create_all(bind=engine)
     print("TABLE CREATION COMPLETE")
@@ -126,11 +124,9 @@ async def lifespan(app: FastAPI):
     tables = inspector.get_table_names()
     print(tables)
     
-    # Log table count
     print(f"📊 Total Tables: {len(tables)}")
     print("========================================")
     
-    # Update expected tables with new models
     expected_tables = [
         'customers', 
         'conversations', 
@@ -158,12 +154,10 @@ async def lifespan(app: FastAPI):
         print("⚠️ Excel Service Not Installed - Will be added later")
     
     print("========================================")
-
     print("✅ PostgreSQL Connected Successfully")
     print("✅ Database Tables Verified")
     print("✅ Upload Directory Created")
     print("========================================")
-
     print("✅ Application Startup Complete")
     print("========================================")
     
@@ -202,18 +196,18 @@ app.add_middleware(
 # REGISTER ROUTERS
 # ==========================================================
 
-# Register upload router
+# Priority 9: Verify router registration
 app.include_router(upload_router)
 
 # ==========================================================
 # TEMPLATES
 # ==========================================================
 
-# Ensure templates directory exists
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
 os.makedirs(TEMPLATES_DIR, exist_ok=True)
 
 templates = Jinja2Templates(directory=TEMPLATES_DIR)
+
 
 # ==========================================================
 # REQUEST / RESPONSE MODELS
@@ -310,7 +304,6 @@ def get_dashboard_conversations_optimized(db: Session, limit: int = 10):
 def get_latest_uploads(db: Session, limit: int = 5):
     """Get latest upload batches for dashboard"""
     try:
-        # Get unique batches with their metadata
         batches = db.query(
             DeliveryReport.upload_batch_id,
             DeliveryReport.source_file,
@@ -338,211 +331,183 @@ def get_latest_uploads(db: Session, limit: int = 5):
         return []
 
 
+def get_top_dealers(db: Session, limit: int = 5):
+    """Get top dealers by delivery count"""
+    try:
+        dealers = db.query(
+            DeliveryReport.dealer_code,
+            DeliveryReport.customer_name,
+            func.count(DeliveryReport.id).label('delivery_count'),
+            func.sum(DeliveryReport.dn_amount).label('total_amount'),
+            func.sum(func.case((DeliveryReport.pending_flag.is_(True), 1), else_=0)).label('pending_count')
+        ).group_by(
+            DeliveryReport.dealer_code,
+            DeliveryReport.customer_name
+        ).order_by(
+            func.count(DeliveryReport.id).desc()
+        ).limit(limit).all()
+        
+        return [
+            {
+                "dealer_code": d.dealer_code or "N/A",
+                "customer_name": d.customer_name or "N/A",
+                "delivery_count": d.delivery_count,
+                "total_amount": float(d.total_amount or 0),
+                "pending_count": d.pending_count or 0
+            }
+            for d in dealers if d.dealer_code
+        ]
+    except Exception as e:
+        print(f"Error getting top dealers: {e}")
+        return []
+
+
+def get_top_cities(db: Session, limit: int = 5):
+    """Get top cities by delivery count"""
+    try:
+        cities = db.query(
+            DeliveryReport.ship_to_city.label('city'),
+            func.count(DeliveryReport.id).label('count'),
+            func.sum(func.case((DeliveryReport.pending_flag.is_(True), 1), else_=0)).label('pending_count')
+        ).group_by(
+            DeliveryReport.ship_to_city
+        ).order_by(
+            func.count(DeliveryReport.id).desc()
+        ).limit(limit).all()
+        
+        return [
+            {
+                "city": c.city or "N/A",
+                "count": c.count,
+                "pending_count": c.pending_count or 0
+            }
+            for c in cities if c.city
+        ]
+    except Exception as e:
+        print(f"Error getting top cities: {e}")
+        return []
+
+
+def get_warehouse_stats(db: Session, limit: int = 5):
+    """Get warehouse statistics"""
+    try:
+        warehouses = db.query(
+            DeliveryReport.warehouse,
+            func.count(DeliveryReport.id).label('total_count'),
+            func.sum(func.case((DeliveryReport.pending_flag.is_(True), 1), else_=0)).label('pending_count'),
+            func.sum(func.case((DeliveryReport.pending_flag.is_(True), DeliveryReport.dn_amount), else_=0)).label('pending_amount')
+        ).group_by(
+            DeliveryReport.warehouse
+        ).order_by(
+            func.count(DeliveryReport.id).desc()
+        ).limit(limit).all()
+        
+        return [
+            {
+                "warehouse": w.warehouse or "N/A",
+                "total_count": w.total_count,
+                "pending_count": w.pending_count or 0,
+                "pending_amount": float(w.pending_amount or 0)
+            }
+            for w in warehouses if w.warehouse
+        ]
+    except Exception as e:
+        print(f"Error getting warehouse stats: {e}")
+        return []
+
+
+def get_upload_statistics(db: Session):
+    """Get upload statistics for dashboard"""
+    try:
+        total_uploads = db.query(DeliveryReport.upload_batch_id).distinct().count()
+        total_imported_rows = db.query(DeliveryReport).count()
+        last_upload = db.query(DeliveryReport.imported_at).order_by(
+            DeliveryReport.imported_at.desc()
+        ).first()
+        
+        return {
+            "total_uploads": total_uploads,
+            "total_imported_rows": total_imported_rows,
+            "last_upload_date": last_upload[0] if last_upload else None
+        }
+    except Exception as e:
+        print(f"Error getting upload statistics: {e}")
+        return {
+            "total_uploads": 0,
+            "total_imported_rows": 0,
+            "last_upload_date": None
+        }
+
+
 # Create fallback templates if they don't exist
 def create_fallback_templates():
     """Create fallback HTML templates if they don't exist"""
     
-    # Dashboard template
     dashboard_path = os.path.join(TEMPLATES_DIR, "dashboard.html")
     if not os.path.exists(dashboard_path):
         with open(dashboard_path, "w") as f:
             f.write("""<!DOCTYPE html>
 <html>
 <head>
-    <title>AI WhatsApp Agent - Dashboard</title>
+    <title>Logistics Dashboard</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fb; padding: 20px; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f0f2f5; padding: 20px; }
         .container { max-width: 1400px; margin: 0 auto; }
-        h1 { color: #1a1a2e; margin-bottom: 10px; }
-        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }
-        .stat-card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .stat-value { font-size: 32px; font-weight: bold; color: #2563eb; margin: 10px 0; }
-        .stat-label { color: #666; font-size: 14px; }
-        .upload-section { background: white; border-radius: 12px; padding: 20px; margin-bottom: 30px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .upload-form { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
-        .form-group { flex: 1; }
-        label { display: block; margin-bottom: 5px; color: #666; font-size: 14px; }
-        input[type="file"] { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; }
-        button { background: #2563eb; color: white; border: none; padding: 10px 24px; border-radius: 6px; cursor: pointer; font-size: 16px; }
-        button:hover { background: #1d4ed8; }
-        .message { margin-top: 10px; padding: 10px; border-radius: 6px; display: none; }
-        .message.success { background: #dcfce7; color: #166534; display: block; }
-        .message.error { background: #fee2e2; color: #991b1b; display: block; }
-        .uploads-table { width: 100%; border-collapse: collapse; background: white; border-radius: 12px; overflow: hidden; }
-        .uploads-table th, .uploads-table td { padding: 12px; text-align: left; border-bottom: 1px solid #e5e7eb; }
-        .uploads-table th { background: #f9fafb; font-weight: 600; color: #374151; }
-        .status-badge { display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 12px; }
-        .status-online { background: #dcfce7; color: #166534; }
-        .status-offline { background: #fee2e2; color: #991b1b; }
+        .header { background: linear-gradient(135deg, #128C7E, #25D366); color: white; padding: 30px; border-radius: 12px; margin-bottom: 25px; }
+        .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 20px; margin-bottom: 25px; }
+        .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
+        .metric { font-size: 32px; font-weight: bold; color: #128C7E; }
+        .section { background: white; padding: 25px; border-radius: 12px; margin-bottom: 25px; }
+        button { background: #25D366; color: white; border: none; padding: 10px 24px; border-radius: 8px; cursor: pointer; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #e5e7eb; }
+        th { background: #2c3e50; color: white; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>📊 AI WhatsApp Agent Dashboard</h1>
-        <p>Logistics Management System</p>
-        
-        <div class="stats-grid">
-            <div class="stat-card">
-                <div class="stat-label">Total Delivery Records</div>
-                <div class="stat-value">{{ total_records }}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Pending Deliveries</div>
-                <div class="stat-value">{{ pending_deliveries }}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Pending POD</div>
-                <div class="stat-value">{{ pending_pod }}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Pending PGI</div>
-                <div class="stat-value">{{ pending_pgi }}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Pending Amount</div>
-                <div class="stat-value">₹{{ pending_amount }}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Cities Covered</div>
-                <div class="stat-value">{{ cities }}</div>
-            </div>
+        <div class="header"><h1>📦 Logistics Control Center</h1><p>DN/PGI/POD Tracking Dashboard</p></div>
+        <div class="cards">
+            <div class="card"><h3>Total DNs</h3><div class="metric">{{ total_records or 0 }}</div></div>
+            <div class="card"><h3>Pending Deliveries</h3><div class="metric">{{ pending_deliveries or 0 }}</div></div>
+            <div class="card"><h3>Pending POD</h3><div class="metric">{{ pending_pod or 0 }}</div></div>
+            <div class="card"><h3>Pending PGI</h3><div class="metric">{{ pending_pgi or 0 }}</div></div>
+            <div class="card"><h3>Pending Amount</h3><div class="metric">₹{{ pending_amount or 0 }}</div></div>
         </div>
-        
-        <div class="upload-section">
-            <h3>📤 Upload Delivery Report</h3>
-            <form class="upload-form" action="/upload/excel" method="post" enctype="multipart/form-data">
-                <div class="form-group">
-                    <label>Excel File (.xlsx, .xls)</label>
-                    <input type="file" name="file" accept=".xlsx,.xls" required>
-                </div>
-                <div class="form-group">
-                    <label>Skip Duplicates</label>
-                    <select name="skip_duplicates">
-                        <option value="true">Yes</option>
-                        <option value="false">No</option>
-                    </select>
-                </div>
+        <div class="section">
+            <h2>Upload Excel Report</h2>
+            <form action="/upload/excel" method="post" enctype="multipart/form-data">
+                <input type="file" name="file" accept=".xlsx,.xls" required>
                 <button type="submit">Upload</button>
             </form>
         </div>
-        
-        <div class="upload-section">
-            <h3>📋 Recent Uploads</h3>
-            <table class="uploads-table">
-                <thead>
-                    <tr><th>Filename</th><th>Upload Date</th><th>Records</th><th>Action</th></tr>
-                </thead>
-                <tbody>
-                    {% for upload in latest_uploads %}
-                    <tr>
-                        <td>{{ upload.filename }}</td>
-                        <td>{{ upload.upload_date.strftime('%Y-%m-%d %H:%M') if upload.upload_date else 'N/A' }}</td>
-                        <td>{{ upload.record_count }}</td>
-                        <td><a href="/upload/batch/{{ upload.batch_id }}/summary">View</a></td>
-                    </tr>
-                    {% else %}
-                    <tr><td colspan="4">No uploads yet</td></tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-        
-        <div class="stats-grid">
-            <div class="stat-card">
-                <div class="stat-label">WhatsApp Status</div>
-                <div class="stat-value"><span class="status-badge status-{{ 'online' if whatsapp_status == 'Online' else 'offline' }}">{{ whatsapp_status }}</span></div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Schema Version</div>
-                <div class="stat-value">{{ schema_version }}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Last Upload</div>
-                <div class="stat-value">{{ last_upload_date }}</div>
-            </div>
-        </div>
+        <div class="footer"><p>Last Updated: {{ last_refresh }}</p></div>
     </div>
-    <script>
-        const urlParams = new URLSearchParams(window.location.search);
-        const message = urlParams.get('message');
-        const error = urlParams.get('error');
-        if (message) alert(message);
-        if (error) alert('Error: ' + error);
-    </script>
 </body>
 </html>""")
         print(f"Created fallback dashboard template at {dashboard_path}")
     
-    # Upload center template
     upload_center_path = os.path.join(TEMPLATES_DIR, "upload_center.html")
     if not os.path.exists(upload_center_path):
         with open(upload_center_path, "w") as f:
             f.write("""<!DOCTYPE html>
 <html>
-<head>
-    <title>Upload Center - AI WhatsApp Agent</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fb; padding: 20px; }
-        .container { max-width: 1200px; margin: 0 auto; }
-        h1 { margin-bottom: 20px; }
-        .card { background: white; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        .stats { display: flex; gap: 20px; margin-bottom: 20px; }
-        .stat { flex: 1; text-align: center; padding: 15px; background: #f8fafc; border-radius: 8px; }
-        .stat-value { font-size: 28px; font-weight: bold; color: #2563eb; }
-        table { width: 100%; border-collapse: collapse; }
-        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #e5e7eb; }
-        th { background: #f9fafb; }
-        .btn { display: inline-block; padding: 8px 16px; background: #2563eb; color: white; text-decoration: none; border-radius: 6px; }
-        .btn-danger { background: #dc2626; }
-        .btn-small { padding: 4px 12px; font-size: 14px; }
-        .nav { margin-bottom: 20px; }
-        .nav a { margin-right: 15px; color: #2563eb; text-decoration: none; }
-    </style>
-</head>
+<head><title>Upload Center</title></head>
 <body>
-    <div class="container">
-        <div class="nav">
-            <a href="/dashboard">← Back to Dashboard</a>
-            <a href="/upload/template">Download Template</a>
-        </div>
-        <h1>📦 Upload Center</h1>
-        <div class="stats">
-            <div class="stat"><div class="stat-value">{{ total_batches }}</div><div>Total Batches</div></div>
-            <div class="stat"><div class="stat-value">{{ total_records }}</div><div>Total Records</div></div>
-        </div>
-        <div class="card">
-            <h3>Upload History</h3>
-            <table>
-                <thead><tr><th>Batch ID</th><th>File</th><th>Upload Date</th><th>Records</th><th>Actions</th></tr></thead>
-                <tbody>
-                    {% for upload in latest_uploads %}
-                    <tr>
-                        <td>{{ upload.batch_id }}</td>
-                        <td>{{ upload.filename }}</td>
-                        <td>{{ upload.upload_date.strftime('%Y-%m-%d %H:%M:%S') if upload.upload_date else 'N/A' }}</td>
-                        <td>{{ upload.record_count }}</td>
-                        <td><a href="/upload/batch/{{ upload.batch_id }}/summary" class="btn btn-small">View</a></td>
-                    </tr>
-                    {% else %}
-                    <tr><td colspan="5">No uploads found</td></tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    </div>
+    <h1>Upload Center</h1>
+    <p>Upload your Excel delivery reports here.</p>
+    <a href="/dashboard">Back to Dashboard</a>
 </body>
 </html>""")
         print(f"Created fallback upload_center template at {upload_center_path}")
 
 
-# Create fallback templates on startup
 create_fallback_templates()
 
 
 # ==========================================================
-# ROOT ENDPOINT - Redirect to Dashboard
+# ROOT ENDPOINTS
 # ==========================================================
 
 @app.get("/", tags=["Root"])
@@ -551,10 +516,26 @@ async def home():
     return RedirectResponse(url="/dashboard", status_code=303)
 
 
+# Priority 6: Enhanced Health Endpoint
 @app.get("/health", tags=["Health"])
-async def health():
+async def health(db: Session = Depends(get_db)):
+    """Enhanced health check endpoint"""
+    try:
+        # Test database connection
+        db.execute(text("SELECT 1")).scalar()
+        db_status = "connected"
+    except:
+        db_status = "disconnected"
+    
+    whatsapp_token = os.getenv("WHATSAPP_ACCESS_TOKEN")
+    uploads_folder_exists = os.path.exists("uploads")
+    
     return {
         "status": "healthy",
+        "database": db_status,
+        "whatsapp": "connected" if whatsapp_token else "disconnected",
+        "schema_version": APP_SCHEMA_VERSION,
+        "uploads_folder": uploads_folder_exists,
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -583,9 +564,75 @@ async def db_health(db: Session = Depends(get_db)):
         )
 
 
-# ==========================================================
-# UPLOAD STATUS ENDPOINT
-# ==========================================================
+# Priority 2: Upload Center Route
+@app.get("/upload-center", tags=["Upload"])
+async def upload_center(request: Request, db: Session = Depends(get_db)):
+    """Render upload center page"""
+    try:
+        latest_uploads = get_latest_uploads(db, limit=20)
+        total_batches = db.query(DeliveryReport.upload_batch_id).distinct().count()
+        total_records = db.query(DeliveryReport).count()
+        
+        return templates.TemplateResponse(
+            "upload_center.html",
+            {
+                "request": request,
+                "latest_uploads": latest_uploads or [],
+                "total_batches": total_batches,
+                "total_records": total_records,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        )
+    except Exception as e:
+        print(f"Upload center error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Priority 3: Download Template Route
+@app.get("/download-template", tags=["Upload"])
+async def download_template():
+    """Download Excel template for logistics reports"""
+    import pandas as pd
+    import io
+    from fastapi.responses import StreamingResponse
+    
+    # Create template DataFrame
+    template_data = {
+        "DN No": ["DN12345", "DN12346"],
+        "DN Work": ["Invoiced", "Invoiced"],
+        "Order Type": ["ZOR", "ZOR"],
+        "Division": ["Refrigerator", "AC"],
+        "Customer Code": ["CUST001", "CUST002"],
+        "Dealer Code": ["DEALER001", "DEALER002"],
+        "Customer Name": ["ABC Traders", "XYZ Enterprises"],
+        "Customer Model": ["Model A", "Model B"],
+        "Material No": ["MAT001", "MAT002"],
+        "Storage Location": ["WH01", "WH02"],
+        "Sales Office": ["North Region", "South Region"],
+        "Sales Manager": ["John Doe", "Jane Smith"],
+        "Ship To City": ["New York", "Los Angeles"],
+        "Warehouse": ["Main Warehouse", "Secondary Warehouse"],
+        "Warehouse Code": ["WH001", "WH002"],
+        "DN Qty": [10, 20],
+        "DN Amount": [1000.00, 2000.00],
+        "DN Create Date": ["2024-01-01", "2024-01-02"],
+        "Good Issue Date": ["2024-01-05", "2024-01-06"],
+        "POD Date": ["2024-01-10", ""]
+    }
+    
+    df = pd.DataFrame(template_data)
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, sheet_name='Delivery Report', index=False)
+    
+    output.seek(0)
+    
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=logistics_template.xlsx"}
+    )
+
 
 @app.get("/upload-status", tags=["Upload"])
 async def upload_status():
@@ -595,33 +642,6 @@ async def upload_status():
         "upload_folder_path": "uploads",
         "status": "ready" if os.path.exists("uploads") else "not_ready"
     }
-
-
-# Upload Center Page
-@app.get("/upload-center", tags=["Upload"])
-async def upload_center(request: Request, db: Session = Depends(get_db)):
-    """Render upload center page"""
-    try:
-        # Get recent uploads
-        latest_uploads = get_latest_uploads(db, limit=20)
-        
-        # Get upload statistics
-        total_batches = db.query(DeliveryReport.upload_batch_id).distinct().count()
-        total_records = db.query(DeliveryReport).count()
-        
-        return templates.TemplateResponse(
-            "upload_center.html",
-            {
-                "request": request,
-                "latest_uploads": latest_uploads,
-                "total_batches": total_batches,
-                "total_records": total_records,
-                "timestamp": datetime.utcnow().isoformat()
-            }
-        )
-    except Exception as e:
-        print(f"Upload center error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ==========================================================
@@ -635,10 +655,8 @@ async def status(db: Session = Depends(get_db)):
         total_conversations = db.query(Conversation).count()
         total_delivery_records = db.query(DeliveryReport).count()
         
-        # Get schema info using the function
         schema_info = get_schema_info(db)
         
-        # Get last upload date
         last_upload = db.query(DeliveryReport.imported_at).order_by(
             DeliveryReport.imported_at.desc()
         ).first()
@@ -693,7 +711,7 @@ async def db_test():
 
 
 # ==========================================================
-# DASHBOARD ENDPOINTS
+# DASHBOARD ENDPOINT
 # ==========================================================
 
 @app.get("/dashboard", tags=["Dashboard"])
@@ -721,9 +739,22 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
         # Get unique cities and warehouses
         cities = db.query(DeliveryReport.ship_to_city).distinct().count()
         warehouses = db.query(DeliveryReport.warehouse).distinct().count()
-        
-        # Get total amount
         total_amount = db.query(func.sum(DeliveryReport.dn_amount)).scalar() or 0
+        
+        # Priority 7: Get top dealers
+        top_dealers = get_top_dealers(db, limit=5)
+        
+        # Get top cities
+        top_cities = get_top_cities(db, limit=5)
+        
+        # Get warehouse stats
+        top_warehouses = get_warehouse_stats(db, limit=5)
+        
+        # Priority 4: Get upload statistics
+        upload_stats = get_upload_statistics(db)
+        
+        # Get latest uploads
+        latest_uploads = get_latest_uploads(db, limit=5)
         
         # Get conversation stats
         total_conversations = db.query(Conversation).count()
@@ -731,10 +762,10 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
         total_messages = db.query(Message).count()
         total_ai_responses = db.query(Message).filter(Message.sender == "assistant").count()
         
-        # Get dashboard conversations
+        # Dashboard conversations
         dashboard_conversations = get_dashboard_conversations_optimized(db, limit=5)
         
-        # Get message stats by day (last 7 days)
+        # Message stats
         stats = db.query(
             func.date(Message.created_at).label('date'),
             func.count(Message.id).label('count')
@@ -742,53 +773,57 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
             func.date(Message.created_at).desc()
         ).limit(7).all()
         
-        # Get latest uploads
-        latest_uploads = get_latest_uploads(db, limit=5)
-        
-        # Check service statuses
+        # Service statuses
         whatsapp_token = os.getenv("WHATSAPP_ACCESS_TOKEN")
         anthropic_key = os.getenv("ANTHROPIC_API_KEY")
         openai_key = os.getenv("OPENAI_API_KEY")
         
-        # Get schema info for status card
+        # Schema info
         schema_info = get_schema_info(db)
         
-        # Get last upload date
-        last_upload = db.query(DeliveryReport.imported_at).order_by(
-            DeliveryReport.imported_at.desc()
-        ).first()
+        # Priority 8: Last refresh timestamp
+        last_refresh = datetime.utcnow()
         
+        # Priority 1: Ensure all variables have defaults
         return templates.TemplateResponse(
             "dashboard.html",
             {
                 "request": request,
                 # Delivery KPIs
-                "total_records": total_records,
-                "pending_deliveries": pending_deliveries,
-                "pending_pod": pending_pod,
-                "pending_pgi": pending_pgi,
-                "pending_amount": round(pending_amount, 2),
-                "completed_deliveries": completed_deliveries,
-                "total_amount": round(total_amount, 2),
-                "cities": cities,
-                "warehouses": warehouses,
-                # Conversation stats
-                "total_conversations": total_conversations,
-                "total_customers": total_customers,
-                "total_messages": total_messages,
-                "total_ai_responses": total_ai_responses,
-                "conversations": dashboard_conversations,
-                "stats": stats,
+                "total_records": total_records or 0,
+                "pending_deliveries": pending_deliveries or 0,
+                "pending_pod": pending_pod or 0,
+                "pending_pgi": pending_pgi or 0,
+                "pending_amount": round(pending_amount, 2) if pending_amount else 0,
+                "completed_deliveries": completed_deliveries or 0,
+                "total_amount": round(total_amount, 2) if total_amount else 0,
+                "cities": cities or 0,
+                "warehouses": warehouses or 0,
+                # Priority 7: Top dealers
+                "top_dealers": top_dealers or [],
+                "top_cities": top_cities or [],
+                "top_warehouses": top_warehouses or [],
                 # Upload stats
-                "latest_uploads": latest_uploads,
+                "latest_uploads": latest_uploads or [],
+                "total_uploads": upload_stats.get("total_uploads", 0),
+                "total_imported_rows": upload_stats.get("total_imported_rows", 0),
+                # Conversation stats
+                "total_conversations": total_conversations or 0,
+                "total_customers": total_customers or 0,
+                "total_messages": total_messages or 0,
+                "total_ai_responses": total_ai_responses or 0,
+                "conversations": dashboard_conversations or [],
+                "stats": stats or [],
                 # System status
                 "status": "running",
                 "whatsapp_status": "Online" if whatsapp_token else "Offline",
                 "claude_status": "Online" if anthropic_key or openai_key else "Offline",
                 "vision_status": "Online" if anthropic_key or openai_key else "Offline",
                 # Schema info
-                "schema_version": schema_info["app_version"],
-                "last_upload_date": last_upload[0].strftime('%Y-%m-%d %H:%M') if last_upload else "Never",
+                "schema_version": schema_info.get("app_version", "1.0"),
+                "last_upload_date": upload_stats.get("last_upload_date").strftime('%Y-%m-%d %H:%M') if upload_stats.get("last_upload_date") else "Never",
+                # Priority 8: Last refresh
+                "last_refresh": last_refresh.strftime('%Y-%m-%d %H:%M:%S'),
                 "timestamp": datetime.utcnow().isoformat()
             }
         )
@@ -797,11 +832,14 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ==========================================================
+# API DASHBOARD ENDPOINT
+# ==========================================================
+
 @app.get("/api/dashboard", tags=["API"])
 async def dashboard_api(db: Session = Depends(get_db)):
     """Return dashboard data as JSON"""
     try:
-        # Delivery KPIs
         total_records = db.query(DeliveryReport).count()
         pending_deliveries = db.query(DeliveryReport).filter(
             DeliveryReport.pending_flag.is_(True)
@@ -816,16 +854,18 @@ async def dashboard_api(db: Session = Depends(get_db)):
             DeliveryReport.pending_flag.is_(True)
         ).scalar() or 0
         
-        # Conversation stats
+        top_dealers = get_top_dealers(db, limit=5)
+        top_cities = get_top_cities(db, limit=5)
+        top_warehouses = get_warehouse_stats(db, limit=5)
+        
+        upload_stats = get_upload_statistics(db)
+        
         total_conversations = db.query(Conversation).count()
         total_customers = db.query(Customer).count()
         total_messages = db.query(Message).count()
         total_ai_responses = db.query(Message).filter(Message.sender == "assistant").count()
         
-        # Dashboard conversations
         dashboard_conversations = get_dashboard_conversations_optimized(db, limit=10)
-        
-        # Latest uploads
         latest_uploads = get_latest_uploads(db, limit=5)
         
         whatsapp_token = os.getenv("WHATSAPP_ACCESS_TOKEN")
@@ -840,6 +880,10 @@ async def dashboard_api(db: Session = Depends(get_db)):
                 "pending_pgi": pending_pgi,
                 "pending_amount": float(pending_amount)
             },
+            "top_dealers": top_dealers,
+            "top_cities": top_cities,
+            "top_warehouses": top_warehouses,
+            "upload_stats": upload_stats,
             "conversation_stats": {
                 "total_conversations": total_conversations,
                 "total_customers": total_customers,
@@ -857,12 +901,14 @@ async def dashboard_api(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Enhanced logistics-status endpoint
+# ==========================================================
+# LOGISTICS ENDPOINTS
+# ==========================================================
+
 @app.get("/logistics-status", tags=["Logistics"])
 async def logistics_status(db: Session = Depends(get_db)):
     """Get logistics dashboard statistics"""
     try:
-        # Basic counts
         total_dns = db.query(DeliveryReport).count()
         pending_pod = db.query(DeliveryReport).filter(
             DeliveryReport.pod_status == "Pending"
@@ -870,8 +916,6 @@ async def logistics_status(db: Session = Depends(get_db)):
         pending_pgi = db.query(DeliveryReport).filter(
             DeliveryReport.pgi_status == "Pending"
         ).count()
-        
-        # Add delivered and pending counts - using .is_() for boolean
         total_delivered = db.query(DeliveryReport).filter(
             DeliveryReport.pod_status == "Received"
         ).count()
@@ -884,30 +928,12 @@ async def logistics_status(db: Session = Depends(get_db)):
             DeliveryReport.pending_flag.is_(True)
         ).scalar() or 0
         
-        # Get unique cities and warehouses
         cities = db.query(DeliveryReport.ship_to_city).distinct().count()
         warehouses = db.query(DeliveryReport.warehouse).distinct().count()
         
-        # Add top cities and warehouses
-        top_cities = db.query(
-            DeliveryReport.ship_to_city,
-            func.count(DeliveryReport.id).label('count')
-        ).group_by(
-            DeliveryReport.ship_to_city
-        ).order_by(
-            func.count(DeliveryReport.id).desc()
-        ).limit(5).all()
+        top_cities = get_top_cities(db, limit=5)
+        top_warehouses = get_warehouse_stats(db, limit=5)
         
-        top_warehouses = db.query(
-            DeliveryReport.warehouse,
-            func.count(DeliveryReport.id).label('count')
-        ).group_by(
-            DeliveryReport.warehouse
-        ).order_by(
-            func.count(DeliveryReport.id).desc()
-        ).limit(5).all()
-        
-        # Get pending by division
         pending_by_division = db.query(
             DeliveryReport.division,
             func.count(DeliveryReport.id).label('count'),
@@ -930,12 +956,8 @@ async def logistics_status(db: Session = Depends(get_db)):
                 "unique_cities": cities,
                 "unique_warehouses": warehouses
             },
-            "top_cities": [
-                {"city": city[0], "count": city[1]} for city in top_cities if city[0]
-            ],
-            "top_warehouses": [
-                {"warehouse": wh[0], "count": wh[1]} for wh in top_warehouses if wh[0]
-            ],
+            "top_cities": top_cities,
+            "top_warehouses": top_warehouses,
             "pending_by_division": [
                 {
                     "division": div.division,
@@ -949,7 +971,6 @@ async def logistics_status(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# DN search endpoint with improved regex
 @app.get("/dn/{dn_no}", tags=["Logistics"])
 async def get_delivery_note(dn_no: str, db: Session = Depends(get_db)):
     """Search for delivery notes by DN number"""
@@ -990,6 +1011,112 @@ async def get_delivery_note(dn_no: str, db: Session = Depends(get_db)):
 
 
 # ==========================================================
+# SEARCH ENDPOINT (Priority 5)
+# ==========================================================
+
+@app.get("/search", tags=["Search"])
+async def search_deliveries(
+    q: str,
+    search_type: str = "all",
+    limit: int = 20,
+    db: Session = Depends(get_db)
+):
+    """Search deliveries by DN, dealer, city, warehouse, or division"""
+    try:
+        results = []
+        
+        if search_type in ["all", "dn"]:
+            dn_results = db.query(DeliveryReport).filter(
+                DeliveryReport.dn_no.ilike(f"%{q}%")
+            ).limit(limit).all()
+            for r in dn_results:
+                results.append({
+                    "type": "dn",
+                    "dn_no": r.dn_no,
+                    "customer_name": r.customer_name,
+                    "city": r.ship_to_city,
+                    "dealer_code": r.dealer_code,
+                    "warehouse": r.warehouse,
+                    "division": r.division,
+                    "status": r.delivery_status,
+                    "pending": r.pending_flag
+                })
+        
+        if search_type in ["all", "dealer"]:
+            dealer_results = db.query(DeliveryReport).filter(
+                DeliveryReport.dealer_code.ilike(f"%{q}%")
+            ).limit(limit).all()
+            for r in dealer_results:
+                results.append({
+                    "type": "dealer",
+                    "dealer_code": r.dealer_code,
+                    "customer_name": r.customer_name,
+                    "dn_no": r.dn_no,
+                    "city": r.ship_to_city,
+                    "status": r.delivery_status
+                })
+        
+        if search_type in ["all", "city"]:
+            city_results = db.query(DeliveryReport).filter(
+                DeliveryReport.ship_to_city.ilike(f"%{q}%")
+            ).limit(limit).all()
+            for r in city_results:
+                results.append({
+                    "type": "city",
+                    "city": r.ship_to_city,
+                    "dn_no": r.dn_no,
+                    "customer_name": r.customer_name,
+                    "status": r.delivery_status
+                })
+        
+        if search_type in ["all", "warehouse"]:
+            warehouse_results = db.query(DeliveryReport).filter(
+                DeliveryReport.warehouse.ilike(f"%{q}%")
+            ).limit(limit).all()
+            for r in warehouse_results:
+                results.append({
+                    "type": "warehouse",
+                    "warehouse": r.warehouse,
+                    "dn_no": r.dn_no,
+                    "customer_name": r.customer_name,
+                    "city": r.ship_to_city,
+                    "status": r.delivery_status
+                })
+        
+        if search_type in ["all", "division"]:
+            division_results = db.query(DeliveryReport).filter(
+                DeliveryReport.division.ilike(f"%{q}%")
+            ).limit(limit).all()
+            for r in division_results:
+                results.append({
+                    "type": "division",
+                    "division": r.division,
+                    "dn_no": r.dn_no,
+                    "customer_name": r.customer_name,
+                    "status": r.delivery_status
+                })
+        
+        # Remove duplicates by DN
+        seen = set()
+        unique_results = []
+        for r in results:
+            dn_key = r.get('dn_no')
+            if dn_key and dn_key not in seen:
+                seen.add(dn_key)
+                unique_results.append(r)
+        
+        return {
+            "query": q,
+            "search_type": search_type,
+            "total_results": len(unique_results),
+            "limit": limit,
+            "results": unique_results[:limit]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==========================================================
 # CHAT ENDPOINTS
 # ==========================================================
 
@@ -998,7 +1125,6 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
     try:
         user_message = request.message.lower()
         
-        # Enhanced AI response logic with delivery queries
         if "pending delivery" in user_message or "pending dn" in user_message:
             pending_count = db.query(DeliveryReport).filter(
                 DeliveryReport.pending_flag.is_(True)
@@ -1054,7 +1180,6 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
             db.commit()
             db.refresh(customer)
         
-        # Create conversation
         conversation = Conversation(
             customer_id=customer.id,
             status="active"
@@ -1063,7 +1188,6 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(conversation)
         
-        # Store messages
         user_msg = Message(
             conversation_id=conversation.id,
             sender="user",
@@ -1304,7 +1428,6 @@ async def whatsapp_webhook(payload: dict, db: Session = Depends(get_db)):
                                 
                                 print(f"WhatsApp message received from {customer_phone}")
                                 
-                                # Find or create customer
                                 customer = db.query(Customer).filter(
                                     Customer.phone_number == customer_phone
                                 ).first()
@@ -1319,7 +1442,6 @@ async def whatsapp_webhook(payload: dict, db: Session = Depends(get_db)):
                                     db.commit()
                                     db.refresh(customer)
                                 
-                                # Reuse active conversation
                                 active_conversation = db.query(Conversation).filter(
                                     Conversation.customer_id == customer.id,
                                     Conversation.status == "active"
@@ -1327,7 +1449,6 @@ async def whatsapp_webhook(payload: dict, db: Session = Depends(get_db)):
                                 
                                 if active_conversation:
                                     conversation = active_conversation
-                                    print(f"Reusing active conversation {conversation.id}")
                                 else:
                                     conversation = Conversation(
                                         customer_id=customer.id,
@@ -1336,9 +1457,7 @@ async def whatsapp_webhook(payload: dict, db: Session = Depends(get_db)):
                                     db.add(conversation)
                                     db.commit()
                                     db.refresh(conversation)
-                                    print(f"Created new conversation {conversation.id}")
                                 
-                                # Store incoming message
                                 user_msg = Message(
                                     conversation_id=conversation.id,
                                     sender="user",
@@ -1347,10 +1466,8 @@ async def whatsapp_webhook(payload: dict, db: Session = Depends(get_db)):
                                 )
                                 db.add(user_msg)
                                 
-                                # Enhanced delivery query logic
                                 user_message_lower = message_text.lower()
                                 
-                                # Check for DN number query
                                 dn_match = re.search(r'(?:dn|delivery note|delivery|note)[:\s#-]*([A-Za-z0-9]+)', user_message_lower)
                                 if dn_match:
                                     dn_number = dn_match.group(1).upper()
@@ -1361,26 +1478,21 @@ async def whatsapp_webhook(payload: dict, db: Session = Depends(get_db)):
                                         ai_reply = f"DN {dn_number}: Status={delivery.delivery_status}, PGI={delivery.pgi_status}, POD={delivery.pod_status}"
                                     else:
                                         ai_reply = f"DN {dn_number} not found in system."
-                                
-                                # Check for pending deliveries query
                                 elif "pending delivery" in user_message_lower or "pending dn" in user_message_lower:
                                     pending_count = db.query(DeliveryReport).filter(
                                         DeliveryReport.pending_flag.is_(True)
                                     ).count()
                                     ai_reply = f"You have {pending_count} pending deliveries."
-                                
                                 elif "pgi status" in user_message_lower:
                                     pgi_pending = db.query(DeliveryReport).filter(
                                         DeliveryReport.pgi_status == "Pending"
                                     ).count()
                                     ai_reply = f"{pgi_pending} deliveries are pending PGI."
-                                
                                 elif "pod status" in user_message_lower:
                                     pod_pending = db.query(DeliveryReport).filter(
                                         DeliveryReport.pod_status == "Pending"
                                     ).count()
                                     ai_reply = f"{pod_pending} deliveries are pending POD confirmation."
-                                
                                 elif "order" in user_message_lower:
                                     ai_reply = "Your order is currently in transit and expected tomorrow."
                                 elif "delivery" in user_message_lower:
@@ -1392,7 +1504,6 @@ async def whatsapp_webhook(payload: dict, db: Session = Depends(get_db)):
                                 else:
                                     ai_reply = "Thank you for contacting support. You can ask about pending deliveries, PGI status, or specific DN numbers."
                                 
-                                # Store AI response
                                 ai_msg = Message(
                                     conversation_id=conversation.id,
                                     sender="assistant",
@@ -1412,13 +1523,10 @@ async def whatsapp_webhook(payload: dict, db: Session = Depends(get_db)):
                                 
                                 db.commit()
                                 
-                                # Send reply
-                                print(f"Sending WhatsApp reply to {customer_phone}")
                                 send_result = send_text_message(
                                     phone_number=customer_phone,
                                     message=ai_reply
                                 )
-                                print(f"WhatsApp Send Result: {send_result}")
         
         return {"status": "received"}
     except Exception as e:
@@ -1482,109 +1590,3 @@ async def version():
 async def schema_info(db: Session = Depends(get_db)):
     """Get detailed schema information"""
     return get_schema_info(db)
-
-
-# ==========================================================
-# SEARCH ENDPOINTS
-# ==========================================================
-
-@app.get("/search", tags=["Search"])
-async def search_deliveries(
-    q: str,
-    search_type: str = "all",
-    limit: int = 20,
-    db: Session = Depends(get_db)
-):
-    """Search deliveries by DN, dealer, city, warehouse, or division"""
-    try:
-        results = []
-        
-        if search_type in ["all", "dn"]:
-            dn_results = db.query(DeliveryReport).filter(
-                DeliveryReport.dn_no.ilike(f"%{q}%")
-            ).limit(limit).all()
-            for r in dn_results:
-                results.append({
-                    "type": "dn",
-                    "dn_no": r.dn_no,
-                    "customer_name": r.customer_name,
-                    "city": r.ship_to_city,
-                    "dealer_code": r.dealer_code,
-                    "warehouse": r.warehouse,
-                    "division": r.division,
-                    "status": r.delivery_status,
-                    "pending": r.pending_flag
-                })
-        
-        if search_type in ["all", "dealer"]:
-            dealer_results = db.query(DeliveryReport).filter(
-                DeliveryReport.dealer_code.ilike(f"%{q}%")
-            ).limit(limit).all()
-            for r in dealer_results:
-                results.append({
-                    "type": "dealer",
-                    "dealer_code": r.dealer_code,
-                    "customer_name": r.customer_name,
-                    "dn_no": r.dn_no,
-                    "city": r.ship_to_city,
-                    "status": r.delivery_status
-                })
-        
-        if search_type in ["all", "city"]:
-            city_results = db.query(DeliveryReport).filter(
-                DeliveryReport.ship_to_city.ilike(f"%{q}%")
-            ).limit(limit).all()
-            for r in city_results:
-                results.append({
-                    "type": "city",
-                    "city": r.ship_to_city,
-                    "dn_no": r.dn_no,
-                    "customer_name": r.customer_name,
-                    "status": r.delivery_status
-                })
-        
-        if search_type in ["all", "warehouse"]:
-            warehouse_results = db.query(DeliveryReport).filter(
-                DeliveryReport.warehouse.ilike(f"%{q}%")
-            ).limit(limit).all()
-            for r in warehouse_results:
-                results.append({
-                    "type": "warehouse",
-                    "warehouse": r.warehouse,
-                    "dn_no": r.dn_no,
-                    "customer_name": r.customer_name,
-                    "city": r.ship_to_city,
-                    "status": r.delivery_status
-                })
-        
-        if search_type in ["all", "division"]:
-            division_results = db.query(DeliveryReport).filter(
-                DeliveryReport.division.ilike(f"%{q}%")
-            ).limit(limit).all()
-            for r in division_results:
-                results.append({
-                    "type": "division",
-                    "division": r.division,
-                    "dn_no": r.dn_no,
-                    "customer_name": r.customer_name,
-                    "status": r.delivery_status
-                })
-        
-        # Remove duplicates by DN
-        seen = set()
-        unique_results = []
-        for r in results:
-            dn_key = r.get('dn_no')
-            if dn_key and dn_key not in seen:
-                seen.add(dn_key)
-                unique_results.append(r)
-        
-        return {
-            "query": q,
-            "search_type": search_type,
-            "total_results": len(unique_results),
-            "limit": limit,
-            "results": unique_results[:limit]
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
