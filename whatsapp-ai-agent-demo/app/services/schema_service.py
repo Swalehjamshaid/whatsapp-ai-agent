@@ -4,14 +4,21 @@
 
 import os
 import logging
-
 from sqlalchemy.orm import Session
+from sqlalchemy import inspect
 
 from app.database import engine
 from app.models import Base, SystemSetting
 
 
 logger = logging.getLogger(__name__)
+
+
+# ==========================================================
+# CONSTANTS
+# ==========================================================
+
+APP_SCHEMA_VERSION = "2.0.0"
 
 
 # ==========================================================
@@ -225,3 +232,47 @@ def check_schema_version(
     logger.warning(
         f"Schema updated to {app_version}"
     )
+
+
+# ==========================================================
+# GET SCHEMA INFO
+# ==========================================================
+
+def get_schema_info(
+    db: Session
+) -> dict:
+    """
+    Get detailed schema information for status endpoints.
+    Returns a dictionary with current schema status.
+    """
+
+    inspector = inspect(engine)
+
+    # Get current version from database
+    version_record = get_setting(
+        db,
+        "schema_version"
+    )
+
+    db_version = version_record.value if version_record else "0.0.0"
+
+    app_version = os.getenv(
+        "SCHEMA_VERSION",
+        "1.0"
+    )
+
+    allow_reset = os.getenv(
+        "ALLOW_DB_RESET",
+        "false"
+    ).lower()
+
+    needs_migration = app_version != db_version
+
+    return {
+        "app_version": app_version,
+        "db_version": db_version,
+        "needs_migration": needs_migration,
+        "allow_reset": allow_reset == "true",
+        "tables": inspector.get_table_names(),
+        "table_count": len(inspector.get_table_names())
+    }
