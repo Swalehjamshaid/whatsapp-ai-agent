@@ -24,9 +24,9 @@ class ExcelImportService:
     Handles file validation, data cleaning, and bulk import.
     """
 
-    # Expanded column name aliases
+    # Expanded column name aliases with SAP-specific terms
     COLUMN_ALIASES = {
-        # DN variations - Expanded
+        # DN variations - Expanded (Priority 9)
         "DN": "DN No",
         "DN NO": "DN No",
         "DN NO.": "DN No",
@@ -47,13 +47,18 @@ class ExcelImportService:
         "REFERENCE NUMBER": "DN No",
         "ORDER NO": "DN No",
         "ORDER NUMBER": "DN No",
+        "OUTBOUND DELIVERY": "DN No",
+        "OUTBOUND DELIVERY NO": "DN No",
+        "DOC NO": "DN No",
+        "Delivery Document": "DN No",
+        "Delivery Number": "DN No",
         
         # DN Work variations
         "DN WORK": "DN Work",
         "DELIVERY WORK": "DN Work",
         "WORK STATUS": "DN Work",
         
-        # Customer variations
+        # Customer variations - SAP specific (Priority 4)
         "CUSTOMER": "Customer Name",
         "CUSTOMER NAME": "Customer Name",
         "CUSTOMERNAME": "Customer Name",
@@ -61,10 +66,13 @@ class ExcelImportService:
         "DEALER NAME": "Customer Name",
         "PARTY": "Customer Name",
         "PARTY NAME": "Customer Name",
+        "SHIP-TO PARTY": "Customer Name",
+        "SOLD-TO PARTY": "Customer Name",
+        "SOLD TO PARTY": "Customer Name",
         "CUSTOMER CODE": "Customer Code",
         "DEALER CODE": "Dealer Code",
         
-        # Amount variations
+        # Amount variations (Priority 4)
         "AMOUNT": "DN Amount",
         "VALUE": "DN Amount",
         "NET VALUE": "DN Amount",
@@ -73,8 +81,11 @@ class ExcelImportService:
         "TOTAL AMOUNT": "DN Amount",
         "AMOUNT (USD)": "DN Amount",
         "INVOICE AMOUNT": "DN Amount",
+        "DELIVERY VALUE": "DN Amount",
+        "NET AMOUNT": "DN Amount",
+        "TOTAL VALUE": "DN Amount",
         
-        # City variations
+        # City variations (Priority 4)
         "CITY": "Ship To City",
         "DESTINATION": "Ship To City",
         "DESTINATION CITY": "Ship To City",
@@ -82,13 +93,16 @@ class ExcelImportService:
         "SHIP-TO CITY": "Ship To City",
         "SHIP CITY": "Ship To City",
         "DELIVERY CITY": "Ship To City",
+        "DEST CITY": "Ship To City",
         
-        # Warehouse variations
+        # Warehouse variations (Priority 4)
         "WAREHOUSE": "Warehouse",
         "WHSE": "Warehouse",
         "STORAGE": "Storage Location",
         "STORAGE LOCATION": "Storage Location",
         "STORAGE LOC": "Storage Location",
+        "PLANT": "Warehouse",
+        "DEPOT": "Warehouse",
         
         # Material variations
         "MATERIAL": "Material No",
@@ -106,14 +120,18 @@ class ExcelImportService:
         "SALES OFFICE": "Sales Office",
         "SALES MANAGER": "Sales Manager",
         
-        # Date variations
+        # Date variations (Priority 4)
         "DN DATE": "DN Create Date",
         "CREATE DATE": "DN Create Date",
         "CREATED DATE": "DN Create Date",
         "GOOD ISSUE DATE": "Good Issue Date",
         "PGI DATE": "Good Issue Date",
+        "ACTUAL PGI DATE": "Good Issue Date",
+        "PGI": "Good Issue Date",
         "POD DATE": "POD Date",
         "PROOF OF DELIVERY": "POD Date",
+        "PROOF OF DELIVERY DATE": "POD Date",
+        "POD": "POD Date",
         
         # Quantity variations
         "QUANTITY": "DN Qty",
@@ -145,18 +163,34 @@ class ExcelImportService:
         "POD Date": "pod_date",
     }
 
-    # IMPROVEMENT: Multiple acceptable DN column names
+    # Expanded DN column variants (Priority 9)
     DN_COLUMN_VARIANTS = [
         "DN No",
         "Delivery No",
         "Document No",
         "Invoice No",
         "Reference No",
-        "Order No"
+        "Order No",
+        "Outbound Delivery",
+        "Outbound Delivery No",
+        "Doc No",
+        "Document",
+        "DN",
+        "Delivery",
+        "Delivery Number",
+        "Delivery Document"
     ]
     
-    # Only DN is required, but we accept multiple variants
-    REQUIRED_COLUMNS = DN_COLUMN_VARIANTS  # Accept any of these
+    # Only DN is required
+    REQUIRED_COLUMNS = DN_COLUMN_VARIANTS
+
+    # Keywords for header detection (Priority 1)
+    HEADER_KEYWORDS = [
+        "dn", "delivery", "customer", "dealer", 
+        "amount", "city", "warehouse", "division", 
+        "material", "pgi", "pod", "document", 
+        "invoice", "order", "ship", "party"
+    ]
 
     def __init__(self, db: Session):
         self.db = db
@@ -175,50 +209,53 @@ class ExcelImportService:
     ) -> Dict[str, Any]:
         """
         Import Excel file into delivery_reports table.
-        
-        Args:
-            file_path: Path to the Excel file
-            source_filename: Original filename for tracking
-            batch_id: Optional batch ID for grouping multiple files
-            skip_duplicates: Skip duplicate DN records (default: True)
-            update_existing: Update existing records instead of skipping
-        
-        Returns:
-            Dictionary with import statistics
         """
         try:
-            # Auto-detect header row
-            df = self._auto_detect_header(file_path)
+            # Priority 5: Support multiple sheets
+            df = self._find_and_read_sheet(file_path)
             
             if df is None:
                 return {
                     "success": False,
-                    "error": "Could not detect header row in Excel file",
+                    "error": "Could not find a valid data sheet in Excel file",
                     "available_columns": []
                 }
             
-            # Debug logging - show found columns
+            # Priority 3: Remove Unnamed columns
+            df = self._remove_unnamed_columns(df)
+            
+            # Debug logging
             logger.info(f"Excel Columns Found: {list(df.columns)}")
-            print("=" * 50)
+            print("=" * 60)
             print("EXCEL IMPORT DEBUG:")
             print(f"File: {source_filename}")
             print(f"Columns Found: {list(df.columns)}")
             print(f"Total Rows: {len(df)}")
             
-            # IMPORTANT IMPROVEMENT: Show first few rows for debugging
+            # Show first few rows for debugging
             print("\n📊 FIRST 3 ROWS OF DATA:")
             for idx, row in df.head(3).iterrows():
                 print(f"Row {idx + 1}: {dict(row)}")
             logger.info(f"First 3 rows: {df.head(3).to_dict()}")
-            print("=" * 50)
+            print("=" * 60)
             
             # Auto-clean headers
             df = self._clean_headers(df)
             
-            # Normalize column names (apply aliases)
+            # Priority 6: Remove empty rows
+            df = self._remove_empty_rows(df)
+            
+            # Priority 7: Remove total/summary rows
+            df = self._remove_total_rows(df)
+            
+            # Normalize column names
             df = self._normalize_columns(df)
             
-            # Smart validation with multiple DN column support
+            # Priority 8: Log normalized columns
+            logger.info(f"Normalized Columns: {list(df.columns)}")
+            print(f"📋 Normalized Columns: {list(df.columns)}")
+            
+            # Smart validation
             validation_result = self._validate_columns_smart(df)
             if not validation_result["is_valid"]:
                 return {
@@ -228,21 +265,21 @@ class ExcelImportService:
                     "available_columns": validation_result.get("available_columns", [])
                 }
             
-            # Clean and transform data
+            # Transform data
             records = self._transform_data(df, source_filename, batch_id)
             
             # Handle duplicates
             if skip_duplicates or update_existing:
                 records = self._handle_duplicates(records, update_existing)
             
-            # Bulk insert records
+            # Bulk insert
             inserted_count, updated_count, skipped_count = self._bulk_insert(
                 records, 
                 skip_duplicates=skip_duplicates,
                 update_existing=update_existing
             )
             
-            # Update derived fields for new/updated records
+            # Update derived fields
             if batch_id:
                 self._update_derived_fields(batch_id)
             
@@ -269,36 +306,99 @@ class ExcelImportService:
             }
 
     # ==========================================================
-    # HEADER DETECTION
+    # SHEET DETECTION (Priority 5)
+    # ==========================================================
+
+    def _find_and_read_sheet(self, file_path: str) -> Optional[pd.DataFrame]:
+        """
+        Find the correct sheet in multi-sheet Excel files.
+        Looks for sheets containing logistics-related data.
+        """
+        try:
+            excel_file = pd.ExcelFile(file_path)
+            best_sheet = None
+            best_score = 0
+            
+            # Priority 2: Search more rows for headers (now 30)
+            for sheet_name in excel_file.sheet_names:
+                # Try to detect header in this sheet
+                for header_row in range(30):  # Increased from 10 to 30
+                    try:
+                        test_df = pd.read_excel(file_path, sheet_name=sheet_name, header=header_row)
+                        
+                        # Priority 1: Score-based header detection
+                        column_str = ' '.join([str(col).lower() for col in test_df.columns])
+                        score = 0
+                        
+                        for keyword in self.HEADER_KEYWORDS:
+                            if keyword in column_str:
+                                score += 1
+                        
+                        if score > best_score and score >= 3:  # Need at least 3 keywords
+                            best_score = score
+                            best_sheet = sheet_name
+                            best_header_row = header_row
+                            logger.info(f"Sheet '{sheet_name}' scored {score} at row {header_row + 1}")
+                            print(f"📊 Sheet '{sheet_name}' - Score: {score} at row {header_row + 1}")
+                            break
+                            
+                    except Exception as e:
+                        continue
+            
+            if best_sheet:
+                print(f"✅ Selected sheet: '{best_sheet}' with score {best_score}")
+                return pd.read_excel(file_path, sheet_name=best_sheet, header=best_header_row)
+            
+            # Fallback: return first sheet
+            print("⚠️ No good sheet found, using first sheet")
+            return pd.read_excel(file_path)
+            
+        except Exception as e:
+            logger.error(f"Sheet detection failed: {e}")
+            return None
+
+    # ==========================================================
+    # HEADER DETECTION (Priority 1 & 2)
     # ==========================================================
 
     def _auto_detect_header(self, file_path: str) -> Optional[pd.DataFrame]:
         """
         Automatically detect the correct header row in Excel file.
-        SAP reports often have metadata rows before the actual headers.
+        Uses scoring system instead of simple keyword match.
         """
         try:
-            # Try first 10 rows as potential header rows
-            for header_row in range(10):
+            best_df = None
+            best_score = 0
+            best_header_row = 0
+            
+            # Priority 2: Search up to 30 rows
+            for header_row in range(30):
                 try:
-                    # Read with current row as header
                     test_df = pd.read_excel(file_path, header=header_row)
                     
-                    # Check if this row contains expected column names
+                    # Priority 1: Score-based detection
                     column_str = ' '.join([str(col).lower() for col in test_df.columns])
+                    score = 0
                     
-                    # Look for common logistics terms (expanded)
-                    keywords = ['dn', 'delivery', 'customer', 'amount', 'city', 'document', 'invoice', 'order']
-                    if any(keyword in column_str for keyword in keywords):
-                        logger.info(f"Detected header at row {header_row + 1}")
-                        print(f"✅ Header detected at row: {header_row + 1}")
-                        return test_df
+                    for keyword in self.HEADER_KEYWORDS:
+                        if keyword in column_str:
+                            score += 1
+                    
+                    if score > best_score and score >= 3:  # Need at least 3 keywords
+                        best_score = score
+                        best_header_row = header_row
+                        best_df = test_df
+                        logger.info(f"Detected header at row {header_row + 1} with score {score}")
+                        print(f"✅ Header detected at row: {header_row + 1} (Score: {score})")
                         
                 except Exception as e:
                     logger.debug(f"Error reading with header={header_row}: {e}")
                     continue
             
-            # If no header found, try reading without header and use first row as data
+            if best_df:
+                return best_df
+            
+            # Fallback
             logger.warning("No header detected, using first row as header")
             return pd.read_excel(file_path)
             
@@ -307,13 +407,51 @@ class ExcelImportService:
             return None
 
     # ==========================================================
-    # CLEAN HEADERS
+    # CLEAN DATA (Priority 3, 6, 7)
     # ==========================================================
 
+    def _remove_unnamed_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Priority 3: Remove Unnamed columns from SAP exports."""
+        unnamed_cols = df.columns[df.columns.astype(str).str.contains("^Unnamed", na=False)]
+        if len(unnamed_cols) > 0:
+            df = df.drop(columns=unnamed_cols)
+            logger.info(f"Removed {len(unnamed_cols)} unnamed columns")
+            print(f"🗑️ Removed {len(unnamed_cols)} unnamed columns")
+        return df
+
+    def _remove_empty_rows(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Priority 6: Remove completely empty rows."""
+        before = len(df)
+        df = df.dropna(how="all")
+        after = len(df)
+        if before != after:
+            logger.info(f"Removed {before - after} empty rows")
+            print(f"🗑️ Removed {before - after} empty rows")
+        return df
+
+    def _remove_total_rows(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Priority 7: Remove total/summary/grand total rows."""
+        before = len(df)
+        
+        # Check each row for total/summary keywords
+        mask = ~df.astype(str).apply(
+            lambda row: row.str.contains(
+                "total|summary|grand total|subtotal|grandtotal",
+                case=False,
+                na=False
+            ).any(),
+            axis=1
+        )
+        df = df[mask]
+        
+        after = len(df)
+        if before != after:
+            logger.info(f"Removed {before - after} total/summary rows")
+            print(f"🗑️ Removed {before - after} total/summary rows")
+        return df
+
     def _clean_headers(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Clean column names by removing newlines, carriage returns, and extra spaces.
-        """
+        """Clean column names by removing special characters and spaces."""
         df.columns = [
             str(col)
             .replace("\n", " ")
@@ -329,53 +467,43 @@ class ExcelImportService:
     # ==========================================================
 
     def _normalize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Normalize column names using aliases.
-        """
-        # Create a mapping for actual columns in the dataframe
+        """Normalize column names using aliases."""
         column_mapping = {}
         
         for col in df.columns:
-            # Clean the column name for matching
             clean_col = str(col).strip()
             
             # Try exact match
             if clean_col in self.COLUMN_ALIASES:
                 column_mapping[col] = self.COLUMN_ALIASES[clean_col]
-            # Try case-insensitive match
             else:
+                # Case-insensitive match
                 for alias, standard in self.COLUMN_ALIASES.items():
                     if clean_col.lower() == alias.lower():
                         column_mapping[col] = standard
                         break
                 else:
-                    # Try partial match (e.g., "DN No." matches "DN No")
+                    # Partial match
                     for alias, standard in self.COLUMN_ALIASES.items():
                         if alias.lower() in clean_col.lower() or clean_col.lower() in alias.lower():
                             column_mapping[col] = standard
                             break
         
-        # Rename columns
         if column_mapping:
             df = df.rename(columns=column_mapping)
             logger.info(f"Normalized {len(column_mapping)} columns: {list(column_mapping.values())}")
-            print(f"📋 Normalized columns: {list(column_mapping.values())}")
         
         return df
 
     # ==========================================================
-    # SMART COLUMN VALIDATION (Supports multiple DN column variants)
+    # SMART VALIDATION
     # ==========================================================
 
     def _validate_columns_smart(self, df: pd.DataFrame) -> Dict[str, Any]:
-        """
-        Validate that required columns exist using case-insensitive matching.
-        Accepts multiple DN column variants.
-        """
-        # Get available columns (normalized)
+        """Validate required columns with multiple DN variants."""
         available_columns = [str(col).strip() for col in df.columns]
         
-        # Check if any DN column variant exists
+        # Check for DN column
         dn_column_found = None
         for dn_variant in self.DN_COLUMN_VARIANTS:
             for available in available_columns:
@@ -386,29 +514,25 @@ class ExcelImportService:
                 break
         
         if not dn_column_found:
-            logger.error(f"Available columns: {available_columns}")
-            logger.error(f"Expected DN column variants: {self.DN_COLUMN_VARIANTS}")
-            
             return {
                 "is_valid": False,
-                "error": f"Missing DN column. Expected one of: {', '.join(self.DN_COLUMN_VARIANTS)}",
-                "missing_columns": self.DN_COLUMN_VARIANTS,
-                "available_columns": available_columns
+                "error": f"Missing DN column. Expected one of: {', '.join(self.DN_COLUMN_VARIANTS[:10])}",
+                "missing_columns": self.DN_COLUMN_VARIANTS[:5],
+                "available_columns": available_columns[:20]
             }
         
-        # Map the found DN column to standard "DN No"
+        # Map to standard name
         if dn_column_found != "DN No":
-            # Rename the column to standard name
             for col in df.columns:
                 if col.lower() == dn_column_found.lower():
                     df.rename(columns={col: "DN No"}, inplace=True)
                     print(f"📝 Mapped '{dn_column_found}' to 'DN No'")
                     break
         
-        # Warn about optional missing columns but don't fail
+        # Log optional missing columns
         optional_missing = []
         for std_col in self.COLUMN_MAPPING.keys():
-            if std_col != "DN No":  # Skip DN as we already handled it
+            if std_col != "DN No":
                 found = False
                 for available in available_columns:
                     if available.lower() == std_col.lower():
@@ -429,61 +553,7 @@ class ExcelImportService:
         }
 
     # ==========================================================
-    # DUPLICATE HANDLING
-    # ==========================================================
-
-    def _handle_duplicates(
-        self, 
-        records: List[Dict[str, Any]], 
-        update_existing: bool = False
-    ) -> List[Dict[str, Any]]:
-        """
-        Check for existing DN records and handle accordingly.
-        """
-        if not records:
-            return records
-        
-        # Extract all DN numbers from records
-        dn_numbers = [r.get("dn_no") for r in records if r.get("dn_no")]
-        
-        if not dn_numbers:
-            return records
-        
-        # Query existing records
-        existing_records = self.db.query(DeliveryReport).filter(
-            DeliveryReport.dn_no.in_(dn_numbers)
-        ).all()
-        
-        existing_dn_map = {r.dn_no: r for r in existing_records}
-        
-        processed_records = []
-        skipped_count = 0
-        
-        for record in records:
-            dn_no = record.get("dn_no")
-            
-            if dn_no and dn_no in existing_dn_map:
-                if update_existing:
-                    # Add existing ID for update
-                    record["_existing_id"] = existing_dn_map[dn_no].id
-                    processed_records.append(record)
-                    logger.debug(f"Will update existing DN: {dn_no}")
-                else:
-                    # Skip duplicate
-                    skipped_count += 1
-                    logger.debug(f"Skipping duplicate DN: {dn_no}")
-                    continue
-            else:
-                # New record
-                processed_records.append(record)
-        
-        if skipped_count > 0:
-            print(f"📊 Skipped {skipped_count} duplicate DN(s)")
-        
-        return processed_records
-
-    # ==========================================================
-    # DATA TRANSFORMATION
+    # DATA TRANSFORMATION (Keep existing implementation)
     # ==========================================================
 
     def _transform_data(
@@ -492,9 +562,7 @@ class ExcelImportService:
         source_filename: str, 
         batch_id: int = None
     ) -> List[Dict[str, Any]]:
-        """
-        Transform Excel data to match DeliveryReport model.
-        """
+        """Transform Excel data to match DeliveryReport model."""
         records = []
         current_time = datetime.utcnow()
         
@@ -502,9 +570,7 @@ class ExcelImportService:
             try:
                 record = {}
                 
-                # Map columns based on mapping
                 for standard_col, db_col in self.COLUMN_MAPPING.items():
-                    # Try to find column (case-insensitive)
                     found_col = None
                     for col in df.columns:
                         if col.lower() == standard_col.lower():
@@ -514,39 +580,30 @@ class ExcelImportService:
                     if found_col:
                         value = row[found_col]
                         
-                        # Handle NaN values
                         if pd.isna(value):
                             value = None
                         
-                        # Convert dates
                         if db_col in ["dn_create_date", "good_issue_date", "pod_date"]:
                             value = self._parse_date(value)
                         
-                        # Convert numeric fields
                         if db_col in ["dn_qty", "dn_amount"]:
                             value = self._parse_numeric(value)
                         
                         record[db_col] = value
                 
-                # Skip if DN No is missing (critical field)
                 if not record.get("dn_no"):
                     logger.warning(f"Skipping row {index + 2}: Missing DN No")
                     continue
                 
-                # Add tracking fields
                 record["source_file"] = source_filename
                 record["upload_batch_id"] = batch_id
                 record["imported_at"] = current_time
                 record["created_at"] = current_time
                 record["updated_at"] = current_time
-                
-                # Generate delivery_location from warehouse + ship_to_city
                 record["delivery_location"] = self._generate_delivery_location(
                     record.get("warehouse"),
                     record.get("ship_to_city")
                 )
-                
-                # Set initial statuses
                 record["delivery_status"] = self._determine_delivery_status(record)
                 record["pgi_status"] = self._determine_pgi_status(record)
                 record["pod_status"] = self._determine_pod_status(record)
@@ -562,32 +619,26 @@ class ExcelImportService:
         return records
 
     # ==========================================================
-    # DATA PARSING HELPERS
+    # HELPER FUNCTIONS (Keep existing implementations)
     # ==========================================================
 
     def _parse_date(self, value: Any) -> Optional[date]:
-        """
-        Parse date from various formats.
-        """
+        """Parse date from various formats."""
         if value is None or (isinstance(value, float) and pd.isna(value)):
             return None
         
         try:
-            # If it's already a datetime/date object
             if isinstance(value, (datetime, date)):
                 return value if isinstance(value, date) else value.date()
             
-            # If it's a string
             if isinstance(value, str):
                 value = value.strip()
-                # Try common date formats
                 for fmt in ["%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%Y%m%d", "%d.%m.%Y", "%d-%m-%Y"]:
                     try:
                         return datetime.strptime(value, fmt).date()
                     except ValueError:
                         continue
             
-            # If it's a number (Excel serial date)
             if isinstance(value, (int, float)):
                 try:
                     return datetime.fromordinal(datetime(1900, 1, 1).toordinal() + int(value) - 2).date()
@@ -601,9 +652,7 @@ class ExcelImportService:
             return None
 
     def _parse_numeric(self, value: Any) -> Optional[float]:
-        """
-        Parse numeric values safely.
-        """
+        """Parse numeric values safely."""
         if value is None or (isinstance(value, float) and pd.isna(value)):
             return None
         
@@ -616,9 +665,7 @@ class ExcelImportService:
             return None
 
     def _generate_delivery_location(self, warehouse: str, city: str) -> str:
-        """
-        Generate delivery location string from warehouse and city.
-        """
+        """Generate delivery location string."""
         warehouse_str = warehouse or ""
         city_str = city or ""
         
@@ -631,10 +678,6 @@ class ExcelImportService:
         else:
             return ""
 
-    # ==========================================================
-    # STATUS DETERMINATION
-    # ==========================================================
-
     def _determine_delivery_status(self, record: Dict[str, Any]) -> str:
         if record.get("pod_date"):
             return "Completed"
@@ -644,23 +687,56 @@ class ExcelImportService:
             return "Pending"
 
     def _determine_pgi_status(self, record: Dict[str, Any]) -> str:
-        if record.get("good_issue_date"):
-            return "Completed"
-        else:
-            return "Pending"
+        return "Completed" if record.get("good_issue_date") else "Pending"
 
     def _determine_pod_status(self, record: Dict[str, Any]) -> str:
-        if record.get("pod_date"):
-            return "Received"
-        else:
-            return "Pending"
+        return "Received" if record.get("pod_date") else "Pending"
 
     def _determine_pending_flag(self, record: Dict[str, Any]) -> bool:
         return record.get("pod_date") is None
 
     # ==========================================================
-    # BULK INSERT / UPDATE
+    # BULK OPERATIONS (Keep existing implementation)
     # ==========================================================
+
+    def _handle_duplicates(
+        self, 
+        records: List[Dict[str, Any]], 
+        update_existing: bool = False
+    ) -> List[Dict[str, Any]]:
+        """Handle duplicate DN records."""
+        if not records:
+            return records
+        
+        dn_numbers = [r.get("dn_no") for r in records if r.get("dn_no")]
+        if not dn_numbers:
+            return records
+        
+        existing_records = self.db.query(DeliveryReport).filter(
+            DeliveryReport.dn_no.in_(dn_numbers)
+        ).all()
+        
+        existing_dn_map = {r.dn_no: r for r in existing_records}
+        processed_records = []
+        skipped_count = 0
+        
+        for record in records:
+            dn_no = record.get("dn_no")
+            
+            if dn_no and dn_no in existing_dn_map:
+                if update_existing:
+                    record["_existing_id"] = existing_dn_map[dn_no].id
+                    processed_records.append(record)
+                else:
+                    skipped_count += 1
+                    continue
+            else:
+                processed_records.append(record)
+        
+        if skipped_count > 0:
+            print(f"📊 Skipped {skipped_count} duplicate DN(s)")
+        
+        return processed_records
 
     def _bulk_insert(
         self, 
@@ -668,6 +744,7 @@ class ExcelImportService:
         skip_duplicates: bool = True,
         update_existing: bool = False
     ) -> Tuple[int, int, int]:
+        """Bulk insert/update records."""
         if not records:
             return 0, 0, 0
         
@@ -712,6 +789,7 @@ class ExcelImportService:
         return inserted_count, updated_count, skipped_count
 
     def _individual_insert(self, records: List[Dict[str, Any]]) -> int:
+        """Individual insert fallback."""
         inserted = 0
         for record in records:
             try:
@@ -726,13 +804,9 @@ class ExcelImportService:
                 continue
         return inserted
 
-    # ==========================================================
-    # DERIVED FIELDS UPDATE
-    # ==========================================================
-
     def _update_derived_fields(self, batch_id: int = None):
+        """Update derived fields for a batch."""
         query = self.db.query(DeliveryReport)
-        
         if batch_id:
             query = query.filter(DeliveryReport.upload_batch_id == batch_id)
         
@@ -743,7 +817,6 @@ class ExcelImportService:
                 record.warehouse,
                 record.ship_to_city
             )
-            
             record.delivery_status = self._determine_delivery_status({
                 "pod_date": record.pod_date,
                 "good_issue_date": record.good_issue_date
@@ -767,6 +840,7 @@ class ExcelImportService:
     # ==========================================================
 
     def get_import_summary(self, batch_id: int) -> Dict[str, Any]:
+        """Get import batch summary."""
         records = self.db.query(DeliveryReport).filter(
             DeliveryReport.upload_batch_id == batch_id
         ).all()
@@ -797,6 +871,7 @@ class ExcelImportService:
         }
 
     def delete_batch(self, batch_id: int) -> Dict[str, Any]:
+        """Delete a batch."""
         try:
             count = self.db.query(DeliveryReport).filter(
                 DeliveryReport.upload_batch_id == batch_id
