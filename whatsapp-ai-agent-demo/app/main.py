@@ -15,7 +15,7 @@ from fastapi.responses import RedirectResponse, PlainTextResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import inspect, func, text
+from sqlalchemy import inspect, func, text, case  # FIX 1: Added case import
 
 # Import SessionLocal from database
 from app.database import (
@@ -49,6 +49,9 @@ from app.services.schema_service import (
 
 # WhatsApp service import
 from app.services.whatsapp_service import send_text_message
+
+# FIX 3: Import LogisticsQueryService
+from app.services.logistics_query_service import LogisticsQueryService
 
 # Import routers
 from app.routes.upload import router as upload_router
@@ -196,7 +199,6 @@ app.add_middleware(
 # REGISTER ROUTERS
 # ==========================================================
 
-# Priority 9: Verify router registration
 app.include_router(upload_router)
 
 # ==========================================================
@@ -331,15 +333,16 @@ def get_latest_uploads(db: Session, limit: int = 5):
         return []
 
 
+# FIX 1: Fixed case() function usage
 def get_top_dealers(db: Session, limit: int = 5):
-    """Get top dealers by delivery count"""
+    """Get top dealers by delivery count - FIXED case() function"""
     try:
         dealers = db.query(
             DeliveryReport.dealer_code,
             DeliveryReport.customer_name,
             func.count(DeliveryReport.id).label('delivery_count'),
             func.sum(DeliveryReport.dn_amount).label('total_amount'),
-            func.sum(func.case((DeliveryReport.pending_flag.is_(True), 1), else_=0)).label('pending_count')
+            func.sum(case((DeliveryReport.pending_flag.is_(True), 1), else_=0)).label('pending_count')
         ).group_by(
             DeliveryReport.dealer_code,
             DeliveryReport.customer_name
@@ -363,12 +366,12 @@ def get_top_dealers(db: Session, limit: int = 5):
 
 
 def get_top_cities(db: Session, limit: int = 5):
-    """Get top cities by delivery count"""
+    """Get top cities by delivery count - FIXED case() function"""
     try:
         cities = db.query(
             DeliveryReport.ship_to_city.label('city'),
             func.count(DeliveryReport.id).label('count'),
-            func.sum(func.case((DeliveryReport.pending_flag.is_(True), 1), else_=0)).label('pending_count')
+            func.sum(case((DeliveryReport.pending_flag.is_(True), 1), else_=0)).label('pending_count')
         ).group_by(
             DeliveryReport.ship_to_city
         ).order_by(
@@ -389,13 +392,13 @@ def get_top_cities(db: Session, limit: int = 5):
 
 
 def get_warehouse_stats(db: Session, limit: int = 5):
-    """Get warehouse statistics"""
+    """Get warehouse statistics - FIXED case() function"""
     try:
         warehouses = db.query(
             DeliveryReport.warehouse,
             func.count(DeliveryReport.id).label('total_count'),
-            func.sum(func.case((DeliveryReport.pending_flag.is_(True), 1), else_=0)).label('pending_count'),
-            func.sum(func.case((DeliveryReport.pending_flag.is_(True), DeliveryReport.dn_amount), else_=0)).label('pending_amount')
+            func.sum(case((DeliveryReport.pending_flag.is_(True), 1), else_=0)).label('pending_count'),
+            func.sum(case((DeliveryReport.pending_flag.is_(True), DeliveryReport.dn_amount), else_=0)).label('pending_amount')
         ).group_by(
             DeliveryReport.warehouse
         ).order_by(
@@ -516,12 +519,10 @@ async def home():
     return RedirectResponse(url="/dashboard", status_code=303)
 
 
-# Priority 6: Enhanced Health Endpoint
 @app.get("/health", tags=["Health"])
 async def health(db: Session = Depends(get_db)):
     """Enhanced health check endpoint"""
     try:
-        # Test database connection
         db.execute(text("SELECT 1")).scalar()
         db_status = "connected"
     except:
@@ -564,7 +565,6 @@ async def db_health(db: Session = Depends(get_db)):
         )
 
 
-# Priority 2: Upload Center Route
 @app.get("/upload-center", tags=["Upload"])
 async def upload_center(request: Request, db: Session = Depends(get_db)):
     """Render upload center page"""
@@ -588,7 +588,6 @@ async def upload_center(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Priority 3: Download Template Route
 @app.get("/download-template", tags=["Upload"])
 async def download_template():
     """Download Excel template for logistics reports"""
@@ -596,7 +595,6 @@ async def download_template():
     import io
     from fastapi.responses import StreamingResponse
     
-    # Create template DataFrame
     template_data = {
         "DN No": ["DN12345", "DN12346"],
         "DN Work": ["Invoiced", "Invoiced"],
@@ -718,7 +716,6 @@ async def db_test():
 async def dashboard(request: Request, db: Session = Depends(get_db)):
     """Render the dashboard HTML page"""
     try:
-        # Get DeliveryReport KPIs
         total_records = db.query(DeliveryReport).count()
         pending_deliveries = db.query(DeliveryReport).filter(
             DeliveryReport.pending_flag.is_(True)
@@ -736,36 +733,23 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
             DeliveryReport.pod_status == "Received"
         ).count()
         
-        # Get unique cities and warehouses
         cities = db.query(DeliveryReport.ship_to_city).distinct().count()
         warehouses = db.query(DeliveryReport.warehouse).distinct().count()
         total_amount = db.query(func.sum(DeliveryReport.dn_amount)).scalar() or 0
         
-        # Priority 7: Get top dealers
         top_dealers = get_top_dealers(db, limit=5)
-        
-        # Get top cities
         top_cities = get_top_cities(db, limit=5)
-        
-        # Get warehouse stats
         top_warehouses = get_warehouse_stats(db, limit=5)
-        
-        # Priority 4: Get upload statistics
         upload_stats = get_upload_statistics(db)
-        
-        # Get latest uploads
         latest_uploads = get_latest_uploads(db, limit=5)
         
-        # Get conversation stats
         total_conversations = db.query(Conversation).count()
         total_customers = db.query(Customer).count()
         total_messages = db.query(Message).count()
         total_ai_responses = db.query(Message).filter(Message.sender == "assistant").count()
         
-        # Dashboard conversations
         dashboard_conversations = get_dashboard_conversations_optimized(db, limit=5)
         
-        # Message stats
         stats = db.query(
             func.date(Message.created_at).label('date'),
             func.count(Message.id).label('count')
@@ -773,23 +757,16 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
             func.date(Message.created_at).desc()
         ).limit(7).all()
         
-        # Service statuses
         whatsapp_token = os.getenv("WHATSAPP_ACCESS_TOKEN")
         anthropic_key = os.getenv("ANTHROPIC_API_KEY")
         openai_key = os.getenv("OPENAI_API_KEY")
-        
-        # Schema info
         schema_info = get_schema_info(db)
-        
-        # Priority 8: Last refresh timestamp
         last_refresh = datetime.utcnow()
         
-        # Priority 1: Ensure all variables have defaults
         return templates.TemplateResponse(
             "dashboard.html",
             {
                 "request": request,
-                # Delivery KPIs
                 "total_records": total_records or 0,
                 "pending_deliveries": pending_deliveries or 0,
                 "pending_pod": pending_pod or 0,
@@ -799,30 +776,24 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
                 "total_amount": round(total_amount, 2) if total_amount else 0,
                 "cities": cities or 0,
                 "warehouses": warehouses or 0,
-                # Priority 7: Top dealers
                 "top_dealers": top_dealers or [],
                 "top_cities": top_cities or [],
                 "top_warehouses": top_warehouses or [],
-                # Upload stats
                 "latest_uploads": latest_uploads or [],
                 "total_uploads": upload_stats.get("total_uploads", 0),
                 "total_imported_rows": upload_stats.get("total_imported_rows", 0),
-                # Conversation stats
                 "total_conversations": total_conversations or 0,
                 "total_customers": total_customers or 0,
                 "total_messages": total_messages or 0,
                 "total_ai_responses": total_ai_responses or 0,
                 "conversations": dashboard_conversations or [],
                 "stats": stats or [],
-                # System status
                 "status": "running",
                 "whatsapp_status": "Online" if whatsapp_token else "Offline",
                 "claude_status": "Online" if anthropic_key or openai_key else "Offline",
                 "vision_status": "Online" if anthropic_key or openai_key else "Offline",
-                # Schema info
                 "schema_version": schema_info.get("app_version", "1.0"),
                 "last_upload_date": upload_stats.get("last_upload_date").strftime('%Y-%m-%d %H:%M') if upload_stats.get("last_upload_date") else "Never",
-                # Priority 8: Last refresh
                 "last_refresh": last_refresh.strftime('%Y-%m-%d %H:%M:%S'),
                 "timestamp": datetime.utcnow().isoformat()
             }
@@ -831,10 +802,6 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
         print(f"Dashboard error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
-# ==========================================================
-# API DASHBOARD ENDPOINT
-# ==========================================================
 
 @app.get("/api/dashboard", tags=["API"])
 async def dashboard_api(db: Session = Depends(get_db)):
@@ -1010,10 +977,6 @@ async def get_delivery_note(dn_no: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ==========================================================
-# SEARCH ENDPOINT (Priority 5)
-# ==========================================================
-
 @app.get("/search", tags=["Search"])
 async def search_deliveries(
     q: str,
@@ -1096,7 +1059,6 @@ async def search_deliveries(
                     "status": r.delivery_status
                 })
         
-        # Remove duplicates by DN
         seen = set()
         unique_results = []
         for r in results:
@@ -1151,7 +1113,6 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
         else:
             ai_reply = "Thank you for contacting support. You can ask about pending deliveries, PGI status, or POD status."
         
-        # Get or create customer
         customer = None
         if request.phone_number:
             customer = db.query(Customer).filter(
@@ -1387,7 +1348,7 @@ async def get_customer(customer_id: int, db: Session = Depends(get_db)):
 
 
 # ==========================================================
-# WEBHOOK - WhatsApp Integration
+# WEBHOOK - WhatsApp Integration (UPDATED WITH LOGISTICS)
 # ==========================================================
 
 @app.get("/webhook", tags=["Webhook"])
@@ -1412,7 +1373,7 @@ async def verify_webhook(
 
 @app.post("/webhook", tags=["Webhook"])
 async def whatsapp_webhook(payload: dict, db: Session = Depends(get_db)):
-    """Receive and process WhatsApp messages"""
+    """Receive and process WhatsApp messages using Logistics AI Service"""
     try:
         print("WhatsApp webhook received")
         
@@ -1426,8 +1387,16 @@ async def whatsapp_webhook(payload: dict, db: Session = Depends(get_db)):
                                 customer_phone = message.get("from")
                                 message_text = message.get("text", {}).get("body", "")
                                 
-                                print(f"WhatsApp message received from {customer_phone}")
+                                # ==========================================================
+                                # FIX 5 & 6: Debug Logging
+                                # ==========================================================
+                                print("=" * 80)
+                                print(f"📱 WHATSAPP MESSAGE RECEIVED")
+                                print(f"📞 PHONE: {customer_phone}")
+                                print(f"💬 MESSAGE: {message_text}")
+                                print("=" * 80)
                                 
+                                # Get or create customer
                                 customer = db.query(Customer).filter(
                                     Customer.phone_number == customer_phone
                                 ).first()
@@ -1442,6 +1411,7 @@ async def whatsapp_webhook(payload: dict, db: Session = Depends(get_db)):
                                     db.commit()
                                     db.refresh(customer)
                                 
+                                # Get or create conversation
                                 active_conversation = db.query(Conversation).filter(
                                     Conversation.customer_id == customer.id,
                                     Conversation.status == "active"
@@ -1458,6 +1428,7 @@ async def whatsapp_webhook(payload: dict, db: Session = Depends(get_db)):
                                     db.commit()
                                     db.refresh(conversation)
                                 
+                                # Save user message
                                 user_msg = Message(
                                     conversation_id=conversation.id,
                                     sender="user",
@@ -1465,45 +1436,38 @@ async def whatsapp_webhook(payload: dict, db: Session = Depends(get_db)):
                                     message_type="text"
                                 )
                                 db.add(user_msg)
+                                db.commit()
                                 
-                                user_message_lower = message_text.lower()
+                                # ==========================================================
+                                # FIX 4: Use LogisticsQueryService for ALL WhatsApp messages
+                                # ==========================================================
+                                try:
+                                    # Call logistics service
+                                    result = LogisticsQueryService.handle_ai_query(
+                                        question=message_text,
+                                        db=db,
+                                        openai_client=None
+                                    )
+                                    
+                                    ai_reply = result.get("ai_response", "Unable to process your request.")
+                                    
+                                    # FIX 6: Log intent and success
+                                    print(f"🤖 INTENT: {result.get('intent', 'unknown')}")
+                                    print(f"✅ SUCCESS: {result.get('success', False)}")
+                                    print(f"💬 AI RESPONSE: {ai_reply[:200]}...")
+                                    print("=" * 80)
+                                    
+                                except Exception as e:
+                                    # FIX 7: Exception handling
+                                    print(f"❌ LOGISTICS ERROR: {str(e)}")
+                                    import traceback
+                                    traceback.print_exc()
+                                    ai_reply = (
+                                        "An error occurred while processing your logistics request. "
+                                        "Please try again in a moment."
+                                    )
                                 
-                                dn_match = re.search(r'(?:dn|delivery note|delivery|note)[:\s#-]*([A-Za-z0-9]+)', user_message_lower)
-                                if dn_match:
-                                    dn_number = dn_match.group(1).upper()
-                                    delivery = db.query(DeliveryReport).filter(
-                                        DeliveryReport.dn_no == dn_number
-                                    ).first()
-                                    if delivery:
-                                        ai_reply = f"DN {dn_number}: Status={delivery.delivery_status}, PGI={delivery.pgi_status}, POD={delivery.pod_status}"
-                                    else:
-                                        ai_reply = f"DN {dn_number} not found in system."
-                                elif "pending delivery" in user_message_lower or "pending dn" in user_message_lower:
-                                    pending_count = db.query(DeliveryReport).filter(
-                                        DeliveryReport.pending_flag.is_(True)
-                                    ).count()
-                                    ai_reply = f"You have {pending_count} pending deliveries."
-                                elif "pgi status" in user_message_lower:
-                                    pgi_pending = db.query(DeliveryReport).filter(
-                                        DeliveryReport.pgi_status == "Pending"
-                                    ).count()
-                                    ai_reply = f"{pgi_pending} deliveries are pending PGI."
-                                elif "pod status" in user_message_lower:
-                                    pod_pending = db.query(DeliveryReport).filter(
-                                        DeliveryReport.pod_status == "Pending"
-                                    ).count()
-                                    ai_reply = f"{pod_pending} deliveries are pending POD confirmation."
-                                elif "order" in user_message_lower:
-                                    ai_reply = "Your order is currently in transit and expected tomorrow."
-                                elif "delivery" in user_message_lower:
-                                    ai_reply = "Your shipment is scheduled for delivery within 24 hours."
-                                elif "refund" in user_message_lower:
-                                    ai_reply = "Your refund request has been received and is under review."
-                                elif "hello" in user_message_lower or "hi" in user_message_lower:
-                                    ai_reply = f"Hello {customer.name}, how may I assist you today? You can ask about pending deliveries, PGI status, or specific DN numbers."
-                                else:
-                                    ai_reply = "Thank you for contacting support. You can ask about pending deliveries, PGI status, or specific DN numbers."
-                                
+                                # Save AI response
                                 ai_msg = Message(
                                     conversation_id=conversation.id,
                                     sender="assistant",
@@ -1512,25 +1476,30 @@ async def whatsapp_webhook(payload: dict, db: Session = Depends(get_db)):
                                 )
                                 db.add(ai_msg)
                                 
+                                # Save AI log
                                 ai_log = AIResponseLog(
                                     conversation_id=conversation.id,
                                     prompt=message_text,
                                     ai_response=ai_reply,
-                                    model_name="rule-based",
+                                    model_name="logistics-ai",
                                     success=True
                                 )
                                 db.add(ai_log)
-                                
                                 db.commit()
                                 
+                                # Send WhatsApp response
                                 send_result = send_text_message(
                                     phone_number=customer_phone,
                                     message=ai_reply
                                 )
+                                print(f"📤 WhatsApp send result: {send_result}")
         
         return {"status": "received"}
+        
     except Exception as e:
-        print(f"Webhook error: {str(e)}")
+        print(f"❌ Webhook error: {str(e)}")
+        import traceback
+        traceback.print_exc()
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1582,7 +1551,8 @@ async def version():
         "version": "1.0.0",
         "framework": "FastAPI",
         "database": "PostgreSQL",
-        "schema_version": APP_SCHEMA_VERSION
+        "schema_version": APP_SCHEMA_VERSION,
+        "logistics_integration": True
     }
 
 
