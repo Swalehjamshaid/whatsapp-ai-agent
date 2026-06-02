@@ -6,6 +6,7 @@
 from fastapi import APIRouter, Request, Depends
 from sqlalchemy.orm import Session
 from typing import Dict, Any
+import json
 
 from app.config import (
     WHATSAPP_VERIFY_TOKEN
@@ -23,18 +24,15 @@ from app.services.claude_service import (
 
 from app.services.conversation_service import (
     add_user_message,
-    add_ai_message,
-    get_user_context,
-    set_user_context
+    add_ai_message
 )
 
 # ==========================================================
-# NEW: LOGISTICS SERVICE IMPORT
+# FIX 1: Remove unused import - only import what we need
 # ==========================================================
 
 from app.services.logistics_query_service import (
-    LogisticsQueryService,
-    handle_ai_query
+    LogisticsQueryService
 )
 
 from app.database import get_db
@@ -49,10 +47,10 @@ router = APIRouter(
 )
 
 # ==========================================================
-# USER SESSION TRACKING (For dealer selection)
+# FIX 2: User Session Tracking (In-memory - will be lost on restart)
+# TODO: Move to PostgreSQL for production
 # ==========================================================
 
-# In-memory session tracking (can be moved to database)
 user_sessions: Dict[str, Dict[str, Any]] = {}
 
 def get_user_session(phone_number: str) -> Dict[str, Any]:
@@ -62,7 +60,8 @@ def get_user_session(phone_number: str) -> Dict[str, Any]:
             "pending_dealer_selection": None,
             "pending_dealer_matches": [],
             "last_intent": None,
-            "selected_dealer": None
+            "selected_dealer": None,
+            "last_question": None
         }
     return user_sessions[phone_number]
 
@@ -73,64 +72,184 @@ def clear_user_session(phone_number: str):
             "pending_dealer_selection": None,
             "pending_dealer_matches": [],
             "last_intent": None,
-            "selected_dealer": None
+            "selected_dealer": None,
+            "last_question": None
         }
 
 # ==========================================================
-# HELPER: Build Logistics Prompt for Claude
+# FIX 3,4,5,6,7,8,9,10: Enhanced Logistics Prompt Builder
 # ==========================================================
 
 def build_logistics_prompt(customer_message: str, context: str, intent: str) -> str:
-    """Build specialized logistics prompt for Claude."""
+    """Build specialized logistics prompt for Claude with all business rules."""
+    
+    # FIX 6: Context length protection
+    if len(context) > 6000:
+        context = context[:6000]
+        context += "\n... (truncated for length)"
     
     prompt = f"""You are HNR Logistics AI Assistant, a professional logistics operations manager.
 
-BUSINESS RULES FOR LOGISTICS INTERPRETATION:
-1. PGI Status = "Completed" means: The shipment has been dispatched/delivered from warehouse
+================================================================================
+CRITICAL BUSINESS RULES - MUST FOLLOW:
+================================================================================
+
+DELIVERY STATUS INTERPRETATION (NEVER expose raw field names):
+- PGI Completed + POD Received = "Delivered and Acknowledged"
+- PGI Completed + POD Pending = "Delivered Awaiting Dealer Acknowledgement"  
+- PGI Pending = "Pending Dispatch"
+
+NEVER tell a user "PGI Completed" - Instead say "Shipment Delivered"
+NEVER tell a user "POD Received" - Instead say "Dealer Acknowledged Receipt"
+NEVER tell a user "POD Pending" - Instead say "Awaiting Dealer Acknowledgement"
+
+================================================================================
+BUSINESS RULES FOR RESPONSES:
+================================================================================
+
+1. PGI Status = "Completed" means: The shipment has been dispatched/delivered
 2. PGI Status = "Pending" means: The shipment is still at warehouse, pending dispatch
 3. POD Status = "Received" means: The dealer has acknowledged and received the shipment
 4. POD Status = "Pending" means: Shipment delivered but awaiting dealer acknowledgement
-5. When PGI is Completed but POD is Pending: State "Shipment delivered and awaiting dealer acknowledgement"
-6. When POD is Received: State "Dealer has received and acknowledged the shipment"
-7. When PGI is Pending: State "Shipment is pending dispatch from warehouse"
-8. Never expose raw database field names (PGI/POD) to end users
-9. Always use business-friendly terms: "dispatched", "delivered", "acknowledged", "pending"
 
-RESPONSE GUIDELINES:
-1. Act as a professional Logistics Operations Manager
-2. Explain delivery status clearly using business terms
-3. Explain business impact when relevant
-4. Mention pending risks if applicable
-5. Keep responses professional but conversational
-6. Be concise (2-4 sentences for simple queries, more for detailed summaries)
-7. Format amounts as Rs X,XXX.XX
-8. Format quantities as X,XXX units
-9. For pending items, suggest follow-up actions
+================================================================================
+DEALER BUSINESS RULES:
+================================================================================
 
-USER QUESTION:
+If user asks about a dealer, ALWAYS provide:
+- Total DNs
+- Delivered DNs
+- Pending DNs
+- Total Quantity (units)
+- Delivered Quantity (units)
+- Pending Quantity (units)
+- Pending Amount (Rs)
+
+If dealer has pending deliveries: Mention operational risk and suggest follow-up action.
+
+================================================================================
+WAREHOUSE INTELLIGENCE RULES:
+================================================================================
+
+If user asks "Which warehouse has highest pending?" ALWAYS provide:
+- Warehouse Name
+- Pending DNs count
+- Pending Quantity (units)
+- Pending Amount (Rs)
+- Operational risk level
+- Suggested action
+
+================================================================================
+CITY INTELLIGENCE RULES:
+================================================================================
+
+If user asks "Which city has highest pending?" ALWAYS provide:
+- City Name
+- Pending DNs count
+- Pending Quantity (units)
+- Pending Amount (Rs)
+
+================================================================================
+PRODUCT INTELLIGENCE RULES:
+================================================================================
+
+If user asks about products (refrigerators, LED TVs, etc.):
+- Show total quantity delivered
+- Show pending quantity
+- Show which dealers have pending stock
+- Suggest follow-up actions
+
+================================================================================
+EXECUTIVE SUMMARY RULES:
+================================================================================
+
+If user asks for executive summary, logistics summary, or business insights:
+- Total Deliveries
+- Completion Rate (%)
+- Pending Deliveries with Amount
+- Pending Dispatch (PGI count)
+- Awaiting Dealer Acknowledgement (POD count)
+- Top 3 Dealers by delivery volume
+- Top 3 Cities by delivery volume
+- Top Warehouse by performance
+- Biggest Risk & Recommendation
+- Focus Area for today
+
+================================================================================
+CUSTOMER QUESTION:
+================================================================================
+
 {customer_message}
 
 INTENT DETECTED: {intent}
 
+================================================================================
 DATABASE INFORMATION:
+================================================================================
+
 {context}
 
-RESPONSE STYLE:
-- Professional but approachable
-- Data-driven but human-readable
-- Action-oriented for pending items
-- Acknowledge risks and delays
+================================================================================
+RESPONSE GUIDELINES:
+================================================================================
 
-RESPONSE:"""
+1. Act as a professional Logistics Operations Manager
+2. Use the business rules above for interpreting status
+3. NEVER expose raw field names (PGI/POD)
+4. ALWAYS use business terms: "dispatched", "delivered", "acknowledged", "pending"
+5. For dealers, provide complete summary with quantities and amounts
+6. For pending items, mention operational risk and suggest follow-up
+7. Format amounts as Rs X,XXX.XX
+8. Format quantities as X,XXX units
+9. Be concise but comprehensive
+10. For executive queries, provide actionable insights
+
+================================================================================
+EXAMPLE RESPONSES:
+================================================================================
+
+DN Query: "DN 6243612322 has been delivered and acknowledged by the dealer. 
+Total quantity: 50 units. Amount: Rs 150,000.00"
+
+Dealer Query: "Faisal Traders has 152 total DNs. 128 delivered, 24 pending. 
+Pending quantity: 750 units worth Rs 8,700,000. Recommend following up on pending deliveries."
+
+Executive Query: "Logistics Summary: 1,247 total deliveries. 85% completion rate. 
+Pending deliveries: 187 (Rs 18.2M). Top risk: HPK warehouse with 42 pending DNs. 
+Recommend focusing on HPK dispatches today."
+
+================================================================================
+RESPONSE:
+================================================================================"""
     
     return prompt
 
 # ==========================================================
-# HELPER: Handle Dealer Selection
+# FIX 7: Better "No Data Found" Handling
+# ==========================================================
+
+def get_no_data_message() -> str:
+    """Return helpful message when no data found."""
+    return """I couldn't find matching logistics records in our system.
+
+Try asking about:
+
+📦 **DN Number:** Check DN 6243612322
+🏢 **Dealer Name:** Show Faisal Traders summary
+🏭 **Warehouse:** Which warehouse has highest pending?
+🌆 **City:** Show Lahore deliveries
+📊 **Summary:** Give me logistics summary
+⏳ **Pending:** How many deliveries pending?
+✅ **POD:** How many awaiting acknowledgement?
+
+Please provide a specific DN number, dealer name, warehouse, or city for accurate information."""
+
+# ==========================================================
+# FIX 5 & 6: Helper to handle dealer selection with confirmation
 # ==========================================================
 
 def handle_dealer_selection(customer_message: str, phone_number: str, db: Session) -> Dict[str, Any]:
-    """Handle dealer selection flow (when user picks from multiple matches)."""
+    """Handle dealer selection flow with confirmation message."""
     session = get_user_session(phone_number)
     
     # Check if user is responding to a dealer selection prompt
@@ -144,17 +263,23 @@ def handle_dealer_selection(customer_message: str, phone_number: str, db: Sessio
             session["selected_dealer"] = selected_dealer
             session["pending_dealer_selection"] = None
             session["pending_dealer_matches"] = []
+            session["last_intent"] = "dealer_lookup_selected"
             
             # Get full dealer summary
             dealer_result = LogisticsQueryService.get_dealer_summary(db, selected_dealer)
             
             if dealer_result.get("success"):
                 summary = LogisticsQueryService.generate_dealer_summary_text(dealer_result)
+                
+                # Add confirmation message
+                confirmation = f"✅ Dealer Confirmed: {selected_dealer}\n\nGenerating logistics summary...\n\n"
+                
                 return {
                     "success": True,
-                    "summary": summary,
-                    "intent": "dealer_lookup",
-                    "data": dealer_result
+                    "summary": confirmation + summary,
+                    "intent": "dealer_lookup_selected",
+                    "data": dealer_result,
+                    "dealer_name": selected_dealer
                 }
     
     return {"success": False}
@@ -184,7 +309,7 @@ async def webhook_verification(
     }
 
 # ==========================================================
-# RECEIVE WHATSAPP MESSAGE (UPDATED WITH LOGISTICS)
+# RECEIVE WHATSAPP MESSAGE (FULLY UPDATED)
 # ==========================================================
 
 @router.post("/")
@@ -225,10 +350,8 @@ async def receive_message(
     selection_result = handle_dealer_selection(customer_message, phone_number, db)
     
     if selection_result.get("success"):
-        # User selected a dealer from multiple matches
-        ai_reply = selection_result.get("summary", "Dealer information retrieved.")
-        context = ai_reply
-        intent = "dealer_lookup_selected"
+        context = selection_result.get("summary", "Dealer information retrieved.")
+        intent = selection_result.get("intent", "dealer_lookup_selected")
         
         # Build and send AI response
         prompt = build_logistics_prompt(customer_message, context, intent)
@@ -261,11 +384,33 @@ async def receive_message(
         context = ai_result.get("summary", "No logistics data found")
         intent = ai_result.get("intent", "general_query")
         
+        # Update session
+        session = get_user_session(phone_number)
+        session["last_intent"] = intent
+        session["last_question"] = customer_message
+        
+        # ==========================================================
+        # FIX 8 & 9: Handle Executive and Product Queries
+        # ==========================================================
+        
+        # Check if this is an executive/insights query
+        executive_keywords = ["executive summary", "logistics summary", "business insights", 
+                             "what needs attention", "biggest risk", "ceo report"]
+        if any(keyword in customer_message.lower() for keyword in executive_keywords):
+            intent = "executive_summary"
+            # Get executive summary
+            exec_result = LogisticsQueryService.get_executive_summary(db)
+            context = exec_result.get("executive_summary", "Executive summary generated.")
+        
+        # Check if this is a product query
+        product_keywords = ["refrigerator", "led tv", "tv", "washing machine", "product", "material"]
+        if any(keyword in customer_message.lower() for keyword in product_keywords):
+            intent = "product_query"
+        
         # ==========================================================
         # HANDLE DEALER LOOKUP WITH MULTIPLE MATCHES
         # ==========================================================
         if intent == "dealer_lookup" and ai_result.get("fuzzy"):
-            # Multiple dealers found - ask user to select
             matches = ai_result.get("matches", [])
             if matches:
                 session = get_user_session(phone_number)
@@ -277,20 +422,14 @@ async def receive_message(
                     for i, m in enumerate(matches[:5])
                 ])
                 
-                context = f"Multiple dealers found:\n{dealer_list}\n\nPlease reply with the number of your dealer."
+                context = f"Multiple dealers found. Please reply with the number:\n\n{dealer_list}\n\nExample: Reply '1' for the first dealer"
                 intent = "dealer_selection"
         
         # ==========================================================
-        # CHECK IF DATA WAS FOUND
+        # FIX 7: Better "No Data Found" Handling
         # ==========================================================
-        if not ai_result.get("success", True):
-            # No data found - return helpful message
-            ai_reply = (
-                "I could not find matching logistics data in our system. "
-                "Please provide a valid DN number (e.g., 6243612322), "
-                "dealer name (e.g., Faisal Traders), "
-                "city name, or warehouse code."
-            )
+        if not ai_result.get("success", True) or context == "No logistics data found":
+            ai_reply = get_no_data_message()
             
             add_ai_message(phone_number, ai_reply)
             whatsapp_response = send_text_message(phone_number, ai_reply)
@@ -313,7 +452,8 @@ async def receive_message(
         print("\n" + "="*80)
         print(f"🤖 SENDING TO CLAUDE")
         print(f"📊 Intent: {intent}")
-        print(f"📝 Context: {context[:500]}...")
+        print(f"📝 Context Length: {len(context)} chars")
+        print(f"📝 Context Preview: {context[:300]}...")
         print("="*80)
         
         # ==========================================================
@@ -321,12 +461,18 @@ async def receive_message(
         # ==========================================================
         ai_reply = ask_claude(prompt)
         
+        # FIX 10: Post-process response to ensure business rules are applied
+        # Replace any raw field names that might have slipped through
+        ai_reply = ai_reply.replace("PGI Completed", "Delivered")
+        ai_reply = ai_reply.replace("POD Received", "Dealer Acknowledged")
+        ai_reply = ai_reply.replace("POD Pending", "Awaiting Acknowledgement")
+        ai_reply = ai_reply.replace("PGI Pending", "Pending Dispatch")
+        
     except Exception as e:
-        # Handle any errors in logistics query
         print(f"❌ Error in logistics query: {str(e)}")
         ai_reply = (
             "I'm having trouble accessing the logistics database right now. "
-            "Please try again in a moment."
+            "Please try again in a moment. If the issue persists, contact support."
         )
 
     # ==========================================================
@@ -344,7 +490,7 @@ async def receive_message(
     # ==========================================================
     print("\n" + "="*80)
     print(f"✅ RESPONSE SENT TO {phone_number}")
-    print(f"💬 Reply: {ai_reply[:200]}...")
+    print(f"💬 Reply Preview: {ai_reply[:200]}...")
     print("="*80 + "\n")
 
     return {
@@ -405,7 +551,8 @@ async def webhook_status():
         "service": "WhatsApp Webhook",
         "status": "running",
         "verify_token": bool(WHATSAPP_VERIFY_TOKEN),
-        "logistics_integration": True
+        "logistics_integration": True,
+        "active_sessions": len(user_sessions)
     }
 
 # ==========================================================
@@ -442,4 +589,17 @@ async def test_logistics_query(
         "intent": result.get("intent"),
         "summary": result.get("summary"),
         "has_data": result.get("metadata", {}).get("has_data", False)
+    }
+
+# ==========================================================
+# SESSION STATUS ENDPOINT
+# ==========================================================
+
+@router.get("/session/{phone_number}")
+async def get_session(phone_number: str):
+    """Get user session for debugging."""
+    session = get_user_session(phone_number)
+    return {
+        "phone_number": phone_number,
+        "session": session
     }
