@@ -51,17 +51,14 @@ class ExcelImportService:
         }
         
         try:
-            # Force print to see in logs
             print("\n" + "="*80)
             print("🚀 EXCEL IMPORT STARTED")
             print("="*80)
             print(f"📁 File: {source_filename}")
             print(f"🆔 Batch ID: {batch_id}")
-            print(f"📂 File path: {file_path}")
             sys.stdout.flush()
             
             # Step 1: Check if file exists
-            print("\n📖 Step 1: Checking file...")
             if not os.path.exists(file_path):
                 error_msg = f"File not found: {file_path}"
                 print(f"❌ {error_msg}")
@@ -71,42 +68,100 @@ class ExcelImportService:
             print(f"✅ File exists, size: {os.path.getsize(file_path)} bytes")
             sys.stdout.flush()
             
-            # Step 2: Read Excel file
-            print("\n📖 Step 2: Reading Excel file...")
-            try:
-                df = pd.read_excel(file_path)
-                print(f"✅ Successfully read Excel file")
-                print(f"   📊 Rows: {len(df)}")
-                print(f"   📊 Columns: {len(df.columns)}")
-                print(f"   📋 Column names: {list(df.columns)}")
-            except Exception as e:
-                print(f"❌ Failed to read Excel: {e}")
-                result["error"] = f"Failed to read Excel: {e}"
-                return result
+            # ==========================================================
+            # CRITICAL FIX: Auto-detect header row
+            # ==========================================================
+            print("\n🔍 Step 2: Detecting header row...")
             
-            result["total_rows"] = len(df)
+            # Try to find the row that contains column headers
+            header_row = None
+            found_headers = None
+            
+            # Search first 20 rows for headers
+            for row_num in range(20):
+                try:
+                    # Read just this row to check
+                    test_df = pd.read_excel(file_path, header=None, nrows=row_num + 1)
+                    
+                    # Get the last row as potential headers
+                    potential_headers = test_df.iloc[row_num].astype(str).tolist()
+                    
+                    # Check if this row looks like column headers
+                    header_text = ' '.join(potential_headers).lower()
+                    
+                    # Look for logistics-related keywords
+                    if any(keyword in header_text for keyword in [
+                        'dn', 'delivery', 'customer', 'order', 'division', 
+                        'material', 'warehouse', 'city', 'amount', 'pgi', 'pod'
+                    ]):
+                        header_row = row_num
+                        found_headers = potential_headers
+                        print(f"   ✅ Found header row at row {row_num + 1}")
+                        print(f"   📋 Headers: {found_headers[:10]}...")  # Show first 10
+                        break
+                        
+                except Exception as e:
+                    continue
+            
+            # If header found, read the file with that header row
+            if header_row is not None:
+                print(f"\n📖 Step 3: Reading Excel with header at row {header_row + 1}...")
+                df = pd.read_excel(file_path, header=header_row)
+            else:
+                print(f"\n📖 Step 3: No header detected, reading first row as headers...")
+                df = pd.read_excel(file_path)
+            
+            print(f"   ✅ Successfully read Excel file")
+            print(f"   📊 Rows: {len(df)}")
+            print(f"   📊 Columns: {len(df.columns)}")
+            print(f"   📋 Column names: {list(df.columns)}")
             sys.stdout.flush()
             
-            # Step 3: Show sample data
-            print("\n📋 Step 3: Sample data (first 2 rows):")
+            result["total_rows"] = len(df)
+            
+            # Step 4: Clean column names (remove NaN, empty, etc.)
+            print("\n🧹 Step 4: Cleaning column names...")
+            
+            # Remove any NaN or empty column names
+            clean_columns = []
+            for col in df.columns:
+                if pd.isna(col) or str(col).strip() == '' or 'Unnamed' in str(col):
+                    clean_columns.append(None)
+                else:
+                    clean_columns.append(str(col).strip())
+            
+            # Rename columns
+            new_columns = {}
+            for idx, col in enumerate(df.columns):
+                if clean_columns[idx] is None:
+                    new_columns[col] = f"Column_{idx}"
+                else:
+                    new_columns[col] = clean_columns[idx]
+            
+            df = df.rename(columns=new_columns)
+            print(f"   📋 Cleaned columns: {list(df.columns)}")
+            sys.stdout.flush()
+            
+            # Step 5: Show sample data
+            print("\n📋 Step 5: Sample data (first 2 rows):")
             for idx in range(min(2, len(df))):
                 row_dict = {}
-                for col in df.columns:
+                for col in df.columns[:10]:  # Show first 10 columns only
                     val = df.iloc[idx][col]
                     if pd.isna(val):
                         val = "NULL"
                     elif isinstance(val, (float, int)):
                         val = str(val)
                     else:
-                        val = str(val)[:50]
+                        val = str(val)[:30]
                     row_dict[col] = val
                 print(f"   Row {idx+1}: {row_dict}")
             sys.stdout.flush()
             
-            # Step 4: Map column names
-            print("\n🔄 Step 4: Mapping column names...")
+            # Step 6: Map column names
+            print("\n🔄 Step 6: Mapping column names...")
             
-            # Define column mappings
+            # Define column mappings (case-insensitive)
             column_mapping = {
                 "DN NO": "DN No",
                 "DN NO.": "DN No",
@@ -114,6 +169,8 @@ class ExcelImportService:
                 "DN": "DN No",
                 "DELIVERY NO": "DN No",
                 "DELIVERY": "DN No",
+                "DELIVERY NOTE": "DN No",
+                "DOCUMENT NO": "DN No",
                 "ORDER TYPE": "Order Type",
                 "DN AMOUNT": "DN Amount",
                 "DN QTY": "DN Qty",
@@ -127,6 +184,7 @@ class ExcelImportService:
                 "SHIP-TO CITY": "Ship To City",
                 "SHIP TO CITY": "Ship To City",
                 "STORAGE": "Storage Location",
+                "STORAGE LOCATION": "Storage Location",
                 "WAREHOUSE": "Warehouse",
                 "DN CREATE DATE": "DN Create Date",
                 "DN CREATE DATE": "DN Create Date",
@@ -136,24 +194,29 @@ class ExcelImportService:
                 "CUSTOMER NAME": "Customer Name",
                 "CUSTOMER": "Customer Name",
                 "DEALER": "Customer Name",
+                "DEALER NAME": "Customer Name",
             }
             
-            # Apply mappings
-            renamed = False
-            for old_col, new_col in column_mapping.items():
-                if old_col in df.columns:
-                    df.rename(columns={old_col: new_col}, inplace=True)
-                    renamed = True
-                    print(f"   ✅ Mapped '{old_col}' -> '{new_col}'")
+            # Apply mappings (case-insensitive)
+            mapping_applied = {}
+            for col in df.columns:
+                col_upper = str(col).upper().strip()
+                for old_key, new_key in column_mapping.items():
+                    if col_upper == old_key or old_key in col_upper:
+                        mapping_applied[col] = new_key
+                        print(f"   ✅ Mapped '{col}' -> '{new_key}'")
+                        break
             
-            if not renamed:
-                print("   ⚠️ No columns were mapped. Using original column names.")
+            if mapping_applied:
+                df = df.rename(columns=mapping_applied)
+            else:
+                print("   ⚠️ No columns were mapped")
             
             print(f"   📋 Columns after mapping: {list(df.columns)}")
             sys.stdout.flush()
             
-            # Step 5: Check for DN No column
-            print("\n🔍 Step 5: Validating DN No column...")
+            # Step 7: Check for DN No column
+            print("\n🔍 Step 7: Validating DN No column...")
             if "DN No" not in df.columns:
                 # Try to find any column containing DN
                 dn_column = None
@@ -175,7 +238,7 @@ class ExcelImportService:
             print(f"   ✅ DN No column found")
             sys.stdout.flush()
             
-            # Step 6: Remove rows with empty DN
+            # Step 8: Remove rows with empty DN
             before = len(df)
             df = df[df["DN No"].notna()]
             after = len(df)
@@ -183,8 +246,8 @@ class ExcelImportService:
             print(f"   ✅ Remaining rows: {after}")
             sys.stdout.flush()
             
-            # Step 7: Transform each row
-            print("\n🔄 Step 7: Transforming data...")
+            # Step 9: Transform each row
+            print("\n🔄 Step 9: Transforming data...")
             records = []
             current_time = datetime.utcnow()
             
@@ -200,9 +263,9 @@ class ExcelImportService:
             print(f"   ✅ Transformed {len(records)} records")
             sys.stdout.flush()
             
-            # Step 8: Show first record preview
+            # Step 10: Show first record preview
             if records:
-                print("\n🔍 Step 8: First record preview:")
+                print("\n🔍 Step 10: First record preview:")
                 preview_record = records[0]
                 for key in ["dn_no", "customer_name", "ship_to_city", "dn_amount", "delivery_status"]:
                     if key in preview_record:
@@ -212,8 +275,8 @@ class ExcelImportService:
                 result["error"] = "No valid records found in Excel file"
                 return result
             
-            # Step 9: Insert into database
-            print("\n💾 Step 9: Inserting into PostgreSQL...")
+            # Step 11: Insert into database
+            print("\n💾 Step 11: Inserting into PostgreSQL...")
             inserted_count = 0
             
             try:
@@ -221,7 +284,6 @@ class ExcelImportService:
                 for record in records:
                     # Remove any keys that shouldn't be in the insert
                     clean_record = {k: v for k, v in record.items() if hasattr(DeliveryReport, k)}
-                    
                     delivery = DeliveryReport(**clean_record)
                     self.db.add(delivery)
                 
@@ -297,7 +359,7 @@ class ExcelImportService:
                 if isinstance(val, date):
                     return val
                 if isinstance(val, str):
-                    for fmt in ["%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d.%m.%Y", "%d-%m-%Y"]:
+                    for fmt in ["%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d.%m.%Y", "%d-%m-%Y", "%Y%m%d"]:
                         try:
                             return datetime.strptime(val.strip(), fmt).date()
                         except:
