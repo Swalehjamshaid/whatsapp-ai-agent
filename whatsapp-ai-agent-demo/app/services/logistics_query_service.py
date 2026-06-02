@@ -14,7 +14,7 @@ from app.models import DeliveryReport
 class LogisticsQueryService:
 
     # ======================================================
-    # INTENT DETECTION (ENHANCED)
+    # INTENT DETECTION (FULLY ENHANCED)
     # ======================================================
     
     @staticmethod
@@ -28,32 +28,66 @@ class LogisticsQueryService:
         - "How many pending deliveries?" -> {"intent": "pending_deliveries"}
         - "Show Lahore deliveries" -> {"intent": "city_search", "city": "Lahore"}
         - "Which dealer has the highest pending?" -> {"intent": "highest_pending_dealer"}
+        - "Faisal Traders" -> {"intent": "dealer_lookup", "dealer_name": "Faisal Traders"}
+        - "What products for Faisal Traders?" -> {"intent": "dealer_products", "dealer_name": "Faisal Traders"}
         """
         question_lower = question.lower().strip()
         
-        # DN detection with keywords
-        dn_keywords = ["dn", "delivery note", "delivery number", "status", "check", "show"]
-        
-        # Check for DN number (numeric string of 8-15 digits)
+        # ==================================================
+        # DN NUMBER DETECTION
+        # ==================================================
         dn_match = re.search(r'\b(\d{8,15})\b', question)
         if dn_match:
-            return {
-                "intent": "dn_lookup",
-                "dn_no": dn_match.group(1)
-            }
+            return {"intent": "dn_lookup", "dn_no": dn_match.group(1)}
         
-        # Also check for DN with keywords
+        # DN with keywords
+        dn_keywords = ["dn", "delivery note", "delivery number", "status", "check", "show"]
         for keyword in dn_keywords:
             if keyword in question_lower:
                 dn_match_with_keyword = re.search(r'\b(\d{8,15})\b', question)
                 if dn_match_with_keyword:
-                    return {
-                        "intent": "dn_lookup",
-                        "dn_no": dn_match_with_keyword.group(1)
-                    }
+                    return {"intent": "dn_lookup", "dn_no": dn_match_with_keyword.group(1)}
         
         # ==================================================
-        # NEW: Highest pending dealer/warehouse/city intents
+        # DEALER LOOKUP (Fuzzy detection for dealer names)
+        # ==================================================
+        
+        # Check for dealer keywords first
+        dealer_keywords = ["dealer", "customer", "show me deliveries for", "deliveries of", "tell me about"]
+        for keyword in dealer_keywords:
+            if keyword in question_lower:
+                parts = question_lower.split(keyword)
+                if len(parts) > 1:
+                    dealer_name = parts[1].strip().title()
+                    if dealer_name and len(dealer_name) > 2:
+                        return {"intent": "dealer_lookup", "dealer_name": dealer_name}
+        
+        # Check for dealer products
+        if any(phrase in question_lower for phrase in ["products for", "what products", "items for", "product breakdown"]):
+            dealer_match = re.search(r'(?:for|of|from)\s+([a-zA-Z\s]+)', question_lower)
+            if dealer_match:
+                dealer_name = dealer_match.group(1).strip().title()
+                if dealer_name and len(dealer_name) > 2:
+                    return {"intent": "dealer_products", "dealer_name": dealer_name}
+        
+        # Check for dealer pending quantity
+        if any(phrase in question_lower for phrase in ["quantity pending", "pending quantity", "units pending", "how many units"]):
+            dealer_match = re.search(r'(?:for|of|from)\s+([a-zA-Z\s]+)', question_lower)
+            if dealer_match:
+                dealer_name = dealer_match.group(1).strip().title()
+                if dealer_name and len(dealer_name) > 2:
+                    return {"intent": "dealer_pending_quantity", "dealer_name": dealer_name}
+        
+        # Check for dealer delivered quantity
+        if any(phrase in question_lower for phrase in ["delivered quantity", "units delivered", "how many delivered"]):
+            dealer_match = re.search(r'(?:to|for|of|from)\s+([a-zA-Z\s]+)', question_lower)
+            if dealer_match:
+                dealer_name = dealer_match.group(1).strip().title()
+                if dealer_name and len(dealer_name) > 2:
+                    return {"intent": "dealer_delivered_quantity", "dealer_name": dealer_name}
+        
+        # ==================================================
+        # HIGHEST PENDING QUERIES
         # ==================================================
         
         if any(phrase in question_lower for phrase in [
@@ -78,7 +112,23 @@ class LogisticsQueryService:
             return {"intent": "highest_pending_city"}
         
         # ==================================================
-        # NEW: Delivery completion and acknowledgment intents
+        # POD PENDING QUERIES
+        # ==================================================
+        
+        if any(phrase in question_lower for phrase in [
+            "which dealer has the most pod pending", "dealer pod pending highest",
+            "dealer with pending pod", "top dealer pod pending"
+        ]):
+            return {"intent": "highest_pod_pending_dealer"}
+        
+        if any(phrase in question_lower for phrase in [
+            "which warehouse has the most pod pending", "warehouse pod pending highest",
+            "top warehouse pod pending"
+        ]):
+            return {"intent": "highest_pod_pending_warehouse"}
+        
+        # ==================================================
+        # DELIVERY STATUS QUERIES
         # ==================================================
         
         if any(phrase in question_lower for phrase in [
@@ -99,24 +149,10 @@ class LogisticsQueryService:
         ]):
             return {"intent": "delivered_not_acknowledged"}
         
-        if any(phrase in question_lower for phrase in [
-            "which dealer has the most pod pending", "dealer pod pending highest",
-            "dealer with pending pod", "top dealer pod pending"
-        ]):
-            return {"intent": "highest_pod_pending_dealer"}
+        # ==================================================
+        # PENDING DELIVERIES
+        # ==================================================
         
-        if any(phrase in question_lower for phrase in [
-            "which warehouse has the most pod pending", "warehouse pod pending highest",
-            "top warehouse pod pending"
-        ]):
-            return {"intent": "highest_pod_pending_warehouse"}
-        
-        # Executive/CEO queries
-        executive_keywords = ["ceo", "executive", "performance", "report", "logistics summary", "dashboard overview"]
-        if any(keyword in question_lower for keyword in executive_keywords):
-            return {"intent": "executive_summary"}
-        
-        # Pending deliveries intent
         pending_keywords = ["pending delivery", "pending deliveries", "how many pending", "pending orders", "undelivered", "not delivered"]
         if any(keyword in question_lower for keyword in pending_keywords):
             return {"intent": "pending_deliveries"}
@@ -131,7 +167,10 @@ class LogisticsQueryService:
         if any(keyword in question_lower for keyword in pgi_keywords):
             return {"intent": "pending_pgi"}
         
-        # City detection for multi-word cities
+        # ==================================================
+        # CITY SEARCH
+        # ==================================================
+        
         city_patterns = [
             r'in\s+([a-zA-Z\s]+?)(?:\s+only|\s+$|\.|\?|$)',
             r'for\s+([a-zA-Z\s]+?)(?:\s+only|\s+$|\.|\?|$)',
@@ -147,17 +186,10 @@ class LogisticsQueryService:
                 if city and len(city) > 2:
                     return {"intent": "city_search", "city": city}
         
-        # Dealer/customer search
-        dealer_keywords = ["dealer", "customer", "show me deliveries for", "deliveries of"]
-        for keyword in dealer_keywords:
-            if keyword in question_lower:
-                parts = question_lower.split(keyword)
-                if len(parts) > 1:
-                    dealer_name = parts[1].strip().title()
-                    if dealer_name and len(dealer_name) > 2:
-                        return {"intent": "dealer_search", "dealer_name": dealer_name}
+        # ==================================================
+        # MATERIAL / PRODUCT SEARCH
+        # ==================================================
         
-        # Material detection
         material_patterns = [
             r'material[\s#:]*([a-zA-Z0-9]+)',
             r'material\s+no[\s#:]*([a-zA-Z0-9]+)',
@@ -174,7 +206,10 @@ class LogisticsQueryService:
                     "material_no": material_match.group(1).upper()
                 }
         
-        # Warehouse search
+        # ==================================================
+        # WAREHOUSE SEARCH
+        # ==================================================
+        
         warehouse_keywords = ["warehouse", "stock from", "from warehouse", "godown"]
         for keyword in warehouse_keywords:
             if keyword in question_lower:
@@ -184,7 +219,10 @@ class LogisticsQueryService:
                     if warehouse and len(warehouse) >= 2:
                         return {"intent": "warehouse_search", "warehouse": warehouse}
         
-        # Division search
+        # ==================================================
+        # DIVISION SEARCH
+        # ==================================================
+        
         division_match = re.search(r'division\s+([a-zA-Z0-9]+)', question_lower)
         if division_match:
             return {
@@ -192,17 +230,35 @@ class LogisticsQueryService:
                 "division": division_match.group(1).upper()
             }
         
-        # Summary/insights intent
-        summary_keywords = ["summary", "dashboard", "overview", "report", "statistics", "insights", "analytics", "how many"]
+        # ==================================================
+        # EXECUTIVE / SUMMARY QUERIES
+        # ==================================================
+        
+        executive_keywords = ["ceo", "executive", "performance", "report", "logistics summary", "dashboard overview"]
+        if any(keyword in question_lower for keyword in executive_keywords):
+            return {"intent": "executive_summary"}
+        
+        summary_keywords = ["summary", "dashboard", "overview", "statistics", "insights", "analytics", "how many"]
         if any(keyword in question_lower for keyword in summary_keywords):
             return {"intent": "dashboard_summary"}
         
-        # Top dealers/cities intent
+        # ==================================================
+        # TOP DEALERS / CITIES
+        # ==================================================
+        
         if "top" in question_lower:
             if "dealer" in question_lower or "customer" in question_lower:
                 return {"intent": "top_dealers"}
             if "city" in question_lower:
                 return {"intent": "top_cities"}
+        
+        # ==================================================
+        # FALLBACK: Short text could be dealer name
+        # ==================================================
+        
+        # If question is short (2-30 chars) and not a number, treat as dealer lookup
+        if 2 < len(question) < 30 and not re.search(r'\d', question):
+            return {"intent": "dealer_lookup", "dealer_name": question.strip().title()}
         
         # Default fallback
         return {"intent": "general_query", "question": question}
@@ -247,7 +303,210 @@ class LogisticsQueryService:
         }
     
     # ======================================================
-    # NEW: HIGHEST PENDING QUERIES
+    # DEALER FUNCTIONS (NEW)
+    # ======================================================
+    
+    @staticmethod
+    def search_dealer_fuzzy(db: Session, dealer_name: str, limit: int = 5) -> Dict[str, Any]:
+        """Search dealers by partial name match."""
+        dealers = (
+            db.query(
+                DeliveryReport.customer_name,
+                func.count(DeliveryReport.id).label("total_dns"),
+                func.sum(DeliveryReport.dn_amount).label("total_amount"),
+                func.sum(DeliveryReport.dn_qty).label("total_quantity")
+            )
+            .filter(DeliveryReport.customer_name.ilike(f"%{dealer_name}%"))
+            .group_by(DeliveryReport.customer_name)
+            .limit(limit)
+            .all()
+        )
+        
+        if not dealers:
+            return {
+                "success": False,
+                "message": f"No dealer found matching '{dealer_name}'"
+            }
+        
+        return {
+            "success": True,
+            "search_term": dealer_name,
+            "matches": [
+                {
+                    "dealer_name": d.customer_name,
+                    "total_dns": d.total_dns,
+                    "total_amount": float(d.total_amount or 0),
+                    "total_quantity": float(d.total_quantity or 0)
+                }
+                for d in dealers
+            ]
+        }
+    
+    @staticmethod
+    def get_dealer_summary(db: Session, dealer_name: str) -> Dict[str, Any]:
+        """Get complete summary for a specific dealer."""
+        # Get all records for this dealer
+        records = (
+            db.query(DeliveryReport)
+            .filter(DeliveryReport.customer_name.ilike(f"%{dealer_name}%"))
+            .all()
+        )
+        
+        if not records:
+            return {"success": False, "message": f"Dealer '{dealer_name}' not found"}
+        
+        # Calculate statistics
+        total_dns = len(records)
+        delivered_dns = sum(1 for r in records if r.pgi_status == "Completed" and r.pod_status == "Received")
+        pending_dns = sum(1 for r in records if r.pending_flag)
+        delivered_not_ack = sum(1 for r in records if r.pgi_status == "Completed" and r.pod_status == "Pending")
+        
+        total_qty = sum(r.dn_qty or 0 for r in records)
+        delivered_qty = sum(r.dn_qty or 0 for r in records if r.pgi_status == "Completed")
+        pending_qty = sum(r.dn_qty or 0 for r in records if r.pending_flag)
+        
+        total_amount = sum(r.dn_amount or 0 for r in records)
+        pending_amount = sum(r.dn_amount or 0 for r in records if r.pending_flag)
+        
+        actual_dealer_name = records[0].customer_name if records else dealer_name
+        
+        return {
+            "success": True,
+            "dealer_name": actual_dealer_name,
+            "total_dns": total_dns,
+            "delivered_dns": delivered_dns,
+            "pending_dns": pending_dns,
+            "delivered_not_acknowledged": delivered_not_ack,
+            "total_quantity": float(total_qty),
+            "delivered_quantity": float(delivered_qty),
+            "pending_quantity": float(pending_qty),
+            "total_amount": float(total_amount),
+            "pending_amount": float(pending_amount)
+        }
+    
+    @staticmethod
+    def get_dealer_product_summary(db: Session, dealer_name: str) -> Dict[str, Any]:
+        """Get product-wise breakdown for a dealer."""
+        products = (
+            db.query(
+                DeliveryReport.material_no,
+                DeliveryReport.customer_model,
+                func.sum(DeliveryReport.dn_qty).label("total_qty"),
+                func.sum(DeliveryReport.dn_amount).label("total_amount"),
+                func.count(DeliveryReport.id).label("dn_count")
+            )
+            .filter(DeliveryReport.customer_name.ilike(f"%{dealer_name}%"))
+            .group_by(DeliveryReport.material_no, DeliveryReport.customer_model)
+            .all()
+        )
+        
+        pending_products = (
+            db.query(
+                DeliveryReport.material_no,
+                DeliveryReport.customer_model,
+                func.sum(DeliveryReport.dn_qty).label("pending_qty"),
+                func.sum(DeliveryReport.dn_amount).label("pending_amount")
+            )
+            .filter(
+                DeliveryReport.customer_name.ilike(f"%{dealer_name}%"),
+                DeliveryReport.pending_flag.is_(True)
+            )
+            .group_by(DeliveryReport.material_no, DeliveryReport.customer_model)
+            .all()
+        )
+        
+        pending_dict = {}
+        for p in pending_products:
+            key = (p.material_no, p.customer_model)
+            pending_dict[key] = {"pending_qty": p.pending_qty, "pending_amount": p.pending_amount}
+        
+        actual_dealer_name = None
+        product_list = []
+        
+        for p in products:
+            if not actual_dealer_name:
+                # Get dealer name from first product
+                dealer_record = db.query(DeliveryReport.customer_name).filter(
+                    DeliveryReport.customer_name.ilike(f"%{dealer_name}%")
+                ).first()
+                if dealer_record:
+                    actual_dealer_name = dealer_record.customer_name
+            
+            key = (p.material_no, p.customer_model)
+            pending_info = pending_dict.get(key, {})
+            
+            product_list.append({
+                "material_no": p.material_no,
+                "product_name": p.customer_model or p.material_no,
+                "total_quantity": float(p.total_qty or 0),
+                "pending_quantity": float(pending_info.get("pending_qty", 0)),
+                "total_amount": float(p.total_amount or 0),
+                "pending_amount": float(pending_info.get("pending_amount", 0)),
+                "dn_count": p.dn_count
+            })
+        
+        if not products:
+            return {"success": False, "message": f"No products found for dealer '{dealer_name}'"}
+        
+        return {
+            "success": True,
+            "dealer_name": actual_dealer_name or dealer_name,
+            "products": product_list,
+            "total_products": len(product_list)
+        }
+    
+    @staticmethod
+    def get_dn_product_breakdown(db: Session, dn_no: str) -> Dict[str, Any]:
+        """Get product breakdown for a single DN."""
+        records = (
+            db.query(DeliveryReport)
+            .filter(DeliveryReport.dn_no == dn_no)
+            .all()
+        )
+        
+        if not records:
+            return {"success": False, "message": f"DN {dn_no} not found"}
+        
+        products = [
+            {
+                "material_no": r.material_no,
+                "product_name": r.customer_model or r.material_no,
+                "quantity": float(r.dn_qty or 0),
+                "amount": float(r.dn_amount or 0)
+            }
+            for r in records
+        ]
+        
+        main = records[0]
+        total_qty = sum(p["quantity"] for p in products)
+        total_amount = sum(p["amount"] for p in products)
+        
+        # Apply business rules for status
+        if main.pgi_status == "Completed" and main.pod_status == "Received":
+            status_text = "Delivered and Acknowledged"
+        elif main.pgi_status == "Completed" and main.pod_status == "Pending":
+            status_text = "Delivered, Awaiting Acknowledgement"
+        elif main.pgi_status == "Pending":
+            status_text = "Pending Dispatch"
+        else:
+            status_text = main.delivery_status or "Unknown"
+        
+        return {
+            "success": True,
+            "dn_no": dn_no,
+            "dealer": main.customer_name,
+            "city": main.ship_to_city,
+            "warehouse": main.warehouse,
+            "status": status_text,
+            "pgi_status": main.pgi_status,
+            "pod_status": main.pod_status,
+            "products": products,
+            "total_quantity": float(total_qty),
+            "total_amount": float(total_amount)
+        }
+    
+    # ======================================================
+    # HIGHEST PENDING QUERIES
     # ======================================================
     
     @staticmethod
@@ -257,7 +516,8 @@ class LogisticsQueryService:
             db.query(
                 DeliveryReport.customer_name,
                 func.count(DeliveryReport.id).label("pending_count"),
-                func.sum(DeliveryReport.dn_amount).label("pending_amount")
+                func.sum(DeliveryReport.dn_amount).label("pending_amount"),
+                func.sum(DeliveryReport.dn_qty).label("pending_quantity")
             )
             .filter(DeliveryReport.pending_flag.is_(True))
             .filter(DeliveryReport.customer_name.isnot(None))
@@ -276,7 +536,8 @@ class LogisticsQueryService:
             "success": True,
             "dealer": result.customer_name,
             "pending_count": result.pending_count,
-            "pending_amount": float(result.pending_amount or 0)
+            "pending_amount": float(result.pending_amount or 0),
+            "pending_quantity": float(result.pending_quantity or 0)
         }
     
     @staticmethod
@@ -286,7 +547,8 @@ class LogisticsQueryService:
             db.query(
                 DeliveryReport.warehouse,
                 func.count(DeliveryReport.id).label("pending_count"),
-                func.sum(DeliveryReport.dn_amount).label("pending_amount")
+                func.sum(DeliveryReport.dn_amount).label("pending_amount"),
+                func.sum(DeliveryReport.dn_qty).label("pending_quantity")
             )
             .filter(DeliveryReport.pending_flag.is_(True))
             .filter(DeliveryReport.warehouse.isnot(None))
@@ -305,7 +567,8 @@ class LogisticsQueryService:
             "success": True,
             "warehouse": result.warehouse,
             "pending_count": result.pending_count,
-            "pending_amount": float(result.pending_amount or 0)
+            "pending_amount": float(result.pending_amount or 0),
+            "pending_quantity": float(result.pending_quantity or 0)
         }
     
     @staticmethod
@@ -315,7 +578,8 @@ class LogisticsQueryService:
             db.query(
                 DeliveryReport.ship_to_city,
                 func.count(DeliveryReport.id).label("pending_count"),
-                func.sum(DeliveryReport.dn_amount).label("pending_amount")
+                func.sum(DeliveryReport.dn_amount).label("pending_amount"),
+                func.sum(DeliveryReport.dn_qty).label("pending_quantity")
             )
             .filter(DeliveryReport.pending_flag.is_(True))
             .filter(DeliveryReport.ship_to_city.isnot(None))
@@ -334,7 +598,8 @@ class LogisticsQueryService:
             "success": True,
             "city": result.ship_to_city,
             "pending_count": result.pending_count,
-            "pending_amount": float(result.pending_amount or 0)
+            "pending_amount": float(result.pending_amount or 0),
+            "pending_quantity": float(result.pending_quantity or 0)
         }
     
     @staticmethod
@@ -344,7 +609,8 @@ class LogisticsQueryService:
             db.query(
                 DeliveryReport.customer_name,
                 func.count(DeliveryReport.id).label("pod_pending_count"),
-                func.sum(DeliveryReport.dn_amount).label("pod_pending_amount")
+                func.sum(DeliveryReport.dn_amount).label("pod_pending_amount"),
+                func.sum(DeliveryReport.dn_qty).label("pod_pending_quantity")
             )
             .filter(DeliveryReport.pod_status == "Pending")
             .filter(DeliveryReport.pgi_status == "Completed")
@@ -364,7 +630,8 @@ class LogisticsQueryService:
             "success": True,
             "dealer": result.customer_name,
             "pod_pending_count": result.pod_pending_count,
-            "pod_pending_amount": float(result.pod_pending_amount or 0)
+            "pod_pending_amount": float(result.pod_pending_amount or 0),
+            "pod_pending_quantity": float(result.pod_pending_quantity or 0)
         }
     
     @staticmethod
@@ -374,7 +641,8 @@ class LogisticsQueryService:
             db.query(
                 DeliveryReport.warehouse,
                 func.count(DeliveryReport.id).label("pod_pending_count"),
-                func.sum(DeliveryReport.dn_amount).label("pod_pending_amount")
+                func.sum(DeliveryReport.dn_amount).label("pod_pending_amount"),
+                func.sum(DeliveryReport.dn_qty).label("pod_pending_quantity")
             )
             .filter(DeliveryReport.pod_status == "Pending")
             .filter(DeliveryReport.pgi_status == "Completed")
@@ -394,11 +662,12 @@ class LogisticsQueryService:
             "success": True,
             "warehouse": result.warehouse,
             "pod_pending_count": result.pod_pending_count,
-            "pod_pending_amount": float(result.pod_pending_amount or 0)
+            "pod_pending_amount": float(result.pod_pending_amount or 0),
+            "pod_pending_quantity": float(result.pod_pending_quantity or 0)
         }
     
     # ======================================================
-    # NEW: DELIVERY COMPLETION AND ACKNOWLEDGMENT QUERIES
+    # DELIVERY COMPLETION AND ACKNOWLEDGMENT QUERIES
     # ======================================================
     
     @staticmethod
@@ -422,10 +691,20 @@ class LogisticsQueryService:
             .scalar() or 0
         )
         
+        total_quantity = (
+            db.query(func.sum(DeliveryReport.dn_qty))
+            .filter(
+                DeliveryReport.pgi_status == "Completed",
+                DeliveryReport.pod_status == "Received"
+            )
+            .scalar() or 0
+        )
+        
         return {
             "success": True,
             "completed_count": count,
-            "completed_amount": float(total_amount)
+            "completed_amount": float(total_amount),
+            "completed_quantity": float(total_quantity)
         }
     
     @staticmethod
@@ -439,11 +718,13 @@ class LogisticsQueryService:
         
         records = [LogisticsQueryService._record_to_dict(row) for row in rows]
         total_amount = sum(r.get("dn_amount", 0) for r in records)
+        total_quantity = sum(r.get("dn_qty", 0) for r in records)
         
         return {
             "success": True,
             "acknowledged_count": len(records),
             "acknowledged_amount": float(total_amount),
+            "acknowledged_quantity": float(total_quantity),
             "records": records
         }
     
@@ -461,16 +742,18 @@ class LogisticsQueryService:
         
         records = [LogisticsQueryService._record_to_dict(row) for row in rows]
         total_amount = sum(r.get("dn_amount", 0) for r in records)
+        total_quantity = sum(r.get("dn_qty", 0) for r in records)
         
         return {
             "success": True,
             "delivered_not_acknowledged_count": len(records),
             "delivered_not_acknowledged_amount": float(total_amount),
+            "delivered_not_acknowledged_quantity": float(total_quantity),
             "records": records
         }
     
     # ======================================================
-    # AI CONTEXT BUILDER (UPDATED WITH NEW INTENTS)
+    # AI CONTEXT BUILDER (FULLY UPDATED)
     # ======================================================
     
     @staticmethod
@@ -485,8 +768,47 @@ class LogisticsQueryService:
         
         # Route to appropriate handler
         if intent == "dn_lookup":
-            result = LogisticsQueryService.get_dn_status(db, intent_result["dn_no"])
+            result = LogisticsQueryService.get_dn_product_breakdown(db, intent_result["dn_no"])
             result["summary"] = LogisticsQueryService.generate_dn_summary(result)
+        
+        elif intent == "dealer_lookup":
+            result = LogisticsQueryService.get_dealer_summary(db, intent_result.get("dealer_name", ""))
+            if not result.get("success"):
+                fuzzy_result = LogisticsQueryService.search_dealer_fuzzy(db, intent_result.get("dealer_name", ""))
+                if fuzzy_result.get("success"):
+                    result = fuzzy_result
+                    result["summary"] = LogisticsQueryService.generate_fuzzy_dealer_summary(result)
+                else:
+                    result["summary"] = f"No dealer found matching '{intent_result.get('dealer_name', '')}'"
+            else:
+                result["summary"] = LogisticsQueryService.generate_dealer_summary_text(result)
+        
+        elif intent == "dealer_products":
+            result = LogisticsQueryService.get_dealer_product_summary(db, intent_result.get("dealer_name", ""))
+            if result.get("success"):
+                result["summary"] = LogisticsQueryService.generate_dealer_products_text(result)
+            else:
+                result["summary"] = f"No products found for dealer '{intent_result.get('dealer_name', '')}'"
+        
+        elif intent == "dealer_pending_quantity":
+            result = LogisticsQueryService.get_dealer_summary(db, intent_result.get("dealer_name", ""))
+            if result.get("success"):
+                result["summary"] = (
+                    f"{result['dealer_name']} has {result['pending_quantity']:.0f} units pending "
+                    f"across {result['pending_dns']} DNs totaling Rs {result['pending_amount']:,.2f}."
+                )
+            else:
+                result["summary"] = f"No data found for dealer '{intent_result.get('dealer_name', '')}'"
+        
+        elif intent == "dealer_delivered_quantity":
+            result = LogisticsQueryService.get_dealer_summary(db, intent_result.get("dealer_name", ""))
+            if result.get("success"):
+                result["summary"] = (
+                    f"{result['dealer_name']} has received {result['delivered_quantity']:.0f} units "
+                    f"across {result['delivered_dns']} delivered DNs totaling Rs {result['total_amount']:,.2f}."
+                )
+            else:
+                result["summary"] = f"No data found for dealer '{intent_result.get('dealer_name', '')}'"
         
         elif intent == "pending_deliveries":
             result = LogisticsQueryService.get_pending_deliveries(db)
@@ -500,13 +822,13 @@ class LogisticsQueryService:
             result = LogisticsQueryService.get_pending_pgi(db)
             result["summary"] = f"There are {result['pending_pgi']} deliveries pending dispatch from warehouse."
         
-        # NEW: Highest pending queries
         elif intent == "highest_pending_dealer":
             result = LogisticsQueryService.get_highest_pending_dealer(db)
             if result.get("success"):
                 result["summary"] = (
                     f"{result['dealer']} currently has the highest pending deliveries "
-                    f"with {result['pending_count']} pending DNs totaling Rs {result['pending_amount']:,.2f}."
+                    f"with {result['pending_count']} pending DNs, {result['pending_quantity']:.0f} units, "
+                    f"totaling Rs {result['pending_amount']:,.2f}."
                 )
             else:
                 result["summary"] = "No pending deliveries found in the system."
@@ -516,7 +838,8 @@ class LogisticsQueryService:
             if result.get("success"):
                 result["summary"] = (
                     f"Warehouse {result['warehouse']} currently has the highest pending deliveries "
-                    f"with {result['pending_count']} pending DNs totaling Rs {result['pending_amount']:,.2f}."
+                    f"with {result['pending_count']} pending DNs, {result['pending_quantity']:.0f} units, "
+                    f"totaling Rs {result['pending_amount']:,.2f}."
                 )
             else:
                 result["summary"] = "No pending deliveries found in the system."
@@ -526,18 +849,19 @@ class LogisticsQueryService:
             if result.get("success"):
                 result["summary"] = (
                     f"{result['city']} currently has the highest pending deliveries "
-                    f"with {result['pending_count']} pending DNs totaling Rs {result['pending_amount']:,.2f}."
+                    f"with {result['pending_count']} pending DNs, {result['pending_quantity']:.0f} units, "
+                    f"totaling Rs {result['pending_amount']:,.2f}."
                 )
             else:
                 result["summary"] = "No pending deliveries found in the system."
         
-        # NEW: POD pending queries
         elif intent == "highest_pod_pending_dealer":
             result = LogisticsQueryService.get_highest_pod_pending_dealer(db)
             if result.get("success"):
                 result["summary"] = (
                     f"{result['dealer']} has the most deliveries awaiting acknowledgement "
-                    f"with {result['pod_pending_count']} DNs totaling Rs {result['pod_pending_amount']:,.2f}."
+                    f"with {result['pod_pending_count']} DNs, {result['pod_pending_quantity']:.0f} units, "
+                    f"totaling Rs {result['pod_pending_amount']:,.2f}."
                 )
             else:
                 result["summary"] = "No POD pending deliveries found."
@@ -547,40 +871,37 @@ class LogisticsQueryService:
             if result.get("success"):
                 result["summary"] = (
                     f"Warehouse {result['warehouse']} has the most deliveries awaiting acknowledgement "
-                    f"with {result['pod_pending_count']} DNs totaling Rs {result['pod_pending_amount']:,.2f}."
+                    f"with {result['pod_pending_count']} DNs, {result['pod_pending_quantity']:.0f} units, "
+                    f"totaling Rs {result['pod_pending_amount']:,.2f}."
                 )
             else:
                 result["summary"] = "No POD pending deliveries found."
         
-        # NEW: Completion and acknowledgment queries
         elif intent == "completed_deliveries_count":
             result = LogisticsQueryService.get_completed_deliveries_count(db)
             result["summary"] = (
                 f"There are {result['completed_count']} completed deliveries "
-                f"totaling Rs {result['completed_amount']:,.2f}."
+                f"totaling {result['completed_quantity']:.0f} units worth Rs {result['completed_amount']:,.2f}."
             )
         
         elif intent == "acknowledged_deliveries":
             result = LogisticsQueryService.get_acknowledged_deliveries(db)
             result["summary"] = (
                 f"There are {result['acknowledged_count']} acknowledged deliveries "
-                f"totaling Rs {result['acknowledged_amount']:,.2f}."
+                f"totaling {result['acknowledged_quantity']:.0f} units worth Rs {result['acknowledged_amount']:,.2f}."
             )
         
         elif intent == "delivered_not_acknowledged":
             result = LogisticsQueryService.get_delivered_not_acknowledged(db)
             result["summary"] = (
                 f"There are {result['delivered_not_acknowledged_count']} deliveries that have been dispatched "
-                f"but are awaiting dealer acknowledgement, totaling Rs {result['delivered_not_acknowledged_amount']:,.2f}."
+                f"but are awaiting dealer acknowledgement, totaling {result['delivered_not_acknowledged_quantity']:.0f} units "
+                f"worth Rs {result['delivered_not_acknowledged_amount']:,.2f}."
             )
         
         elif intent == "city_search":
             result = LogisticsQueryService.get_city_deliveries(db, intent_result["city"])
             result["summary"] = LogisticsQueryService.generate_city_summary(result)
-        
-        elif intent == "dealer_search":
-            result = LogisticsQueryService.get_dealer_deliveries(db, intent_result["dealer_name"])
-            result["summary"] = LogisticsQueryService.generate_dealer_summary(result)
         
         elif intent == "material_search":
             result = LogisticsQueryService.search_material(db, intent_result["material_no"])
@@ -622,7 +943,7 @@ class LogisticsQueryService:
         return result
     
     # ======================================================
-    # AI SUMMARY GENERATORS (UPDATED WITH BUSINESS RULES)
+    # AI SUMMARY GENERATORS (WITH BUSINESS RULES)
     # ======================================================
     
     @staticmethod
@@ -631,37 +952,87 @@ class LogisticsQueryService:
         if not dn_result.get("success"):
             return f"DN {dn_result.get('dn_no', 'unknown')} was not found in the system."
         
-        records = dn_result.get("records", [])
-        if not records:
-            return f"No records found for DN {dn_result.get('dn_no', 'unknown')}."
+        dn_no = dn_result.get("dn_no", "Unknown")
+        dealer = dn_result.get("dealer", "Unknown Customer")
+        city = dn_result.get("city", "Unknown City")
+        warehouse = dn_result.get("warehouse", "Unknown Warehouse")
+        status = dn_result.get("status", "Unknown")
+        total_amount = dn_result.get("total_amount", 0)
+        total_quantity = dn_result.get("total_quantity", 0)
+        products = dn_result.get("products", [])
         
-        # Get first record for main details
-        main = records[0]
-        customer = main.get("customer_name", "Unknown Customer")
-        city = main.get("city", "Unknown City")
-        warehouse = main.get("warehouse", "Unknown Warehouse")
-        pgi_status = main.get("pgi_status", "Unknown")
-        pod_status = main.get("pod_status", "Unknown")
-        amount = main.get("dn_amount", 0)
+        summary = f"DN {dn_no} belongs to {dealer} in {city}. "
         
-        summary = f"DN {dn_result['dn_no']} belongs to {customer} in {city}. "
-        
-        # FIXED: Business rules for PGI/POD
-        if pgi_status == "Completed" and pod_status == "Received":
+        # Business rules for status
+        if status == "Delivered and Acknowledged":
             summary += "The shipment has been delivered and acknowledged by the dealer. "
-        elif pgi_status == "Completed" and pod_status == "Pending":
+        elif status == "Delivered, Awaiting Acknowledgement":
             summary += "The shipment has been delivered and is awaiting dealer acknowledgement. "
-        elif pgi_status == "Pending":
+        elif status == "Pending Dispatch":
             summary += "The shipment is pending dispatch from the warehouse. "
         else:
-            summary += "The shipment status is currently being updated. "
+            summary += f"The shipment status is {status}. "
         
-        summary += f"Warehouse: {warehouse}. Amount: Rs {amount:,.2f}."
+        summary += f"Warehouse: {warehouse}. Total Quantity: {total_quantity:.0f} units. Amount: Rs {total_amount:,.2f}."
         
-        if len(records) > 1:
-            summary += f" There are {len(records)} line items in this delivery."
+        if products:
+            product_list = ", ".join([f"{p['product_name']} ({p['quantity']:.0f} units)" for p in products[:3]])
+            summary += f" Products: {product_list}."
+            if len(products) > 3:
+                summary += f" And {len(products) - 3} more items."
         
         return summary
+    
+    @staticmethod
+    def generate_dealer_summary_text(result: Dict[str, Any]) -> str:
+        """Generate natural language dealer summary."""
+        return (
+            f"📊 DEALER SUMMARY: {result['dealer_name']}\n\n"
+            f"📦 Deliveries:\n"
+            f"• Total DNs: {result['total_dns']}\n"
+            f"• Delivered: {result['delivered_dns']}\n"
+            f"• Pending: {result['pending_dns']}\n"
+            f"• Awaiting Acknowledgement: {result['delivered_not_acknowledged']}\n\n"
+            f"📦 Quantity:\n"
+            f"• Total Units: {result['total_quantity']:.0f}\n"
+            f"• Delivered: {result['delivered_quantity']:.0f}\n"
+            f"• Pending: {result['pending_quantity']:.0f}\n\n"
+            f"💰 Amount:\n"
+            f"• Total Value: Rs {result['total_amount']:,.2f}\n"
+            f"• Pending Value: Rs {result['pending_amount']:,.2f}"
+        )
+    
+    @staticmethod
+    def generate_dealer_products_text(result: Dict[str, Any]) -> str:
+        """Generate natural language dealer products summary."""
+        dealer_name = result.get("dealer_name", "Unknown")
+        products = result.get("products", [])
+        
+        if not products:
+            return f"No products found for {dealer_name}"
+        
+        text = f"📦 PRODUCTS FOR {dealer_name}:\n\n"
+        for p in products[:10]:
+            text += f"• {p['product_name']}: {p['total_quantity']:.0f} total units, {p['pending_quantity']:.0f} pending\n"
+        
+        if len(products) > 10:
+            text += f"\nAnd {len(products) - 10} more products."
+        
+        return text
+    
+    @staticmethod
+    def generate_fuzzy_dealer_summary(result: Dict[str, Any]) -> str:
+        """Generate summary for fuzzy dealer search (multiple matches)."""
+        matches = result.get("matches", [])
+        if not matches:
+            return f"No dealers found matching '{result.get('search_term', '')}'"
+        
+        text = f"Multiple dealers found matching '{result['search_term']}':\n\n"
+        for i, m in enumerate(matches[:5], 1):
+            text += f"{i}. {m['dealer_name']} - {m['total_dns']} DNs, Rs {m['total_amount']:,.2f}\n"
+        
+        text += "\nPlease specify the full dealer name for details."
+        return text
     
     @staticmethod
     def generate_pending_summary(result: Dict[str, Any]) -> str:
@@ -694,21 +1065,6 @@ class LogisticsQueryService:
                 f"{pending_dispatch} pending dispatch.")
     
     @staticmethod
-    def generate_dealer_summary(result: Dict[str, Any]) -> str:
-        """Generate summary for dealer search."""
-        dealer = result.get("dealer_code", "Unknown")
-        count = result.get("count", 0)
-        
-        if count == 0:
-            return f"No deliveries found for dealer {dealer}."
-        
-        records = result.get("records", [])
-        total_amount = sum(r.get("dn_amount", 0) for r in records)
-        pending_count = sum(1 for r in records if r.get("pending_flag", False))
-        
-        return f"Dealer {dealer} has {count} deliveries totaling Rs {total_amount:,.2f}. {pending_count} of these are pending."
-    
-    @staticmethod
     def generate_material_summary(result: Dict[str, Any]) -> str:
         """Generate summary for material search."""
         material = result.get("material_no", "Unknown")
@@ -719,7 +1075,7 @@ class LogisticsQueryService:
         
         total_qty = result.get("total_quantity", 0)
         
-        return f"Material {material} appears in {count} deliveries with total quantity {total_qty}."
+        return f"Material {material} appears in {count} deliveries with total quantity {total_qty:.0f} units."
     
     @staticmethod
     def generate_warehouse_summary(result: Dict[str, Any]) -> str:
@@ -758,7 +1114,7 @@ class LogisticsQueryService:
         )
     
     # ======================================================
-    # GPT PROMPT BUILDER (ENHANCED WITH BUSINESS RULES)
+    # GPT PROMPT BUILDER (WITH BUSINESS RULES)
     # ======================================================
     
     @staticmethod
@@ -790,6 +1146,7 @@ BUSINESS RULES FOR LOGISTICS INTERPRETATION:
 7. When PGI is Pending: State "Shipment is pending dispatch from warehouse"
 8. Never expose raw database field names (PGI/POD) to end users
 9. Always use business-friendly terms: "dispatched", "delivered", "acknowledged", "pending"
+10. For dealer inquiries, provide comprehensive summary including DNs, quantities, and amounts
 
 RESPONSE GUIDELINES:
 1. Act as a Logistics Operations Manager
@@ -797,9 +1154,10 @@ RESPONSE GUIDELINES:
 3. Explain business impact when relevant
 4. Mention pending risks if applicable
 5. Keep responses professional but conversational
-6. Be concise (2-4 sentences for simple queries)
+6. Be concise (2-4 sentences for simple queries, more for detailed summaries)
 7. Format amounts as Rs X,XXX.XX
-8. For pending items, suggest follow-up actions
+8. Format quantities as X,XXX units
+9. For pending items, suggest follow-up actions
 
 RESPONSE STYLE:
 - Professional but approachable
@@ -834,15 +1192,15 @@ RESPONSE:"""
                 response = openai_client.chat.completions.create(
                     model="gpt-3.5-turbo",
                     messages=[
-                        {"role": "system", "content": "You are a professional Logistics Operations Manager."},
+                        {"role": "system", "content": "You are a professional Logistics Operations Manager for a supply chain company. You provide clear, business-friendly responses about delivery status, pending items, and logistics analytics."},
                         {"role": "user", "content": prompt}
                     ],
                     temperature=0.7,
-                    max_tokens=300
+                    max_tokens=500
                 )
                 ai_response = response.choices[0].message.content
             except Exception as e:
-                ai_response = f"Unable to generate AI response at this time. Error: {str(e)}"
+                ai_response = f"Unable to generate AI response at this time. Here's the data: {context.get('summary', 'No summary available')}"
         else:
             # Fallback to summary if no OpenAI client
             ai_response = context.get("summary", "Query processed successfully.")
@@ -862,7 +1220,7 @@ RESPONSE:"""
         }
     
     # ======================================================
-    # DELIVERY ANALYTICS (RETURNS DICTIONARIES)
+    # DELIVERY ANALYTICS
     # ======================================================
     
     @staticmethod
@@ -945,7 +1303,7 @@ RESPONSE:"""
         }
     
     # ======================================================
-    # EXECUTIVE SUMMARY (ENHANCED)
+    # EXECUTIVE SUMMARY
     # ======================================================
     
     @staticmethod
@@ -1010,6 +1368,7 @@ RESPONSE:"""
     
     @staticmethod
     def get_dn_status(db: Session, dn_no: str):
+        """Original method - kept for backward compatibility"""
         deliveries = (
             db.query(DeliveryReport)
             .filter(DeliveryReport.dn_no == dn_no)
@@ -1043,11 +1402,13 @@ RESPONSE:"""
         
         records = [LogisticsQueryService._record_to_dict(row) for row in rows]
         total_amount = sum(r.get("dn_amount", 0) for r in records)
+        total_quantity = sum(r.get("dn_qty", 0) for r in records)
         
         return {
             "success": True,
             "count": len(records),
             "total_amount": float(total_amount),
+            "total_quantity": float(total_quantity),
             "records": records
         }
     
@@ -1185,13 +1546,35 @@ RESPONSE:"""
         }
     
     @staticmethod
+    def search_material(db: Session, material_no: str, limit: int = 50) -> Dict[str, Any]:
+        """Search deliveries by material number."""
+        rows = (
+            db.query(DeliveryReport)
+            .filter(DeliveryReport.material_no.ilike(f"%{material_no}%"))
+            .limit(limit)
+            .all()
+        )
+        
+        records = [LogisticsQueryService._record_to_dict(row) for row in rows]
+        total_qty = sum(r.get("dn_qty", 0) for r in records)
+        
+        return {
+            "success": True,
+            "material_no": material_no,
+            "count": len(records),
+            "total_quantity": float(total_qty),
+            "records": records
+        }
+    
+    @staticmethod
     def get_top_dealers(db: Session, limit: int = 10) -> Dict[str, Any]:
         """Get top dealers by delivery count."""
         rows = (
             db.query(
                 DeliveryReport.customer_name,
                 func.count(DeliveryReport.id).label("delivery_count"),
-                func.sum(DeliveryReport.dn_amount).label("total_amount")
+                func.sum(DeliveryReport.dn_amount).label("total_amount"),
+                func.sum(DeliveryReport.dn_qty).label("total_quantity")
             )
             .filter(DeliveryReport.customer_name.isnot(None))
             .group_by(DeliveryReport.customer_name)
@@ -1204,7 +1587,8 @@ RESPONSE:"""
             {
                 "dealer_name": row.customer_name,
                 "delivery_count": row.delivery_count,
-                "total_amount": float(row.total_amount or 0)
+                "total_amount": float(row.total_amount or 0),
+                "total_quantity": float(row.total_quantity or 0)
             }
             for row in rows
         ]
@@ -1221,7 +1605,8 @@ RESPONSE:"""
             db.query(
                 DeliveryReport.ship_to_city,
                 func.count(DeliveryReport.id).label("count"),
-                func.sum(DeliveryReport.dn_amount).label("total_amount")
+                func.sum(DeliveryReport.dn_amount).label("total_amount"),
+                func.sum(DeliveryReport.dn_qty).label("total_quantity")
             )
             .filter(DeliveryReport.ship_to_city.isnot(None))
             .group_by(DeliveryReport.ship_to_city)
@@ -1234,7 +1619,8 @@ RESPONSE:"""
             {
                 "city": row.ship_to_city,
                 "count": row.count,
-                "total_amount": float(row.total_amount or 0)
+                "total_amount": float(row.total_amount or 0),
+                "total_quantity": float(row.total_quantity or 0)
             }
             for row in rows
             if row.ship_to_city
