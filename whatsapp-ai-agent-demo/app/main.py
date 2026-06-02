@@ -50,6 +50,9 @@ from app.services.schema_service import (
 # WhatsApp service import
 from app.services.whatsapp_service import send_text_message
 
+# Import upload router
+from app.routes.upload import router as upload_router
+
 # ==========================================================
 # LIFESPAN HANDLER (Modern FastAPI)
 # ==========================================================
@@ -196,15 +199,21 @@ app.add_middleware(
 )
 
 # ==========================================================
+# REGISTER ROUTERS
+# ==========================================================
+
+# Register upload router
+app.include_router(upload_router)
+
+# ==========================================================
 # TEMPLATES
 # ==========================================================
 
-templates = Jinja2Templates(
-    directory=os.path.join(
-        os.path.dirname(__file__),
-        "templates"
-    )
-)
+# Ensure templates directory exists
+TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
+os.makedirs(TEMPLATES_DIR, exist_ok=True)
+
+templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
 # ==========================================================
 # REQUEST / RESPONSE MODELS
@@ -298,26 +307,248 @@ def get_dashboard_conversations_optimized(db: Session, limit: int = 10):
     return dashboard_conversations
 
 
+def get_latest_uploads(db: Session, limit: int = 5):
+    """Get latest upload batches for dashboard"""
+    try:
+        # Get unique batches with their metadata
+        batches = db.query(
+            DeliveryReport.upload_batch_id,
+            DeliveryReport.source_file,
+            DeliveryReport.imported_at,
+            func.count(DeliveryReport.id).label('record_count')
+        ).group_by(
+            DeliveryReport.upload_batch_id,
+            DeliveryReport.source_file,
+            DeliveryReport.imported_at
+        ).order_by(
+            DeliveryReport.imported_at.desc()
+        ).limit(limit).all()
+        
+        return [
+            {
+                "batch_id": batch.upload_batch_id,
+                "filename": batch.source_file,
+                "upload_date": batch.imported_at,
+                "record_count": batch.record_count
+            }
+            for batch in batches if batch.upload_batch_id
+        ]
+    except Exception as e:
+        print(f"Error getting latest uploads: {e}")
+        return []
+
+
+# Create fallback templates if they don't exist
+def create_fallback_templates():
+    """Create fallback HTML templates if they don't exist"""
+    
+    # Dashboard template
+    dashboard_path = os.path.join(TEMPLATES_DIR, "dashboard.html")
+    if not os.path.exists(dashboard_path):
+        with open(dashboard_path, "w") as f:
+            f.write("""<!DOCTYPE html>
+<html>
+<head>
+    <title>AI WhatsApp Agent - Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fb; padding: 20px; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        h1 { color: #1a1a2e; margin-bottom: 10px; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }
+        .stat-card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .stat-value { font-size: 32px; font-weight: bold; color: #2563eb; margin: 10px 0; }
+        .stat-label { color: #666; font-size: 14px; }
+        .upload-section { background: white; border-radius: 12px; padding: 20px; margin-bottom: 30px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .upload-form { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+        .form-group { flex: 1; }
+        label { display: block; margin-bottom: 5px; color: #666; font-size: 14px; }
+        input[type="file"] { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; }
+        button { background: #2563eb; color: white; border: none; padding: 10px 24px; border-radius: 6px; cursor: pointer; font-size: 16px; }
+        button:hover { background: #1d4ed8; }
+        .message { margin-top: 10px; padding: 10px; border-radius: 6px; display: none; }
+        .message.success { background: #dcfce7; color: #166534; display: block; }
+        .message.error { background: #fee2e2; color: #991b1b; display: block; }
+        .uploads-table { width: 100%; border-collapse: collapse; background: white; border-radius: 12px; overflow: hidden; }
+        .uploads-table th, .uploads-table td { padding: 12px; text-align: left; border-bottom: 1px solid #e5e7eb; }
+        .uploads-table th { background: #f9fafb; font-weight: 600; color: #374151; }
+        .status-badge { display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 12px; }
+        .status-online { background: #dcfce7; color: #166534; }
+        .status-offline { background: #fee2e2; color: #991b1b; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📊 AI WhatsApp Agent Dashboard</h1>
+        <p>Logistics Management System</p>
+        
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-label">Total Delivery Records</div>
+                <div class="stat-value">{{ total_records }}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Pending Deliveries</div>
+                <div class="stat-value">{{ pending_deliveries }}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Pending POD</div>
+                <div class="stat-value">{{ pending_pod }}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Pending PGI</div>
+                <div class="stat-value">{{ pending_pgi }}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Pending Amount</div>
+                <div class="stat-value">₹{{ pending_amount }}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Cities Covered</div>
+                <div class="stat-value">{{ cities }}</div>
+            </div>
+        </div>
+        
+        <div class="upload-section">
+            <h3>📤 Upload Delivery Report</h3>
+            <form class="upload-form" action="/upload/excel" method="post" enctype="multipart/form-data">
+                <div class="form-group">
+                    <label>Excel File (.xlsx, .xls)</label>
+                    <input type="file" name="file" accept=".xlsx,.xls" required>
+                </div>
+                <div class="form-group">
+                    <label>Skip Duplicates</label>
+                    <select name="skip_duplicates">
+                        <option value="true">Yes</option>
+                        <option value="false">No</option>
+                    </select>
+                </div>
+                <button type="submit">Upload</button>
+            </form>
+        </div>
+        
+        <div class="upload-section">
+            <h3>📋 Recent Uploads</h3>
+            <table class="uploads-table">
+                <thead>
+                    <tr><th>Filename</th><th>Upload Date</th><th>Records</th><th>Action</th></tr>
+                </thead>
+                <tbody>
+                    {% for upload in latest_uploads %}
+                    <tr>
+                        <td>{{ upload.filename }}</td>
+                        <td>{{ upload.upload_date.strftime('%Y-%m-%d %H:%M') if upload.upload_date else 'N/A' }}</td>
+                        <td>{{ upload.record_count }}</td>
+                        <td><a href="/upload/batch/{{ upload.batch_id }}/summary">View</a></td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="4">No uploads yet</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-label">WhatsApp Status</div>
+                <div class="stat-value"><span class="status-badge status-{{ 'online' if whatsapp_status == 'Online' else 'offline' }}">{{ whatsapp_status }}</span></div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Schema Version</div>
+                <div class="stat-value">{{ schema_version }}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Last Upload</div>
+                <div class="stat-value">{{ last_upload_date }}</div>
+            </div>
+        </div>
+    </div>
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const message = urlParams.get('message');
+        const error = urlParams.get('error');
+        if (message) alert(message);
+        if (error) alert('Error: ' + error);
+    </script>
+</body>
+</html>""")
+        print(f"Created fallback dashboard template at {dashboard_path}")
+    
+    # Upload center template
+    upload_center_path = os.path.join(TEMPLATES_DIR, "upload_center.html")
+    if not os.path.exists(upload_center_path):
+        with open(upload_center_path, "w") as f:
+            f.write("""<!DOCTYPE html>
+<html>
+<head>
+    <title>Upload Center - AI WhatsApp Agent</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fb; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 { margin-bottom: 20px; }
+        .card { background: white; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .stats { display: flex; gap: 20px; margin-bottom: 20px; }
+        .stat { flex: 1; text-align: center; padding: 15px; background: #f8fafc; border-radius: 8px; }
+        .stat-value { font-size: 28px; font-weight: bold; color: #2563eb; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #e5e7eb; }
+        th { background: #f9fafb; }
+        .btn { display: inline-block; padding: 8px 16px; background: #2563eb; color: white; text-decoration: none; border-radius: 6px; }
+        .btn-danger { background: #dc2626; }
+        .btn-small { padding: 4px 12px; font-size: 14px; }
+        .nav { margin-bottom: 20px; }
+        .nav a { margin-right: 15px; color: #2563eb; text-decoration: none; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="nav">
+            <a href="/dashboard">← Back to Dashboard</a>
+            <a href="/upload/template">Download Template</a>
+        </div>
+        <h1>📦 Upload Center</h1>
+        <div class="stats">
+            <div class="stat"><div class="stat-value">{{ total_batches }}</div><div>Total Batches</div></div>
+            <div class="stat"><div class="stat-value">{{ total_records }}</div><div>Total Records</div></div>
+        </div>
+        <div class="card">
+            <h3>Upload History</h3>
+            <table>
+                <thead><tr><th>Batch ID</th><th>File</th><th>Upload Date</th><th>Records</th><th>Actions</th></tr></thead>
+                <tbody>
+                    {% for upload in latest_uploads %}
+                    <tr>
+                        <td>{{ upload.batch_id }}</td>
+                        <td>{{ upload.filename }}</td>
+                        <td>{{ upload.upload_date.strftime('%Y-%m-%d %H:%M:%S') if upload.upload_date else 'N/A' }}</td>
+                        <td>{{ upload.record_count }}</td>
+                        <td><a href="/upload/batch/{{ upload.batch_id }}/summary" class="btn btn-small">View</a></td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="5">No uploads found</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>""")
+        print(f"Created fallback upload_center template at {upload_center_path}")
+
+
+# Create fallback templates on startup
+create_fallback_templates()
+
+
 # ==========================================================
-# ROOT ENDPOINTS
+# ROOT ENDPOINT - Redirect to Dashboard
 # ==========================================================
 
 @app.get("/", tags=["Root"])
-async def root(db: Session = Depends(get_db)):
-    # Get delivery record count for root endpoint
-    try:
-        delivery_records = db.query(DeliveryReport).count()
-    except:
-        delivery_records = 0
-    
-    return {
-        "status": "ok",
-        "message": "AI WhatsApp Agent is running",
-        "dashboard_url": "/dashboard",
-        "api_docs": "/docs",
-        "version": "1.0.0",
-        "delivery_records": delivery_records
-    }
+async def home():
+    """Redirect to dashboard"""
+    return RedirectResponse(url="/dashboard", status_code=303)
 
 
 @app.get("/health", tags=["Health"])
@@ -366,6 +597,33 @@ async def upload_status():
     }
 
 
+# Upload Center Page
+@app.get("/upload-center", tags=["Upload"])
+async def upload_center(request: Request, db: Session = Depends(get_db)):
+    """Render upload center page"""
+    try:
+        # Get recent uploads
+        latest_uploads = get_latest_uploads(db, limit=20)
+        
+        # Get upload statistics
+        total_batches = db.query(DeliveryReport.upload_batch_id).distinct().count()
+        total_records = db.query(DeliveryReport).count()
+        
+        return templates.TemplateResponse(
+            "upload_center.html",
+            {
+                "request": request,
+                "latest_uploads": latest_uploads,
+                "total_batches": total_batches,
+                "total_records": total_records,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        )
+    except Exception as e:
+        print(f"Upload center error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ==========================================================
 # STATUS ENDPOINTS
 # ==========================================================
@@ -379,6 +637,11 @@ async def status(db: Session = Depends(get_db)):
         
         # Get schema info using the function
         schema_info = get_schema_info(db)
+        
+        # Get last upload date
+        last_upload = db.query(DeliveryReport.imported_at).order_by(
+            DeliveryReport.imported_at.desc()
+        ).first()
         
         return {
             "application": "AI WhatsApp Agent",
@@ -395,7 +658,8 @@ async def status(db: Session = Depends(get_db)):
                 "app_version": schema_info["app_version"],
                 "db_version": schema_info["db_version"],
                 "needs_migration": schema_info["needs_migration"]
-            }
+            },
+            "last_upload_date": last_upload[0].isoformat() if last_upload else None
         }
     except Exception as e:
         return {
@@ -436,14 +700,41 @@ async def db_test():
 async def dashboard(request: Request, db: Session = Depends(get_db)):
     """Render the dashboard HTML page"""
     try:
+        # Get DeliveryReport KPIs
+        total_records = db.query(DeliveryReport).count()
+        pending_deliveries = db.query(DeliveryReport).filter(
+            DeliveryReport.pending_flag.is_(True)
+        ).count()
+        pending_pod = db.query(DeliveryReport).filter(
+            DeliveryReport.pod_status == "Pending"
+        ).count()
+        pending_pgi = db.query(DeliveryReport).filter(
+            DeliveryReport.pgi_status == "Pending"
+        ).count()
+        pending_amount = db.query(func.sum(DeliveryReport.dn_amount)).filter(
+            DeliveryReport.pending_flag.is_(True)
+        ).scalar() or 0
+        completed_deliveries = db.query(DeliveryReport).filter(
+            DeliveryReport.pod_status == "Received"
+        ).count()
+        
+        # Get unique cities and warehouses
+        cities = db.query(DeliveryReport.ship_to_city).distinct().count()
+        warehouses = db.query(DeliveryReport.warehouse).distinct().count()
+        
+        # Get total amount
+        total_amount = db.query(func.sum(DeliveryReport.dn_amount)).scalar() or 0
+        
+        # Get conversation stats
         total_conversations = db.query(Conversation).count()
         total_customers = db.query(Customer).count()
         total_messages = db.query(Message).count()
         total_ai_responses = db.query(Message).filter(Message.sender == "assistant").count()
-        total_delivery_records = db.query(DeliveryReport).count()
         
-        dashboard_conversations = get_dashboard_conversations_optimized(db, limit=10)
+        # Get dashboard conversations
+        dashboard_conversations = get_dashboard_conversations_optimized(db, limit=5)
         
+        # Get message stats by day (last 7 days)
         stats = db.query(
             func.date(Message.created_at).label('date'),
             func.count(Message.id).label('count')
@@ -451,25 +742,53 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
             func.date(Message.created_at).desc()
         ).limit(7).all()
         
+        # Get latest uploads
+        latest_uploads = get_latest_uploads(db, limit=5)
+        
+        # Check service statuses
         whatsapp_token = os.getenv("WHATSAPP_ACCESS_TOKEN")
         anthropic_key = os.getenv("ANTHROPIC_API_KEY")
         openai_key = os.getenv("OPENAI_API_KEY")
+        
+        # Get schema info for status card
+        schema_info = get_schema_info(db)
+        
+        # Get last upload date
+        last_upload = db.query(DeliveryReport.imported_at).order_by(
+            DeliveryReport.imported_at.desc()
+        ).first()
         
         return templates.TemplateResponse(
             "dashboard.html",
             {
                 "request": request,
+                # Delivery KPIs
+                "total_records": total_records,
+                "pending_deliveries": pending_deliveries,
+                "pending_pod": pending_pod,
+                "pending_pgi": pending_pgi,
+                "pending_amount": round(pending_amount, 2),
+                "completed_deliveries": completed_deliveries,
+                "total_amount": round(total_amount, 2),
+                "cities": cities,
+                "warehouses": warehouses,
+                # Conversation stats
                 "total_conversations": total_conversations,
                 "total_customers": total_customers,
                 "total_messages": total_messages,
                 "total_ai_responses": total_ai_responses,
-                "total_delivery_records": total_delivery_records,
                 "conversations": dashboard_conversations,
                 "stats": stats,
+                # Upload stats
+                "latest_uploads": latest_uploads,
+                # System status
                 "status": "running",
                 "whatsapp_status": "Online" if whatsapp_token else "Offline",
                 "claude_status": "Online" if anthropic_key or openai_key else "Offline",
                 "vision_status": "Online" if anthropic_key or openai_key else "Offline",
+                # Schema info
+                "schema_version": schema_info["app_version"],
+                "last_upload_date": last_upload[0].strftime('%Y-%m-%d %H:%M') if last_upload else "Never",
                 "timestamp": datetime.utcnow().isoformat()
             }
         )
@@ -482,25 +801,53 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
 async def dashboard_api(db: Session = Depends(get_db)):
     """Return dashboard data as JSON"""
     try:
+        # Delivery KPIs
+        total_records = db.query(DeliveryReport).count()
+        pending_deliveries = db.query(DeliveryReport).filter(
+            DeliveryReport.pending_flag.is_(True)
+        ).count()
+        pending_pod = db.query(DeliveryReport).filter(
+            DeliveryReport.pod_status == "Pending"
+        ).count()
+        pending_pgi = db.query(DeliveryReport).filter(
+            DeliveryReport.pgi_status == "Pending"
+        ).count()
+        pending_amount = db.query(func.sum(DeliveryReport.dn_amount)).filter(
+            DeliveryReport.pending_flag.is_(True)
+        ).scalar() or 0
+        
+        # Conversation stats
         total_conversations = db.query(Conversation).count()
         total_customers = db.query(Customer).count()
         total_messages = db.query(Message).count()
         total_ai_responses = db.query(Message).filter(Message.sender == "assistant").count()
-        total_delivery_records = db.query(DeliveryReport).count()
         
+        # Dashboard conversations
         dashboard_conversations = get_dashboard_conversations_optimized(db, limit=10)
+        
+        # Latest uploads
+        latest_uploads = get_latest_uploads(db, limit=5)
         
         whatsapp_token = os.getenv("WHATSAPP_ACCESS_TOKEN")
         anthropic_key = os.getenv("ANTHROPIC_API_KEY")
         openai_key = os.getenv("OPENAI_API_KEY")
         
         return {
-            "total_conversations": total_conversations,
-            "total_customers": total_customers,
-            "total_messages": total_messages,
-            "total_ai_responses": total_ai_responses,
-            "total_delivery_records": total_delivery_records,
+            "delivery_stats": {
+                "total_records": total_records,
+                "pending_deliveries": pending_deliveries,
+                "pending_pod": pending_pod,
+                "pending_pgi": pending_pgi,
+                "pending_amount": float(pending_amount)
+            },
+            "conversation_stats": {
+                "total_conversations": total_conversations,
+                "total_customers": total_customers,
+                "total_messages": total_messages,
+                "total_ai_responses": total_ai_responses
+            },
             "conversations": dashboard_conversations,
+            "latest_uploads": latest_uploads,
             "status": "running",
             "whatsapp_status": "Online" if whatsapp_token else "Offline",
             "claude_status": "Online" if anthropic_key or openai_key else "Offline",
@@ -510,7 +857,7 @@ async def dashboard_api(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Enhanced logistics-status endpoint with SQLAlchemy boolean style
+# Enhanced logistics-status endpoint
 @app.get("/logistics-status", tags=["Logistics"])
 async def logistics_status(db: Session = Depends(get_db)):
     """Get logistics dashboard statistics"""
@@ -651,8 +998,23 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
     try:
         user_message = request.message.lower()
         
-        # Simple AI response logic
-        if "order" in user_message:
+        # Enhanced AI response logic with delivery queries
+        if "pending delivery" in user_message or "pending dn" in user_message:
+            pending_count = db.query(DeliveryReport).filter(
+                DeliveryReport.pending_flag.is_(True)
+            ).count()
+            ai_reply = f"You have {pending_count} pending deliveries."
+        elif "pgi status" in user_message:
+            pgi_pending = db.query(DeliveryReport).filter(
+                DeliveryReport.pgi_status == "Pending"
+            ).count()
+            ai_reply = f"{pgi_pending} deliveries are pending PGI."
+        elif "pod status" in user_message:
+            pod_pending = db.query(DeliveryReport).filter(
+                DeliveryReport.pod_status == "Pending"
+            ).count()
+            ai_reply = f"{pod_pending} deliveries are pending POD confirmation."
+        elif "order" in user_message:
             ai_reply = "Your order is currently in transit and expected tomorrow."
         elif "delivery" in user_message:
             ai_reply = "Your shipment is scheduled for delivery within 24 hours."
@@ -661,7 +1023,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
         elif "hello" in user_message or "hi" in user_message:
             ai_reply = f"Hello {request.customer_name}, how may I assist you today?"
         else:
-            ai_reply = "Thank you for contacting support. Our AI assistant has received your message."
+            ai_reply = "Thank you for contacting support. You can ask about pending deliveries, PGI status, or POD status."
         
         # Get or create customer
         customer = None
@@ -985,10 +1347,10 @@ async def whatsapp_webhook(payload: dict, db: Session = Depends(get_db)):
                                 )
                                 db.add(user_msg)
                                 
-                                # Enhanced delivery query logic with improved regex
+                                # Enhanced delivery query logic
                                 user_message_lower = message_text.lower()
                                 
-                                # Check for DN number query with improved pattern (handles more formats)
+                                # Check for DN number query
                                 dn_match = re.search(r'(?:dn|delivery note|delivery|note)[:\s#-]*([A-Za-z0-9]+)', user_message_lower)
                                 if dn_match:
                                     dn_number = dn_match.group(1).upper()
@@ -1000,22 +1362,12 @@ async def whatsapp_webhook(payload: dict, db: Session = Depends(get_db)):
                                     else:
                                         ai_reply = f"DN {dn_number} not found in system."
                                 
-                                # Check for pending deliveries query with boolean style
+                                # Check for pending deliveries query
                                 elif "pending delivery" in user_message_lower or "pending dn" in user_message_lower:
                                     pending_count = db.query(DeliveryReport).filter(
                                         DeliveryReport.pending_flag.is_(True)
                                     ).count()
                                     ai_reply = f"You have {pending_count} pending deliveries."
-                                
-                                # Check for dealer/customer query
-                                elif "dealer" in user_message_lower or "customer" in user_message_lower:
-                                    ai_reply = "Please provide the dealer code or customer name for specific delivery status."
-                                
-                                # Check for city query
-                                elif "city" in user_message_lower:
-                                    cities = db.query(DeliveryReport.ship_to_city).distinct().limit(5).all()
-                                    city_list = ", ".join([c[0] for c in cities if c[0]])
-                                    ai_reply = f"Active cities: {city_list}"
                                 
                                 elif "pgi status" in user_message_lower:
                                     pgi_pending = db.query(DeliveryReport).filter(
@@ -1130,3 +1482,109 @@ async def version():
 async def schema_info(db: Session = Depends(get_db)):
     """Get detailed schema information"""
     return get_schema_info(db)
+
+
+# ==========================================================
+# SEARCH ENDPOINTS
+# ==========================================================
+
+@app.get("/search", tags=["Search"])
+async def search_deliveries(
+    q: str,
+    search_type: str = "all",
+    limit: int = 20,
+    db: Session = Depends(get_db)
+):
+    """Search deliveries by DN, dealer, city, warehouse, or division"""
+    try:
+        results = []
+        
+        if search_type in ["all", "dn"]:
+            dn_results = db.query(DeliveryReport).filter(
+                DeliveryReport.dn_no.ilike(f"%{q}%")
+            ).limit(limit).all()
+            for r in dn_results:
+                results.append({
+                    "type": "dn",
+                    "dn_no": r.dn_no,
+                    "customer_name": r.customer_name,
+                    "city": r.ship_to_city,
+                    "dealer_code": r.dealer_code,
+                    "warehouse": r.warehouse,
+                    "division": r.division,
+                    "status": r.delivery_status,
+                    "pending": r.pending_flag
+                })
+        
+        if search_type in ["all", "dealer"]:
+            dealer_results = db.query(DeliveryReport).filter(
+                DeliveryReport.dealer_code.ilike(f"%{q}%")
+            ).limit(limit).all()
+            for r in dealer_results:
+                results.append({
+                    "type": "dealer",
+                    "dealer_code": r.dealer_code,
+                    "customer_name": r.customer_name,
+                    "dn_no": r.dn_no,
+                    "city": r.ship_to_city,
+                    "status": r.delivery_status
+                })
+        
+        if search_type in ["all", "city"]:
+            city_results = db.query(DeliveryReport).filter(
+                DeliveryReport.ship_to_city.ilike(f"%{q}%")
+            ).limit(limit).all()
+            for r in city_results:
+                results.append({
+                    "type": "city",
+                    "city": r.ship_to_city,
+                    "dn_no": r.dn_no,
+                    "customer_name": r.customer_name,
+                    "status": r.delivery_status
+                })
+        
+        if search_type in ["all", "warehouse"]:
+            warehouse_results = db.query(DeliveryReport).filter(
+                DeliveryReport.warehouse.ilike(f"%{q}%")
+            ).limit(limit).all()
+            for r in warehouse_results:
+                results.append({
+                    "type": "warehouse",
+                    "warehouse": r.warehouse,
+                    "dn_no": r.dn_no,
+                    "customer_name": r.customer_name,
+                    "city": r.ship_to_city,
+                    "status": r.delivery_status
+                })
+        
+        if search_type in ["all", "division"]:
+            division_results = db.query(DeliveryReport).filter(
+                DeliveryReport.division.ilike(f"%{q}%")
+            ).limit(limit).all()
+            for r in division_results:
+                results.append({
+                    "type": "division",
+                    "division": r.division,
+                    "dn_no": r.dn_no,
+                    "customer_name": r.customer_name,
+                    "status": r.delivery_status
+                })
+        
+        # Remove duplicates by DN
+        seen = set()
+        unique_results = []
+        for r in results:
+            dn_key = r.get('dn_no')
+            if dn_key and dn_key not in seen:
+                seen.add(dn_key)
+                unique_results.append(r)
+        
+        return {
+            "query": q,
+            "search_type": search_type,
+            "total_results": len(unique_results),
+            "limit": limit,
+            "results": unique_results[:limit]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
