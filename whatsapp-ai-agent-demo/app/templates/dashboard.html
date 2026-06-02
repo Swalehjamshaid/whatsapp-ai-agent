@@ -330,7 +330,7 @@
 
 <div class="container">
 
-    <!-- Priority 10: Navigation Menu -->
+    <!-- Navigation Menu -->
     <div class="nav-menu">
         <a href="/dashboard" class="active">📊 Dashboard</a>
         <a href="/upload-center">📤 Upload Center</a>
@@ -345,7 +345,7 @@
         <p>Real-time DN, PGI & POD Tracking Dashboard</p>
     </div>
 
-    <!-- Priority 2 & 3: Logistics KPI Cards -->
+    <!-- Logistics KPI Cards -->
     <div class="cards">
         <div class="card">
             <h3>Total DNs</h3>
@@ -373,7 +373,7 @@
         </div>
     </div>
 
-    <!-- Priority 1: Excel Upload Section -->
+    <!-- Excel Upload Section -->
     <div class="section">
         <h2>📤 Upload Logistics Report</h2>
         <form class="upload-form" action="/upload/excel" method="post" enctype="multipart/form-data">
@@ -392,7 +392,7 @@
         </form>
     </div>
 
-    <!-- Priority 4: Search Box -->
+    <!-- Search Box -->
     <div class="section">
         <h2>🔍 Search Deliveries</h2>
         <form class="search-form" action="/search" method="get">
@@ -409,7 +409,7 @@
         </form>
     </div>
 
-    <!-- Priority 5: Latest Uploads Table -->
+    <!-- Latest Uploads Table -->
     <div class="section">
         <h2>📋 Latest Uploads</h2>
         {% if latest_uploads %}
@@ -430,7 +430,8 @@
                     <td>{{ upload.upload_date.strftime('%Y-%m-%d %H:%M:%S') if upload.upload_date else 'N/A' }}</td>
                     <td>{{ upload.record_count }}</td>
                     <td>{{ upload.batch_id }}</td>
-                    <td><a href="/upload/batch/{{ upload.batch_id }}/summary" style="color:#25D366;">View</a></td>
+                    <!-- FIX 5: Updated to match the actual route -->
+                    <td><a href="/upload/batch/{{ upload.batch_id }}" style="color:#25D366;">View</a></td>
                 </tr>
                 {% endfor %}
             </tbody>
@@ -440,7 +441,7 @@
         {% endif %}
     </div>
 
-    <!-- Priority 6: Recent Deliveries (Two Column Layout) -->
+    <!-- Recent Deliveries (Two Column Layout) -->
     <div class="two-columns">
         
         <!-- Recent Deliveries Table -->
@@ -461,20 +462,31 @@
                 <tbody>
                     {% for item in conversations %}
                     <tr>
+                        <!-- DN Number -->
                         <td><strong>{{ item.dn_no or 'N/A' }}</strong></td>
-                        <td>{{ item.customer_name or item.customer or 'N/A' }}</td>
-                        <td>{{ item.city or 'N/A' }}</td>
+                        
+                        <!-- FIX 3: Customer Name field -->
+                        <td>{{ item.customer_name or 'N/A' }}</td>
+                        
+                        <!-- FIX 1: Ship To City field -->
+                        <td>{{ item.ship_to_city or 'N/A' }}</td>
+                        
+                        <!-- PGI Status -->
                         <td>
                             <span class="status-badge {% if item.pgi_status == 'Completed' %}status-completed{% else %}status-pending{% endif %}">
                                 {{ item.pgi_status or 'Pending' }}
                             </span>
                         </td>
+                        
+                        <!-- POD Status -->
                         <td>
                             <span class="status-badge {% if item.pod_status == 'Received' %}status-completed{% else %}status-pending{% endif %}">
                                 {{ item.pod_status or 'Pending' }}
                             </span>
                         </td>
-                        <td>₹{{ "%.2f"|format(item.amount or 0) }}</td>
+                        
+                        <!-- FIX 2: DN Amount field -->
+                        <td>₹{{ "%.2f"|format(item.dn_amount or 0) }}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -484,7 +496,7 @@
             {% endif %}
         </div>
 
-        <!-- Priority 7: Top Cities -->
+        <!-- Top Cities -->
         <div class="section">
             <h2>🏙️ Top Cities by Deliveries</h2>
             {% if top_cities %}
@@ -499,7 +511,7 @@
                 <tbody>
                     {% for city in top_cities %}
                     <tr>
-                        <td><strong>{{ city.city }}</strong></td>
+                        <td><strong>{{ city.city or city.ship_to_city or 'N/A' }}</strong></td>
                         <td>{{ city.count }}</td>
                         <td>
                             <span class="status-badge status-pending">
@@ -516,7 +528,7 @@
         </div>
     </div>
 
-    <!-- Priority 8: Warehouse Statistics -->
+    <!-- Warehouse Statistics -->
     <div class="section">
         <h2>🏭 Warehouse Performance</h2>
         {% if top_warehouses %}
@@ -551,7 +563,42 @@
         {% endif %}
     </div>
 
-    <!-- Priority 9: System Status -->
+    <!-- Top Dealers Section (NEW) -->
+    <div class="section">
+        <h2>🏆 Top Dealers</h2>
+        {% if top_dealers %}
+        <table>
+            <thead>
+                <tr>
+                    <th>Dealer Code</th>
+                    <th>Dealer Name</th>
+                    <th>Total Deliveries</th>
+                    <th>Total Amount</th>
+                    <th>Pending Count</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for dealer in top_dealers %}
+                <tr>
+                    <td><strong>{{ dealer.dealer_code or 'N/A' }}</strong></td>
+                    <td>{{ dealer.customer_name or 'N/A' }}</td>
+                    <td>{{ dealer.delivery_count or 0 }}</td>
+                    <td>₹{{ "%.2f"|format(dealer.total_amount or 0) }}</td>
+                    <td>
+                        <span class="status-badge {% if dealer.pending_count > 0 %}status-pending{% else %}status-completed{% endif %}">
+                            {{ dealer.pending_count or 0 }}
+                        </span>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p>No dealer data available. Upload an Excel report to see dealer statistics.</p>
+        {% endif %}
+    </div>
+
+    <!-- System Status -->
     <div class="section">
         <h2>⚙️ System Status</h2>
         <div class="two-columns" style="margin-bottom:0;">
@@ -598,6 +645,17 @@
     }
     if (error) {
         alert('❌ Error: ' + decodeURIComponent(error));
+    }
+    
+    // Also check for upload success/failure messages
+    const uploadSuccess = urlParams.get('upload_success');
+    const uploadError = urlParams.get('upload_error');
+    
+    if (uploadSuccess) {
+        alert('✅ Upload Successful: ' + decodeURIComponent(uploadSuccess));
+    }
+    if (uploadError) {
+        alert('❌ Upload Failed: ' + decodeURIComponent(uploadError));
     }
 </script>
 
