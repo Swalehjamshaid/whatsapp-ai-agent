@@ -25,13 +25,31 @@ class ExcelImportService:
     """
 
     # ==========================================================
-    # PHASE 2: EXPANDED COLUMN ALIASES (UPPERCASE FOR MATCHING)
+    # CORRECTION 1: EXPANDED COLUMN ALIASES with exact Excel mappings
     # ==========================================================
     
     COLUMN_ALIASES = {
-        # DN variations
-        "DN": "DN No",
+        # CORRECTION 1: Exact mappings from your Excel file
+        "ORDER TYPE": "Order Type",
         "DN NO": "DN No",
+        "DN AMOUNT": "DN Amount",
+        "DN QTY": "DN Qty",
+        "DN WORK": "DN Work",
+        "DIVISION": "Division",
+        "MATERIAL NO": "Material No",
+        "CUSTOMER MODEL": "Customer Model",
+        "SALES OFFICE": "Sales Office",
+        "SOLD-TO-PARTY NAME": "Customer Name",  # CORRECTION 5: Critical mapping
+        "SHIP-TO CITY": "Ship To City",
+        "STORAGE": "Storage Location",  # CORRECTION 6: Storage field mapping
+        "WAREHOUSE": "Warehouse",
+        "DN CREATE DATE": "DN Create Date",  # CORRECTION 7: Date field
+        "GOOD ISSUE DATE": "Good Issue Date",
+        "POD DATE": "POD Date",
+        "SALES MANAGER": "Sales Manager",
+        
+        # Additional variations for flexibility
+        "DN": "DN No",
         "DN NO.": "DN No",
         "DN NUMBER": "DN No",
         "DELIVERY": "DN No",
@@ -100,7 +118,7 @@ class ExcelImportService:
         # Warehouse variations
         "WAREHOUSE": "Warehouse",
         "WHSE": "Warehouse",
-        "STORAGE": "Storage Location",
+        "STORAGE": "Storage Location",  # CORRECTION 6
         "STORAGE LOCATION": "Storage Location",
         "STORAGE LOC": "Storage Location",
         "PLANT": "Warehouse",
@@ -126,6 +144,7 @@ class ExcelImportService:
         "DN DATE": "DN Create Date",
         "CREATE DATE": "DN Create Date",
         "CREATED DATE": "DN Create Date",
+        "DN CREATE DATE": "DN Create Date",  # CORRECTION 7
         "GOOD ISSUE DATE": "Good Issue Date",
         "PGI DATE": "Good Issue Date",
         "ACTUAL PGI DATE": "Good Issue Date",
@@ -175,8 +194,16 @@ class ExcelImportService:
         "Delivery Document Number", "Doc No"
     ]
     
-    # Weighted scoring for header detection
+    # CORRECTION 3: Enhanced HEADER_WEIGHTS with exact Excel column names
     HEADER_WEIGHTS = {
+        # CORRECTION 3: High priority exact matches from your Excel (5 points)
+        "dn no": 5,
+        "dn amount": 5,
+        "dn qty": 5,
+        "ship-to city": 5,
+        "sold-to-party": 5,
+        "warehouse": 5,
+        
         # High priority (3 points)
         "customer name": 3,
         "dealer name": 3,
@@ -193,6 +220,10 @@ class ExcelImportService:
         "pod": 2,
         "party": 2,
         "ship to": 2,
+        "order type": 2,
+        "division": 2,
+        "material": 2,
+        "storage": 2,
         
         # Low priority (1 point)
         "document": 1,
@@ -266,7 +297,7 @@ class ExcelImportService:
                 print(f"  Row {idx + 1}: {dict(row)}")
             print("=" * 70)
             
-            # Clean headers (without upper() to preserve case for later)
+            # Clean headers
             df = self._clean_headers(df)
             
             # Remove empty rows
@@ -278,10 +309,11 @@ class ExcelImportService:
             # Remove duplicate rows based on DN if available
             df = self._remove_duplicate_rows(df)
             
-            # Normalize column names (with uppercase matching)
+            # Normalize column names
             df = self._normalize_columns(df)
             
-            # Log normalized columns
+            # CORRECTION 4: Log normalized columns for debugging
+            logger.info(f"Normalized Columns: {list(df.columns)}")
             print(f"\n📋 NORMALIZED COLUMNS: {list(df.columns)}")
             
             # Smart validation
@@ -303,7 +335,7 @@ class ExcelImportService:
             # Show first record preview
             if records:
                 print(f"\n🔍 FIRST RECORD PREVIEW:")
-                for key, value in list(records[0].items())[:10]:
+                for key, value in list(records[0].items())[:15]:
                     print(f"  {key}: {value}")
             
             # Handle duplicates
@@ -402,7 +434,7 @@ class ExcelImportService:
                 print(f"✅ Selected sheet: '{best_sheet}' with score {best_score:.1f} at row {best_header_row + 1}")
                 return best_df, best_score
             
-            # ISSUE 2 FIX: Better fallback sheet reading
+            # Fallback sheet reading
             print("⚠️ No good sheet found with scoring, trying fallback detection...")
             first_sheet = excel_file.sheet_names[0]
             print(f"🔍 Trying fallback on sheet: '{first_sheet}'")
@@ -420,7 +452,7 @@ class ExcelImportService:
                     if len(test_df.columns) > 2:
                         # Check for any logistics-related keywords
                         column_str = ' '.join([str(col).lower() for col in test_df.columns])
-                        if any(keyword in column_str for keyword in ['dn', 'delivery', 'customer', 'document', 'outbound']):
+                        if any(keyword in column_str for keyword in ['dn', 'delivery', 'customer', 'document', 'outbound', 'order type']):
                             print(f"✅ Fallback found valid headers at row {header_row + 1}")
                             return test_df, 1
                             
@@ -471,7 +503,6 @@ class ExcelImportService:
         """Remove duplicate rows based on DN if available, otherwise all columns."""
         before = len(df)
         
-        # ISSUE 4 FIX: Remove duplicates based on DN No if available
         if "DN No" in df.columns:
             df = df.drop_duplicates(subset=["DN No"], keep="last")
             print(f"🗑️ Removed duplicates based on DN No")
@@ -556,7 +587,7 @@ class ExcelImportService:
         column_mapping = {}
         
         for col in df.columns:
-            # ISSUE 1 FIX: Convert to uppercase for consistent matching
+            # Convert to uppercase for consistent matching
             clean_col = str(col).strip().upper()
             
             # Try exact match in aliases
@@ -624,7 +655,6 @@ class ExcelImportService:
         """Validate required columns - only DN No is required."""
         available_columns = [str(col).strip().upper() for col in df.columns]
         
-        # ISSUE 3 FIX: Enhanced DN detection
         dn_column_found = None
         for available in available_columns:
             if available == "DN NO":
@@ -650,7 +680,7 @@ class ExcelImportService:
                     print(f"📝 Mapped '{dn_column_found}' to 'DN No'")
                     break
         
-        # Log optional missing columns (not required, just informational)
+        # Log optional missing columns
         optional_missing = []
         for std_col in self.COLUMN_MAPPING.keys():
             if std_col != "DN No":
@@ -674,7 +704,7 @@ class ExcelImportService:
         }
 
     # ==========================================================
-    # DATA TRANSFORMATION
+    # CORRECTION 2: DATA TRANSFORMATION with exact field mappings
     # ==========================================================
 
     def _transform_data(
@@ -683,43 +713,57 @@ class ExcelImportService:
         source_filename: str, 
         batch_id: int = None
     ) -> List[Dict[str, Any]]:
-        """Transform Excel data to match DeliveryReport model."""
+        """Transform Excel data to match DeliveryReport model with exact mappings."""
         records = []
         current_time = datetime.utcnow()
         
         for index, row in df.iterrows():
             try:
-                record = {}
-                
-                for standard_col, db_col in self.COLUMN_MAPPING.items():
-                    found_col = None
-                    for col in df.columns:
-                        if col == standard_col:
-                            found_col = col
-                            break
+                # CORRECTION 2: Direct mapping from normalized column names
+                record = {
+                    # Core fields
+                    "order_type": row.get("Order Type") if "Order Type" in df.columns else None,
+                    "dn_no": row.get("DN No") if "DN No" in df.columns else None,
+                    "dn_amount": self._parse_numeric(row.get("DN Amount")) if "DN Amount" in df.columns else None,
+                    "dn_qty": self._parse_numeric(row.get("DN Qty")) if "DN Qty" in df.columns else None,
+                    "dn_work": row.get("DN Work") if "DN Work" in df.columns else None,
+                    "division": row.get("Division") if "Division" in df.columns else None,
                     
-                    if found_col:
-                        value = row[found_col]
-                        
-                        if pd.isna(value):
-                            value = None
-                        
-                        if db_col in ["dn_create_date", "good_issue_date", "pod_date"]:
-                            value = self._parse_date(value)
-                        
-                        if db_col in ["dn_qty", "dn_amount"]:
-                            value = self._parse_numeric(value)
-                        
-                        record[db_col] = value
+                    # Material and customer fields
+                    "material_no": row.get("Material No") if "Material No" in df.columns else None,
+                    "customer_model": row.get("Customer Model") if "Customer Model" in df.columns else None,
+                    "sales_office": row.get("Sales Office") if "Sales Office" in df.columns else None,
+                    "customer_name": row.get("Customer Name") if "Customer Name" in df.columns else None,  # CORRECTION 5
+                    "dealer_code": row.get("Dealer Code") if "Dealer Code" in df.columns else None,
+                    "customer_code": row.get("Customer Code") if "Customer Code" in df.columns else None,
+                    
+                    # Location fields
+                    "ship_to_city": row.get("Ship To City") if "Ship To City" in df.columns else None,
+                    "storage_location": row.get("Storage Location") if "Storage Location" in df.columns else None,  # CORRECTION 6
+                    "warehouse": row.get("Warehouse") if "Warehouse" in df.columns else None,
+                    "warehouse_code": row.get("Warehouse Code") if "Warehouse Code" in df.columns else None,
+                    
+                    # Date fields
+                    "dn_create_date": self._parse_date(row.get("DN Create Date")) if "DN Create Date" in df.columns else None,  # CORRECTION 7
+                    "good_issue_date": self._parse_date(row.get("Good Issue Date")) if "Good Issue Date" in df.columns else None,
+                    "pod_date": self._parse_date(row.get("POD Date")) if "POD Date" in df.columns else None,
+                    
+                    # Sales fields
+                    "sales_manager": row.get("Sales Manager") if "Sales Manager" in df.columns else None,
+                }
                 
+                # Skip if DN No is missing
                 if not record.get("dn_no"):
                     continue
                 
+                # Add tracking fields
                 record["source_file"] = source_filename
                 record["upload_batch_id"] = batch_id
                 record["imported_at"] = current_time
                 record["created_at"] = current_time
                 record["updated_at"] = current_time
+                
+                # Generate delivery location
                 record["delivery_location"] = self._generate_delivery_location(
                     record.get("warehouse"),
                     record.get("ship_to_city")
@@ -790,13 +834,11 @@ class ExcelImportService:
         
         try:
             if isinstance(value, str):
-                # ISSUE 5 FIX: Add Pakistan currency support
                 value = value.replace('$', '') \
                              .replace('₹', '') \
                              .replace('PKR', '') \
                              .replace('Rs.', '') \
                              .replace('Rs', '') \
-                             .replace('PKR', '') \
                              .replace(',', '') \
                              .strip()
                 return float(value) if value else None
