@@ -13,7 +13,7 @@ import sys
 from app.models import DeliveryReport
 
 # Force logging to print immediately
-logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', stream=sys.stdout)
 logger = logging.getLogger(__name__)
 
 
@@ -69,7 +69,7 @@ class ExcelImportService:
             sys.stdout.flush()
             
             # ==========================================================
-            # UPDATE 1: Dynamic Header Detection (⭐⭐⭐⭐⭐)
+            # Dynamic Header Detection with Improved Scoring
             # ==========================================================
             print("\n📖 Step 2: Reading Excel file with dynamic header detection...")
             
@@ -81,11 +81,17 @@ class ExcelImportService:
             best_sheet = None
             best_header_row = None
             
+            # Required headers for validation
+            required_headers = ["DN", "CITY", "WAREHOUSE", "AMOUNT"]
+            
             for sheet in excel_file.sheet_names:
                 print(f"\n   🔍 Checking sheet: '{sheet}'")
                 
-                # Search rows 0-74 for headers (SAP exports often have metadata in first rows)
-                for header_row in range(75):
+                # Get sheet info for safer iteration
+                sheet_df = pd.read_excel(file_path, sheet_name=sheet, nrows=0)
+                sheet_rows = min(75, len(sheet_df.index) + 10) if hasattr(sheet_df, 'index') else 75
+                
+                for header_row in range(sheet_rows):
                     try:
                         test_df = pd.read_excel(
                             file_path,
@@ -100,46 +106,80 @@ class ExcelImportService:
                         ]
                         
                         score = 0
+                        header_hits = 0
                         
+                        # IMPROVED: Split words to avoid partial matches like "UNNAMED" matching "DN"
                         for col in columns:
-                            if "DN" in col or "DELIVERY" in col or "OUTBOUND" in col:
+                            # Split by spaces, hyphens, underscores
+                            words = col.replace("-", " ").replace("_", " ").split()
+                            
+                            # Check for exact word matches
+                            if "DN" in words or "DELIVERY" in words or "OUTBOUND" in words:
                                 score += 5
                             
-                            if "CITY" in col:
+                            if "CITY" in words:
                                 score += 3
                             
-                            if "WAREHOUSE" in col or "STORAGE" in col:
+                            if "WAREHOUSE" in words or "STORAGE" in words:
                                 score += 3
                             
-                            if "AMOUNT" in col or "QTY" in col:
+                            if "AMOUNT" in words or "QTY" in words:
                                 score += 3
                             
-                            if "CUSTOMER" in col or "SOLD" in col:
+                            if "CUSTOMER" in words or "SOLD" in words:
                                 score += 2
+                            
+                            # Check for required headers
+                            for req in required_headers:
+                                if req in words:
+                                    header_hits += 1
+                        
+                        # Require at least 2 required headers
+                        if header_hits < 2:
+                            if header_row == 0:  # Only log for first few rows to avoid spam
+                                print(f"      ⏭️ Skipping row {header_row}: only {header_hits}/2 required headers found")
+                            continue
+                        
+                        # Sheet name priority bonus
+                        sheet_upper = sheet.upper()
+                        if "PGI" in sheet_upper:
+                            score += 10
+                            print(f"      🎯 +10 bonus for 'PGI' in sheet name")
+                        
+                        if "DN" in sheet_upper.split():
+                            score += 10
+                            print(f"      🎯 +10 bonus for 'DN' in sheet name")
+                        
+                        if "DELIVERY" in sheet_upper.split():
+                            score += 10
+                            print(f"      🎯 +10 bonus for 'DELIVERY' in sheet name")
                         
                         if score > best_score:
                             best_score = score
                             best_df = test_df
                             best_sheet = sheet
                             best_header_row = header_row
-                            print(f"      ✅ New best match! Score: {score}, Header row: {header_row}")
+                            print(f"      ✅ New best match! Score: {score}, Header row: {header_row}, Required headers hit: {header_hits}")
                             
                     except Exception as e:
-                        # Silently skip rows that can't be read
+                        # Better error logging for debugging
+                        logger.debug(f"Sheet={sheet}, row={header_row}: {e}")
                         pass
             
-            if best_df is None:
-                raise Exception("Could not detect valid sheet with delivery data headers")
+            # Minimum score validation
+            min_required_score = 10
+            if best_df is None or best_score < min_required_score:
+                error_msg = f"No valid delivery report found. Best score={best_score if best_df else 0}. Required minimum={min_required_score}"
+                print(f"   ❌ {error_msg}")
+                raise Exception(error_msg)
             
             print(f"\n   ✅ Selected sheet: '{best_sheet}'")
             print(f"   ✅ Header row: {best_header_row}")
-            print(f"   ✅ Detection score: {best_score}")
+            print(f"   ✅ Detection score: {best_score} (minimum required: {min_required_score})")
             
             df = best_df
             
-            # ==========================================================
-            # UPDATE 2: Normalize Column Names (⭐⭐⭐⭐⭐)
-            # ==========================================================
+            # Normalize column names
             print("\n🧹 Step 3: Normalizing column names...")
             df.columns = [
                 str(col).strip().upper()
@@ -149,9 +189,7 @@ class ExcelImportService:
             print(f"   📋 Normalized columns: {list(df.columns)}")
             sys.stdout.flush()
             
-            # ==========================================================
-            # UPDATE 3: Log Actual Columns Found (⭐⭐⭐⭐⭐)
-            # ==========================================================
+            # Log actual columns found
             print("\n📋 ACTUAL COLUMNS FOUND IN EXCEL:")
             for idx, col in enumerate(df.columns):
                 print(f"   {idx+1}. '{col}'")
@@ -159,9 +197,7 @@ class ExcelImportService:
             
             result["total_rows"] = len(df)
             
-            # ==========================================================
-            # Step 4: Remove any unnamed columns
-            # ==========================================================
+            # Remove unnamed columns
             print("\n🧹 Step 4: Removing unnamed columns...")
             unnamed_cols = [col for col in df.columns if 'UNNAMED' in col]
             if unnamed_cols:
@@ -170,13 +206,11 @@ class ExcelImportService:
                 print(f"   ✅ Remaining columns: {len(df.columns)}")
             sys.stdout.flush()
             
-            # ==========================================================
-            # Step 5: Show sample data
-            # ==========================================================
+            # Show sample data
             print("\n📋 Step 5: Sample data (first 2 rows):")
             for idx in range(min(2, len(df))):
                 row_dict = {}
-                for col in df.columns[:10]:  # Show first 10 columns only
+                for col in df.columns[:10]:
                     val = df.iloc[idx][col]
                     if pd.isna(val):
                         val = "NULL"
@@ -188,12 +222,9 @@ class ExcelImportService:
                 print(f"   Row {idx+1}: {row_dict}")
             sys.stdout.flush()
             
-            # ==========================================================
-            # Step 6: Map column names
-            # ==========================================================
+            # Map column names
             print("\n🔄 Step 6: Mapping column names...")
             
-            # Define column mappings (now in UPPERCASE for normalized comparison)
             column_mapping = {
                 "DN NO": "DN No",
                 "DN NO.": "DN No",
@@ -229,7 +260,6 @@ class ExcelImportService:
                 "DEALER NAME": "Customer Name",
             }
             
-            # Apply mappings
             mapping_applied = {}
             for col in df.columns:
                 col_upper = str(col).strip().upper()
@@ -238,7 +268,6 @@ class ExcelImportService:
                     mapping_applied[col] = new_name
                     print(f"   ✅ Mapped '{col}' -> '{new_name}'")
                 else:
-                    # Check for partial matches
                     for old_key, new_key in column_mapping.items():
                         if old_key in col_upper:
                             mapping_applied[col] = new_key
@@ -253,18 +282,17 @@ class ExcelImportService:
             print(f"   📋 Columns after mapping: {list(df.columns)}")
             sys.stdout.flush()
             
-            # ==========================================================
-            # UPDATE 4: Better DN Detection (⭐⭐⭐⭐)
-            # ==========================================================
+            # Better DN Detection
             print("\n🔍 Step 7: Validating DN No column...")
             if "DN No" not in df.columns:
-                # Try to find any column containing DN, DELIVERY, or OUTBOUND
                 dn_column = None
                 for col in df.columns:
                     col_upper = str(col).upper()
-                    if ("DN" in col_upper or 
-                        "DELIVERY" in col_upper or 
-                        "OUTBOUND" in col_upper):
+                    # Split words to avoid "UNNAMED" matching "DN"
+                    words = col_upper.replace("-", " ").replace("_", " ").split()
+                    if ("DN" in words or 
+                        "DELIVERY" in words or 
+                        "OUTBOUND" in words):
                         dn_column = col
                         break
                 
@@ -281,9 +309,7 @@ class ExcelImportService:
             print(f"   ✅ DN No column found")
             sys.stdout.flush()
             
-            # ==========================================================
-            # Step 8: Remove rows with empty DN
-            # ==========================================================
+            # Remove rows with empty DN
             before = len(df)
             df = df[df["DN No"].notna()]
             after = len(df)
@@ -291,9 +317,20 @@ class ExcelImportService:
             print(f"✅ Remaining rows: {after}")
             sys.stdout.flush()
             
-            # ==========================================================
-            # Step 9: Transform each row
-            # ==========================================================
+            # Remove old records before upload
+            print("\n🗑️ Step 8: Removing old records before upload...")
+            old_count = self.db.query(DeliveryReport).count()
+            print(f"   📊 Database currently contains {old_count} records")
+            
+            if old_count > 0:
+                deleted_count = self.db.query(DeliveryReport).delete(synchronize_session=False)
+                self.db.commit()
+                print(f"   ✅ Deleted {deleted_count} old records from database")
+            else:
+                print(f"   ℹ️ No existing records to delete")
+            sys.stdout.flush()
+            
+            # Transform each row
             print("\n🔄 Step 9: Transforming data...")
             records = []
             current_time = datetime.utcnow()
@@ -310,9 +347,7 @@ class ExcelImportService:
             print(f"   ✅ Transformed {len(records)} records")
             sys.stdout.flush()
             
-            # ==========================================================
-            # Step 10: Show first record preview
-            # ==========================================================
+            # Show first record preview
             if records:
                 print("\n🔍 Step 10: First record preview:")
                 preview_record = records[0]
@@ -324,30 +359,35 @@ class ExcelImportService:
                 result["error"] = "No valid records found in Excel file"
                 return result
             
-            # ==========================================================
-            # UPDATE 5: Better SQLAlchemy Validation (⭐⭐⭐⭐)
-            # ==========================================================
+            # Insert into database
             print("\n💾 Step 11: Inserting into PostgreSQL...")
             inserted_count = 0
             
-            # Get actual model columns
             model_columns = DeliveryReport.__table__.columns.keys()
-            print(f"   📋 Model columns: {model_columns[:10]}...")  # Show first 10
+            print(f"   📋 Model columns: {model_columns[:10]}...")
             
+            # Bulk insert all records
             try:
-                # Try bulk insert first
                 for record in records:
-                    # Use model_columns for validation
                     clean_record = {
                         k: v for k, v in record.items() 
                         if k in model_columns
                     }
                     delivery = DeliveryReport(**clean_record)
                     self.db.add(delivery)
+                    inserted_count += 1
+                    
+                    # Commit in batches of 100
+                    if inserted_count % 100 == 0:
+                        self.db.commit()
+                        print(f"      ✅ Committed {inserted_count} records so far")
                 
-                self.db.commit()
-                inserted_count = len(records)
+                # Final commit
+                if inserted_count % 100 != 0:
+                    self.db.commit()
+                
                 print(f"   ✅ Successfully inserted {inserted_count} records")
+                print(f"   📊 Expected rows: {len(records)}")
                 
             except Exception as e:
                 print(f"   ❌ Bulk insert failed: {e}")
@@ -355,6 +395,7 @@ class ExcelImportService:
                 
                 # Try individual inserts
                 print(f"   🔄 Trying individual inserts...")
+                inserted_count = 0
                 for record in records:
                     try:
                         clean_record = {
@@ -370,15 +411,24 @@ class ExcelImportService:
                         print(f"      ❌ Failed to insert DN {record.get('dn_no', 'Unknown')}: {inner_e}")
                         self.db.rollback()
             
-            # ==========================================================
-            # UPDATE 6: Success only when records inserted (⭐⭐⭐)
-            # ==========================================================
+            # Database count verification
+            final_count = self.db.query(DeliveryReport).count()
+            print(f"\n   ✅ Database verification: {final_count} total rows now in database")
+            print(f"   📊 Inserted: {inserted_count}, Expected: {len(records)}")
+            
             result["success"] = inserted_count > 0
             result["inserted_count"] = inserted_count
+            
+            # Show comparison between expected and actual
+            if inserted_count != len(records):
+                print(f"   ⚠️ WARNING: Expected {len(records)} records but inserted {inserted_count}")
+                result["debug_info"]["expected_records"] = len(records)
+                result["debug_info"]["inserted_records"] = inserted_count
             
             print("\n" + "="*80)
             if result["success"]:
                 print(f"✅ IMPORT COMPLETE: {inserted_count} records inserted")
+                print(f"📊 Database now contains {final_count} rows")
             else:
                 print(f"❌ IMPORT FAILED: No records were inserted")
             print("="*80)
@@ -416,26 +466,30 @@ class ExcelImportService:
             except:
                 return None
         
-        # Helper function to safely get date
+        # Improved date conversion using pandas
         def get_date(col):
             val = row.get(col)
             if pd.isna(val):
                 return None
             try:
-                if isinstance(val, datetime):
-                    return val.date()
-                if isinstance(val, date):
-                    return val
-                if isinstance(val, str):
-                    for fmt in ["%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d.%m.%Y", "%d-%m-%Y", "%Y%m%d"]:
-                        try:
-                            return datetime.strptime(val.strip(), fmt).date()
-                        except:
-                            continue
-                if isinstance(val, (int, float)):
-                    return datetime.fromordinal(datetime(1900, 1, 1).toordinal() + int(val) - 2).date()
+                # Use pandas to_datetime for better Excel date handling
+                if isinstance(val, (datetime, date)):
+                    return val.date() if isinstance(val, datetime) else val
+                
+                # Try pandas to_datetime for string and numeric values
+                converted = pd.to_datetime(val, errors='coerce')
+                if pd.notna(converted):
+                    return converted.date()
+                
                 return None
-            except:
+            except Exception as e:
+                # Fallback to original method if pandas fails
+                try:
+                    if isinstance(val, (int, float)):
+                        # Excel dates are days since 1900-01-01
+                        return datetime.fromordinal(datetime(1900, 1, 1).toordinal() + int(val) - 2).date()
+                except:
+                    pass
                 return None
         
         # Build the record
@@ -520,7 +574,7 @@ class ExcelImportService:
         """Delete a batch."""
         try:
             count = self.db.query(DeliveryReport).filter(DeliveryReport.upload_batch_id == batch_id).count()
-            deleted = self.db.query(DeliveryReport).filter(DeliveryReport.upload_batch_id == batch_id).delete()
+            deleted = self.db.query(DeliveryReport).filter(DeliveryReport.upload_batch_id == batch_id).delete(synchronize_session=False)
             self.db.commit()
             return {"success": True, "deleted_count": deleted, "batch_id": batch_id, "original_count": count}
         except Exception as e:
