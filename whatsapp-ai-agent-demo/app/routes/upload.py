@@ -5,7 +5,9 @@
 import os
 import uuid
 import logging
+import shutil
 from datetime import datetime
+from tempfile import NamedTemporaryFile
 
 from fastapi import (
     APIRouter,
@@ -24,7 +26,10 @@ from app.services.excel_import_service import (
     delete_import_batch
 )
 
-# IMPROVEMENT 3: Add logging
+# Import DeliveryReport model for deletion
+from app.models import DeliveryReport
+
+# Logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
@@ -54,15 +59,26 @@ os.makedirs(
 @router.post("/excel")
 async def upload_excel(
     file: UploadFile = File(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    replace_previous: bool = True  # New parameter: whether to replace previous data
 ):
     """
     Upload DN / PGI / POD Excel file.
+    
+    - replace_previous=True: Deletes all previous uploads, keeps only this batch
+    - replace_previous=False: Keeps all previous uploads, adds this batch
     """
     file_path = None
     
     try:
-        # IMPROVEMENT 3: Log upload start
+        # PRIORITY 4: Validate filename
+        if not file.filename:
+            logger.warning("No file selected")
+            raise HTTPException(
+                status_code=400,
+                detail="No file selected. Please choose an Excel file to upload."
+            )
+        
         logger.info(f"Starting upload: {file.filename}")
         print(f"📤 Uploading file: {file.filename}")
         
@@ -77,10 +93,19 @@ async def upload_excel(
                 detail=f"Only Excel files (.xlsx, .xls) are allowed. Got: {extension}"
             )
         
-        # IMPROVEMENT 2: Read and validate file size
+        # PRIORITY 3: Read and validate file is not empty
         contents = await file.read()
+        
+        if len(contents) == 0:
+            logger.warning("Uploaded file is empty")
+            raise HTTPException(
+                status_code=400,
+                detail="Uploaded file is empty. Please check your file and try again."
+            )
+        
         file_size_mb = len(contents) / (1024 * 1024)
         
+        # Validate file size
         if len(contents) > MAX_FILE_SIZE_BYTES:
             logger.warning(f"File too large: {file_size_mb:.2f}MB > {MAX_FILE_SIZE_MB}MB")
             raise HTTPException(
@@ -89,13 +114,15 @@ async def upload_excel(
             )
         
         logger.info(f"File size: {file_size_mb:.2f}MB - Accepted")
+        print(f"📊 File size: {file_size_mb:.2f}MB")
         
         # Generate batch ID and file path
         batch_id = int(datetime.utcnow().timestamp())
         unique_filename = f"{uuid.uuid4()}_{file.filename}"
         file_path = os.path.join(UPLOAD_FOLDER, unique_filename)
         
-        # Save file
+        # PRIORITY 5: For future - stream large files directly to disk
+        # Currently using memory for simplicity, but can be optimized
         with open(file_path, "wb") as buffer:
             buffer.write(contents)
         
@@ -112,7 +139,28 @@ async def upload_excel(
             update_existing=False
         )
         
-        # IMPROVEMENT 3: Log import results
+        # PRIORITY 2: Only delete previous data if import was successful AND rows were inserted
+        if result.get("success") and result.get("inserted_count", 0) > 0:
+            if replace_previous:
+                # PRIORITY 1: Delete all previous batches except current one
+                old_records_deleted = (
+                    db.query(DeliveryReport)
+                    .filter(
+                        DeliveryReport.upload_batch_id != batch_id
+                    )
+                    .delete(synchronize_session=False)
+                )
+                db.commit()
+                
+                logger.info(f"Deleted {old_records_deleted} old records from previous batches")
+                print(f"🗑️ Replaced {old_records_deleted} old records with new data")
+            else:
+                print(f"📦 Keeping previous data, added {result.get('inserted_count', 0)} new records")
+        elif result.get("success") and result.get("inserted_count", 0) == 0:
+            print(f"⚠️ Import completed but no new records were inserted. Previous data preserved.")
+            logger.warning(f"Batch {batch_id} imported 0 records - no data replaced")
+        
+        # PRIORITY 3: Log import results
         if result.get("success"):
             logger.info(
                 f"Batch {batch_id} imported successfully: "
@@ -126,12 +174,20 @@ async def upload_excel(
             logger.error(f"Batch {batch_id} import failed: {result.get('error')}")
             print(f"❌ Import failed: {result.get('error')}")
         
+        # PRIORITY 6: Return simplified response structure
         return {
             "success": result.get("success"),
             "batch_id": batch_id,
             "file_name": file.filename,
             "file_size_mb": round(file_size_mb, 2),
-            "result": result
+            "replace_previous": replace_previous,
+            # Simplified statistics for dashboard
+            "inserted": result.get("inserted_count", 0),
+            "updated": result.get("updated_count", 0),
+            "skipped": result.get("skipped_count", 0),
+            "total_rows": result.get("total_rows", 0),
+            # Keep full result for debugging
+            "details": result
         }
         
     except HTTPException:
@@ -146,7 +202,7 @@ async def upload_excel(
         )
         
     finally:
-        # IMPROVEMENT 1: Delete temporary file
+        # Delete temporary file
         if file_path and os.path.exists(file_path):
             try:
                 os.remove(file_path)
@@ -187,19 +243,82 @@ def batch_summary(
 
 
 # ==========================================================
+# GET LATEST BATCH (Utility endpoint)
+# ==========================================================
+
+@router.get("/batch/latest")
+def latest_batch(
+    db: Session = Depends(get_db)
+):
+    """
+    Get the most recent upload batch.
+    """
+    from sqlalchemy import func
+    
+    latest = db.query(
+        DeliveryReport.upload_batch_id,
+        func.max(DeliveryReport.imported_at).label('uploaded_at')
+    ).group_by(
+        DeliveryReport.upload_batch_id
+    ).order_by(
+        func.max(DeliveryReport.imported_at).desc()
+    ).first()
+    
+    if not latest or not latest.upload_batch_id:
+        raise HTTPException(
+            status_code=404,
+            detail="No upload batches found"
+        )
+    
+    result = get_batch_summary(
+        db=db,
+        batch_id=latest.upload_batch_id
+    )
+    
+    return result
+
+
+# ==========================================================
 # DELETE BATCH
 # ==========================================================
 
 @router.delete("/batch/{batch_id}")
 def delete_batch(
     batch_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    confirm: bool = False
 ):
     """
     Delete uploaded batch records.
-    """
-    logger.info(f"Deleting batch {batch_id}")
     
+    - confirm=True: Actually delete the batch
+    - confirm=False: Return info about what would be deleted
+    """
+    logger.info(f"Delete request for batch {batch_id}, confirm={confirm}")
+    
+    # First, get info about what will be deleted
+    count_query = db.query(DeliveryReport).filter(
+        DeliveryReport.upload_batch_id == batch_id
+    )
+    
+    record_count = count_query.count()
+    
+    if record_count == 0:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Batch {batch_id} not found or has no records"
+        )
+    
+    if not confirm:
+        return {
+            "confirm_required": True,
+            "message": f"This will delete {record_count} records from batch {batch_id}",
+            "batch_id": batch_id,
+            "record_count": record_count,
+            "endpoint": f"/upload/batch/{batch_id}?confirm=true"
+        }
+    
+    # Perform deletion
     result = delete_import_batch(
         db=db,
         batch_id=batch_id
@@ -217,6 +336,54 @@ def delete_batch(
 
 
 # ==========================================================
+# DELETE ALL BATCHES (Admin utility)
+# ==========================================================
+
+@router.delete("/all")
+def delete_all_batches(
+    db: Session = Depends(get_db),
+    confirm: bool = False
+):
+    """
+    DELETE ALL upload batches (Admin only).
+    
+    - confirm=True: Delete all data
+    - confirm=False: Return warning
+    """
+    total_records = db.query(DeliveryReport).count()
+    
+    if not confirm:
+        return {
+            "confirm_required": True,
+            "warning": "⚠️ DANGER: This will delete ALL delivery records!",
+            "total_records": total_records,
+            "endpoint": "/upload/all?confirm=true"
+        }
+    
+    # Delete all records
+    deleted = db.query(DeliveryReport).delete()
+    db.commit()
+    
+    # Also clean up upload folder
+    if os.path.exists(UPLOAD_FOLDER):
+        for file in os.listdir(UPLOAD_FOLDER):
+            file_path = os.path.join(UPLOAD_FOLDER, file)
+            try:
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
+            except Exception as e:
+                logger.warning(f"Failed to delete {file_path}: {e}")
+    
+    logger.warning(f"ALL DATA DELETED: {deleted} records removed")
+    
+    return {
+        "success": True,
+        "message": "All delivery records have been deleted",
+        "deleted_count": deleted
+    }
+
+
+# ==========================================================
 # HEALTH CHECK
 # ==========================================================
 
@@ -225,7 +392,7 @@ def upload_status():
     """
     Upload module health check.
     """
-    # Check folder size (optional - for monitoring)
+    # Check folder size
     folder_size_bytes = 0
     file_count = 0
     
@@ -260,7 +427,6 @@ def recent_batches(
     """
     Get most recent upload batches.
     """
-    from app.models import DeliveryReport
     from sqlalchemy import func
     
     batches = db.query(
@@ -285,4 +451,37 @@ def recent_batches(
             }
             for batch in batches if batch.upload_batch_id
         ]
+    }
+
+
+# ==========================================================
+# GET STATISTICS
+# ==========================================================
+
+@router.get("/statistics")
+def upload_statistics(
+    db: Session = Depends(get_db)
+):
+    """
+    Get overall upload statistics.
+    """
+    from sqlalchemy import func
+    
+    total_records = db.query(DeliveryReport).count()
+    total_batches = db.query(DeliveryReport.upload_batch_id).distinct().count()
+    
+    last_upload = db.query(
+        DeliveryReport.upload_batch_id,
+        func.max(DeliveryReport.imported_at).label('uploaded_at')
+    ).group_by(
+        DeliveryReport.upload_batch_id
+    ).order_by(
+        func.max(DeliveryReport.imported_at).desc()
+    ).first()
+    
+    return {
+        "total_records": total_records,
+        "total_batches": total_batches,
+        "last_batch_id": last_upload.upload_batch_id if last_upload else None,
+        "last_upload_date": last_upload.uploaded_at.isoformat() if last_upload and last_upload.uploaded_at else None
     }
