@@ -1,6 +1,8 @@
 # ==========================================================
 # FILE: app/services/logistics_query_service.py
 # ==========================================================
+# COMPLETE UPDATED VERSION WITH PRIORITY 1, 2, AND 3 IMPROVEMENTS
+# ==========================================================
 
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_, distinct
@@ -26,19 +28,6 @@ class LogisticsQueryService:
     def _get_unique_dns(records) -> set:
         """Get unique DN numbers from a list of records."""
         return set(str(r.dn_no) for r in records if r.dn_no)
-    
-    @staticmethod
-    def _calculate_dn_age(record) -> int:
-        """Calculate age of a DN in days from creation date."""
-        if not record.dn_create_date:
-            return 0
-        
-        if isinstance(record.dn_create_date, datetime):
-            create_date = record.dn_create_date.date()
-        else:
-            create_date = record.dn_create_date
-        
-        return (datetime.now().date() - create_date).days
     
     @staticmethod
     def _get_dn_creation_date(record):
@@ -108,18 +97,71 @@ class LogisticsQueryService:
             "imported_at": record.imported_at.isoformat() if record.imported_at else None,
             "created_at": record.created_at.isoformat() if record.created_at else None,
             "updated_at": record.updated_at.isoformat() if record.updated_at else None,
-            "dn_age_days": LogisticsQueryService._calculate_dn_age(record)
         }
     
     # ======================================================
-    # MASTER DEALER DASHBOARD BUILDER (NEW - REPLACES MULTIPLE FUNCTIONS)
+    # CORRECTED AGING CALCULATIONS (Priority 1 - Critical Fix)
+    # ======================================================
+    
+    @staticmethod
+    def calculate_dispatch_age(record) -> int:
+        """
+        Calculate dispatch age = PGI Date - DN Create Date
+        Returns days taken from DN creation to dispatch
+        """
+        if not record.dn_create_date or not record.good_issue_date:
+            return 0
+        
+        create_date = record.dn_create_date.date() if isinstance(record.dn_create_date, datetime) else record.dn_create_date
+        issue_date = record.good_issue_date.date() if isinstance(record.good_issue_date, datetime) else record.good_issue_date
+        
+        return (issue_date - create_date).days
+    
+    @staticmethod
+    def calculate_pod_age(record) -> int:
+        """
+        Calculate POD age = Today - PGI Date
+        Returns days since dispatch without acknowledgement
+        """
+        if not record.good_issue_date:
+            return 0
+        
+        issue_date = record.good_issue_date.date() if isinstance(record.good_issue_date, datetime) else record.good_issue_date
+        
+        return (datetime.now().date() - issue_date).days
+    
+    @staticmethod
+    def calculate_delivery_cycle(record) -> int:
+        """
+        Calculate total delivery cycle = POD Date - DN Create Date
+        Returns total days from creation to acknowledgement
+        """
+        if not record.dn_create_date or not record.pod_date:
+            return 0
+        
+        create_date = record.dn_create_date.date() if isinstance(record.dn_create_date, datetime) else record.dn_create_date
+        pod_date = record.pod_date.date() if isinstance(record.pod_date, datetime) else record.pod_date
+        
+        return (pod_date - create_date).days
+    
+    @staticmethod
+    def get_dn_aging_details(record) -> Dict[str, int]:
+        """Get complete aging details for a DN record"""
+        return {
+            "dispatch_age": LogisticsQueryService.calculate_dispatch_age(record),
+            "pod_age": LogisticsQueryService.calculate_pod_age(record),
+            "delivery_cycle": LogisticsQueryService.calculate_delivery_cycle(record)
+        }
+    
+    # ======================================================
+    # MASTER DEALER DASHBOARD BUILDER (Priority 1 & 2 - Enhanced)
     # ======================================================
     
     @staticmethod
     def get_dealer_complete_dashboard(db: Session, dealer_name: str, page: int = 1, page_size: int = 10) -> Dict[str, Any]:
         """
         Master function that builds a complete dealer dashboard in one pass.
-        This replaces get_dealer_summary, get_dealer_dn_breakdown, get_dealer_product_summary, and get_dealer_aging.
+        Features corrected aging calculations, enhanced DN details, and pod_pending_amount.
         
         Parameters:
         - dealer_name: Name of the dealer (supports partial/fuzzy matching)
@@ -150,7 +192,7 @@ class LogisticsQueryService:
         
         actual_dealer_name = records[0].customer_name if records else dealer_name
         
-        # Step 2: Group by unique DN
+        # Step 2: Group by unique DN with enhanced fields (Priority 2)
         dn_groups = {}
         product_summary = {}
         warehouse_stats = {}
@@ -175,6 +217,31 @@ class LogisticsQueryService:
                     status = "unknown"
                     status_text = r.delivery_status or "Unknown"
                 
+                # Get corrected aging details (Priority 1)
+                aging = LogisticsQueryService.get_dn_aging_details(r)
+                
+                # Format dates for display
+                dn_create_date_str = ""
+                if r.dn_create_date:
+                    if isinstance(r.dn_create_date, datetime):
+                        dn_create_date_str = r.dn_create_date.strftime('%d-%b')
+                    else:
+                        dn_create_date_str = r.dn_create_date.strftime('%d-%b') if hasattr(r.dn_create_date, 'strftime') else str(r.dn_create_date)
+                
+                good_issue_date_str = ""
+                if r.good_issue_date:
+                    if isinstance(r.good_issue_date, datetime):
+                        good_issue_date_str = r.good_issue_date.strftime('%d-%b')
+                    else:
+                        good_issue_date_str = r.good_issue_date.strftime('%d-%b') if hasattr(r.good_issue_date, 'strftime') else str(r.good_issue_date)
+                
+                pod_date_str = ""
+                if r.pod_date:
+                    if isinstance(r.pod_date, datetime):
+                        pod_date_str = r.pod_date.strftime('%d-%b')
+                    else:
+                        pod_date_str = r.pod_date.strftime('%d-%b') if hasattr(r.pod_date, 'strftime') else str(r.pod_date)
+                
                 dn_groups[dn_no] = {
                     "dn_no": dn_no,
                     "status": status,
@@ -182,7 +249,15 @@ class LogisticsQueryService:
                     "pod_status": "Received" if r.pod_status == "Received" else "Pending",
                     "total_quantity": 0,
                     "total_amount": 0,
-                    "age_days": LogisticsQueryService._calculate_dn_age(r),
+                    "dn_create_date": r.dn_create_date,
+                    "dn_create_date_str": dn_create_date_str,
+                    "good_issue_date": r.good_issue_date,
+                    "good_issue_date_str": good_issue_date_str,
+                    "pod_date": r.pod_date,
+                    "pod_date_str": pod_date_str,
+                    "dispatch_age": aging["dispatch_age"],
+                    "pod_age": aging["pod_age"],
+                    "delivery_cycle": aging["delivery_cycle"],
                     "warehouse": r.warehouse,
                     "city": r.ship_to_city,
                     "products": []
@@ -225,27 +300,29 @@ class LogisticsQueryService:
             # Warehouse stats (for pending only)
             if r.pgi_status != "Completed" and r.warehouse:
                 if r.warehouse not in warehouse_stats:
-                    warehouse_stats[r.warehouse] = {"dns": set(), "quantity": 0}
+                    warehouse_stats[r.warehouse] = {"dns": set(), "quantity": 0, "amount": 0}
                 warehouse_stats[r.warehouse]["dns"].add(dn_no)
                 warehouse_stats[r.warehouse]["quantity"] += float(r.dn_qty or 0)
+                warehouse_stats[r.warehouse]["amount"] += float(r.dn_amount or 0)
             
             # City stats (for pending only)
             if r.pgi_status != "Completed" and r.ship_to_city:
                 if r.ship_to_city not in city_stats:
-                    city_stats[r.ship_to_city] = {"dns": set(), "quantity": 0}
+                    city_stats[r.ship_to_city] = {"dns": set(), "quantity": 0, "amount": 0}
                 city_stats[r.ship_to_city]["dns"].add(dn_no)
                 city_stats[r.ship_to_city]["quantity"] += float(r.dn_qty or 0)
+                city_stats[r.ship_to_city]["amount"] += float(r.dn_amount or 0)
         
         # Step 3: Categorize DNs by status
         delivered_dns = [dn for dn in dn_groups.values() if dn["status"] == "delivered_acknowledged"]
         pending_dns = [dn for dn in dn_groups.values() if dn["status"] == "pending"]
         pod_pending_dns = [dn for dn in dn_groups.values() if dn["status"] == "delivered_not_acknowledged"]
         
-        # Sort pending DNs by age (oldest first)
-        pending_dns_sorted = sorted(pending_dns, key=lambda x: x["age_days"], reverse=True)
-        pod_pending_dns_sorted = sorted(pod_pending_dns, key=lambda x: x["age_days"], reverse=True)
+        # Sort pending DNs by dispatch_age (older first), POD pending by pod_age
+        pending_dns_sorted = sorted(pending_dns, key=lambda x: x["dispatch_age"], reverse=True)
+        pod_pending_dns_sorted = sorted(pod_pending_dns, key=lambda x: x["pod_age"], reverse=True)
         
-        # Step 4: Calculate KPIs
+        # Step 4: Calculate KPIs with pod_pending_amount (Priority 1)
         total_dns = len(dn_groups)
         total_units = sum(dn["total_quantity"] for dn in dn_groups.values())
         delivered_units = sum(dn["total_quantity"] for dn in delivered_dns)
@@ -254,17 +331,24 @@ class LogisticsQueryService:
         
         total_amount = sum(dn["total_amount"] for dn in dn_groups.values())
         pending_amount = sum(dn["total_amount"] for dn in pending_dns)
+        pod_pending_amount = sum(dn["total_amount"] for dn in pod_pending_dns)
+        outstanding_amount = pending_amount + pod_pending_amount
         
         # Step 5: Find oldest pending DN
         oldest_pending = pending_dns_sorted[0] if pending_dns_sorted else None
         oldest_pod_pending = pod_pending_dns_sorted[0] if pod_pending_dns_sorted else None
         
-        # Step 6: Find highest pending product
-        highest_pending_product = max(
-            [(p["product_name"], p["pending_quantity"]) for p in product_summary.values()],
-            key=lambda x: x[1],
-            default=("None", 0)
-        )
+        # Step 6: Fix Highest Pending Product Bug (Priority 1)
+        # Filter products with pending_quantity > 0 before finding max
+        pending_products = [p for p in product_summary.values() if p["pending_quantity"] > 0]
+        if pending_products:
+            highest_pending_product = max(pending_products, key=lambda x: x["pending_quantity"])
+            highest_pending_product_info = {
+                "product_name": highest_pending_product["product_name"],
+                "pending_quantity": round(highest_pending_product["pending_quantity"], 0)
+            }
+        else:
+            highest_pending_product_info = {"product_name": "None", "pending_quantity": 0}
         
         # Step 7: Paginate pending DNs
         total_pages = (len(pending_dns_sorted) + page_size - 1) // page_size if pending_dns_sorted else 1
@@ -286,26 +370,27 @@ class LogisticsQueryService:
                 "pending_units": round(pending_units, 0),
                 "pending_amount": round(pending_amount, 2),
                 "pod_pending_dns": len(pod_pending_dns),
-                "pod_pending_units": round(pod_pending_units, 0)
+                "pod_pending_units": round(pod_pending_units, 0),
+                "pod_pending_amount": round(pod_pending_amount, 2),
+                "outstanding_amount": round(outstanding_amount, 2)
             },
             "alerts": {
                 "oldest_pending_dn": {
                     "dn_no": oldest_pending["dn_no"] if oldest_pending else None,
-                    "age_days": oldest_pending["age_days"] if oldest_pending else 0,
-                    "quantity": oldest_pending["total_quantity"] if oldest_pending else 0
+                    "dispatch_age": oldest_pending["dispatch_age"] if oldest_pending else 0,
+                    "quantity": oldest_pending["total_quantity"] if oldest_pending else 0,
+                    "amount": oldest_pending["total_amount"] if oldest_pending else 0
                 } if oldest_pending else None,
                 "oldest_pod_pending_dn": {
                     "dn_no": oldest_pod_pending["dn_no"] if oldest_pod_pending else None,
-                    "age_days": oldest_pod_pending["age_days"] if oldest_pod_pending else 0,
-                    "quantity": oldest_pod_pending["total_quantity"] if oldest_pod_pending else 0
+                    "pod_age": oldest_pod_pending["pod_age"] if oldest_pod_pending else 0,
+                    "quantity": oldest_pod_pending["total_quantity"] if oldest_pod_pending else 0,
+                    "amount": oldest_pod_pending["total_amount"] if oldest_pod_pending else 0
                 } if oldest_pod_pending else None,
-                "highest_pending_product": {
-                    "product_name": highest_pending_product[0],
-                    "pending_quantity": round(highest_pending_product[1], 0)
-                }
+                "highest_pending_product": highest_pending_product_info
             },
             "pending_dns": paginated_pending_dns,
-            "pod_pending_dns": pod_pending_dns_sorted[:10],  # Top 10 POD pending for quick view
+            "pod_pending_dns": pod_pending_dns_sorted[:10],
             "product_summary": sorted(
                 [{
                     "product_name": p["product_name"],
@@ -319,13 +404,13 @@ class LogisticsQueryService:
                 reverse=True
             )[:15],
             "warehouse_breakdown": sorted(
-                [{"warehouse": w, "pending_dns": len(stats["dns"]), "pending_units": round(stats["quantity"], 0)}
+                [{"warehouse": w, "pending_dns": len(stats["dns"]), "pending_units": round(stats["quantity"], 0), "pending_amount": round(stats["amount"], 2)}
                  for w, stats in warehouse_stats.items()],
                 key=lambda x: x["pending_dns"],
                 reverse=True
             )[:10],
             "city_breakdown": sorted(
-                [{"city": c, "pending_dns": len(stats["dns"]), "pending_units": round(stats["quantity"], 0)}
+                [{"city": c, "pending_dns": len(stats["dns"]), "pending_units": round(stats["quantity"], 0), "pending_amount": round(stats["amount"], 2)}
                  for c, stats in city_stats.items()],
                 key=lambda x: x["pending_dns"],
                 reverse=True
@@ -340,14 +425,20 @@ class LogisticsQueryService:
             }
         }
         
-        # Step 9: Generate formatted WhatsApp message
-        dashboard["formatted_message"] = LogisticsQueryService._format_dealer_dashboard(dashboard)
+        # Step 9: Generate formatted WhatsApp message (Enhanced with Priority 2 format)
+        dashboard["formatted_message"] = LogisticsQueryService._format_dealer_dashboard_enhanced(dashboard)
+        
+        # Step 10: Add AI Insights (Priority 8)
+        dashboard["ai_insights"] = LogisticsQueryService._generate_ai_insights_for_dealer(dashboard)
         
         return dashboard
     
     @staticmethod
-    def _format_dealer_dashboard(dashboard: Dict[str, Any]) -> str:
-        """Format the dealer dashboard into a WhatsApp-friendly message."""
+    def _format_dealer_dashboard_enhanced(dashboard: Dict[str, Any]) -> str:
+        """
+        Format the dealer dashboard with enhanced DN details.
+        Priority 2: Shows DN with Products, Qty, Value, PGI Date, POD Status, Aging
+        """
         if dashboard.get("fuzzy"):
             return dashboard.get("summary", "Multiple dealers found")
         
@@ -376,8 +467,10 @@ class LogisticsQueryService:
         
         message += f"✅ *Delivered:* {kpis['delivered_dns']} DNs ({kpis['delivered_units']:,.0f} units)\n"
         message += f"⏳ *Pending Dispatch:* {kpis['pending_dns']} DNs ({kpis['pending_units']:,.0f} units)\n"
+        message += f"   Value: Rs {kpis['pending_amount']:,.2f}\n"
         message += f"📋 *Pending POD:* {kpis['pod_pending_dns']} DNs ({kpis['pod_pending_units']:,.0f} units)\n"
-        message += f"💰 *Pending Value:* Rs {kpis['pending_amount']:,.2f}\n\n"
+        message += f"   Value: Rs {kpis['pod_pending_amount']:,.2f}\n"
+        message += f"💰 *Total Outstanding:* Rs {kpis['outstanding_amount']:,.2f}\n\n"
         
         # Alerts Section (Critical)
         if alerts["oldest_pending_dn"] and alerts["oldest_pending_dn"]["dn_no"]:
@@ -385,47 +478,64 @@ class LogisticsQueryService:
             message += "🚨 *CRITICAL ALERTS*\n"
             message += "━━━━━━━━━━━━━━━━━━━━\n"
             message += f"⚠️ *Oldest Pending DN:* {alerts['oldest_pending_dn']['dn_no']}\n"
-            message += f"   Age: {alerts['oldest_pending_dn']['age_days']} days\n"
-            message += f"   Quantity: {alerts['oldest_pending_dn']['quantity']:,.0f} units\n\n"
+            message += f"   Dispatch Age: {alerts['oldest_pending_dn']['dispatch_age']} days\n"
+            message += f"   Quantity: {alerts['oldest_pending_dn']['quantity']:,.0f} units\n"
+            message += f"   Value: Rs {alerts['oldest_pending_dn']['amount']:,.2f}\n\n"
         
         if alerts["oldest_pod_pending_dn"] and alerts["oldest_pod_pending_dn"]["dn_no"]:
             message += f"⚠️ *Oldest POD Pending:* {alerts['oldest_pod_pending_dn']['dn_no']}\n"
-            message += f"   Age: {alerts['oldest_pod_pending_dn']['age_days']} days\n\n"
+            message += f"   POD Age: {alerts['oldest_pod_pending_dn']['pod_age']} days\n"
+            message += f"   Quantity: {alerts['oldest_pod_pending_dn']['quantity']:,.0f} units\n"
+            message += f"   Value: Rs {alerts['oldest_pod_pending_dn']['amount']:,.2f}\n\n"
         
         if alerts["highest_pending_product"]["product_name"] != "None":
             message += f"⚠️ *Highest Pending Product:* {alerts['highest_pending_product']['product_name']}\n"
             message += f"   Pending Quantity: {alerts['highest_pending_product']['pending_quantity']:,.0f} units\n\n"
         
-        # Pending DNs Section (Paginated)
+        # Enhanced Pending DNs Section with full details (Priority 2 format)
         if pending_dns:
             message += "━━━━━━━━━━━━━━━━━━━━\n"
             message += f"⏳ *PENDING DNs (Page {pagination.get('page', 1)} of {pagination.get('total_pages', 1)})*\n"
             message += "━━━━━━━━━━━━━━━━━━━━\n"
             for dn in pending_dns[:10]:
-                message += f"🔹 *DN {dn['dn_no']}*\n"
-                message += f"   Age: {dn['age_days']} days | Qty: {dn['total_quantity']:,.0f} units\n"
-                # Show top 3 products
-                products_display = dn['products'][:3]
-                for p in products_display:
-                    message += f"   • {p['product_name']}: {p['quantity']:,.0f} units\n"
-                if len(dn['products']) > 3:
-                    message += f"   • +{len(dn['products']) - 3} more products\n"
+                # Format using enhanced DN display (Priority 2)
+                message += f"🔹 *DN: {dn['dn_no']}*\n"
+                message += f"\n"
+                message += f"   📅 DN Date: {dn.get('dn_create_date_str', 'N/A')}\n"
+                message += f"   🚚 PGI Date: {dn.get('good_issue_date_str', 'Not Dispatched')}\n"
+                message += f"\n"
+                message += f"   ⏱️ Dispatch Age: {dn['dispatch_age']} days\n"
+                message += f"   ⏱️ POD Age: {dn['pod_age']} days\n"
+                message += f"\n"
+                message += f"   📦 Qty: {dn['total_quantity']:,.0f} units\n"
+                message += f"   💰 Value: Rs {dn['total_amount']:,.2f}\n"
+                message += f"\n"
+                message += f"   📋 Products:\n"
+                # Show products with quantities
+                for p in dn['products'][:5]:
+                    message += f"      • {p['product_name']} = {p['quantity']:,.0f} units\n"
+                if len(dn['products']) > 5:
+                    message += f"      • +{len(dn['products']) - 5} more products\n"
                 message += "\n"
             
             if pagination.get("has_next", False):
-                message += f"📌 *{pagination.get('total_pending_dns', 0) - 10} more pending DNs*\n"
+                remaining = pagination.get('total_pending_dns', 0) - 10
+                message += f"📌 *{remaining} more pending DNs*\n"
                 message += f"   Reply: *MORE PENDING* for next page\n\n"
         
-        # POD Pending DNs (Top 5)
+        # POD Pending DNs (Enhanced with details)
         if pod_pending_dns:
             message += "━━━━━━━━━━━━━━━━━━━━\n"
-            message += "📋 *AWAITING ACKNOWLEDGEMENT*\n"
+            message += "📋 *AWAITING ACKNOWLEDGEMENT (POD Pending)*\n"
             message += "━━━━━━━━━━━━━━━━━━━━\n"
             for dn in pod_pending_dns[:5]:
-                message += f"🔹 *DN {dn['dn_no']}* - Age: {dn['age_days']} days | Qty: {dn['total_quantity']:,.0f} units\n"
+                message += f"🔹 *DN: {dn['dn_no']}*\n"
+                message += f"   PGI Date: {dn.get('good_issue_date_str', 'N/A')}\n"
+                message += f"   POD Age: {dn['pod_age']} days\n"
+                message += f"   Qty: {dn['total_quantity']:,.0f} units\n"
+                message += f"   Value: Rs {dn['total_amount']:,.2f}\n\n"
             if len(pod_pending_dns) > 5:
-                message += f"\n📌 +{len(pod_pending_dns) - 5} more POD pending DNs\n"
-            message += "\n"
+                message += f"📌 +{len(pod_pending_dns) - 5} more POD pending DNs\n\n"
         
         # Product Summary (Top 10)
         if product_summary:
@@ -445,7 +555,7 @@ class LogisticsQueryService:
             message += "🏭 *PENDING BY WAREHOUSE*\n"
             message += "━━━━━━━━━━━━━━━━━━━━\n"
             for w in warehouse_breakdown[:5]:
-                message += f"• {w['warehouse']}: {w['pending_dns']} DNs ({w['pending_units']:,.0f} units)\n"
+                message += f"• {w['warehouse']}: {w['pending_dns']} DNs ({w['pending_units']:,.0f} units) - Rs {w['pending_amount']:,.2f}\n"
             message += "\n"
         
         # City Breakdown
@@ -454,7 +564,26 @@ class LogisticsQueryService:
             message += "🌆 *PENDING BY CITY*\n"
             message += "━━━━━━━━━━━━━━━━━━━━\n"
             for c in city_breakdown[:5]:
-                message += f"• {c['city']}: {c['pending_dns']} DNs ({c['pending_units']:,.0f} units)\n"
+                message += f"• {c['city']}: {c['pending_dns']} DNs ({c['pending_units']:,.0f} units) - Rs {c['pending_amount']:,.2f}\n"
+            message += "\n"
+        
+        # AI Insights Section (Priority 8)
+        ai_insights = dashboard.get("ai_insights", {})
+        if ai_insights:
+            message += "━━━━━━━━━━━━━━━━━━━━\n"
+            message += "🤖 *AI INSIGHTS*\n"
+            message += "━━━━━━━━━━━━━━━━━━━━\n"
+            
+            risk_icon = "🔴" if ai_insights.get("risk_level") == "HIGH" else "🟡" if ai_insights.get("risk_level") == "MEDIUM" else "🟢"
+            message += f"{risk_icon} Risk Level: *{ai_insights.get('risk_level', 'UNKNOWN')}*\n\n"
+            
+            message += "📊 Key Findings:\n"
+            for finding in ai_insights.get('findings', [])[:4]:
+                message += f"   • {finding}\n"
+            
+            message += "\n💡 Recommendations:\n"
+            for rec in ai_insights.get('recommendations', [])[:4]:
+                message += f"   • {rec}\n"
             message += "\n"
         
         # Footer
@@ -464,6 +593,458 @@ class LogisticsQueryService:
         message += "━━━━━━━━━━━━━━━━━━━━"
         
         return message
+    
+    @staticmethod
+    def _generate_ai_insights_for_dealer(dashboard: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate AI insights for dealer dashboard (Priority 8)"""
+        kpis = dashboard.get("kpis", {})
+        alerts = dashboard.get("alerts", {})
+        pending_dns = dashboard.get("pending_dns", [])
+        pod_pending_dns = dashboard.get("pod_pending_dns", [])
+        
+        findings = []
+        recommendations = []
+        risk_level = "LOW"
+        
+        # Analyze pending DNs
+        pending_dns_count = kpis.get("pending_dns", 0)
+        pod_pending_dns_count = kpis.get("pod_pending_dns", 0)
+        total_dns = kpis.get("total_dns", 1)
+        
+        pending_ratio = (pending_dns_count + pod_pending_dns_count) / total_dns if total_dns > 0 else 0
+        
+        if pending_ratio > 0.5:
+            risk_level = "HIGH"
+            findings.append(f"{pending_ratio * 100:.0f}% of deliveries are outstanding")
+            recommendations.append("🚨 PRIORITY: Clear pending dispatches immediately")
+        elif pending_ratio > 0.25:
+            risk_level = "MEDIUM"
+            findings.append(f"{pending_ratio * 100:.0f}% of deliveries are pending")
+            recommendations.append("Review pending DNs and expedite processing")
+        else:
+            findings.append("Most deliveries are on track")
+        
+        # Check oldest pending dispatch
+        oldest_pending = alerts.get("oldest_pending_dn")
+        if oldest_pending and oldest_pending.get("dispatch_age", 0) > 15:
+            risk_level = "HIGH"
+            findings.append(f"DN {oldest_pending['dn_no']} has been pending dispatch for {oldest_pending['dispatch_age']} days")
+            recommendations.append(f"ESCALATE: DN {oldest_pending['dn_no']} requires urgent dispatch")
+        elif oldest_pending and oldest_pending.get("dispatch_age", 0) > 7:
+            if risk_level != "HIGH":
+                risk_level = "MEDIUM"
+            findings.append(f"DN {oldest_pending['dn_no']} pending dispatch for {oldest_pending['dispatch_age']} days")
+            recommendations.append(f"Follow up on DN {oldest_pending['dn_no']}")
+        
+        # Check POD pending aging
+        oldest_pod = alerts.get("oldest_pod_pending_dn")
+        if oldest_pod and oldest_pod.get("pod_age", 0) > 15:
+            risk_level = "HIGH"
+            findings.append(f"DN {oldest_pod['dn_no']} delivered but not acknowledged for {oldest_pod['pod_age']} days")
+            recommendations.append(f"URGENT: Contact dealer for POD of DN {oldest_pod['dn_no']}")
+        elif oldest_pod and oldest_pod.get("pod_age", 0) > 7:
+            if risk_level != "HIGH":
+                risk_level = "MEDIUM"
+            findings.append(f"DN {oldest_pod['dn_no']} awaiting POD for {oldest_pod['pod_age']} days")
+            recommendations.append(f"Send reminder for DN {oldest_pod['dn_no']} POD")
+        
+        # Volume-based insights
+        if pending_dns_count > 20:
+            findings.append(f"High volume of pending dispatches: {pending_dns_count} DNs")
+            recommendations.append("Consider warehouse capacity review")
+        
+        if pod_pending_dns_count > 15:
+            findings.append(f"High volume of POD pending: {pod_pending_dns_count} DNs")
+            recommendations.append("Dealer follow-up campaign needed")
+        
+        # Product insights
+        highest_product = alerts.get("highest_pending_product", {})
+        if highest_product.get("pending_quantity", 0) > 500:
+            findings.append(f"Critical backlog: {highest_product['pending_quantity']:.0f} units of {highest_product['product_name']}")
+            recommendations.append(f"Check stock and supply chain for {highest_product['product_name']}")
+        elif highest_product.get("pending_quantity", 0) > 100:
+            findings.append(f"High pending quantity ({highest_product['pending_quantity']:.0f} units) of {highest_product['product_name']}")
+            recommendations.append(f"Review {highest_product['product_name']} orders")
+        
+        # Value-based insights
+        pending_amount = kpis.get("pending_amount", 0)
+        pod_pending_amount = kpis.get("pod_pending_amount", 0)
+        if pending_amount > 10000000:
+            findings.append(f"High financial exposure: Rs {pending_amount:,.2f} pending dispatch")
+            recommendations.append("Financial risk review recommended")
+        
+        # Calculate risk score (0-100, higher = more risk)
+        risk_score = min(100, int(
+            (pending_ratio * 60) +
+            (min(1, (oldest_pending.get("dispatch_age", 0) / 30) if oldest_pending else 0) * 20) +
+            (min(1, (oldest_pod.get("pod_age", 0) / 30) if oldest_pod else 0) * 20)
+        ))
+        
+        return {
+            "risk_level": risk_level,
+            "risk_score": risk_score,
+            "findings": findings,
+            "recommendations": recommendations,
+            "summary": f"Risk Level: {risk_level} (Score: {risk_score}/100) - {len(findings)} issues identified"
+        }
+    
+    # ======================================================
+    # EXECUTIVE SUMMARY UPGRADE (Priority 3)
+    # ======================================================
+    
+    @staticmethod
+    def get_executive_summary_enhanced(db: Session) -> Dict[str, Any]:
+        """
+        Enhanced executive summary with Top Risk Dealers, Warehouses, Cities, and Oldest POD DNs.
+        Priority 3: Complete executive dashboard for CEO/Management
+        """
+        
+        # Get base metrics
+        all_records = db.query(DeliveryReport).all()
+        unique_dns = LogisticsQueryService._get_unique_dns(all_records)
+        
+        # Calculate KPIs
+        pending_records = [r for r in all_records if r.pgi_status != "Completed"]
+        pending_dns = LogisticsQueryService._get_unique_dns(pending_records)
+        
+        delivered_records = [r for r in all_records if r.pgi_status == "Completed"]
+        delivered_dns = LogisticsQueryService._get_unique_dns(delivered_records)
+        
+        pod_pending_records = [r for r in all_records if r.pgi_status == "Completed" and r.pod_status == "Pending"]
+        pod_pending_dns = LogisticsQueryService._get_unique_dns(pod_pending_records)
+        
+        acknowledged_records = [r for r in all_records if r.pod_status == "Received"]
+        acknowledged_dns = LogisticsQueryService._get_unique_dns(acknowledged_records)
+        
+        total_amount = sum(r.dn_amount or 0 for r in all_records)
+        pending_amount = sum(r.dn_amount or 0 for r in pending_records)
+        pod_pending_amount = sum(r.dn_amount or 0 for r in pod_pending_records)
+        
+        # ==================================================
+        # TOP RISK DEALERS (Priority 3)
+        # ==================================================
+        dealer_risk = {}
+        for r in pending_records:
+            if r.customer_name:
+                if r.customer_name not in dealer_risk:
+                    dealer_risk[r.customer_name] = {
+                        "dns": set(),
+                        "quantity": 0,
+                        "amount": 0,
+                        "max_age": 0
+                    }
+                dealer_risk[r.customer_name]["dns"].add(r.dn_no)
+                dealer_risk[r.customer_name]["quantity"] += float(r.dn_qty or 0)
+                dealer_risk[r.customer_name]["amount"] += float(r.dn_amount or 0)
+                age = LogisticsQueryService.calculate_dispatch_age(r)
+                if age > dealer_risk[r.customer_name]["max_age"]:
+                    dealer_risk[r.customer_name]["max_age"] = age
+        
+        top_risk_dealers = sorted(
+            [{
+                "dealer": d,
+                "pending_dns": len(stats["dns"]),
+                "units": round(stats["quantity"], 0),
+                "value": round(stats["amount"], 2),
+                "max_age_days": stats["max_age"]
+            } for d, stats in dealer_risk.items()],
+            key=lambda x: x["pending_dns"],
+            reverse=True
+        )[:10]
+        
+        # ==================================================
+        # TOP RISK WAREHOUSES (Priority 3)
+        # ==================================================
+        warehouse_risk = {}
+        for r in pending_records:
+            if r.warehouse:
+                if r.warehouse not in warehouse_risk:
+                    warehouse_risk[r.warehouse] = {
+                        "dns": set(),
+                        "quantity": 0,
+                        "amount": 0,
+                        "max_age": 0
+                    }
+                warehouse_risk[r.warehouse]["dns"].add(r.dn_no)
+                warehouse_risk[r.warehouse]["quantity"] += float(r.dn_qty or 0)
+                warehouse_risk[r.warehouse]["amount"] += float(r.dn_amount or 0)
+                age = LogisticsQueryService.calculate_dispatch_age(r)
+                if age > warehouse_risk[r.warehouse]["max_age"]:
+                    warehouse_risk[r.warehouse]["max_age"] = age
+        
+        top_risk_warehouses = sorted(
+            [{
+                "warehouse": w,
+                "pending_dns": len(stats["dns"]),
+                "units": round(stats["quantity"], 0),
+                "value": round(stats["amount"], 2),
+                "max_age_days": stats["max_age"]
+            } for w, stats in warehouse_risk.items()],
+            key=lambda x: x["pending_dns"],
+            reverse=True
+        )[:10]
+        
+        # ==================================================
+        # TOP RISK CITIES (Priority 3)
+        # ==================================================
+        city_risk = {}
+        for r in pending_records:
+            if r.ship_to_city:
+                if r.ship_to_city not in city_risk:
+                    city_risk[r.ship_to_city] = {
+                        "dns": set(),
+                        "quantity": 0,
+                        "amount": 0,
+                        "max_age": 0
+                    }
+                city_risk[r.ship_to_city]["dns"].add(r.dn_no)
+                city_risk[r.ship_to_city]["quantity"] += float(r.dn_qty or 0)
+                city_risk[r.ship_to_city]["amount"] += float(r.dn_amount or 0)
+                age = LogisticsQueryService.calculate_dispatch_age(r)
+                if age > city_risk[r.ship_to_city]["max_age"]:
+                    city_risk[r.ship_to_city]["max_age"] = age
+        
+        top_risk_cities = sorted(
+            [{
+                "city": c,
+                "pending_dns": len(stats["dns"]),
+                "units": round(stats["quantity"], 0),
+                "value": round(stats["amount"], 2),
+                "max_age_days": stats["max_age"]
+            } for c, stats in city_risk.items()],
+            key=lambda x: x["pending_dns"],
+            reverse=True
+        )[:10]
+        
+        # ==================================================
+        # TOP 10 OLDEST POD DNs (Priority 3)
+        # ==================================================
+        pod_oldest = []
+        for r in pod_pending_records:
+            pod_age = LogisticsQueryService.calculate_pod_age(r)
+            pod_oldest.append({
+                "dn_no": r.dn_no,
+                "dealer": r.customer_name,
+                "pgi_date": r.good_issue_date,
+                "pod_age_days": pod_age,
+                "quantity": float(r.dn_qty or 0),
+                "value": float(r.dn_amount or 0)
+            })
+        
+        # Deduplicate by DN
+        seen_dns = set()
+        unique_pod_oldest = []
+        for pod in sorted(pod_oldest, key=lambda x: x["pod_age_days"], reverse=True):
+            if pod["dn_no"] not in seen_dns:
+                seen_dns.add(pod["dn_no"])
+                unique_pod_oldest.append(pod)
+        
+        oldest_pod_dns = unique_pod_oldest[:10]
+        
+        # ==================================================
+        # COMPLETE EXECUTIVE SUMMARY
+        # ==================================================
+        completion_rate = round((len(delivered_dns) / len(unique_dns) * 100) if unique_dns else 0, 2)
+        avg_dispatch_days = 0
+        dispatch_ages = [LogisticsQueryService.calculate_dispatch_age(r) for r in delivered_records if r.good_issue_date]
+        if dispatch_ages:
+            avg_dispatch_days = round(sum(dispatch_ages) / len(dispatch_ages), 1)
+        
+        summary_data = {
+            "success": True,
+            "overview": {
+                "total_dns": len(unique_dns),
+                "total_units": round(sum(r.dn_qty or 0 for r in all_records), 0),
+                "total_value": round(total_amount, 2),
+                "completion_rate": completion_rate,
+                "avg_dispatch_days": avg_dispatch_days
+            },
+            "pending_status": {
+                "pending_dispatch_dns": len(pending_dns),
+                "pending_dispatch_units": round(sum(r.dn_qty or 0 for r in pending_records), 0),
+                "pending_dispatch_value": round(pending_amount, 2),
+                "pending_pod_dns": len(pod_pending_dns),
+                "pending_pod_units": round(sum(r.dn_qty or 0 for r in pod_pending_records), 0),
+                "pending_pod_value": round(pod_pending_amount, 2),
+                "outstanding_value": round(pending_amount + pod_pending_amount, 2)
+            },
+            "top_risk_dealers": top_risk_dealers,
+            "top_risk_warehouses": top_risk_warehouses,
+            "top_risk_cities": top_risk_cities,
+            "oldest_pod_dns": oldest_pod_dns
+        }
+        
+        # Generate formatted WhatsApp message for executive
+        summary_data["formatted_message"] = LogisticsQueryService._format_executive_summary(summary_data)
+        
+        # Add AI recommendations (Priority 8)
+        summary_data["ai_recommendations"] = LogisticsQueryService._generate_executive_ai_recommendations(summary_data)
+        
+        return summary_data
+    
+    @staticmethod
+    def _format_executive_summary(data: Dict[str, Any]) -> str:
+        """Format executive summary for WhatsApp (Priority 3)"""
+        overview = data.get("overview", {})
+        pending = data.get("pending_status", {})
+        top_dealers = data.get("top_risk_dealers", [])[:5]
+        top_warehouses = data.get("top_risk_warehouses", [])[:5]
+        top_cities = data.get("top_risk_cities", [])[:5]
+        oldest_pod = data.get("oldest_pod_dns", [])[:10]
+        
+        message = "👔 *EXECUTIVE LOGISTICS COMMAND CENTER*\n\n"
+        
+        # Overview Section
+        message += "━━━━━━━━━━━━━━━━━━━━\n"
+        message += "📊 *OVERVIEW PERFORMANCE*\n"
+        message += "━━━━━━━━━━━━━━━━━━━━\n"
+        message += f"📦 Total DNs: *{overview.get('total_dns', 0)}*\n"
+        message += f"📦 Total Units: *{overview.get('total_units', 0):,.0f}*\n"
+        message += f"💰 Total Value: *Rs {overview.get('total_value', 0):,.2f}*\n"
+        message += f"✅ Completion Rate: *{overview.get('completion_rate', 0)}%*\n"
+        message += f"⏱️ Avg Dispatch Days: *{overview.get('avg_dispatch_days', 0)}* days\n\n"
+        
+        # Pending Status
+        message += "━━━━━━━━━━━━━━━━━━━━\n"
+        message += "⏳ *PENDING STATUS*\n"
+        message += "━━━━━━━━━━━━━━━━━━━━\n"
+        message += f"🚚 Pending Dispatch: *{pending.get('pending_dispatch_dns', 0)}* DNs\n"
+        message += f"   Units: {pending.get('pending_dispatch_units', 0):,.0f}\n"
+        message += f"   Value: Rs {pending.get('pending_dispatch_value', 0):,.2f}\n\n"
+        message += f"📋 Pending POD: *{pending.get('pending_pod_dns', 0)}* DNs\n"
+        message += f"   Units: {pending.get('pending_pod_units', 0):,.0f}\n"
+        message += f"   Value: Rs {pending.get('pending_pod_value', 0):,.2f}\n\n"
+        message += f"💰 Total Outstanding: *Rs {pending.get('outstanding_value', 0):,.2f}*\n\n"
+        
+        # Top Risk Dealers
+        if top_dealers:
+            message += "━━━━━━━━━━━━━━━━━━━━\n"
+            message += "🚨 *TOP RISK DEALERS*\n"
+            message += "━━━━━━━━━━━━━━━━━━━━\n"
+            for i, d in enumerate(top_dealers, 1):
+                message += f"{i}. *{d['dealer']}*\n"
+                message += f"   Pending: {d['pending_dns']} DNs | {d['units']:,.0f} units\n"
+                message += f"   Value: Rs {d['value']:,.2f} | Max Age: {d['max_age_days']} days\n\n"
+        
+        # Top Risk Warehouses
+        if top_warehouses:
+            message += "━━━━━━━━━━━━━━━━━━━━\n"
+            message += "🏭 *TOP RISK WAREHOUSES*\n"
+            message += "━━━━━━━━━━━━━━━━━━━━\n"
+            for i, w in enumerate(top_warehouses, 1):
+                message += f"{i}. *{w['warehouse']}*\n"
+                message += f"   Pending: {w['pending_dns']} DNs | {w['units']:,.0f} units\n"
+                message += f"   Value: Rs {w['value']:,.2f} | Max Age: {w['max_age_days']} days\n\n"
+        
+        # Top Risk Cities
+        if top_cities:
+            message += "━━━━━━━━━━━━━━━━━━━━\n"
+            message += "🌆 *TOP RISK CITIES*\n"
+            message += "━━━━━━━━━━━━━━━━━━━━\n"
+            for i, c in enumerate(top_cities, 1):
+                message += f"{i}. *{c['city']}*\n"
+                message += f"   Pending: {c['pending_dns']} DNs | {c['units']:,.0f} units\n"
+                message += f"   Value: Rs {c['value']:,.2f} | Max Age: {c['max_age_days']} days\n\n"
+        
+        # Oldest POD DNs
+        if oldest_pod:
+            message += "━━━━━━━━━━━━━━━━━━━━\n"
+            message += "📋 *TOP 10 OLDEST POD PENDING*\n"
+            message += "━━━━━━━━━━━━━━━━━━━━\n"
+            for i, pod in enumerate(oldest_pod, 1):
+                pgi_date = ""
+                if pod.get('pgi_date'):
+                    if isinstance(pod['pgi_date'], datetime):
+                        pgi_date = pod['pgi_date'].strftime('%d-%b')
+                    else:
+                        pgi_date = str(pod['pgi_date'])[:5]
+                message += f"{i}. *DN {pod['dn_no']}*\n"
+                message += f"   Dealer: {pod['dealer']}\n"
+                message += f"   PGI Date: {pgi_date} | POD Age: {pod['pod_age_days']} days\n"
+                message += f"   Qty: {pod['quantity']:,.0f} | Value: Rs {pod['value']:,.2f}\n\n"
+        
+        # AI Recommendations
+        ai_recs = data.get("ai_recommendations", {})
+        if ai_recs:
+            message += "━━━━━━━━━━━━━━━━━━━━\n"
+            message += "🤖 *AI ACTION PLAN FOR TODAY*\n"
+            message += "━━━━━━━━━━━━━━━━━━━━\n"
+            for rec in ai_recs.get("recommendations", [])[:5]:
+                priority_icon = "🔴" if rec.get("priority") == "HIGH" else "🟡" if rec.get("priority") == "MEDIUM" else "🟢"
+                message += f"{priority_icon} *{rec.get('title', 'Action')}*\n"
+                message += f"   {rec.get('description', '')}\n\n"
+        
+        # Footer
+        message += "━━━━━━━━━━━━━━━━━━━━\n"
+        message += "💡 *Need more details?*\n"
+        message += "   Reply: *DETAILS <dealer/warehouse/city>*\n"
+        message += "━━━━━━━━━━━━━━━━━━━━"
+        
+        return message
+    
+    @staticmethod
+    def _generate_executive_ai_recommendations(data: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate AI recommendations for executive (Priority 8)"""
+        recommendations = []
+        pending = data.get("pending_status", {})
+        top_dealers = data.get("top_risk_dealers", [])
+        top_warehouses = data.get("top_risk_warehouses", [])
+        top_cities = data.get("top_risk_cities", [])
+        oldest_pod = data.get("oldest_pod_dns", [])
+        
+        # Priority 1: Clear oldest POD pending
+        if oldest_pod:
+            oldest = oldest_pod[0]
+            recommendations.append({
+                "title": "Clear Oldest POD Pending",
+                "description": f"DN {oldest['dn_no']} to {oldest['dealer']} has been awaiting acknowledgement for {oldest['pod_age_days']} days",
+                "priority": "HIGH",
+                "action": "Contact dealer immediately for POD submission"
+            })
+        
+        # Priority 2: Address top risk dealer
+        if top_dealers:
+            worst_dealer = top_dealers[0]
+            recommendations.append({
+                "title": "Escalate Top Risk Dealer",
+                "description": f"{worst_dealer['dealer']} has {worst_dealer['pending_dns']} pending DNs worth Rs {worst_dealer['value']:,.2f}",
+                "priority": "HIGH",
+                "action": "Schedule urgent review meeting with dealer management"
+            })
+        
+        # Priority 3: Warehouse bottleneck
+        if top_warehouses:
+            worst_warehouse = top_warehouses[0]
+            recommendations.append({
+                "title": "Warehouse Bottleneck Alert",
+                "description": f"{worst_warehouse['warehouse']} has {worst_warehouse['pending_dns']} pending DNs with max age {worst_warehouse['max_age_days']} days",
+                "priority": "HIGH",
+                "action": "Review warehouse capacity and staffing"
+            })
+        
+        # Priority 4: City focus
+        if top_cities:
+            worst_city = top_cities[0]
+            recommendations.append({
+                "title": "Regional Focus Required",
+                "description": f"{worst_city['city']} region has {worst_city['pending_dns']} pending deliveries",
+                "priority": "MEDIUM",
+                "action": "Deploy additional logistics resources to this region"
+            })
+        
+        # Priority 5: Financial exposure
+        if pending.get("outstanding_value", 0) > 50000000:
+            recommendations.append({
+                "title": "Financial Risk Alert",
+                "description": f"Total outstanding value is Rs {pending.get('outstanding_value', 0):,.2f}",
+                "priority": "HIGH",
+                "action": "Review credit terms and collection process"
+            })
+        
+        return {
+            "recommendations": recommendations,
+            "summary": f"Found {len(recommendations)} critical action items for today"
+        }
     
     # ======================================================
     # INTENT DETECTION (UPDATED)
@@ -487,220 +1068,56 @@ class LogisticsQueryService:
                 if dn_match_with_keyword:
                     return {"intent": "dn_lookup", "dn_no": dn_match_with_keyword.group(1)}
         
-        # DEALER DASHBOARD (NEW - Routes all dealer queries to master dashboard)
+        # DEALER DASHBOARD - Universal dealer intelligence
         dealer_indicators = [
             "dealer", "customer", "show dealer", "dealer summary", "dealer dashboard",
             "status of", "show me", "tell me about", "deliveries of", "delivery for",
             "information about", "details of", "dealer aging", "dealer performance"
         ]
         
-        # Check for dealer name patterns
         for indicator in dealer_indicators:
             if indicator in question_lower:
-                # Extract dealer name after the indicator
                 parts = question_lower.split(indicator)
                 if len(parts) > 1:
                     dealer_name = parts[1].strip().title()
                     if dealer_name and len(dealer_name) > 2:
-                        # Check for page number in question
                         page_match = re.search(r'page\s+(\d+)', question_lower)
                         page = int(page_match.group(1)) if page_match else 1
                         return {"intent": "dealer_dashboard", "dealer_name": dealer_name, "page": page}
         
-        # Check for "more pending" pagination
-        if any(phrase in question_lower for phrase in ["more pending", "next page", "show more"]):
-            return {"intent": "dealer_pagination", "direction": "next"}
-        
-        # If question is short (2-30 chars) and not a number, treat as dealer dashboard
+        # Short name query (single word dealer name)
         if 2 < len(original_question) < 30 and not re.search(r'\d', original_question):
             return {"intent": "dealer_dashboard", "dealer_name": original_question.strip().title(), "page": 1}
         
-        # ==================================================
-        # AGING & DELIVERY INTELLIGENCE
-        # ==================================================
+        # Executive/CEO queries
+        executive_keywords = ["ceo", "executive", "command center", "executive summary", "ceo dashboard", "what should i focus on"]
+        if any(keyword in question_lower for keyword in executive_keywords):
+            return {"intent": "executive_summary_enhanced"}
         
-        if any(phrase in question_lower for phrase in [
-            "aging report", "delivery aging", "pending aging", "old pending", "oldest pending"
-        ]):
+        # Top risk queries
+        if any(phrase in question_lower for phrase in ["top risk", "worst dealer", "worst warehouse", "worst city"]):
+            return {"intent": "executive_summary_enhanced"}
+        
+        # Aging queries (using corrected calculations)
+        if any(phrase in question_lower for phrase in ["aging report", "delivery aging", "pending aging"]):
             return {"intent": "pending_delivery_aging"}
         
-        if any(phrase in question_lower for phrase in [
-            "warehouse aging", "which warehouse has the oldest", "oldest pending warehouse"
-        ]):
+        if any(phrase in question_lower for phrase in ["warehouse aging", "oldest pending warehouse"]):
             return {"intent": "warehouse_aging"}
         
-        if any(phrase in question_lower for phrase in [
-            "city aging", "which city has the oldest", "oldest pending city"
-        ]):
+        if any(phrase in question_lower for phrase in ["city aging", "oldest pending city"]):
             return {"intent": "city_aging"}
         
-        if any(phrase in question_lower for phrase in [
-            "critical deliveries", "critical pending", "urgent deliveries"
-        ]):
+        # Critical deliveries
+        if any(phrase in question_lower for phrase in ["critical deliveries", "critical pending", "urgent deliveries"]):
             return {"intent": "critical_pending_dns"}
         
-        if any(phrase in question_lower for phrase in [
-            "delivery risk", "biggest risks", "risk summary", "what are the biggest delivery risks"
-        ]):
-            return {"intent": "risk_summary"}
-        
-        if any(phrase in question_lower for phrase in [
-            "dealer with most delays", "most delayed dealer", "top delayed dealer"
-        ]):
-            return {"intent": "top_delayed_dealers"}
-        
-        if any(phrase in question_lower for phrase in [
-            "sla breach", "breaching sla", "sla violation", "deliveries older than"
-        ]):
-            return {"intent": "sla_breach_deliveries"}
-        
-        days_match = re.search(r'older than (\d+) days?', question_lower)
-        if days_match:
-            days = int(days_match.group(1))
-            return {"intent": "pending_older_than", "days": days}
-        
-        # ==================================================
-        # HIGHEST PENDING QUERIES
-        # ==================================================
-        
-        if any(phrase in question_lower for phrase in [
-            "highest pending dealer", "dealer has highest pending", "top pending dealer",
-            "which dealer has the highest pending", "dealer with most pending"
-        ]):
-            return {"intent": "highest_pending_dealer"}
-        
-        if any(phrase in question_lower for phrase in [
-            "highest pending warehouse", "warehouse has highest pending", "top pending warehouse"
-        ]):
-            top_match = re.search(r'top\s+(\d+)', question_lower)
-            if top_match:
-                return {"intent": "top_pending_warehouses", "limit": int(top_match.group(1))}
-            return {"intent": "highest_pending_warehouse"}
-        
-        if any(phrase in question_lower for phrase in [
-            "highest pending city", "city has highest pending", "top pending city"
-        ]):
-            top_match = re.search(r'top\s+(\d+)', question_lower)
-            if top_match:
-                return {"intent": "top_pending_cities", "limit": int(top_match.group(1))}
-            return {"intent": "highest_pending_city"}
-        
-        # ==================================================
-        # POD PENDING QUERIES
-        # ==================================================
-        
-        if any(phrase in question_lower for phrase in [
-            "which dealer has the most pod pending", "dealer pod pending highest",
-            "dealer with pending pod", "top dealer pod pending"
-        ]):
-            return {"intent": "highest_pod_pending_dealer"}
-        
-        if any(phrase in question_lower for phrase in [
-            "which warehouse has the most pod pending", "warehouse pod pending highest",
-            "top warehouse pod pending"
-        ]):
-            return {"intent": "highest_pod_pending_warehouse"}
-        
-        # ==================================================
-        # DELIVERY STATUS QUERIES
-        # ==================================================
-        
-        if any(phrase in question_lower for phrase in [
-            "how many deliveries are completed", "completed deliveries count",
-            "total completed deliveries", "deliveries completed"
-        ]):
-            return {"intent": "completed_deliveries_count"}
-        
-        if any(phrase in question_lower for phrase in [
-            "how many deliveries are acknowledged", "acknowledged deliveries",
-            "pod received count", "deliveries with pod"
-        ]):
-            return {"intent": "acknowledged_deliveries"}
-        
-        if any(phrase in question_lower for phrase in [
-            "delivered but not acknowledged", "awaiting dealer acknowledgement",
-            "delivered pod pending", "pending pod", "awaiting acknowledgement"
-        ]):
-            return {"intent": "delivered_not_acknowledged"}
-        
-        # ==================================================
-        # PENDING DELIVERIES
-        # ==================================================
-        
+        # Pending counts
         pending_keywords = ["pending delivery", "pending deliveries", "how many pending", "pending orders"]
         if any(keyword in question_lower for keyword in pending_keywords):
             return {"intent": "pending_deliveries"}
         
-        # ==================================================
-        # CITY SEARCH
-        # ==================================================
-        
-        city_patterns = [
-            r'in\s+([a-zA-Z\s]+?)(?:\s+only|\s+$|\.|\?|$)',
-            r'for\s+([a-zA-Z\s]+?)(?:\s+only|\s+$|\.|\?|$)',
-            r'at\s+([a-zA-Z\s]+?)(?:\s+only|\s+$|\.|\?|$)',
-            r'deliveries?\s+in\s+([a-zA-Z\s]+?)(?:\s+only|\s+$|\.|\?|$)'
-        ]
-        
-        for pattern in city_patterns:
-            city_match = re.search(pattern, question_lower)
-            if city_match:
-                city = city_match.group(1).strip().title()
-                if city and len(city) > 2:
-                    return {"intent": "city_search", "city": city}
-        
-        # ==================================================
-        # MATERIAL / PRODUCT SEARCH
-        # ==================================================
-        
-        material_patterns = [
-            r'material[\s#:]*([a-zA-Z0-9]+)',
-            r'product[\s#:]*([a-zA-Z0-9]+)',
-            r'model[\s#:]*([a-zA-Z0-9]+)'
-        ]
-        
-        for pattern in material_patterns:
-            material_match = re.search(pattern, question_lower)
-            if material_match:
-                return {"intent": "material_search", "material_no": material_match.group(1).upper()}
-        
-        # ==================================================
-        # WAREHOUSE SEARCH
-        # ==================================================
-        
-        warehouse_keywords = ["warehouse", "stock from", "from warehouse", "godown"]
-        for keyword in warehouse_keywords:
-            if keyword in question_lower:
-                parts = question_lower.split(keyword)
-                if len(parts) > 1:
-                    warehouse = parts[1].strip().upper()
-                    if warehouse and len(warehouse) >= 2:
-                        return {"intent": "warehouse_search", "warehouse": warehouse}
-        
-        # ==================================================
-        # EXECUTIVE / SUMMARY QUERIES
-        # ==================================================
-        
-        executive_keywords = ["ceo", "executive", "performance", "report", "logistics summary", "dashboard overview"]
-        if any(keyword in question_lower for keyword in executive_keywords):
-            return {"intent": "executive_summary"}
-        
-        summary_keywords = ["summary", "dashboard", "overview", "statistics", "insights", "analytics"]
-        if any(keyword in question_lower for keyword in summary_keywords):
-            return {"intent": "dashboard_summary"}
-        
-        # ==================================================
-        # TOP DEALERS / CITIES
-        # ==================================================
-        
-        if "top" in question_lower:
-            if "dealer" in question_lower or "customer" in question_lower:
-                top_match = re.search(r'top\s+(\d+)', question_lower)
-                return {"intent": "top_dealers", "limit": int(top_match.group(1)) if top_match else 10}
-            if "city" in question_lower:
-                top_match = re.search(r'top\s+(\d+)', question_lower)
-                return {"intent": "top_cities", "limit": int(top_match.group(1)) if top_match else 10}
-        
+        # Default
         return {"intent": "general_query", "question": original_question}
     
     # ======================================================
@@ -742,7 +1159,7 @@ class LogisticsQueryService:
     
     @staticmethod
     def get_dn_product_breakdown(db: Session, dn_no: str) -> Dict[str, Any]:
-        """Get product breakdown for a single DN."""
+        """Get product breakdown for a single DN with corrected aging."""
         records = (
             db.query(DeliveryReport)
             .filter(DeliveryReport.dn_no == dn_no)
@@ -765,7 +1182,9 @@ class LogisticsQueryService:
         main = records[0]
         total_qty = sum(p["quantity"] for p in products)
         total_amount = sum(p["amount"] for p in products)
-        age_days = LogisticsQueryService._calculate_dn_age(main)
+        
+        # Use corrected aging calculations
+        aging = LogisticsQueryService.get_dn_aging_details(main)
         
         if main.pgi_status == "Completed" and main.pod_status == "Received":
             status_text = "Delivered and Acknowledged"
@@ -784,7 +1203,12 @@ class LogisticsQueryService:
             "warehouse": main.warehouse,
             "status": status_text,
             "pod_status": "Received" if main.pod_status == "Received" else "Pending",
-            "age_days": age_days,
+            "dispatch_age": aging["dispatch_age"],
+            "pod_age": aging["pod_age"],
+            "delivery_cycle": aging["delivery_cycle"],
+            "dn_create_date": main.dn_create_date,
+            "good_issue_date": main.good_issue_date,
+            "pod_date": main.pod_date,
             "products": products,
             "total_quantity": float(total_qty),
             "total_amount": float(total_amount)
@@ -800,188 +1224,42 @@ class LogisticsQueryService:
         intent_result = LogisticsQueryService.detect_intent(question)
         intent = intent_result["intent"]
         
-        # NEW: Master dealer dashboard routing
+        # Master dealer dashboard routing (Priority 5)
         if intent == "dealer_dashboard":
             dealer_name = intent_result.get("dealer_name", "")
             page = intent_result.get("page", 1)
             result = LogisticsQueryService.get_dealer_complete_dashboard(db, dealer_name, page)
             result["summary"] = result.get("formatted_message", "Dealer dashboard generated.")
         
-        elif intent == "dealer_pagination":
-            # This would need to track user session for pagination
-            # For now, return a message asking to re-enter dealer name
-            result = {
-                "success": True,
-                "summary": "Please re-enter the dealer name to see more pending DNs. Example: 'Show more for FAISAL TRADERS'"
-            }
+        # Enhanced Executive Summary (Priority 3)
+        elif intent == "executive_summary_enhanced":
+            result = LogisticsQueryService.get_executive_summary_enhanced(db)
+            result["summary"] = result.get("formatted_message", "Executive summary generated.")
         
         elif intent == "dn_lookup":
             result = LogisticsQueryService.get_dn_product_breakdown(db, intent_result["dn_no"])
-            result["summary"] = LogisticsQueryService._format_dn_summary(result)
+            result["summary"] = LogisticsQueryService._format_dn_summary_enhanced(result)
         
         elif intent == "pending_delivery_aging":
-            result = LogisticsQueryService._get_pending_delivery_aging(db)
+            result = LogisticsQueryService._get_pending_delivery_aging_corrected(db)
         
         elif intent == "warehouse_aging":
-            result = LogisticsQueryService._get_warehouse_aging(db)
+            result = LogisticsQueryService._get_warehouse_aging_corrected(db)
         
         elif intent == "city_aging":
-            result = LogisticsQueryService._get_city_aging(db)
+            result = LogisticsQueryService._get_city_aging_corrected(db)
         
         elif intent == "critical_pending_dns":
-            result = LogisticsQueryService._get_critical_pending_dns(db)
-        
-        elif intent == "risk_summary":
-            result = LogisticsQueryService._generate_risk_summary(db)
-        
-        elif intent == "top_delayed_dealers":
-            result = LogisticsQueryService._get_top_delayed_dealers(db)
-        
-        elif intent == "sla_breach_deliveries":
-            result = LogisticsQueryService._get_sla_breach_deliveries(db)
-        
-        elif intent == "pending_older_than":
-            days = intent_result.get("days", 15)
-            result = LogisticsQueryService._get_pending_older_than(db, days)
+            result = LogisticsQueryService._get_critical_pending_dns_corrected(db)
         
         elif intent == "pending_deliveries":
-            result = LogisticsQueryService._get_pending_deliveries(db)
+            result = LogisticsQueryService._get_pending_deliveries_corrected(db)
             result["summary"] = f"There are {result.get('count', 0)} pending deliveries totaling {result.get('total_quantity', 0):.0f} units worth Rs {result.get('total_amount', 0):,.2f}."
         
-        elif intent == "pending_pod":
-            result = LogisticsQueryService._get_pending_pod(db)
-            result["summary"] = f"There are {result.get('pending_pod', 0)} deliveries awaiting dealer acknowledgement."
-        
-        elif intent == "pending_pgi":
-            result = LogisticsQueryService._get_pending_pgi(db)
-            result["summary"] = f"There are {result.get('pending_pgi', 0)} deliveries pending dispatch from warehouse."
-        
-        elif intent == "highest_pending_dealer":
-            result = LogisticsQueryService._get_highest_pending_dealer(db)
-            if result.get("success"):
-                result["summary"] = (f"{result['dealer']} currently has the highest pending deliveries "
-                                    f"with {result['pending_count']} pending DNs, {result['pending_quantity']:.0f} units, "
-                                    f"totaling Rs {result['pending_amount']:,.2f}.")
-            else:
-                result["summary"] = "No pending deliveries found in the system."
-        
-        elif intent == "highest_pending_warehouse":
-            result = LogisticsQueryService._get_highest_pending_warehouse(db)
-            if result.get("success"):
-                result["summary"] = (f"Warehouse {result['warehouse']} currently has the highest pending deliveries "
-                                    f"with {result['pending_count']} pending DNs, {result['pending_quantity']:.0f} units, "
-                                    f"totaling Rs {result['pending_amount']:,.2f}.")
-            else:
-                result["summary"] = "No pending deliveries found in the system."
-        
-        elif intent == "top_pending_warehouses":
-            limit = intent_result.get("limit", 10)
-            result = LogisticsQueryService._get_top_pending_warehouses(db, limit)
-            if result.get("success") and result.get("warehouses"):
-                warehouse_list = "\n".join([f"{w['rank']}. {w['warehouse']}: {w['pending_dns']} DNs, {w['pending_quantity']:.0f} units" 
-                                           for w in result["warehouses"]])
-                result["summary"] = f"Top {len(result['warehouses'])} Warehouses by Pending:\n{warehouse_list}"
-            else:
-                result["summary"] = "No pending deliveries found."
-        
-        elif intent == "highest_pending_city":
-            result = LogisticsQueryService._get_highest_pending_city(db)
-            if result.get("success"):
-                result["summary"] = (f"{result['city']} currently has the highest pending deliveries "
-                                    f"with {result['pending_count']} pending DNs, {result['pending_quantity']:.0f} units, "
-                                    f"totaling Rs {result['pending_amount']:,.2f}.")
-            else:
-                result["summary"] = "No pending deliveries found in the system."
-        
-        elif intent == "top_pending_cities":
-            limit = intent_result.get("limit", 10)
-            result = LogisticsQueryService._get_top_pending_cities(db, limit)
-            if result.get("success") and result.get("cities"):
-                city_list = "\n".join([f"{c['rank']}. {c['city']}: {c['pending_dns']} DNs, {c['pending_quantity']:.0f} units" 
-                                      for c in result["cities"]])
-                result["summary"] = f"Top {len(result['cities'])} Cities by Pending:\n{city_list}"
-            else:
-                result["summary"] = "No pending deliveries found."
-        
-        elif intent == "top_pending_dealers":
-            limit = intent_result.get("limit", 10)
-            result = LogisticsQueryService._get_top_pending_dealers(db, limit)
-            if result.get("success") and result.get("dealers"):
-                dealer_list = "\n".join([f"{d['rank']}. {d['dealer']}: {d['pending_dns']} DNs, {d['pending_quantity']:.0f} units" 
-                                        for d in result["dealers"]])
-                result["summary"] = f"Top {len(result['dealers'])} Dealers by Pending:\n{dealer_list}"
-            else:
-                result["summary"] = "No pending deliveries found."
-        
-        elif intent == "highest_pod_pending_dealer":
-            result = LogisticsQueryService._get_highest_pod_pending_dealer(db)
-            if result.get("success"):
-                result["summary"] = (f"{result['dealer']} has the most deliveries awaiting acknowledgement "
-                                    f"with {result['pod_pending_count']} DNs, {result['pod_pending_quantity']:.0f} units, "
-                                    f"totaling Rs {result['pod_pending_amount']:,.2f}.")
-            else:
-                result["summary"] = "No POD pending deliveries found."
-        
-        elif intent == "highest_pod_pending_warehouse":
-            result = LogisticsQueryService._get_highest_pod_pending_warehouse(db)
-            if result.get("success"):
-                result["summary"] = (f"Warehouse {result['warehouse']} has the most deliveries awaiting acknowledgement "
-                                    f"with {result['pod_pending_count']} DNs, {result['pod_pending_quantity']:.0f} units, "
-                                    f"totaling Rs {result['pod_pending_amount']:,.2f}.")
-            else:
-                result["summary"] = "No POD pending deliveries found."
-        
-        elif intent == "completed_deliveries_count":
-            result = LogisticsQueryService._get_completed_deliveries_count(db)
-            result["summary"] = (f"There are {result['completed_count']} completed deliveries "
-                                f"totaling {result['completed_quantity']:.0f} units worth Rs {result['completed_amount']:,.2f}.")
-        
-        elif intent == "acknowledged_deliveries":
-            result = LogisticsQueryService._get_acknowledged_deliveries(db)
-            result["summary"] = (f"There are {result['acknowledged_count']} acknowledged deliveries "
-                                f"totaling {result['acknowledged_quantity']:.0f} units worth Rs {result['acknowledged_amount']:,.2f}.")
-        
-        elif intent == "delivered_not_acknowledged":
-            result = LogisticsQueryService._get_delivered_not_acknowledged(db)
-            result["summary"] = (f"There are {result['delivered_not_acknowledged_count']} deliveries that have been dispatched "
-                                f"but are awaiting dealer acknowledgement, totaling {result['delivered_not_acknowledged_quantity']:.0f} units "
-                                f"worth Rs {result['delivered_not_acknowledged_amount']:,.2f}.")
-        
-        elif intent == "city_search":
-            result = LogisticsQueryService._get_city_deliveries(db, intent_result["city"])
-            result["summary"] = f"Found {result.get('count', 0)} deliveries for {intent_result['city']}."
-        
-        elif intent == "material_search":
-            result = LogisticsQueryService._search_material(db, intent_result["material_no"])
-            result["summary"] = f"Material {intent_result['material_no']} appears in {result.get('count', 0)} deliveries with total quantity {result.get('total_quantity', 0):.0f} units."
-        
-        elif intent == "warehouse_search":
-            result = LogisticsQueryService._get_warehouse_deliveries(db, intent_result["warehouse"])
-            result["summary"] = f"Warehouse {intent_result['warehouse']} has {result.get('count', 0)} deliveries."
-        
-        elif intent == "dashboard_summary":
-            result = LogisticsQueryService._get_delivery_insights(db)
-            result["summary"] = (f"Logistics Summary: {result['total_records']} total DNs. "
-                                f"{result['pending_deliveries']} pending (Rs {result['pending_amount']:,.2f}). "
-                                f"Top city: {result['top_city']}. Top warehouse: {result['top_warehouse']}.")
-        
-        elif intent == "executive_summary":
-            result = LogisticsQueryService._get_executive_summary(db)
-            result["summary"] = result.get("executive_summary", "Executive summary generated successfully.")
-        
-        elif intent == "top_dealers":
-            limit = intent_result.get("limit", 10)
-            result = LogisticsQueryService._get_top_dealers(db, limit)
-            result["summary"] = f"Top dealers: {', '.join([d['dealer_name'] for d in result['records'][:5]])}"
-        
-        elif intent == "top_cities":
-            limit = intent_result.get("limit", 10)
-            result = LogisticsQueryService._get_top_cities(db, limit)
-            result["summary"] = f"Top cities by delivery volume: {', '.join([c['city'] for c in result[:5]])}"
-        
         else:
-            result = LogisticsQueryService._get_delivery_insights(db)
-            result["summary"] = "Here's the current logistics dashboard summary."
+            # Default to enhanced executive summary
+            result = LogisticsQueryService.get_executive_summary_enhanced(db)
+            result["summary"] = result.get("formatted_message", "Executive summary generated.")
         
         result["question"] = question
         result["intent"] = intent
@@ -989,8 +1267,8 @@ class LogisticsQueryService:
         return result
     
     @staticmethod
-    def _format_dn_summary(dn_result: Dict[str, Any]) -> str:
-        """Format DN summary for WhatsApp."""
+    def _format_dn_summary_enhanced(dn_result: Dict[str, Any]) -> str:
+        """Format DN summary with enhanced details (Priority 2 format)."""
         if not dn_result.get("success"):
             return f"DN {dn_result.get('dn_no', 'unknown')} was not found in the system."
         
@@ -1000,18 +1278,36 @@ class LogisticsQueryService:
         warehouse = dn_result.get("warehouse", "Unknown Warehouse")
         status = dn_result.get("status", "Unknown")
         pod_status = dn_result.get("pod_status", "Pending")
-        age_days = dn_result.get("age_days", 0)
+        dispatch_age = dn_result.get("dispatch_age", 0)
+        pod_age = dn_result.get("pod_age", 0)
         total_amount = dn_result.get("total_amount", 0)
         total_quantity = dn_result.get("total_quantity", 0)
         products = dn_result.get("products", [])
         
-        summary = f"🔹 *DN {dn_no}*\n"
+        # Format dates
+        dn_date = ""
+        if dn_result.get('dn_create_date'):
+            if isinstance(dn_result['dn_create_date'], datetime):
+                dn_date = dn_result['dn_create_date'].strftime('%d-%b-%Y')
+            else:
+                dn_date = str(dn_result['dn_create_date'])[:10]
+        
+        pgi_date = ""
+        if dn_result.get('good_issue_date'):
+            if isinstance(dn_result['good_issue_date'], datetime):
+                pgi_date = dn_result['good_issue_date'].strftime('%d-%b-%Y')
+            else:
+                pgi_date = str(dn_result['good_issue_date'])[:10]
+        
+        summary = f"🔹 *DN: {dn_no}*\n\n"
         summary += f"📋 Dealer: {dealer}\n"
-        summary += f"📍 City: {city}\n"
-        summary += f"🏭 Warehouse: {warehouse}\n"
+        summary += f"📍 City: {city} | 🏭 Warehouse: {warehouse}\n"
+        summary += f"📅 DN Date: {dn_date}\n"
+        summary += f"🚚 PGI Date: {pgi_date if pgi_date else 'Not Dispatched'}\n\n"
         summary += f"📋 Status: {status}\n"
         summary += f"📋 POD: {pod_status}\n"
-        summary += f"📅 Age: {age_days} days\n"
+        summary += f"⏱️ Dispatch Age: {dispatch_age} days\n"
+        summary += f"⏱️ POD Age: {pod_age} days\n\n"
         summary += f"📦 Total Quantity: {total_quantity:.0f} units\n"
         summary += f"💰 Amount: Rs {total_amount:,.2f}\n\n"
         
@@ -1022,18 +1318,18 @@ class LogisticsQueryService:
             if len(products) > 5:
                 summary += f"   • +{len(products) - 5} more products\n"
         
-        if age_days > 15:
+        if dispatch_age > 15 or pod_age > 15:
             summary += "\n⚠️ *CRITICAL:* This delivery requires immediate attention!"
         
         return summary
     
     # ======================================================
-    # INTERNAL METHODS (PREVIOUSLY PUBLIC, NOW PRIVATE)
-    # These are kept for backward compatibility but new code should use get_dealer_complete_dashboard
+    # CORRECTED INTERNAL METHODS (Using new aging calculations)
     # ======================================================
     
     @staticmethod
-    def _get_pending_delivery_aging(db: Session) -> Dict[str, Any]:
+    def _get_pending_delivery_aging_corrected(db: Session) -> Dict[str, Any]:
+        """Pending delivery aging using corrected dispatch_age."""
         all_records = db.query(DeliveryReport).all()
         pending_records = [r for r in all_records if r.pgi_status != "Completed"]
         
@@ -1041,44 +1337,50 @@ class LogisticsQueryService:
             return {"success": True, "message": "No pending deliveries found"}
         
         aging_groups = {
-            "0-3 Days": {"dns": set(), "quantity": 0},
-            "4-7 Days": {"dns": set(), "quantity": 0},
-            "8-15 Days": {"dns": set(), "quantity": 0},
-            "16-30 Days": {"dns": set(), "quantity": 0},
-            "30+ Days": {"dns": set(), "quantity": 0}
+            "0-3 Days": {"dns": set(), "quantity": 0, "amount": 0},
+            "4-7 Days": {"dns": set(), "quantity": 0, "amount": 0},
+            "8-15 Days": {"dns": set(), "quantity": 0, "amount": 0},
+            "16-30 Days": {"dns": set(), "quantity": 0, "amount": 0},
+            "30+ Days": {"dns": set(), "quantity": 0, "amount": 0}
         }
         
         for r in pending_records:
-            age_days = LogisticsQueryService._calculate_dn_age(r)
+            age_days = LogisticsQueryService.calculate_dispatch_age(r)
             
             if age_days <= 3:
                 aging_groups["0-3 Days"]["dns"].add(r.dn_no)
                 aging_groups["0-3 Days"]["quantity"] += float(r.dn_qty or 0)
+                aging_groups["0-3 Days"]["amount"] += float(r.dn_amount or 0)
             elif age_days <= 7:
                 aging_groups["4-7 Days"]["dns"].add(r.dn_no)
                 aging_groups["4-7 Days"]["quantity"] += float(r.dn_qty or 0)
+                aging_groups["4-7 Days"]["amount"] += float(r.dn_amount or 0)
             elif age_days <= 15:
                 aging_groups["8-15 Days"]["dns"].add(r.dn_no)
                 aging_groups["8-15 Days"]["quantity"] += float(r.dn_qty or 0)
+                aging_groups["8-15 Days"]["amount"] += float(r.dn_amount or 0)
             elif age_days <= 30:
                 aging_groups["16-30 Days"]["dns"].add(r.dn_no)
                 aging_groups["16-30 Days"]["quantity"] += float(r.dn_qty or 0)
+                aging_groups["16-30 Days"]["amount"] += float(r.dn_amount or 0)
             else:
                 aging_groups["30+ Days"]["dns"].add(r.dn_no)
                 aging_groups["30+ Days"]["quantity"] += float(r.dn_qty or 0)
+                aging_groups["30+ Days"]["amount"] += float(r.dn_amount or 0)
         
         total_pending = sum(len(g["dns"]) for g in aging_groups.values())
         
-        summary = f"📊 PENDING DELIVERY AGING REPORT\n\n"
+        summary = f"📊 PENDING DELIVERY AGING REPORT (Dispatch Age)\n\n"
         summary += f"Total Pending DNs: {total_pending}\n\n"
         for category, data in aging_groups.items():
             if len(data["dns"]) > 0:
-                summary += f"• {category}: {len(data['dns'])} DNs, {data['quantity']:.0f} units\n"
+                summary += f"• {category}: {len(data['dns'])} DNs, {data['quantity']:.0f} units, Rs {data['amount']:,.2f}\n"
         
         return {"success": True, "summary": summary}
     
     @staticmethod
-    def _get_warehouse_aging(db: Session, limit: int = 10) -> Dict[str, Any]:
+    def _get_warehouse_aging_corrected(db: Session, limit: int = 10) -> Dict[str, Any]:
+        """Warehouse aging using corrected dispatch_age."""
         all_records = db.query(DeliveryReport).all()
         pending_records = [r for r in all_records if r.pgi_status != "Completed"]
         
@@ -1090,27 +1392,29 @@ class LogisticsQueryService:
             if not r.warehouse:
                 continue
             if r.warehouse not in warehouse_stats:
-                warehouse_stats[r.warehouse] = {"dns": set(), "max_age": 0, "quantity": 0}
+                warehouse_stats[r.warehouse] = {"dns": set(), "max_age": 0, "quantity": 0, "amount": 0}
             
-            age = LogisticsQueryService._calculate_dn_age(r)
+            age = LogisticsQueryService.calculate_dispatch_age(r)
             warehouse_stats[r.warehouse]["dns"].add(r.dn_no)
             warehouse_stats[r.warehouse]["quantity"] += float(r.dn_qty or 0)
+            warehouse_stats[r.warehouse]["amount"] += float(r.dn_amount or 0)
             
             if age > warehouse_stats[r.warehouse]["max_age"]:
                 warehouse_stats[r.warehouse]["max_age"] = age
         
         sorted_warehouses = sorted(warehouse_stats.items(), key=lambda x: x[1]["max_age"], reverse=True)[:limit]
         
-        summary = "🏭 WAREHOUSE AGING RANKING\n\n"
+        summary = "🏭 WAREHOUSE AGING RANKING (Dispatch Age)\n\n"
         for i, w in enumerate(sorted_warehouses, 1):
             summary += f"{i}. {w[0]}\n"
-            summary += f"   Pending DNs: {len(w[1]['dns'])}, Pending Units: {w[1]['quantity']:.0f}\n"
+            summary += f"   Pending DNs: {len(w[1]['dns'])}, Units: {w[1]['quantity']:.0f}, Value: Rs {w[1]['amount']:,.2f}\n"
             summary += f"   Oldest Age: {w[1]['max_age']} days\n\n"
         
         return {"success": True, "summary": summary}
     
     @staticmethod
-    def _get_city_aging(db: Session, limit: int = 10) -> Dict[str, Any]:
+    def _get_city_aging_corrected(db: Session, limit: int = 10) -> Dict[str, Any]:
+        """City aging using corrected dispatch_age."""
         all_records = db.query(DeliveryReport).all()
         pending_records = [r for r in all_records if r.pgi_status != "Completed"]
         
@@ -1122,27 +1426,29 @@ class LogisticsQueryService:
             if not r.ship_to_city:
                 continue
             if r.ship_to_city not in city_stats:
-                city_stats[r.ship_to_city] = {"dns": set(), "max_age": 0, "quantity": 0}
+                city_stats[r.ship_to_city] = {"dns": set(), "max_age": 0, "quantity": 0, "amount": 0}
             
-            age = LogisticsQueryService._calculate_dn_age(r)
+            age = LogisticsQueryService.calculate_dispatch_age(r)
             city_stats[r.ship_to_city]["dns"].add(r.dn_no)
             city_stats[r.ship_to_city]["quantity"] += float(r.dn_qty or 0)
+            city_stats[r.ship_to_city]["amount"] += float(r.dn_amount or 0)
             
             if age > city_stats[r.ship_to_city]["max_age"]:
                 city_stats[r.ship_to_city]["max_age"] = age
         
         sorted_cities = sorted(city_stats.items(), key=lambda x: x[1]["max_age"], reverse=True)[:limit]
         
-        summary = "🌆 CITY AGING RANKING\n\n"
+        summary = "🌆 CITY AGING RANKING (Dispatch Age)\n\n"
         for i, c in enumerate(sorted_cities, 1):
             summary += f"{i}. {c[0]}\n"
-            summary += f"   Pending DNs: {len(c[1]['dns'])}, Pending Units: {c[1]['quantity']:.0f}\n"
+            summary += f"   Pending DNs: {len(c[1]['dns'])}, Units: {c[1]['quantity']:.0f}, Value: Rs {c[1]['amount']:,.2f}\n"
             summary += f"   Oldest Age: {c[1]['max_age']} days\n\n"
         
         return {"success": True, "summary": summary}
     
     @staticmethod
-    def _get_critical_pending_dns(db: Session, threshold_days: int = 15, limit: int = 20) -> Dict[str, Any]:
+    def _get_critical_pending_dns_corrected(db: Session, threshold_days: int = 15, limit: int = 20) -> Dict[str, Any]:
+        """Critical pending DNs using corrected dispatch_age."""
         all_records = db.query(DeliveryReport).all()
         pending_records = [r for r in all_records if r.pgi_status != "Completed"]
         
@@ -1150,22 +1456,27 @@ class LogisticsQueryService:
         seen_dns = set()
         
         for r in pending_records:
-            age_days = LogisticsQueryService._calculate_dn_age(r)
+            age_days = LogisticsQueryService.calculate_dispatch_age(r)
             if age_days >= threshold_days and r.dn_no not in seen_dns:
                 seen_dns.add(r.dn_no)
                 critical_dns.append({
                     "dn_no": r.dn_no,
                     "dealer": r.customer_name,
                     "age_days": age_days,
-                    "quantity": float(r.dn_qty or 0)
+                    "quantity": float(r.dn_qty or 0),
+                    "amount": float(r.dn_amount or 0)
                 })
         
         critical_dns.sort(key=lambda x: x["age_days"], reverse=True)
         
-        summary = f"🚨 CRITICAL DELIVERIES ({threshold_days}+ days)\n\n"
+        summary = f"🚨 CRITICAL DELIVERIES ({threshold_days}+ days dispatch age)\n\n"
+        total_amount = 0
         for dn in critical_dns[:limit]:
             summary += f"• DN {dn['dn_no']}: {dn['dealer']}\n"
-            summary += f"   Age: {dn['age_days']} days, Qty: {dn['quantity']:.0f} units\n"
+            summary += f"   Age: {dn['age_days']} days, Qty: {dn['quantity']:.0f} units, Value: Rs {dn['amount']:,.2f}\n"
+            total_amount += dn['amount']
+        
+        summary += f"\n💰 Total value at risk: Rs {total_amount:,.2f}"
         
         if len(critical_dns) > limit:
             summary += f"\nAnd {len(critical_dns) - limit} more critical deliveries"
@@ -1173,134 +1484,8 @@ class LogisticsQueryService:
         return {"success": True, "summary": summary}
     
     @staticmethod
-    def _generate_risk_summary(db: Session) -> Dict[str, Any]:
-        all_records = db.query(DeliveryReport).all()
-        pending_records = [r for r in all_records if r.pgi_status != "Completed"]
-        
-        age_counts = {">15": 0, ">30": 0}
-        oldest_age = 0
-        oldest_dn = None
-        oldest_dealer = None
-        
-        for r in pending_records:
-            age = LogisticsQueryService._calculate_dn_age(r)
-            if age > 15:
-                age_counts[">15"] += 1
-            if age > 30:
-                age_counts[">30"] += 1
-            if age > oldest_age:
-                oldest_age = age
-                oldest_dn = r.dn_no
-                oldest_dealer = r.customer_name
-        
-        summary = f"""🚨 EXECUTIVE RISK SUMMARY
-
-📊 DELAY STATISTICS:
-• {age_counts['>15']} DNs older than 15 days
-• {age_counts['>30']} DNs older than 30 days
-• Oldest DN: {oldest_dn} ({oldest_age} days) - {oldest_dealer}
-
-🎯 RECOMMENDATIONS:
-• Prioritize clearance of DNs over 15 days
-• Follow up with {oldest_dealer} for oldest pending
-• Focus on reducing backlog"""
-        
-        return {"success": True, "summary": summary}
-    
-    @staticmethod
-    def _get_top_delayed_dealers(db: Session, limit: int = 10) -> Dict[str, Any]:
-        all_records = db.query(DeliveryReport).all()
-        pending_records = [r for r in all_records if r.pgi_status != "Completed"]
-        
-        dealer_stats = {}
-        for r in pending_records:
-            age_days = LogisticsQueryService._calculate_dn_age(r)
-            if age_days >= 15 and r.customer_name:
-                if r.customer_name not in dealer_stats:
-                    dealer_stats[r.customer_name] = {"dns": set(), "quantity": 0, "max_age": 0}
-                dealer_stats[r.customer_name]["dns"].add(r.dn_no)
-                dealer_stats[r.customer_name]["quantity"] += float(r.dn_qty or 0)
-                if age_days > dealer_stats[r.customer_name]["max_age"]:
-                    dealer_stats[r.customer_name]["max_age"] = age_days
-        
-        sorted_dealers = sorted(dealer_stats.items(), key=lambda x: len(x[1]["dns"]), reverse=True)[:limit]
-        
-        summary = "🏆 TOP DELAYED DEALERS (15+ days)\n\n"
-        for i, d in enumerate(sorted_dealers, 1):
-            summary += f"{i}. {d[0]}: {len(d[1]['dns'])} DNs, {d[1]['quantity']:.0f} units\n"
-            summary += f"   Max Delay: {d[1]['max_age']} days\n\n"
-        
-        return {"success": True, "summary": summary}
-    
-    @staticmethod
-    def _get_sla_breach_deliveries(db: Session) -> Dict[str, Any]:
-        all_records = db.query(DeliveryReport).all()
-        pending_records = [r for r in all_records if r.pgi_status != "Completed"]
-        
-        sla_breaches = {"Green (0-3 Days)": 0, "Yellow (4-7 Days)": 0, "Orange (8-15 Days)": 0, "Red (15+ Days)": 0}
-        red_alerts = []
-        
-        for r in pending_records:
-            age_days = LogisticsQueryService._calculate_dn_age(r)
-            
-            if age_days <= 3:
-                sla_breaches["Green (0-3 Days)"] += 1
-            elif age_days <= 7:
-                sla_breaches["Yellow (4-7 Days)"] += 1
-            elif age_days <= 15:
-                sla_breaches["Orange (8-15 Days)"] += 1
-            else:
-                sla_breaches["Red (15+ Days)"] += 1
-                if len(red_alerts) < 10:
-                    red_alerts.append({"dn_no": r.dn_no, "dealer": r.customer_name, "age_days": age_days})
-        
-        summary = f"""🔴 SLA BREACH DELIVERIES
-
-• Green (0-3 days): {sla_breaches['Green (0-3 Days)']} DNs
-• Yellow (4-7 days): {sla_breaches['Yellow (4-7 Days)']} DNs
-• Orange (8-15 days): {sla_breaches['Orange (8-15 Days)']} DNs
-• Red (15+ days): {sla_breaches['Red (15+ Days)']} DNs
-
-⚠️ RED ALERT (15+ days):
-"""
-        for dn in red_alerts:
-            summary += f"   • DN {dn['dn_no']}: {dn['dealer']} ({dn['age_days']} days)\n"
-        
-        return {"success": True, "summary": summary}
-    
-    @staticmethod
-    def _get_pending_older_than(db: Session, days: int) -> Dict[str, Any]:
-        all_records = db.query(DeliveryReport).all()
-        pending_records = [r for r in all_records if r.pgi_status != "Completed"]
-        
-        older_than = []
-        seen_dns = set()
-        
-        for r in pending_records:
-            age_days = LogisticsQueryService._calculate_dn_age(r)
-            if age_days > days and r.dn_no not in seen_dns:
-                seen_dns.add(r.dn_no)
-                older_than.append({
-                    "dn_no": r.dn_no,
-                    "dealer": r.customer_name,
-                    "age_days": age_days,
-                    "quantity": float(r.dn_qty or 0)
-                })
-        
-        older_than.sort(key=lambda x: x["age_days"], reverse=True)
-        
-        summary = f"📋 PENDING DELIVERIES OLDER THAN {days} DAYS\n\n"
-        for dn in older_than[:15]:
-            summary += f"• DN {dn['dn_no']}: {dn['dealer']} - {dn['age_days']} days\n"
-            summary += f"   Quantity: {dn['quantity']:.0f} units\n"
-        
-        if len(older_than) > 15:
-            summary += f"\nAnd {len(older_than) - 15} more deliveries"
-        
-        return {"success": True, "summary": summary}
-    
-    @staticmethod
-    def _get_pending_deliveries(db: Session, limit: int = 100):
+    def _get_pending_deliveries_corrected(db: Session, limit: int = 100):
+        """Get pending deliveries with corrected amounts."""
         rows = db.query(DeliveryReport).filter(DeliveryReport.pgi_status != "Completed").all()
         
         dn_groups = {}
@@ -1318,488 +1503,6 @@ class LogisticsQueryService:
             "count": len(dn_groups),
             "total_amount": float(total_amount),
             "total_quantity": float(total_quantity)
-        }
-    
-    @staticmethod
-    def _get_pending_pod(db: Session):
-        rows = db.query(DeliveryReport).filter(
-            DeliveryReport.pod_status == "Pending",
-            DeliveryReport.pgi_status == "Completed"
-        ).all()
-        unique_dns = LogisticsQueryService._get_unique_dns(rows)
-        return {"success": True, "pending_pod": len(unique_dns)}
-    
-    @staticmethod
-    def _get_pending_pgi(db: Session):
-        rows = db.query(DeliveryReport).filter(DeliveryReport.pgi_status == "Pending").all()
-        unique_dns = LogisticsQueryService._get_unique_dns(rows)
-        return {"success": True, "pending_pgi": len(unique_dns)}
-    
-    @staticmethod
-    def _get_highest_pending_dealer(db: Session) -> Dict[str, Any]:
-        all_records = db.query(DeliveryReport).all()
-        pending_records = [r for r in all_records if r.pgi_status != "Completed"]
-        
-        if not pending_records:
-            return {"success": False, "message": "No pending deliveries found"}
-        
-        dealer_stats = {}
-        for r in pending_records:
-            if not r.customer_name:
-                continue
-            if r.customer_name not in dealer_stats:
-                dealer_stats[r.customer_name] = {"dns": set(), "amount": 0, "quantity": 0}
-            dealer_stats[r.customer_name]["dns"].add(r.dn_no)
-            dealer_stats[r.customer_name]["amount"] += float(r.dn_amount or 0)
-            dealer_stats[r.customer_name]["quantity"] += float(r.dn_qty or 0)
-        
-        if not dealer_stats:
-            return {"success": False, "message": "No pending deliveries found"}
-        
-        top_dealer = max(dealer_stats.items(), key=lambda x: len(x[1]["dns"]))
-        
-        return {
-            "success": True,
-            "dealer": top_dealer[0],
-            "pending_count": len(top_dealer[1]["dns"]),
-            "pending_amount": top_dealer[1]["amount"],
-            "pending_quantity": top_dealer[1]["quantity"]
-        }
-    
-    @staticmethod
-    def _get_highest_pending_warehouse(db: Session) -> Dict[str, Any]:
-        all_records = db.query(DeliveryReport).all()
-        pending_records = [r for r in all_records if r.pgi_status != "Completed"]
-        
-        if not pending_records:
-            return {"success": False, "message": "No pending deliveries found"}
-        
-        warehouse_stats = {}
-        for r in pending_records:
-            if not r.warehouse:
-                continue
-            if r.warehouse not in warehouse_stats:
-                warehouse_stats[r.warehouse] = {"dns": set(), "amount": 0, "quantity": 0}
-            warehouse_stats[r.warehouse]["dns"].add(r.dn_no)
-            warehouse_stats[r.warehouse]["amount"] += float(r.dn_amount or 0)
-            warehouse_stats[r.warehouse]["quantity"] += float(r.dn_qty or 0)
-        
-        if not warehouse_stats:
-            return {"success": False, "message": "No pending deliveries found"}
-        
-        top_warehouse = max(warehouse_stats.items(), key=lambda x: len(x[1]["dns"]))
-        
-        return {
-            "success": True,
-            "warehouse": top_warehouse[0],
-            "pending_count": len(top_warehouse[1]["dns"]),
-            "pending_amount": top_warehouse[1]["amount"],
-            "pending_quantity": top_warehouse[1]["quantity"]
-        }
-    
-    @staticmethod
-    def _get_top_pending_warehouses(db: Session, limit: int = 10) -> Dict[str, Any]:
-        all_records = db.query(DeliveryReport).all()
-        pending_records = [r for r in all_records if r.pgi_status != "Completed"]
-        
-        if not pending_records:
-            return {"success": True, "warehouses": [], "count": 0}
-        
-        warehouse_stats = {}
-        for r in pending_records:
-            if not r.warehouse:
-                continue
-            if r.warehouse not in warehouse_stats:
-                warehouse_stats[r.warehouse] = {"dns": set(), "amount": 0, "quantity": 0}
-            warehouse_stats[r.warehouse]["dns"].add(r.dn_no)
-            warehouse_stats[r.warehouse]["amount"] += float(r.dn_amount or 0)
-            warehouse_stats[r.warehouse]["quantity"] += float(r.dn_qty or 0)
-        
-        sorted_warehouses = sorted(warehouse_stats.items(), key=lambda x: len(x[1]["dns"]), reverse=True)[:limit]
-        
-        warehouses = [
-            {
-                "rank": i + 1,
-                "warehouse": w[0],
-                "pending_dns": len(w[1]["dns"]),
-                "pending_quantity": w[1]["quantity"],
-                "pending_amount": w[1]["amount"]
-            }
-            for i, w in enumerate(sorted_warehouses)
-        ]
-        
-        return {"success": True, "warehouses": warehouses, "count": len(warehouses)}
-    
-    @staticmethod
-    def _get_highest_pending_city(db: Session) -> Dict[str, Any]:
-        all_records = db.query(DeliveryReport).all()
-        pending_records = [r for r in all_records if r.pgi_status != "Completed"]
-        
-        if not pending_records:
-            return {"success": False, "message": "No pending deliveries found"}
-        
-        city_stats = {}
-        for r in pending_records:
-            if not r.ship_to_city:
-                continue
-            if r.ship_to_city not in city_stats:
-                city_stats[r.ship_to_city] = {"dns": set(), "amount": 0, "quantity": 0}
-            city_stats[r.ship_to_city]["dns"].add(r.dn_no)
-            city_stats[r.ship_to_city]["amount"] += float(r.dn_amount or 0)
-            city_stats[r.ship_to_city]["quantity"] += float(r.dn_qty or 0)
-        
-        if not city_stats:
-            return {"success": False, "message": "No pending deliveries found"}
-        
-        top_city = max(city_stats.items(), key=lambda x: len(x[1]["dns"]))
-        
-        return {
-            "success": True,
-            "city": top_city[0],
-            "pending_count": len(top_city[1]["dns"]),
-            "pending_amount": top_city[1]["amount"],
-            "pending_quantity": top_city[1]["quantity"]
-        }
-    
-    @staticmethod
-    def _get_top_pending_cities(db: Session, limit: int = 10) -> Dict[str, Any]:
-        all_records = db.query(DeliveryReport).all()
-        pending_records = [r for r in all_records if r.pgi_status != "Completed"]
-        
-        if not pending_records:
-            return {"success": True, "cities": [], "count": 0}
-        
-        city_stats = {}
-        for r in pending_records:
-            if not r.ship_to_city:
-                continue
-            if r.ship_to_city not in city_stats:
-                city_stats[r.ship_to_city] = {"dns": set(), "amount": 0, "quantity": 0}
-            city_stats[r.ship_to_city]["dns"].add(r.dn_no)
-            city_stats[r.ship_to_city]["amount"] += float(r.dn_amount or 0)
-            city_stats[r.ship_to_city]["quantity"] += float(r.dn_qty or 0)
-        
-        sorted_cities = sorted(city_stats.items(), key=lambda x: len(x[1]["dns"]), reverse=True)[:limit]
-        
-        cities = [
-            {
-                "rank": i + 1,
-                "city": c[0],
-                "pending_dns": len(c[1]["dns"]),
-                "pending_quantity": c[1]["quantity"],
-                "pending_amount": c[1]["amount"]
-            }
-            for i, c in enumerate(sorted_cities)
-        ]
-        
-        return {"success": True, "cities": cities, "count": len(cities)}
-    
-    @staticmethod
-    def _get_top_pending_dealers(db: Session, limit: int = 10) -> Dict[str, Any]:
-        all_records = db.query(DeliveryReport).all()
-        pending_records = [r for r in all_records if r.pgi_status != "Completed"]
-        
-        if not pending_records:
-            return {"success": True, "dealers": [], "count": 0}
-        
-        dealer_stats = {}
-        for r in pending_records:
-            if not r.customer_name:
-                continue
-            if r.customer_name not in dealer_stats:
-                dealer_stats[r.customer_name] = {"dns": set(), "amount": 0, "quantity": 0}
-            dealer_stats[r.customer_name]["dns"].add(r.dn_no)
-            dealer_stats[r.customer_name]["amount"] += float(r.dn_amount or 0)
-            dealer_stats[r.customer_name]["quantity"] += float(r.dn_qty or 0)
-        
-        sorted_dealers = sorted(dealer_stats.items(), key=lambda x: len(x[1]["dns"]), reverse=True)[:limit]
-        
-        dealers = [
-            {
-                "rank": i + 1,
-                "dealer": d[0],
-                "pending_dns": len(d[1]["dns"]),
-                "pending_quantity": d[1]["quantity"],
-                "pending_amount": d[1]["amount"]
-            }
-            for i, d in enumerate(sorted_dealers)
-        ]
-        
-        return {"success": True, "dealers": dealers, "count": len(dealers)}
-    
-    @staticmethod
-    def _get_highest_pod_pending_dealer(db: Session) -> Dict[str, Any]:
-        pod_pending_records = db.query(DeliveryReport).filter(
-            DeliveryReport.pod_status == "Pending",
-            DeliveryReport.pgi_status == "Completed"
-        ).all()
-        
-        if not pod_pending_records:
-            return {"success": False, "message": "No POD pending deliveries found"}
-        
-        dealer_stats = {}
-        for r in pod_pending_records:
-            if not r.customer_name:
-                continue
-            if r.customer_name not in dealer_stats:
-                dealer_stats[r.customer_name] = {"dns": set(), "amount": 0, "quantity": 0}
-            dealer_stats[r.customer_name]["dns"].add(r.dn_no)
-            dealer_stats[r.customer_name]["amount"] += float(r.dn_amount or 0)
-            dealer_stats[r.customer_name]["quantity"] += float(r.dn_qty or 0)
-        
-        top_dealer = max(dealer_stats.items(), key=lambda x: len(x[1]["dns"]))
-        
-        return {
-            "success": True,
-            "dealer": top_dealer[0],
-            "pod_pending_count": len(top_dealer[1]["dns"]),
-            "pod_pending_amount": top_dealer[1]["amount"],
-            "pod_pending_quantity": top_dealer[1]["quantity"]
-        }
-    
-    @staticmethod
-    def _get_highest_pod_pending_warehouse(db: Session) -> Dict[str, Any]:
-        pod_pending_records = db.query(DeliveryReport).filter(
-            DeliveryReport.pod_status == "Pending",
-            DeliveryReport.pgi_status == "Completed"
-        ).all()
-        
-        if not pod_pending_records:
-            return {"success": False, "message": "No POD pending deliveries found"}
-        
-        warehouse_stats = {}
-        for r in pod_pending_records:
-            if not r.warehouse:
-                continue
-            if r.warehouse not in warehouse_stats:
-                warehouse_stats[r.warehouse] = {"dns": set(), "amount": 0, "quantity": 0}
-            warehouse_stats[r.warehouse]["dns"].add(r.dn_no)
-            warehouse_stats[r.warehouse]["amount"] += float(r.dn_amount or 0)
-            warehouse_stats[r.warehouse]["quantity"] += float(r.dn_qty or 0)
-        
-        top_warehouse = max(warehouse_stats.items(), key=lambda x: len(x[1]["dns"]))
-        
-        return {
-            "success": True,
-            "warehouse": top_warehouse[0],
-            "pod_pending_count": len(top_warehouse[1]["dns"]),
-            "pod_pending_amount": top_warehouse[1]["amount"],
-            "pod_pending_quantity": top_warehouse[1]["quantity"]
-        }
-    
-    @staticmethod
-    def _get_completed_deliveries_count(db: Session) -> Dict[str, Any]:
-        completed_records = db.query(DeliveryReport).filter(
-            DeliveryReport.pgi_status == "Completed",
-            DeliveryReport.pod_status == "Received"
-        ).all()
-        
-        unique_dns = LogisticsQueryService._get_unique_dns(completed_records)
-        total_amount = sum(r.dn_amount or 0 for r in completed_records)
-        total_quantity = sum(r.dn_qty or 0 for r in completed_records)
-        
-        return {
-            "success": True,
-            "completed_count": len(unique_dns),
-            "completed_amount": float(total_amount),
-            "completed_quantity": float(total_quantity)
-        }
-    
-    @staticmethod
-    def _get_acknowledged_deliveries(db: Session) -> Dict[str, Any]:
-        rows = db.query(DeliveryReport).filter(DeliveryReport.pod_status == "Received").all()
-        records = [LogisticsQueryService._record_to_dict(row) for row in rows]
-        unique_dns = LogisticsQueryService._get_unique_dns(rows)
-        total_amount = sum(r.get("dn_amount", 0) for r in records)
-        total_quantity = sum(r.get("dn_qty", 0) for r in records)
-        
-        return {
-            "success": True,
-            "acknowledged_count": len(unique_dns),
-            "acknowledged_amount": float(total_amount),
-            "acknowledged_quantity": float(total_quantity)
-        }
-    
-    @staticmethod
-    def _get_delivered_not_acknowledged(db: Session) -> Dict[str, Any]:
-        rows = db.query(DeliveryReport).filter(
-            DeliveryReport.pgi_status == "Completed",
-            DeliveryReport.pod_status == "Pending"
-        ).all()
-        
-        records = [LogisticsQueryService._record_to_dict(row) for row in rows]
-        unique_dns = LogisticsQueryService._get_unique_dns(rows)
-        total_amount = sum(r.get("dn_amount", 0) for r in records)
-        total_quantity = sum(r.get("dn_qty", 0) for r in records)
-        
-        return {
-            "success": True,
-            "delivered_not_acknowledged_count": len(unique_dns),
-            "delivered_not_acknowledged_amount": float(total_amount),
-            "delivered_not_acknowledged_quantity": float(total_quantity)
-        }
-    
-    @staticmethod
-    def _get_city_deliveries(db: Session, city: str, limit: int = 100):
-        rows = db.query(DeliveryReport).filter(DeliveryReport.ship_to_city.ilike(f"%{city}%")).all()
-        records = [LogisticsQueryService._record_to_dict(row) for row in rows]
-        return {"success": True, "city": city, "count": len(records), "records": records}
-    
-    @staticmethod
-    def _get_warehouse_deliveries(db: Session, warehouse: str, limit: int = 100):
-        rows = db.query(DeliveryReport).filter(DeliveryReport.warehouse.ilike(f"%{warehouse}%")).all()
-        records = [LogisticsQueryService._record_to_dict(row) for row in rows]
-        return {"success": True, "warehouse": warehouse, "count": len(records), "records": records}
-    
-    @staticmethod
-    def _search_material(db: Session, material_no: str, limit: int = 50) -> Dict[str, Any]:
-        rows = db.query(DeliveryReport).filter(DeliveryReport.material_no.ilike(f"%{material_no}%")).all()
-        records = [LogisticsQueryService._record_to_dict(row) for row in rows]
-        total_qty = sum(r.get("dn_qty", 0) for r in records)
-        
-        return {
-            "success": True,
-            "material_no": material_no,
-            "count": len(records),
-            "total_quantity": float(total_qty),
-            "records": records
-        }
-    
-    @staticmethod
-    def _get_top_dealers(db: Session, limit: int = 10) -> Dict[str, Any]:
-        rows = db.query(DeliveryReport).all()
-        
-        dealer_stats = {}
-        for r in rows:
-            if r.customer_name:
-                if r.customer_name not in dealer_stats:
-                    dealer_stats[r.customer_name] = {"dns": set(), "amount": 0, "quantity": 0}
-                dealer_stats[r.customer_name]["dns"].add(r.dn_no)
-                dealer_stats[r.customer_name]["amount"] += float(r.dn_amount or 0)
-                dealer_stats[r.customer_name]["quantity"] += float(r.dn_qty or 0)
-        
-        sorted_dealers = sorted(dealer_stats.items(), key=lambda x: len(x[1]["dns"]), reverse=True)[:limit]
-        
-        records = [
-            {
-                "dealer_name": d[0],
-                "delivery_count": len(d[1]["dns"]),
-                "total_amount": d[1]["amount"],
-                "total_quantity": d[1]["quantity"]
-            }
-            for d in sorted_dealers
-        ]
-        
-        return {"success": True, "count": len(records), "records": records}
-    
-    @staticmethod
-    def _get_top_cities(db: Session, limit: int = 10):
-        rows = db.query(DeliveryReport).all()
-        
-        city_stats = {}
-        for r in rows:
-            if r.ship_to_city:
-                if r.ship_to_city not in city_stats:
-                    city_stats[r.ship_to_city] = {"dns": set(), "amount": 0, "quantity": 0}
-                city_stats[r.ship_to_city]["dns"].add(r.dn_no)
-                city_stats[r.ship_to_city]["amount"] += float(r.dn_amount or 0)
-                city_stats[r.ship_to_city]["quantity"] += float(r.dn_qty or 0)
-        
-        sorted_cities = sorted(city_stats.items(), key=lambda x: len(x[1]["dns"]), reverse=True)[:limit]
-        
-        return [
-            {
-                "city": c[0],
-                "count": len(c[1]["dns"]),
-                "total_amount": c[1]["amount"],
-                "total_quantity": c[1]["quantity"]
-            }
-            for c in sorted_cities if c[0]
-        ]
-    
-    @staticmethod
-    def _get_delivery_insights(db: Session) -> Dict[str, Any]:
-        all_records = db.query(DeliveryReport).all()
-        unique_dns = LogisticsQueryService._get_unique_dns(all_records)
-        
-        pending_records = [r for r in all_records if r.pgi_status != "Completed"]
-        pending_unique_dns = LogisticsQueryService._get_unique_dns(pending_records)
-        
-        completed_records = [r for r in all_records if r.pgi_status == "Completed" and r.pod_status == "Received"]
-        completed_unique_dns = LogisticsQueryService._get_unique_dns(completed_records)
-        
-        delivered_not_ack_records = [r for r in all_records if r.pgi_status == "Completed" and r.pod_status == "Pending"]
-        delivered_not_ack_unique_dns = LogisticsQueryService._get_unique_dns(delivered_not_ack_records)
-        
-        pending_amount = sum(r.dn_amount or 0 for r in pending_records)
-        
-        warehouse_stats = {}
-        for r in all_records:
-            if r.warehouse:
-                if r.warehouse not in warehouse_stats:
-                    warehouse_stats[r.warehouse] = set()
-                warehouse_stats[r.warehouse].add(r.dn_no)
-        
-        top_warehouse = max(warehouse_stats.items(), key=lambda x: len(x[1]))[0] if warehouse_stats else "N/A"
-        
-        city_stats = {}
-        for r in all_records:
-            if r.ship_to_city:
-                if r.ship_to_city not in city_stats:
-                    city_stats[r.ship_to_city] = set()
-                city_stats[r.ship_to_city].add(r.dn_no)
-        
-        top_city = max(city_stats.items(), key=lambda x: len(x[1]))[0] if city_stats else "N/A"
-        
-        avg_amount = sum(r.dn_amount or 0 for r in all_records) / len(unique_dns) if unique_dns else 0
-        
-        return {
-            "success": True,
-            "total_records": len(unique_dns),
-            "pending_deliveries": len(pending_unique_dns),
-            "completed_deliveries": len(completed_unique_dns),
-            "delivered_not_acknowledged": len(delivered_not_ack_unique_dns),
-            "pending_amount": float(pending_amount),
-            "top_warehouse": top_warehouse,
-            "top_city": top_city,
-            "average_dn_amount": float(avg_amount)
-        }
-    
-    @staticmethod
-    def _get_executive_summary(db: Session) -> Dict[str, Any]:
-        insights = LogisticsQueryService._get_delivery_insights(db)
-        top_dealers = LogisticsQueryService._get_top_dealers(db, 5)
-        top_pending_warehouses = LogisticsQueryService._get_top_pending_warehouses(db, 5)
-        highest_pending_dealer = LogisticsQueryService._get_highest_pending_dealer(db)
-        
-        completion_rate = round((insights["completed_deliveries"] / insights["total_records"] * 100) 
-                                if insights["total_records"] > 0 else 0, 2)
-        
-        executive_summary = f"""📊 EXECUTIVE LOGISTICS REPORT
-
-📈 OVERVIEW:
-• Total DNs: {insights['total_records']}
-• Completion Rate: {completion_rate}%
-• Avg Order Value: Rs {insights['average_dn_amount']:,.2f}
-
-⏳ PENDING STATUS:
-• Pending DNs: {insights['pending_deliveries']} (Rs {insights['pending_amount']:,.2f})
-• Delivered - Awaiting Acknowledgment: {insights['delivered_not_acknowledged']}
-
-🏆 HIGHEST PENDING:
-• Dealer: {highest_pending_dealer.get('dealer', 'N/A')} ({highest_pending_dealer.get('pending_count', 0)} DNs)
-
-🎯 RECOMMENDATIONS:
-• Focus on clearing pending dispatches
-• Follow up with {highest_pending_dealer.get('dealer', 'dealers')} for pending acknowledgements"""
-        
-        return {
-            "success": True,
-            "executive_summary": executive_summary,
-            **insights,
-            "top_dealers": top_dealers["records"],
-            "top_pending_warehouses": top_pending_warehouses.get("warehouses", []),
-            "highest_pending_dealer": highest_pending_dealer
         }
     
     # ======================================================
@@ -1825,8 +1528,8 @@ BUSINESS RULES:
 - PGI Pending = Pending Dispatch
 - POD Received = Acknowledged
 - POD Pending = Awaiting Acknowledgement
-- DN Age > 15 days = Critical
-- DN Age > 30 days = Urgent
+- Dispatch Age > 15 days = Critical
+- POD Age > 15 days = Urgent
 
 Never show PGI/POD. Use: Delivered, Pending Dispatch, Acknowledged, Awaiting Acknowledgement
 
