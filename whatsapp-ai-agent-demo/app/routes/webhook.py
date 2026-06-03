@@ -18,9 +18,9 @@ from app.services.whatsapp_service import (
     send_text_message
 )
 
-from app.services.claude_service import (
-    ask_claude
-)
+# ==========================================================
+# STEP 1: REMOVED claude_service import
+# ==========================================================
 
 from app.services.conversation_service import (
     add_user_message,
@@ -28,11 +28,11 @@ from app.services.conversation_service import (
 )
 
 # ==========================================================
-# FIX 1: Remove unused import - only import what we need
+# STEP 1: ADDED ai_query_service import
 # ==========================================================
 
-from app.services.logistics_query_service import (
-    LogisticsQueryService
+from app.services.ai_query_service import (
+    AIQueryService
 )
 
 from app.database import get_db
@@ -47,7 +47,7 @@ router = APIRouter(
 )
 
 # ==========================================================
-# FIX 2: User Session Tracking (In-memory - will be lost on restart)
+# User Session Tracking (In-memory - will be lost on restart)
 # TODO: Move to PostgreSQL for production
 # ==========================================================
 
@@ -77,178 +77,10 @@ def clear_user_session(phone_number: str):
         }
 
 # ==========================================================
-# FIX 3,4,5,6,7,8,9,10: Enhanced Logistics Prompt Builder
+# HELPER FOR DEALER SELECTION (UPDATED)
 # ==========================================================
 
-def build_logistics_prompt(customer_message: str, context: str, intent: str) -> str:
-    """Build specialized logistics prompt for Claude with all business rules."""
-    
-    # FIX 6: Context length protection
-    if len(context) > 6000:
-        context = context[:6000]
-        context += "\n... (truncated for length)"
-    
-    prompt = f"""You are HNR Logistics AI Assistant, a professional logistics operations manager.
-
-================================================================================
-CRITICAL BUSINESS RULES - MUST FOLLOW:
-================================================================================
-
-DELIVERY STATUS INTERPRETATION (NEVER expose raw field names):
-- PGI Completed + POD Received = "Delivered and Acknowledged"
-- PGI Completed + POD Pending = "Delivered Awaiting Dealer Acknowledgement"  
-- PGI Pending = "Pending Dispatch"
-
-NEVER tell a user "PGI Completed" - Instead say "Shipment Delivered"
-NEVER tell a user "POD Received" - Instead say "Dealer Acknowledged Receipt"
-NEVER tell a user "POD Pending" - Instead say "Awaiting Dealer Acknowledgement"
-
-================================================================================
-BUSINESS RULES FOR RESPONSES:
-================================================================================
-
-1. PGI Status = "Completed" means: The shipment has been dispatched/delivered
-2. PGI Status = "Pending" means: The shipment is still at warehouse, pending dispatch
-3. POD Status = "Received" means: The dealer has acknowledged and received the shipment
-4. POD Status = "Pending" means: Shipment delivered but awaiting dealer acknowledgement
-
-================================================================================
-DEALER BUSINESS RULES:
-================================================================================
-
-If user asks about a dealer, ALWAYS provide:
-- Total DNs
-- Delivered DNs
-- Pending DNs
-- Total Quantity (units)
-- Delivered Quantity (units)
-- Pending Quantity (units)
-- Pending Amount (Rs)
-
-If dealer has pending deliveries: Mention operational risk and suggest follow-up action.
-
-================================================================================
-WAREHOUSE INTELLIGENCE RULES:
-================================================================================
-
-If user asks "Which warehouse has highest pending?" ALWAYS provide:
-- Warehouse Name
-- Pending DNs count
-- Pending Quantity (units)
-- Pending Amount (Rs)
-- Operational risk level
-- Suggested action
-
-================================================================================
-CITY INTELLIGENCE RULES:
-================================================================================
-
-If user asks "Which city has highest pending?" ALWAYS provide:
-- City Name
-- Pending DNs count
-- Pending Quantity (units)
-- Pending Amount (Rs)
-
-================================================================================
-PRODUCT INTELLIGENCE RULES:
-================================================================================
-
-If user asks about products (refrigerators, LED TVs, etc.):
-- Show total quantity delivered
-- Show pending quantity
-- Show which dealers have pending stock
-- Suggest follow-up actions
-
-================================================================================
-EXECUTIVE SUMMARY RULES:
-================================================================================
-
-If user asks for executive summary, logistics summary, or business insights:
-- Total Deliveries
-- Completion Rate (%)
-- Pending Deliveries with Amount
-- Pending Dispatch (PGI count)
-- Awaiting Dealer Acknowledgement (POD count)
-- Top 3 Dealers by delivery volume
-- Top 3 Cities by delivery volume
-- Top Warehouse by performance
-- Biggest Risk & Recommendation
-- Focus Area for today
-
-================================================================================
-CUSTOMER QUESTION:
-================================================================================
-
-{customer_message}
-
-INTENT DETECTED: {intent}
-
-================================================================================
-DATABASE INFORMATION:
-================================================================================
-
-{context}
-
-================================================================================
-RESPONSE GUIDELINES:
-================================================================================
-
-1. Act as a professional Logistics Operations Manager
-2. Use the business rules above for interpreting status
-3. NEVER expose raw field names (PGI/POD)
-4. ALWAYS use business terms: "dispatched", "delivered", "acknowledged", "pending"
-5. For dealers, provide complete summary with quantities and amounts
-6. For pending items, mention operational risk and suggest follow-up
-7. Format amounts as Rs X,XXX.XX
-8. Format quantities as X,XXX units
-9. Be concise but comprehensive
-10. For executive queries, provide actionable insights
-
-================================================================================
-EXAMPLE RESPONSES:
-================================================================================
-
-DN Query: "DN 6243612322 has been delivered and acknowledged by the dealer. 
-Total quantity: 50 units. Amount: Rs 150,000.00"
-
-Dealer Query: "Faisal Traders has 152 total DNs. 128 delivered, 24 pending. 
-Pending quantity: 750 units worth Rs 8,700,000. Recommend following up on pending deliveries."
-
-Executive Query: "Logistics Summary: 1,247 total deliveries. 85% completion rate. 
-Pending deliveries: 187 (Rs 18.2M). Top risk: HPK warehouse with 42 pending DNs. 
-Recommend focusing on HPK dispatches today."
-
-================================================================================
-RESPONSE:
-================================================================================"""
-    
-    return prompt
-
-# ==========================================================
-# FIX 7: Better "No Data Found" Handling
-# ==========================================================
-
-def get_no_data_message() -> str:
-    """Return helpful message when no data found."""
-    return """I couldn't find matching logistics records in our system.
-
-Try asking about:
-
-📦 **DN Number:** Check DN 6243612322
-🏢 **Dealer Name:** Show Faisal Traders summary
-🏭 **Warehouse:** Which warehouse has highest pending?
-🌆 **City:** Show Lahore deliveries
-📊 **Summary:** Give me logistics summary
-⏳ **Pending:** How many deliveries pending?
-✅ **POD:** How many awaiting acknowledgement?
-
-Please provide a specific DN number, dealer name, warehouse, or city for accurate information."""
-
-# ==========================================================
-# FIX 5 & 6: Helper to handle dealer selection with confirmation
-# ==========================================================
-
-def handle_dealer_selection(customer_message: str, phone_number: str, db: Session) -> Dict[str, Any]:
+def handle_dealer_selection(customer_message: str, phone_number: str, db: Session, ai_service: AIQueryService) -> Dict[str, Any]:
     """Handle dealer selection flow with confirmation message."""
     session = get_user_session(phone_number)
     
@@ -265,20 +97,18 @@ def handle_dealer_selection(customer_message: str, phone_number: str, db: Sessio
             session["pending_dealer_matches"] = []
             session["last_intent"] = "dealer_lookup_selected"
             
-            # Get full dealer summary
-            dealer_result = LogisticsQueryService.get_dealer_summary(db, selected_dealer)
+            # Get full dealer summary using AI Query Service
+            result = ai_service.process_query(
+                question=f"Show dealer {selected_dealer} dashboard",
+                user_phone=phone_number
+            )
             
-            if dealer_result.get("success"):
-                summary = LogisticsQueryService.generate_dealer_summary_text(dealer_result)
-                
-                # Add confirmation message
-                confirmation = f"✅ Dealer Confirmed: {selected_dealer}\n\nGenerating logistics summary...\n\n"
-                
+            if result.get("success"):
                 return {
                     "success": True,
-                    "summary": confirmation + summary,
+                    "summary": result.get("response", "Dealer information retrieved."),
                     "intent": "dealer_lookup_selected",
-                    "data": dealer_result,
+                    "data": result.get("dashboard", {}),
                     "dealer_name": selected_dealer
                 }
     
@@ -345,17 +175,18 @@ async def receive_message(
     add_user_message(phone_number, customer_message)
 
     # ==========================================================
+    # STEP 2: CREATE AI SERVICE INSTANCE
+    # ==========================================================
+    ai_service = AIQueryService(db)
+
+    # ==========================================================
     # CHECK FOR DEALER SELECTION RESPONSE FIRST
     # ==========================================================
-    selection_result = handle_dealer_selection(customer_message, phone_number, db)
+    selection_result = handle_dealer_selection(customer_message, phone_number, db, ai_service)
     
     if selection_result.get("success"):
-        context = selection_result.get("summary", "Dealer information retrieved.")
+        ai_reply = selection_result.get("summary", "Dealer information retrieved.")
         intent = selection_result.get("intent", "dealer_lookup_selected")
-        
-        # Build and send AI response
-        prompt = build_logistics_prompt(customer_message, context, intent)
-        ai_reply = ask_claude(prompt)
         
         # Save AI response
         add_ai_message(phone_number, ai_reply)
@@ -363,117 +194,74 @@ async def receive_message(
         # Send WhatsApp response
         whatsapp_response = send_text_message(phone_number, ai_reply)
         
+        # Log response
+        print("\n" + "="*80)
+        print(f"✅ RESPONSE SENT TO {phone_number}")
+        print(f"💬 Reply Preview: {ai_reply[:200]}...")
+        print(f"📊 Intent: {intent}")
+        print("="*80 + "\n")
+        
         return {
             "success": True,
             "customer_message": customer_message,
             "ai_reply": ai_reply,
+            "intent": intent,
             "whatsapp_response": whatsapp_response
         }
     
     # ==========================================================
-    # DETECT INTENT AND QUERY LOGISTICS DATABASE
+    # STEP 3: PROCESS QUERY WITH AI QUERY SERVICE
     # ==========================================================
     try:
-        # Get AI context from logistics database
-        ai_result = LogisticsQueryService.handle_ai_query(
+        # Use AI Query Service to process the question
+        result = ai_service.process_query(
             question=customer_message,
-            db=db,
-            openai_client=None  # We'll use Claude instead
+            user_phone=phone_number
         )
         
-        context = ai_result.get("summary", "No logistics data found")
-        intent = ai_result.get("intent", "general_query")
+        # Extract response and intent
+        ai_reply = result.get("response", "Unable to generate response.")
+        intent = result.get("question_type", "general")
         
         # Update session
         session = get_user_session(phone_number)
         session["last_intent"] = intent
         session["last_question"] = customer_message
         
-        # ==========================================================
-        # FIX 8 & 9: Handle Executive and Product Queries
-        # ==========================================================
-        
-        # Check if this is an executive/insights query
-        executive_keywords = ["executive summary", "logistics summary", "business insights", 
-                             "what needs attention", "biggest risk", "ceo report"]
-        if any(keyword in customer_message.lower() for keyword in executive_keywords):
-            intent = "executive_summary"
-            # Get executive summary
-            exec_result = LogisticsQueryService.get_executive_summary(db)
-            context = exec_result.get("executive_summary", "Executive summary generated.")
-        
-        # Check if this is a product query
-        product_keywords = ["refrigerator", "led tv", "tv", "washing machine", "product", "material"]
-        if any(keyword in customer_message.lower() for keyword in product_keywords):
-            intent = "product_query"
-        
-        # ==========================================================
-        # HANDLE DEALER LOOKUP WITH MULTIPLE MATCHES
-        # ==========================================================
-        if intent == "dealer_lookup" and ai_result.get("fuzzy"):
-            matches = ai_result.get("matches", [])
+        # Check if this is a fuzzy match that needs dealer selection
+        if result.get("fuzzy"):
+            matches = result.get("matches", [])
             if matches:
                 session = get_user_session(phone_number)
                 session["pending_dealer_selection"] = True
                 session["pending_dealer_matches"] = matches
                 
-                dealer_list = "\n".join([
-                    f"{i+1}. {m['dealer_name']} ({m['total_dns']} DNs, Rs {m['total_amount']:,.2f})"
-                    for i, m in enumerate(matches[:5])
-                ])
-                
-                context = f"Multiple dealers found. Please reply with the number:\n\n{dealer_list}\n\nExample: Reply '1' for the first dealer"
-                intent = "dealer_selection"
+                # The response already contains the selection prompt
+                # No need to modify ai_reply
+                print(f"📋 Multiple dealers found, awaiting selection from user")
         
         # ==========================================================
-        # FIX 7: Better "No Data Found" Handling
-        # ==========================================================
-        if not ai_result.get("success", True) or context == "No logistics data found":
-            ai_reply = get_no_data_message()
-            
-            add_ai_message(phone_number, ai_reply)
-            whatsapp_response = send_text_message(phone_number, ai_reply)
-            
-            return {
-                "success": True,
-                "customer_message": customer_message,
-                "ai_reply": ai_reply,
-                "whatsapp_response": whatsapp_response
-            }
-        
-        # ==========================================================
-        # BUILD SPECIALIZED LOGISTICS PROMPT FOR CLAUDE
-        # ==========================================================
-        prompt = build_logistics_prompt(customer_message, context, intent)
-        
-        # ==========================================================
-        # LOGGING: Show what's being sent to Claude
+        # LOGGING: Show what was processed
         # ==========================================================
         print("\n" + "="*80)
-        print(f"🤖 SENDING TO CLAUDE")
+        print(f"🤖 AI QUERY SERVICE PROCESSED")
         print(f"📊 Intent: {intent}")
-        print(f"📝 Context Length: {len(context)} chars")
-        print(f"📝 Context Preview: {context[:300]}...")
+        print(f"🎯 Question Type: {result.get('question_type', 'unknown')}")
+        print(f"🤖 AI Used: {result.get('ai_used', False)}")
+        print(f"⏱️ Processing Time: {result.get('processing_time_ms', 0)}ms")
+        print(f"📝 Response Preview: {ai_reply[:300]}...")
         print("="*80)
         
-        # ==========================================================
-        # GET AI RESPONSE FROM CLAUDE
-        # ==========================================================
-        ai_reply = ask_claude(prompt)
-        
-        # FIX 10: Post-process response to ensure business rules are applied
-        # Replace any raw field names that might have slipped through
-        ai_reply = ai_reply.replace("PGI Completed", "Delivered")
-        ai_reply = ai_reply.replace("POD Received", "Dealer Acknowledged")
-        ai_reply = ai_reply.replace("POD Pending", "Awaiting Acknowledgement")
-        ai_reply = ai_reply.replace("PGI Pending", "Pending Dispatch")
-        
     except Exception as e:
-        print(f"❌ Error in logistics query: {str(e)}")
+        print(f"❌ Error in AI Query Service: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        
         ai_reply = (
             "I'm having trouble accessing the logistics database right now. "
             "Please try again in a moment. If the issue persists, contact support."
         )
+        intent = "error"
 
     # ==========================================================
     # SAVE AI RESPONSE
@@ -491,6 +279,7 @@ async def receive_message(
     print("\n" + "="*80)
     print(f"✅ RESPONSE SENT TO {phone_number}")
     print(f"💬 Reply Preview: {ai_reply[:200]}...")
+    print(f"📊 Intent: {intent}")
     print("="*80 + "\n")
 
     return {
@@ -513,32 +302,33 @@ async def test_webhook():
     }
 
 # ==========================================================
-# DEMO MESSAGE (UPDATED WITH LOGISTICS)
+# DEMO MESSAGE (UPDATED WITH AI QUERY SERVICE)
 # ==========================================================
 
 @router.post("/demo")
 async def demo_message(db: Session = Depends(get_db)):
     customer_message = "How many pending deliveries?"
     
-    # Use logistics service
-    ai_result = LogisticsQueryService.handle_ai_query(
+    # ==========================================================
+    # STEP 5: Use AI Query Service for demo
+    # ==========================================================
+    ai_service = AIQueryService(db)
+    
+    result = ai_service.process_query(
         question=customer_message,
-        db=db,
-        openai_client=None
+        user_phone="demo"
     )
     
-    context = ai_result.get("summary", "No logistics data found")
-    intent = ai_result.get("intent", "general_query")
+    ai_reply = result.get("response", "Unable to generate response.")
+    intent = result.get("question_type", "general")
     
-    prompt = build_logistics_prompt(customer_message, context, intent)
-    ai_reply = ask_claude(prompt)
-
     return {
         "success": True,
         "customer_message": customer_message,
         "ai_reply": ai_reply,
         "intent": intent,
-        "summary": context
+        "processing_time_ms": result.get("processing_time_ms", 0),
+        "ai_used": result.get("ai_used", False)
     }
 
 # ==========================================================
@@ -551,7 +341,7 @@ async def webhook_status():
         "service": "WhatsApp Webhook",
         "status": "running",
         "verify_token": bool(WHATSAPP_VERIFY_TOKEN),
-        "logistics_integration": True,
+        "ai_query_service_integration": True,
         "active_sessions": len(user_sessions)
     }
 
@@ -569,7 +359,7 @@ async def clear_session(phone_number: str):
     }
 
 # ==========================================================
-# TEST LOGISTICS QUERY ENDPOINT
+# TEST LOGISTICS QUERY ENDPOINT (UPDATED)
 # ==========================================================
 
 @router.get("/test-logistics")
@@ -577,18 +367,21 @@ async def test_logistics_query(
     q: str,
     db: Session = Depends(get_db)
 ):
-    """Test endpoint for logistics queries."""
-    result = LogisticsQueryService.handle_ai_query(
+    """Test endpoint for logistics queries using AI Query Service."""
+    ai_service = AIQueryService(db)
+    
+    result = ai_service.process_query(
         question=q,
-        db=db,
-        openai_client=None
+        user_phone="test"
     )
     
     return {
         "question": q,
-        "intent": result.get("intent"),
-        "summary": result.get("summary"),
-        "has_data": result.get("metadata", {}).get("has_data", False)
+        "question_type": result.get("question_type", "unknown"),
+        "response": result.get("response", "No response"),
+        "ai_used": result.get("ai_used", False),
+        "processing_time_ms": result.get("processing_time_ms", 0),
+        "success": result.get("success", False)
     }
 
 # ==========================================================
@@ -602,4 +395,16 @@ async def get_session(phone_number: str):
     return {
         "phone_number": phone_number,
         "session": session
+    }
+
+# ==========================================================
+# HEALTH CHECK ENDPOINT
+# ==========================================================
+
+@router.get("/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "service": "WhatsApp Webhook with AI Query Service",
+        "architecture": "WhatsApp → Webhook → AIQueryService → AnalyticsService → AIProviderService"
     }
