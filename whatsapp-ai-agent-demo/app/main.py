@@ -6,6 +6,7 @@
 import os
 import re
 import uuid
+import time
 from contextlib import asynccontextmanager
 from typing import Optional
 from datetime import datetime
@@ -15,7 +16,8 @@ from fastapi.responses import RedirectResponse, PlainTextResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import inspect, func, text, case  # FIX 1: Added case import
+from sqlalchemy import inspect, func, text, case
+from loguru import logger
 
 # Import SessionLocal from database
 from app.database import (
@@ -50,11 +52,19 @@ from app.services.schema_service import (
 # WhatsApp service import
 from app.services.whatsapp_service import send_text_message
 
-# FIX 3: Import LogisticsQueryService
-from app.services.logistics_query_service import LogisticsQueryService
+# ==========================================================
+# CHANGE 1: Replace old query engine with AI Query Service
+# ==========================================================
+from app.services.ai_query_service import AIQueryService
 
 # Import routers
 from app.routes.upload import router as upload_router
+
+# ==========================================================
+# CHANGE 7: Register webhook router
+# ==========================================================
+from app.routes.webhook import router as webhook_router
+
 
 # ==========================================================
 # LIFESPAN HANDLER
@@ -75,6 +85,18 @@ async def lifespan(app: FastAPI):
     print("WHATSAPP VERIFY TOKEN:", bool(os.getenv("WHATSAPP_VERIFY_TOKEN")))
     print("OPENAI_API_KEY:", bool(os.getenv("OPENAI_API_KEY")))
     print("ANTHROPIC_API_KEY:", bool(os.getenv("ANTHROPIC_API_KEY")))
+    
+    # ==========================================================
+    # CHANGE 2: Add AI Startup Validation
+    # ==========================================================
+    print("=" * 60)
+    print("🤖 AI SERVICE VALIDATION")
+    print("=" * 60)
+    print("DEEPSEEK_API_KEY:", bool(os.getenv("DEEPSEEK_API_KEY")))
+    print("AI_PROVIDER:", os.getenv("AI_PROVIDER", "deepseek (default)"))
+    print("AI_ANALYSIS_ENABLED:", os.getenv("AI_ANALYSIS_ENABLED", "True"))
+    print("ENABLE_DEEPSEEK_LOGISTICS:", os.getenv("ENABLE_DEEPSEEK_LOGISTICS", "True"))
+    print("=" * 60)
     
     # Check Railway variables
     print("SCHEMA_VERSION:", os.getenv("SCHEMA_VERSION", "Not Set"))
@@ -156,10 +178,21 @@ async def lifespan(app: FastAPI):
     except ImportError:
         print("⚠️ Excel Service Not Installed - Will be added later")
     
+    # Test AI Query Service initialization
+    print("TESTING AI QUERY SERVICE...")
+    try:
+        test_db = SessionLocal()
+        ai_service = AIQueryService(test_db)
+        print("✅ AI Query Service initialized successfully")
+        test_db.close()
+    except Exception as e:
+        print(f"⚠️ AI Query Service initialization warning: {e}")
+    
     print("========================================")
     print("✅ PostgreSQL Connected Successfully")
     print("✅ Database Tables Verified")
     print("✅ Upload Directory Created")
+    print("✅ AI Query Service Ready")
     print("========================================")
     print("✅ Application Startup Complete")
     print("========================================")
@@ -200,6 +233,11 @@ app.add_middleware(
 # ==========================================================
 
 app.include_router(upload_router)
+
+# ==========================================================
+# CHANGE 7: Register webhook router
+# ==========================================================
+app.include_router(webhook_router)
 
 # ==========================================================
 # TEMPLATES
@@ -333,7 +371,6 @@ def get_latest_uploads(db: Session, limit: int = 5):
         return []
 
 
-# FIX 1: Fixed case() function usage
 def get_top_dealers(db: Session, limit: int = 5):
     """Get top dealers by delivery count - FIXED case() function"""
     try:
@@ -537,6 +574,45 @@ async def health(db: Session = Depends(get_db)):
         "whatsapp": "connected" if whatsapp_token else "disconnected",
         "schema_version": APP_SCHEMA_VERSION,
         "uploads_folder": uploads_folder_exists,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+
+# ==========================================================
+# CHANGE 3: Add AI Service Health Check
+# ==========================================================
+
+@app.get("/ai-status", tags=["AI"])
+async def ai_status(db: Session = Depends(get_db)):
+    """Get AI service status and configuration"""
+    try:
+        # Check database connection
+        db.execute(text("SELECT 1")).scalar()
+        db_connected = True
+    except:
+        db_connected = False
+    
+    # Get AI configuration from environment
+    deepseek_key = os.getenv("DEEPSEEK_API_KEY")
+    ai_provider = os.getenv("AI_PROVIDER", "deepseek")
+    ai_analysis_enabled = os.getenv("AI_ANALYSIS_ENABLED", "True").lower() == "true"
+    deepseek_logistics = os.getenv("ENABLE_DEEPSEEK_LOGISTICS", "True").lower() == "true"
+    
+    # Try to initialize AI service
+    ai_service_ready = False
+    try:
+        test_service = AIQueryService(db)
+        ai_service_ready = True
+    except Exception as e:
+        ai_service_error = str(e)
+    
+    return {
+        "deepseek_enabled": bool(deepseek_key),
+        "ai_provider": ai_provider,
+        "ai_analysis_enabled": ai_analysis_enabled,
+        "deepseek_logistics_enabled": deepseek_logistics,
+        "database_connected": db_connected,
+        "ai_service_ready": ai_service_ready,
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -760,6 +836,7 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
         whatsapp_token = os.getenv("WHATSAPP_ACCESS_TOKEN")
         anthropic_key = os.getenv("ANTHROPIC_API_KEY")
         openai_key = os.getenv("OPENAI_API_KEY")
+        deepseek_key = os.getenv("DEEPSEEK_API_KEY")
         schema_info = get_schema_info(db)
         last_refresh = datetime.utcnow()
         
@@ -791,6 +868,7 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
                 "status": "running",
                 "whatsapp_status": "Online" if whatsapp_token else "Offline",
                 "claude_status": "Online" if anthropic_key or openai_key else "Offline",
+                "deepseek_status": "Online" if deepseek_key else "Offline",
                 "vision_status": "Online" if anthropic_key or openai_key else "Offline",
                 "schema_version": schema_info.get("app_version", "1.0"),
                 "last_upload_date": upload_stats.get("last_upload_date").strftime('%Y-%m-%d %H:%M') if upload_stats.get("last_upload_date") else "Never",
@@ -838,6 +916,7 @@ async def dashboard_api(db: Session = Depends(get_db)):
         whatsapp_token = os.getenv("WHATSAPP_ACCESS_TOKEN")
         anthropic_key = os.getenv("ANTHROPIC_API_KEY")
         openai_key = os.getenv("OPENAI_API_KEY")
+        deepseek_key = os.getenv("DEEPSEEK_API_KEY")
         
         return {
             "delivery_stats": {
@@ -862,6 +941,7 @@ async def dashboard_api(db: Session = Depends(get_db)):
             "status": "running",
             "whatsapp_status": "Online" if whatsapp_token else "Offline",
             "claude_status": "Online" if anthropic_key or openai_key else "Offline",
+            "deepseek_status": "Online" if deepseek_key else "Offline",
             "vision_status": "Online" if anthropic_key or openai_key else "Offline"
         }
     except Exception as e:
@@ -1079,40 +1159,37 @@ async def search_deliveries(
 
 
 # ==========================================================
-# CHAT ENDPOINTS
+# CHAT ENDPOINTS (UPDATED WITH AI Query Service)
 # ==========================================================
 
 @app.post("/chat", response_model=ChatResponse, tags=["Chat"])
 async def chat(request: ChatRequest, db: Session = Depends(get_db)):
     try:
-        user_message = request.message.lower()
+        start_time = time.time()
         
-        if "pending delivery" in user_message or "pending dn" in user_message:
-            pending_count = db.query(DeliveryReport).filter(
-                DeliveryReport.pending_flag.is_(True)
-            ).count()
-            ai_reply = f"You have {pending_count} pending deliveries."
-        elif "pgi status" in user_message:
-            pgi_pending = db.query(DeliveryReport).filter(
-                DeliveryReport.pgi_status == "Pending"
-            ).count()
-            ai_reply = f"{pgi_pending} deliveries are pending PGI."
-        elif "pod status" in user_message:
-            pod_pending = db.query(DeliveryReport).filter(
-                DeliveryReport.pod_status == "Pending"
-            ).count()
-            ai_reply = f"{pod_pending} deliveries are pending POD confirmation."
-        elif "order" in user_message:
-            ai_reply = "Your order is currently in transit and expected tomorrow."
-        elif "delivery" in user_message:
-            ai_reply = "Your shipment is scheduled for delivery within 24 hours."
-        elif "refund" in user_message:
-            ai_reply = "Your refund request has been received and is under review."
-        elif "hello" in user_message or "hi" in user_message:
-            ai_reply = f"Hello {request.customer_name}, how may I assist you today?"
-        else:
-            ai_reply = "Thank you for contacting support. You can ask about pending deliveries, PGI status, or POD status."
+        # ==========================================================
+        # CHANGE 1: Use AI Query Service for chat endpoint
+        # ==========================================================
+        ai_service = AIQueryService(db)
         
+        result = ai_service.process_query(
+            question=request.message,
+            user_phone=request.phone_number or "web_chat"
+        )
+        
+        ai_reply = result.get("response", "Thank you for contacting support.")
+        
+        # ==========================================================
+        # CHANGE 4: Log AI usage
+        # ==========================================================
+        elapsed = time.time() - start_time
+        print(f"📊 CHAT AI USAGE:")
+        print(f"   Question: {request.message[:100]}...")
+        print(f"   Intent: {result.get('question_type', 'unknown')}")
+        print(f"   AI Used: {result.get('ai_used', False)}")
+        print(f"   Response Time: {elapsed:.2f}s")
+        
+        # Get or create customer
         customer = None
         if request.phone_number:
             customer = db.query(Customer).filter(
@@ -1141,6 +1218,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
             db.commit()
             db.refresh(customer)
         
+        # Create conversation
         conversation = Conversation(
             customer_id=customer.id,
             status="active"
@@ -1149,6 +1227,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(conversation)
         
+        # Save messages
         user_msg = Message(
             conversation_id=conversation.id,
             sender="user",
@@ -1169,7 +1248,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
             conversation_id=conversation.id,
             prompt=request.message,
             ai_response=ai_reply,
-            model_name="rule-based",
+            model_name=result.get('question_type', 'ai-query-service'),
             success=True
         )
         db.add(ai_log)
@@ -1182,6 +1261,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
         }
     except Exception as e:
         db.rollback()
+        logger.exception(f"Chat endpoint error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1348,7 +1428,7 @@ async def get_customer(customer_id: int, db: Session = Depends(get_db)):
 
 
 # ==========================================================
-# WEBHOOK - WhatsApp Integration (UPDATED WITH LOGISTICS)
+# WEBHOOK - WhatsApp Integration (UPDATED WITH AI Query Service)
 # ==========================================================
 
 @app.get("/webhook", tags=["Webhook"])
@@ -1373,7 +1453,7 @@ async def verify_webhook(
 
 @app.post("/webhook", tags=["Webhook"])
 async def whatsapp_webhook(payload: dict, db: Session = Depends(get_db)):
-    """Receive and process WhatsApp messages using Logistics AI Service"""
+    """Receive and process WhatsApp messages using AI Query Service"""
     try:
         print("WhatsApp webhook received")
         
@@ -1387,9 +1467,6 @@ async def whatsapp_webhook(payload: dict, db: Session = Depends(get_db)):
                                 customer_phone = message.get("from")
                                 message_text = message.get("text", {}).get("body", "")
                                 
-                                # ==========================================================
-                                # FIX 5 & 6: Debug Logging
-                                # ==========================================================
                                 print("=" * 80)
                                 print(f"📱 WHATSAPP MESSAGE RECEIVED")
                                 print(f"📞 PHONE: {customer_phone}")
@@ -1439,29 +1516,37 @@ async def whatsapp_webhook(payload: dict, db: Session = Depends(get_db)):
                                 db.commit()
                                 
                                 # ==========================================================
-                                # FIX 4: Use LogisticsQueryService for ALL WhatsApp messages
+                                # CHANGE 1: Use AI Query Service for WhatsApp messages
+                                # CHANGE 4: Log AI usage
+                                # CHANGE 6: Add exception logging
+                                # CHANGE 7: Add AI response timing
                                 # ==========================================================
+                                start_time = time.time()
+                                
                                 try:
-                                    # Call logistics service
-                                    result = LogisticsQueryService.handle_ai_query(
+                                    ai_service = AIQueryService(db)
+                                    
+                                    result = ai_service.process_query(
                                         question=message_text,
-                                        db=db,
-                                        openai_client=None
+                                        user_phone=customer_phone
                                     )
                                     
-                                    ai_reply = result.get("ai_response", "Unable to process your request.")
+                                    ai_reply = result.get("response", "Unable to process your request.")
                                     
-                                    # FIX 6: Log intent and success
-                                    print(f"🤖 INTENT: {result.get('intent', 'unknown')}")
-                                    print(f"✅ SUCCESS: {result.get('success', False)}")
-                                    print(f"💬 AI RESPONSE: {ai_reply[:200]}...")
+                                    elapsed = time.time() - start_time
+                                    
+                                    # CHANGE 4: Log AI usage
+                                    print(f"🤖 AI USAGE:")
+                                    print(f"   Intent: {result.get('question_type', 'unknown')}")
+                                    print(f"   AI Used: {result.get('ai_used', False)}")
+                                    print(f"   Response Time: {elapsed:.2f}s")
+                                    print(f"   AI Response: {ai_reply[:200]}...")
                                     print("=" * 80)
                                     
                                 except Exception as e:
-                                    # FIX 7: Exception handling
-                                    print(f"❌ LOGISTICS ERROR: {str(e)}")
-                                    import traceback
-                                    traceback.print_exc()
+                                    # CHANGE 6: Exception logging
+                                    logger.exception(f"AI Query Service error: {e}")
+                                    print(f"❌ AI SERVICE ERROR: {str(e)}")
                                     ai_reply = (
                                         "An error occurred while processing your logistics request. "
                                         "Please try again in a moment."
@@ -1481,7 +1566,7 @@ async def whatsapp_webhook(payload: dict, db: Session = Depends(get_db)):
                                     conversation_id=conversation.id,
                                     prompt=message_text,
                                     ai_response=ai_reply,
-                                    model_name="logistics-ai",
+                                    model_name="ai-query-service",
                                     success=True
                                 )
                                 db.add(ai_log)
@@ -1497,6 +1582,7 @@ async def whatsapp_webhook(payload: dict, db: Session = Depends(get_db)):
         return {"status": "received"}
         
     except Exception as e:
+        logger.exception(f"Webhook error: {e}")
         print(f"❌ Webhook error: {str(e)}")
         import traceback
         traceback.print_exc()
@@ -1552,7 +1638,9 @@ async def version():
         "framework": "FastAPI",
         "database": "PostgreSQL",
         "schema_version": APP_SCHEMA_VERSION,
-        "logistics_integration": True
+        "logistics_integration": True,
+        "ai_provider": os.getenv("AI_PROVIDER", "deepseek"),
+        "ai_enabled": os.getenv("AI_ANALYSIS_ENABLED", "True") == "True"
     }
 
 
