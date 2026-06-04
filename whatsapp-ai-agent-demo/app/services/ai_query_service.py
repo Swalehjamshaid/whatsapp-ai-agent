@@ -35,13 +35,14 @@ except ImportError as e:
 class QuestionClassifier:
     """Classify questions by type before AI processing"""
     
-    # PHASE 2: General AI Keywords
+    # PHASE 2: General AI Keywords - These should go to DeepSeek directly
     GENERAL_AI_KEYWORDS = [
         "what", "why", "how", "when", "where", "who",
         "tell me", "explain", "describe", "write", "create",
         "joke", "story", "poem", "python", "code", "programming",
-        "ai", "deepseek", "chatgpt", "weather", "news",
-        "who is", "what is", "how to", "why is", "when will"
+        "ai", "deepseek", "chatgpt", "weather", "news", "sports",
+        "who is", "what is", "how to", "why is", "when will",
+        "tell me a", "give me", "make a", "generate"
     ]
     
     # PHASE 3: Logistics Detection Keywords
@@ -53,7 +54,8 @@ class QuestionClassifier:
         "karachi", "lahore", "islamabad", "multan", "faisalabad",
         "hyderabad", "peshawar", "quetta", "rawalpindi",
         "situation", "performance", "status", "aging", "risk",
-        "ceo", "executive", "dashboard", "kpi", "ranking"
+        "ceo", "executive", "dashboard", "kpi", "ranking",
+        "top", "best", "worst", "compare", "versus"
     ]
     
     QUESTION_TYPES = {
@@ -61,7 +63,7 @@ class QuestionClassifier:
             "keywords": [
                 "dealer", "customer", "dealer dashboard", "dealer summary",
                 "dealer performance", "dealer score", "dealer rating",
-                "show dealer", "tell me about dealer"
+                "show dealer", "tell me about dealer", "dealer aging"
             ],
             "patterns": [
                 r'(?:dealer|customer|for|of|show)\s+([A-Za-z0-9\s&]+)',
@@ -69,7 +71,7 @@ class QuestionClassifier:
             ]
         },
         "DN": {
-            "keywords": ["dn", "delivery note", "delivery number"],
+            "keywords": ["dn", "delivery note", "delivery number", "track delivery"],
             "patterns": [r'\b(\d{8,15})\b']
         },
         "PRODUCT": {
@@ -80,7 +82,7 @@ class QuestionClassifier:
             "keywords": ["warehouse", "godown", "stock location", "storage"],
             "patterns": [r'(?:warehouse|godown)\s+([A-Za-z0-9]+)']
         },
-        # PHASE 6: Improved City Detection
+        # PHASE 6: Improved City Detection with Pakistan cities
         "CITY": {
             "keywords": [
                 "city", "location", "region", "area",
@@ -91,14 +93,14 @@ class QuestionClassifier:
             ],
             "patterns": [
                 r'(?:in|for|at)\s+([A-Za-z\s]+?)(?:\s+only|\s+$|\.|\?|$)',
-                r'(?:karachi|lahore|islamabad|multan|faisalabad|hyderabad|peshawar|quetta)'
+                r'(karachi|lahore|islamabad|multan|faisalabad|hyderabad|peshawar|quetta|rawalpindi)'
             ]
         },
         "EXECUTIVE": {
             "keywords": [
                 "ceo", "executive", "command center", "executive summary",
                 "ceo dashboard", "what should i focus", "overview",
-                "dashboard", "kpi", "performance report"
+                "dashboard", "kpi", "performance report", "summary"
             ],
             "patterns": []
         },
@@ -153,24 +155,26 @@ class QuestionClassifier:
         question_lower = question.lower().strip()
         words = question.strip().split()
         
-        # PHASE 2: Check for general AI questions first (highest priority)
+        # PHASE 2: Check for general AI questions first (HIGHEST PRIORITY)
+        # These should NEVER go to dealer search
         for keyword in cls.GENERAL_AI_KEYWORDS:
             if keyword in question_lower:
-                # Don't classify as GENERAL if it's clearly a logistics query
+                # If it's clearly a general question, send to GENERAL handler
                 if not cls.is_logistics_question(question):
                     logger.debug(f"Classified as GENERAL due to keyword: {keyword}")
                     return "GENERAL", None
         
-        # PHASE 1: Remove automatic dealer fallback - only classify as dealer with explicit indicators
+        # PHASE 1: REMOVED automatic dealer fallback
+        # Only classify as dealer with explicit indicators
         dealer_indicators = [
             "dealer", "customer", "dealer dashboard", "dealer summary",
             "dealer performance", "show dealer", "tell me about dealer",
-            "dashboard for", "performance of"
+            "dashboard for", "performance of", "dealer aging"
         ]
         
         is_explicit_dealer = any(indicator in question_lower for indicator in dealer_indicators)
         
-        # Only classify as dealer if explicit indicators exist OR it's a short name and logistics question
+        # Only classify as dealer if explicit indicators exist
         if is_explicit_dealer:
             # Extract dealer name
             for pattern in cls.QUESTION_TYPES["DEALER"]["patterns"]:
@@ -180,12 +184,7 @@ class QuestionClassifier:
                     if dealer_name and len(dealer_name) > 1:
                         return "DEALER", dealer_name
         
-        # Check if it's a single word name and logistics question
-        if len(words) == 1 and 2 < len(question) < 30 and not re.search(r'\d', question):
-            if cls.is_logistics_question(question):
-                return "DEALER", question.strip().title()
-        
-        # Check each category
+        # Check each logistics category
         for qtype, data in cls.QUESTION_TYPES.items():
             for keyword in data.get("keywords", []):
                 if keyword in question_lower:
@@ -319,7 +318,7 @@ class ResponseFormatter:
     
     @staticmethod
     def product_response(product_data: Dict, ai_insights: Dict = None) -> str:
-        """Format product performance response"""
+        """Format product performance response with AI insights"""
         if not product_data.get("success"):
             return f"❌ Product not found."
         
@@ -454,8 +453,43 @@ class ResponseFormatter:
         return response
     
     @staticmethod
+    def ranking_response(rankings: Dict, category: str, limit: int = 10) -> str:
+        """Format ranking response"""
+        if category not in rankings:
+            return f"No ranking data available for {category}"
+        
+        data = rankings[category][:limit]
+        
+        if not data:
+            return f"No data found for {category.replace('_', ' ').title()}"
+        
+        response = f"📊 *TOP {limit} {category.replace('_', ' ').upper()}*\n\n"
+        
+        for i, item in enumerate(data, 1):
+            if "dealer" in item:
+                response += f"{i}. *{item.get('dealer', 'Unknown')}*\n"
+                response += f"   📦 DNs: {item.get('total_dns', 0)}\n"
+                response += f"   💰 Value: Rs {item.get('total_value', 0):,.2f}\n"
+                response += f"   ⭐ Score: {item.get('score', 0)}/100\n\n"
+            elif "warehouse" in item:
+                response += f"{i}. *{item.get('warehouse', 'Unknown')}*\n"
+                response += f"   ⏳ Pending: {item.get('pending_dns', 0)} DNs\n"
+                response += f"   ⚡ Efficiency: {item.get('efficiency_score', 0)}%\n\n"
+            elif "city" in item:
+                response += f"{i}. *{item.get('city', 'Unknown')}*\n"
+                response += f"   ⏳ Pending: {item.get('pending_dns', 0)} DNs\n"
+                response += f"   ⚡ Performance: {item.get('performance_score', 0)}%\n\n"
+            elif "product_name" in item:
+                response += f"{i}. *{item.get('product_name', 'Unknown')}*\n"
+                response += f"   📦 Qty: {item.get('total_qty', 0):,.0f}\n"
+                response += f"   ✅ Fulfillment: {item.get('fulfillment_rate', 0)}%\n\n"
+        
+        return response
+    
+    # PHASE 7: Clarification response for delivery tracking
+    @staticmethod
     def clarification_response() -> str:
-        """PHASE 7: Return clarification response for delivery tracking"""
+        """Return clarification response for delivery tracking"""
         return """
 📦 *Delivery Tracking Help*
 
@@ -489,12 +523,15 @@ I can help you with:
 📊 *Dealer Queries*
 • "Show Afzal dashboard"
 • "Afzal performance"
+• "Compare Afzal and Bismillah"
 
 📦 *DN Queries*
 • "DN 6243611264"
+• "Track delivery 6243611264"
 
 🏭 *Warehouse Queries*
 • "Warehouse HPK status"
+• "Which warehouse has highest pending?"
 
 🌆 *City Queries*
 • "Karachi situation"
@@ -502,10 +539,12 @@ I can help you with:
 
 📈 *Executive Queries*
 • "Executive summary"
-• "What should I focus on?"
+• "What should I focus on today?"
+• "Top risks"
 
 🏆 *Ranking Queries*
 • "Top 10 dealers"
+• "Best warehouse"
 
 💬 *General Questions*
 • "Who is Imran Khan?"
@@ -596,7 +635,7 @@ class AIQueryService:
                 result = self._handle_pod_query(user_phone)
             elif qtype == "LOGISTICS":
                 result = self._handle_logistics_query(question, user_phone)
-            else:
+            else:  # GENERAL
                 result = self._handle_general_query(question, user_phone)
         except Exception as e:
             logger.error(f"❌ Error processing query: {e}")
@@ -612,8 +651,8 @@ class AIQueryService:
         result["question_type"] = qtype
         result["entity"] = entity
         
-        # PHASE 8: Log AI usage
-        logger.info(f"🤖 AI USED: {result.get('ai_used', False)} | RESPONSE LENGTH: {len(result.get('response', ''))}")
+        # PHASE 8: Log AI usage and response length
+        logger.info(f"🤖 AI USED: {result.get('ai_used', False)} | RESPONSE LENGTH: {len(result.get('response', ''))} chars")
         
         # Step 4: Log the query
         self._log_query(question, result, user_phone)
@@ -621,7 +660,7 @@ class AIQueryService:
         return result
     
     # ======================================================
-    # HANDLER METHODS
+    # HANDLER METHODS WITH AI FALLBACK (PHASE 5)
     # ======================================================
     
     def _handle_dealer_query(self, dealer_name: str, user_phone: str = None) -> Dict[str, Any]:
@@ -1119,8 +1158,9 @@ class AIQueryService:
             "ai_used": False
         }
     
+    # PHASE 4: Improved logistics query handler
     def _handle_logistics_query(self, question: str, user_phone: str = None) -> Dict[str, Any]:
-        """PHASE 4: Handle logistics-related general questions with AI"""
+        """Handle logistics-related general questions with AI"""
         if self.ai_available and ai_provider_service:
             try:
                 # Build logistics context
