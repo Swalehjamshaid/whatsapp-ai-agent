@@ -2,8 +2,8 @@
 # FILE: app/services/ai_query_service.py
 # ==========================================================
 # COMPLETE AI QUERY SERVICE - PRODUCTION READY
-# IMPROVED: Classification Logging, Dealer Detection, Ranking Detection,
-# City Detection, General AI Routing, Conversational Memory
+# ENHANCED: AI Startup Logging, DeepSeek Call Logging, Dealer Lookup,
+# Ranking Logic, Conversational Memory, Executive Advisor
 
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
@@ -30,7 +30,7 @@ except ImportError as e:
 
 
 # ======================================================
-# IMPROVEMENT 6: CONVERSATIONAL MEMORY
+# CONVERSATIONAL MEMORY
 # ======================================================
 
 class ConversationMemory:
@@ -109,27 +109,27 @@ class ConversationMemory:
 
 
 # ======================================================
-# IMPROVEMENT 1,2,3,4,5: ENHANCED INTENT CLASSIFIER
+# ENHANCED INTENT CLASSIFIER
 # ======================================================
 
 class IntentClassifier:
-    """Enhanced intent classification with logging, fuzzy dealer matching, improved detection"""
+    """Enhanced intent classification with improved dealer lookup and ranking detection"""
     
-    # IMPROVEMENT 4: Known cities for direct detection
+    # Known cities for direct detection
     KNOWN_CITIES = [
         "karachi", "lahore", "islamabad", "faisalabad", "multan",
         "peshawar", "quetta", "rawalpindi", "gujranwala", "sialkot",
         "hyderabad", "bahawalpur", "sukkur", "larkana"
     ]
     
-    # IMPROVEMENT 3: Ranking keywords (highest priority)
+    # Ranking keywords
     RANKING_KEYWORDS = [
         "highest", "lowest", "top", "bottom", "best", "worst",
         "largest", "smallest", "most", "least", "maximum", "minimum",
         "ranking", "leaderboard", "top 10", "top 5", "top 3"
     ]
     
-    # IMPROVEMENT 5: General AI keywords (non-logistics)
+    # General AI keywords (non-logistics)
     GENERAL_AI_KEYWORDS = [
         "who is", "what is", "why is", "how to", "tell me about",
         "explain", "describe", "write", "create", "generate",
@@ -156,23 +156,14 @@ class IntentClassifier:
     @classmethod
     def classify(cls, question: str, memory: Dict = None, logistics_service=None) -> Tuple[str, Optional[str]]:
         """
-        Enhanced classify with:
-        - Classification logging (Improvement 1)
-        - Fuzzy dealer lookup (Improvement 2)
-        - Improved ranking detection (Improvement 3)
-        - Improved city detection (Improvement 4)
-        - Improved general AI detection (Improvement 5)
+        Enhanced classify with improved dealer lookup and ranking detection
         """
         question_lower = question.lower().strip()
         question_original = question.strip()
         
-        # IMPROVEMENT 1: Logging will be added in process_query
-        # (Moved to process_query for better visibility)
-        
-        # IMPROVEMENT 5: Check for General AI questions first (highest priority)
+        # Check for General AI questions first (highest priority)
         for keyword in cls.GENERAL_AI_KEYWORDS:
             if keyword in question_lower:
-                # Don't classify as GENERAL if it contains logistics keywords
                 logistics_keywords = ["dealer", "dn", "delivery", "warehouse", "pod", "pending"]
                 if not any(lk in question_lower for lk in logistics_keywords):
                     return "GENERAL", None
@@ -183,15 +174,14 @@ class IntentClassifier:
             if match:
                 return "DN", match.group(1)
         
-        # PRIORITY 2: Ranking Query (IMPROVEMENT 3)
+        # PRIORITY 2: Ranking Query
         for keyword in cls.RANKING_KEYWORDS:
             if keyword in question_lower:
-                # Extract entity type if present
                 entity_match = re.search(r'(dealer|warehouse|city|product|dn)', question_lower)
                 entity = entity_match.group(1) if entity_match else None
                 return "RANKING", entity
         
-        # Check for ranking patterns without keywords
+        # Check for ranking patterns
         ranking_patterns = [
             r'which\s+(dealer|warehouse|city|product)\s+(?:has|is)\s+(?:the\s+)?(?:most|least)',
             r'(?:show|get|display)\s+(?:the\s+)?(?:top|bottom)'
@@ -202,13 +192,11 @@ class IntentClassifier:
                 entity = entity_match.group(1) if entity_match else None
                 return "RANKING", entity
         
-        # PRIORITY 3: City Query (IMPROVEMENT 4)
-        # Direct city name detection
+        # PRIORITY 3: City Query
         for city in cls.KNOWN_CITIES:
             if city in question_lower:
                 return "CITY", city.title()
         
-        # City patterns
         city_patterns = [
             r'(?:in|for|at)\s+(' + '|'.join(cls.KNOWN_CITIES) + r')',
             r'(' + '|'.join(cls.KNOWN_CITIES) + r')\s+(?:situation|performance|status|delivery)',
@@ -259,7 +247,7 @@ class IntentClassifier:
         if any(kw in question_lower for kw in pending_keywords):
             return "PENDING", None
         
-        # PRIORITY 10: Dealer Query with fuzzy matching (IMPROVEMENT 2)
+        # PRIORITY 10: Dealer Query with improved lookup
         # Check for explicit dealer indicators
         if any(indicator in question_lower for indicator in cls.DEALER_INDICATORS):
             for pattern in [
@@ -271,26 +259,36 @@ class IntentClassifier:
                 if match:
                     return "DEALER", match.group(1).strip().title()
         
-        # IMPROVEMENT 2: Fuzzy dealer lookup for standalone names
-        # If question is short (2-30 chars) and no numbers, try to find dealer
-        words = question.strip().split()
-        if len(words) == 1 and 2 < len(question) < 30 and not re.search(r'\d', question):
-            # Try to find dealer by name using logistics service
+        # IMPROVEMENT: Try full question dealer lookup first (most important fix)
+        if logistics_service and hasattr(logistics_service, 'search_dealer'):
+            try:
+                # First try the entire question as a dealer name
+                dealer_match = logistics_service.search_dealer(question_original)
+                if dealer_match:
+                    logger.info(f"Dealer found via full question lookup: '{question_original}' -> '{dealer_match}'")
+                    return "DEALER", dealer_match
+            except Exception as e:
+                logger.debug(f"Full question dealer search error: {e}")
+        
+        # Then try single word lookup if question is short
+        words = question_original.strip().split()
+        if len(words) == 1 and 2 < len(question_original) < 30 and not re.search(r'\d', question_original):
             if logistics_service and hasattr(logistics_service, 'search_dealer'):
                 try:
-                    dealer_match = logistics_service.search_dealer(question)
+                    dealer_match = logistics_service.search_dealer(question_original)
                     if dealer_match:
                         return "DEALER", dealer_match
                 except Exception as e:
                     logger.debug(f"Dealer search error: {e}")
         
-        # Also try to match any word that might be a dealer name
+        # Also try individual words that might be dealer names
         for word in words:
             if len(word) > 3 and not word in cls.GENERAL_AI_KEYWORDS and not word in cls.RANKING_KEYWORDS:
                 if logistics_service and hasattr(logistics_service, 'search_dealer'):
                     try:
                         dealer_match = logistics_service.search_dealer(word)
                         if dealer_match:
+                            logger.info(f"Dealer found via word lookup: '{word}' -> '{dealer_match}'")
                             return "DEALER", dealer_match
                     except Exception as e:
                         logger.debug(f"Dealer search error for '{word}': {e}")
@@ -311,11 +309,11 @@ class IntentClassifier:
 
 
 # ======================================================
-# IMPROVEMENT 8: AI RECOMMENDATION ENGINE
+# AI RECOMMENDATION ENGINE
 # ======================================================
 
 class AIRecommendationEngine:
-    """Generate AI-powered insights and recommendations after dashboards"""
+    """Generate AI-powered insights and recommendations"""
     
     @staticmethod
     def generate_pod_insights(pod_data: Dict, ai_provider=None, user_phone=None) -> Dict:
@@ -383,7 +381,7 @@ class AIRecommendationEngine:
 
 
 # ======================================================
-# IMPROVEMENT 7: EXECUTIVE ADVISOR
+# EXECUTIVE ADVISOR
 # ======================================================
 
 class ExecutiveAdvisor:
@@ -471,7 +469,7 @@ class ResponseFormatter:
         
         response = dashboard.get("formatted_message", "")
         
-        # IMPROVEMENT 8: Add AI insights and recommendations
+        # Add AI insights and recommendations
         if ai_insights and ai_insights.get("success"):
             response += "\n\n━━━━━━━━━━━━━━━━━━━━\n"
             response += "🤖 *AI INSIGHT*\n"
@@ -494,8 +492,8 @@ class ResponseFormatter:
         return response
     
     @staticmethod
-    def ranking_response(rankings: Dict, category: str, limit: int = 10) -> str:
-        """Format ranking response"""
+    def ranking_response(rankings: Dict, category: str, limit: int = 10, sort_by: str = "value") -> str:
+        """Format ranking response with flexible sorting"""
         if category not in rankings:
             return f"No ranking data available for {category}"
         
@@ -505,25 +503,33 @@ class ResponseFormatter:
             return f"No data found"
         
         category_name = category.replace("_", " ").upper()
-        response = f"📊 *{category_name} RANKINGS*\n\n"
+        sort_display = "PENDING" if sort_by == "pending" else "VALUE" if sort_by == "value" else "SCORE"
+        response = f"📊 *{category_name} RANKINGS (by {sort_display})*\n\n"
         
         for i, item in enumerate(data, 1):
             if "dealer" in item:
                 response += f"{i}. *{item.get('dealer', 'Unknown')}*\n"
                 response += f"   📦 DNs: {item.get('total_dns', 0)}\n"
                 response += f"   💰 Value: Rs {item.get('total_value', 0):,.2f}\n"
-                if item.get('pending_dns', 0) > 0:
-                    response += f"   ⚠️ Pending: {item.get('pending_dns', 0)}\n"
+                pending = item.get('pending_dns', 0)
+                if pending > 0:
+                    response += f"   ⚠️ Pending: {pending}\n"
                 response += "\n"
             elif "warehouse" in item:
                 response += f"{i}. *{item.get('warehouse', 'Unknown')}*\n"
                 response += f"   📦 DNs: {item.get('total_dns', 0)}\n"
                 response += f"   ⚡ Efficiency: {item.get('efficiency_score', 0)}%\n"
-                response += f"   ⏳ Pending: {item.get('pending_dns', 0)}\n\n"
+                pending = item.get('pending_dns', 0)
+                if pending > 0:
+                    response += f"   ⏳ Pending: {pending}\n"
+                response += "\n"
             elif "city" in item:
                 response += f"{i}. *{item.get('city', 'Unknown')}*\n"
                 response += f"   📊 Score: {item.get('performance_score', 0)}%\n"
-                response += f"   ⏳ Pending: {item.get('pending_dns', 0)}\n\n"
+                pending = item.get('pending_dns', 0)
+                if pending > 0:
+                    response += f"   ⏳ Pending: {pending}\n"
+                response += "\n"
         
         return response
     
@@ -551,7 +557,7 @@ class ResponseFormatter:
         """Format executive response with priorities"""
         response = executive_data.get("formatted_message", "")
         
-        # IMPROVEMENT 7: Add priorities
+        # Add priorities
         if priorities and priorities.get("success"):
             response += "\n\n━━━━━━━━━━━━━━━━━━━━\n"
             response += "🎯 *EXECUTIVE PRIORITIES*\n"
@@ -582,7 +588,7 @@ class ResponseFormatter:
         if pod_data.get("urgent_count", 0) > 0:
             response += f"\n⚠️ *URGENT:* {pod_data.get('urgent_count', 0)} DNs older than 15 days\n"
         
-        # IMPROVEMENT 8: Add AI insights for POD
+        # Add AI insights for POD
         if ai_insights and ai_insights.get("success"):
             response += "\n━━━━━━━━━━━━━━━━━━━━\n"
             response += "🤖 *AI INSIGHT*\n"
@@ -695,7 +701,7 @@ Examples:
         return response
     
     @staticmethod
-    def warehouse_response(warehouse_data: Dict) -> str:
+    def warehouse_response(warehouse_data: Dict, sort_by: str = "efficiency") -> str:
         """Format warehouse response"""
         response = f"🏭 *WAREHOUSE: {warehouse_data.get('warehouse', 'Unknown')}*\n\n"
         response += f"📊 Total DNs: {warehouse_data.get('total_dns', 0)}\n"
@@ -731,7 +737,8 @@ Examples:
         if risk_data.get("risk_dealers"):
             response += "⚠️ *Top Risk Dealers:*\n"
             for dealer in risk_data.get("risk_dealers", [])[:5]:
-                response += f"   • {dealer.get('dealer', 'Unknown')}: {dealer.get('pending_dns', 0)} pending\n"
+                pending = dealer.get('pending_dns', 0)
+                response += f"   • {dealer.get('dealer', 'Unknown')}: {pending} pending\n"
         
         if risk_data.get("action_plan"):
             response += f"\n🎯 *Action Plan:*\n"
@@ -748,14 +755,11 @@ Examples:
 class AIQueryService:
     """
     Complete AI Query Service with all improvements:
-    - Classification logging (Improvement 1)
-    - Fuzzy dealer detection (Improvement 2)
-    - Improved ranking detection (Improvement 3)
-    - Improved city detection (Improvement 4)
-    - Improved general AI routing (Improvement 5)
-    - Conversational memory (Improvement 6)
-    - Executive advisor (Improvement 7)
-    - AI recommendations (Improvement 8)
+    - AI Startup Logging
+    - DeepSeek Call Logging
+    - Improved Dealer Lookup
+    - Enhanced Ranking Logic
+    - Conversational Memory
     """
     
     def __init__(self, db: Session):
@@ -763,10 +767,22 @@ class AIQueryService:
         self.analytics = AnalyticsService(db)
         self.logistics = LogisticsQueryService()
         self.formatter = ResponseFormatter()
-        self.memory = ConversationMemory()  # IMPROVEMENT 6
+        self.memory = ConversationMemory()
         
         self.ai_enabled = getattr(config, 'ENABLE_DEEPSEEK_LOGISTICS', False) and getattr(config, 'AI_ANALYSIS_ENABLED', False)
         self.ai_available = AI_PROVIDER_AVAILABLE and self.ai_enabled
+        
+        # IMPROVEMENT 1: AI startup logging - Highest Priority
+        logger.info("=" * 50)
+        logger.info("🚀 AI QUERY SERVICE INITIALIZED")
+        logger.info(f"AI_PROVIDER_AVAILABLE={AI_PROVIDER_AVAILABLE}")
+        logger.info(f"ENABLE_DEEPSEEK_LOGISTICS={getattr(config, 'ENABLE_DEEPSEEK_LOGISTICS', False)}")
+        logger.info(f"AI_ANALYSIS_ENABLED={getattr(config, 'AI_ANALYSIS_ENABLED', False)}")
+        logger.info(f"AI_ENABLED={self.ai_enabled}")
+        logger.info(f"AI_AVAILABLE={self.ai_available}")
+        logger.info(f"AI_PROVIDER={getattr(config, 'AI_PROVIDER', 'NONE')}")
+        logger.info(f"DEEPSEEK_API_KEY={'SET' if getattr(config, 'DEEPSEEK_API_KEY', None) else 'NOT SET'}")
+        logger.info("=" * 50)
     
     # ======================================================
     # MAIN PROCESSING PIPELINE
@@ -782,7 +798,7 @@ class AIQueryService:
         # Get user memory for context
         user_memory = self.memory.get(user_phone) if user_phone else {}
         
-        # IMPROVEMENT 1: Classification logging
+        # Log incoming request
         logger.info(f"📝 PROCESSING: {question} | User: {user_phone}")
         
         # Quick responses
@@ -797,10 +813,10 @@ class AIQueryService:
             result["processing_time_ms"] = int((time.time() - start_time) * 1000)
             return result
         
-        # IMPROVEMENT 1 & 2,3,4,5: Classify intent with logistics service for dealer lookup
+        # Classify intent with logistics service for dealer lookup
         intent, entity = IntentClassifier.classify(question, user_memory, self.logistics)
         
-        # IMPROVEMENT 1: Log classification result
+        # Log classification result
         logger.info(f"🏷️ CLASSIFIED: Question='{question}' Intent='{intent}' Entity='{entity}'")
         
         # Route to handlers
@@ -844,7 +860,7 @@ class AIQueryService:
                 "ai_used": False
             }
         
-        # IMPROVEMENT 6: Update memory
+        # Update memory
         self.memory.update(
             user_phone,
             intent=intent,
@@ -888,7 +904,7 @@ class AIQueryService:
         if dashboard.get("fuzzy"):
             return {"success": True, "response": dashboard.get("summary", "Multiple dealers found"), "ai_used": False}
         
-        # IMPROVEMENT 8: Generate AI insights for dealer
+        # Generate AI insights for dealer
         ai_insights = None
         if self.ai_available and ai_provider_service:
             try:
@@ -927,7 +943,7 @@ class AIQueryService:
         return {"success": True, "response": response, "ai_used": False}
     
     def _handle_executive_query(self, user_phone: str = None) -> Dict[str, Any]:
-        """IMPROVEMENT 7: Handle executive queries with priorities"""
+        """Handle executive queries with priorities"""
         try:
             if hasattr(self.analytics, 'get_executive_summary_enhanced'):
                 executive_data = self.analytics.get_executive_summary_enhanced(self.db)
@@ -937,7 +953,7 @@ class AIQueryService:
             logger.error(f"Executive error: {e}")
             executive_data = {"formatted_message": "Unable to fetch executive summary"}
         
-        # IMPROVEMENT 7: Generate priorities
+        # Generate priorities
         priorities = ExecutiveAdvisor.generate_priorities(
             self.analytics, ai_provider_service if self.ai_available else None, user_phone
         )
@@ -947,32 +963,65 @@ class AIQueryService:
         return {"success": True, "response": response, "ai_used": False}
     
     def _handle_ranking_query(self, question: str, user_phone: str = None) -> Dict[str, Any]:
-        """IMPROVEMENT 3: Handle ranking queries"""
+        """Handle ranking queries with improved sorting logic"""
         question_lower = question.lower()
         
-        try:
-            if "dealer" in question_lower or "customer" in question_lower:
-                if hasattr(self.analytics, 'dealer_rankings'):
-                    rankings = self.analytics.dealer_rankings(10)
-                    response = self.formatter.ranking_response(rankings, "by_value", 10)
+        # Determine what to rank
+        if "dealer" in question_lower or "customer" in question_lower:
+            if hasattr(self.analytics, 'dealer_rankings'):
+                rankings = self.analytics.dealer_rankings(10)
+                
+                # Check if sorting by pending is requested
+                if "pending" in question_lower:
+                    # Sort by pending_dns if available
+                    if "by_value" in rankings:
+                        rankings["by_value"] = sorted(
+                            rankings.get("by_value", []),
+                            key=lambda x: x.get("pending_dns", 0),
+                            reverse=True
+                        )
+                    response = self.formatter.ranking_response(rankings, "by_value", 10, sort_by="pending")
                 else:
-                    response = self.formatter.unknown_response()
-            elif "warehouse" in question_lower:
-                if hasattr(self.analytics, 'warehouse_rankings'):
-                    rankings = self.analytics.warehouse_rankings(10)
-                    response = self.formatter.ranking_response(rankings, "by_efficiency", 10)
-                else:
-                    response = self.formatter.unknown_response()
-            elif "city" in question_lower:
-                if hasattr(self.analytics, 'city_rankings'):
-                    rankings = self.analytics.city_rankings(10)
-                    response = self.formatter.ranking_response(rankings, "by_performance", 10)
-                else:
-                    response = self.formatter.unknown_response()
+                    response = self.formatter.ranking_response(rankings, "by_value", 10, sort_by="value")
             else:
                 response = self.formatter.unknown_response()
-        except Exception as e:
-            logger.error(f"Ranking error: {e}")
+                
+        elif "warehouse" in question_lower:
+            if hasattr(self.analytics, 'warehouse_rankings'):
+                rankings = self.analytics.warehouse_rankings(10)
+                
+                # Check if sorting by pending is requested
+                if "pending" in question_lower:
+                    if "all_warehouses" in rankings:
+                        rankings["all_warehouses"] = sorted(
+                            rankings.get("all_warehouses", []),
+                            key=lambda x: x.get("pending_dns", 0),
+                            reverse=True
+                        )
+                    response = self.formatter.ranking_response(rankings, "all_warehouses", 10, sort_by="pending")
+                else:
+                    response = self.formatter.ranking_response(rankings, "by_efficiency", 10, sort_by="score")
+            else:
+                response = self.formatter.unknown_response()
+                
+        elif "city" in question_lower:
+            if hasattr(self.analytics, 'city_rankings'):
+                rankings = self.analytics.city_rankings(10)
+                
+                # Check if sorting by pending is requested
+                if "pending" in question_lower:
+                    if "all_cities" in rankings:
+                        rankings["all_cities"] = sorted(
+                            rankings.get("all_cities", []),
+                            key=lambda x: x.get("pending_dns", 0),
+                            reverse=True
+                        )
+                    response = self.formatter.ranking_response(rankings, "all_cities", 10, sort_by="pending")
+                else:
+                    response = self.formatter.ranking_response(rankings, "by_performance", 10, sort_by="score")
+            else:
+                response = self.formatter.unknown_response()
+        else:
             response = self.formatter.unknown_response()
         
         return {"success": True, "response": response, "ai_used": False}
@@ -988,7 +1037,7 @@ class AIQueryService:
             logger.error(f"POD error: {e}")
             pod_data = {}
         
-        # IMPROVEMENT 8: Generate AI insights for POD
+        # Generate AI insights for POD
         ai_insights = None
         if self.ai_available and ai_provider_service:
             try:
@@ -1003,9 +1052,12 @@ class AIQueryService:
         return {"success": True, "response": response, "ai_used": ai_insights is not None}
     
     def _handle_general_query(self, question: str, user_phone: str = None) -> Dict[str, Any]:
-        """IMPROVEMENT 5: Handle general AI questions"""
+        """Handle general AI questions with DeepSeek logging"""
         if self.ai_available and ai_provider_service:
             try:
+                # IMPROVEMENT 2: DeepSeek call logging
+                logger.info(f"🔍 CALLING DEEPSEEK: {question}")
+                
                 context = {
                     "type": "general_ai",
                     "question": question,
@@ -1017,14 +1069,17 @@ class AIQueryService:
                 )
                 
                 if ai_response.get("success"):
+                    logger.info(f"✅ DEEPSEEK RESPONSE RECEIVED (length: {len(ai_response.get('content', ''))} chars)")
                     return {
                         "success": True,
                         "response": ai_response.get("content", "No response generated."),
                         "ai_used": True,
                         "provider": "DeepSeek"
                     }
+                else:
+                    logger.warning(f"⚠️ DEEPSEEK RESPONSE FAILED: {ai_response.get('error', 'Unknown error')}")
             except Exception as e:
-                logger.error(f"General AI error: {e}")
+                logger.error(f"❌ DEEPSEEK CALL ERROR: {e}")
         
         return {"success": True, "response": self.formatter.help_response(), "ai_used": False}
     
@@ -1032,12 +1087,15 @@ class AIQueryService:
         """Handle unknown queries - try AI first"""
         if self.ai_available and ai_provider_service:
             try:
+                logger.info(f"🔍 CALLING DEEPSEEK (unknown query): {question}")
+                
                 context = {"type": "unknown_query", "question": question}
                 ai_response = ai_provider_service.answer_question(
                     question, context, structured=False, user_phone=user_phone
                 )
                 
                 if ai_response.get("success"):
+                    logger.info(f"✅ DEEPSEEK RESPONSE RECEIVED for unknown query")
                     return {
                         "success": True,
                         "response": ai_response.get("content", self.formatter.unknown_response()),
