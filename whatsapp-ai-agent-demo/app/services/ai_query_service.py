@@ -2,7 +2,7 @@
 # FILE: app/services/ai_query_service.py
 # ==========================================================
 # COMPLETE AI QUERY SERVICE - PRODUCTION READY
-# FIXED: AIQueryLog model, Config variables, Analytics method validation
+# IMPROVED: Question classification, AI detection, Logistics routing
 
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
@@ -13,13 +13,12 @@ import time
 from sqlalchemy.orm import Session
 from loguru import logger
 
-# FIX 1: Use AIResponseLog instead of AIQueryLog (matching models.py)
 from app.models import AIResponseLog
 from app.config import config
 from app.services.analytics_service import AnalyticsService
 from app.services.logistics_query_service import LogisticsQueryService
 
-# FIX 3: Safe import with fallback for AI provider
+# Safe import for AI provider
 try:
     from app.services.ai_provider_service import ai_provider_service
     AI_PROVIDER_AVAILABLE = True
@@ -30,21 +29,47 @@ except ImportError as e:
 
 
 # ======================================================
-# QUESTION CLASSIFIER
+# IMPROVED QUESTION CLASSIFIER
 # ======================================================
 
 class QuestionClassifier:
     """Classify questions by type before AI processing"""
     
+    # PHASE 2: General AI Keywords
+    GENERAL_AI_KEYWORDS = [
+        "what", "why", "how", "when", "where", "who",
+        "tell me", "explain", "describe", "write", "create",
+        "joke", "story", "poem", "python", "code", "programming",
+        "ai", "deepseek", "chatgpt", "weather", "news",
+        "who is", "what is", "how to", "why is", "when will"
+    ]
+    
+    # PHASE 3: Logistics Detection Keywords
+    LOGISTICS_KEYWORDS = [
+        "dealer", "customer", "delivery", "dispatch", "shipment",
+        "warehouse", "godown", "stock", "inventory", "logistics",
+        "dn", "delivery note", "pod", "pending", "backlog",
+        "product", "material", "model", "sku", "item",
+        "karachi", "lahore", "islamabad", "multan", "faisalabad",
+        "hyderabad", "peshawar", "quetta", "rawalpindi",
+        "situation", "performance", "status", "aging", "risk",
+        "ceo", "executive", "dashboard", "kpi", "ranking"
+    ]
+    
     QUESTION_TYPES = {
         "DEALER": {
-            "keywords": ["dealer", "customer", "show dealer", "dealer dashboard", "dealer summary", 
-                        "status of", "tell me about", "deliveries of", "delivery for", "information about",
-                        "details of", "dealer aging", "dealer performance", "dealer score", "dealer rating"],
-            "patterns": [r'(?:dealer|customer|for|of|show)\s+([A-Za-z0-9\s&]+)']
+            "keywords": [
+                "dealer", "customer", "dealer dashboard", "dealer summary",
+                "dealer performance", "dealer score", "dealer rating",
+                "show dealer", "tell me about dealer"
+            ],
+            "patterns": [
+                r'(?:dealer|customer|for|of|show)\s+([A-Za-z0-9\s&]+)',
+                r'(?:dashboard|performance|summary|details)\s+(?:for|of)\s+([A-Za-z0-9\s&]+)'
+            ]
         },
         "DN": {
-            "keywords": ["dn", "delivery note", "delivery number", "status of dn", "check dn", "show dn"],
+            "keywords": ["dn", "delivery note", "delivery number"],
             "patterns": [r'\b(\d{8,15})\b']
         },
         "PRODUCT": {
@@ -55,13 +80,26 @@ class QuestionClassifier:
             "keywords": ["warehouse", "godown", "stock location", "storage"],
             "patterns": [r'(?:warehouse|godown)\s+([A-Za-z0-9]+)']
         },
+        # PHASE 6: Improved City Detection
         "CITY": {
-            "keywords": ["city", "location", "region", "area"],
-            "patterns": [r'(?:in|for|at)\s+([A-Za-z\s]+?)(?:\s+only|\s+$|\.|\?|$)']
+            "keywords": [
+                "city", "location", "region", "area",
+                "situation", "status", "performance", "delivery status",
+                "karachi", "lahore", "islamabad", "multan", "faisalabad",
+                "hyderabad", "peshawar", "quetta", "rawalpindi", "gujranwala",
+                "sialkot", "bahawalpur", "sukkur", "larkana"
+            ],
+            "patterns": [
+                r'(?:in|for|at)\s+([A-Za-z\s]+?)(?:\s+only|\s+$|\.|\?|$)',
+                r'(?:karachi|lahore|islamabad|multan|faisalabad|hyderabad|peshawar|quetta)'
+            ]
         },
         "EXECUTIVE": {
-            "keywords": ["ceo", "executive", "command center", "executive summary", "ceo dashboard", 
-                        "what should i focus", "overview", "dashboard", "kpi", "performance report"],
+            "keywords": [
+                "ceo", "executive", "command center", "executive summary",
+                "ceo dashboard", "what should i focus", "overview",
+                "dashboard", "kpi", "performance report"
+            ],
             "patterns": []
         },
         "COMPARISON": {
@@ -91,29 +129,72 @@ class QuestionClassifier:
     }
     
     @classmethod
+    def is_logistics_question(cls, question: str) -> bool:
+        """PHASE 3: Check if question is logistics-related"""
+        question_lower = question.lower()
+        
+        # Direct logistics keywords
+        for keyword in cls.LOGISTICS_KEYWORDS:
+            if keyword in question_lower:
+                return True
+        
+        # Check for DN numbers
+        if re.search(r'\b(\d{8,15})\b', question):
+            return True
+        
+        return False
+    
+    @classmethod
     def classify(cls, question: str) -> Tuple[str, Optional[str]]:
         """
         Classify question into category and extract entity.
         Returns: (category, entity)
         """
         question_lower = question.lower().strip()
+        words = question.strip().split()
         
-        # Check for short name (single word) - likely a dealer
-        if 2 < len(question) < 30 and not re.search(r'\d', question):
-            return "DEALER", question.strip().title()
+        # PHASE 2: Check for general AI questions first (highest priority)
+        for keyword in cls.GENERAL_AI_KEYWORDS:
+            if keyword in question_lower:
+                # Don't classify as GENERAL if it's clearly a logistics query
+                if not cls.is_logistics_question(question):
+                    logger.debug(f"Classified as GENERAL due to keyword: {keyword}")
+                    return "GENERAL", None
+        
+        # PHASE 1: Remove automatic dealer fallback - only classify as dealer with explicit indicators
+        dealer_indicators = [
+            "dealer", "customer", "dealer dashboard", "dealer summary",
+            "dealer performance", "show dealer", "tell me about dealer",
+            "dashboard for", "performance of"
+        ]
+        
+        is_explicit_dealer = any(indicator in question_lower for indicator in dealer_indicators)
+        
+        # Only classify as dealer if explicit indicators exist OR it's a short name and logistics question
+        if is_explicit_dealer:
+            # Extract dealer name
+            for pattern in cls.QUESTION_TYPES["DEALER"]["patterns"]:
+                match = re.search(pattern, question_lower)
+                if match:
+                    dealer_name = match.group(1).strip().title()
+                    if dealer_name and len(dealer_name) > 1:
+                        return "DEALER", dealer_name
+        
+        # Check if it's a single word name and logistics question
+        if len(words) == 1 and 2 < len(question) < 30 and not re.search(r'\d', question):
+            if cls.is_logistics_question(question):
+                return "DEALER", question.strip().title()
         
         # Check each category
         for qtype, data in cls.QUESTION_TYPES.items():
-            # Check keywords
             for keyword in data.get("keywords", []):
                 if keyword in question_lower:
-                    # Extract entity using patterns
                     for pattern in data.get("patterns", []):
                         match = re.search(pattern, question_lower)
                         if match:
                             if qtype == "COMPARISON" and len(match.groups()) >= 2:
                                 return qtype, (match.group(1).strip(), match.group(2).strip())
-                            entity = match.group(1).strip()
+                            entity = match.group(1).strip() if match.groups() else None
                             if entity and len(entity) > 1:
                                 return qtype, entity
                     return qtype, None
@@ -123,6 +204,11 @@ class QuestionClassifier:
         if dn_match:
             return "DN", dn_match.group(1)
         
+        # PHASE 3: If logistics related but no specific type found, return LOGISTICS
+        if cls.is_logistics_question(question):
+            return "LOGISTICS", None
+        
+        # Default to GENERAL for AI processing
         return "GENERAL", None
 
 
@@ -135,17 +221,16 @@ class ResponseFormatter:
     
     @staticmethod
     def dealer_response(dealer_name: str, dashboard: Dict, ai_insights: Dict = None) -> str:
-        """Format dealer dashboard response"""
+        """Format dealer dashboard response with AI insights"""
         if dashboard.get("fuzzy"):
             return dashboard.get("summary", "Multiple dealers found")
         
         if not dashboard.get("success"):
             return f"❌ Dealer '{dealer_name}' not found. Please check the name and try again."
         
-        # Use the pre-formatted message from dashboard
         response = dashboard.get("formatted_message", "")
         
-        # Add AI insights if available
+        # PHASE 5: Add AI insights for dealer queries
         if ai_insights and ai_insights.get("success"):
             response += "\n\n━━━━━━━━━━━━━━━━━━━━\n"
             response += "🤖 *AI INSIGHTS*\n"
@@ -191,7 +276,6 @@ class ResponseFormatter:
         total_amount = dn_details.get("total_amount", 0)
         products = dn_details.get("products", [])
         
-        # Format dates
         dn_date = ""
         if dn_details.get('dn_create_date'):
             if isinstance(dn_details['dn_create_date'], datetime):
@@ -234,7 +318,7 @@ class ResponseFormatter:
         return response
     
     @staticmethod
-    def product_response(product_data: Dict) -> str:
+    def product_response(product_data: Dict, ai_insights: Dict = None) -> str:
         """Format product performance response"""
         if not product_data.get("success"):
             return f"❌ Product not found."
@@ -252,11 +336,15 @@ class ResponseFormatter:
         response += f"🏪 # of Dealers: {product.get('dealer_count', 0)}\n"
         response += f"⏱️ Avg Dispatch Days: {product.get('avg_dispatch_days', 0)} days\n"
         
+        if ai_insights and ai_insights.get("success"):
+            response += "\n━━━━━━━━━━━━━━━━━━━━\n🤖 *AI RECOMMENDATIONS*\n━━━━━━━━━━━━━━━━━━━━\n"
+            response += ai_insights.get("content", "")[:300]
+        
         return response
     
     @staticmethod
-    def warehouse_response(warehouse_data: Dict) -> str:
-        """Format warehouse response"""
+    def warehouse_response(warehouse_data: Dict, ai_insights: Dict = None) -> str:
+        """Format warehouse response with AI insights"""
         response = f"🏭 *WAREHOUSE: {warehouse_data.get('warehouse', 'Unknown')}*\n\n"
         response += f"📊 Total DNs: {warehouse_data.get('total_dns', 0)}\n"
         response += f"⏳ Pending DNs: {warehouse_data.get('pending_dns', 0)}\n"
@@ -265,11 +353,21 @@ class ResponseFormatter:
         response += f"📋 POD Pending: {warehouse_data.get('pod_pending_dns', 0)}\n"
         response += f"⚡ Efficiency Score: {warehouse_data.get('efficiency_score', 0)}%\n"
         
+        if ai_insights and ai_insights.get("success"):
+            response += "\n━━━━━━━━━━━━━━━━━━━━\n🤖 *AI ANALYSIS*\n━━━━━━━━━━━━━━━━━━━━\n"
+            if ai_insights.get("structured"):
+                recommendations = ai_insights.get("recommendations", [])[:3]
+                if recommendations:
+                    for rec in recommendations:
+                        response += f"💡 {rec}\n"
+            else:
+                response += ai_insights.get("content", "")[:300]
+        
         return response
     
     @staticmethod
-    def city_response(city_data: Dict) -> str:
-        """Format city response"""
+    def city_response(city_data: Dict, ai_insights: Dict = None) -> str:
+        """Format city response with AI insights"""
         response = f"🌆 *CITY: {city_data.get('city', 'Unknown')}*\n\n"
         response += f"📊 Total DNs: {city_data.get('total_dns', 0)}\n"
         response += f"⏳ Pending DNs: {city_data.get('pending_dns', 0)}\n"
@@ -277,6 +375,29 @@ class ResponseFormatter:
         response += f"💰 Pending Value: Rs {city_data.get('pending_value', 0):,.2f}\n"
         response += f"⚠️ Delay Rate: {city_data.get('delay_rate', 0)}%\n"
         response += f"📋 Performance Score: {city_data.get('performance_score', 0)}%\n"
+        
+        if ai_insights and ai_insights.get("success"):
+            response += "\n━━━━━━━━━━━━━━━━━━━━\n🤖 *AI ANALYSIS*\n━━━━━━━━━━━━━━━━━━━━\n"
+            
+            if ai_insights.get("structured"):
+                summary = ai_insights.get("summary", "")
+                if summary:
+                    response += f"📝 {summary[:200]}\n\n"
+                
+                risks = ai_insights.get("risks", [])[:2]
+                if risks:
+                    response += "⚠️ *Risk Factors:*\n"
+                    for risk in risks:
+                        response += f"   • {risk}\n"
+                    response += "\n"
+                
+                recommendations = ai_insights.get("recommendations", [])[:2]
+                if recommendations:
+                    response += "💡 *Recommendations:*\n"
+                    for rec in recommendations:
+                        response += f"   • {rec}\n"
+            else:
+                response += ai_insights.get("content", "")[:300]
         
         return response
     
@@ -305,7 +426,6 @@ class ResponseFormatter:
             response += f"   {entity2}: {val2:,.0f}\n"
             response += f"   {winner_icon} Winner: {winner}\n\n"
         
-        # Add scores if available
         scores = comparison.get("scores", {})
         if scores:
             response += "━━━━━━━━━━━━━━━━━━━━\n"
@@ -318,10 +438,9 @@ class ResponseFormatter:
     
     @staticmethod
     def executive_response(executive_data: Dict) -> str:
-        """Format executive summary response"""
+        """Format executive summary response with AI insights"""
         response = executive_data.get("formatted_message", "")
         
-        # Add AI recommendations if available
         ai_recs = executive_data.get("ai_recommendations", {})
         if ai_recs:
             response += "\n\n━━━━━━━━━━━━━━━━━━━━\n"
@@ -335,43 +454,29 @@ class ResponseFormatter:
         return response
     
     @staticmethod
-    def ranking_response(rankings: Dict, category: str, limit: int = 10) -> str:
-        """Format ranking response"""
-        if category not in rankings:
-            return f"No ranking data available for {category}"
-        
-        data = rankings[category][:limit]
-        
-        if not data:
-            return f"No data found for {category.replace('_', ' ').title()}"
-        
-        response = f"📊 *TOP {limit} {category.replace('_', ' ').upper()}*\n\n"
-        
-        for i, item in enumerate(data, 1):
-            if "dealer" in item:
-                response += f"{i}. *{item.get('dealer', 'Unknown')}*\n"
-                response += f"   📦 DNs: {item.get('total_dns', 0)}\n"
-                response += f"   💰 Value: Rs {item.get('total_value', 0):,.2f}\n"
-                response += f"   ⭐ Score: {item.get('score', 0)}/100\n\n"
-            elif "warehouse" in item:
-                response += f"{i}. *{item.get('warehouse', 'Unknown')}*\n"
-                response += f"   ⏳ Pending: {item.get('pending_dns', 0)} DNs\n"
-                response += f"   ⚡ Efficiency: {item.get('efficiency_score', 0)}%\n\n"
-            elif "city" in item:
-                response += f"{i}. *{item.get('city', 'Unknown')}*\n"
-                response += f"   ⏳ Pending: {item.get('pending_dns', 0)} DNs\n"
-                response += f"   ⚡ Performance: {item.get('performance_score', 0)}%\n\n"
-            elif "product_name" in item:
-                response += f"{i}. *{item.get('product_name', 'Unknown')}*\n"
-                response += f"   📦 Qty: {item.get('total_qty', 0):,.0f}\n"
-                response += f"   ✅ Fulfillment: {item.get('fulfillment_rate', 0)}%\n\n"
-        
-        return response
+    def clarification_response() -> str:
+        """PHASE 7: Return clarification response for delivery tracking"""
+        return """
+📦 *Delivery Tracking Help*
+
+I can help you track your delivery. Please provide:
+
+🔹 *Option 1: DN Number*
+   Example: `DN 6243611264`
+
+🔹 *Option 2: Dealer Name*
+   Example: `Show Afzal dashboard`
+
+🔹 *Option 3: General Status*
+   Example: `Pending deliveries`
+
+Which information do you have?
+"""
     
     @staticmethod
     def error_response(message: str) -> str:
         """Format error response"""
-        return f"❌ {message}\n\nPlease try rephrasing your question or contact support for assistance."
+        return f"❌ {message}\n\nPlease try rephrasing your question or type 'help' for assistance."
     
     @staticmethod
     def help_response() -> str:
@@ -384,29 +489,28 @@ I can help you with:
 📊 *Dealer Queries*
 • "Show Afzal dashboard"
 • "Afzal performance"
-• "Compare Afzal and Bismillah"
 
 📦 *DN Queries*
 • "DN 6243611264"
-• "Status of DN 6243611264"
 
 🏭 *Warehouse Queries*
 • "Warehouse HPK status"
-• "Which warehouse has highest pending?"
 
 🌆 *City Queries*
-• "Lahore delivery status"
-• "Which city is causing delays?"
+• "Karachi situation"
+• "Lahore performance"
 
 📈 *Executive Queries*
 • "Executive summary"
-• "What should I focus on today?"
-• "Top risks"
+• "What should I focus on?"
 
 🏆 *Ranking Queries*
 • "Top 10 dealers"
-• "Best warehouse"
-• "Worst performing city"
+
+💬 *General Questions*
+• "Who is Imran Khan?"
+• "Tell me a joke"
+• "What is Python?"
 
 Just type your question naturally!
 """
@@ -418,7 +522,7 @@ Just type your question naturally!
 
 class AIQueryService:
     """
-    Complete AI Query Service - The orchestrator for all logistics queries.
+    Complete AI Query Service - The orchestrator for all queries.
     """
     
     def __init__(self, db: Session):
@@ -427,7 +531,6 @@ class AIQueryService:
         self.logistics = LogisticsQueryService()
         self.formatter = ResponseFormatter()
         
-        # FIX 2: Safe config access with defaults
         self.ai_enabled = getattr(config, 'ENABLE_DEEPSEEK_LOGISTICS', False) and getattr(config, 'AI_ANALYSIS_ENABLED', False)
         self.ai_available = AI_PROVIDER_AVAILABLE and self.ai_enabled
     
@@ -441,8 +544,10 @@ class AIQueryService:
         """
         start_time = time.time()
         
-        # Clean and normalize question
         question = question.strip()
+        
+        # PHASE 8: Add comprehensive logging
+        logger.info(f"📝 PROCESSING QUERY: {question}")
         
         # Handle help command
         if question.lower() in ["help", "menu", "what can you do", "commands"]:
@@ -456,15 +561,16 @@ class AIQueryService:
         # Step 1: Classify the question
         qtype, entity = QuestionClassifier.classify(question)
         
+        # PHASE 8: Log classification
+        logger.info(f"🏷️ CLASSIFIED AS: {qtype} | ENTITY: {entity}")
+        
         # Handle comparison specially
         if qtype == "COMPARISON" and isinstance(entity, tuple):
             qtype, entity1, entity2 = "COMPARISON", entity[0], entity[1]
         else:
             entity1, entity2 = None, None
         
-        logger.info(f"Processing query: type={qtype}, entity={entity}, question={question[:100]}")
-        
-        # Step 2: Route to appropriate handler with try-except for each
+        # Step 2: Route to appropriate handler
         try:
             if qtype == "DEALER":
                 result = self._handle_dealer_query(entity or question, user_phone)
@@ -488,10 +594,12 @@ class AIQueryService:
                 result = self._handle_pending_query(user_phone)
             elif qtype == "POD":
                 result = self._handle_pod_query(user_phone)
+            elif qtype == "LOGISTICS":
+                result = self._handle_logistics_query(question, user_phone)
             else:
                 result = self._handle_general_query(question, user_phone)
         except Exception as e:
-            logger.error(f"Error processing query: {e}")
+            logger.error(f"❌ Error processing query: {e}")
             return {
                 "success": False,
                 "response": self.formatter.error_response("An unexpected error occurred. Please try again."),
@@ -504,17 +612,20 @@ class AIQueryService:
         result["question_type"] = qtype
         result["entity"] = entity
         
+        # PHASE 8: Log AI usage
+        logger.info(f"🤖 AI USED: {result.get('ai_used', False)} | RESPONSE LENGTH: {len(result.get('response', ''))}")
+        
         # Step 4: Log the query
         self._log_query(question, result, user_phone)
         
         return result
     
     # ======================================================
-    # HANDLER METHODS WITH SAFE TRY-CATCH
+    # HANDLER METHODS
     # ======================================================
     
     def _handle_dealer_query(self, dealer_name: str, user_phone: str = None) -> Dict[str, Any]:
-        """Handle dealer-related queries"""
+        """Handle dealer-related queries with AI insights"""
         try:
             dashboard = self.logistics.get_dealer_complete_dashboard(self.db, dealer_name, page=1, page_size=10)
         except Exception as e:
@@ -541,6 +652,7 @@ class AIQueryService:
                 "ai_used": False
             }
         
+        # PHASE 5: Add AI insights for dealer
         ai_response = None
         if self.ai_available and ai_provider_service:
             try:
@@ -591,7 +703,7 @@ class AIQueryService:
         }
     
     def _handle_product_query(self, product_name: str, user_phone: str = None) -> Dict[str, Any]:
-        """Handle product-related queries"""
+        """Handle product-related queries with AI insights"""
         try:
             if hasattr(self.analytics, 'product_dashboard'):
                 product_data = self.analytics.product_dashboard(product_name)
@@ -616,18 +728,31 @@ class AIQueryService:
                 "ai_used": False
             }
         
-        response = self.formatter.product_response(product_data)
+        # PHASE 5: Add AI insights for product
+        ai_insights = None
+        if self.ai_available and ai_provider_service:
+            try:
+                ai_insights = ai_provider_service.answer_question(
+                    f"Analyze product performance for {product_name}",
+                    product_data,
+                    structured=True,
+                    user_phone=user_phone
+                )
+            except Exception as e:
+                logger.error(f"AI product analysis failed: {e}")
+        
+        response = self.formatter.product_response(product_data, ai_insights)
         
         return {
             "success": True,
             "product": product_name,
             "data": product_data,
             "response": response,
-            "ai_used": False
+            "ai_used": ai_insights is not None and ai_insights.get("success", False)
         }
     
     def _handle_warehouse_query(self, warehouse_name: str, user_phone: str = None) -> Dict[str, Any]:
-        """Handle warehouse-related queries"""
+        """Handle warehouse-related queries with AI insights"""
         try:
             if hasattr(self.analytics, 'warehouse_rankings'):
                 rankings = self.analytics.warehouse_rankings()
@@ -658,18 +783,31 @@ class AIQueryService:
                 "ai_used": False
             }
         
-        response = self.formatter.warehouse_response(warehouse_data)
+        # PHASE 5: Add AI insights for warehouse
+        ai_insights = None
+        if self.ai_available and ai_provider_service:
+            try:
+                ai_insights = ai_provider_service.answer_question(
+                    f"Analyze warehouse performance for {warehouse_name}",
+                    warehouse_data,
+                    structured=True,
+                    user_phone=user_phone
+                )
+            except Exception as e:
+                logger.error(f"AI warehouse analysis failed: {e}")
+        
+        response = self.formatter.warehouse_response(warehouse_data, ai_insights)
         
         return {
             "success": True,
             "warehouse": warehouse_name,
             "data": warehouse_data,
             "response": response,
-            "ai_used": False
+            "ai_used": ai_insights is not None and ai_insights.get("success", False)
         }
     
     def _handle_city_query(self, city_name: str, user_phone: str = None) -> Dict[str, Any]:
-        """Handle city-related queries"""
+        """Handle city-related queries with AI insights"""
         try:
             if hasattr(self.analytics, 'city_rankings'):
                 rankings = self.analytics.city_rankings()
@@ -700,18 +838,32 @@ class AIQueryService:
                 "ai_used": False
             }
         
-        response = self.formatter.city_response(city_data)
+        # PHASE 5: Add AI insights for city
+        ai_insights = None
+        if self.ai_available and ai_provider_service:
+            try:
+                ai_insights = ai_provider_service.answer_question(
+                    f"Analyze city performance for {city_name}. What are the key issues, risks, and recommendations?",
+                    city_data,
+                    structured=True,
+                    user_phone=user_phone
+                )
+            except Exception as e:
+                logger.error(f"AI city analysis failed for {city_name}: {e}")
+        
+        response = self.formatter.city_response(city_data, ai_insights)
         
         return {
             "success": True,
             "city": city_name,
             "data": city_data,
+            "ai_insights": ai_insights,
             "response": response,
-            "ai_used": False
+            "ai_used": ai_insights is not None and ai_insights.get("success", False)
         }
     
     def _handle_executive_query(self, user_phone: str = None) -> Dict[str, Any]:
-        """Handle executive/CEO queries"""
+        """Handle executive/CEO queries with AI insights"""
         try:
             if hasattr(self.analytics, 'get_executive_summary_enhanced'):
                 executive_data = self.analytics.get_executive_summary_enhanced(self.db)
@@ -721,6 +873,7 @@ class AIQueryService:
             logger.error(f"Executive query error: {e}")
             executive_data = {"formatted_message": "Unable to fetch executive summary"}
         
+        # PHASE 5: Add AI insights for executive
         ai_response = None
         if self.ai_available and ai_provider_service:
             try:
@@ -788,7 +941,7 @@ class AIQueryService:
         }
     
     def _handle_risk_query(self, user_phone: str = None) -> Dict[str, Any]:
-        """Handle risk-related queries"""
+        """Handle risk-related queries with AI insights"""
         risk_dealers = []
         risk_warehouses = []
         action_plan = []
@@ -966,15 +1119,77 @@ class AIQueryService:
             "ai_used": False
         }
     
+    def _handle_logistics_query(self, question: str, user_phone: str = None) -> Dict[str, Any]:
+        """PHASE 4: Handle logistics-related general questions with AI"""
+        if self.ai_available and ai_provider_service:
+            try:
+                # Build logistics context
+                logistics_context = {}
+                try:
+                    if hasattr(self.analytics, 'build_executive_ai_context'):
+                        exec_context = self.analytics.build_executive_ai_context()
+                        if exec_context:
+                            logistics_context["executive_summary"] = exec_context
+                    
+                    # Add pending metrics
+                    if hasattr(self.analytics, 'pending_metrics'):
+                        logistics_context["pending_metrics"] = self.analytics.pending_metrics()
+                    
+                    # Add risk data
+                    if hasattr(self.analytics, 'top_risk_dealers'):
+                        logistics_context["top_risks"] = self.analytics.top_risk_dealers(3)
+                except Exception as ctx_err:
+                    logger.debug(f"Could not add logistics context: {ctx_err}")
+                
+                ai_response = ai_provider_service.answer_question(
+                    question,
+                    logistics_context,
+                    structured=False,
+                    user_phone=user_phone
+                )
+                
+                if ai_response.get("success"):
+                    return {
+                        "success": True,
+                        "response": ai_response.get("content", "No response generated."),
+                        "ai_used": True,
+                        "ai_response": ai_response
+                    }
+            except Exception as e:
+                logger.error(f"AI logistics query failed: {e}")
+        
+        # PHASE 7: Fallback to clarification for delivery questions
+        if "delivery" in question.lower() or "when" in question.lower():
+            return {
+                "success": True,
+                "response": self.formatter.clarification_response(),
+                "ai_used": False
+            }
+        
+        return {
+            "success": True,
+            "response": self.formatter.help_response(),
+            "ai_used": False
+        }
+    
+    # PHASE 4: Improved general query handler
     def _handle_general_query(self, question: str, user_phone: str = None) -> Dict[str, Any]:
         """Handle general questions with AI"""
         if self.ai_available and ai_provider_service:
             try:
-                context = {}
-                if hasattr(self.analytics, 'build_executive_ai_context'):
-                    context = self.analytics.build_executive_ai_context()
+                # Simple context for general AI questions
+                context = {
+                    "type": "general_ai",
+                    "question": question,
+                    "timestamp": datetime.utcnow().isoformat()
+                }
                 
-                ai_response = ai_provider_service.answer_question(question, context, structured=False, user_phone=user_phone)
+                ai_response = ai_provider_service.answer_question(
+                    question,
+                    context,
+                    structured=False,
+                    user_phone=user_phone
+                )
                 
                 if ai_response.get("success"):
                     return {
@@ -1001,7 +1216,6 @@ class AIQueryService:
         if not entity_name:
             return "UNKNOWN"
         
-        # Try to find in dealer rankings
         if hasattr(self.analytics, 'dealer_rankings'):
             try:
                 dealer_rankings = self.analytics.dealer_rankings(50)
@@ -1011,7 +1225,6 @@ class AIQueryService:
             except:
                 pass
         
-        # Try warehouse
         if hasattr(self.analytics, 'warehouse_rankings'):
             try:
                 warehouse_rankings = self.analytics.warehouse_rankings(50)
@@ -1021,7 +1234,6 @@ class AIQueryService:
             except:
                 pass
         
-        # Try city
         if hasattr(self.analytics, 'city_rankings'):
             try:
                 city_rankings = self.analytics.city_rankings(50)
@@ -1036,7 +1248,7 @@ class AIQueryService:
     def _log_query(self, question: str, result: Dict, user_phone: str = None):
         """Log query to database for analytics"""
         try:
-            log_entry = AIResponseLog(  # FIX 1: Using AIResponseLog instead of AIQueryLog
+            log_entry = AIResponseLog(
                 question=question[:500],
                 response=result.get("response", "")[:2000],
                 intent=result.get("question_type", "unknown"),
