@@ -1,7 +1,8 @@
 # ==========================================================
-# FILE: app/services/ai_provider_service.py
+# FILE: app/services/ai_provider_service.py (CORRECTED)
 # ==========================================================
 # COMPLETE VERSION WITH PROVIDER FACTORY, CACHING, TOKEN TRACKING, RAG
+# FIXED: Uses AIResponseLog instead of AIQueryLog
 
 from typing import Dict, Any, List, Optional, Union
 from datetime import datetime, timedelta
@@ -16,7 +17,6 @@ import redis
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models import AIQueryLog
 
 
 # ======================================================
@@ -32,7 +32,7 @@ class AIProviderType(str, Enum):
 
 
 # ======================================================
-# AI PROVIDER FACTORY (Priority 4)
+# AI PROVIDER FACTORY
 # ======================================================
 
 class AIProviderFactory:
@@ -243,11 +243,8 @@ class GeminiProvider(BaseAIProvider):
         super().__init__()
         self.provider_name = "gemini"
         self.model = getattr(settings, "GEMINI_MODEL", "gemini-pro")
-        # Initialize Gemini client when API key is available
-        # self.client = genai.configure(api_key=settings.GEMINI_API_KEY)
     
     def generate(self, messages: List[Dict], **kwargs) -> Dict[str, Any]:
-        # TODO: Implement when Gemini API key is available
         return {
             "success": False,
             "error": "Gemini provider not fully implemented yet",
@@ -271,11 +268,8 @@ class OllamaProvider(BaseAIProvider):
         super().__init__()
         self.provider_name = "ollama"
         self.model = getattr(settings, "OLLAMA_MODEL", "llama2")
-        # Initialize Ollama client when available
-        # self.client = Ollama(host=settings.OLLAMA_HOST)
     
     def generate(self, messages: List[Dict], **kwargs) -> Dict[str, Any]:
-        # TODO: Implement when Ollama is configured
         return {
             "success": False,
             "error": "Ollama provider not fully implemented yet",
@@ -286,11 +280,11 @@ class OllamaProvider(BaseAIProvider):
         return 0
     
     def get_cost(self, input_tokens: int, output_tokens: int) -> float:
-        return 0.0  # Free for local
+        return 0.0
 
 
 # ======================================================
-# RESPONSE CACHE (Priority 7)
+# RESPONSE CACHE
 # ======================================================
 
 class AIResponseCache:
@@ -373,11 +367,11 @@ class AIResponseCache:
 
 
 # ======================================================
-# TOKEN TRACKING (Priority 8)
+# TOKEN TRACKING (FIXED - Uses AIResponseLog)
 # ======================================================
 
 class TokenTracker:
-    """Track AI usage for cost management"""
+    """Track AI usage for cost management - uses AIResponseLog model"""
     
     def __init__(self, db: Session = None):
         self.db = db
@@ -392,36 +386,37 @@ class TokenTracker:
         input_tokens: int,
         output_tokens: int,
         cost: float,
-        cache_hit: bool = False
+        cache_hit: bool = False,
+        conversation_id: int = None,
+        user_phone: str = None
     ):
-        """Log AI query to database"""
+        """Log AI query to database using AIResponseLog model"""
         if not self.db:
             return
         
         try:
-            log_entry = AIQueryLog(
-                question=question[:500],
-                context=json.dumps(context, default=str)[:2000],
-                response=response.get("content", "")[:2000],
-                provider=provider,
-                model=model,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                total_tokens=input_tokens + output_tokens,
-                cost=cost,
-                cache_hit=cache_hit,
+            # Import here to avoid circular imports
+            from app.models import AIResponseLog
+            
+            log_entry = AIResponseLog(
+                conversation_id=conversation_id,  # Can be None
+                prompt=question[:500],  # Using 'prompt' field
+                ai_response=response.get("content", "")[:2000],  # Using 'ai_response' field
+                model_name=f"{provider}/{model}",
+                success=response.get("success", False),
                 created_at=datetime.utcnow()
             )
             self.db.add(log_entry)
             self.db.commit()
-            logger.info(f"Logged AI query: {input_tokens + output_tokens} tokens, ${cost:.6f}")
+            logger.info(f"Logged AI query: {input_tokens + output_tokens} tokens")
         except Exception as e:
             logger.error(f"Failed to log query: {e}")
-            self.db.rollback()
+            if self.db:
+                self.db.rollback()
 
 
 # ======================================================
-# MAIN DEEPSEEK SERVICE (Refactored)
+# MAIN AI SERVICE (FIXED - Uses AIResponseLog)
 # ======================================================
 
 class DeepSeekService:
@@ -456,7 +451,7 @@ class DeepSeekService:
         self.provider = AIProviderFactory.get_provider(provider_name)
     
     # ======================================================
-    # GENERATE AI RESPONSE (Unified Method - Priority 5)
+    # GENERATE AI RESPONSE (Unified Method)
     # ======================================================
     
     def generate_ai_response(
@@ -467,13 +462,12 @@ class DeepSeekService:
         temperature: float = 0.3,
         max_tokens: int = 2500,
         force_refresh: bool = False,
-        structured: bool = False
+        structured: bool = False,
+        user_phone: str = None,
+        conversation_id: int = None
     ) -> Dict[str, Any]:
         """
         Unified AI response generation with caching, fallback, and structured output.
-        
-        Priority 5: Single method for all AI interactions.
-        Priority 9: Structured response mode.
         """
         
         # Prepare messages
@@ -527,7 +521,7 @@ class DeepSeekService:
                     "content": "Unable to generate response at this time. Please try again later."
                 }
         
-        # Track tokens and cost
+        # Track tokens and cost (using fixed TokenTracker)
         cost = self.provider.get_cost(response.get("input_tokens", 0), response.get("output_tokens", 0))
         self.token_tracker.log_query(
             question=prompt,
@@ -538,14 +532,16 @@ class DeepSeekService:
             input_tokens=response.get("input_tokens", 0),
             output_tokens=response.get("output_tokens", 0),
             cost=cost,
-            cache_hit=False
+            cache_hit=False,
+            conversation_id=conversation_id,
+            user_phone=user_phone
         )
         
         # Add cost to response
         response["cost"] = cost
         response["cache_hit"] = False
         
-        # Structure response if requested (Priority 9)
+        # Structure response if requested
         if structured:
             response = self._structure_response(response["content"])
         
@@ -567,12 +563,8 @@ class DeepSeekService:
             return {"success": False, "error": str(e), "provider": provider.provider_name}
     
     def _structure_response(self, content: str) -> Dict[str, Any]:
-        """Convert free text to structured response (Priority 9)"""
-        # Attempt to parse structured content
-        # If AI returns JSON, use it; otherwise create structure
-        
+        """Convert free text to structured response"""
         try:
-            # Try to parse as JSON
             if content.strip().startswith("{"):
                 structured = json.loads(content)
                 return {
@@ -588,7 +580,6 @@ class DeepSeekService:
         except:
             pass
         
-        # Fallback: Create simple structure
         return {
             "success": True,
             "structured": False,
@@ -614,10 +605,10 @@ class DeepSeekService:
         }
     
     # ======================================================
-    # SPECIALIZED METHODS (Now using unified generator)
+    # SPECIALIZED METHODS
     # ======================================================
     
-    def analyze_dealer(self, dealer_context: Dict[str, Any], structured: bool = True) -> Dict:
+    def analyze_dealer(self, dealer_context: Dict[str, Any], structured: bool = True, user_phone: str = None) -> Dict:
         """Analyze dealer performance"""
         prompt = """
 Analyze this dealer and provide:
@@ -629,9 +620,9 @@ Analyze this dealer and provide:
 
 Return as JSON with keys: summary, risks, recommendations, actions, metrics
 """
-        return self.generate_ai_response(prompt, dealer_context, structured=structured)
+        return self.generate_ai_response(prompt, dealer_context, structured=structured, user_phone=user_phone)
     
-    def analyze_executive(self, executive_context: Dict[str, Any], structured: bool = True) -> Dict:
+    def analyze_executive(self, executive_context: Dict[str, Any], structured: bool = True, user_phone: str = None) -> Dict:
         """Analyze overall logistics operations"""
         prompt = """
 Analyze this logistics operation and provide:
@@ -643,9 +634,9 @@ Analyze this logistics operation and provide:
 
 Return as JSON with keys: summary, risks, recommendations, actions, metrics
 """
-        return self.generate_ai_response(prompt, executive_context, structured=structured)
+        return self.generate_ai_response(prompt, executive_context, structured=structured, user_phone=user_phone)
     
-    def analyze_product(self, product_context: Dict[str, Any], structured: bool = True) -> Dict:
+    def analyze_product(self, product_context: Dict[str, Any], structured: bool = True, user_phone: str = None) -> Dict:
         """Analyze product performance"""
         prompt = """
 Analyze this product and provide:
@@ -656,9 +647,9 @@ Analyze this product and provide:
 
 Return as JSON with keys: summary, risks, recommendations, actions, metrics
 """
-        return self.generate_ai_response(prompt, product_context, structured=structured)
+        return self.generate_ai_response(prompt, product_context, structured=structured, user_phone=user_phone)
     
-    def analyze_warehouse(self, warehouse_context: Dict[str, Any], structured: bool = True) -> Dict:
+    def analyze_warehouse(self, warehouse_context: Dict[str, Any], structured: bool = True, user_phone: str = None) -> Dict:
         """Analyze warehouse operations"""
         prompt = """
 Analyze this warehouse and provide:
@@ -669,9 +660,9 @@ Analyze this warehouse and provide:
 
 Return as JSON with keys: summary, risks, recommendations, actions, metrics
 """
-        return self.generate_ai_response(prompt, warehouse_context, structured=structured)
+        return self.generate_ai_response(prompt, warehouse_context, structured=structured, user_phone=user_phone)
     
-    def analyze_city(self, city_context: Dict[str, Any], structured: bool = True) -> Dict:
+    def analyze_city(self, city_context: Dict[str, Any], structured: bool = True, user_phone: str = None) -> Dict:
         """Analyze city logistics"""
         prompt = """
 Analyze this city and provide:
@@ -682,9 +673,9 @@ Analyze this city and provide:
 
 Return as JSON with keys: summary, risks, recommendations, actions, metrics
 """
-        return self.generate_ai_response(prompt, city_context, structured=structured)
+        return self.generate_ai_response(prompt, city_context, structured=structured, user_phone=user_phone)
     
-    def analyze_dn(self, dn_context: Dict[str, Any], structured: bool = True) -> Dict:
+    def analyze_dn(self, dn_context: Dict[str, Any], structured: bool = True, user_phone: str = None) -> Dict:
         """Analyze specific delivery note"""
         prompt = """
 Analyze this Delivery Note and provide:
@@ -696,9 +687,9 @@ Analyze this Delivery Note and provide:
 
 Return as JSON with keys: summary, risks, recommendations, actions, metrics
 """
-        return self.generate_ai_response(prompt, dn_context, structured=structured)
+        return self.generate_ai_response(prompt, dn_context, structured=structured, user_phone=user_phone)
     
-    def compare_entities(self, comparison_context: Dict[str, Any], structured: bool = True) -> Dict:
+    def compare_entities(self, comparison_context: Dict[str, Any], structured: bool = True, user_phone: str = None) -> Dict:
         """Compare multiple entities"""
         prompt = """
 Compare these entities and provide:
@@ -710,9 +701,9 @@ Compare these entities and provide:
 
 Return as JSON with keys: summary, risks, recommendations, actions, metrics
 """
-        return self.generate_ai_response(prompt, comparison_context, structured=structured)
+        return self.generate_ai_response(prompt, comparison_context, structured=structured, user_phone=user_phone)
     
-    def analyze_action_plan(self, action_plan: List[Dict], structured: bool = True) -> Dict:
+    def analyze_action_plan(self, action_plan: List[Dict], structured: bool = True, user_phone: str = None) -> Dict:
         """Analyze action plan"""
         prompt = f"""
 Review this action plan and provide:
@@ -725,31 +716,27 @@ Action Plan: {json.dumps(action_plan, indent=2)}
 
 Return as JSON with keys: summary, risks, recommendations, actions, metrics
 """
-        return self.generate_ai_response(prompt, structured=structured)
+        return self.generate_ai_response(prompt, structured=structured, user_phone=user_phone)
     
-    def answer_question(self, question: str, context: Dict[str, Any], structured: bool = False) -> Dict:
+    def answer_question(self, question: str, context: Dict[str, Any] = None, structured: bool = False, user_phone: str = None) -> Dict:
         """Answer free-form logistics question"""
-        return self.generate_ai_response(question, context, structured=structured)
+        return self.generate_ai_response(question, context or {}, structured=structured, user_phone=user_phone)
+    
+    def answer_question_simple(self, question: str, user_phone: str = None) -> Dict:
+        """Simple question answering without complex context"""
+        return self.generate_ai_response(question, {}, structured=False, user_phone=user_phone)
     
     # ======================================================
-    # RAG LAYER (Priority 11 - Placeholder)
+    # RAG LAYER (Placeholder)
     # ======================================================
     
-    def answer_with_rag(self, question: str, db: Session, structured: bool = False) -> Dict:
+    def answer_with_rag(self, question: str, db: Session, structured: bool = False, user_phone: str = None) -> Dict:
         """
         Enhanced RAG-based answer using vector search.
         TODO: Implement with FAISS and sentence-transformers
         """
-        # Placeholder for RAG implementation
-        # Step 1: Embed question
-        # Step 2: Search similar DNs/Dealers/Products
-        # Step 3: Augment context with retrieved documents
-        # Step 4: Generate response with augmented context
-        
         logger.info("RAG layer - to be implemented with FAISS and embeddings")
-        
-        # Fallback to regular answer
-        return self.answer_question(question, {}, structured=structured)
+        return self.answer_question(question, {}, structured=structured, user_phone=user_phone)
 
 
 # ======================================================
@@ -757,72 +744,4 @@ Return as JSON with keys: summary, risks, recommendations, actions, metrics
 # ======================================================
 
 deepseek_service = DeepSeekService()
-
-
-# ======================================================
-# QUESTION CLASSIFIER (Priority 10 - in ai_query_service.py)
-# ======================================================
-
-class QuestionClassifier:
-    """Classify questions by type before AI processing"""
-    
-    QUESTION_TYPES = {
-        "DEALER": ["dealer", "customer", "show dealer", "dealer dashboard"],
-        "DN": ["dn", "delivery note", "delivery number"],
-        "PRODUCT": ["product", "material", "model"],
-        "WAREHOUSE": ["warehouse", "godown", "stock location"],
-        "CITY": ["city", "location", "region"],
-        "EXECUTIVE": ["ceo", "executive", "command center", "summary"],
-        "COMPARISON": ["compare", "versus", "vs"],
-        "FORECAST": ["forecast", "predict", "trend", "projection"],
-        "RISK": ["risk", "critical", "urgent", "worst"]
-    }
-    
-    @classmethod
-    def classify(cls, question: str) -> str:
-        """Classify question into one of the categories"""
-        question_lower = question.lower()
-        
-        for qtype, keywords in cls.QUESTION_TYPES.items():
-            for keyword in keywords:
-                if keyword in question_lower:
-                    return qtype
-        
-        return "GENERAL"
-    
-    @classmethod
-    def extract_entity(cls, question: str, qtype: str) -> Optional[str]:
-        """Extract entity name from question based on type"""
-        question_lower = question.lower()
-        
-        if qtype == "DEALER":
-            patterns = ["dealer", "customer", "for", "of", "show"]
-            for pattern in patterns:
-                if pattern in question_lower:
-                    parts = question_lower.split(pattern)
-                    if len(parts) > 1:
-                        entity = parts[1].strip().title()
-                        if entity and len(entity) > 2:
-                            return entity
-        
-        elif qtype == "DN":
-            import re
-            dn_match = re.search(r'\b(\d{8,15})\b', question)
-            if dn_match:
-                return dn_match.group(1)
-        
-        elif qtype == "PRODUCT":
-            patterns = ["product", "material", "model"]
-            for pattern in patterns:
-                if pattern in question_lower:
-                    parts = question_lower.split(pattern)
-                    if len(parts) > 1:
-                        return parts[1].strip().upper()
-        
-        elif qtype in ["WAREHOUSE", "CITY"]:
-            words = question_lower.split()
-            for word in words:
-                if len(word) > 2 and word not in ["the", "and", "for", "of", "show", "warehouse", "city"]:
-                    return word.title()
-        
-        return None
+ai_provider_service = deepseek_service  # Alias for backward compatibility
