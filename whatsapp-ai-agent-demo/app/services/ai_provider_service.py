@@ -1,17 +1,6 @@
 # ==========================================================
-# FILE: app/services/ai_query_service.py (COMPLETE ENHANCED VERSION)
+# FILE: app/services/ai_query_service.py (FINAL IMPROVED VERSION)
 # ==========================================================
-# FEATURES:
-# - Singleton pattern (No recreation per request)
-# - DeepSeek context injection (Conversational memory)
-# - AI analysis for City/Dealer/Warehouse
-# - Natural language ranking engine
-# - Follow-up question engine
-# - Executive command center
-# - Smart dealer search with suggestions
-# - Auto AI fallback with service catalog
-# - User roles support (future)
-# - Predictive analytics placeholders
 
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
@@ -39,7 +28,7 @@ except ImportError as e:
 
 
 # ======================================================
-# IMPROVEMENT 11: USER ROLES
+# USER ROLES
 # ======================================================
 
 class UserRole:
@@ -49,45 +38,44 @@ class UserRole:
     VENDOR = "vendor"
     GUEST = "guest"
 
-# Role-based response levels
-ROLE_RESPONSE_LEVEL = {
-    UserRole.CEO: "executive",      # Full strategic insights
-    UserRole.MANAGER: "detailed",   # Operational details
-    UserRole.BRANCH: "branch_only", # Branch-specific only
-    UserRole.VENDOR: "vendor_only", # Vendor-specific only
-    UserRole.GUEST: "basic"         # Basic information only
-}
-
 
 # ======================================================
-# IMPROVEMENT 1: SINGLETON PATTERN
+# FIX 1: IMPROVED SINGLETON PATTERN with Session Handling
 # ======================================================
 
 class AIQueryServiceSingleton:
-    """Singleton wrapper for AIQueryService to prevent recreation per request"""
+    """Singleton wrapper with proper session handling"""
     _instance = None
-    _db = None
+    _db_session = None
     
     @classmethod
     def get_instance(cls, db: Session = None):
         if cls._instance is None:
             if db is None:
                 raise Exception("First call must provide db")
-            cls._db = db
+            cls._db_session = db
             cls._instance = AIQueryService(db)
             logger.info("✅ AIQueryService singleton created")
         return cls._instance
     
     @classmethod
+    def update_db_session(cls, db: Session):
+        """Update database session for existing instance"""
+        if cls._instance:
+            cls._instance.db = db
+            cls._instance.analytics = AnalyticsService(db)
+            cls._instance.logistics = LogisticsQueryService()
+            logger.info("✅ AIQueryService database session updated")
+    
+    @classmethod
     def reset(cls):
-        """Reset singleton (useful for testing)"""
         cls._instance = None
-        cls._db = None
+        cls._db_session = None
         logger.info("🔄 AIQueryService singleton reset")
 
 
 # ======================================================
-# CONVERSATIONAL MEMORY (ENHANCED)
+# CONVERSATIONAL MEMORY
 # ======================================================
 
 class ConversationMemory:
@@ -152,7 +140,7 @@ class ConversationMemory:
         memory["updated_at"] = datetime.utcnow()
     
     def get_context_for_ai(self, user_phone: str) -> Dict:
-        """Get formatted context for AI injection (IMPROVEMENT 2)"""
+        """Get formatted context for AI injection"""
         memory = self.get(user_phone)
         return {
             "last_intent": memory.get("last_intent"),
@@ -171,7 +159,7 @@ class ConversationMemory:
 
 
 # ======================================================
-# IMPROVEMENT 6: NATURAL LANGUAGE RANKING ENGINE
+# NATURAL LANGUAGE RANKING ENGINE
 # ======================================================
 
 class NaturalLanguageRankingEngine:
@@ -208,10 +196,8 @@ class NaturalLanguageRankingEngine:
     
     @classmethod
     def detect(cls, question: str) -> Tuple[bool, Optional[str]]:
-        """Detect if question is a ranking query and extract entity type"""
         question_lower = question.lower()
         
-        # Check keywords first
         for keyword in cls.RANKING_KEYWORDS:
             if keyword in question_lower:
                 for entity_type, patterns in cls.RANKING_PATTERNS.items():
@@ -220,7 +206,6 @@ class NaturalLanguageRankingEngine:
                             return True, entity_type
                 return True, None
         
-        # Check patterns
         for entity_type, patterns in cls.RANKING_PATTERNS.items():
             for pattern in patterns:
                 if pattern in question_lower:
@@ -268,33 +253,30 @@ class IntentClassifier:
         question_lower = question.lower().strip()
         question_original = question.strip()
         
-        # IMPROVEMENT 5 & 6: Check for ranking using natural language engine
+        # Check for ranking using natural language engine
         is_ranking, ranking_entity = NaturalLanguageRankingEngine.detect(question)
         if is_ranking:
-            logger.info(f"Ranking detected via natural language engine: entity={ranking_entity}")
+            logger.info(f"Ranking detected: entity={ranking_entity}")
             return "RANKING", ranking_entity
         
-        # Try full question dealer lookup FIRST
-        if logistics_service and hasattr(logistics_service, 'search_dealer'):
+        # Try full question dealer lookup
+        if logistics_service:
             try:
-                dealer_match = logistics_service.search_dealer(question_original)
-                if dealer_match:
-                    logger.info(f"Dealer found: '{question_original}' -> '{dealer_match}'")
-                    return "DEALER", dealer_match
+                # Try exact match first
+                if hasattr(logistics_service, 'search_dealer'):
+                    dealer_match = logistics_service.search_dealer(question_original)
+                    if dealer_match:
+                        logger.info(f"Dealer found: '{question_original}' -> '{dealer_match}'")
+                        return "DEALER", dealer_match
+                
+                # Try fuzzy match for typos
+                if hasattr(logistics_service, 'fuzzy_search_dealer'):
+                    dealer_match = logistics_service.fuzzy_search_dealer(question_original)
+                    if dealer_match:
+                        logger.info(f"Fuzzy dealer match: '{question_original}' -> '{dealer_match}'")
+                        return "DEALER", dealer_match
             except Exception as e:
                 logger.debug(f"Dealer search error: {e}")
-        
-        # IMPROVEMENT 9: Smart dealer search with suggestions
-        if logistics_service and hasattr(logistics_service, 'search_dealers_by_prefix'):
-            try:
-                dealer_matches = logistics_service.search_dealers_by_prefix(question_original)
-                if dealer_matches and len(dealer_matches) == 1:
-                    return "DEALER", dealer_matches[0]
-                elif dealer_matches and len(dealer_matches) > 1:
-                    # Multiple matches - return suggestions
-                    return "DEALER_SUGGESTIONS", dealer_matches[:5]
-            except Exception as e:
-                logger.debug(f"Prefix dealer search error: {e}")
         
         # Check for General AI questions
         for keyword in cls.GENERAL_AI_KEYWORDS:
@@ -307,7 +289,7 @@ class IntentClassifier:
             if match:
                 return "DN", match.group(1)
         
-        # Executive Query (IMPROVEMENT 8)
+        # Executive Query
         if any(kw in question_lower for kw in cls.EXECUTIVE_KEYWORDS):
             return "EXECUTIVE", None
         
@@ -350,11 +332,11 @@ class IntentClassifier:
                 if word in dealer_indicators and i + 1 < len(words):
                     return "DEALER", words[i + 1].title()
         
-        # Check for follow-up questions (IMPROVEMENT 7)
+        # Check for follow-up questions
         if memory and memory.get("last_intent"):
             follow_up_keywords = ["why", "how", "what about", "tell me more", "explain", "improve", "cause"]
             if any(kw in question_lower for kw in follow_up_keywords):
-                logger.info(f"Follow-up detected: returning last intent {memory.get('last_intent')}")
+                logger.info(f"Follow-up detected: returning {memory.get('last_intent')}")
                 return memory["last_intent"], memory.get("last_entity")
         
         # Service Discovery
@@ -365,7 +347,7 @@ class IntentClassifier:
 
 
 # ======================================================
-# IMPROVEMENT 8: EXECUTIVE COMMAND CENTER
+# EXECUTIVE COMMAND CENTER
 # ======================================================
 
 class ExecutiveCommandCenter:
@@ -373,18 +355,15 @@ class ExecutiveCommandCenter:
     
     @staticmethod
     def generate_daily_briefing(analytics_service, ai_provider=None, user_phone=None) -> str:
-        """Generate executive daily briefing with top 5 risks, opportunities, actions"""
         briefing = ""
         
         try:
-            # Collect data
             pending_metrics = analytics_service.pending_metrics() if hasattr(analytics_service, 'pending_metrics') else {}
             pod_metrics = analytics_service.pod_metrics() if hasattr(analytics_service, 'pod_metrics') else {}
             risk_dealers = analytics_service.top_risk_dealers(5) if hasattr(analytics_service, 'top_risk_dealers') else []
             
             briefing = "🎯 *EXECUTIVE COMMAND CENTER*\n\n"
             
-            # Top 5 Risks
             briefing += "🚨 *TOP 5 RISKS*\n"
             if risk_dealers:
                 for i, dealer in enumerate(risk_dealers[:5], 1):
@@ -392,14 +371,12 @@ class ExecutiveCommandCenter:
             else:
                 briefing += "   No major risks detected\n"
             
-            # Key Metrics
             briefing += f"\n📊 *KEY METRICS*\n"
             briefing += f"   • Pending DNs: {pending_metrics.get('pending_dns', 0)}\n"
             briefing += f"   • POD Pending: {pod_metrics.get('pod_pending_dns', 0)}\n"
             briefing += f"   • Pending Value: Rs {pending_metrics.get('pending_value', 0):,.2f}\n"
             
-            # AI Recommendations
-            if ai_provider:
+            if ai_provider and hasattr(ai_provider, 'answer_question'):
                 try:
                     context = {
                         "pending_dns": pending_metrics.get('pending_dns', 0),
@@ -425,7 +402,7 @@ class ExecutiveCommandCenter:
 
 
 # ======================================================
-# IMPROVEMENT 10: AUTO AI FALLBACK WITH SERVICE CATALOG
+# SERVICE DISCOVERY
 # ======================================================
 
 class ServiceDiscovery:
@@ -486,7 +463,36 @@ Type `services` for complete catalog!
 
 
 # ======================================================
-# RESPONSE FORMATTER (ENHANCED)
+# FIX 4: AI INSIGHTS HELPER (Fallback for missing methods)
+# ======================================================
+
+class AIInsightsHelper:
+    """Helper to generate AI insights with fallback for missing methods"""
+    
+    @staticmethod
+    def analyze_entity(entity_data: Dict, entity_type: str, ai_provider, user_phone: str = None) -> Optional[Dict]:
+        """Generate AI insights for any entity type with fallback"""
+        if not ai_provider:
+            return None
+        
+        try:
+            # Try direct method if available
+            method_name = f"analyze_{entity_type}"
+            if hasattr(ai_provider, method_name):
+                return getattr(ai_provider, method_name)(entity_data, structured=True, user_phone=user_phone)
+            
+            # Fallback to generic answer_question
+            prompt = f"Analyze this {entity_type} performance and provide key insights, risks, and recommendations."
+            response = ai_provider.answer_question(prompt, entity_data, structured=True, user_phone=user_phone)
+            return response if response.get("success") else None
+            
+        except Exception as e:
+            logger.error(f"AI insights error for {entity_type}: {e}")
+            return None
+
+
+# ======================================================
+# RESPONSE FORMATTER
 # ======================================================
 
 class ResponseFormatter:
@@ -500,7 +506,6 @@ class ResponseFormatter:
         
         response = dashboard.get("formatted_message", "")
         
-        # IMPROVEMENT 4: Add AI insights for dealers
         if ai_insights and ai_insights.get("success"):
             response += "\n\n━━━━━━━━━━━━━━━━━━━━\n"
             response += "🤖 *AI INSIGHTS*\n"
@@ -522,7 +527,6 @@ class ResponseFormatter:
         response += f"💰 Pending Value: Rs {city_data.get('pending_value', 0):,.2f}\n"
         response += f"⚠️ Delay Rate: {city_data.get('delay_rate', 0)}%\n"
         
-        # IMPROVEMENT 3: Add AI analysis for cities
         if ai_insights and ai_insights.get("success"):
             response += "\n━━━━━━━━━━━━━━━━━━━━\n"
             response += "🤖 *AI ANALYSIS*\n"
@@ -547,7 +551,6 @@ class ResponseFormatter:
         response += f"⏳ Pending DNs: {warehouse_data.get('pending_dns', 0)}\n"
         response += f"⚡ Efficiency Score: {warehouse_data.get('efficiency_score', 0)}%\n"
         
-        # IMPROVEMENT 5: Add AI analysis for warehouses
         if ai_insights and ai_insights.get("success"):
             response += "\n━━━━━━━━━━━━━━━━━━━━\n"
             response += "🤖 *AI ANALYSIS*\n"
@@ -589,15 +592,6 @@ class ResponseFormatter:
         return briefing
     
     @staticmethod
-    def dealer_suggestions_response(suggestions: List[str]) -> str:
-        response = "🔍 *Multiple dealers found*\n\n"
-        response += "Did you mean:\n"
-        for i, suggestion in enumerate(suggestions[:5], 1):
-            response += f"{i}. {suggestion}\n"
-        response += "\nPlease type the full dealer name."
-        return response
-    
-    @staticmethod
     def service_discovery_response() -> str:
         return ServiceDiscovery.get_full_catalog()
     
@@ -607,7 +601,7 @@ class ResponseFormatter:
     
     @staticmethod
     def unknown_response() -> str:
-        return ServiceDiscovery.get_full_catalog()  # IMPROVEMENT 10: Show catalog instead of generic
+        return ServiceDiscovery.get_full_catalog()
     
     @staticmethod
     def dn_response(dn_details: Dict) -> str:
@@ -650,6 +644,7 @@ class AIQueryService:
         self.logistics = LogisticsQueryService()
         self.formatter = ResponseFormatter()
         self.memory = ConversationMemory()
+        self.ai_insights_helper = AIInsightsHelper()
         
         # AI availability settings
         self.ai_enabled = getattr(config, 'ENABLE_DEEPSEEK_LOGISTICS', False) and getattr(config, 'AI_ANALYSIS_ENABLED', False)
@@ -664,10 +659,6 @@ class AIQueryService:
         logger.info(f"AI_AVAILABLE={self.ai_available}")
         logger.info("=" * 50)
     
-    # ======================================================
-    # MAIN PROCESSING PIPELINE
-    # ======================================================
-    
     def process_query(self, question: str, user_phone: str = None, user_role: str = None) -> Dict[str, Any]:
         start_time = time.time()
         question = question.strip()
@@ -675,13 +666,11 @@ class AIQueryService:
         # Get user memory
         user_memory = self.memory.get(user_phone) if user_phone else {}
         
-        # Update role if provided
         if user_role:
             self.memory.update(user_phone, role=user_role)
         
         logger.info(f"📝 PROCESSING: {question} | User: {user_phone}")
         
-        # Service discovery
         if question.lower() in ["help", "menu", "services", "what can you do", "capabilities"]:
             result = {
                 "success": True,
@@ -693,24 +682,10 @@ class AIQueryService:
             result["processing_time_ms"] = int((time.time() - start_time) * 1000)
             return result
         
-        # Classify intent
         intent, entity = IntentClassifier.classify(question, user_memory, self.logistics)
-        
-        # Handle dealer suggestions
-        if intent == "DEALER_SUGGESTIONS":
-            result = {
-                "success": True,
-                "response": self.formatter.dealer_suggestions_response(entity),
-                "question_type": "DEALER_SUGGESTIONS",
-                "ai_used": False
-            }
-            self.memory.update(user_phone, intent=intent, entity=entity, question=question, response=result["response"])
-            result["processing_time_ms"] = int((time.time() - start_time) * 1000)
-            return result
         
         logger.info(f"🏷️ CLASSIFIED: Intent='{intent}' Entity='{entity}'")
         
-        # Route to handlers
         try:
             if intent == "DN":
                 result = self._handle_dn_query(entity or question, user_phone)
@@ -745,7 +720,6 @@ class AIQueryService:
                 "ai_used": False
             }
         
-        # Update memory with context
         self.memory.update(user_phone, intent=intent, entity=entity, question=question, response=result.get("response", ""))
         
         if intent == "CITY" and entity:
@@ -782,14 +756,12 @@ class AIQueryService:
         if dashboard.get("fuzzy"):
             return {"success": True, "response": dashboard.get("summary", "Multiple dealers found"), "ai_used": False}
         
-        # IMPROVEMENT 4: Generate AI insights for dealer
         ai_insights = None
         if self.ai_available and ai_provider_service:
             try:
-                context = self.memory.get_context_for_ai(user_phone)
-                ai_insights = ai_provider_service.analyze_dealer(dashboard, structured=True, user_phone=user_phone)
-                if ai_insights.get("success"):
-                    self.memory.update(user_phone, analysis=ai_insights)
+                ai_insights = self.ai_insights_helper.analyze_entity(
+                    dashboard, "dealer", ai_provider_service, user_phone
+                )
             except Exception as e:
                 logger.error(f"AI dealer insights error: {e}")
         
@@ -801,10 +773,10 @@ class AIQueryService:
             if hasattr(self.analytics, 'city_rankings'):
                 rankings = self.analytics.city_rankings()
             else:
-                return {"success": False, "response": f"❌ City analytics not available.", "ai_used": False}
+                return {"success": False, "response": "❌ City analytics not available.", "ai_used": False}
         except Exception as e:
             logger.error(f"City error: {e}")
-            return {"success": False, "response": f"❌ Unable to fetch city data.", "ai_used": False}
+            return {"success": False, "response": "❌ Unable to fetch city data.", "ai_used": False}
         
         city_data = None
         for c in rankings.get("all_cities", []):
@@ -815,13 +787,12 @@ class AIQueryService:
         if not city_data:
             return {"success": False, "response": f"❌ City '{city_name}' not found.", "ai_used": False}
         
-        # IMPROVEMENT 3: Generate AI analysis for city
         ai_insights = None
         if self.ai_available and ai_provider_service:
             try:
-                ai_insights = ai_provider_service.analyze_city(city_data, structured=True, user_phone=user_phone)
-                if ai_insights.get("success"):
-                    self.memory.update(user_phone, analysis=ai_insights)
+                ai_insights = self.ai_insights_helper.analyze_entity(
+                    city_data, "city", ai_provider_service, user_phone
+                )
             except Exception as e:
                 logger.error(f"AI city insights error: {e}")
         
@@ -829,7 +800,6 @@ class AIQueryService:
         return {"success": True, "response": response, "ai_used": ai_insights is not None}
     
     def _handle_executive_query(self, user_phone: str = None) -> Dict[str, Any]:
-        """IMPROVEMENT 8: Executive Command Center"""
         briefing = ExecutiveCommandCenter.generate_daily_briefing(
             self.analytics, 
             ai_provider_service if self.ai_available else None, 
@@ -863,12 +833,10 @@ class AIQueryService:
         return {"success": True, "response": response, "ai_used": False}
     
     def _handle_general_query(self, question: str, user_phone: str = None) -> Dict[str, Any]:
-        """IMPROVEMENT 2: DeepSeek with context injection"""
         logger.info(f"🔍 CALLING DEEPSEEK: {question}")
         
         if self.ai_available and ai_provider_service:
             try:
-                # Get conversation context for AI injection
                 context = self.memory.get_context_for_ai(user_phone)
                 
                 response = ai_provider_service.answer_question(
@@ -899,7 +867,6 @@ class AIQueryService:
         }
     
     def _handle_unknown_query(self, question: str, user_phone: str = None) -> Dict[str, Any]:
-        """IMPROVEMENT 10: Auto AI fallback with service catalog"""
         logger.info(f"🔍 CALLING DEEPSEEK (unknown query): {question}")
         
         if self.ai_available and ai_provider_service:
@@ -917,7 +884,6 @@ class AIQueryService:
             except Exception as e:
                 logger.error(f"Unknown query AI error: {e}")
         
-        # Show service catalog instead of generic unknown response
         return {"success": True, "response": self.formatter.unknown_response(), "ai_used": False}
     
     def _handle_warehouse_query(self, warehouse_name: str, user_phone: str = None) -> Dict[str, Any]:
@@ -939,11 +905,12 @@ class AIQueryService:
         if not warehouse_data:
             return {"success": False, "response": f"❌ Warehouse '{warehouse_name}' not found.", "ai_used": False}
         
-        # IMPROVEMENT 5: Generate AI insights for warehouse
         ai_insights = None
         if self.ai_available and ai_provider_service:
             try:
-                ai_insights = ai_provider_service.analyze_warehouse(warehouse_data, structured=True, user_phone=user_phone)
+                ai_insights = self.ai_insights_helper.analyze_entity(
+                    warehouse_data, "warehouse", ai_provider_service, user_phone
+                )
             except Exception as e:
                 logger.error(f"AI warehouse insights error: {e}")
         
@@ -1029,7 +996,7 @@ class AIQueryService:
 
 
 # ======================================================
-# SINGLETON FACTORY FUNCTION (IMPROVEMENT 1)
+# FACTORY FUNCTIONS
 # ======================================================
 
 def get_ai_query_service(db: Session = None) -> AIQueryService:
@@ -1039,13 +1006,16 @@ def get_ai_query_service(db: Session = None) -> AIQueryService:
     return AIQueryServiceSingleton.get_instance()
 
 
+def update_ai_query_service_db(db: Session):
+    """Update database session for existing instance"""
+    AIQueryServiceSingleton.update_db_session(db)
+
+
 def reset_ai_query_service():
-    """Reset singleton (useful for testing)"""
     AIQueryServiceSingleton.reset()
 
 
 def process_whatsapp_query(question: str, db: Session, user_phone: str = None, user_role: str = None) -> str:
-    """Convenience function for WhatsApp integration - uses singleton"""
     service = get_ai_query_service(db)
     result = service.process_query(question, user_phone, user_role)
     return result.get("response", "Unable to process your request. Please try again.")
