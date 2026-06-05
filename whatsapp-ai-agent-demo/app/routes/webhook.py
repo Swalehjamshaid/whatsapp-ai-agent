@@ -709,7 +709,7 @@ async def receive_message(
             logger.debug("No message found in payload")
             return {"success": True, "message": "No message found"}
 
-        phone_number = parsed_message["from"]
+        phone_number = parsed_message.get("from_phone", "")
         customer_message = parsed_message["text"]
         
         logger.info(f"📱 WHATSAPP MESSAGE RECEIVED - From: {phone_number}, Message: {customer_message}")
