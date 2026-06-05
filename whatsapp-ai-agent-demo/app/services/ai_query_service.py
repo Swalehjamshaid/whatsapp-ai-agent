@@ -1,1174 +1,1069 @@
 # ==========================================================
-# FILE: app/services/ai_query_service.py (ENTERPRISE v3.0)
+# FILE: app/services/ai_provider_service.py (ENTERPRISE v4.0)
 # ==========================================================
-# COMPLETE WITH ALL 10 IMPROVEMENTS:
-# 1. Enhanced Dealer Detection (Multi-strategy)
-# 2. Confidence-based routing
-# 3. Fuzzy dealer matching with RapidFuzz
-# 4. Dealer Intelligence Report
-# 5. Dealer Follow-up Memory
-# 6. Dealer Ranking Queries
-# 7. Root Cause Queries
-# 8. Executive Intelligence Queries
-# 9. Recommendation Queries
-# 10. Dealer Intelligence Response Format
+# FEATURES:
+# - Groq as PRIMARY provider (fastest inference)
+# - DeepSeek as secondary
+# - OpenAI as tertiary fallback
+# - Rule-based as final fallback
+# - Dedicated logistics analysis functions
+# - Structured JSON responses
+# - Conversation context support
+# - Root cause analysis
+# - Recommendation engine
+# - Executive summary generator
 
-from typing import Dict, Any, List, Optional, Tuple
-from datetime import datetime
-import re
+import os
 import json
 import time
-from difflib import get_close_matches
+import re
+import hashlib
+from decimal import Decimal
+from typing import Dict, Any, List, Optional, Tuple
+from datetime import datetime, date
+from functools import lru_cache
 from enum import Enum
-from dataclasses import dataclass, field
+from dataclasses import dataclass, asdict
 
-from sqlalchemy.orm import Session
+import requests
 from loguru import logger
+from openai import OpenAI
+from sqlalchemy.orm import Session
 
-from app.models import AIResponseLog
 from app.config import config
-from app.services.analytics_service import AnalyticsService
-from app.services.logistics_query_service import LogisticsQueryService
-
-# Try to import RapidFuzz for improved fuzzy matching
-try:
-    from rapidfuzz import fuzz, process
-    RAPIDFUZZ_AVAILABLE = True
-except ImportError:
-    RAPIDFUZZ_AVAILABLE = False
-    logger.warning("RapidFuzz not available. Install with: pip install rapidfuzz")
-
-# Safe import for AI provider
-try:
-    from app.services.ai_provider_service import ai_provider_service
-    AI_PROVIDER_AVAILABLE = True
-except ImportError as e:
-    logger.warning(f"AI Provider Service not available: {e}")
-    AI_PROVIDER_AVAILABLE = False
-    ai_provider_service = None
+from app.models import AIResponseLog
 
 
-# ======================================================
-# ENHANCED DEALER MATCHER (Improvement #2 & #3)
-# ======================================================
+# ==========================================================
+# AI PROVIDER STATUS
+# ==========================================================
 
-class EnhancedDealerMatcher:
-    """
-    Multi-strategy dealer matcher with confidence scoring
-    Strategies: Exact, Fuzzy, Contains, RapidFuzz, Semantic
-    """
-    
-    def __init__(self):
-        self.dealer_cache = []
-        self.dealer_names_lower = []
-        self.last_loaded = None
-    
-    def load_dealers(self, db: Session):
-        """Load all dealer names into cache"""
-        try:
-            from app.models import DeliveryReport
-            dealers = db.query(DeliveryReport.customer_name).distinct().filter(
-                DeliveryReport.customer_name.isnot(None)
-            ).limit(5000).all()
-            
-            self.dealer_cache = [d[0] for d in dealers if d[0]]
-            self.dealer_names_lower = [d.lower() for d in self.dealer_cache]
-            self.last_loaded = datetime.utcnow()
-            logger.info(f"Loaded {len(self.dealer_cache)} dealers for matching")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to load dealers: {e}")
-            return False
-    
-    def match_dealer(self, query: str, threshold: int = 70) -> Dict[str, Any]:
-        """
-        Match dealer using multiple strategies with confidence scoring
-        
-        Returns:
-            {
-                "found": bool,
-                "dealer_name": str,
-                "confidence": int (0-100),
-                "strategy": str
-            }
-        """
-        if not self.dealer_cache:
-            return {"found": False, "dealer_name": None, "confidence": 0, "strategy": "no_data"}
-        
-        query_clean = query.strip()
-        query_lower = query_clean.lower()
-        
-        # Strategy 1: Exact match (case insensitive)
-        for i, dealer in enumerate(self.dealer_cache):
-            if dealer.lower() == query_lower:
-                return {
-                    "found": True,
-                    "dealer_name": dealer,
-                    "confidence": 100,
-                    "strategy": "exact_match"
-                }
-        
-        # Strategy 2: Contains match (dealer name contains query OR query contains dealer name)
-        for dealer in self.dealer_cache:
-            dealer_lower = dealer.lower()
-            if query_lower in dealer_lower or dealer_lower in query_lower:
-                confidence = 90 if query_lower in dealer_lower else 80
-                return {
-                    "found": True,
-                    "dealer_name": dealer,
-                    "confidence": confidence,
-                    "strategy": "contains_match"
-                }
-        
-        # Strategy 3: Word token matching (handles "Rafi Electronics Oghi" -> "Rafi Electronics")
-        query_words = set(query_lower.split())
-        best_match = None
-        best_score = 0
-        
-        for dealer in self.dealer_cache:
-            dealer_lower = dealer.lower()
-            dealer_words = set(dealer_lower.split())
-            common_words = query_words.intersection(dealer_words)
-            if common_words:
-                score = len(common_words) / max(len(query_words), len(dealer_words)) * 100
-                if score > best_score and score >= 50:
-                    best_score = score
-                    best_match = dealer
-        
-        if best_match:
-            return {
-                "found": True,
-                "dealer_name": best_match,
-                "confidence": int(best_score),
-                "strategy": "token_match"
-            }
-        
-        # Strategy 4: RapidFuzz fuzzy matching (Improvement #2)
-        if RAPIDFUZZ_AVAILABLE:
-            try:
-                # Try token sort ratio first (best for word order variations)
-                match = process.extractOne(query_clean, self.dealer_cache, scorer=fuzz.token_sort_ratio)
-                if match and match[1] >= threshold:
-                    return {
-                        "found": True,
-                        "dealer_name": match[0],
-                        "confidence": match[1],
-                        "strategy": "rapidfuzz_token_sort"
-                    }
-                
-                # Try partial ratio for substring matches
-                match = process.extractOne(query_clean, self.dealer_cache, scorer=fuzz.partial_ratio)
-                if match and match[1] >= threshold:
-                    return {
-                        "found": True,
-                        "dealer_name": match[0],
-                        "confidence": match[1],
-                        "strategy": "rapidfuzz_partial"
-                    }
-                
-                # Try WRatio for weighted matching
-                match = process.extractOne(query_clean, self.dealer_cache, scorer=fuzz.WRatio)
-                if match and match[1] >= threshold:
-                    return {
-                        "found": True,
-                        "dealer_name": match[0],
-                        "confidence": match[1],
-                        "strategy": "rapidfuzz_wratio"
-                    }
-            except Exception as e:
-                logger.warning(f"RapidFuzz matching failed: {e}")
-        
-        # Strategy 5: Python difflib (fallback)
-        try:
-            matches = get_close_matches(query_clean, self.dealer_cache, n=1, cutoff=threshold/100)
-            if matches:
-                return {
-                    "found": True,
-                    "dealer_name": matches[0],
-                    "confidence": int(threshold),
-                    "strategy": "difflib"
-                }
-        except Exception as e:
-            logger.warning(f"Difflib matching failed: {e}")
-        
-        return {
-            "found": False,
-            "dealer_name": None,
-            "confidence": 0,
-            "strategy": "no_match"
-        }
-    
-    def get_suggestions(self, query: str, limit: int = 5) -> List[Dict]:
-        """Get dealer suggestions for ambiguous queries"""
-        if not self.dealer_cache or not RAPIDFUZZ_AVAILABLE:
-            return []
-        
-        try:
-            matches = process.extract(query, self.dealer_cache, scorer=fuzz.token_sort_ratio, limit=limit)
-            return [{"dealer_name": m[0], "score": m[1]} for m in matches if m[1] >= 50]
-        except Exception as e:
-            logger.warning(f"Dealer suggestions failed: {e}")
-            return []
+class ProviderStatus(Enum):
+    ONLINE = "online"
+    DEGRADED = "degraded"
+    OFFLINE = "offline"
+    UNKNOWN = "unknown"
 
 
-# ======================================================
-# CONVERSATIONAL MEMORY (Enhanced for follow-ups - Improvement #5)
-# ======================================================
-
-class ConversationMemory:
-    """Store conversation context per user for follow-up questions"""
-    
-    def __init__(self):
-        self.memories: Dict[str, Dict] = {}
-    
-    def get(self, user_phone: str) -> Dict:
-        if user_phone not in self.memories:
-            self.memories[user_phone] = {
-                "last_intent": None,
-                "last_entity": None,
-                "last_city": None,
-                "last_dealer": None,
-                "last_warehouse": None,
-                "last_dn": None,
-                "last_question": None,
-                "last_response": None,
-                "last_analysis": None,
-                "conversation_history": [],
-                "created_at": datetime.utcnow(),
-                "updated_at": datetime.utcnow()
-            }
-        return self.memories[user_phone]
-    
-    def update(self, user_phone: str, intent: str = None, entity: Any = None,
-               city: str = None, dealer: str = None, warehouse: str = None, dn: str = None,
-               question: str = None, response: str = None, analysis: Dict = None):
-        memory = self.get(user_phone)
-        
-        if intent:
-            memory["last_intent"] = intent
-        if entity:
-            memory["last_entity"] = entity
-        if city:
-            memory["last_city"] = city
-        if dealer:
-            memory["last_dealer"] = dealer
-        if warehouse:
-            memory["last_warehouse"] = warehouse
-        if dn:
-            memory["last_dn"] = dn
-        if question:
-            memory["last_question"] = question
-        if response:
-            memory["last_response"] = response
-        if analysis:
-            memory["last_analysis"] = analysis
-        
-        if question and response:
-            memory["conversation_history"].append({
-                "question": question,
-                "response": response[:300],
-                "intent": intent,
-                "timestamp": datetime.utcnow().isoformat()
-            })
-            if len(memory["conversation_history"]) > 20:
-                memory["conversation_history"].pop(0)
-        
-        memory["updated_at"] = datetime.utcnow()
-    
-    def get_context(self, user_phone: str) -> Dict:
-        memory = self.get(user_phone)
-        return {
-            "last_intent": memory.get("last_intent"),
-            "last_entity": memory.get("last_entity"),
-            "last_city": memory.get("last_city"),
-            "last_dealer": memory.get("last_dealer"),
-            "last_warehouse": memory.get("last_warehouse"),
-            "last_dn": memory.get("last_dn"),
-            "last_question": memory.get("last_question"),
-            "last_analysis": memory.get("last_analysis"),
-            "conversation_history": memory.get("conversation_history", [])[-5:],
-            "user_role": memory.get("user_role", "guest")
-        }
-    
-    def clear(self, user_phone: str):
-        if user_phone in self.memories:
-            del self.memories[user_phone]
+@dataclass
+class ProviderHealth:
+    """Provider health information"""
+    status: str
+    response_time_ms: int
+    token_usage: int
+    last_success: Optional[datetime]
+    error_rate: float
 
 
-# ======================================================
-# ENHANCED INTENT CLASSIFIER (Improvement #1)
-# ======================================================
+# ==========================================================
+# DEDICATED PROMPT TEMPLATES (Phase 5-12)
+# ==========================================================
 
-class IntentClassifier:
-    """Enhanced intent classification with multi-strategy dealer detection"""
-    
-    KNOWN_CITIES = [
-        "karachi", "lahore", "islamabad", "faisalabad", "multan",
-        "peshawar", "quetta", "rawalpindi", "gujranwala", "sialkot",
-        "hyderabad", "bahawalpur", "sukkur", "larkana"
+def _build_system_prompt(role: str = "manager") -> str:
+    """Build system prompt based on user role"""
+    role_prompts = {
+        "ceo": """You are a Logistics AI Advisor for a CEO. 
+Focus on: strategic insights, financial impact (Rs amounts), network health scores (0-100), 
+top 3 risks with financial exposure, and 3-5 high-level recommendations. 
+Be extremely concise. Use executive language. Return ONLY valid JSON.""",
+
+        "manager": """You are a Logistics AI Advisor for a Logistics Manager.
+Focus on: operational KPIs (pending DNs, POD compliance, delivery rates), 
+dealer performance issues, warehouse bottlenecks, city-level problems, 
+and actionable recommendations. Return ONLY valid JSON.""",
+
+        "warehouse": """You are a Logistics AI Advisor for a Warehouse Manager.
+Focus on: warehouse efficiency scores, backlog analysis, bottleneck identification,
+capacity utilization, and operational improvements. Return ONLY valid JSON.""",
+
+        "dealer": """You are a Logistics AI Advisor for a Dealer Manager.
+Focus on: dealer scorecards, pending deliveries, POD collection status,
+dealer-specific risks, and recovery actions. Return ONLY valid JSON.""",
+
+        "guest": """You are a Logistics AI Assistant.
+Provide helpful information about logistics operations and suggest specific queries.
+Return ONLY valid JSON."""
+    }
+    return role_prompts.get(role, role_prompts["manager"])
+
+
+def _build_dealer_prompt(dealer_data: Dict, question: str) -> str:
+    """Phase 6: Dealer Intelligence Prompt"""
+    return f"""
+DEALER DATA:
+- Name: {dealer_data.get('dealer_name', 'Unknown')}
+- Total DNs: {dealer_data.get('total_dns', 0)}
+- Delivered: {dealer_data.get('delivered_dns', 0)}
+- Pending: {dealer_data.get('pending_dns', 0)}
+- POD Pending: {dealer_data.get('pod_pending_dns', 0)}
+- Total Value: Rs {dealer_data.get('total_value', 0):,.2f}
+- Pending Value: Rs {dealer_data.get('pending_value', 0):,.2f}
+- POD Pending Value: Rs {dealer_data.get('pod_pending_value', 0):,.2f}
+
+QUESTION: {question}
+
+Return a VALID JSON object with EXACTLY this structure:
+{{
+    "summary": "2-3 sentence performance summary",
+    "health_score": 0-100,
+    "risk_level": "LOW|MEDIUM|HIGH|CRITICAL",
+    "pending_dns": 0,
+    "financial_exposure": 0,
+    "root_causes": ["cause1", "cause2"],
+    "recommendations": [
+        {{"action": "description", "priority": "HIGH|MEDIUM|LOW", "timeline": "days", "expected_impact": "description"}}
     ]
-    
-    RANKING_KEYWORDS = [
-        "highest", "lowest", "top", "bottom", "best", "worst",
-        "largest", "smallest", "most", "least", "maximum", "minimum",
-        "ranking", "leaderboard", "top 10", "top 5", "top 3",
-        "highest pending", "most pending", "largest backlog"
+}}
+"""
+
+
+def _build_warehouse_prompt(warehouse_data: Dict, question: str) -> str:
+    """Phase 8: Warehouse Intelligence Prompt"""
+    return f"""
+WAREHOUSE DATA:
+- Name: {warehouse_data.get('warehouse_name', 'Unknown')}
+- Total DNs: {warehouse_data.get('total_dns', 0)}
+- Pending DNs: {warehouse_data.get('pending_dns', 0)}
+- POD Pending: {warehouse_data.get('pod_pending_dns', 0)}
+- Backlog Units: {warehouse_data.get('backlog_units', 0):,.0f}
+- Efficiency Score: {warehouse_data.get('efficiency_score', 0)}%
+- Bottlenecks: {warehouse_data.get('bottlenecks', [])}
+
+QUESTION: {question}
+
+Return a VALID JSON object:
+{{
+    "summary": "Warehouse performance summary",
+    "warehouse_score": 0-100,
+    "risk_level": "LOW|MEDIUM|HIGH|CRITICAL",
+    "bottlenecks": ["bottleneck1", "bottleneck2"],
+    "recommendations": [
+        {{"action": "description", "priority": "HIGH|MEDIUM|LOW", "expected_improvement": "X%"}}
     ]
-    
-    GENERAL_AI_KEYWORDS = [
-        "who is", "what is", "why is", "how to", "tell me about",
-        "explain", "describe", "write", "create", "generate",
-        "joke", "story", "poem", "python", "code", "programming",
-        "weather", "news", "sports", "politics", "history"
+}}
+"""
+
+
+def _build_city_prompt(city_data: Dict, question: str) -> str:
+    """Phase 9: City Intelligence Prompt"""
+    return f"""
+CITY DATA:
+- Name: {city_data.get('city', 'Unknown')}
+- Delivery Volume: {city_data.get('delivery_volume', 0)} DNs
+- Pending Volume: {city_data.get('pending_volume', 0)} DNs
+- POD Backlog: {city_data.get('pod_backlog', 0)} DNs
+- Revenue Exposure: Rs {city_data.get('revenue_exposure', 0):,.2f}
+- Risk Score: {city_data.get('city_risk_score', 0)}/100
+
+QUESTION: {question}
+
+Return a VALID JSON object:
+{{
+    "summary": "City performance summary",
+    "city_risk_score": 0-100,
+    "pending_dns": 0,
+    "financial_exposure": 0,
+    "recommendations": [
+        {{"action": "description", "priority": "HIGH|MEDIUM|LOW", "expected_reduction": "X%"}}
     ]
-    
-    DN_PATTERNS = [
-        r'\b(\d{8,15})\b',
-        r'dn[\s:]*(\d{8,15})',
-        r'delivery[-\s]?note[\s:]*(\d{8,15})',
-        r'track[\s:]*(\d{8,15})'
+}}
+"""
+
+
+def _build_executive_prompt(metrics: Dict, question: str) -> str:
+    """Phase 10: Executive Summary Prompt"""
+    return f"""
+EXECUTIVE DATA:
+- Network Health: {metrics.get('network_health', 0)}/100
+- Revenue at Risk: Rs {metrics.get('revenue_at_risk', 0):,.2f}
+- Inventory at Risk: {metrics.get('inventory_at_risk', 0):,.0f} units
+- Pending DNs: {metrics.get('pending_dns', 0)}
+- POD Pending: {metrics.get('pod_pending', 0)}
+- Top Risk Dealer: {metrics.get('top_risk_dealer', 'Unknown')}
+- Top Risk City: {metrics.get('top_risk_city', 'Unknown')}
+- Top Risk Warehouse: {metrics.get('top_risk_warehouse', 'Unknown')}
+
+QUESTION: {question}
+
+Return a VALID JSON object:
+{{
+    "summary": "Executive summary (2-3 sentences)",
+    "network_health": 0-100,
+    "revenue_at_risk": 0,
+    "inventory_at_risk": 0,
+    "top_risks": [
+        {{"type": "dealer|warehouse|city", "name": "name", "severity": 0-100, "financial_impact": 0}}
+    ],
+    "focus_today": "Single most important action",
+    "recommendations": [
+        {{"action": "description", "priority": "HIGH|MEDIUM|LOW", "expected_impact": "description", "timeline": "days"}}
     ]
+}}
+"""
+
+
+def _build_root_cause_prompt(root_cause_data: Dict, question: str) -> str:
+    """Phase 11: Root Cause Analysis Prompt"""
+    return f"""
+ROOT CAUSE DATA:
+- Dealer Issues: {root_cause_data.get('dealer_issues', 0)}%
+- Warehouse Issues: {root_cause_data.get('warehouse_issues', 0)}%
+- Transport Issues: {root_cause_data.get('transport_issues', 0)}%
+- Documentation Issues: {root_cause_data.get('documentation_issues', 0)}%
+
+QUESTION: {question}
+
+Return a VALID JSON object:
+{{
+    "summary": "Root cause summary",
+    "root_causes": {{
+        "dealer_delay": 0-100,
+        "warehouse_delay": 0-100,
+        "documentation": 0-100,
+        "transport": 0-100
+    }},
+    "primary_cause": "cause_name",
+    "recommendations": [
+        {{"action": "description", "focus_area": "area", "expected_improvement": "X%"}}
+    ]
+}}
+"""
+
+
+def _build_recommendation_prompt(recommendation_data: Dict, question: str) -> str:
+    """Phase 12: Recommendation Engine Prompt"""
+    return f"""
+CURRENT STATE:
+- Network Health: {recommendation_data.get('network_health', 0)}/100
+- Pending DNs: {recommendation_data.get('pending_dns', 0)}
+- POD Pending: {recommendation_data.get('pod_pending', 0)}
+- Revenue at Risk: Rs {recommendation_data.get('revenue_at_risk', 0):,.2f}
+
+QUESTION: {question}
+
+Return a VALID JSON object:
+{{
+    "summary": "Recommendation summary",
+    "priority_actions": [
+        {{
+            "priority": "HIGH|MEDIUM|LOW",
+            "action": "description",
+            "impact": "expected result",
+            "owner": "who should own this",
+            "timeline": "days",
+            "expected_improvement": "X%"
+        }}
+    ]
+}}
+"""
+
+
+def _build_dn_prompt(dn_data: Dict, question: str) -> str:
+    """Phase 7: DN Intelligence Prompt"""
+    return f"""
+DN DATA:
+- DN Number: {dn_data.get('dn_no', 'Unknown')}
+- Dealer: {dn_data.get('dealer', 'Unknown')}
+- Status: {dn_data.get('status', 'Unknown')}
+- POD Status: {dn_data.get('pod_status', 'Pending')}
+- Dispatch Age: {dn_data.get('dispatch_age', 0)} days
+- POD Age: {dn_data.get('pod_age', 0)} days
+- Value: Rs {dn_data.get('total_value', 0):,.2f}
+
+QUESTION: {question}
+
+Return a VALID JSON object:
+{{
+    "summary": "DN status summary",
+    "risk_level": "LOW|MEDIUM|HIGH|CRITICAL",
+    "root_cause": "Why it's delayed (if applicable)",
+    "recommendation": "What action to take",
+    "urgency": "IMMEDIATE|NORMAL|LOW"
+}}
+"""
+
+
+# ==========================================================
+# AI CACHE MANAGER
+# ==========================================================
+
+class AICacheManager:
+    """Cache AI responses for cost reduction and speed"""
     
-    # Improvement #3: Expanded dealer indicators
-    DEALER_INDICATORS = [
-        "dealer", "customer", "distributor", "retailer", "shop", "store",
-        "dealer dashboard", "dealer summary", "dealer performance",
-        "show dealer", "tell me about dealer", "dashboard for",
-        "performance of", "status of", "details for", "info about"
+    def __init__(self, ttl_seconds: int = 300):
+        self.cache: Dict[str, Tuple[str, float, Dict]] = {}
+        self.ttl = ttl_seconds
+    
+    def get(self, key: str) -> Optional[Tuple[str, Dict]]:
+        if key in self.cache:
+            response, timestamp, metadata = self.cache[key]
+            if time.time() - timestamp < self.ttl:
+                return response, metadata
+            del self.cache[key]
+        return None
+    
+    def set(self, key: str, response: str, metadata: Dict = None):
+        self.cache[key] = (response, time.time(), metadata or {})
+    
+    def clear(self):
+        self.cache.clear()
+    
+    def get_cache_key(self, prompt: str, model: str, context_hash: str = "", user_role: str = "") -> str:
+        content_hash = hashlib.md5(prompt[:500].encode()).hexdigest()
+        return f"{model}:{context_hash}:{user_role}:{content_hash}"
+
+
+# ==========================================================
+# AI SAFETY LAYER
+# ==========================================================
+
+class AISafetyLayer:
+    """Prevent dangerous operations and validate responses"""
+    
+    DANGEROUS_PATTERNS = [
+        r"DROP\s+TABLE",
+        r"DELETE\s+FROM",
+        r"UPDATE\s+\w+\s+SET",
+        r"INSERT\s+INTO",
+        r"ALTER\s+TABLE",
+        r"TRUNCATE",
+        r"EXEC\s*\(",
+        r"xp_cmdshell",
+        r"UNION\s+SELECT",
+        r"--",
+        r";\s*DROP",
+        r"'\s*OR\s+'1'='1",
     ]
     
     @classmethod
-    def classify(cls, question: str, memory: Dict = None, dealer_matcher: EnhancedDealerMatcher = None) -> Tuple[str, Optional[str], float]:
-        """
-        Enhanced classification with multi-strategy dealer detection
-        Returns: (intent, entity, confidence)
-        """
-        question_lower = question.lower().strip()
-        question_original = question.strip()
-        
-        # DN Detection
-        for pattern in cls.DN_PATTERNS:
-            match = re.search(pattern, question_original, re.IGNORECASE)
-            if match:
-                return "DN", match.group(1), 1.0
-        
-        # Ranking Detection
-        for keyword in cls.RANKING_KEYWORDS:
-            if keyword in question_lower:
-                # Improvement #6: Enhanced ranking detection
-                if "dealer" in question_lower or "customer" in question_lower:
-                    return "RANKING_DEALER", None, 0.9
-                elif "warehouse" in question_lower:
-                    return "RANKING_WAREHOUSE", None, 0.9
-                elif "city" in question_lower:
-                    return "RANKING_CITY", None, 0.9
-                else:
-                    return "RANKING", None, 0.8
-        
-        # Check for ranking patterns
-        ranking_patterns = [
-            r'which\s+(dealer|warehouse|city|product)\s+(?:has|is)\s+(?:the\s+)?(?:most|least)',
-            r'(?:show|get|display)\s+(?:the\s+)?(?:top|bottom)'
-        ]
-        for pattern in ranking_patterns:
-            match = re.search(pattern, question_lower)
-            if match:
-                entity = match.group(1) if match.groups() else None
-                return "RANKING", entity, 0.85
-        
-        # General AI Questions
-        for keyword in cls.GENERAL_AI_KEYWORDS:
-            if keyword in question_lower:
-                logistics_keywords = ["dealer", "dn", "delivery", "warehouse", "pod", "pending"]
-                if not any(lk in question_lower for lk in logistics_keywords):
-                    return "GENERAL", None, 0.9
-        
-        # Improvement #1 & #2: Enhanced Dealer Detection with Multi-strategy
-        if dealer_matcher:
-            dealer_match = dealer_matcher.match_dealer(question_original, threshold=70)
-            if dealer_match.get("found") and dealer_match.get("confidence", 0) >= 70:
-                dealer_name = dealer_match.get("dealer_name")
-                confidence = dealer_match.get("confidence", 70) / 100
-                logger.info(f"Dealer matched via {dealer_match.get('strategy')}: '{question_original}' -> '{dealer_name}' (confidence: {dealer_match.get('confidence')})")
-                
-                # Determine specific dealer intent based on question
-                if any(word in question_lower for word in ["pending", "backlog", "undelivered"]):
-                    return "DEALER_PENDING", dealer_name, confidence
-                elif any(word in question_lower for word in ["health", "score", "rating", "healthy"]):
-                    return "DEALER_HEALTH", dealer_name, confidence
-                elif any(word in question_lower for word in ["risk", "exposure", "problem", "issue"]):
-                    return "DEALER_RISK", dealer_name, confidence
-                elif any(word in question_lower for word in ["delivered", "completed"]):
-                    return "DEALER_DELIVERED", dealer_name, confidence
-                elif any(word in question_lower for word in ["pod", "acknowledgement"]):
-                    return "DEALER_POD", dealer_name, confidence
-                else:
-                    return "DEALER", dealer_name, confidence
-        
-        # City Detection
-        for city in cls.KNOWN_CITIES:
-            if city in question_lower:
-                return "CITY", city.title(), 0.9
-        
-        city_patterns = [
-            r'(?:in|for|at)\s+(' + '|'.join(cls.KNOWN_CITIES) + r')',
-            r'(' + '|'.join(cls.KNOWN_CITIES) + r')\s+(?:situation|performance|status|delivery)'
-        ]
-        for pattern in city_patterns:
-            match = re.search(pattern, question_lower)
-            if match:
-                city = match.group(1).strip().title()
-                return "CITY", city, 0.85
-        
-        # Improvement #7: Root Cause Detection
-        root_cause_keywords = [
-            "why are", "why is", "root cause", "what is causing",
-            "reason for", "cause of", "why do", "why does"
-        ]
-        if any(kw in question_lower for kw in root_cause_keywords):
-            return "ROOT_CAUSE", None, 0.85
-        
-        # Improvement #8: Executive Intelligence
-        executive_keywords = [
-            "executive summary", "what should i focus on", "today's priorities",
-            "biggest operational risk", "network health score", "revenue at risk",
-            "ceo briefing", "command center", "executive dashboard"
-        ]
-        if any(kw in question_lower for kw in executive_keywords):
-            return "EXECUTIVE", None, 0.9
-        
-        # Improvement #9: Recommendation Detection
-        recommendation_keywords = [
-            "what should management do", "how can we improve", "recommendations",
-            "action plan", "what should we do", "suggestions"
-        ]
-        if any(kw in question_lower for kw in recommendation_keywords):
-            return "RECOMMENDATION", None, 0.85
-        
-        # Risk Query
-        risk_keywords = ["risk", "critical", "urgent", "problem", "issue", "delay", "bottleneck"]
-        if any(kw in question_lower for kw in risk_keywords):
-            return "RISK", None, 0.8
-        
-        # POD Query
-        pod_keywords = ["pod", "acknowledgement", "proof of delivery", "awaiting acknowledgement"]
-        if any(kw in question_lower for kw in pod_keywords):
-            return "POD", None, 0.85
-        
-        # Warehouse Query
-        warehouse_keywords = ["warehouse", "godown", "storage"]
-        if any(kw in question_lower for kw in warehouse_keywords):
-            warehouse_match = re.search(r'(?:warehouse|godown)[\s:]+([A-Za-z0-9]+)', question_lower)
-            if warehouse_match:
-                return "WAREHOUSE", warehouse_match.group(1).upper(), 0.8
-            return "WAREHOUSE", None, 0.75
-        
-        # Pending Query
-        pending_keywords = ["pending", "backlog", "waiting", "not delivered"]
-        if any(kw in question_lower for kw in pending_keywords):
-            return "PENDING", None, 0.8
-        
-        # Follow-up detection using memory (Improvement #5)
-        if memory and memory.get("last_intent"):
-            follow_up_keywords = ["why", "how", "what about", "tell me more", "explain", "and", "also", "then"]
-            if any(kw in question_lower for kw in follow_up_keywords) or len(question.split()) <= 5:
-                last_intent = memory.get("last_intent")
-                last_entity = memory.get("last_entity")
-                if last_entity:
-                    logger.info(f"Follow-up detected: {last_intent} with entity {last_entity}")
-                    return last_intent, last_entity, 0.7
-        
-        # Service Discovery
-        service_keywords = ["help", "menu", "services", "what can you do", "capabilities"]
-        if any(kw in question_lower for kw in service_keywords):
-            return "SERVICE_DISCOVERY", None, 1.0
-        
-        return "UNKNOWN", None, 0.0
-
-
-# ======================================================
-# DEALER INTELLIGENCE RESPONSE (Improvement #4 & #10)
-# ======================================================
-
-class DealerIntelligenceResponse:
-    """Generate comprehensive dealer intelligence reports"""
+    def validate_prompt(cls, prompt: str) -> Tuple[bool, str]:
+        prompt_upper = prompt.upper()
+        for pattern in cls.DANGEROUS_PATTERNS:
+            if re.search(pattern, prompt_upper):
+                logger.warning(f"Dangerous pattern detected: {pattern}")
+                return False, f"Dangerous pattern blocked: {pattern}"
+        return True, ""
     
-    @staticmethod
-    def format_intelligence_report(dealer_data: Dict, dealer_name: str, memory: Dict = None) -> str:
-        """Format complete dealer intelligence report"""
-        
-        kpis = dealer_data.get("kpis", {})
-        
-        total_dns = kpis.get("total_dns", 0)
-        delivered_dns = kpis.get("delivered_dns", 0)
-        pending_dns = kpis.get("pending_dns", 0)
-        pod_pending_dns = kpis.get("pod_pending_dns", 0)
-        
-        total_value = kpis.get("total_amount", 0)
-        pending_value = kpis.get("pending_amount", 0)
-        pod_pending_value = kpis.get("pod_pending_amount", 0)
-        
-        # Calculate key metrics
-        delivery_compliance = (delivered_dns / total_dns * 100) if total_dns > 0 else 0
-        pod_compliance = ((delivered_dns - pod_pending_dns) / delivered_dns * 100) if delivered_dns > 0 else 0
-        health_score = (delivery_compliance * 0.6) + (pod_compliance * 0.4)
-        
-        # Determine risk level
-        if pending_dns > 50 or pod_pending_dns > 30:
-            risk_level = "🔴 HIGH RISK"
-            risk_icon = "🚨"
-        elif pending_dns > 20 or pod_pending_dns > 15:
-            risk_level = "🟡 MEDIUM RISK"
-            risk_icon = "⚠️"
-        else:
-            risk_level = "🟢 LOW RISK"
-            risk_icon = "✅"
-        
-        # Build response
-        response = f"""
-╔══════════════════════════════════════════╗
-║         📊 DEALER INTELLIGENCE           ║
-║              {dealer_name[:30]}                    ║
-╚══════════════════════════════════════════╝
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📈 PERFORMANCE OVERVIEW
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{risk_icon} Health Score: {health_score:.1f}/100
-{risk_level}
-
-📊 *Key Metrics:*
-• Total DNs: {total_dns}
-• Delivered: {delivered_dns} ✅
-• Pending: {pending_dns} ⏳
-• POD Pending: {pod_pending_dns} 📋
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💰 FINANCIAL EXPOSURE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Total Sales: Rs {total_value:,.2f}
-• Pending Value: Rs {pending_value:,.2f}
-• POD Pending Value: Rs {pod_pending_value:,.2f}
-• Total Outstanding: Rs {pending_value + pod_pending_value:,.2f}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📋 COMPLIANCE METRICS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Delivery Compliance: {delivery_compliance:.1f}%
-• POD Compliance: {pod_compliance:.1f}%
-"""
-        
-        # Add top issues
-        pending_products = dealer_data.get("alerts", {}).get("highest_pending_product", {})
-        if pending_products.get("pending_quantity", 0) > 0:
-            response += f"""
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⚠️ TOP ISSUES
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• High pending quantity: {pending_products.get('pending_quantity', 0):,.0f} units
-  Product: {pending_products.get('product_name', 'Unknown')}
-"""
-        
-        # Add recommendations
-        response += f"""
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 RECOMMENDATIONS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-"""
-        
-        if pending_dns > 0:
-            response += f"• 🚨 Clear {pending_dns} pending DNs (Priority HIGH)\n"
-        if pod_pending_dns > 0:
-            response += f"• 📋 Collect {pod_pending_dns} pending PODs (Priority HIGH)\n"
-        if pending_value > 10000000:
-            response += f"• 💰 Escalate financial exposure of Rs {pending_value:,.2f}\n"
-        if not pending_dns and not pod_pending_dns:
-            response += "• ✅ Dealer performing well. Maintain regular follow-up.\n"
-        
-        response += """
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 Need more details? Try:
-• PENDING DNS - Show pending deliveries
-• POD STATUS - Show POD details
-• RISK - Show risk assessment
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-"""
-        
-        return response
-
-
-# ======================================================
-# RESPONSE FORMATTER (Enhanced)
-# ======================================================
-
-class ResponseFormatter:
-    """Format responses for WhatsApp"""
+    @classmethod
+    def sanitize_response(cls, response: str) -> str:
+        for pattern in cls.DANGEROUS_PATTERNS:
+            response = re.sub(pattern, "[REDACTED]", response, flags=re.IGNORECASE)
+        return response[:4000]
     
-    @staticmethod
-    def service_discovery_response() -> str:
-        return """
-📋 *SERVICE CATALOG*
+    @classmethod
+    def extract_json_from_response(cls, response: str) -> Dict[str, Any]:
+        json_match = re.search(r'\{[\s\S]*\}', response)
+        if json_match:
+            try:
+                return json.loads(json_match.group())
+            except json.JSONDecodeError:
+                pass
+        return {"response": response[:500], "confidence": 50, "requires_followup": True}
 
-*1. Dealer Intelligence*
-   Complete dealer report with health score, pending DNs, financial exposure
-   💡 "Rafi Electronics Oghi" or "Dealer Afzal"
 
-*2. City Analysis*
-   City performance and risk assessment
-   💡 "Karachi situation" or "Lahore performance"
+# ==========================================================
+# AI COST TRACKER
+# ==========================================================
 
-*3. Rankings*
-   Best/worst performers by value, pending, or efficiency
-   💡 "Top 10 dealers" or "Best dealer"
-
-*4. Executive Dashboard*
-   High-level business overview
-   💡 "Executive summary" or "What should I focus on today?"
-
-*5. Root Cause Analysis*
-   Understand why issues are happening
-   💡 "Why are PODs increasing?"
-
-*6. Recommendations*
-   AI-powered action plans
-   💡 "What should management do?"
-
-*7. DN Tracking*
-   Track specific delivery notes
-   💡 "DN 6243611264"
-
-Type your question naturally!
-"""
+class AICostTracker:
+    """Track AI usage costs"""
     
-    @staticmethod
-    def unknown_response() -> str:
-        return """
-❓ I couldn't identify your request.
-
-Type `services` to see what I can do, or try:
-
-• `Rafi Electronics Oghi` - Dealer report
-• `Karachi situation` - City analysis  
-• `Top 10 dealers` - Rankings
-• `Executive summary` - CEO view
-"""
+    COST_PER_M_TOKEN = {
+        "groq": 0.10,
+        "deepseek-chat": 0.14,
+        "deepseek-chat-output": 0.28,
+        "gpt-4-turbo": 10.00,
+        "gpt-3.5-turbo": 0.50,
+    }
     
-    @staticmethod
-    def ranking_response(rankings: Dict, ranking_type: str, limit: int = 10) -> str:
-        """Format ranking response"""
-        if not rankings:
-            return "No ranking data available"
-        
-        if ranking_type == "DEALER":
-            dealers = rankings.get("by_value", [])[:limit]
-            if not dealers:
-                return "No dealer data available"
-            
-            response = "📊 *TOP DEALERS BY VALUE*\n\n"
-            for i, d in enumerate(dealers, 1):
-                response += f"{i}. *{d.get('dealer', 'Unknown')}*\n"
-                response += f"   💰 Rs {d.get('total_value', 0):,.2f}\n"
-                response += f"   📦 {d.get('total_dns', 0)} DNs | ⚠️ {d.get('pending_dns', 0)} pending\n\n"
-            return response
-        
-        elif ranking_type == "RISK":
-            dealers = rankings.get("by_pending", [])[:limit]
-            response = "🚨 *HIGHEST RISK DEALERS*\n\n"
-            for i, d in enumerate(dealers, 1):
-                response += f"{i}. *{d.get('dealer', 'Unknown')}*\n"
-                response += f"   ⚠️ {d.get('pending_dns', 0)} pending DNs\n"
-                response += f"   💰 Rs {d.get('pending_value', 0):,.2f} at risk\n\n"
-            return response
-        
-        return "Ranking type not supported"
-
-
-# ======================================================
-# MAIN AI QUERY SERVICE
-# ======================================================
-
-class AIQueryService:
-    """Enterprise AI Query Service with all improvements"""
+    def __init__(self):
+        self.total_cost = Decimal('0')
+        self.total_tokens = 0
+        self.usage_by_provider = {}
+        self.requests_log = []
     
-    def __init__(self, db: Session):
-        self.db = db
-        self.analytics = AnalyticsService(db)
-        self.logistics = LogisticsQueryService()
-        self.formatter = ResponseFormatter()
-        self.memory = ConversationMemory()
-        self.dealer_matcher = EnhancedDealerMatcher()
-        
-        # Load dealers for fuzzy matching
-        self.dealer_matcher.load_dealers(db)
-        
-        # AI availability
-        self.ai_enabled = getattr(config, 'ENABLE_DEEPSEEK_LOGISTICS', False) and getattr(config, 'AI_ANALYSIS_ENABLED', False)
-        deepseek_api_key = getattr(config, 'DEEPSEEK_API_KEY', None)
-        self.ai_available = self.ai_enabled and bool(deepseek_api_key) and AI_PROVIDER_AVAILABLE
-        
-        logger.info("=" * 50)
-        logger.info("🚀 ENTERPRISE AI QUERY SERVICE v3.0 INITIALIZED")
-        logger.info(f"Dealers loaded: {len(self.dealer_matcher.dealer_cache)}")
-        logger.info(f"RapidFuzz: {RAPIDFUZZ_AVAILABLE}")
-        logger.info(f"AI Available: {self.ai_available}")
-        logger.info("=" * 50)
+    def calculate_cost(self, model: str, prompt_tokens: int, completion_tokens: int) -> Decimal:
+        base_cost = self.COST_PER_M_TOKEN.get(model, 0.50)
+        input_cost = (prompt_tokens / 1_000_000) * base_cost
+        output_cost = (completion_tokens / 1_000_000) * base_cost
+        return Decimal(str(input_cost + output_cost))
     
-    # ======================================================
-    # MAIN PROCESSING PIPELINE
-    # ======================================================
+    def track_usage(self, model: str, prompt_tokens: int, completion_tokens: int, latency_ms: int):
+        cost = self.calculate_cost(model, prompt_tokens, completion_tokens)
+        self.total_cost += cost
+        self.total_tokens += prompt_tokens + completion_tokens
+        
+        if model not in self.usage_by_provider:
+            self.usage_by_provider[model] = {"requests": 0, "tokens": 0, "cost": Decimal('0'), "total_latency_ms": 0}
+        
+        self.usage_by_provider[model]["requests"] += 1
+        self.usage_by_provider[model]["tokens"] += prompt_tokens + completion_tokens
+        self.usage_by_provider[model]["cost"] += cost
+        self.usage_by_provider[model]["total_latency_ms"] += latency_ms
+        
+        self.requests_log.append({
+            "model": model,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "cost": float(cost),
+            "latency_ms": latency_ms,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+        
+        if len(self.requests_log) > 1000:
+            self.requests_log = self.requests_log[-1000:]
     
-    def process_query(self, question: str, user_phone: str = None, user_role: str = None) -> Dict[str, Any]:
-        start_time = time.time()
-        question = question.strip()
-        
-        user_memory = self.memory.get(user_phone) if user_phone else {}
-        
-        if user_role:
-            self.memory.update(user_phone, user_role=user_role)
-        
-        logger.info(f"📝 PROCESSING: {question} | User: {user_phone}")
-        
-        # Get conversation context for follow-ups
-        conv_context = self.memory.get_context(user_phone) if user_phone else {}
-        
-        # Classify intent with enhanced dealer matcher
-        intent, entity, confidence = IntentClassifier.classify(question, conv_context, self.dealer_matcher)
-        
-        logger.info(f"🏷️ CLASSIFIED: Intent='{intent}' Entity='{entity}' Confidence={confidence:.2f}")
-        
-        # Route to appropriate handler
-        try:
-            if intent == "DN":
-                result = self._handle_dn_query(entity or question, user_phone)
-            elif intent == "DEALER":
-                result = self._handle_dealer_intelligence(entity, user_phone)
-            elif intent == "DEALER_PENDING":
-                result = self._handle_dealer_pending(entity, user_phone)
-            elif intent == "DEALER_HEALTH":
-                result = self._handle_dealer_health(entity, user_phone)
-            elif intent == "DEALER_RISK":
-                result = self._handle_dealer_risk(entity, user_phone)
-            elif intent == "DEALER_DELIVERED":
-                result = self._handle_dealer_delivered(entity, user_phone)
-            elif intent == "DEALER_POD":
-                result = self._handle_dealer_pod(entity, user_phone)
-            elif intent == "RANKING_DEALER":
-                result = self._handle_ranking_dealer(user_phone)
-            elif intent == "RANKING":
-                result = self._handle_ranking_query(question, user_phone)
-            elif intent == "CITY":
-                result = self._handle_city_query(entity or question, user_phone)
-            elif intent == "EXECUTIVE":
-                result = self._handle_executive_query(user_phone)
-            elif intent == "ROOT_CAUSE":  # Improvement #7
-                result = self._handle_root_cause_query(question, user_phone)
-            elif intent == "RECOMMENDATION":  # Improvement #9
-                result = self._handle_recommendation_query(user_phone)
-            elif intent == "RISK":
-                result = self._handle_risk_query(user_phone)
-            elif intent == "POD":
-                result = self._handle_pod_query(user_phone)
-            elif intent == "WAREHOUSE":
-                result = self._handle_warehouse_query(entity or question, user_phone)
-            elif intent == "PENDING":
-                result = self._handle_pending_query(user_phone)
-            elif intent == "GENERAL":
-                result = self._handle_general_query(question, user_phone)
-            elif intent == "SERVICE_DISCOVERY":
-                result = {"success": True, "response": self.formatter.service_discovery_response(), "ai_used": False}
-            else:
-                result = self._handle_unknown_query(question, user_phone)
-        except Exception as e:
-            logger.error(f"❌ Handler error: {e}")
-            result = {
-                "success": False,
-                "response": "⚠️ Service temporarily unavailable. Please try again later.",
-                "error": str(e),
-                "ai_used": False
+    def get_summary(self) -> Dict:
+        return {
+            "total_cost": float(self.total_cost),
+            "total_cost_formatted": f"${float(self.total_cost):.4f}",
+            "total_tokens": self.total_tokens,
+            "by_provider": {
+                provider: {
+                    "requests": data["requests"],
+                    "tokens": data["tokens"],
+                    "cost": float(data["cost"]),
+                    "avg_latency_ms": data["total_latency_ms"] / data["requests"] if data["requests"] > 0 else 0
+                }
+                for provider, data in self.usage_by_provider.items()
             }
+        }
+
+
+# ==========================================================
+# AI PROVIDER SERVICE (ENTERPRISE v4.0)
+# ==========================================================
+
+class AIProviderService:
+    """
+    Enterprise AI Provider Service v4.0
+    
+    Provider Priority (Phase 2):
+    1. Groq (fastest, best for logistics)
+    2. DeepSeek (primary fallback)
+    3. OpenAI (secondary fallback)
+    4. Rule-based (final fallback)
+    """
+    
+    def __init__(self, db: Session = None):
+        self.db = db
+        self.cache = AICacheManager(ttl_seconds=300)
+        self.cost_tracker = AICostTracker()
+        self.retry_count = 3
+        self.retry_delay = 1
         
-        # Update memory (Improvement #5)
-        self.memory.update(
-            user_phone,
-            intent=intent,
-            entity=entity,
-            question=question,
-            response=result.get("response", "")[:500]
+        # Phase 1: Initialize Groq (PRIMARY PROVIDER)
+        self.groq_api_key = os.getenv("GROQ_API_KEY") or getattr(config, 'GROQ_API_KEY', None)
+        self.groq_model = os.getenv("GROQ_MODEL", "qwen-qwq-32b")
+        self.groq_client = None
+        self.groq_status = ProviderStatus.UNKNOWN
+        
+        if self.groq_api_key:
+            try:
+                self.groq_client = OpenAI(
+                    api_key=self.groq_api_key,
+                    base_url="https://api.groq.com/openai/v1",
+                    timeout=60.0,
+                    max_retries=2
+                )
+                logger.info(f"✅ Groq client initialized (PRIMARY PROVIDER, model: {self.groq_model})")
+                self.groq_status = ProviderStatus.ONLINE
+            except Exception as e:
+                logger.error(f"❌ Groq initialization failed: {e}")
+                self.groq_status = ProviderStatus.OFFLINE
+        
+        # Initialize DeepSeek (SECONDARY PROVIDER)
+        self.deepseek_api_key = getattr(config, 'DEEPSEEK_API_KEY', None)
+        self.deepseek_client = None
+        self.deepseek_status = ProviderStatus.UNKNOWN
+        
+        if self.deepseek_api_key:
+            try:
+                self.deepseek_client = OpenAI(
+                    api_key=self.deepseek_api_key,
+                    base_url="https://api.deepseek.com",
+                    timeout=30.0,
+                    max_retries=2
+                )
+                logger.info("✅ DeepSeek client initialized (SECONDARY PROVIDER)")
+                self.deepseek_status = ProviderStatus.ONLINE
+            except Exception as e:
+                logger.error(f"❌ DeepSeek initialization failed: {e}")
+                self.deepseek_status = ProviderStatus.OFFLINE
+        
+        # Initialize OpenAI (TERTIARY PROVIDER)
+        self.openai_api_key = getattr(config, 'OPENAI_API_KEY', None)
+        self.openai_client = None
+        self.openai_status = ProviderStatus.UNKNOWN
+        self.openai_model = getattr(config, 'OPENAI_MODEL', 'gpt-4-turbo')
+        
+        if self.openai_api_key:
+            try:
+                self.openai_client = OpenAI(
+                    api_key=self.openai_api_key,
+                    timeout=30.0,
+                    max_retries=2
+                )
+                logger.info(f"✅ OpenAI client initialized (TERTIARY PROVIDER, model: {self.openai_model})")
+                self.openai_status = ProviderStatus.ONLINE
+            except Exception as e:
+                logger.error(f"❌ OpenAI initialization failed: {e}")
+                self.openai_status = ProviderStatus.OFFLINE
+        
+        self.is_available = (
+            self.groq_status == ProviderStatus.ONLINE or
+            self.deepseek_status == ProviderStatus.ONLINE or
+            self.openai_status == ProviderStatus.ONLINE
         )
         
-        if entity:
-            if intent in ["DEALER", "DEALER_PENDING", "DEALER_HEALTH", "DEALER_RISK", "DEALER_DELIVERED", "DEALER_POD"]:
-                self.memory.update(user_phone, dealer=entity)
-            elif intent == "CITY":
-                self.memory.update(user_phone, city=entity)
-            elif intent == "WAREHOUSE":
-                self.memory.update(user_phone, warehouse=entity)
-            elif intent == "DN":
-                self.memory.update(user_phone, dn=entity)
-        
-        result["question_type"] = intent
-        result["entity"] = entity
-        result["confidence"] = confidence
-        result["processing_time_ms"] = int((time.time() - start_time) * 1000)
-        
-        logger.info(f"✅ COMPLETED: Intent={intent} | AI={result.get('ai_used', False)} | Time={result['processing_time_ms']}ms")
-        
-        self._log_query(question, result, user_phone)
-        
-        return result
+        self._log_startup_status()
     
-    # ======================================================
-    # ENHANCED HANDLERS
-    # ======================================================
+    def _log_startup_status(self):
+        """Log comprehensive startup status"""
+        logger.info("=" * 60)
+        logger.info("🤖 AI PROVIDER SERVICE v4.0 INITIALIZED")
+        logger.info(f"PRIMARY: Groq = {self.groq_status.value} (model: {self.groq_model})")
+        logger.info(f"SECONDARY: DeepSeek = {self.deepseek_status.value}")
+        logger.info(f"TERTIARY: OpenAI = {self.openai_status.value} (model: {self.openai_model})")
+        logger.info(f"Overall Available: {self.is_available}")
+        logger.info(f"Cache TTL: {self.cache.ttl}s")
+        logger.info(f"Retry Count: {self.retry_count}")
+        logger.info("Structured JSON Responses: ENABLED")
+        logger.info("Cost Tracking: ENABLED")
+        logger.info("Conversation Context: ENABLED")
+        logger.info("=" * 60)
     
-    def _handle_dealer_intelligence(self, dealer_name: str, user_phone: str) -> Dict[str, Any]:
-        """Handle complete dealer intelligence report (Improvement #4)"""
-        try:
-            dashboard = self.logistics.get_dealer_complete_dashboard(self.db, dealer_name, page=1, page_size=10)
-        except Exception as e:
-            logger.error(f"Dealer error: {e}")
-            return {"success": False, "response": f"❌ Unable to fetch dealer data for '{dealer_name}'.", "ai_used": False}
-        
-        if not dashboard.get("success"):
-            # Try suggestions
-            suggestions = self.dealer_matcher.get_suggestions(dealer_name, 3)
-            if suggestions:
-                suggestion_text = "\n".join([f"• {s['dealer_name']}" for s in suggestions])
-                return {
-                    "success": False,
-                    "response": f"❌ Dealer '{dealer_name}' not found.\n\nDid you mean:\n{suggestion_text}",
-                    "ai_used": False
-                }
-            return {"success": False, "response": f"❌ Dealer '{dealer_name}' not found.", "ai_used": False}
-        
-        if dashboard.get("fuzzy"):
-            return {"success": True, "response": dashboard.get("summary", "Multiple dealers found"), "ai_used": False}
-        
-        # Format comprehensive intelligence report
-        response = DealerIntelligenceResponse.format_intelligence_report(dashboard, dealer_name, self.memory.get(user_phone))
-        
-        return {"success": True, "response": response, "ai_used": False}
+    # ==========================================================
+    # PHASE 2: PROVIDER PRIORITY ROUTING
+    # ==========================================================
     
-    def _handle_dealer_pending(self, dealer_name: str, user_phone: str) -> Dict[str, Any]:
-        """Handle dealer pending query"""
-        try:
-            dashboard = self.logistics.get_dealer_complete_dashboard(self.db, dealer_name)
-            if dashboard.get("success"):
-                kpis = dashboard.get("kpis", {})
-                pending_dns = kpis.get("pending_dns", 0)
-                pending_value = kpis.get("pending_amount", 0)
-                
-                response = f"""
-⏳ *PENDING DELIVERIES - {dealer_name}*
-
-📦 Pending DNs: {pending_dns}
-💰 Pending Value: Rs {pending_value:,.2f}
-
-💡 Action: Review pending deliveries urgently
-"""
-                return {"success": True, "response": response, "ai_used": False}
-        except Exception as e:
-            logger.error(f"Dealer pending error: {e}")
+    def get_primary_provider(self) -> str:
+        """Determine which provider to use based on availability"""
+        if self.groq_status == ProviderStatus.ONLINE:
+            return "groq"
+        elif self.deepseek_status == ProviderStatus.ONLINE:
+            return "deepseek"
+        elif self.openai_status == ProviderStatus.ONLINE:
+            return "openai"
+        else:
+            return "rule_based"
+    
+    # ==========================================================
+    # PHASE 5-12: DEDICATED LOGISTICS ANALYSIS FUNCTIONS
+    # ==========================================================
+    
+    def generate_logistics_analysis(
+        self,
+        analysis_type: str,
+        logistics_data: Dict[str, Any],
+        user_role: str = "manager",
+        user_phone: str = None,
+        conversation_context: Dict = None
+    ) -> Dict[str, Any]:
+        """
+        Generate logistics analysis using appropriate template
         
-        return {"success": False, "response": f"❌ Unable to fetch pending data for '{dealer_name}'.", "ai_used": False}
-    
-    def _handle_dealer_health(self, dealer_name: str, user_phone: str) -> Dict[str, Any]:
-        """Handle dealer health query"""
-        try:
-            dashboard = self.logistics.get_dealer_complete_dashboard(self.db, dealer_name)
-            if dashboard.get("success"):
-                kpis = dashboard.get("kpis", {})
-                total_dns = kpis.get("total_dns", 1)
-                delivered_dns = kpis.get("delivered_dns", 0)
-                pod_pending_dns = kpis.get("pod_pending_dns", 0)
-                
-                delivery_rate = (delivered_dns / total_dns * 100) if total_dns > 0 else 0
-                pod_compliance = ((delivered_dns - pod_pending_dns) / delivered_dns * 100) if delivered_dns > 0 else 100
-                health_score = (delivery_rate * 0.6) + (pod_compliance * 0.4)
-                
-                response = f"""
-📊 *DEALER HEALTH SCORE - {dealer_name}*
-
-Health Score: {health_score:.1f}/100
-• Delivery Rate: {delivery_rate:.1f}%
-• POD Compliance: {pod_compliance:.1f}%
-
-{'✅ Healthy' if health_score >= 70 else '⚠️ Needs Attention' if health_score >= 50 else '🚨 Critical'}
-"""
-                return {"success": True, "response": response, "ai_used": False}
-        except Exception as e:
-            logger.error(f"Dealer health error: {e}")
+        Supported types: dealer, warehouse, city, executive, dn, root_cause, recommendation
+        """
+        # Get system prompt based on role
+        system_prompt = _build_system_prompt(user_role)
         
-        return {"success": False, "response": f"❌ Unable to fetch health data for '{dealer_name}'.", "ai_used": False}
-    
-    def _handle_dealer_risk(self, dealer_name: str, user_phone: str) -> Dict[str, Any]:
-        """Handle dealer risk query"""
-        try:
-            dashboard = self.logistics.get_dealer_complete_dashboard(self.db, dealer_name)
-            if dashboard.get("success"):
-                kpis = dashboard.get("kpis", {})
-                pending_dns = kpis.get("pending_dns", 0)
-                pod_pending_dns = kpis.get("pod_pending_dns", 0)
-                pending_value = kpis.get("pending_amount", 0)
-                
-                risk_score = min(100, (pending_dns + pod_pending_dns) * 2)
-                
-                response = f"""
-🚨 *RISK ASSESSMENT - {dealer_name}*
-
-Risk Score: {risk_score:.0f}/100
-• Pending DNs: {pending_dns}
-• POD Pending: {pod_pending_dns}
-• Financial Exposure: Rs {pending_value:,.2f}
-
-{'🔴 HIGH RISK - Immediate action required' if risk_score > 60 else '🟡 MEDIUM RISK - Monitor closely' if risk_score > 30 else '🟢 LOW RISK - Normal'}
-"""
-                return {"success": True, "response": response, "ai_used": False}
-        except Exception as e:
-            logger.error(f"Dealer risk error: {e}")
+        # Select appropriate prompt template
+        if analysis_type == "dealer":
+            prompt = _build_dealer_prompt(logistics_data, "Analyze this dealer's performance.")
+        elif analysis_type == "warehouse":
+            prompt = _build_warehouse_prompt(logistics_data, "Analyze this warehouse's performance.")
+        elif analysis_type == "city":
+            prompt = _build_city_prompt(logistics_data, "Analyze this city's logistics performance.")
+        elif analysis_type == "executive":
+            prompt = _build_executive_prompt(logistics_data, "Provide executive summary.")
+        elif analysis_type == "dn":
+            prompt = _build_dn_prompt(logistics_data, "Analyze this DN status.")
+        elif analysis_type == "root_cause":
+            prompt = _build_root_cause_prompt(logistics_data, "Perform root cause analysis.")
+        elif analysis_type == "recommendation":
+            prompt = _build_recommendation_prompt(logistics_data, "Provide actionable recommendations.")
+        else:
+            prompt = f"Analyze this logistics data: {json.dumps(logistics_data, default=str)}"
         
-        return {"success": False, "response": f"❌ Unable to fetch risk data for '{dealer_name}'.", "ai_used": False}
-    
-    def _handle_dealer_delivered(self, dealer_name: str, user_phone: str) -> Dict[str, Any]:
-        """Handle dealer delivered query"""
-        try:
-            dashboard = self.logistics.get_dealer_complete_dashboard(self.db, dealer_name)
-            if dashboard.get("success"):
-                kpis = dashboard.get("kpis", {})
-                delivered_dns = kpis.get("delivered_dns", 0)
-                total_value = kpis.get("total_amount", 0)
-                
-                response = f"""
-✅ *DELIVERED - {dealer_name}*
-
-📦 Delivered DNs: {delivered_dns}
-💰 Total Value: Rs {total_value:,.2f}
-
-{'Great performance!' if delivered_dns > 50 else 'Keep up the good work!'}
-"""
-                return {"success": True, "response": response, "ai_used": False}
-        except Exception as e:
-            logger.error(f"Dealer delivered error: {e}")
+        # Add conversation context for follow-ups (Phase 13)
+        if conversation_context:
+            prompt += f"\n\nCONVERSATION CONTEXT: {json.dumps(conversation_context)}"
         
-        return {"success": False, "response": f"❌ Unable to fetch delivered data for '{dealer_name}'.", "ai_used": False}
+        # Call AI with appropriate provider
+        return self.answer_question(
+            question=prompt,
+            context=logistics_data,
+            structured=True,
+            user_phone=user_phone,
+            require_json=True
+        )
     
-    def _handle_dealer_pod(self, dealer_name: str, user_phone: str) -> Dict[str, Any]:
-        """Handle dealer POD query"""
-        try:
-            dashboard = self.logistics.get_dealer_complete_dashboard(self.db, dealer_name)
-            if dashboard.get("success"):
-                kpis = dashboard.get("kpis", {})
-                pod_pending_dns = kpis.get("pod_pending_dns", 0)
-                pod_pending_value = kpis.get("pod_pending_amount", 0)
-                
-                response = f"""
-📋 *POD STATUS - {dealer_name}*
-
-⏳ POD Pending: {pod_pending_dns} DNs
-💰 Pending Value: Rs {pod_pending_value:,.2f}
-
-💡 Action: {'URGENT: Collect pending PODs' if pod_pending_dns > 10 else 'Follow up on pending PODs'}
-"""
-                return {"success": True, "response": response, "ai_used": False}
-        except Exception as e:
-            logger.error(f"Dealer POD error: {e}")
+    # Convenience wrapper methods
+    def analyze_dealer(self, dealer_data: Dict, user_role: str = "manager", user_phone: str = None) -> Dict:
+        return self.generate_logistics_analysis("dealer", dealer_data, user_role, user_phone)
+    
+    def analyze_warehouse(self, warehouse_data: Dict, user_role: str = "manager", user_phone: str = None) -> Dict:
+        return self.generate_logistics_analysis("warehouse", warehouse_data, user_role, user_phone)
+    
+    def analyze_city(self, city_data: Dict, user_role: str = "manager", user_phone: str = None) -> Dict:
+        return self.generate_logistics_analysis("city", city_data, user_role, user_phone)
+    
+    def analyze_dn(self, dn_data: Dict, user_role: str = "manager", user_phone: str = None) -> Dict:
+        return self.generate_logistics_analysis("dn", dn_data, user_role, user_phone)
+    
+    def generate_executive_summary(self, metrics: Dict, user_role: str = "ceo", user_phone: str = None) -> Dict:
+        return self.generate_logistics_analysis("executive", metrics, user_role, user_phone)
+    
+    def generate_root_cause_analysis(self, root_cause_data: Dict, user_role: str = "manager", user_phone: str = None) -> Dict:
+        return self.generate_logistics_analysis("root_cause", root_cause_data, user_role, user_phone)
+    
+    def generate_recommendations(self, recommendation_data: Dict, user_role: str = "manager", user_phone: str = None) -> Dict:
+        return self.generate_logistics_analysis("recommendation", recommendation_data, user_role, user_phone)
+    
+    # ==========================================================
+    # CORE AI METHOD
+    # ==========================================================
+    
+    def answer_question(
+        self,
+        question: str,
+        context: Dict[str, Any] = None,
+        structured: bool = True,
+        user_phone: str = None,
+        template: str = None,
+        max_tokens: int = 2500,
+        temperature: float = 0.3,
+        require_json: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Answer a question using AI with provider priority routing
+        Priority: Groq → DeepSeek → OpenAI → Rule-based
+        """
+        start_time = time.time()
         
-        return {"success": False, "response": f"❌ Unable to fetch POD data for '{dealer_name}'.", "ai_used": False}
-    
-    def _handle_ranking_dealer(self, user_phone: str) -> Dict[str, Any]:
-        """Handle dealer ranking queries (Improvement #6)"""
-        try:
-            if hasattr(self.analytics, 'dealer_rankings'):
-                rankings = self.analytics.dealer_rankings(10)
-                response = self.formatter.ranking_response(rankings, "DEALER", 10)
-                return {"success": True, "response": response, "ai_used": False}
-        except Exception as e:
-            logger.error(f"Ranking dealer error: {e}")
+        # Phase 4: Add diagnostics
+        provider = self.get_primary_provider()
+        logger.info(f"🚀 AI REQUEST - Provider: {provider.upper()}, User: {user_phone}, Question: {question[:100]}...")
         
-        return {"success": False, "response": "❌ Unable to fetch dealer rankings.", "ai_used": False}
-    
-    def _handle_root_cause_query(self, question: str, user_phone: str) -> Dict[str, Any]:
-        """Handle root cause analysis (Improvement #7)"""
-        response = """
-🔍 *ROOT CAUSE ANALYSIS*
-
-*Delay Breakdown:*
-• Dealer Delays: 42%
-• Warehouse Delays: 31%
-• Documentation Issues: 18%
-• Transport Issues: 9%
-
-💡 *Primary Cause:* Dealer acknowledgment delays
-
-🎯 *Recommendation:* Implement automated POD follow-up system
-
-Need specific analysis? Ask:
-• "Why is Karachi delayed?"
-• "Why are PODs increasing?"
-"""
-        return {"success": True, "response": response, "ai_used": False}
-    
-    def _handle_recommendation_query(self, user_phone: str) -> Dict[str, Any]:
-        """Handle recommendation queries (Improvement #9)"""
-        response = """
-💡 *MANAGEMENT RECOMMENDATIONS*
-
-*Priority 1 - IMMEDIATE (24h)*
-Action: Recover POD from top 20 dealers
-Impact: Reduce backlog by 18%
-Owner: Dealer Management
-
-*Priority 2 - SHORT TERM (7 days)*
-Action: Deploy recovery team to Karachi
-Impact: Clear 500 pending DNs
-
-*Priority 3 - STRATEGIC (30 days)*
-Action: Implement daily POD follow-up automation
-Impact: 30% faster POD collection
-
-Need specific recommendations? Ask:
-• "How can we improve Karachi?"
-• "What about warehouse delays?"
-"""
-        return {"success": True, "response": response, "ai_used": False}
-    
-    def _handle_executive_query(self, user_phone: str) -> Dict[str, Any]:
-        """Handle executive queries (Improvement #8)"""
-        try:
-            if hasattr(self.analytics, 'get_executive_summary_enhanced'):
-                executive_data = self.analytics.get_executive_summary_enhanced(self.db)
-                response = executive_data.get("formatted_message", "Executive summary not available")
+        # Validate prompt safety
+        is_safe, error_msg = AISafetyLayer.validate_prompt(question)
+        if not is_safe:
+            logger.warning(f"Unsafe prompt blocked: {error_msg}")
+            return {
+                "success": False,
+                "content": "⚠️ Your request contains unsafe content.",
+                "structured_data": None,
+                "confidence": 0,
+                "error": error_msg,
+                "provider_used": "safety_layer",
+                "processing_time_ms": int((time.time() - start_time) * 1000)
+            }
+        
+        # Build prompt
+        system_prompt = _build_system_prompt(context.get("user_role", "manager") if context else "manager")
+        full_prompt = self._build_prompt(question, context, template)
+        
+        # Check cache
+        cache_key = self.cache.get_cache_key(
+            full_prompt, provider,
+            context_hash=str(hash(str(context))),
+            user_role=context.get("user_role", "guest") if context else "guest"
+        )
+        cached_response = self.cache.get(cache_key)
+        if cached_response:
+            cached_content, cached_metadata = cached_response
+            logger.info(f"✅ AI RESPONSE - Cache hit")
+            return {
+                "success": True,
+                "content": cached_content,
+                "structured_data": AISafetyLayer.extract_json_from_response(cached_content) if require_json else None,
+                "confidence": cached_metadata.get("confidence", 85),
+                "provider_used": "cache",
+                "processing_time_ms": 0,
+                "cached": True
+            }
+        
+        # Try providers in priority order
+        response = None
+        provider_used = None
+        latency_ms = 0
+        
+        # Phase 3: Try Groq first
+        if self.groq_status == ProviderStatus.ONLINE:
+            logger.info("🚀 CALLING GROQ...")
+            call_start = time.time()
+            response = self._call_groq(full_prompt, system_prompt, max_tokens, temperature)
+            latency_ms = int((time.time() - call_start) * 1000)
+            
+            if response.get("success"):
+                provider_used = "groq"
+                logger.info(f"✅ GROQ RESPONSE RECEIVED - Latency: {latency_ms}ms")
+                self.cost_tracker.track_usage(
+                    "groq",
+                    response.get("usage", {}).get("prompt_tokens", 0),
+                    response.get("usage", {}).get("completion_tokens", 0),
+                    latency_ms
+                )
             else:
-                response = """
-👑 *EXECUTIVE COMMAND CENTER*
-
-📊 Network Health: 78/100
-💰 Revenue at Risk: Rs 19.1 Billion
-🚨 Top Risk: Karachi POD backlog
-💡 Focus: Escalate top 20 dealers
-
-*Today's Priorities:*
-1. Recover POD from top 20 dealers
-2. Deploy team to Karachi
-3. Review HPK warehouse
-
-Need more? Ask:
-• "Biggest operational risk?"
-• "What should I focus on today?"
-"""
-            return {"success": True, "response": response, "ai_used": False}
-        except Exception as e:
-            logger.error(f"Executive error: {e}")
-            return {"success": False, "response": "❌ Unable to fetch executive summary.", "ai_used": False}
-    
-    # ======================================================
-    # BASIC HANDLERS
-    # ======================================================
-    
-    def _handle_city_query(self, city_name: str, user_phone: str) -> Dict[str, Any]:
-        try:
-            if hasattr(self.analytics, 'city_rankings'):
-                rankings = self.analytics.city_rankings()
-                for c in rankings.get("all_cities", []):
-                    if city_name.lower() in c.get("city", "").lower():
-                        response = f"""
-🌆 *CITY: {city_name.upper()}*
-
-📊 Total DNs: {c.get('total_dns', 0)}
-⏳ Pending DNs: {c.get('pending_dns', 0)}
-💰 Pending Value: Rs {c.get('pending_value', 0):,.2f}
-⚠️ Delay Rate: {c.get('delay_rate', 0)}%
-
-{'🚨 Requires immediate attention' if c.get('delay_rate', 0) > 30 else '📊 Monitor regularly'}
-"""
-                        return {"success": True, "response": response, "ai_used": False}
-        except Exception as e:
-            logger.error(f"City error: {e}")
+                logger.warning(f"⚠️ GROQ FAILED: {response.get('error')} - Falling back to DeepSeek")
         
-        return {"success": False, "response": f"❌ City '{city_name}' not found.", "ai_used": False}
-    
-    def _handle_dn_query(self, dn_no: str, user_phone: str) -> Dict[str, Any]:
-        try:
-            dn_details = self.logistics.get_dn_product_breakdown(self.db, dn_no)
-            if dn_details.get("success"):
-                response = f"""
-🔹 *DN: {dn_details.get('dn_no')}*
-
-📋 Dealer: {dn_details.get('dealer')}
-📋 Status: {dn_details.get('status')}
-📋 POD: {dn_details.get('pod_status')}
-💰 Value: Rs {dn_details.get('total_value', 0):,.2f}
-"""
-                return {"success": True, "response": response, "ai_used": False}
-        except Exception as e:
-            logger.error(f"DN error: {e}")
-        
-        return {"success": False, "response": f"❌ DN {dn_no} not found.", "ai_used": False}
-    
-    def _handle_warehouse_query(self, warehouse_name: str, user_phone: str) -> Dict[str, Any]:
-        return {"success": True, "response": f"🏭 *WAREHOUSE: {warehouse_name}*\n\nWarehouse analytics coming soon.", "ai_used": False}
-    
-    def _handle_ranking_query(self, question: str, user_phone: str) -> Dict[str, Any]:
-        return {"success": True, "response": self.formatter.ranking_response({}, "DEALER", 10), "ai_used": False}
-    
-    def _handle_risk_query(self, user_phone: str) -> Dict[str, Any]:
-        return {"success": True, "response": "🚨 *RISK ASSESSMENT*\n\nNo significant risks detected.", "ai_used": False}
-    
-    def _handle_pod_query(self, user_phone: str) -> Dict[str, Any]:
-        return {"success": True, "response": "📋 *POD STATUS*\n\nPOD analytics coming soon.", "ai_used": False}
-    
-    def _handle_pending_query(self, user_phone: str) -> Dict[str, Any]:
-        return {"success": True, "response": "⏳ *PENDING DELIVERIES*\n\nPending analytics coming soon.", "ai_used": False}
-    
-    def _handle_general_query(self, question: str, user_phone: str) -> Dict[str, Any]:
-        if self.ai_available and ai_provider_service:
-            try:
-                response = ai_provider_service.answer_question(question, structured=False, user_phone=user_phone)
+        # Fallback to DeepSeek
+        if not response or not response.get("success"):
+            if self.deepseek_status == ProviderStatus.ONLINE:
+                logger.info("🚀 CALLING DEEPSEEK (fallback)...")
+                call_start = time.time()
+                response = self._call_deepseek(full_prompt, max_tokens, temperature)
+                latency_ms = int((time.time() - call_start) * 1000)
+                
                 if response.get("success"):
-                    return {"success": True, "response": response.get("content"), "ai_used": True}
+                    provider_used = "deepseek"
+                    logger.info(f"✅ DEEPSEEK RESPONSE RECEIVED - Latency: {latency_ms}ms")
+                    self.cost_tracker.track_usage(
+                        "deepseek-chat",
+                        response.get("usage", {}).get("prompt_tokens", 0),
+                        response.get("usage", {}).get("completion_tokens", 0),
+                        latency_ms
+                    )
+                else:
+                    logger.warning(f"⚠️ DEEPSEEK FAILED: {response.get('error')} - Falling back to OpenAI")
+        
+        # Fallback to OpenAI
+        if not response or not response.get("success"):
+            if self.openai_status == ProviderStatus.ONLINE:
+                logger.info("🚀 CALLING OPENAI (fallback)...")
+                call_start = time.time()
+                response = self._call_openai(full_prompt, max_tokens, temperature)
+                latency_ms = int((time.time() - call_start) * 1000)
+                
+                if response.get("success"):
+                    provider_used = "openai"
+                    logger.info(f"✅ OPENAI RESPONSE RECEIVED - Latency: {latency_ms}ms")
+                    self.cost_tracker.track_usage(
+                        self.openai_model,
+                        response.get("usage", {}).get("prompt_tokens", 0),
+                        response.get("usage", {}).get("completion_tokens", 0),
+                        latency_ms
+                    )
+                else:
+                    logger.error(f"❌ OPENAI FAILED: {response.get('error')}")
+        
+        # Final fallback to rule-based
+        if not response or not response.get("success"):
+            logger.error("❌ ALL AI PROVIDERS FAILED - Using rule-based fallback")
+            response = self._call_fallback(question)
+            provider_used = "fallback"
+        
+        # Process response
+        content = response.get("content", "")
+        content = AISafetyLayer.sanitize_response(content)
+        
+        structured_data = None
+        confidence = 50
+        
+        if require_json:
+            structured_data = AISafetyLayer.extract_json_from_response(content)
+            confidence = self._calculate_confidence(structured_data, provider_used, response.get("usage", {}))
+        
+        # Cache successful response
+        if response.get("success") and provider_used in ["groq", "deepseek", "openai"]:
+            self.cache.set(cache_key, content, {"confidence": confidence})
+        
+        processing_time = int((time.time() - start_time) * 1000)
+        
+        logger.info(f"✅ AI REQUEST COMPLETE - Provider: {provider_used}, Success: {response.get('success')}, Confidence: {confidence}%, Total Time: {processing_time}ms")
+        
+        self._log_usage(
+            user_phone=user_phone,
+            question=question,
+            response=content,
+            provider=provider_used,
+            success=response.get("success", False),
+            processing_time_ms=processing_time,
+            tokens=response.get("usage", {}).get("total_tokens", 0),
+            confidence=confidence
+        )
+        
+        return {
+            "success": response.get("success", False),
+            "content": content,
+            "structured_data": structured_data if structured else None,
+            "confidence": confidence,
+            "provider_used": provider_used,
+            "processing_time_ms": processing_time,
+            "latency_ms": latency_ms,
+            "cached": False
+        }
+    
+    # ==========================================================
+    # PROVIDER SPECIFIC METHODS
+    # ==========================================================
+    
+    def _call_groq(self, prompt: str, system_prompt: str, max_tokens: int = 2500, temperature: float = 0.3) -> Dict[str, Any]:
+        """Phase 3: Call Groq API"""
+        if not self.groq_client:
+            return {"success": False, "error": "Groq client not initialized"}
+        
+        for attempt in range(self.retry_count):
+            try:
+                logger.debug(f"Groq attempt {attempt + 1}/{self.retry_count}")
+                
+                response = self.groq_client.chat.completions.create(
+                    model=self.groq_model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    stream=False
+                )
+                
+                content = response.choices[0].message.content
+                
+                logger.debug(f"Groq success: {len(content)} chars")
+                return {
+                    "success": True,
+                    "content": content,
+                    "model": self.groq_model,
+                    "usage": {
+                        "prompt_tokens": response.usage.prompt_tokens if hasattr(response, 'usage') else 0,
+                        "completion_tokens": response.usage.completion_tokens if hasattr(response, 'usage') else 0,
+                        "total_tokens": response.usage.total_tokens if hasattr(response, 'usage') else 0
+                    }
+                }
+                
             except Exception as e:
-                logger.error(f"General AI error: {e}")
+                logger.warning(f"Groq attempt {attempt + 1} failed: {e}")
+                if attempt < self.retry_count - 1:
+                    time.sleep(self.retry_delay * (2 ** attempt))
+                else:
+                    return {"success": False, "error": str(e)}
         
-        return {"success": False, "response": "⚠️ AI service unavailable. Please try 'services' for available commands.", "ai_used": False}
+        return {"success": False, "error": "Max retries exceeded"}
     
-    def _handle_unknown_query(self, question: str, user_phone: str) -> Dict[str, Any]:
-        if self.ai_available and ai_provider_service:
+    def _call_deepseek(self, prompt: str, max_tokens: int = 1000, temperature: float = 0.7) -> Dict[str, Any]:
+        """Call DeepSeek API"""
+        if not self.deepseek_client:
+            return {"success": False, "error": "DeepSeek client not initialized"}
+        
+        for attempt in range(self.retry_count):
             try:
-                response = ai_provider_service.answer_question(question, structured=False, user_phone=user_phone)
-                if response.get("success"):
-                    return {"success": True, "response": response.get("content"), "ai_used": True}
-            except Exception:
-                pass
+                response = self.deepseek_client.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=[
+                        {"role": "system", "content": "You are a logistics AI advisor. Return ONLY valid JSON when requested."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    stream=False
+                )
+                
+                return {
+                    "success": True,
+                    "content": response.choices[0].message.content,
+                    "model": "deepseek-chat",
+                    "usage": {
+                        "prompt_tokens": response.usage.prompt_tokens,
+                        "completion_tokens": response.usage.completion_tokens,
+                        "total_tokens": response.usage.total_tokens
+                    }
+                }
+                
+            except Exception as e:
+                logger.warning(f"DeepSeek attempt {attempt + 1} failed: {e}")
+                if attempt < self.retry_count - 1:
+                    time.sleep(self.retry_delay * (2 ** attempt))
+                else:
+                    return {"success": False, "error": str(e)}
         
-        return {"success": True, "response": self.formatter.unknown_response(), "ai_used": False}
+        return {"success": False, "error": "Max retries exceeded"}
     
-    def _log_query(self, question: str, result: Dict, user_phone: str = None):
+    def _call_openai(self, prompt: str, max_tokens: int = 1000, temperature: float = 0.7) -> Dict[str, Any]:
+        """Call OpenAI API"""
+        if not self.openai_client:
+            return {"success": False, "error": "OpenAI client not initialized"}
+        
+        for attempt in range(self.retry_count):
+            try:
+                response = self.openai_client.chat.completions.create(
+                    model=self.openai_model,
+                    messages=[
+                        {"role": "system", "content": "You are a logistics AI advisor. Return ONLY valid JSON when requested."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    stream=False
+                )
+                
+                return {
+                    "success": True,
+                    "content": response.choices[0].message.content,
+                    "model": self.openai_model,
+                    "usage": {
+                        "prompt_tokens": response.usage.prompt_tokens,
+                        "completion_tokens": response.usage.completion_tokens,
+                        "total_tokens": response.usage.total_tokens
+                    }
+                }
+                
+            except Exception as e:
+                logger.warning(f"OpenAI attempt {attempt + 1} failed: {e}")
+                if attempt < self.retry_count - 1:
+                    time.sleep(self.retry_delay * (2 ** attempt))
+                else:
+                    return {"success": False, "error": str(e)}
+        
+        return {"success": False, "error": "Max retries exceeded"}
+    
+    def _call_fallback(self, question: str) -> Dict[str, Any]:
+        """Rule-based fallback"""
+        logger.info(f"Using fallback for: {question[:50]}")
+        
+        question_lower = question.lower()
+        
+        if any(word in question_lower for word in ["pending", "backlog"]):
+            content = json.dumps({
+                "response": "Check pending dashboard for real-time updates.",
+                "confidence": 40,
+                "requires_followup": True
+            })
+        elif any(word in question_lower for word in ["risk", "critical"]):
+            content = json.dumps({
+                "response": "Review executive dashboard for risk assessment.",
+                "confidence": 35,
+                "requires_followup": True
+            })
+        else:
+            content = json.dumps({
+                "response": "AI service temporarily unavailable. Please try again.",
+                "confidence": 25,
+                "requires_followup": True
+            })
+        
+        return {
+            "success": True,
+            "content": content,
+            "model": "fallback",
+            "fallback": True,
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        }
+    
+    def _build_prompt(self, question: str, context: Dict = None, template: str = None) -> str:
+        """Build prompt using context"""
+        if template:
+            return template.format(context=json.dumps(context, default=str) if context else "No context", question=question)
+        
+        context_str = json.dumps(context, indent=2, default=str, ensure_ascii=False) if context else "No additional context"
+        if len(context_str) > 3000:
+            context_str = context_str[:3000] + "..."
+        
+        return f"""
+CONTEXT DATA:
+{context_str}
+
+QUESTION: {question}
+
+Return a VALID JSON response. Be concise and data-driven.
+"""
+    
+    def _calculate_confidence(self, structured_data: Optional[Dict], provider: str, usage: Dict) -> int:
+        """Calculate confidence score"""
+        confidence = 70
+        
+        if not structured_data:
+            return 50
+        
+        if provider == "groq":
+            confidence += 15
+        elif provider == "deepseek":
+            confidence += 10
+        elif provider == "openai":
+            confidence += 5
+        
+        if usage.get("total_tokens", 0) > 500:
+            confidence += 10
+        
+        if structured_data.get("recommendations"):
+            confidence += 5
+        if structured_data.get("risk_level"):
+            confidence += 5
+        
+        return min(100, confidence)
+    
+    def _log_usage(self, user_phone: str, question: str, response: str, provider: str, 
+                   success: bool, processing_time_ms: int, tokens: int = 0, confidence: int = 0):
+        """Log AI usage"""
+        if not self.db:
+            return
+        
         try:
             log_entry = AIResponseLog(
-                question=question[:500],
-                response=result.get("response", "")[:2000],
-                intent=result.get("question_type", "unknown"),
-                confidence=result.get("confidence", 0.0),
-                response_time_ms=result.get("processing_time_ms", 0),
-                user_phone=user_phone,
+                conversation_id=None,
+                prompt=question[:500],
+                ai_response=response[:2000],
+                model_name=provider,
+                success=success,
                 created_at=datetime.utcnow()
             )
             self.db.add(log_entry)
             self.db.commit()
         except Exception as e:
-            logger.error(f"Log error: {e}")
-            self.db.rollback()
+            logger.error(f"Failed to log AI usage: {e}")
+            if self.db:
+                self.db.rollback()
+    
+    def get_cost_summary(self) -> Dict[str, Any]:
+        """Get AI usage cost summary"""
+        return self.cost_tracker.get_summary()
 
 
-# ======================================================
-# FACTORY FUNCTIONS
-# ======================================================
+# ==========================================================
+# SINGLETON INSTANCE
+# ==========================================================
 
-def get_ai_query_service(db: Session) -> AIQueryService:
-    return AIQueryService(db)
+ai_provider_service = None
 
 
-def process_whatsapp_query(question: str, db: Session, user_phone: str = None, user_role: str = None) -> str:
-    service = AIQueryService(db)
-    result = service.process_query(question, user_phone, user_role)
-    return result.get("response", "Unable to process your request. Please try again.")
+def init_ai_provider_service(db: Session = None) -> AIProviderService:
+    """Initialize AI Provider Service singleton"""
+    global ai_provider_service
+    
+    try:
+        ai_provider_service = AIProviderService(db)
+        
+        if ai_provider_service.is_available:
+            logger.info("✅ AI PROVIDER SERVICE v4.0 LOADED SUCCESSFULLY")
+            logger.info(f"   PRIMARY: Groq ({ai_provider_service.groq_model})")
+            logger.info(f"   SECONDARY: DeepSeek")
+            logger.info(f"   TERTIARY: OpenAI")
+            cost_summary = ai_provider_service.get_cost_summary()
+            logger.info(f"   Total Cost to Date: {cost_summary.get('total_cost_formatted', '$0')}")
+        else:
+            logger.error("❌ AI PROVIDER SERVICE FAILED TO LOAD - No AI providers available")
+        
+        return ai_provider_service
+        
+    except Exception as e:
+        logger.error(f"❌ AI PROVIDER SERVICE INITIALIZATION ERROR: {e}")
+        ai_provider_service = None
+        raise
+
+
+def get_ai_provider_service() -> Optional[AIProviderService]:
+    """Get the AI Provider Service instance"""
+    return ai_provider_service
+
+
+# ==========================================================
+# AUTO-INITIALIZATION
+# ==========================================================
+
+try:
+    ai_provider_service = AIProviderService(db=None)
+    logger.info("AI Provider Service v4.0 auto-initialized (no DB)")
+except Exception as e:
+    logger.error(f"Auto-initialization failed: {e}")
+    ai_provider_service = None
