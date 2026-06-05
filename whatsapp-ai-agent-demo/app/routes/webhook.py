@@ -1,5 +1,5 @@
 # ==========================================================
-# FILE: app/routes/webhook.py (PRODUCTION READY v5.1)
+# FILE: app/routes/webhook.py (PRODUCTION READY v5.2)
 # PROJECT: AI WhatsApp Logistics Copilot
 # ==========================================================
 
@@ -12,6 +12,7 @@ from enum import Enum
 from dataclasses import dataclass, asdict
 
 from fastapi import APIRouter, Request, Depends, HTTPException, Query
+from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
 from loguru import logger
 
@@ -645,11 +646,9 @@ def format_executive_response(data: Dict[str, Any], response_type: str) -> str:
 # ==========================================================
 # WEBHOOK VERIFICATION (IMPROVED - PRODUCTION READY)
 # ==========================================================
-from fastapi.responses import PlainTextResponse
 
 @router.get("/")
 async def webhook_verification(request: Request):
-
     hub_mode = request.query_params.get("hub.mode")
     hub_verify_token = request.query_params.get("hub.verify_token")
     hub_challenge = request.query_params.get("hub.challenge")
@@ -682,7 +681,7 @@ async def webhook_verification(request: Request):
     )
 
 # ==========================================================
-# RECEIVE WHATSAPP MESSAGE (PRODUCTION READY v5.1)
+# RECEIVE WHATSAPP MESSAGE (PRODUCTION READY v5.2)
 # ==========================================================
 
 @router.post("/")
@@ -705,12 +704,35 @@ async def receive_message(
             logger.error(f"Failed to parse webhook payload: {e}")
             return {"success": False, "message": "Invalid payload"}
 
+        # ==========================================================
+        # STEP 2: LOG COMPLETE PAYLOAD WHEN NO MESSAGE FOUND
+        # ==========================================================
         if not parsed_message:
-            logger.debug("No message found in payload")
-            return {"success": True, "message": "No message found"}
+            logger.info("FULL WEBHOOK PAYLOAD:")
+            logger.info(json.dumps(payload, indent=2))
+            
+            return {
+                "success": True,
+                "message": "No message found"
+            }
 
+        # ==========================================================
+        # STEP 1: FIX MESSAGE EXTRACTION
+        # ==========================================================
         phone_number = parsed_message.get("from_phone", "")
-        customer_message = parsed_message["text"]
+        customer_message = parsed_message.get("text", "")
+        
+        # Check if we have a text message
+        if not customer_message:
+            logger.info("No text message found in webhook payload")
+            logger.info(f"Webhook type: {parsed_message.get('type', 'unknown')}")
+            logger.info(f"From: {phone_number}")
+            
+            return {
+                "success": True,
+                "message": "No text message",
+                "webhook_type": parsed_message.get("type", "unknown")
+            }
         
         logger.info(f"📱 WHATSAPP MESSAGE RECEIVED - From: {phone_number}, Message: {customer_message}")
         
@@ -1728,7 +1750,7 @@ async def receive_message(
 async def test_webhook():
     return {
         "success": True,
-        "message": "Webhook is active - Production Ready v5.1",
+        "message": "Webhook is active - Production Ready v5.2",
         "features": [
             "Safe Imports (All services protected)",
             "Safe Service Initialization",
@@ -1745,7 +1767,9 @@ async def test_webhook():
             "Forecast Commands",
             "Recommendation Engine",
             "Suggested Follow-ups",
-            "Fixed Webhook Verification (v5.1)"
+            "Fixed Webhook Verification (v5.2)",
+            "Improved Message Extraction",
+            "Full Payload Logging"
         ]
     }
 
@@ -1755,8 +1779,8 @@ async def health_check():
     """Comprehensive health check"""
     return {
         "status": "healthy",
-        "service": "WhatsApp Webhook - Production Ready v5.1",
-        "version": "5.1.0",
+        "service": "WhatsApp Webhook - Production Ready v5.2",
+        "version": "5.2.0",
         "services_status": {
             "ai_query_service": AI_QUERY_AVAILABLE,
             "session_service": SESSION_AVAILABLE,
@@ -1776,7 +1800,9 @@ async def health_check():
             "Executive Dashboard",
             "Root Cause Analysis",
             "Forecast Engine",
-            "Fixed Webhook Verification"
+            "Fixed Webhook Verification",
+            "Improved Message Extraction",
+            "Full Payload Logging"
         ],
         "timestamp": datetime.utcnow().isoformat()
     }
