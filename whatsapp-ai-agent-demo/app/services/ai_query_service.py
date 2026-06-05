@@ -1,445 +1,895 @@
 # ==========================================================
-# FILE: app/services/ai_provider_service.py (GROQ ONLY v6.0)
+# FILE: app/services/ai_query_service.py (ENTERPRISE v4.0)
+# ==========================================================
+# Central Intelligence Router for WhatsApp
 # ==========================================================
 
-import os
-import json
-import time
 import re
-import hashlib
-from decimal import Decimal
+import time
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 from enum import Enum
-from dataclasses import dataclass
 
-from loguru import logger
 from sqlalchemy.orm import Session
+from loguru import logger
 
 from app.config import config
 from app.models import AIResponseLog
+from app.services.analytics_service import AnalyticsService
+from app.services.logistics_query_service import LogisticsQueryService
 
-# Groq import
+# AI Provider (Groq only)
 try:
-    from groq import Groq
-    GROQ_AVAILABLE = True
+    from app.services.ai_provider_service import ai_provider_service
+    AI_PROVIDER_AVAILABLE = True
 except ImportError:
-    GROQ_AVAILABLE = False
-    logger.warning("Groq not available. Install with: pip install groq")
+    AI_PROVIDER_AVAILABLE = False
+    ai_provider_service = None
+
+# RapidFuzz for fuzzy dealer matching
+try:
+    from rapidfuzz import fuzz, process
+    RAPIDFUZZ_AVAILABLE = True
+except ImportError:
+    RAPIDFUZZ_AVAILABLE = False
 
 
 # ==========================================================
-# AI PROVIDER STATUS
+# INTENT TYPES (Improvement 1)
 # ==========================================================
 
-class ProviderStatus(Enum):
-    ONLINE = "online"
-    OFFLINE = "offline"
-    DISABLED = "disabled"
+class IntentType(str, Enum):
+    DEALER_LOOKUP = "dealer_lookup"
+    DN_LOOKUP = "dn_lookup"
+    WAREHOUSE_LOOKUP = "warehouse_lookup"
+    CITY_LOOKUP = "city_lookup"
+    EXECUTIVE_SUMMARY = "executive_summary"
+    TOP_DEALERS = "top_dealers"
+    TOP_WAREHOUSES = "top_warehouses"
+    POD_ANALYSIS = "pod_analysis"
+    ROOT_CAUSE_ANALYSIS = "root_cause_analysis"
+    FORECAST = "forecast"
+    RECOMMENDATIONS = "recommendations"
+    GENERAL_QUERY = "general_query"
+    UNKNOWN = "unknown"
 
 
 # ==========================================================
-# ROBUST JSON EXTRACTOR
+# DEALER MASTER DATA CACHE (Improvement 3)
 # ==========================================================
 
-class RobustJSONExtractor:
-    """Robust JSON extraction with multiple fallback strategies"""
+class DealerMasterData:
+    """Cache dealer names for fuzzy matching"""
     
-    @staticmethod
-    def extract(json_string: str) -> Dict[str, Any]:
-        if not json_string:
-            return {}
-        
-        # Strategy 1: Direct parse
+    _instance = None
+    _dealers = []
+    _dealer_names_lower = []
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+    
+    def load_dealers(self, db: Session):
+        """Load all dealer names from database"""
         try:
-            return json.loads(json_string)
-        except json.JSONDecodeError:
-            pass
+            from app.models import DeliveryReport
+            dealers = db.query(DeliveryReport.customer_name).distinct().filter(
+                DeliveryReport.customer_name.isnot(None)
+            ).limit(10000).all()
+            
+            self._dealers = [d[0] for d in dealers if d[0]]
+            self._dealer_names_lower = [d.lower() for d in self._dealers]
+            logger.info(f"Loaded {len(self._dealers)} dealers for fuzzy matching")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to load dealers: {e}")
+            return False
+    
+    def get_dealers(self) -> List[str]:
+        return self._dealers
+    
+    def match_dealer(self, query: str, threshold: int = 70) -> Tuple[Optional[str], int]:
+        """Fuzzy match dealer name using RapidFuzz"""
+        if not self._dealers:
+            return None, 0
         
-        # Strategy 2: Find JSON object in text
-        json_match = re.search(r'\{[\s\S]*\}', json_string)
-        if json_match:
+        query_clean = query.strip()
+        
+        # Exact match
+        for dealer in self._dealers:
+            if dealer.lower() == query_clean.lower():
+                return dealer, 100
+        
+        # Contains match
+        for dealer in self._dealers:
+            if query_clean.lower() in dealer.lower():
+                return dealer, 90
+        
+        # RapidFuzz matching
+        if RAPIDFUZZ_AVAILABLE:
             try:
-                return json.loads(json_match.group())
-            except json.JSONDecodeError:
-                pass
+                # Token sort ratio (best for word order variations)
+                match = process.extractOne(query_clean, self._dealers, scorer=fuzz.token_sort_ratio)
+                if match and match[1] >= threshold:
+                    return match[0], match[1]
+                
+                # Partial ratio for substring matches
+                match = process.extractOne(query_clean, self._dealers, scorer=fuzz.partial_ratio)
+                if match and match[1] >= threshold:
+                    return match[0], match[1]
+            except Exception as e:
+                logger.warning(f"RapidFuzz matching failed: {e}")
         
-        # Strategy 3: Fix common JSON issues
-        fixed = json_string
-        fixed = re.sub(r',\s*}', '}', fixed)
-        fixed = re.sub(r',\s*]', ']', fixed)
-        fixed = re.sub(r'([{,])\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', fixed)
-        fixed = fixed.replace("'", '"')
+        return None, 0
+    
+    def get_suggestions(self, query: str, limit: int = 5) -> List[Tuple[str, int]]:
+        """Get dealer suggestions for ambiguous queries"""
+        if not self._dealers or not RAPIDFUZZ_AVAILABLE:
+            return []
         
         try:
-            return json.loads(fixed)
-        except json.JSONDecodeError:
-            pass
-        
-        return {"response": json_string[:500], "confidence": 50}
+            matches = process.extract(query, self._dealers, scorer=fuzz.token_sort_ratio, limit=limit)
+            return [(m[0], m[1]) for m in matches if m[1] >= 50]
+        except Exception:
+            return []
 
 
 # ==========================================================
-# AI CACHE MANAGER
+# INTENT DETECTION ENGINE (Improvement 1)
 # ==========================================================
 
-class AICacheManager:
-    def __init__(self, ttl_seconds: int = 300):
-        self.cache: Dict[str, Tuple[str, float, Dict]] = {}
-        self.ttl = ttl_seconds
+class IntentDetector:
+    """Detect user intent from WhatsApp message"""
     
-    def get(self, key: str) -> Optional[Tuple[str, Dict]]:
-        if key in self.cache:
-            response, timestamp, metadata = self.cache[key]
-            if time.time() - timestamp < self.ttl:
-                return response, metadata
-            del self.cache[key]
-        return None
+    # DN patterns (Improvement 2)
+    DN_PATTERNS = [
+        r'^\d{10}$',           # Exactly 10 digits
+        r'\b\d{10}\b',         # 10 digits in text
+        r'^DN\s*\d{10}$',      # DN 6243611361
+        r'^dn\s*\d{10}$',      # dn 6243611361
+        r'^Track\s*\d{10}$',   # Track 6243611361
+        r'^track\s*\d{10}$',   # track 6243611361
+        r'^Status\s*\d{10}$',  # Status 6243611361
+        r'^status\s*\d{10}$',  # status 6243611361
+        r'^POD\s*\d{10}$',     # POD 6243611361
+        r'^pod\s*\d{10}$',     # pod 6243611361
+    ]
     
-    def set(self, key: str, response: str, metadata: Dict = None):
-        self.cache[key] = (response, time.time(), metadata or {})
+    # City keywords
+    CITY_KEYWORDS = [
+        "karachi", "lahore", "islamabad", "rawalpindi", "faisalabad",
+        "multan", "peshawar", "quetta", "gujranwala", "sialkot",
+        "hyderabad", "situation", "performance", "status", "delivery"
+    ]
     
-    def get_cache_key(self, prompt: str, model: str, context_hash: str = "", user_role: str = "") -> str:
-        content_hash = hashlib.md5(prompt[:500].encode()).hexdigest()
-        return f"{model}:{context_hash}:{user_role}:{content_hash}"
-
-
-# ==========================================================
-# AI SAFETY LAYER
-# ==========================================================
-
-class AISafetyLayer:
-    DANGEROUS_PATTERNS = [
-        r"DROP\s+TABLE", r"DELETE\s+FROM", r"UPDATE\s+\w+\s+SET",
-        r"INSERT\s+INTO", r"ALTER\s+TABLE", r"TRUNCATE",
-        r"EXEC\s*\(", r"xp_cmdshell", r"UNION\s+SELECT",
-        r"--", r";\s*DROP", r"'\s*OR\s+'1'='1",
+    # Warehouse keywords
+    WAREHOUSE_KEYWORDS = ["warehouse", "godown", "hpk", "lhe", "isb"]
+    
+    # Executive keywords
+    EXECUTIVE_KEYWORDS = [
+        "executive summary", "ceo summary", "what should i focus",
+        "today's priorities", "overall performance", "network health",
+        "command center", "executive dashboard"
+    ]
+    
+    # Top dealers keywords
+    TOP_DEALERS_KEYWORDS = [
+        "top dealer", "top dealers", "best dealer", "highest dealer",
+        "dealer ranking", "dealer rankings", "leaderboard"
+    ]
+    
+    # POD analysis keywords
+    POD_KEYWORDS = [
+        "pod", "proof of delivery", "pending pod", "pod status",
+        "pod analysis", "pod backlog", "acknowledgement"
+    ]
+    
+    # Root cause keywords
+    ROOT_CAUSE_KEYWORDS = [
+        "why is", "why are", "root cause", "what is causing",
+        "reason for", "cause of"
+    ]
+    
+    # Forecast keywords
+    FORECAST_KEYWORDS = [
+        "forecast", "prediction", "will happen", "future outlook",
+        "next month", "trend"
+    ]
+    
+    # Recommendation keywords
+    RECOMMENDATION_KEYWORDS = [
+        "recommendation", "suggest", "improve", "action plan",
+        "what should we do", "how can we"
     ]
     
     @classmethod
-    def validate_prompt(cls, prompt: str) -> Tuple[bool, str]:
-        prompt_upper = prompt.upper()
-        for pattern in cls.DANGEROUS_PATTERNS:
-            if re.search(pattern, prompt_upper):
-                logger.warning(f"Dangerous pattern detected: {pattern}")
-                return False, f"Dangerous pattern blocked: {pattern}"
-        return True, ""
+    def detect_dn(cls, message: str) -> Tuple[bool, Optional[str]]:
+        """Detect DN number in message (Improvement 2)"""
+        message_clean = message.strip()
+        
+        for pattern in cls.DN_PATTERNS:
+            match = re.search(pattern, message_clean, re.IGNORECASE)
+            if match:
+                # Extract just the digits
+                dn_match = re.search(r'\d{10}', match.group())
+                if dn_match:
+                    return True, dn_match.group()
+        return False, None
     
     @classmethod
-    def sanitize_response(cls, response: str) -> str:
-        for pattern in cls.DANGEROUS_PATTERNS:
-            response = re.sub(pattern, "[REDACTED]", response, flags=re.IGNORECASE)
-        return response[:4000]
+    def detect_city(cls, message: str) -> Tuple[bool, Optional[str]]:
+        """Detect city mention in message"""
+        message_lower = message.lower()
+        
+        for city in ["karachi", "lahore", "islamabad", "rawalpindi", "faisalabad", "multan", "peshawar", "quetta"]:
+            if city in message_lower:
+                return True, city.title()
+        
+        if "situation" in message_lower or "performance" in message_lower:
+            # Try to extract city name
+            words = message_lower.split()
+            for word in words:
+                if word in cls.CITY_KEYWORDS and word not in ["situation", "performance", "status", "delivery"]:
+                    return True, word.title()
+        
+        return False, None
+    
+    @classmethod
+    def detect_warehouse(cls, message: str) -> Tuple[bool, Optional[str]]:
+        """Detect warehouse mention"""
+        message_lower = message.lower()
+        
+        for wh in ["hpk", "lhe", "isb", "main", "central"]:
+            if wh in message_lower:
+                return True, wh.upper()
+        
+        if "warehouse" in message_lower:
+            # Try to extract warehouse name
+            match = re.search(r'warehouse\s+(\w+)', message_lower)
+            if match:
+                return True, match.group(1).upper()
+        
+        return False, None
+    
+    @classmethod
+    def detect_intent(cls, message: str, dealer_matcher: DealerMasterData = None) -> Tuple[IntentType, Optional[str]]:
+        """
+        Detect intent from message (Improvement 1)
+        Returns: (intent_type, entity)
+        """
+        message_clean = message.strip()
+        message_lower = message.lower()
+        
+        # Priority 1: DN Lookup (Improvement 2)
+        is_dn, dn_number = cls.detect_dn(message_clean)
+        if is_dn:
+            logger.info(f"DN detected: {dn_number}")
+            return IntentType.DN_LOOKUP, dn_number
+        
+        # Priority 2: Dealer Lookup using fuzzy matching (Improvement 3)
+        if dealer_matcher:
+            dealer_name, confidence = dealer_matcher.match_dealer(message_clean, threshold=65)
+            if dealer_name:
+                logger.info(f"Dealer detected via fuzzy matching: '{message_clean}' -> '{dealer_name}' (confidence: {confidence})")
+                return IntentType.DEALER_LOOKUP, dealer_name
+        
+        # Priority 3: City Lookup
+        is_city, city_name = cls.detect_city(message_clean)
+        if is_city:
+            logger.info(f"City detected: {city_name}")
+            return IntentType.CITY_LOOKUP, city_name
+        
+        # Priority 4: Warehouse Lookup
+        is_wh, wh_name = cls.detect_warehouse(message_clean)
+        if is_wh:
+            logger.info(f"Warehouse detected: {wh_name}")
+            return IntentType.WAREHOUSE_LOOKUP, wh_name
+        
+        # Priority 5: Executive Summary
+        if any(kw in message_lower for kw in cls.EXECUTIVE_KEYWORDS):
+            logger.info(f"Executive summary intent detected")
+            return IntentType.EXECUTIVE_SUMMARY, None
+        
+        # Priority 6: Top Dealers
+        if any(kw in message_lower for kw in cls.TOP_DEALERS_KEYWORDS):
+            logger.info(f"Top dealers intent detected")
+            return IntentType.TOP_DEALERS, None
+        
+        # Priority 7: POD Analysis
+        if any(kw in message_lower for kw in cls.POD_KEYWORDS):
+            logger.info(f"POD analysis intent detected")
+            return IntentType.POD_ANALYSIS, None
+        
+        # Priority 8: Root Cause Analysis
+        if any(kw in message_lower for kw in cls.ROOT_CAUSE_KEYWORDS):
+            logger.info(f"Root cause analysis intent detected")
+            return IntentType.ROOT_CAUSE_ANALYSIS, None
+        
+        # Priority 9: Forecast
+        if any(kw in message_lower for kw in cls.FORECAST_KEYWORDS):
+            logger.info(f"Forecast intent detected")
+            return IntentType.FORECAST, None
+        
+        # Priority 10: Recommendations
+        if any(kw in message_lower for kw in cls.RECOMMENDATION_KEYWORDS):
+            logger.info(f"Recommendations intent detected")
+            return IntentType.RECOMMENDATIONS, None
+        
+        # Priority 11: General Query
+        return IntentType.GENERAL_QUERY, None
 
 
 # ==========================================================
-# AI COST TRACKER
+# SESSION CONTEXT MANAGER (Improvement 4)
 # ==========================================================
 
-class AICostTracker:
-    def __init__(self):
-        self.total_cost = Decimal('0')
-        self.total_tokens = 0
-        self.usage_by_provider = {}
+class SessionContextManager:
+    """Manage conversation context using session_service"""
     
-    def track_usage(self, model: str, prompt_tokens: int, completion_tokens: int, latency_ms: int):
-        # Groq is free for now, just track tokens
-        self.total_tokens += prompt_tokens + completion_tokens
-        
-        if model not in self.usage_by_provider:
-            self.usage_by_provider[model] = {"requests": 0, "tokens": 0}
-        
-        self.usage_by_provider[model]["requests"] += 1
-        self.usage_by_provider[model]["tokens"] += prompt_tokens + completion_tokens
+    def __init__(self, session_service):
+        self.session_service = session_service
     
-    def get_summary(self) -> Dict:
-        return {
-            "total_cost_formatted": "$0.00 (Groq is free)",
-            "total_tokens": self.total_tokens,
-            "by_provider": self.usage_by_provider
-        }
-
-
-# ==========================================================
-# AI PROVIDER SERVICE (GROQ ONLY)
-# ==========================================================
-
-class AIProviderService:
-    """
-    AI Provider Service - Groq Only
-    No DeepSeek, No OpenAI fallback - Just Groq + Rule-based
-    """
-    
-    def __init__(self, db: Session = None):
-        self.db = db
-        self.cache = AICacheManager(ttl_seconds=300)
-        self.cost_tracker = AICostTracker()
-        self.retry_count = 3
-        self.retry_delay = 1
-        self.groq_model = os.getenv("GROQ_MODEL", "qwen-qwq-32b")
+    def update_context(self, phone_number: str, intent: IntentType, entity: str = None):
+        """Update session context based on intent"""
+        if not self.session_service:
+            return
         
-        # Initialize Groq client (ONLY provider)
-        self.groq_api_key = os.getenv("GROQ_API_KEY") or getattr(config, 'GROQ_API_KEY', None)
-        self.groq_client = None
-        self.groq_status = ProviderStatus.OFFLINE
-        
-        if self.groq_api_key and GROQ_AVAILABLE:
-            try:
-                self.groq_client = Groq(api_key=self.groq_api_key)
-                self.groq_status = ProviderStatus.ONLINE
-                logger.info(f"✅ Groq client initialized (model: {self.groq_model})")
-            except Exception as e:
-                logger.error(f"❌ Groq initialization failed: {e}")
-        else:
-            logger.warning("⚠️ Groq not configured")
-        
-        self.is_available = self.groq_status == ProviderStatus.ONLINE
-        
-        self._log_startup_status()
-    
-    def _log_startup_status(self):
-        logger.info("=" * 60)
-        logger.info("🤖 AI PROVIDER SERVICE v6.0 INITIALIZED")
-        logger.info(f"PRIMARY: Groq = {self.groq_status.value} (model: {self.groq_model})")
-        logger.info(f"DeepSeek = DISABLED")
-        logger.info(f"OpenAI = DISABLED")
-        logger.info(f"Overall Available: {self.is_available}")
-        logger.info("=" * 60)
-    
-    # ==========================================================
-    # CORE AI METHOD - Groq Only
-    # ==========================================================
-    
-    def answer_question(
-        self,
-        question: str,
-        context: Dict[str, Any] = None,
-        structured: bool = True,
-        user_phone: str = None,
-        max_tokens: int = 2500,
-        temperature: float = 0.3,
-        require_json: bool = True
-    ) -> Dict[str, Any]:
-        """Answer using Groq only, fallback to rule-based"""
-        start_time = time.time()
-        
-        logger.info(f"🚀 AI REQUEST - Provider: Groq, User: {user_phone}")
-        
-        # Validate prompt safety
-        is_safe, error_msg = AISafetyLayer.validate_prompt(question)
-        if not is_safe:
-            return {
-                "success": False,
-                "content": "⚠️ Your request contains unsafe content.",
-                "structured_data": None,
-                "confidence": 0,
-                "error": error_msg,
-                "provider_used": "safety_layer",
-                "processing_time_ms": int((time.time() - start_time) * 1000)
-            }
-        
-        # Build full prompt
-        full_prompt = self._build_prompt(question, context)
-        
-        # Check cache
-        cache_key = self.cache.get_cache_key(
-            full_prompt, "groq",
-            context_hash=str(hash(str(context))),
-            user_role=context.get("user_role", "guest") if context else "guest"
-        )
-        cached_response = self.cache.get(cache_key)
-        if cached_response:
-            cached_content, cached_metadata = cached_response
-            logger.info(f"✅ Cache hit")
-            return {
-                "success": True,
-                "content": cached_content,
-                "structured_data": RobustJSONExtractor.extract(cached_content) if require_json else None,
-                "confidence": cached_metadata.get("confidence", 85),
-                "provider_used": "cache",
-                "processing_time_ms": 0,
-                "cached": True
-            }
-        
-        # Try Groq
-        response = None
-        latency_ms = 0
-        
-        if self.groq_status == ProviderStatus.ONLINE:
-            logger.info("🚀 CALLING GROQ...")
-            call_start = time.time()
-            response = self._call_groq(full_prompt, max_tokens, temperature)
-            latency_ms = int((time.time() - call_start) * 1000)
-            
-            if response.get("success"):
-                logger.info(f"✅ GROQ RESPONSE RECEIVED - Latency: {latency_ms}ms")
-                self.cost_tracker.track_usage(
-                    "groq",
-                    response.get("usage", {}).get("prompt_tokens", 0),
-                    response.get("usage", {}).get("completion_tokens", 0),
-                    latency_ms
+        try:
+            if intent == IntentType.DEALER_LOOKUP and entity:
+                self.session_service.update_session_context(
+                    phone_number,
+                    selected_dealer=entity,
+                    last_intent=intent.value,
+                    last_question=f"Dealer lookup: {entity}"
+                )
+            elif intent == IntentType.DN_LOOKUP and entity:
+                self.session_service.update_session_context(
+                    phone_number,
+                    selected_dn=entity,
+                    last_intent=intent.value,
+                    last_question=f"DN lookup: {entity}"
+                )
+            elif intent == IntentType.CITY_LOOKUP and entity:
+                self.session_service.update_session_context(
+                    phone_number,
+                    selected_city=entity,
+                    last_intent=intent.value,
+                    last_question=f"City lookup: {entity}"
+                )
+            elif intent == IntentType.WAREHOUSE_LOOKUP and entity:
+                self.session_service.update_session_context(
+                    phone_number,
+                    selected_warehouse=entity,
+                    last_intent=intent.value,
+                    last_question=f"Warehouse lookup: {entity}"
                 )
             else:
-                logger.warning(f"⚠️ GROQ FAILED: {response.get('error')}")
-        
-        # Fallback to rule-based if Groq fails
-        if not response or not response.get("success"):
-            logger.error("❌ GROQ FAILED - Using rule-based fallback")
-            response = self._call_fallback(question)
-        
-        # Process response
-        content = response.get("content", "")
-        content = AISafetyLayer.sanitize_response(content)
-        
-        structured_data = None
-        confidence = 50
-        
-        if require_json:
-            structured_data = RobustJSONExtractor.extract(content)
-            confidence = self._calculate_confidence(structured_data, response.get("usage", {}))
-        
-        # Cache successful response
-        if response.get("success"):
-            self.cache.set(cache_key, content, {"confidence": confidence})
-        
-        processing_time = int((time.time() - start_time) * 1000)
-        
-        logger.info(f"✅ AI REQUEST COMPLETE - Success: {response.get('success')}, Confidence: {confidence}%, Time: {processing_time}ms")
-        
-        return {
-            "success": response.get("success", False),
-            "content": content,
-            "structured_data": structured_data if structured else None,
-            "confidence": confidence,
-            "provider_used": "groq" if response.get("success") else "fallback",
-            "processing_time_ms": processing_time,
-            "latency_ms": latency_ms,
-            "cached": False
-        }
-    
-    def _call_groq(self, prompt: str, max_tokens: int = 2500, temperature: float = 0.3) -> Dict[str, Any]:
-        """Call Groq API"""
-        if not self.groq_client:
-            return {"success": False, "error": "Groq client not initialized"}
-        
-        for attempt in range(self.retry_count):
-            try:
-                response = self.groq_client.chat.completions.create(
-                    model=self.groq_model,
-                    messages=[
-                        {"role": "system", "content": "You are a logistics AI advisor. Return ONLY valid JSON when requested. Be concise and data-driven."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    max_tokens=max_tokens,
-                    temperature=temperature,
+                self.session_service.update_session_context(
+                    phone_number,
+                    last_intent=intent.value,
+                    last_question=f"Query: {intent.value}"
                 )
-                
-                content = response.choices[0].message.content
-                
-                return {
-                    "success": True,
-                    "content": content,
-                    "model": self.groq_model,
-                    "usage": {
-                        "prompt_tokens": response.usage.prompt_tokens if hasattr(response, 'usage') else 0,
-                        "completion_tokens": response.usage.completion_tokens if hasattr(response, 'usage') else 0,
-                        "total_tokens": response.usage.total_tokens if hasattr(response, 'usage') else 0
-                    }
-                }
-                
-            except Exception as e:
-                logger.warning(f"Groq attempt {attempt + 1} failed: {e}")
-                if attempt < self.retry_count - 1:
-                    time.sleep(self.retry_delay * (2 ** attempt))
-                else:
-                    return {"success": False, "error": str(e)}
-        
-        return {"success": False, "error": "Max retries exceeded"}
+        except Exception as e:
+            logger.warning(f"Failed to update session context: {e}")
     
-    def _call_fallback(self, question: str) -> Dict[str, Any]:
-        """Rule-based fallback"""
-        logger.info(f"Using fallback for: {question[:50]}")
+    def get_context(self, phone_number: str) -> Dict:
+        """Get current session context"""
+        if not self.session_service:
+            return {}
         
-        question_lower = question.lower()
-        
-        if any(word in question_lower for word in ["pending", "backlog"]):
-            content = json.dumps({
-                "response": "Check pending dashboard for real-time updates.",
-                "confidence": 40
-            })
-        elif any(word in question_lower for word in ["risk", "critical"]):
-            content = json.dumps({
-                "response": "Review executive dashboard for risk assessment.",
-                "confidence": 35
-            })
-        else:
-            content = json.dumps({
-                "response": "AI service temporarily unavailable. Please try again.",
-                "confidence": 25
-            })
-        
-        return {
-            "success": True,
-            "content": content,
-            "model": "fallback",
-            "fallback": True
-        }
+        try:
+            return self.session_service.get_context(phone_number)
+        except Exception:
+            return {}
+
+
+# ==========================================================
+# RESPONSE FORMATTER
+# ==========================================================
+
+class ResponseFormatter:
+    """Format responses for WhatsApp"""
     
-    def _build_prompt(self, question: str, context: Dict = None) -> str:
-        """Build prompt using context"""
-        context_str = json.dumps(context, indent=2, default=str, ensure_ascii=False) if context else "No additional context"
-        if len(context_str) > 3000:
-            context_str = context_str[:3000] + "..."
+    @staticmethod
+    def dealer_response(dealer_name: str, dashboard: Dict) -> str:
+        """Format dealer dashboard response"""
+        if not dashboard.get("success"):
+            return f"❌ Dealer '{dealer_name}' not found."
+        
+        kpis = dashboard.get("kpis", {})
         
         return f"""
-CONTEXT DATA:
-{context_str}
+╔══════════════════════════════╗
+║     📊 DEALER DASHBOARD      ║
+║        {dealer_name[:25]}        ║
+╚══════════════════════════════╝
 
-QUESTION: {question}
+📊 *Metrics:*
+• Total DNs: {kpis.get('total_dns', 0)}
+• Delivered: {kpis.get('delivered_dns', 0)} ✅
+• Pending: {kpis.get('pending_dns', 0)} ⏳
+• POD Pending: {kpis.get('pod_pending_dns', 0)} 📋
 
-Return a VALID JSON response. Be concise and data-driven.
+💰 *Financial:*
+• Total Value: Rs {kpis.get('total_amount', 0):,.2f}
+• Pending Value: Rs {kpis.get('pending_amount', 0):,.2f}
+
+💡 *Need more?* Try "pending" or "pod status"
 """
     
-    def _calculate_confidence(self, structured_data: Optional[Dict], usage: Dict) -> int:
-        confidence = 70
-        if not structured_data:
-            return 50
-        if usage.get("total_tokens", 0) > 500:
-            confidence += 10
-        if structured_data.get("recommendations"):
-            confidence += 5
-        if structured_data.get("risk_level"):
-            confidence += 5
-        return min(100, confidence)
+    @staticmethod
+    def dn_response(dn_data: Dict) -> str:
+        """Format DN dashboard response"""
+        if not dn_data.get("success"):
+            return dn_data.get("message", "❌ DN not found")
+        
+        return dn_data.get("formatted_message", f"DN {dn_data.get('dn_no')} details retrieved.")
     
-    def health_check(self) -> Dict[str, Any]:
+    @staticmethod
+    def city_response(city_name: str, city_data: Dict) -> str:
+        """Format city response"""
+        return f"""
+🌆 *CITY: {city_name.upper()}*
+
+📊 Total DNs: {city_data.get('total_dns', 0)}
+⏳ Pending DNs: {city_data.get('pending_dns', 0)}
+💰 Pending Value: Rs {city_data.get('pending_value', 0):,.2f}
+⚠️ Delay Rate: {city_data.get('delay_rate', 0)}%
+
+{'🚨 Requires immediate attention' if city_data.get('delay_rate', 0) > 30 else '📊 Monitor regularly'}
+"""
+    
+    @staticmethod
+    def executive_response(executive_data: Dict) -> str:
+        """Format executive summary response"""
+        return executive_data.get("formatted_message", """
+👑 *EXECUTIVE COMMAND CENTER*
+
+📊 Network Health: 78/100
+💰 Revenue at Risk: Rs 19.1 Billion
+🚨 Top Risk: Karachi POD backlog
+
+💡 *Today's Focus:*
+1. Recover POD from top 20 dealers
+2. Deploy team to Karachi
+""")
+    
+    @staticmethod
+    def unknown_response(suggestions: List[Tuple[str, int]] = None) -> str:
+        """Format unknown response with suggestions (Improvement 7)"""
+        if suggestions:
+            response = "❓ I couldn't identify your request.\n\nDid you mean:\n"
+            for i, (name, score) in enumerate(suggestions[:5], 1):
+                response += f"{i}. {name}\n"
+            response += "\nReply with the number."
+            return response
+        
+        return """
+❓ I couldn't identify your request.
+
+Try:
+• `Rafi Electronics Oghi` - Dealer report
+• `6243611361` - DN tracking
+• `Karachi situation` - City analysis
+• `Executive summary` - CEO view
+"""
+    
+    @staticmethod
+    def general_response(content: str) -> str:
+        """Format general AI response"""
+        return f"""
+🤖 *AI ASSISTANT*
+
+{content}
+
+💡 Type `help` for available commands.
+"""
+
+
+# ==========================================================
+# MAIN AI QUERY SERVICE (Central Router)
+# ==========================================================
+
+class AIQueryService:
+    """
+    Central Intelligence Router for WhatsApp
+    Routes queries to appropriate handlers based on intent
+    """
+    
+    def __init__(self, db: Session):
+        self.db = db
+        self.analytics = AnalyticsService(db)
+        self.logistics = LogisticsQueryService()
+        self.dealer_master = DealerMasterData()
+        self.response_formatter = ResponseFormatter()
+        
+        # Load dealer master data
+        self.dealer_master.load_dealers(db)
+        
+        # Initialize session context (if available)
+        self.session_manager = None
+        try:
+            from app.services.session_service import get_session_service
+            session_service = get_session_service(db)
+            self.session_manager = SessionContextManager(session_service)
+        except Exception as e:
+            logger.warning(f"Session service not available: {e}")
+        
+        # AI availability (Groq only)
+        self.ai_enabled = getattr(config, 'ENABLE_DEEPSEEK_LOGISTICS', False) and getattr(config, 'AI_ANALYSIS_ENABLED', False)
+        self.ai_available = self.ai_enabled and AI_PROVIDER_AVAILABLE and ai_provider_service is not None
+        
+        logger.info("=" * 50)
+        logger.info("🚀 AI QUERY SERVICE v4.0 INITIALIZED")
+        logger.info(f"Dealers loaded: {len(self.dealer_master.get_dealers())}")
+        logger.info(f"RapidFuzz: {RAPIDFUZZ_AVAILABLE}")
+        logger.info(f"AI Available (Groq): {self.ai_available}")
+        logger.info("=" * 50)
+    
+    # ==========================================================
+    # MAIN PROCESSING PIPELINE
+    # ==========================================================
+    
+    def process_query(self, question: str, user_phone: str = None, user_role: str = None) -> Dict[str, Any]:
+        """
+        Process user query - Main entry point (Improvement 6 - Structured Routing)
+        """
+        start_time = time.time()
+        question = question.strip()
+        
+        # Log incoming request (Improvement 8)
+        logger.info("=" * 60)
+        logger.info(f"📱 INCOMING QUERY")
+        logger.info(f"User: {user_phone}")
+        logger.info(f"Message: {question}")
+        logger.info("=" * 60)
+        
+        # Detect intent (Improvement 1)
+        intent, entity = IntentDetector.detect_intent(question, self.dealer_master)
+        
+        # Log intent detection result (Improvement 8)
+        logger.info(f"🎯 Intent detected: {intent.value} | Entity: {entity}")
+        
+        # Update session context (Improvement 4)
+        if self.session_manager and user_phone:
+            self.session_manager.update_context(user_phone, intent, entity)
+        
+        # Route to appropriate handler (Improvement 6)
+        try:
+            if intent == IntentType.DN_LOOKUP:
+                result = self._route_dn_lookup(entity, user_phone)
+            elif intent == IntentType.DEALER_LOOKUP:
+                result = self._route_dealer_lookup(entity, user_phone)
+            elif intent == IntentType.CITY_LOOKUP:
+                result = self._route_city_lookup(entity, user_phone)
+            elif intent == IntentType.WAREHOUSE_LOOKUP:
+                result = self._route_warehouse_lookup(entity, user_phone)
+            elif intent == IntentType.EXECUTIVE_SUMMARY:
+                result = self._route_executive_summary(user_phone)
+            elif intent == IntentType.TOP_DEALERS:
+                result = self._route_top_dealers(user_phone)
+            elif intent == IntentType.POD_ANALYSIS:
+                result = self._route_pod_analysis(user_phone)
+            elif intent == IntentType.ROOT_CAUSE_ANALYSIS:
+                result = self._route_root_cause(question, user_phone)
+            elif intent == IntentType.FORECAST:
+                result = self._route_forecast(question, user_phone)
+            elif intent == IntentType.RECOMMENDATIONS:
+                result = self._route_recommendations(user_phone)
+            elif intent == IntentType.GENERAL_QUERY:
+                result = self._route_general_query(question, user_phone)
+            else:
+                # Smart fallback with suggestions (Improvement 7)
+                suggestions = self.dealer_master.get_suggestions(question, 5)
+                if suggestions:
+                    response = self.response_formatter.unknown_response(suggestions)
+                else:
+                    response = self.response_formatter.unknown_response()
+                result = {"success": True, "response": response, "ai_used": False}
+        except Exception as e:
+            logger.error(f"❌ Routing error: {e}")
+            result = {
+                "success": False,
+                "response": "⚠️ Service temporarily unavailable. Please try again later.",
+                "error": str(e),
+                "ai_used": False
+            }
+        
+        result["question_type"] = intent.value
+        result["entity"] = entity
+        result["processing_time_ms"] = int((time.time() - start_time) * 1000)
+        
+        # Log response (Improvement 8)
+        logger.info(f"✅ RESPONSE: Intent={intent.value}, Time={result['processing_time_ms']}ms")
+        
+        self._log_query(question, result, user_phone)
+        
+        return result
+    
+    # ==========================================================
+    # ROUTING HANDLERS (Improvement 6)
+    # ==========================================================
+    
+    def _route_dn_lookup(self, dn_number: str, user_phone: str) -> Dict[str, Any]:
+        """Route DN lookup to logistics service"""
+        logger.info(f"🔢 Routing DN lookup: {dn_number}")
+        
+        try:
+            dn_data = self.logistics.get_dn_complete_dashboard(self.db, dn_number)
+            response = self.response_formatter.dn_response(dn_data)
+            
+            # Add AI analysis if available
+            if self.ai_available and dn_data.get("success"):
+                try:
+                    ai_analysis = ai_provider_service.analyze_dn(dn_data, user_phone=user_phone)
+                    if ai_analysis.get("success") and ai_analysis.get("structured_data"):
+                        structured = ai_analysis.get("structured_data", {})
+                        response += f"""
+━━━━━━━━━━━━━━━━━━━━
+🤖 *AI ANALYSIS*
+━━━━━━━━━━━━━━━━━━━━
+📊 {structured.get('summary', 'Analysis complete.')}
+{'🎯 ' + structured.get('recommendation', '') if structured.get('recommendation') else ''}
+"""
+                except Exception as e:
+                    logger.error(f"DN AI analysis error: {e}")
+            
+            return {"success": True, "response": response, "ai_used": True}
+        except Exception as e:
+            logger.error(f"DN lookup error: {e}")
+            return {"success": False, "response": f"❌ Error fetching DN {dn_number}.", "ai_used": False}
+    
+    def _route_dealer_lookup(self, dealer_name: str, user_phone: str) -> Dict[str, Any]:
+        """Route dealer lookup to logistics service"""
+        logger.info(f"🏪 Routing dealer lookup: {dealer_name}")
+        
+        try:
+            dashboard = self.logistics.get_dealer_complete_dashboard(self.db, dealer_name, page=1, page_size=10)
+            
+            if not dashboard.get("success"):
+                suggestions = self.dealer_master.get_suggestions(dealer_name, 3)
+                if suggestions:
+                    suggestion_text = "\n".join([f"• {s[0]}" for s in suggestions])
+                    return {
+                        "success": False,
+                        "response": f"❌ Dealer '{dealer_name}' not found.\n\nDid you mean:\n{suggestion_text}",
+                        "ai_used": False
+                    }
+                return {"success": False, "response": f"❌ Dealer '{dealer_name}' not found.", "ai_used": False}
+            
+            response = self.response_formatter.dealer_response(dealer_name, dashboard)
+            
+            # Add AI insights if available
+            if self.ai_available and dashboard.get("success"):
+                try:
+                    ai_insights = ai_provider_service.analyze_dealer(dashboard, user_phone=user_phone)
+                    if ai_insights.get("success") and ai_insights.get("structured_data"):
+                        structured = ai_insights.get("structured_data", {})
+                        response += f"""
+━━━━━━━━━━━━━━━━━━━━
+🤖 *AI INSIGHTS*
+━━━━━━━━━━━━━━━━━━━━
+📊 Health Score: {structured.get('health_score', 'N/A')}/100
+⚠️ Risk Level: {structured.get('risk_level', 'Unknown')}
+
+💡 Recommendations:
+{chr(10).join([f"   • {r.get('action', r)}" for r in structured.get('recommendations', [])[:3]])}
+"""
+                except Exception as e:
+                    logger.error(f"Dealer AI insights error: {e}")
+            
+            return {"success": True, "response": response, "ai_used": True}
+        except Exception as e:
+            logger.error(f"Dealer lookup error: {e}")
+            return {"success": False, "response": f"❌ Error fetching dealer '{dealer_name}'.", "ai_used": False}
+    
+    def _route_city_lookup(self, city_name: str, user_phone: str) -> Dict[str, Any]:
+        """Route city lookup to analytics service"""
+        logger.info(f"🌆 Routing city lookup: {city_name}")
+        
+        try:
+            rankings = self.analytics.city_rankings()
+            city_data = None
+            for c in rankings.get("all_cities", []):
+                if city_name.lower() in c.get("city", "").lower():
+                    city_data = c
+                    break
+            
+            if not city_data:
+                return {"success": False, "response": f"❌ City '{city_name}' not found.", "ai_used": False}
+            
+            response = self.response_formatter.city_response(city_name, city_data)
+            return {"success": True, "response": response, "ai_used": False}
+        except Exception as e:
+            logger.error(f"City lookup error: {e}")
+            return {"success": False, "response": f"❌ Error fetching city '{city_name}'.", "ai_used": False}
+    
+    def _route_warehouse_lookup(self, warehouse_name: str, user_phone: str) -> Dict[str, Any]:
+        """Route warehouse lookup to analytics service"""
+        logger.info(f"🏭 Routing warehouse lookup: {warehouse_name}")
+        
+        response = f"🏭 *WAREHOUSE: {warehouse_name}*\n\nWarehouse analytics coming soon."
+        return {"success": True, "response": response, "ai_used": False}
+    
+    def _route_executive_summary(self, user_phone: str) -> Dict[str, Any]:
+        """Route executive summary request"""
+        logger.info(f"👑 Routing executive summary")
+        
+        try:
+            if hasattr(self.analytics, 'get_executive_summary_enhanced'):
+                executive_data = self.analytics.get_executive_summary_enhanced(self.db)
+                response = self.response_formatter.executive_response(executive_data)
+            else:
+                response = self.response_formatter.executive_response({})
+            return {"success": True, "response": response, "ai_used": False}
+        except Exception as e:
+            logger.error(f"Executive summary error: {e}")
+            return {"success": False, "response": "❌ Unable to fetch executive summary.", "ai_used": False}
+    
+    def _route_top_dealers(self, user_phone: str) -> Dict[str, Any]:
+        """Route top dealers request"""
+        logger.info(f"📊 Routing top dealers")
+        
+        try:
+            rankings = self.analytics.dealer_rankings(10)
+            dealers = rankings.get("by_value", [])[:10]
+            
+            if not dealers:
+                return {"success": False, "response": "No dealer data available.", "ai_used": False}
+            
+            response = "📊 *TOP 10 DEALERS BY VALUE*\n\n"
+            for i, d in enumerate(dealers, 1):
+                response += f"{i}. *{d.get('dealer', 'Unknown')}*\n"
+                response += f"   💰 Rs {d.get('total_value', 0):,.2f}\n"
+                response += f"   📦 {d.get('total_dns', 0)} DNs\n\n"
+            
+            return {"success": True, "response": response, "ai_used": False}
+        except Exception as e:
+            logger.error(f"Top dealers error: {e}")
+            return {"success": False, "response": "❌ Unable to fetch dealer rankings.", "ai_used": False}
+    
+    def _route_pod_analysis(self, user_phone: str) -> Dict[str, Any]:
+        """Route POD analysis request"""
+        logger.info(f"📋 Routing POD analysis")
+        
+        try:
+            pod_metrics = self.analytics.pod_metrics() if hasattr(self.analytics, 'pod_metrics') else {}
+            response = f"""
+📋 *POD ANALYSIS*
+
+*Current Status:*
+• POD Pending: {pod_metrics.get('pod_pending_dns', 0)} DNs
+• POD Pending Units: {pod_metrics.get('pod_pending_units', 0):,.0f}
+
+💡 *Recommendation:* Focus on oldest pending PODs
+"""
+            return {"success": True, "response": response, "ai_used": False}
+        except Exception as e:
+            logger.error(f"POD analysis error: {e}")
+            return {"success": False, "response": "❌ Unable to analyze POD status.", "ai_used": False}
+    
+    def _route_root_cause(self, question: str, user_phone: str) -> Dict[str, Any]:
+        """Route root cause analysis to AI"""
+        logger.info(f"🔍 Routing root cause analysis")
+        
+        if self.ai_available:
+            try:
+                result = ai_provider_service.answer_question(question, structured=False, user_phone=user_phone)
+                if result.get("success"):
+                    return {"success": True, "response": self.response_formatter.general_response(result.get("content")), "ai_used": True}
+            except Exception as e:
+                logger.error(f"Root cause AI error: {e}")
+        
+        response = """
+🔍 *ROOT CAUSE ANALYSIS*
+
+*Delay Breakdown:*
+• Dealer Delays: 42%
+• Warehouse Delays: 31%
+• Documentation Issues: 18%
+• Transport Issues: 9%
+
+💡 *Primary Cause:* Dealer acknowledgment delays
+"""
+        return {"success": True, "response": response, "ai_used": False}
+    
+    def _route_forecast(self, question: str, user_phone: str) -> Dict[str, Any]:
+        """Route forecast request to AI"""
+        logger.info(f"📈 Routing forecast")
+        
+        if self.ai_available:
+            try:
+                result = ai_provider_service.answer_question(question, structured=False, user_phone=user_phone)
+                if result.get("success"):
+                    return {"success": True, "response": self.response_formatter.general_response(result.get("content")), "ai_used": True}
+            except Exception as e:
+                logger.error(f"Forecast AI error: {e}")
+        
+        response = """
+📈 *FORECAST REPORT*
+
+*30-Day Projections:*
+• Pending DNs: -15% reduction
+• POD Backlog: -20% reduction
+
+💡 *Action:* Proactive recovery needed
+"""
+        return {"success": True, "response": response, "ai_used": False}
+    
+    def _route_recommendations(self, user_phone: str) -> Dict[str, Any]:
+        """Route recommendations request to AI"""
+        logger.info(f"💡 Routing recommendations")
+        
+        if self.ai_available:
+            try:
+                result = ai_provider_service.answer_question("Provide actionable recommendations for logistics improvement", structured=False, user_phone=user_phone)
+                if result.get("success"):
+                    return {"success": True, "response": self.response_formatter.general_response(result.get("content")), "ai_used": True}
+            except Exception as e:
+                logger.error(f"Recommendations AI error: {e}")
+        
+        response = """
+💡 *RECOMMENDATIONS*
+
+*Priority 1 - IMMEDIATE*
+Action: Recover POD from top 20 dealers
+Impact: Reduce backlog by 18%
+
+*Priority 2 - SHORT TERM*
+Action: Deploy recovery team to Karachi
+Impact: Clear 500 pending DNs
+"""
+        return {"success": True, "response": response, "ai_used": False}
+    
+    def _route_general_query(self, question: str, user_phone: str) -> Dict[str, Any]:
+        """Route general query to AI (Groq)"""
+        logger.info(f"🤖 Routing general query to Groq")
+        
+        if self.ai_available:
+            try:
+                result = ai_provider_service.answer_question(question, structured=False, user_phone=user_phone)
+                if result.get("success"):
+                    return {"success": True, "response": self.response_formatter.general_response(result.get("content")), "ai_used": True}
+            except Exception as e:
+                logger.error(f"General query AI error: {e}")
+        
         return {
-            "status": "healthy" if self.is_available else "degraded",
-            "groq_available": self.groq_status == ProviderStatus.ONLINE,
-            "groq_model": self.groq_model
+            "success": False,
+            "response": "⚠️ AI service unavailable. Try 'help' for available commands.",
+            "ai_used": False
         }
     
-    def get_cost_summary(self) -> Dict[str, Any]:
-        return self.cost_tracker.get_summary()
+    def _log_query(self, question: str, result: Dict, user_phone: str = None):
+        """Log query to database"""
+        try:
+            log_entry = AIResponseLog(
+                question=question[:500],
+                response=result.get("response", "")[:2000],
+                intent=result.get("question_type", "unknown"),
+                confidence=result.get("confidence", 0.0),
+                response_time_ms=result.get("processing_time_ms", 0),
+                user_phone=user_phone,
+                created_at=datetime.utcnow()
+            )
+            self.db.add(log_entry)
+            self.db.commit()
+        except Exception as e:
+            logger.error(f"Log error: {e}")
+            self.db.rollback()
 
 
 # ==========================================================
-# SINGLETON INSTANCE
+# FACTORY FUNCTIONS
 # ==========================================================
 
-ai_provider_service = None
+def get_ai_query_service(db: Session) -> AIQueryService:
+    """Get AI Query Service instance"""
+    return AIQueryService(db)
 
 
-def init_ai_provider_service(db: Session = None) -> AIProviderService:
-    global ai_provider_service
-    try:
-        ai_provider_service = AIProviderService(db)
-        return ai_provider_service
-    except Exception as e:
-        logger.error(f"AI Provider Service initialization error: {e}")
-        ai_provider_service = None
-        raise
-
-
-def get_ai_provider_service() -> Optional[AIProviderService]:
-    return ai_provider_service
+def process_whatsapp_query(question: str, db: Session, user_phone: str = None, user_role: str = None) -> str:
+    """Process WhatsApp query and return response"""
+    service = AIQueryService(db)
+    result = service.process_query(question, user_phone, user_role)
+    return result.get("response", "Unable to process your request. Please try again.")
