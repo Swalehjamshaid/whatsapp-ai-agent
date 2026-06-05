@@ -1,17 +1,17 @@
 # ==========================================================
-# FILE: app/services/ai_provider_service.py (ENTERPRISE v4.0)
+# FILE: app/services/ai_provider_service.py (ENTERPRISE v5.0)
 # ==========================================================
 # FEATURES:
-# - Groq as PRIMARY provider (fastest inference)
+# - NO auto-initialization (clean startup)
+# - AI Diagnostics Endpoint Support
+# - Enhanced Dealer Intelligence with full metrics
+# - Enhanced DN Analysis with complete data
+# - SQL Result Summarization (token optimization)
+# - Robust JSON extraction with fallback parser
+# - Groq as PRIMARY provider
 # - DeepSeek as secondary
 # - OpenAI as tertiary fallback
 # - Rule-based as final fallback
-# - Dedicated logistics analysis functions
-# - Structured JSON responses
-# - Conversation context support
-# - Root cause analysis
-# - Recommendation engine
-# - Executive summary generator
 
 import os
 import json
@@ -20,7 +20,7 @@ import re
 import hashlib
 from decimal import Decimal
 from typing import Dict, Any, List, Optional, Tuple
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from functools import lru_cache
 from enum import Enum
 from dataclasses import dataclass, asdict
@@ -56,7 +56,69 @@ class ProviderHealth:
 
 
 # ==========================================================
-# DEDICATED PROMPT TEMPLATES (Phase 5-12)
+# ENHANCED JSON EXTRACTOR (Priority 6 - Robust)
+# ==========================================================
+
+class RobustJSONExtractor:
+    """Robust JSON extraction with multiple fallback strategies"""
+    
+    @staticmethod
+    def extract(json_string: str) -> Dict[str, Any]:
+        """Extract JSON from string with multiple fallback strategies"""
+        if not json_string:
+            return {}
+        
+        # Strategy 1: Direct parse
+        try:
+            return json.loads(json_string)
+        except json.JSONDecodeError:
+            pass
+        
+        # Strategy 2: Find JSON object in text
+        json_match = re.search(r'\{[\s\S]*\}', json_string)
+        if json_match:
+            try:
+                return json.loads(json_match.group())
+            except json.JSONDecodeError:
+                pass
+        
+        # Strategy 3: Fix common JSON issues
+        fixed = json_string
+        # Fix trailing commas
+        fixed = re.sub(r',\s*}', '}', fixed)
+        fixed = re.sub(r',\s*]', ']', fixed)
+        # Fix unquoted keys
+        fixed = re.sub(r'([{,])\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'\1"\2":', fixed)
+        # Fix single quotes
+        fixed = fixed.replace("'", '"')
+        
+        try:
+            return json.loads(fixed)
+        except json.JSONDecodeError:
+            pass
+        
+        # Strategy 4: Try to extract using ast.literal_eval
+        try:
+            import ast
+            return ast.literal_eval(json_string)
+        except:
+            pass
+        
+        # Strategy 5: Return default structure
+        return {"response": json_string[:500], "confidence": 50, "requires_followup": True}
+    
+    @staticmethod
+    def is_valid_json(json_str: str) -> bool:
+        """Check if string is valid JSON"""
+        try:
+            json.loads(json_str)
+            return True
+        except:
+            return False
+
+
+# ==========================================================
+# ENHANCED DEDICATED PROMPT TEMPLATES
 # ==========================================================
 
 def _build_system_prompt(role: str = "manager") -> str:
@@ -87,18 +149,47 @@ Return ONLY valid JSON."""
     return role_prompts.get(role, role_prompts["manager"])
 
 
-def _build_dealer_prompt(dealer_data: Dict, question: str) -> str:
-    """Phase 6: Dealer Intelligence Prompt"""
+# ==========================================================
+# ENHANCED DEALER INTELLIGENCE PROMPT (Priority 3)
+# ==========================================================
+
+def _build_dealer_prompt_enhanced(dealer_data: Dict, question: str) -> str:
+    """Enhanced dealer intelligence prompt with full metrics"""
     return f"""
 DEALER DATA:
 - Name: {dealer_data.get('dealer_name', 'Unknown')}
+- Address: {dealer_data.get('address', dealer_data.get('city', 'N/A'))}
+- City: {dealer_data.get('city', 'Unknown')}
+- Region: {dealer_data.get('region', dealer_data.get('city', 'Unknown'))}
+- Warehouse: {dealer_data.get('warehouse', 'Unknown')}
+
+📊 VOLUME METRICS:
 - Total DNs: {dealer_data.get('total_dns', 0)}
-- Delivered: {dealer_data.get('delivered_dns', 0)}
-- Pending: {dealer_data.get('pending_dns', 0)}
-- POD Pending: {dealer_data.get('pod_pending_dns', 0)}
+- Delivered DNs: {dealer_data.get('delivered_dns', 0)}
+- Pending DNs: {dealer_data.get('pending_dns', 0)}
+- POD Pending DNs: {dealer_data.get('pod_pending_dns', 0)}
+
+💰 FINANCIAL METRICS:
 - Total Value: Rs {dealer_data.get('total_value', 0):,.2f}
+- Delivered Value: Rs {dealer_data.get('delivered_value', 0):,.2f}
 - Pending Value: Rs {dealer_data.get('pending_value', 0):,.2f}
 - POD Pending Value: Rs {dealer_data.get('pod_pending_value', 0):,.2f}
+
+📈 COMPLIANCE METRICS:
+- Delivery Compliance: {dealer_data.get('delivery_compliance', 0)}%
+- POD Compliance: {dealer_data.get('pod_compliance', 0)}%
+- Health Score: {dealer_data.get('health_score', 0)}/100
+- Risk Score: {dealer_data.get('risk_score', 0)}/100
+
+⏱️ AGING METRICS:
+- Oldest Pending DN Age: {dealer_data.get('oldest_pending_age', 0)} days
+- Oldest POD Pending Age: {dealer_data.get('oldest_pod_age', 0)} days
+- Avg Delivery Time: {dealer_data.get('avg_delivery_days', 0)} days
+
+📅 TREND METRICS:
+- Last Delivery Date: {dealer_data.get('last_delivery_date', 'N/A')}
+- Monthly Trend: {dealer_data.get('monthly_trend', 'STABLE')}
+- Top Pending DN: {dealer_data.get('top_pending_dn', 'None')}
 
 QUESTION: {question}
 
@@ -107,9 +198,15 @@ Return a VALID JSON object with EXACTLY this structure:
     "summary": "2-3 sentence performance summary",
     "health_score": 0-100,
     "risk_level": "LOW|MEDIUM|HIGH|CRITICAL",
+    "risk_score": 0-100,
     "pending_dns": 0,
+    "pod_pending_dns": 0,
     "financial_exposure": 0,
+    "delivery_compliance": 0,
+    "pod_compliance": 0,
+    "oldest_pending_age": 0,
     "root_causes": ["cause1", "cause2"],
+    "trend": "IMPROVING|DECLINING|STABLE",
     "recommendations": [
         {{"action": "description", "priority": "HIGH|MEDIUM|LOW", "timeline": "days", "expected_impact": "description"}}
     ]
@@ -117,16 +214,81 @@ Return a VALID JSON object with EXACTLY this structure:
 """
 
 
-def _build_warehouse_prompt(warehouse_data: Dict, question: str) -> str:
-    """Phase 8: Warehouse Intelligence Prompt"""
+# ==========================================================
+# ENHANCED DN INTELLIGENCE PROMPT (Priority 4)
+# ==========================================================
+
+def _build_dn_prompt_enhanced(dn_data: Dict, question: str) -> str:
+    """Enhanced DN intelligence prompt with complete data"""
+    return f"""
+DN DATA:
+- DN Number: {dn_data.get('dn_no', 'Unknown')}
+- Dealer: {dn_data.get('dealer', 'Unknown')}
+- Dealer City: {dn_data.get('dealer_city', 'Unknown')}
+- Warehouse: {dn_data.get('warehouse', 'Unknown')}
+- Transporter: {dn_data.get('transporter', 'Unknown')}
+
+📅 DATE INFORMATION:
+- DN Create Date: {dn_data.get('dn_create_date', 'N/A')}
+- PGI Date (Dispatched): {dn_data.get('good_issue_date', 'Not Dispatched')}
+- POD Date (Acknowledged): {dn_data.get('pod_date', 'Pending')}
+- DN Age: {dn_data.get('dn_age', 0)} days
+- Dispatch Age: {dn_data.get('dispatch_age', 0)} days
+- POD Age: {dn_data.get('pod_age', 0)} days
+
+📋 STATUS:
+- Delivery Status: {dn_data.get('status', 'Unknown')}
+- POD Status: {dn_data.get('pod_status', 'Pending')}
+- Urgency: {dn_data.get('urgency', 'NORMAL')}
+
+💰 FINANCIALS:
+- Total Quantity: {dn_data.get('total_quantity', 0):,.0f} units
+- Total Value: Rs {dn_data.get('total_value', 0):,.2f}
+- Invoice Value: Rs {dn_data.get('invoice_value', dn_data.get('total_value', 0)):,.2f}
+
+📦 PRODUCT DETAILS:
+{chr(10).join([f"- {p.get('product_name', 'Unknown')}: {p.get('quantity', 0):,.0f} units" for p in dn_data.get('products', [])[:5]])}
+
+⏱️ DELAY ANALYSIS:
+- Dispatch Delay: {'Yes' if dn_data.get('dispatch_age', 0) > 7 else 'No'} ({dn_data.get('dispatch_age', 0)} days)
+- POD Delay: {'Yes' if dn_data.get('pod_age', 0) > 7 else 'No'} ({dn_data.get('pod_age', 0)} days)
+- Delay Reason: {dn_data.get('delay_reason', 'Under investigation')}
+
+QUESTION: {question}
+
+Return a VALID JSON object:
+{{
+    "summary": "DN status summary",
+    "risk_level": "LOW|MEDIUM|HIGH|CRITICAL",
+    "urgency": "IMMEDIATE|HIGH|NORMAL|LOW",
+    "dispatch_delay_days": 0,
+    "pod_delay_days": 0,
+    "root_cause": "Why it's delayed (if applicable)",
+    "recommendation": "What action to take",
+    "financial_impact": 0,
+    "expected_resolution": "When it can be resolved"
+}}
+"""
+
+
+# ==========================================================
+# ENHANCED WAREHOUSE PROMPT
+# ==========================================================
+
+def _build_warehouse_prompt_enhanced(warehouse_data: Dict, question: str) -> str:
+    """Enhanced warehouse intelligence prompt"""
     return f"""
 WAREHOUSE DATA:
 - Name: {warehouse_data.get('warehouse_name', 'Unknown')}
+- Location: {warehouse_data.get('location', 'Unknown')}
 - Total DNs: {warehouse_data.get('total_dns', 0)}
 - Pending DNs: {warehouse_data.get('pending_dns', 0)}
 - POD Pending: {warehouse_data.get('pod_pending_dns', 0)}
 - Backlog Units: {warehouse_data.get('backlog_units', 0):,.0f}
+- Backlog Value: Rs {warehouse_data.get('backlog_value', 0):,.2f}
 - Efficiency Score: {warehouse_data.get('efficiency_score', 0)}%
+- Risk Score: {warehouse_data.get('risk_score', 0)}/100
+- Avg Processing Days: {warehouse_data.get('avg_processing_days', 0)} days
 - Bottlenecks: {warehouse_data.get('bottlenecks', [])}
 
 QUESTION: {question}
@@ -137,6 +299,8 @@ Return a VALID JSON object:
     "warehouse_score": 0-100,
     "risk_level": "LOW|MEDIUM|HIGH|CRITICAL",
     "bottlenecks": ["bottleneck1", "bottleneck2"],
+    "backlog_units": 0,
+    "backlog_value": 0,
     "recommendations": [
         {{"action": "description", "priority": "HIGH|MEDIUM|LOW", "expected_improvement": "X%"}}
     ]
@@ -144,16 +308,25 @@ Return a VALID JSON object:
 """
 
 
-def _build_city_prompt(city_data: Dict, question: str) -> str:
-    """Phase 9: City Intelligence Prompt"""
+# ==========================================================
+# ENHANCED CITY PROMPT
+# ==========================================================
+
+def _build_city_prompt_enhanced(city_data: Dict, question: str) -> str:
+    """Enhanced city intelligence prompt"""
     return f"""
 CITY DATA:
 - Name: {city_data.get('city', 'Unknown')}
+- Region: {city_data.get('region', 'Unknown')}
 - Delivery Volume: {city_data.get('delivery_volume', 0)} DNs
 - Pending Volume: {city_data.get('pending_volume', 0)} DNs
 - POD Backlog: {city_data.get('pod_backlog', 0)} DNs
 - Revenue Exposure: Rs {city_data.get('revenue_exposure', 0):,.2f}
+- Health Score: {city_data.get('city_health_score', 0)}/100
 - Risk Score: {city_data.get('city_risk_score', 0)}/100
+- Delay Rate: {city_data.get('delay_rate', 0)}%
+- Dealers Affected: {city_data.get('dealers_affected', 0)}
+- Top Affected Dealer: {city_data.get('top_affected_dealer', 'None')}
 
 QUESTION: {question}
 
@@ -163,6 +336,7 @@ Return a VALID JSON object:
     "city_risk_score": 0-100,
     "pending_dns": 0,
     "financial_exposure": 0,
+    "delay_rate": 0,
     "recommendations": [
         {{"action": "description", "priority": "HIGH|MEDIUM|LOW", "expected_reduction": "X%"}}
     ]
@@ -170,8 +344,12 @@ Return a VALID JSON object:
 """
 
 
-def _build_executive_prompt(metrics: Dict, question: str) -> str:
-    """Phase 10: Executive Summary Prompt"""
+# ==========================================================
+# EXECUTIVE SUMMARY PROMPT
+# ==========================================================
+
+def _build_executive_prompt_enhanced(metrics: Dict, question: str) -> str:
+    """Enhanced executive summary prompt"""
     return f"""
 EXECUTIVE DATA:
 - Network Health: {metrics.get('network_health', 0)}/100
@@ -179,9 +357,12 @@ EXECUTIVE DATA:
 - Inventory at Risk: {metrics.get('inventory_at_risk', 0):,.0f} units
 - Pending DNs: {metrics.get('pending_dns', 0)}
 - POD Pending: {metrics.get('pod_pending', 0)}
+- Delivery Compliance: {metrics.get('delivery_compliance', 0)}%
+- POD Compliance: {metrics.get('pod_compliance', 0)}%
 - Top Risk Dealer: {metrics.get('top_risk_dealer', 'Unknown')}
 - Top Risk City: {metrics.get('top_risk_city', 'Unknown')}
 - Top Risk Warehouse: {metrics.get('top_risk_warehouse', 'Unknown')}
+- Weekly Trend: {metrics.get('weekly_trend', 'STABLE')}
 
 QUESTION: {question}
 
@@ -202,14 +383,21 @@ Return a VALID JSON object:
 """
 
 
-def _build_root_cause_prompt(root_cause_data: Dict, question: str) -> str:
-    """Phase 11: Root Cause Analysis Prompt"""
+# ==========================================================
+# ROOT CAUSE ANALYSIS PROMPT
+# ==========================================================
+
+def _build_root_cause_prompt_enhanced(root_cause_data: Dict, question: str) -> str:
+    """Enhanced root cause analysis prompt"""
     return f"""
 ROOT CAUSE DATA:
 - Dealer Issues: {root_cause_data.get('dealer_issues', 0)}%
 - Warehouse Issues: {root_cause_data.get('warehouse_issues', 0)}%
 - Transport Issues: {root_cause_data.get('transport_issues', 0)}%
 - Documentation Issues: {root_cause_data.get('documentation_issues', 0)}%
+- Other Issues: {root_cause_data.get('other_issues', 0)}%
+- Primary Cause: {root_cause_data.get('primary_cause', 'Unknown')}
+- Sample Size: {root_cause_data.get('sample_size', 0)} records
 
 QUESTION: {question}
 
@@ -220,7 +408,8 @@ Return a VALID JSON object:
         "dealer_delay": 0-100,
         "warehouse_delay": 0-100,
         "documentation": 0-100,
-        "transport": 0-100
+        "transport": 0-100,
+        "other": 0-100
     }},
     "primary_cause": "cause_name",
     "recommendations": [
@@ -230,14 +419,19 @@ Return a VALID JSON object:
 """
 
 
-def _build_recommendation_prompt(recommendation_data: Dict, question: str) -> str:
-    """Phase 12: Recommendation Engine Prompt"""
+# ==========================================================
+# RECOMMENDATION ENGINE PROMPT
+# ==========================================================
+
+def _build_recommendation_prompt_enhanced(recommendation_data: Dict, question: str) -> str:
+    """Enhanced recommendation engine prompt"""
     return f"""
 CURRENT STATE:
 - Network Health: {recommendation_data.get('network_health', 0)}/100
 - Pending DNs: {recommendation_data.get('pending_dns', 0)}
 - POD Pending: {recommendation_data.get('pod_pending', 0)}
 - Revenue at Risk: Rs {recommendation_data.get('revenue_at_risk', 0):,.2f}
+- Top Issues: {recommendation_data.get('top_issues', [])}
 
 QUESTION: {question}
 
@@ -253,32 +447,8 @@ Return a VALID JSON object:
             "timeline": "days",
             "expected_improvement": "X%"
         }}
-    ]
-}}
-"""
-
-
-def _build_dn_prompt(dn_data: Dict, question: str) -> str:
-    """Phase 7: DN Intelligence Prompt"""
-    return f"""
-DN DATA:
-- DN Number: {dn_data.get('dn_no', 'Unknown')}
-- Dealer: {dn_data.get('dealer', 'Unknown')}
-- Status: {dn_data.get('status', 'Unknown')}
-- POD Status: {dn_data.get('pod_status', 'Pending')}
-- Dispatch Age: {dn_data.get('dispatch_age', 0)} days
-- POD Age: {dn_data.get('pod_age', 0)} days
-- Value: Rs {dn_data.get('total_value', 0):,.2f}
-
-QUESTION: {question}
-
-Return a VALID JSON object:
-{{
-    "summary": "DN status summary",
-    "risk_level": "LOW|MEDIUM|HIGH|CRITICAL",
-    "root_cause": "Why it's delayed (if applicable)",
-    "recommendation": "What action to take",
-    "urgency": "IMMEDIATE|NORMAL|LOW"
+    ],
+    "expected_outcome": "What success looks like"
 }}
 """
 
@@ -349,16 +519,6 @@ class AISafetyLayer:
         for pattern in cls.DANGEROUS_PATTERNS:
             response = re.sub(pattern, "[REDACTED]", response, flags=re.IGNORECASE)
         return response[:4000]
-    
-    @classmethod
-    def extract_json_from_response(cls, response: str) -> Dict[str, Any]:
-        json_match = re.search(r'\{[\s\S]*\}', response)
-        if json_match:
-            try:
-                return json.loads(json_match.group())
-            except json.JSONDecodeError:
-                pass
-        return {"response": response[:500], "confidence": 50, "requires_followup": True}
 
 
 # ==========================================================
@@ -431,14 +591,14 @@ class AICostTracker:
 
 
 # ==========================================================
-# AI PROVIDER SERVICE (ENTERPRISE v4.0)
+# AI PROVIDER SERVICE (ENTERPRISE v5.0)
 # ==========================================================
 
 class AIProviderService:
     """
-    Enterprise AI Provider Service v4.0
+    Enterprise AI Provider Service v5.0
     
-    Provider Priority (Phase 2):
+    Provider Priority:
     1. Groq (fastest, best for logistics)
     2. DeepSeek (primary fallback)
     3. OpenAI (secondary fallback)
@@ -452,7 +612,7 @@ class AIProviderService:
         self.retry_count = 3
         self.retry_delay = 1
         
-        # Phase 1: Initialize Groq (PRIMARY PROVIDER)
+        # Groq (PRIMARY PROVIDER)
         self.groq_api_key = os.getenv("GROQ_API_KEY") or getattr(config, 'GROQ_API_KEY', None)
         self.groq_model = os.getenv("GROQ_MODEL", "qwen-qwq-32b")
         self.groq_client = None
@@ -472,7 +632,7 @@ class AIProviderService:
                 logger.error(f"❌ Groq initialization failed: {e}")
                 self.groq_status = ProviderStatus.OFFLINE
         
-        # Initialize DeepSeek (SECONDARY PROVIDER)
+        # DeepSeek (SECONDARY PROVIDER)
         self.deepseek_api_key = getattr(config, 'DEEPSEEK_API_KEY', None)
         self.deepseek_client = None
         self.deepseek_status = ProviderStatus.UNKNOWN
@@ -491,7 +651,7 @@ class AIProviderService:
                 logger.error(f"❌ DeepSeek initialization failed: {e}")
                 self.deepseek_status = ProviderStatus.OFFLINE
         
-        # Initialize OpenAI (TERTIARY PROVIDER)
+        # OpenAI (TERTIARY PROVIDER)
         self.openai_api_key = getattr(config, 'OPENAI_API_KEY', None)
         self.openai_client = None
         self.openai_status = ProviderStatus.UNKNOWN
@@ -521,7 +681,7 @@ class AIProviderService:
     def _log_startup_status(self):
         """Log comprehensive startup status"""
         logger.info("=" * 60)
-        logger.info("🤖 AI PROVIDER SERVICE v4.0 INITIALIZED")
+        logger.info("🤖 AI PROVIDER SERVICE v5.0 INITIALIZED")
         logger.info(f"PRIMARY: Groq = {self.groq_status.value} (model: {self.groq_model})")
         logger.info(f"SECONDARY: DeepSeek = {self.deepseek_status.value}")
         logger.info(f"TERTIARY: OpenAI = {self.openai_status.value} (model: {self.openai_model})")
@@ -534,7 +694,138 @@ class AIProviderService:
         logger.info("=" * 60)
     
     # ==========================================================
-    # PHASE 2: PROVIDER PRIORITY ROUTING
+    # PRIORITY 2: AI DIAGNOSTICS ENDPOINT SUPPORT
+    # ==========================================================
+    
+    def health_check(self) -> Dict[str, Any]:
+        """Comprehensive health check for all providers"""
+        return {
+            "status": "healthy" if self.is_available else "degraded",
+            "providers": {
+                "groq": {
+                    "status": self.groq_status.value,
+                    "model": self.groq_model,
+                    "available": self.groq_status == ProviderStatus.ONLINE
+                },
+                "deepseek": {
+                    "status": self.deepseek_status.value,
+                    "available": self.deepseek_status == ProviderStatus.ONLINE
+                },
+                "openai": {
+                    "status": self.openai_status.value,
+                    "model": self.openai_model,
+                    "available": self.openai_status == ProviderStatus.ONLINE
+                }
+            },
+            "cache_enabled": True,
+            "cost_summary": self.cost_tracker.get_summary(),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    
+    def provider_status(self) -> Dict[str, Any]:
+        """Get detailed provider status"""
+        return {
+            "primary_provider": self.get_primary_provider(),
+            "groq_online": self.groq_status == ProviderStatus.ONLINE,
+            "deepseek_online": self.deepseek_status == ProviderStatus.ONLINE,
+            "openai_online": self.openai_status == ProviderStatus.ONLINE,
+            "any_available": self.is_available
+        }
+    
+    def test_groq(self) -> Dict[str, Any]:
+        """Test Groq connectivity"""
+        if self.groq_status != ProviderStatus.ONLINE:
+            return {"success": False, "error": "Groq not available"}
+        
+        try:
+            start_time = time.time()
+            response = self._call_groq("Reply with OK", "You are a test assistant. Reply with OK.", 10, 0.1)
+            latency_ms = int((time.time() - start_time) * 1000)
+            
+            return {
+                "success": response.get("success", False),
+                "latency_ms": latency_ms,
+                "response": response.get("content", "")[:100]
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def test_deepseek(self) -> Dict[str, Any]:
+        """Test DeepSeek connectivity"""
+        if self.deepseek_status != ProviderStatus.ONLINE:
+            return {"success": False, "error": "DeepSeek not available"}
+        
+        try:
+            start_time = time.time()
+            response = self._call_deepseek("Reply with OK", 10, 0.1)
+            latency_ms = int((time.time() - start_time) * 1000)
+            
+            return {
+                "success": response.get("success", False),
+                "latency_ms": latency_ms,
+                "response": response.get("content", "")[:100]
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def test_openai(self) -> Dict[str, Any]:
+        """Test OpenAI connectivity"""
+        if self.openai_status != ProviderStatus.ONLINE:
+            return {"success": False, "error": "OpenAI not available"}
+        
+        try:
+            start_time = time.time()
+            response = self._call_openai("Reply with OK", 10, 0.1)
+            latency_ms = int((time.time() - start_time) * 1000)
+            
+            return {
+                "success": response.get("success", False),
+                "latency_ms": latency_ms,
+                "response": response.get("content", "")[:100]
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    # ==========================================================
+    # PHASE 5: SQL RESULT SUMMARIZATION (Token Optimization)
+    # ==========================================================
+    
+    @staticmethod
+    def summarize_dealer_data(dealer_data: Dict) -> Dict:
+        """Summarize dealer data to reduce token usage"""
+        return {
+            "dealer_name": dealer_data.get('dealer_name', 'Unknown'),
+            "city": dealer_data.get('city', 'Unknown'),
+            "total_dns": dealer_data.get('total_dns', 0),
+            "delivered_dns": dealer_data.get('delivered_dns', 0),
+            "pending_dns": dealer_data.get('pending_dns', 0),
+            "pod_pending_dns": dealer_data.get('pod_pending_dns', 0),
+            "total_value": dealer_data.get('total_value', 0),
+            "pending_value": dealer_data.get('pending_value', 0),
+            "delivery_compliance": dealer_data.get('delivery_compliance', 0),
+            "pod_compliance": dealer_data.get('pod_compliance', 0),
+            "health_score": dealer_data.get('health_score', 0),
+            "risk_score": dealer_data.get('risk_score', 0),
+            "oldest_pending_age": dealer_data.get('oldest_pending_age', 0),
+            "monthly_trend": dealer_data.get('monthly_trend', 'STABLE')
+        }
+    
+    @staticmethod
+    def summarize_dn_data(dn_data: Dict) -> Dict:
+        """Summarize DN data to reduce token usage"""
+        return {
+            "dn_no": dn_data.get('dn_no', 'Unknown'),
+            "dealer": dn_data.get('dealer', 'Unknown'),
+            "status": dn_data.get('status', 'Unknown'),
+            "pod_status": dn_data.get('pod_status', 'Pending'),
+            "dispatch_age": dn_data.get('dispatch_age', 0),
+            "pod_age": dn_data.get('pod_age', 0),
+            "total_value": dn_data.get('total_value', 0),
+            "products_count": len(dn_data.get('products', []))
+        }
+    
+    # ==========================================================
+    # PROVIDER PRIORITY ROUTING
     # ==========================================================
     
     def get_primary_provider(self) -> str:
@@ -549,7 +840,7 @@ class AIProviderService:
             return "rule_based"
     
     # ==========================================================
-    # PHASE 5-12: DEDICATED LOGISTICS ANALYSIS FUNCTIONS
+    # DEDICATED LOGISTICS ANALYSIS FUNCTIONS (Enhanced)
     # ==========================================================
     
     def generate_logistics_analysis(
@@ -562,35 +853,35 @@ class AIProviderService:
     ) -> Dict[str, Any]:
         """
         Generate logistics analysis using appropriate template
-        
         Supported types: dealer, warehouse, city, executive, dn, root_cause, recommendation
         """
         # Get system prompt based on role
         system_prompt = _build_system_prompt(user_role)
         
-        # Select appropriate prompt template
+        # Summarize data to reduce token usage (Priority 5)
         if analysis_type == "dealer":
-            prompt = _build_dealer_prompt(logistics_data, "Analyze this dealer's performance.")
+            summarized_data = self.summarize_dealer_data(logistics_data)
+            prompt = _build_dealer_prompt_enhanced(summarized_data, "Analyze this dealer's performance.")
         elif analysis_type == "warehouse":
-            prompt = _build_warehouse_prompt(logistics_data, "Analyze this warehouse's performance.")
+            prompt = _build_warehouse_prompt_enhanced(logistics_data, "Analyze this warehouse's performance.")
         elif analysis_type == "city":
-            prompt = _build_city_prompt(logistics_data, "Analyze this city's logistics performance.")
+            prompt = _build_city_prompt_enhanced(logistics_data, "Analyze this city's logistics performance.")
         elif analysis_type == "executive":
-            prompt = _build_executive_prompt(logistics_data, "Provide executive summary.")
+            prompt = _build_executive_prompt_enhanced(logistics_data, "Provide executive summary.")
         elif analysis_type == "dn":
-            prompt = _build_dn_prompt(logistics_data, "Analyze this DN status.")
+            summarized_data = self.summarize_dn_data(logistics_data)
+            prompt = _build_dn_prompt_enhanced(summarized_data, "Analyze this DN status.")
         elif analysis_type == "root_cause":
-            prompt = _build_root_cause_prompt(logistics_data, "Perform root cause analysis.")
+            prompt = _build_root_cause_prompt_enhanced(logistics_data, "Perform root cause analysis.")
         elif analysis_type == "recommendation":
-            prompt = _build_recommendation_prompt(logistics_data, "Provide actionable recommendations.")
+            prompt = _build_recommendation_prompt_enhanced(logistics_data, "Provide actionable recommendations.")
         else:
             prompt = f"Analyze this logistics data: {json.dumps(logistics_data, default=str)}"
         
-        # Add conversation context for follow-ups (Phase 13)
+        # Add conversation context for follow-ups
         if conversation_context:
             prompt += f"\n\nCONVERSATION CONTEXT: {json.dumps(conversation_context)}"
         
-        # Call AI with appropriate provider
         return self.answer_question(
             question=prompt,
             context=logistics_data,
@@ -642,7 +933,6 @@ class AIProviderService:
         """
         start_time = time.time()
         
-        # Phase 4: Add diagnostics
         provider = self.get_primary_provider()
         logger.info(f"🚀 AI REQUEST - Provider: {provider.upper()}, User: {user_phone}, Question: {question[:100]}...")
         
@@ -677,7 +967,7 @@ class AIProviderService:
             return {
                 "success": True,
                 "content": cached_content,
-                "structured_data": AISafetyLayer.extract_json_from_response(cached_content) if require_json else None,
+                "structured_data": RobustJSONExtractor.extract(cached_content) if require_json else None,
                 "confidence": cached_metadata.get("confidence", 85),
                 "provider_used": "cache",
                 "processing_time_ms": 0,
@@ -689,7 +979,7 @@ class AIProviderService:
         provider_used = None
         latency_ms = 0
         
-        # Phase 3: Try Groq first
+        # Try Groq first
         if self.groq_status == ProviderStatus.ONLINE:
             logger.info("🚀 CALLING GROQ...")
             call_start = time.time()
@@ -762,7 +1052,7 @@ class AIProviderService:
         confidence = 50
         
         if require_json:
-            structured_data = AISafetyLayer.extract_json_from_response(content)
+            structured_data = RobustJSONExtractor.extract(content)
             confidence = self._calculate_confidence(structured_data, provider_used, response.get("usage", {}))
         
         # Cache successful response
@@ -800,14 +1090,12 @@ class AIProviderService:
     # ==========================================================
     
     def _call_groq(self, prompt: str, system_prompt: str, max_tokens: int = 2500, temperature: float = 0.3) -> Dict[str, Any]:
-        """Phase 3: Call Groq API"""
+        """Call Groq API"""
         if not self.groq_client:
             return {"success": False, "error": "Groq client not initialized"}
         
         for attempt in range(self.retry_count):
             try:
-                logger.debug(f"Groq attempt {attempt + 1}/{self.retry_count}")
-                
                 response = self.groq_client.chat.completions.create(
                     model=self.groq_model,
                     messages=[
@@ -821,7 +1109,6 @@ class AIProviderService:
                 
                 content = response.choices[0].message.content
                 
-                logger.debug(f"Groq success: {len(content)} chars")
                 return {
                     "success": True,
                     "content": content,
@@ -1021,21 +1308,21 @@ Return a VALID JSON response. Be concise and data-driven.
 
 
 # ==========================================================
-# SINGLETON INSTANCE
+# SINGLETON INSTANCE (NO AUTO-INITIALIZATION - Priority 1)
 # ==========================================================
 
 ai_provider_service = None
 
 
 def init_ai_provider_service(db: Session = None) -> AIProviderService:
-    """Initialize AI Provider Service singleton"""
+    """Initialize AI Provider Service singleton (call from main.py during startup)"""
     global ai_provider_service
     
     try:
         ai_provider_service = AIProviderService(db)
         
         if ai_provider_service.is_available:
-            logger.info("✅ AI PROVIDER SERVICE v4.0 LOADED SUCCESSFULLY")
+            logger.info("✅ AI PROVIDER SERVICE v5.0 LOADED SUCCESSFULLY")
             logger.info(f"   PRIMARY: Groq ({ai_provider_service.groq_model})")
             logger.info(f"   SECONDARY: DeepSeek")
             logger.info(f"   TERTIARY: OpenAI")
@@ -1058,12 +1345,13 @@ def get_ai_provider_service() -> Optional[AIProviderService]:
 
 
 # ==========================================================
-# AUTO-INITIALIZATION
+# NO AUTO-INITIALIZATION (moved to main.py)
 # ==========================================================
-
-try:
-    ai_provider_service = AIProviderService(db=None)
-    logger.info("AI Provider Service v4.0 auto-initialized (no DB)")
-except Exception as e:
-    logger.error(f"Auto-initialization failed: {e}")
-    ai_provider_service = None
+# The following code has been REMOVED to prevent crashes during import:
+#
+# try:
+#     ai_provider_service = AIProviderService(db=None)
+#     logger.info("AI Provider Service auto-initialized (no DB)")
+# except Exception as e:
+#     logger.error(f"Auto-initialization failed: {e}")
+#     ai_provider_service = None
