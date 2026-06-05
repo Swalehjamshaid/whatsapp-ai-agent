@@ -1,5 +1,5 @@
 # ==========================================================
-# FILE: app/routes/webhook.py (PRODUCTION READY v5.0)
+# FILE: app/routes/webhook.py (PRODUCTION READY v5.1)
 # PROJECT: AI WhatsApp Logistics Copilot
 # ==========================================================
 
@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional, List
 from enum import Enum
 from dataclasses import dataclass, asdict
 
-from fastapi import APIRouter, Request, Depends, HTTPException
+from fastapi import APIRouter, Request, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from loguru import logger
 
@@ -643,34 +643,52 @@ def format_executive_response(data: Dict[str, Any], response_type: str) -> str:
     return data.get("response", data.get("formatted_message", "No response available"))
 
 # ==========================================================
-# WEBHOOK VERIFICATION
+# WEBHOOK VERIFICATION (IMPROVED - PRODUCTION READY)
 # ==========================================================
 
 @router.get("/")
 async def webhook_verification(
-    hub_mode: str = "",
-    hub_verify_token: str = "",
-    hub_challenge: str = ""
+    hub_mode: str = Query(None, alias="hub.mode"),
+    hub_verify_token: str = Query(None, alias="hub.verify_token"),
+    hub_challenge: str = Query(None, alias="hub.challenge")
 ):
-    try:
-        result = verify_webhook(
-            hub_verify_token,
-            hub_challenge,
-            WHATSAPP_VERIFY_TOKEN
-        )
-
-        if result["success"]:
-            logger.info(f"Webhook verified successfully")
-            return int(result["challenge"])
-
-        logger.warning(f"Webhook verification failed")
-    except Exception as e:
-        logger.error(f"Webhook verification error: {e}")
+    """
+    WhatsApp webhook verification endpoint
+    Meta sends: hub.mode, hub.verify_token, hub.challenge
+    """
+    # Priority 2: Debug logs
+    logger.info("=" * 50)
+    logger.info("📞 WEBHOOK VERIFICATION REQUEST")
+    logger.info(f"hub.mode = {hub_mode}")
+    logger.info(f"hub.verify_token = {hub_verify_token}")
+    logger.info(f"hub.challenge = {hub_challenge}")
+    logger.info(f"server WHATSAPP_VERIFY_TOKEN = {WHATSAPP_VERIFY_TOKEN}")
+    logger.info("=" * 50)
     
-    return {"success": False, "message": "Verification failed"}
+    # Priority 5: Simplified verification logic
+    if (
+        hub_mode == "subscribe"
+        and hub_verify_token == WHATSAPP_VERIFY_TOKEN
+        and hub_challenge is not None
+    ):
+        logger.success("✅ Webhook verification successful!")
+        # Return challenge as integer (Meta requirement)
+        try:
+            return int(hub_challenge)
+        except ValueError:
+            return hub_challenge
+    
+    # Verification failed
+    logger.error("❌ Webhook verification failed!")
+    logger.error(f"Reason: hub_mode={hub_mode}, token_match={hub_verify_token == WHATSAPP_VERIFY_TOKEN}")
+    
+    raise HTTPException(
+        status_code=403,
+        detail="Verification failed. Check your verify token."
+    )
 
 # ==========================================================
-# RECEIVE WHATSAPP MESSAGE (PRODUCTION READY v5.0)
+# RECEIVE WHATSAPP MESSAGE (PRODUCTION READY v5.1)
 # ==========================================================
 
 @router.post("/")
@@ -1716,7 +1734,7 @@ async def receive_message(
 async def test_webhook():
     return {
         "success": True,
-        "message": "Webhook is active - Production Ready v5.0",
+        "message": "Webhook is active - Production Ready v5.1",
         "features": [
             "Safe Imports (All services protected)",
             "Safe Service Initialization",
@@ -1732,7 +1750,8 @@ async def test_webhook():
             "Root Cause Analysis",
             "Forecast Commands",
             "Recommendation Engine",
-            "Suggested Follow-ups"
+            "Suggested Follow-ups",
+            "Fixed Webhook Verification (v5.1)"
         ]
     }
 
@@ -1742,8 +1761,8 @@ async def health_check():
     """Comprehensive health check"""
     return {
         "status": "healthy",
-        "service": "WhatsApp Webhook - Production Ready v5.0",
-        "version": "5.0.0",
+        "service": "WhatsApp Webhook - Production Ready v5.1",
+        "version": "5.1.0",
         "services_status": {
             "ai_query_service": AI_QUERY_AVAILABLE,
             "session_service": SESSION_AVAILABLE,
@@ -1762,7 +1781,8 @@ async def health_check():
             "Full Context Injection",
             "Executive Dashboard",
             "Root Cause Analysis",
-            "Forecast Engine"
+            "Forecast Engine",
+            "Fixed Webhook Verification"
         ],
         "timestamp": datetime.utcnow().isoformat()
     }
