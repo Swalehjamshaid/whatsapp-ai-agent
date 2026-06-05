@@ -381,8 +381,16 @@ def classify_query(question: str) -> QueryCategory:
             return QueryCategory.RECOMMENDATION
         if any(word in question_lower for word in ["risk", "critical", "urgent"]):
             return QueryCategory.RISK
-        if "dealer" in question_lower or "customer" in question_lower:
-            return QueryCategory.DEALER
+      dealer_keywords = [
+    "dealer",
+    "dealer dashboard",
+    "dealer performance",
+    "dealer health",
+    "dealer report"
+]
+
+if any(keyword in question_lower for keyword in dealer_keywords):
+    return QueryCategory.DEALER
         if "warehouse" in question_lower or "godown" in question_lower:
             return QueryCategory.WAREHOUSE
         if "city" in question_lower:
@@ -699,6 +707,19 @@ async def receive_message(
         # Parse incoming message
         try:
             payload = await request.json()
+
+            try:
+    value = payload["entry"][0]["changes"][0]["value"]
+
+    if value.get("statuses"):
+        logger.info("Ignoring WhatsApp status update")
+        return {"success": True}
+except Exception:
+    pass
+
+
+
+            
             parsed_message = parse_whatsapp_message(payload)
         except Exception as e:
             logger.error(f"Failed to parse webhook payload: {e}")
@@ -707,7 +728,16 @@ async def receive_message(
         # ==========================================================
         # STEP 2: LOG COMPLETE PAYLOAD WHEN NO MESSAGE FOUND
         # ==========================================================
-        if not parsed_message:
+      logger.info("=" * 50)
+logger.info(f"PHONE: {phone_number}")
+logger.info(f"MESSAGE: {customer_message}")
+logger.info(f"TYPE: {parsed_message.get('type')}")
+logger.info("=" * 50)
+
+
+
+
+if not parsed_message:
             logger.info("FULL WEBHOOK PAYLOAD:")
             logger.info(json.dumps(payload, indent=2))
             
@@ -1490,6 +1520,36 @@ async def receive_message(
         # ==========================================================
         # SECTION 5: PROTECT AI PROCESSING
         # ==========================================================
+        general_chat_keywords = [
+    "hello", "hi", "hey", "salam",
+    "how are you",
+    "can i ask",
+    "help",
+    "thanks",
+    "thank you"
+]
+
+if any(word in customer_message.lower() for word in general_chat_keywords):
+    if ai_service:
+        result = ai_service.process_query(
+            question=customer_message,
+            user_phone=phone_number,
+            user_role=user_role
+        )
+
+        ai_reply = result.get(
+            "response",
+            "Hello! How can I assist you today?"
+        )
+
+        send_structured_message(phone_number, ai_reply)
+
+        return {
+            "success": True,
+            "intent": "general_chat",
+            "ai_reply": ai_reply
+        }
+        
         ai_start_time = time.time()
         result = None
         
