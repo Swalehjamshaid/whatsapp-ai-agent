@@ -645,18 +645,15 @@ def format_executive_response(data: Dict[str, Any], response_type: str) -> str:
 # ==========================================================
 # WEBHOOK VERIFICATION (IMPROVED - PRODUCTION READY)
 # ==========================================================
+from fastapi.responses import PlainTextResponse
 
 @router.get("/")
-async def webhook_verification(
-    hub_mode: str = Query(None, alias="hub.mode"),
-    hub_verify_token: str = Query(None, alias="hub.verify_token"),
-    hub_challenge: str = Query(None, alias="hub.challenge")
-):
-    """
-    WhatsApp webhook verification endpoint
-    Meta sends: hub.mode, hub.verify_token, hub.challenge
-    """
-    # Priority 2: Debug logs
+async def webhook_verification(request: Request):
+
+    hub_mode = request.query_params.get("hub.mode")
+    hub_verify_token = request.query_params.get("hub.verify_token")
+    hub_challenge = request.query_params.get("hub.challenge")
+
     logger.info("=" * 50)
     logger.info("📞 WEBHOOK VERIFICATION REQUEST")
     logger.info(f"hub.mode = {hub_mode}")
@@ -664,24 +661,21 @@ async def webhook_verification(
     logger.info(f"hub.challenge = {hub_challenge}")
     logger.info(f"server WHATSAPP_VERIFY_TOKEN = {WHATSAPP_VERIFY_TOKEN}")
     logger.info("=" * 50)
-    
-    # Priority 5: Simplified verification logic
+
     if (
         hub_mode == "subscribe"
         and hub_verify_token == WHATSAPP_VERIFY_TOKEN
-        and hub_challenge is not None
+        and hub_challenge
     ):
         logger.success("✅ Webhook verification successful!")
-        # Return challenge as integer (Meta requirement)
-        try:
-            return int(hub_challenge)
-        except ValueError:
-            return hub_challenge
-    
-    # Verification failed
+        return PlainTextResponse(content=hub_challenge)
+
     logger.error("❌ Webhook verification failed!")
-    logger.error(f"Reason: hub_mode={hub_mode}, token_match={hub_verify_token == WHATSAPP_VERIFY_TOKEN}")
-    
+    logger.error(
+        f"Reason: hub_mode={hub_mode}, "
+        f"token_match={hub_verify_token == WHATSAPP_VERIFY_TOKEN}"
+    )
+
     raise HTTPException(
         status_code=403,
         detail="Verification failed. Check your verify token."
