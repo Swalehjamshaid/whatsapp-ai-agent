@@ -1,1021 +1,893 @@
 # ==========================================================
-# FILE: app/services/ai_query_service.py (FINAL IMPROVED VERSION)
+# FILE: app/services/ai_provider_service.py (ENTERPRISE GRADE)
 # ==========================================================
 
-from typing import Dict, Any, List, Optional, Tuple
-from datetime import datetime
-import re
 import json
 import time
-from difflib import get_close_matches
+import re
+from typing import Dict, Any, List, Optional, Tuple
+from datetime import datetime
+from functools import lru_cache
+from enum import Enum
 
-from sqlalchemy.orm import Session
+import requests
 from loguru import logger
+from openai import OpenAI
+from sqlalchemy.orm import Session
 
-from app.models import AIResponseLog
 from app.config import config
-from app.services.analytics_service import AnalyticsService
-from app.services.logistics_query_service import LogisticsQueryService
-
-# Safe import for AI provider
-try:
-    from app.services.ai_provider_service import ai_provider_service
-    AI_PROVIDER_AVAILABLE = True
-except ImportError as e:
-    logger.warning(f"AI Provider Service not available: {e}")
-    AI_PROVIDER_AVAILABLE = False
-    ai_provider_service = None
+from app.models import AIResponseLog
 
 
-# ======================================================
-# USER ROLES
-# ======================================================
+# ==========================================================
+# AI PROVIDER STATUS
+# ==========================================================
 
-class UserRole:
-    CEO = "ceo"
-    MANAGER = "manager"
-    BRANCH = "branch"
-    VENDOR = "vendor"
-    GUEST = "guest"
+class ProviderStatus(Enum):
+    ONLINE = "online"
+    DEGRADED = "degraded"
+    OFFLINE = "offline"
+    UNKNOWN = "unknown"
 
 
-# ======================================================
-# FIX 1: IMPROVED SINGLETON PATTERN with Session Handling
-# ======================================================
+# ==========================================================
+# AI PROMPT TEMPLATES
+# ==========================================================
 
-class AIQueryServiceSingleton:
-    """Singleton wrapper with proper session handling"""
-    _instance = None
-    _db_session = None
+PROMPTS = {
+    "executive_summary": """
+You are a Logistics AI Advisor for a major distribution company.
+
+CONTEXT DATA:
+{context}
+
+QUESTION: {question}
+
+RESPONSE REQUIREMENTS:
+1. Start with an executive summary (2-3 sentences)
+2. List top 3 risks with financial impact
+3. Provide 3 specific actionable recommendations
+4. Use emojis for visual hierarchy
+5. Keep total response under 500 words
+6. Be direct and business-focused
+
+FORMAT:
+🎯 EXECUTIVE SUMMARY
+[summary text]
+
+🚨 TOP RISKS
+1. [risk] - [impact]
+2. [risk] - [impact]
+3. [risk] - [impact]
+
+💡 RECOMMENDATIONS
+1. [action]
+2. [action]
+3. [action]
+""",
+
+    "dealer_analysis": """
+You are a Logistics AI Advisor analyzing a dealer.
+
+DEALER DATA:
+{dealer_data}
+
+QUESTION: {question}
+
+ANALYZE:
+1. Dealer health score (0-100)
+2. Pending DNs and financial exposure
+3. Root causes of any issues
+4. Risk level (Low/Medium/High/Critical)
+5. Specific action plan
+
+FORMAT:
+📊 DEALER SCORE: [score]/100
+
+📦 PENDING: [number] DNs
+💰 EXPOSURE: Rs [amount]
+
+⚠️ RISK LEVEL: [level]
+
+🔍 ROOT CAUSES:
+• [cause]
+• [cause]
+
+✅ ACTION PLAN:
+1. [action]
+2. [action]
+""",
+
+    "warehouse_analysis": """
+You are a Logistics AI Advisor analyzing a warehouse.
+
+WAREHOUSE DATA:
+{warehouse_data}
+
+QUESTION: {question}
+
+ANALYZE:
+1. Warehouse efficiency score (0-100)
+2. Pending DNs and bottlenecks
+3. Processing capacity issues
+4. Recommendations for improvement
+
+FORMAT:
+🏭 WAREHOUSE HEALTH: [score]/100
+
+📦 PENDING: [number] DNs
+⚡ EFFICIENCY: [percentage]%
+
+🚨 BOTTLENECKS:
+• [bottleneck]
+• [bottleneck]
+
+✅ OPTIMIZATION:
+1. [action]
+2. [action]
+""",
+
+    "city_analysis": """
+You are a Logistics AI Advisor analyzing a city.
+
+CITY DATA:
+{city_data}
+
+QUESTION: {question}
+
+ANALYZE:
+1. City performance score (0-100)
+2. Pending DNs by area
+3. Key constraints (transport, warehouse, dealer)
+4. Recovery strategy
+
+FORMAT:
+🌆 CITY HEALTH: [score]/100
+
+📦 PENDING DNs: [number]
+💰 VALUE AT RISK: Rs [amount]
+
+🔑 CONSTRAINTS:
+• [constraint]
+• [constraint]
+
+🎯 RECOVERY PLAN:
+1. [action]
+2. [action]
+""",
+
+    "root_cause": """
+You are a Logistics AI Advisor performing root cause analysis.
+
+METRICS:
+{pending_metrics}
+{pod_metrics}
+{risk_metrics}
+
+QUESTION: {question}
+
+ANALYZE root causes as percentages:
+- Dealer delays
+- Warehouse processing delays
+- Documentation/paperwork issues
+- Transport/logistics issues
+- Other factors
+
+OUTPUT EXACTLY:
+🔍 ROOT CAUSE ANALYSIS
+
+Dealer Delays: [X]%
+Warehouse Delays: [X]%
+Documentation: [X]%
+Transport: [X]%
+Other: [X]%
+
+💡 RECOMMENDATION: [one sentence solution]
+""",
+
+    "recommendations": """
+You are a Logistics AI Advisor providing recommendations.
+
+CURRENT STATE:
+{current_state}
+
+QUESTION: {question}
+
+PROVIDE:
+1. Immediate actions (next 24 hours)
+2. Short-term improvements (this week)
+3. Strategic changes (this month)
+
+FORMAT:
+⚡ IMMEDIATE (24h):
+1. [action]
+
+📅 THIS WEEK:
+1. [action]
+
+🏆 STRATEGIC:
+1. [action]
+""",
+
+    "general": """
+You are a Logistics AI Assistant for a WhatsApp business platform.
+
+CONTEXT:
+{context}
+
+QUESTION: {question}
+
+INSTRUCTIONS:
+1. Be helpful and concise
+2. If unsure, suggest contacting support
+3. Never hallucinate data
+4. Keep responses under 400 words
+5. Use emojis for clarity
+
+RESPONSE:
+"""
+}
+
+
+# ==========================================================
+# AI CACHE MANAGER
+# ==========================================================
+
+class AICacheManager:
+    """Cache AI responses for cost reduction and speed"""
     
-    @classmethod
-    def get_instance(cls, db: Session = None):
-        if cls._instance is None:
-            if db is None:
-                raise Exception("First call must provide db")
-            cls._db_session = db
-            cls._instance = AIQueryService(db)
-            logger.info("✅ AIQueryService singleton created")
-        return cls._instance
+    def __init__(self, ttl_seconds: int = 300):
+        self.cache: Dict[str, Tuple[str, float]] = {}
+        self.ttl = ttl_seconds
     
-    @classmethod
-    def update_db_session(cls, db: Session):
-        """Update database session for existing instance"""
-        if cls._instance:
-            cls._instance.db = db
-            cls._instance.analytics = AnalyticsService(db)
-            cls._instance.logistics = LogisticsQueryService()
-            logger.info("✅ AIQueryService database session updated")
+    def get(self, key: str) -> Optional[str]:
+        if key in self.cache:
+            response, timestamp = self.cache[key]
+            if time.time() - timestamp < self.ttl:
+                return response
+            del self.cache[key]
+        return None
     
-    @classmethod
-    def reset(cls):
-        cls._instance = None
-        cls._db_session = None
-        logger.info("🔄 AIQueryService singleton reset")
+    def set(self, key: str, response: str):
+        self.cache[key] = (response, time.time())
+    
+    def clear(self):
+        self.cache.clear()
+    
+    def get_cache_key(self, prompt: str, model: str, context_hash: str = "") -> str:
+        return f"{model}:{context_hash}:{hash(prompt[:200])}"
 
 
-# ======================================================
-# CONVERSATIONAL MEMORY
-# ======================================================
+# ==========================================================
+# AI SAFETY LAYER
+# ==========================================================
 
-class ConversationMemory:
-    """Store conversation context per user with enhanced history"""
+class AISafetyLayer:
+    """Prevent dangerous operations and validate responses"""
     
-    def __init__(self):
-        self.memories: Dict[str, Dict] = {}
-    
-    def get(self, user_phone: str) -> Dict:
-        if user_phone not in self.memories:
-            self.memories[user_phone] = {
-                "last_intent": None,
-                "last_entity": None,
-                "last_city": None,
-                "last_dealer": None,
-                "last_dn": None,
-                "last_question": None,
-                "last_response": None,
-                "last_analysis": None,
-                "role": UserRole.GUEST,
-                "conversation_history": [],
-                "created_at": datetime.utcnow(),
-                "updated_at": datetime.utcnow()
-            }
-        return self.memories[user_phone]
-    
-    def update(self, user_phone: str, intent: str = None, entity: Any = None,
-               city: str = None, dealer: str = None, dn: str = None,
-               question: str = None, response: str = None, analysis: Dict = None,
-               role: str = None):
-        memory = self.get(user_phone)
-        
-        if intent:
-            memory["last_intent"] = intent
-        if entity:
-            memory["last_entity"] = entity
-        if city:
-            memory["last_city"] = city
-        if dealer:
-            memory["last_dealer"] = dealer
-        if dn:
-            memory["last_dn"] = dn
-        if question:
-            memory["last_question"] = question
-        if response:
-            memory["last_response"] = response
-        if analysis:
-            memory["last_analysis"] = analysis
-        if role:
-            memory["role"] = role
-        
-        if question and response:
-            memory["conversation_history"].append({
-                "question": question,
-                "response": response[:300],
-                "intent": intent,
-                "timestamp": datetime.utcnow().isoformat()
-            })
-            if len(memory["conversation_history"]) > 20:
-                memory["conversation_history"].pop(0)
-        
-        memory["updated_at"] = datetime.utcnow()
-    
-    def get_context_for_ai(self, user_phone: str) -> Dict:
-        """Get formatted context for AI injection"""
-        memory = self.get(user_phone)
-        return {
-            "last_intent": memory.get("last_intent"),
-            "last_entity": memory.get("last_entity"),
-            "last_city": memory.get("last_city"),
-            "last_dealer": memory.get("last_dealer"),
-            "last_dn": memory.get("last_dn"),
-            "last_question": memory.get("last_question"),
-            "conversation_history": memory.get("conversation_history", [])[-5:],
-            "user_role": memory.get("role", UserRole.GUEST)
-        }
-    
-    def clear(self, user_phone: str):
-        if user_phone in self.memories:
-            del self.memories[user_phone]
-
-
-# ======================================================
-# NATURAL LANGUAGE RANKING ENGINE
-# ======================================================
-
-class NaturalLanguageRankingEngine:
-    """Enhanced ranking detection with natural language patterns"""
-    
-    RANKING_PATTERNS = {
-        "dealer": [
-            "best performing dealer", "worst performing dealer",
-            "top dealer", "bottom dealer", "leading dealer",
-            "highest value dealer", "largest dealer", "biggest dealer",
-            "most pending dealer", "highest pending dealer",
-            "dealer with highest", "dealer with most",
-            "which dealer", "what dealer"
-        ],
-        "warehouse": [
-            "best warehouse", "worst warehouse", "top warehouse",
-            "highest efficiency warehouse", "most pending warehouse",
-            "warehouse with highest", "which warehouse"
-        ],
-        "city": [
-            "best city", "worst city", "top city",
-            "highest performing city", "most pending city",
-            "city with highest", "which city"
-        ]
-    }
-    
-    RANKING_KEYWORDS = [
-        "highest", "lowest", "top", "bottom", "best", "worst",
-        "largest", "smallest", "most", "least", "maximum", "minimum",
-        "ranking", "leaderboard", "top 10", "top 5", "top 3",
-        "highest pending", "most pending", "largest backlog",
-        "best performing", "leading", "biggest", "greatest"
+    DANGEROUS_PATTERNS = [
+        r"DROP\s+TABLE",
+        r"DELETE\s+FROM",
+        r"UPDATE\s+\w+\s+SET",
+        r"INSERT\s+INTO",
+        r"ALTER\s+TABLE",
+        r"TRUNCATE",
+        r"EXEC\s*\(",
+        r"xp_cmdshell",
+        r"UNION\s+SELECT",
+        r"--",
+        r";\s*DROP",
+        r"'\s*OR\s+'1'='1",
     ]
     
     @classmethod
-    def detect(cls, question: str) -> Tuple[bool, Optional[str]]:
+    def validate_prompt(cls, prompt: str) -> Tuple[bool, str]:
+        """Check prompt for dangerous content"""
+        prompt_upper = prompt.upper()
+        for pattern in cls.DANGEROUS_PATTERNS:
+            if re.search(pattern, prompt_upper):
+                logger.warning(f"Dangerous pattern detected: {pattern}")
+                return False, f"Dangerous pattern blocked: {pattern}"
+        return True, ""
+    
+    @classmethod
+    def sanitize_response(cls, response: str) -> str:
+        """Remove any dangerous content from AI response"""
+        # Remove any SQL injection attempts
+        for pattern in cls.DANGEROUS_PATTERNS:
+            response = re.sub(pattern, "[REDACTED]", response, flags=re.IGNORECASE)
+        return response[:4000]  # Limit response length
+
+
+# ==========================================================
+# AI PROVIDER SERVICE (ENTERPRISE GRADE)
+# ==========================================================
+
+class AIProviderService:
+    """
+    Enterprise AI Provider Service
+    
+    Features:
+    - Multi-provider support (DeepSeek + OpenAI fallback)
+    - Automatic retry with exponential backoff
+    - Health monitoring
+    - Response caching
+    - Usage logging
+    - Safety layer
+    - Prompt templates
+    """
+    
+    def __init__(self, db: Session = None):
+        self.db = db
+        self.cache = AICacheManager(ttl_seconds=300)  # 5 minute cache
+        self.retry_count = 3
+        self.retry_delay = 1  # seconds, exponential backoff
+        
+        # Initialize DeepSeek client
+        self.deepseek_api_key = getattr(config, 'DEEPSEEK_API_KEY', None)
+        self.deepseek_client = None
+        self.deepseek_status = ProviderStatus.UNKNOWN
+        
+        if self.deepseek_api_key:
+            try:
+                self.deepseek_client = OpenAI(
+                    api_key=self.deepseek_api_key,
+                    base_url="https://api.deepseek.com",
+                    timeout=30.0,
+                    max_retries=2
+                )
+                logger.info("✅ DeepSeek client initialized")
+                self.deepseek_status = ProviderStatus.ONLINE
+            except Exception as e:
+                logger.error(f"❌ DeepSeek initialization failed: {e}")
+                self.deepseek_status = ProviderStatus.OFFLINE
+        
+        # Initialize OpenAI fallback
+        self.openai_api_key = getattr(config, 'OPENAI_API_KEY', None)
+        self.openai_client = None
+        self.openai_status = ProviderStatus.UNKNOWN
+        
+        if self.openai_api_key:
+            try:
+                self.openai_client = OpenAI(
+                    api_key=self.openai_api_key,
+                    timeout=30.0,
+                    max_retries=2
+                )
+                logger.info("✅ OpenAI client initialized")
+                self.openai_status = ProviderStatus.ONLINE
+            except Exception as e:
+                logger.error(f"❌ OpenAI initialization failed: {e}")
+                self.openai_status = ProviderStatus.OFFLINE
+        
+        # Overall availability
+        self.is_available = (
+            self.deepseek_status == ProviderStatus.ONLINE or
+            self.openai_status == ProviderStatus.ONLINE
+        )
+        
+        # Log startup status
+        self._log_startup_status()
+    
+    def _log_startup_status(self):
+        """Log comprehensive startup status"""
+        logger.info("=" * 60)
+        logger.info("🤖 AI PROVIDER SERVICE INITIALIZED")
+        logger.info(f"DeepSeek: {self.deepseek_status.value}")
+        logger.info(f"OpenAI: {self.openai_status.value}")
+        logger.info(f"Overall Available: {self.is_available}")
+        logger.info(f"Cache TTL: {self.cache.ttl}s")
+        logger.info(f"Retry Count: {self.retry_count}")
+        logger.info("=" * 60)
+    
+    def check_health(self) -> Dict[str, Any]:
+        """Health check for all providers"""
+        health = {
+            "deepseek": self.deepseek_status.value,
+            "openai": self.openai_status.value,
+            "overall": self.is_available,
+            "cache_enabled": True,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        # Try to actually call health endpoint
+        if self.deepseek_status == ProviderStatus.ONLINE:
+            try:
+                test_response = self._call_deepseek("Hello", max_tokens=5)
+                if test_response.get("success"):
+                    health["deepseek"] = ProviderStatus.ONLINE.value
+                else:
+                    health["deepseek"] = ProviderStatus.DEGRADED.value
+            except:
+                health["deepseek"] = ProviderStatus.DEGRADED.value
+        
+        return health
+    
+    # ==========================================================
+    # CORE AI METHODS
+    # ==========================================================
+    
+    def answer_question(
+        self,
+        question: str,
+        context: Dict[str, Any] = None,
+        structured: bool = False,
+        user_phone: str = None,
+        template: str = "general",
+        max_tokens: int = 1000,
+        temperature: float = 0.7
+    ) -> Dict[str, Any]:
+        """
+        Answer a question using AI with fallback support
+        
+        Args:
+            question: User's question
+            context: Additional context data
+            structured: Whether to return structured response
+            user_phone: User identifier for logging
+            template: Prompt template to use
+            max_tokens: Maximum response tokens
+            temperature: Response creativity (0-1)
+        
+        Returns:
+            Dict with success, content, provider_used, etc.
+        """
+        start_time = time.time()
+        
+        # Validate prompt safety
+        is_safe, error_msg = AISafetyLayer.validate_prompt(question)
+        if not is_safe:
+            logger.warning(f"Unsafe prompt blocked: {error_msg}")
+            return {
+                "success": False,
+                "content": "⚠️ Your request contains unsafe content and cannot be processed.",
+                "error": error_msg,
+                "provider_used": "safety_layer",
+                "processing_time_ms": int((time.time() - start_time) * 1000)
+            }
+        
+        # Build prompt using template
+        prompt = self._build_prompt(question, context, template)
+        
+        # Check cache
+        cache_key = self.cache.get_cache_key(prompt, "deepseek", str(hash(str(context))))
+        cached_response = self.cache.get(cache_key)
+        if cached_response:
+            logger.info(f"Cache hit for: {question[:50]}...")
+            return {
+                "success": True,
+                "content": cached_response,
+                "provider_used": "cache",
+                "processing_time_ms": 0,
+                "cached": True
+            }
+        
+        # Try providers in order
+        response = None
+        provider_used = None
+        
+        # Try DeepSeek first
+        if self.deepseek_status == ProviderStatus.ONLINE:
+            response = self._call_deepseek(prompt, max_tokens, temperature)
+            if response.get("success"):
+                provider_used = "deepseek"
+        
+        # Fallback to OpenAI
+        if not response or not response.get("success"):
+            if self.openai_status == ProviderStatus.ONLINE:
+                response = self._call_openai(prompt, max_tokens, temperature)
+                if response.get("success"):
+                    provider_used = "openai"
+        
+        # Final fallback
+        if not response or not response.get("success"):
+            response = self._call_fallback(question)
+            provider_used = "fallback"
+        
+        # Sanitize response
+        if response.get("content"):
+            response["content"] = AISafetyLayer.sanitize_response(response["content"])
+        
+        # Cache successful response
+        if response.get("success") and provider_used in ["deepseek", "openai"]:
+            self.cache.set(cache_key, response["content"])
+        
+        # Log usage
+        processing_time = int((time.time() - start_time) * 1000)
+        response["processing_time_ms"] = processing_time
+        response["provider_used"] = provider_used
+        
+        self._log_usage(
+            user_phone=user_phone,
+            question=question,
+            response=response.get("content", ""),
+            provider=provider_used,
+            success=response.get("success", False),
+            processing_time_ms=processing_time
+        )
+        
+        logger.info(f"AI Response: provider={provider_used}, success={response.get('success')}, time={processing_time}ms")
+        
+        return response
+    
+    def _build_prompt(self, question: str, context: Dict = None, template: str = "general") -> str:
+        """Build prompt using template and context"""
+        template_content = PROMPTS.get(template, PROMPTS["general"])
+        
+        # Format context
+        context_str = json.dumps(context, indent=2, default=str) if context else "No additional context"
+        
+        # For executive summary, inject metrics
+        if template == "executive_summary" and context:
+            metrics = context.get("metrics", {})
+            context_str = f"""
+Pending DNs: {metrics.get('pending_dns', 0)}
+Pending Value: Rs {metrics.get('pending_value', 0):,.2f}
+POD Pending: {metrics.get('pod_pending', 0)}
+Top Risk Dealer: {context.get('top_risk_dealer', 'Unknown')}
+Top Warehouse: {context.get('top_warehouse', 'Unknown')}
+"""
+        
+        return template_content.format(
+            context=context_str[:2000],
+            question=question
+        )
+    
+    def _call_deepseek(self, prompt: str, max_tokens: int = 1000, temperature: float = 0.7) -> Dict[str, Any]:
+        """Call DeepSeek API with retry logic"""
+        if not self.deepseek_client:
+            return {"success": False, "error": "DeepSeek client not initialized"}
+        
+        for attempt in range(self.retry_count):
+            try:
+                logger.debug(f"DeepSeek attempt {attempt + 1}/{self.retry_count}")
+                
+                response = self.deepseek_client.chat.completions.create(
+                    model="deepseek-chat",
+                    messages=[
+                        {"role": "system", "content": "You are a logistics AI advisor. Be concise, professional, and data-driven."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    stream=False
+                )
+                
+                content = response.choices[0].message.content
+                
+                logger.info(f"DeepSeek success: {len(content)} chars")
+                return {
+                    "success": True,
+                    "content": content,
+                    "model": "deepseek-chat",
+                    "usage": {
+                        "prompt_tokens": response.usage.prompt_tokens if hasattr(response, 'usage') else 0,
+                        "completion_tokens": response.usage.completion_tokens if hasattr(response, 'usage') else 0
+                    }
+                }
+                
+            except Exception as e:
+                logger.warning(f"DeepSeek attempt {attempt + 1} failed: {e}")
+                if attempt < self.retry_count - 1:
+                    time.sleep(self.retry_delay * (2 ** attempt))
+                else:
+                    return {"success": False, "error": str(e)}
+        
+        return {"success": False, "error": "Max retries exceeded"}
+    
+    def _call_openai(self, prompt: str, max_tokens: int = 1000, temperature: float = 0.7) -> Dict[str, Any]:
+        """Call OpenAI API with retry logic"""
+        if not self.openai_client:
+            return {"success": False, "error": "OpenAI client not initialized"}
+        
+        for attempt in range(self.retry_count):
+            try:
+                logger.debug(f"OpenAI attempt {attempt + 1}/{self.retry_count}")
+                
+                response = self.openai_client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[
+                        {"role": "system", "content": "You are a logistics AI advisor. Be concise, professional, and data-driven."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    stream=False
+                )
+                
+                content = response.choices[0].message.content
+                
+                logger.info(f"OpenAI success: {len(content)} chars")
+                return {
+                    "success": True,
+                    "content": content,
+                    "model": "gpt-3.5-turbo",
+                    "usage": {
+                        "prompt_tokens": response.usage.prompt_tokens if hasattr(response, 'usage') else 0,
+                        "completion_tokens": response.usage.completion_tokens if hasattr(response, 'usage') else 0
+                    }
+                }
+                
+            except Exception as e:
+                logger.warning(f"OpenAI attempt {attempt + 1} failed: {e}")
+                if attempt < self.retry_count - 1:
+                    time.sleep(self.retry_delay * (2 ** attempt))
+                else:
+                    return {"success": False, "error": str(e)}
+        
+        return {"success": False, "error": "Max retries exceeded"}
+    
+    def _call_fallback(self, question: str) -> Dict[str, Any]:
+        """Rule-based fallback when AI is unavailable"""
+        logger.info(f"Using fallback for: {question[:50]}")
+        
         question_lower = question.lower()
         
-        for keyword in cls.RANKING_KEYWORDS:
-            if keyword in question_lower:
-                for entity_type, patterns in cls.RANKING_PATTERNS.items():
-                    for pattern in patterns:
-                        if pattern in question_lower or keyword in question_lower:
-                            return True, entity_type
-                return True, None
+        # Smart fallback responses
+        if any(word in question_lower for word in ["pending", "backlog"]):
+            content = "📊 I can see you're asking about pending items. Please check the pending dashboard or contact your warehouse manager for real-time updates."
+        elif any(word in question_lower for word in ["risk", "critical", "urgent"]):
+            content = "🚨 For risk assessment, please review the executive dashboard. Contact operations if you need immediate assistance."
+        elif any(word in question_lower for word in ["how", "why", "what"]):
+            content = "💡 For detailed analysis, our AI system is temporarily unavailable. Please try again in a few minutes or contact support."
+        else:
+            content = "🤖 Our AI assistant is currently experiencing high demand. Please try your request again in a moment. For urgent matters, contact operations directly."
         
-        for entity_type, patterns in cls.RANKING_PATTERNS.items():
-            for pattern in patterns:
-                if pattern in question_lower:
-                    return True, entity_type
-        
-        return False, None
-
-
-# ======================================================
-# ENHANCED INTENT CLASSIFIER
-# ======================================================
-
-class IntentClassifier:
+        return {
+            "success": True,
+            "content": content,
+            "model": "fallback",
+            "fallback": True
+        }
     
-    KNOWN_CITIES = [
-        "karachi", "lahore", "islamabad", "faisalabad", "multan",
-        "peshawar", "quetta", "rawalpindi", "gujranwala", "sialkot",
-        "hyderabad", "bahawalpur", "sukkur", "larkana"
-    ]
+    # ==========================================================
+    # SPECIALIZED ANALYSIS METHODS
+    # ==========================================================
     
-    GENERAL_AI_KEYWORDS = [
-        "who is", "what is", "why is", "how to", "tell me about",
-        "explain", "describe", "write", "create", "generate",
-        "joke", "story", "poem", "python", "code", "programming",
-        "weather", "news", "sports", "politics", "history"
-    ]
+    def analyze_dealer(
+        self,
+        dealer_data: Dict[str, Any],
+        structured: bool = False,
+        user_phone: str = None
+    ) -> Dict[str, Any]:
+        """Analyze dealer performance"""
+        question = "Analyze this dealer's performance and provide actionable insights."
+        
+        context = {
+            "dealer_data": dealer_data,
+            "type": "dealer_analysis"
+        }
+        
+        return self.answer_question(
+            question=question,
+            context=context,
+            structured=structured,
+            user_phone=user_phone,
+            template="dealer_analysis",
+            max_tokens=800,
+            temperature=0.5
+        )
     
-    DN_PATTERNS = [
-        r'\b(\d{8,15})\b',
-        r'dn[\s:]*(\d{8,15})',
-        r'delivery[-\s]?note[\s:]*(\d{8,15})',
-        r'track[\s:]*(\d{8,15})',
-        r'which\s+dn\s+(?:belong|for|of)\s+([A-Za-z0-9\s&]+)',
-        r'(?:show|list|get)\s+dn\s+(?:for|of)\s+([A-Za-z0-9\s&]+)'
-    ]
+    def analyze_warehouse(
+        self,
+        warehouse_data: Dict[str, Any],
+        structured: bool = False,
+        user_phone: str = None
+    ) -> Dict[str, Any]:
+        """Analyze warehouse performance"""
+        question = "Analyze this warehouse's efficiency and identify bottlenecks."
+        
+        return self.answer_question(
+            question=question,
+            context={"warehouse_data": warehouse_data},
+            structured=structured,
+            user_phone=user_phone,
+            template="warehouse_analysis",
+            max_tokens=800,
+            temperature=0.5
+        )
     
-    EXECUTIVE_KEYWORDS = [
-        "executive", "ceo", "command center", "what should i focus",
-        "overview", "kpi", "performance report", "summary",
-        "what are the biggest", "top risks", "today's priorities"
-    ]
+    def analyze_city(
+        self,
+        city_data: Dict[str, Any],
+        structured: bool = False,
+        user_phone: str = None
+    ) -> Dict[str, Any]:
+        """Analyze city performance"""
+        question = "Analyze this city's logistics performance and constraints."
+        
+        return self.answer_question(
+            question=question,
+            context={"city_data": city_data},
+            structured=structured,
+            user_phone=user_phone,
+            template="city_analysis",
+            max_tokens=800,
+            temperature=0.5
+        )
     
-    @classmethod
-    def classify(cls, question: str, memory: Dict = None, logistics_service=None) -> Tuple[str, Optional[str]]:
-        question_lower = question.lower().strip()
-        question_original = question.strip()
+    def generate_executive_summary(
+        self,
+        metrics: Dict[str, Any],
+        user_phone: str = None
+    ) -> Dict[str, Any]:
+        """Generate executive-level summary"""
+        question = "Generate an executive summary of logistics performance."
         
-        # Check for ranking using natural language engine
-        is_ranking, ranking_entity = NaturalLanguageRankingEngine.detect(question)
-        if is_ranking:
-            logger.info(f"Ranking detected: entity={ranking_entity}")
-            return "RANKING", ranking_entity
+        context = {
+            "metrics": metrics,
+            "top_risk_dealer": metrics.get("top_risk_dealer", "Unknown"),
+            "top_warehouse": metrics.get("top_warehouse", "Unknown"),
+            "type": "executive_summary"
+        }
         
-        # Try full question dealer lookup
-        if logistics_service:
-            try:
-                # Try exact match first
-                if hasattr(logistics_service, 'search_dealer'):
-                    dealer_match = logistics_service.search_dealer(question_original)
-                    if dealer_match:
-                        logger.info(f"Dealer found: '{question_original}' -> '{dealer_match}'")
-                        return "DEALER", dealer_match
-                
-                # Try fuzzy match for typos
-                if hasattr(logistics_service, 'fuzzy_search_dealer'):
-                    dealer_match = logistics_service.fuzzy_search_dealer(question_original)
-                    if dealer_match:
-                        logger.info(f"Fuzzy dealer match: '{question_original}' -> '{dealer_match}'")
-                        return "DEALER", dealer_match
-            except Exception as e:
-                logger.debug(f"Dealer search error: {e}")
-        
-        # Check for General AI questions
-        for keyword in cls.GENERAL_AI_KEYWORDS:
-            if keyword in question_lower:
-                return "GENERAL", None
-        
-        # DN Query
-        for pattern in cls.DN_PATTERNS:
-            match = re.search(pattern, question_original, re.IGNORECASE)
-            if match:
-                return "DN", match.group(1)
-        
-        # Executive Query
-        if any(kw in question_lower for kw in cls.EXECUTIVE_KEYWORDS):
-            return "EXECUTIVE", None
-        
-        # City Query
-        for city in cls.KNOWN_CITIES:
-            if city in question_lower:
-                return "CITY", city.title()
-        
-        # Warehouse Query
-        if "warehouse" in question_lower or "godown" in question_lower:
-            warehouse_match = re.search(r'(?:warehouse|godown)[\s:]+([A-Za-z0-9]+)', question_lower)
-            if warehouse_match:
-                return "WAREHOUSE", warehouse_match.group(1).upper()
-            return "WAREHOUSE", None
-        
-        # Product Query
-        if "product" in question_lower or "material" in question_lower:
-            product_match = re.search(r'(?:product|material)[\s:]+([A-Za-z0-9\-]+)', question_lower)
-            if product_match:
-                return "PRODUCT", product_match.group(1)
-            return "PRODUCT", None
-        
-        # Risk Query
-        if any(kw in question_lower for kw in ["risk", "critical", "urgent", "problem"]):
-            return "RISK", None
-        
-        # POD Query
-        if any(kw in question_lower for kw in ["pod", "acknowledgement", "proof of delivery"]):
-            return "POD", None
-        
-        # Pending Query
-        if any(kw in question_lower for kw in ["pending", "backlog", "waiting"]):
-            return "PENDING", None
-        
-        # Dealer Query with explicit indicators
-        dealer_indicators = ["dealer", "customer", "show", "dashboard"]
-        if any(ind in question_lower for ind in dealer_indicators):
-            words = question_lower.split()
-            for i, word in enumerate(words):
-                if word in dealer_indicators and i + 1 < len(words):
-                    return "DEALER", words[i + 1].title()
-        
-        # Check for follow-up questions
-        if memory and memory.get("last_intent"):
-            follow_up_keywords = ["why", "how", "what about", "tell me more", "explain", "improve", "cause"]
-            if any(kw in question_lower for kw in follow_up_keywords):
-                logger.info(f"Follow-up detected: returning {memory.get('last_intent')}")
-                return memory["last_intent"], memory.get("last_entity")
-        
-        # Service Discovery
-        if any(kw in question_lower for kw in ["help", "menu", "services", "what can you do"]):
-            return "SERVICE_DISCOVERY", None
-        
-        return "UNKNOWN", None
-
-
-# ======================================================
-# EXECUTIVE COMMAND CENTER
-# ======================================================
-
-class ExecutiveCommandCenter:
-    """Generate executive-level insights and action plans"""
+        return self.answer_question(
+            question=question,
+            context=context,
+            structured=False,
+            user_phone=user_phone,
+            template="executive_summary",
+            max_tokens=600,
+            temperature=0.4
+        )
     
-    @staticmethod
-    def generate_daily_briefing(analytics_service, ai_provider=None, user_phone=None) -> str:
-        briefing = ""
+    def generate_root_cause(
+        self,
+        pending_metrics: Dict[str, Any],
+        pod_metrics: Dict[str, Any],
+        risk_metrics: Dict[str, Any],
+        user_phone: str = None
+    ) -> Dict[str, Any]:
+        """Generate root cause analysis"""
+        question = "What are the root causes of delivery delays?"
         
-        try:
-            pending_metrics = analytics_service.pending_metrics() if hasattr(analytics_service, 'pending_metrics') else {}
-            pod_metrics = analytics_service.pod_metrics() if hasattr(analytics_service, 'pod_metrics') else {}
-            risk_dealers = analytics_service.top_risk_dealers(5) if hasattr(analytics_service, 'top_risk_dealers') else []
-            
-            briefing = "🎯 *EXECUTIVE COMMAND CENTER*\n\n"
-            
-            briefing += "🚨 *TOP 5 RISKS*\n"
-            if risk_dealers:
-                for i, dealer in enumerate(risk_dealers[:5], 1):
-                    briefing += f"   {i}. {dealer.get('dealer', 'Unknown')}: {dealer.get('pending_dns', 0)} pending\n"
-            else:
-                briefing += "   No major risks detected\n"
-            
-            briefing += f"\n📊 *KEY METRICS*\n"
-            briefing += f"   • Pending DNs: {pending_metrics.get('pending_dns', 0)}\n"
-            briefing += f"   • POD Pending: {pod_metrics.get('pod_pending_dns', 0)}\n"
-            briefing += f"   • Pending Value: Rs {pending_metrics.get('pending_value', 0):,.2f}\n"
-            
-            if ai_provider and hasattr(ai_provider, 'answer_question'):
-                try:
-                    context = {
-                        "pending_dns": pending_metrics.get('pending_dns', 0),
-                        "pod_pending": pod_metrics.get('pod_pending_dns', 0),
-                        "risk_dealers": [d.get('dealer') for d in risk_dealers[:3]]
-                    }
-                    response = ai_provider.answer_question(
-                        "Based on this data, what are the top 3 actions for today?",
-                        context,
-                        structured=False,
-                        user_phone=user_phone
-                    )
-                    if response.get("success"):
-                        briefing += f"\n💡 *AI RECOMMENDATIONS*\n{response.get('content', '')[:300]}\n"
-                except Exception as e:
-                    logger.error(f"Executive AI error: {e}")
-            
-        except Exception as e:
-            logger.error(f"Executive briefing error: {e}")
-            briefing = "🎯 *EXECUTIVE COMMAND CENTER*\n\nUnable to generate briefing at this time."
+        context = {
+            "pending_metrics": pending_metrics,
+            "pod_metrics": pod_metrics,
+            "risk_metrics": risk_metrics
+        }
         
-        return briefing
-
-
-# ======================================================
-# SERVICE DISCOVERY
-# ======================================================
-
-class ServiceDiscovery:
+        return self.answer_question(
+            question=question,
+            context=context,
+            structured=False,
+            user_phone=user_phone,
+            template="root_cause",
+            max_tokens=300,
+            temperature=0.3
+        )
     
-    SERVICE_CATALOG = """
-📋 *SERVICE CATALOG*
-
-*1. Dealer Dashboard* - View dealer performance
-   Try: "Dealer Afzal" or "Show Abdullah Electronics"
-
-*2. City Analysis* - City-wise delivery performance
-   Try: "Karachi situation" or "Lahore performance"
-
-*3. Warehouse Analytics* - Warehouse efficiency
-   Try: "Warehouse HPK" or "Which warehouse has highest pending?"
-
-*4. DN Tracking* - Track specific delivery notes
-   Try: "DN 6243611264" or "Track delivery 1234567890"
-
-*5. POD Monitoring* - Proof of Delivery status
-   Try: "Pending POD" or "POD aging report"
-
-*6. Rankings* - Best/worst performers
-   Try: "Top 10 dealers" or "Which dealer has highest pending?"
-
-*7. Executive Dashboard* - Strategic insights
-   Try: "Executive summary" or "What should I focus on today?"
-
-*8. Risk Analysis* - Identify critical issues
-   Try: "Top risks" or "Which dealer is causing problems?"
-
-*9. General Questions* - Ask anything
-   Try: "Who is Imran Khan?" or "Explain logistics"
-
-━━━━━━━━━━━━━━━━━━━━
-Just type your question naturally!
-"""
+    def generate_recommendations(
+        self,
+        current_state: Dict[str, Any],
+        user_phone: str = None
+    ) -> Dict[str, Any]:
+        """Generate actionable recommendations"""
+        question = "What actions should be taken to improve logistics performance?"
+        
+        return self.answer_question(
+            question=question,
+            context={"current_state": current_state},
+            structured=False,
+            user_phone=user_phone,
+            template="recommendations",
+            max_tokens=500,
+            temperature=0.5
+        )
     
-    @staticmethod
-    def get_full_catalog() -> str:
-        return ServiceDiscovery.SERVICE_CATALOG
-    
-    @staticmethod
-    def get_quick_help() -> str:
-        return """
-🤖 *AI LOGISTICS ASSISTANT*
-
-*Quick Examples:*
-• `Dealer Afzal` - Dealer dashboard
-• `DN 6243611264` - Track delivery
-• `Karachi situation` - City analysis
-• `Top 10 dealers` - Rankings
-• `Executive summary` - CEO view
-• `Who is Imran Khan?` - General AI
-
-Type `services` for complete catalog!
-"""
-
-
-# ======================================================
-# FIX 4: AI INSIGHTS HELPER (Fallback for missing methods)
-# ======================================================
-
-class AIInsightsHelper:
-    """Helper to generate AI insights with fallback for missing methods"""
-    
-    @staticmethod
-    def analyze_entity(entity_data: Dict, entity_type: str, ai_provider, user_phone: str = None) -> Optional[Dict]:
-        """Generate AI insights for any entity type with fallback"""
-        if not ai_provider:
-            return None
+    def generate_ceo_briefing(
+        self,
+        analytics_data: Dict[str, Any],
+        user_phone: str = None
+    ) -> Dict[str, Any]:
+        """Generate comprehensive CEO briefing"""
         
-        try:
-            # Try direct method if available
-            method_name = f"analyze_{entity_type}"
-            if hasattr(ai_provider, method_name):
-                return getattr(ai_provider, method_name)(entity_data, structured=True, user_phone=user_phone)
-            
-            # Fallback to generic answer_question
-            prompt = f"Analyze this {entity_type} performance and provide key insights, risks, and recommendations."
-            response = ai_provider.answer_question(prompt, entity_data, structured=True, user_phone=user_phone)
-            return response if response.get("success") else None
-            
-        except Exception as e:
-            logger.error(f"AI insights error for {entity_type}: {e}")
-            return None
-
-
-# ======================================================
-# RESPONSE FORMATTER
-# ======================================================
-
-class ResponseFormatter:
-    
-    @staticmethod
-    def dealer_response(dealer_name: str, dashboard: Dict, ai_insights: Dict = None) -> str:
-        if dashboard.get("fuzzy"):
-            return dashboard.get("summary", "Multiple dealers found")
-        if not dashboard.get("success"):
-            return f"❌ Dealer '{dealer_name}' not found."
+        briefing_parts = []
         
-        response = dashboard.get("formatted_message", "")
+        # Executive summary
+        summary = self.generate_executive_summary(analytics_data, user_phone)
+        if summary.get("success"):
+            briefing_parts.append(summary.get("content", ""))
         
-        if ai_insights and ai_insights.get("success"):
-            response += "\n\n━━━━━━━━━━━━━━━━━━━━\n"
-            response += "🤖 *AI INSIGHTS*\n"
-            response += "━━━━━━━━━━━━━━━━━━━━\n"
-            if ai_insights.get("summary"):
-                response += f"📊 {ai_insights['summary'][:300]}\n"
-            if ai_insights.get("recommendations"):
-                response += "\n💡 *Recommendations:*\n"
-                for rec in ai_insights["recommendations"][:3]:
-                    response += f"   • {rec}\n"
-        
-        return response
-    
-    @staticmethod
-    def city_response(city_name: str, city_data: Dict, ai_insights: Dict = None) -> str:
-        response = f"🌆 *CITY: {city_name.upper()}*\n\n"
-        response += f"📊 Total DNs: {city_data.get('total_dns', 0)}\n"
-        response += f"⏳ Pending DNs: {city_data.get('pending_dns', 0)}\n"
-        response += f"💰 Pending Value: Rs {city_data.get('pending_value', 0):,.2f}\n"
-        response += f"⚠️ Delay Rate: {city_data.get('delay_rate', 0)}%\n"
-        
-        if ai_insights and ai_insights.get("success"):
-            response += "\n━━━━━━━━━━━━━━━━━━━━\n"
-            response += "🤖 *AI ANALYSIS*\n"
-            response += "━━━━━━━━━━━━━━━━━━━━\n"
-            if ai_insights.get("summary"):
-                response += f"📊 {ai_insights['summary'][:300]}\n"
-            if ai_insights.get("risks"):
-                response += "\n⚠️ *Risks:*\n"
-                for risk in ai_insights["risks"][:2]:
-                    response += f"   • {risk}\n"
-            if ai_insights.get("recommendations"):
-                response += "\n💡 *Recommendations:*\n"
-                for rec in ai_insights["recommendations"][:2]:
-                    response += f"   • {rec}\n"
-        
-        return response
-    
-    @staticmethod
-    def warehouse_response(warehouse_data: Dict, ai_insights: Dict = None) -> str:
-        response = f"🏭 *WAREHOUSE: {warehouse_data.get('warehouse', 'Unknown')}*\n\n"
-        response += f"📊 Total DNs: {warehouse_data.get('total_dns', 0)}\n"
-        response += f"⏳ Pending DNs: {warehouse_data.get('pending_dns', 0)}\n"
-        response += f"⚡ Efficiency Score: {warehouse_data.get('efficiency_score', 0)}%\n"
-        
-        if ai_insights and ai_insights.get("success"):
-            response += "\n━━━━━━━━━━━━━━━━━━━━\n"
-            response += "🤖 *AI ANALYSIS*\n"
-            response += "━━━━━━━━━━━━━━━━━━━━\n"
-            if ai_insights.get("summary"):
-                response += f"{ai_insights['summary'][:300]}\n"
-        
-        return response
-    
-    @staticmethod
-    def ranking_response(rankings: Dict, category: str, limit: int = 10) -> str:
-        if category not in rankings:
-            return "No ranking data available"
-        data = rankings[category][:limit]
-        if not data:
-            return "No data found"
-        
-        category_name = "DEALERS" if category == "by_value" else category.upper()
-        response = f"📊 *TOP {category_name} RANKINGS*\n\n"
-        
-        for i, item in enumerate(data, 1):
-            if "dealer" in item:
-                response += f"{i}. *{item.get('dealer', 'Unknown')}*\n"
-                response += f"   📦 DNs: {item.get('total_dns', 0)}\n"
-                response += f"   💰 Value: Rs {item.get('total_value', 0):,.2f}\n"
-                pending = item.get('pending_dns', 0)
-                if pending > 0:
-                    response += f"   ⚠️ Pending: {pending}\n"
-                response += "\n"
-            elif "warehouse" in item:
-                response += f"{i}. *{item.get('warehouse', 'Unknown')}*\n"
-                response += f"   📦 DNs: {item.get('total_dns', 0)}\n"
-                response += f"   ⚡ Efficiency: {item.get('efficiency_score', 0)}%\n\n"
-        
-        return response
-    
-    @staticmethod
-    def executive_response(briefing: str) -> str:
-        return briefing
-    
-    @staticmethod
-    def service_discovery_response() -> str:
-        return ServiceDiscovery.get_full_catalog()
-    
-    @staticmethod
-    def help_response() -> str:
-        return ServiceDiscovery.get_quick_help()
-    
-    @staticmethod
-    def unknown_response() -> str:
-        return ServiceDiscovery.get_full_catalog()
-    
-    @staticmethod
-    def dn_response(dn_details: Dict) -> str:
-        if not dn_details.get("success"):
-            return "❌ DN not found."
-        return f"🔹 *DN: {dn_details.get('dn_no')}*\n\n📋 Dealer: {dn_details.get('dealer')}\n📋 Status: {dn_details.get('status')}\n📋 POD: {dn_details.get('pod_status')}"
-    
-    @staticmethod
-    def product_response(product_data: Dict) -> str:
-        product = product_data.get("product", {})
-        return f"📦 *PRODUCT: {product.get('product_name')}*\n\n📊 Total Qty: {product.get('total_qty', 0):,.0f}\n✅ Fulfillment: {product.get('fulfillment_rate', 0)}%"
-    
-    @staticmethod
-    def pending_response(pending_data: Dict) -> str:
-        return f"⏳ *PENDING DELIVERIES*\n\n📊 Total: {pending_data.get('pending_dns', 0)} DNs\n📦 Units: {pending_data.get('pending_units', 0):,.0f}"
-    
-    @staticmethod
-    def risk_response(risk_data: Dict) -> str:
-        response = "🚨 *RISK ASSESSMENT*\n\n"
-        if risk_data.get("risk_dealers"):
-            for dealer in risk_data.get("risk_dealers", [])[:5]:
-                response += f"⚠️ {dealer.get('dealer', 'Unknown')}: {dealer.get('pending_dns', 0)} pending\n"
-        return response if len(response) > 30 else "No significant risks detected."
-    
-    @staticmethod
-    def pod_response(pod_data: Dict) -> str:
-        return f"📋 *POD STATUS*\n\n📊 Pending: {pod_data.get('pod_pending_dns', 0)} DNs\n📦 Units: {pod_data.get('pod_pending_units', 0):,.0f}"
-
-
-# ======================================================
-# MAIN AI QUERY SERVICE (SINGLETON)
-# ======================================================
-
-class AIQueryService:
-    """Main AI Query Service - Singleton instance"""
-    
-    def __init__(self, db: Session):
-        self.db = db
-        self.analytics = AnalyticsService(db)
-        self.logistics = LogisticsQueryService()
-        self.formatter = ResponseFormatter()
-        self.memory = ConversationMemory()
-        self.ai_insights_helper = AIInsightsHelper()
-        
-        # AI availability settings
-        self.ai_enabled = getattr(config, 'ENABLE_DEEPSEEK_LOGISTICS', False) and getattr(config, 'AI_ANALYSIS_ENABLED', False)
-        deepseek_api_key = getattr(config, 'DEEPSEEK_API_KEY', None)
-        
-        self.ai_available = self.ai_enabled and bool(deepseek_api_key) and ai_provider_service is not None
-        
-        logger.info("=" * 50)
-        logger.info("🚀 AI QUERY SERVICE INITIALIZED (SINGLETON)")
-        logger.info(f"AI_ENABLED={self.ai_enabled}")
-        logger.info(f"DEEPSEEK_API_KEY={'SET' if deepseek_api_key else 'NOT SET'}")
-        logger.info(f"AI_AVAILABLE={self.ai_available}")
-        logger.info("=" * 50)
-    
-    def process_query(self, question: str, user_phone: str = None, user_role: str = None) -> Dict[str, Any]:
-        start_time = time.time()
-        question = question.strip()
-        
-        # Get user memory
-        user_memory = self.memory.get(user_phone) if user_phone else {}
-        
-        if user_role:
-            self.memory.update(user_phone, role=user_role)
-        
-        logger.info(f"📝 PROCESSING: {question} | User: {user_phone}")
-        
-        if question.lower() in ["help", "menu", "services", "what can you do", "capabilities"]:
-            result = {
-                "success": True,
-                "response": self.formatter.service_discovery_response(),
-                "question_type": "SERVICE_DISCOVERY",
-                "ai_used": False
-            }
-            self.memory.update(user_phone, intent="SERVICE_DISCOVERY", question=question, response=result["response"])
-            result["processing_time_ms"] = int((time.time() - start_time) * 1000)
-            return result
-        
-        intent, entity = IntentClassifier.classify(question, user_memory, self.logistics)
-        
-        logger.info(f"🏷️ CLASSIFIED: Intent='{intent}' Entity='{entity}'")
-        
-        try:
-            if intent == "DN":
-                result = self._handle_dn_query(entity or question, user_phone)
-            elif intent == "RANKING":
-                result = self._handle_ranking_query(question, user_phone)
-            elif intent == "CITY":
-                result = self._handle_city_query(entity or question, user_phone)
-            elif intent == "EXECUTIVE":
-                result = self._handle_executive_query(user_phone)
-            elif intent == "RISK":
-                result = self._handle_risk_query(user_phone)
-            elif intent == "POD":
-                result = self._handle_pod_query(user_phone)
-            elif intent == "WAREHOUSE":
-                result = self._handle_warehouse_query(entity or question, user_phone)
-            elif intent == "PRODUCT":
-                result = self._handle_product_query(entity or question, user_phone)
-            elif intent == "DEALER":
-                result = self._handle_dealer_query(entity or question, user_phone)
-            elif intent == "PENDING":
-                result = self._handle_pending_query(user_phone)
-            elif intent == "GENERAL":
-                result = self._handle_general_query(question, user_phone)
-            else:
-                result = self._handle_unknown_query(question, user_phone)
-        except Exception as e:
-            logger.error(f"❌ Error: {e}")
-            result = {
-                "success": False,
-                "response": "⚠️ Service temporarily unavailable. Please try again later.",
-                "error": str(e),
-                "ai_used": False
-            }
-        
-        self.memory.update(user_phone, intent=intent, entity=entity, question=question, response=result.get("response", ""))
-        
-        if intent == "CITY" and entity:
-            self.memory.update(user_phone, city=entity)
-        elif intent == "DEALER" and entity:
-            self.memory.update(user_phone, dealer=entity)
-        elif intent == "DN" and entity:
-            self.memory.update(user_phone, dn=entity)
-        
-        result["question_type"] = intent
-        result["entity"] = entity
-        result["processing_time_ms"] = int((time.time() - start_time) * 1000)
-        
-        logger.info(f"✅ COMPLETED: Intent={intent} | AI={result.get('ai_used', False)} | Time={result['processing_time_ms']}ms")
-        
-        self._log_query(question, result, user_phone)
-        
-        return result
-    
-    # ======================================================
-    # HANDLER METHODS
-    # ======================================================
-    
-    def _handle_dealer_query(self, dealer_name: str, user_phone: str = None) -> Dict[str, Any]:
-        try:
-            dashboard = self.logistics.get_dealer_complete_dashboard(self.db, dealer_name, page=1, page_size=10)
-        except Exception as e:
-            logger.error(f"Dealer error: {e}")
-            return {"success": False, "response": f"❌ Unable to fetch dealer data for '{dealer_name}'.", "ai_used": False}
-        
-        if not dashboard.get("success"):
-            return {"success": False, "response": f"❌ Dealer '{dealer_name}' not found.", "ai_used": False}
-        
-        if dashboard.get("fuzzy"):
-            return {"success": True, "response": dashboard.get("summary", "Multiple dealers found"), "ai_used": False}
-        
-        ai_insights = None
-        if self.ai_available and ai_provider_service:
-            try:
-                ai_insights = self.ai_insights_helper.analyze_entity(
-                    dashboard, "dealer", ai_provider_service, user_phone
-                )
-            except Exception as e:
-                logger.error(f"AI dealer insights error: {e}")
-        
-        response = self.formatter.dealer_response(dealer_name, dashboard, ai_insights)
-        return {"success": True, "response": response, "ai_used": ai_insights is not None}
-    
-    def _handle_city_query(self, city_name: str, user_phone: str = None) -> Dict[str, Any]:
-        try:
-            if hasattr(self.analytics, 'city_rankings'):
-                rankings = self.analytics.city_rankings()
-            else:
-                return {"success": False, "response": "❌ City analytics not available.", "ai_used": False}
-        except Exception as e:
-            logger.error(f"City error: {e}")
-            return {"success": False, "response": "❌ Unable to fetch city data.", "ai_used": False}
-        
-        city_data = None
-        for c in rankings.get("all_cities", []):
-            if city_name.lower() in c.get("city", "").lower():
-                city_data = c
-                break
-        
-        if not city_data:
-            return {"success": False, "response": f"❌ City '{city_name}' not found.", "ai_used": False}
-        
-        ai_insights = None
-        if self.ai_available and ai_provider_service:
-            try:
-                ai_insights = self.ai_insights_helper.analyze_entity(
-                    city_data, "city", ai_provider_service, user_phone
-                )
-            except Exception as e:
-                logger.error(f"AI city insights error: {e}")
-        
-        response = self.formatter.city_response(city_name, city_data, ai_insights)
-        return {"success": True, "response": response, "ai_used": ai_insights is not None}
-    
-    def _handle_executive_query(self, user_phone: str = None) -> Dict[str, Any]:
-        briefing = ExecutiveCommandCenter.generate_daily_briefing(
-            self.analytics, 
-            ai_provider_service if self.ai_available else None, 
+        # Root cause
+        root_cause = self.generate_root_cause(
+            analytics_data.get("pending", {}),
+            analytics_data.get("pod", {}),
+            analytics_data.get("risks", {}),
             user_phone
         )
-        response = self.formatter.executive_response(briefing)
-        return {"success": True, "response": response, "ai_used": False}
-    
-    def _handle_ranking_query(self, question: str, user_phone: str = None) -> Dict[str, Any]:
-        question_lower = question.lower()
+        if root_cause.get("success"):
+            briefing_parts.append("\n" + root_cause.get("content", ""))
         
-        try:
-            if "warehouse" in question_lower:
-                if hasattr(self.analytics, 'warehouse_rankings'):
-                    rankings = self.analytics.warehouse_rankings(10)
-                    response = self.formatter.ranking_response(rankings, "all_warehouses", 10)
-                else:
-                    response = "❌ Warehouse rankings not available"
-            elif "dealer" in question_lower or "customer" in question_lower:
-                if hasattr(self.analytics, 'dealer_rankings'):
-                    rankings = self.analytics.dealer_rankings(10)
-                    response = self.formatter.ranking_response(rankings, "by_value", 10)
-                else:
-                    response = "❌ Dealer rankings not available"
-            else:
-                response = "📊 Please specify: dealers, warehouses, or cities"
-        except Exception as e:
-            logger.error(f"Ranking error: {e}")
-            response = "❌ Unable to generate rankings at this time."
+        # Recommendations
+        recommendations = self.generate_recommendations(analytics_data, user_phone)
+        if recommendations.get("success"):
+            briefing_parts.append("\n" + recommendations.get("content", ""))
         
-        return {"success": True, "response": response, "ai_used": False}
-    
-    def _handle_general_query(self, question: str, user_phone: str = None) -> Dict[str, Any]:
-        logger.info(f"🔍 CALLING DEEPSEEK: {question}")
-        
-        if self.ai_available and ai_provider_service:
-            try:
-                context = self.memory.get_context_for_ai(user_phone)
-                
-                response = ai_provider_service.answer_question(
-                    question, 
-                    context=context,
-                    structured=False, 
-                    user_phone=user_phone
-                )
-                
-                if response.get("success"):
-                    logger.info(f"✅ DEEPSEEK RESPONSE RECEIVED")
-                    return {
-                        "success": True,
-                        "response": response.get("content", "No response generated."),
-                        "ai_used": True
-                    }
-                else:
-                    logger.warning(f"⚠️ DEEPSEEK RESPONSE FAILED")
-            except Exception as e:
-                logger.error(f"❌ DEEPSEEK CALL ERROR: {e}")
-        else:
-            logger.warning(f"⚠️ DeepSeek not available. ai_available={self.ai_available}")
+        combined = "\n\n━━━━━━━━━━━━━━━━━━━━\n\n".join(briefing_parts)
         
         return {
-            "success": False,
-            "response": "⚠️ AI service is temporarily unavailable. Please try again later.",
-            "ai_used": False
+            "success": True,
+            "content": combined,
+            "provider_used": "ceo_briefing_composite"
         }
     
-    def _handle_unknown_query(self, question: str, user_phone: str = None) -> Dict[str, Any]:
-        logger.info(f"🔍 CALLING DEEPSEEK (unknown query): {question}")
+    def _log_usage(
+        self,
+        user_phone: str,
+        question: str,
+        response: str,
+        provider: str,
+        success: bool,
+        processing_time_ms: int
+    ):
+        """Log AI usage for analytics"""
+        if not self.db:
+            return
         
-        if self.ai_available and ai_provider_service:
-            try:
-                context = self.memory.get_context_for_ai(user_phone)
-                response = ai_provider_service.answer_question(question, context=context, structured=False, user_phone=user_phone)
-                
-                if response.get("success"):
-                    logger.info(f"✅ DEEPSEEK RESPONSE RECEIVED")
-                    return {
-                        "success": True,
-                        "response": response.get("content", self.formatter.unknown_response()),
-                        "ai_used": True
-                    }
-            except Exception as e:
-                logger.error(f"Unknown query AI error: {e}")
-        
-        return {"success": True, "response": self.formatter.unknown_response(), "ai_used": False}
-    
-    def _handle_warehouse_query(self, warehouse_name: str, user_phone: str = None) -> Dict[str, Any]:
-        try:
-            if hasattr(self.analytics, 'warehouse_rankings'):
-                rankings = self.analytics.warehouse_rankings()
-            else:
-                return {"success": False, "response": "❌ Warehouse analytics not available.", "ai_used": False}
-        except Exception as e:
-            logger.error(f"Warehouse error: {e}")
-            return {"success": False, "response": "❌ Unable to fetch warehouse data.", "ai_used": False}
-        
-        warehouse_data = None
-        for w in rankings.get("all_warehouses", []):
-            if warehouse_name.upper() in w.get("warehouse", "").upper():
-                warehouse_data = w
-                break
-        
-        if not warehouse_data:
-            return {"success": False, "response": f"❌ Warehouse '{warehouse_name}' not found.", "ai_used": False}
-        
-        ai_insights = None
-        if self.ai_available and ai_provider_service:
-            try:
-                ai_insights = self.ai_insights_helper.analyze_entity(
-                    warehouse_data, "warehouse", ai_provider_service, user_phone
-                )
-            except Exception as e:
-                logger.error(f"AI warehouse insights error: {e}")
-        
-        response = self.formatter.warehouse_response(warehouse_data, ai_insights)
-        return {"success": True, "response": response, "ai_used": ai_insights is not None}
-    
-    def _handle_dn_query(self, dn_no: str, user_phone: str = None) -> Dict[str, Any]:
-        try:
-            dn_details = self.logistics.get_dn_product_breakdown(self.db, dn_no)
-        except Exception as e:
-            logger.error(f"DN error: {e}")
-            return {"success": False, "response": f"❌ Unable to fetch DN {dn_no}.", "ai_used": False}
-        
-        response = self.formatter.dn_response(dn_details)
-        return {"success": dn_details.get("success", False), "response": response, "ai_used": False}
-    
-    def _handle_product_query(self, product_name: str, user_phone: str = None) -> Dict[str, Any]:
-        try:
-            if hasattr(self.analytics, 'product_dashboard'):
-                product_data = self.analytics.product_dashboard(product_name)
-            else:
-                return {"success": False, "response": "❌ Product analytics not available.", "ai_used": False}
-        except Exception as e:
-            logger.error(f"Product error: {e}")
-            return {"success": False, "response": "❌ Unable to fetch product data.", "ai_used": False}
-        
-        response = self.formatter.product_response(product_data)
-        return {"success": product_data.get("success", False), "response": response, "ai_used": False}
-    
-    def _handle_pending_query(self, user_phone: str = None) -> Dict[str, Any]:
-        try:
-            if hasattr(self.analytics, 'pending_metrics'):
-                pending_data = self.analytics.pending_metrics()
-            else:
-                pending_data = {}
-        except Exception as e:
-            logger.error(f"Pending error: {e}")
-            pending_data = {}
-        
-        response = self.formatter.pending_response(pending_data)
-        return {"success": True, "response": response, "ai_used": False}
-    
-    def _handle_pod_query(self, user_phone: str = None) -> Dict[str, Any]:
-        try:
-            if hasattr(self.analytics, 'pod_metrics'):
-                pod_data = self.analytics.pod_metrics()
-            else:
-                pod_data = {}
-        except Exception as e:
-            logger.error(f"POD error: {e}")
-            pod_data = {}
-        
-        response = self.formatter.pod_response(pod_data)
-        return {"success": True, "response": response, "ai_used": False}
-    
-    def _handle_risk_query(self, user_phone: str = None) -> Dict[str, Any]:
-        risk_dealers = []
-        try:
-            if hasattr(self.analytics, 'top_risk_dealers'):
-                risk_dealers = self.analytics.top_risk_dealers(5)
-        except Exception as e:
-            logger.error(f"Risk error: {e}")
-        
-        risk_data = {"risk_dealers": risk_dealers}
-        response = self.formatter.risk_response(risk_data)
-        return {"success": True, "response": response, "ai_used": False}
-    
-    def _log_query(self, question: str, result: Dict, user_phone: str = None, conversation_id: int = None):
         try:
             log_entry = AIResponseLog(
-                conversation_id=conversation_id,
+                conversation_id=None,
                 prompt=question[:500],
-                ai_response=result.get("response", "")[:2000],
-                model_name="deepseek" if result.get("ai_used") else "rule_based",
-                success=result.get("success", False),
+                ai_response=response[:2000],
+                model_name=provider,
+                success=success,
                 created_at=datetime.utcnow()
             )
             self.db.add(log_entry)
             self.db.commit()
         except Exception as e:
-            logger.error(f"Failed to log query: {e}")
-            self.db.rollback()
+            logger.error(f"Failed to log AI usage: {e}")
+            if self.db:
+                self.db.rollback()
 
 
-# ======================================================
-# FACTORY FUNCTIONS
-# ======================================================
+# ==========================================================
+# SINGLETON INSTANCE
+# ==========================================================
 
-def get_ai_query_service(db: Session = None) -> AIQueryService:
-    """Get singleton instance of AIQueryService"""
-    if db:
-        return AIQueryServiceSingleton.get_instance(db)
-    return AIQueryServiceSingleton.get_instance()
+ai_provider_service = None
 
 
-def update_ai_query_service_db(db: Session):
-    """Update database session for existing instance"""
-    AIQueryServiceSingleton.update_db_session(db)
+def init_ai_provider_service(db: Session = None) -> AIProviderService:
+    """Initialize AI Provider Service singleton"""
+    global ai_provider_service
+    
+    try:
+        ai_provider_service = AIProviderService(db)
+        
+        # Log detailed status
+        if ai_provider_service.is_available:
+            logger.info("✅ AI PROVIDER SERVICE LOADED SUCCESSFULLY")
+            health = ai_provider_service.check_health()
+            logger.info(f"Health Status: {health}")
+        else:
+            logger.error("❌ AI PROVIDER SERVICE FAILED TO LOAD")
+            logger.error("No AI providers are available. Check API keys.")
+        
+        return ai_provider_service
+        
+    except Exception as e:
+        logger.error(f"❌ AI PROVIDER SERVICE INITIALIZATION ERROR: {e}")
+        ai_provider_service = None
+        raise
 
 
-def reset_ai_query_service():
-    AIQueryServiceSingleton.reset()
+def get_ai_provider_service() -> Optional[AIProviderService]:
+    """Get the AI Provider Service instance"""
+    return ai_provider_service
 
 
-def process_whatsapp_query(question: str, db: Session, user_phone: str = None, user_role: str = None) -> str:
-    service = get_ai_query_service(db)
-    result = service.process_query(question, user_phone, user_role)
-    return result.get("response", "Unable to process your request. Please try again.")
+# ==========================================================
+# AUTO-INITIALIZATION (for compatibility)
+# ==========================================================
+
+# This runs when the module is imported
+# But we need db for full init, so this is partial
+try:
+    # Try to initialize without db first
+    ai_provider_service = AIProviderService(db=None)
+    logger.info("AI Provider Service auto-initialized (no DB)")
+except Exception as e:
+    logger.error(f"Auto-initialization failed: {e}")
+    ai_provider_service = None
