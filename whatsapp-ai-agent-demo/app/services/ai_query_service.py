@@ -1,5 +1,5 @@
 # ==========================================================
-# FILE: app/services/ai_query_service.py (ENTERPRISE v14.0 - DN-CENTRIC)
+# FILE: app/services/ai_query_service.py (ENTERPRISE v15.0 - DN-CENTRIC)
 # ==========================================================
 # DN-CENTRIC INTELLIGENCE ENGINE:
 # - Treats DN Number as primary business entity
@@ -9,6 +9,8 @@
 # - Enriches AI context with complete business data
 # - Risk intelligence with actionable recommendations
 # - Performance optimized with SQL aggregation
+# - DN Health Score & SLA Monitoring
+# - Exception Flags & Enhanced Intent Detection
 # ==========================================================
 
 import re
@@ -39,6 +41,27 @@ except ImportError as e:
 
 
 # ==========================================================
+# SLA CONFIGURATION
+# ==========================================================
+
+class SLAMetrics:
+    """SLA configuration for logistics KPIs"""
+    DISPATCH_SLA_DAYS = 3
+    DELIVERY_SLA_DAYS = 5
+    POD_SLA_DAYS = 7
+    
+    @staticmethod
+    def get_sla_status(actual_days: int, sla_days: int) -> Tuple[str, str]:
+        """Returns (status, icon)"""
+        if actual_days <= sla_days:
+            return "Within SLA", "✅"
+        elif actual_days <= sla_days * 1.5:
+            return "Near Breach", "⚠️"
+        else:
+            return "Breach", "🔴"
+
+
+# ==========================================================
 # DN-CENTRIC DATABASE SERVICE
 # ==========================================================
 
@@ -50,6 +73,108 @@ class DNCentricDatabaseService:
     
     def __init__(self, db: Session):
         self.db = db
+    
+    # ==========================================================
+    # HELPER METHODS FOR RISK CALCULATION
+    # ==========================================================
+    
+    def _calculate_pod_risk(self, primary, pod_aging_days: int, delivery_date, pgi_date) -> Tuple[int, int]:
+        """Calculate POD risk with proper aging for pending PODs"""
+        pod_risk_score = 0
+        pending_pod_aging = 0
+        
+        if primary.pod_status == "Pending":
+            # Calculate aging from delivery date or PGI date
+            if delivery_date:
+                pending_pod_aging = (datetime.now().date() - delivery_date).days
+            elif pgi_date:
+                pending_pod_aging = (datetime.now().date() - pgi_date).days
+            
+            if pending_pod_aging > 10:
+                pod_risk_score += 20
+            elif pending_pod_aging > 5:
+                pod_risk_score += 10
+                
+        elif primary.pod_status == "Received":
+            if pod_aging_days > 10:
+                pod_risk_score += 20
+            elif pod_aging_days > 5:
+                pod_risk_score += 10
+                
+        return pod_risk_score, pending_pod_aging
+    
+    def _calculate_dn_health_score(self, dispatch_aging: int, delivery_aging: int, 
+                                    pod_aging: int, pod_status: str, pending_pod_aging: int = 0) -> int:
+        """Calculate DN Health Score (0-100)"""
+        score = 100
+        
+        # Dispatch delay penalty (max 30 points)
+        if dispatch_aging > 15:
+            score -= 30
+        elif dispatch_aging > 7:
+            score -= 15
+        elif dispatch_aging > 3:
+            score -= 5
+        
+        # Delivery delay penalty (max 30 points)
+        if delivery_aging > 10:
+            score -= 30
+        elif delivery_aging > 5:
+            score -= 15
+        elif delivery_aging > 2:
+            score -= 5
+        
+        # POD penalty (max 40 points)
+        if pod_status == "Pending":
+            aging_to_use = pending_pod_aging if pending_pod_aging > 0 else pod_aging
+            if aging_to_use > 10:
+                score -= 40
+            elif aging_to_use > 5:
+                score -= 25
+            elif aging_to_use > 2:
+                score -= 10
+        elif pod_status == "Received" and pod_aging > 7:
+            score -= 10
+        
+        return max(0, min(100, score))
+    
+    def _get_exception_flags(self, data: Dict) -> List[str]:
+        """Generate exception flags for DN report"""
+        flags = []
+        
+        if data.get('total_value', 0) > 5_000_000:
+            flags.append("💰 HIGH VALUE DN")
+        if data.get('dispatch_aging_days', 0) > 7:
+            flags.append("🚨 DELAYED DISPATCH")
+        if data.get('pod_status') == "Pending" and data.get('pending_pod_aging', 0) > 10:
+            flags.append("📋 POD OVERDUE")
+        if data.get('dealer_summary', {}).get('health_score', 100) < 40:
+            flags.append("🏪 DEALER RISK")
+        if data.get('delivery_aging_days', 0) > 10:
+            flags.append("🚛 DELIVERY DELAY")
+        
+        return flags
+    
+    def _get_dealer_aggregated_metrics(self, dealer_name: str) -> Dict:
+        """Single aggregated query for dealer metrics (replaces .all() queries)"""
+        result = self.db.query(
+            func.count(DeliveryReport.dn_no).label("total_dns"),
+            func.sum(DeliveryReport.dn_amount).label("total_value"),
+            func.count(DeliveryReport.dn_no).filter(DeliveryReport.pgi_status == "Completed").label("delivered_dns"),
+            func.sum(DeliveryReport.dn_amount).filter(DeliveryReport.pgi_status == "Completed").label("delivered_value"),
+            func.count(DeliveryReport.dn_no).filter(
+                DeliveryReport.pgi_status == "Completed",
+                DeliveryReport.pod_status == "Pending"
+            ).label("pod_pending_dns")
+        ).filter(DeliveryReport.customer_name == dealer_name).first()
+        
+        return {
+            "total_dns": result.total_dns or 0,
+            "total_value": float(result.total_value or 0),
+            "delivered_dns": result.delivered_dns or 0,
+            "delivered_value": float(result.delivered_value or 0),
+            "pod_pending_dns": result.pod_pending_dns or 0
+        }
     
     # ==========================================================
     # CORE DN INTELLIGENCE - AGGREGATES ALL ROWS FOR A DN
@@ -64,6 +189,9 @@ class DNCentricDatabaseService:
         - Proper aging calculations
         - Dealer context
         - Risk analysis
+        - DN Health Score
+        - SLA Status
+        - Exception Flags
         """
         try:
             # STEP 1: Get ALL rows for this DN (not just first)
@@ -99,6 +227,10 @@ class DNCentricDatabaseService:
                     "quantity": qty,
                     "value": amt
                 })
+            
+            # Find highest quantity and value products
+            highest_qty_product = max(product_summary.items(), key=lambda x: x[1]["quantity"]) if product_summary else (None, None)
+            highest_value_product = max(product_summary.items(), key=lambda x: x[1]["value"]) if product_summary else (None, None)
             
             # ==========================================================
             # PROPER AGING CALCULATIONS (KPIs management needs)
@@ -151,22 +283,24 @@ class DNCentricDatabaseService:
                     elif pgi_date and pod_date:
                         pod_aging_days = (pod_date - pgi_date).days
             
+            # Calculate POD risk with proper pending POD aging
+            pod_risk_score, pending_pod_aging = self._calculate_pod_risk(
+                primary, pod_aging_days, delivery_date, pgi_date
+            )
+            
             # ==========================================================
-            # DEALER CONTEXT INTEGRATION
+            # DEALER CONTEXT INTEGRATION (Using Aggregated Query)
             # ==========================================================
             
             dealer_name = primary.customer_name
-            dealer_records = self.db.query(DeliveryReport).filter(
-                DeliveryReport.customer_name == dealer_name
-            ).all()
+            dealer_metrics = self._get_dealer_aggregated_metrics(dealer_name)
             
-            # Aggregate dealer data
-            dealer_total_dns = len(set(str(r.dn_no) for r in dealer_records))
-            dealer_delivered = len(set(str(r.dn_no) for r in dealer_records if r.pgi_status == "Completed"))
+            dealer_total_dns = dealer_metrics["total_dns"]
+            dealer_delivered = dealer_metrics["delivered_dns"]
             dealer_pending = dealer_total_dns - dealer_delivered
-            dealer_pod_pending = len(set(str(r.dn_no) for r in dealer_records if r.pgi_status == "Completed" and r.pod_status == "Pending"))
-            dealer_total_value = sum(float(r.dn_amount or 0) for r in dealer_records)
-            dealer_pending_value = sum(float(r.dn_amount or 0) for r in dealer_records if r.pgi_status != "Completed")
+            dealer_pod_pending = dealer_metrics["pod_pending_dns"]
+            dealer_total_value = dealer_metrics["total_value"]
+            dealer_pending_value = dealer_total_value - dealer_metrics["delivered_value"]
             
             dealer_delivery_rate = (dealer_delivered / dealer_total_dns) * 100 if dealer_total_dns > 0 else 0
             dealer_pod_rate = ((dealer_delivered - dealer_pod_pending) / dealer_delivered) * 100 if dealer_delivered > 0 else 0
@@ -197,13 +331,12 @@ class DNCentricDatabaseService:
                 risk_score += 15
                 risk_factors.append(f"Delivery aging: {delivery_aging_days} days")
             
-            # POD Risk
-            if primary.pod_status == "Pending" and pod_aging_days > 10:
-                risk_score += 20
-                risk_factors.append(f"POD pending {pod_aging_days} days")
-            elif primary.pod_status == "Pending" and pod_aging_days > 5:
-                risk_score += 10
-                risk_factors.append(f"POD aging: {pod_aging_days} days")
+            # POD Risk (using improved calculation)
+            risk_score += pod_risk_score
+            if pending_pod_aging > 10:
+                risk_factors.append(f"POD pending {pending_pod_aging} days")
+            elif pending_pod_aging > 5:
+                risk_factors.append(f"POD aging: {pending_pod_aging} days")
             
             # Dealer Risk
             if dealer_pending > 20:
@@ -221,6 +354,44 @@ class DNCentricDatabaseService:
                 risk_icon = "🟡"
             
             # ==========================================================
+            # DN HEALTH SCORE
+            # ==========================================================
+            
+            dn_health_score = self._calculate_dn_health_score(
+                dispatch_aging_days, delivery_aging_days, 
+                pod_aging_days, primary.pod_status, pending_pod_aging
+            )
+            
+            # ==========================================================
+            # SLA STATUS
+            # ==========================================================
+            
+            dispatch_sla_status, dispatch_sla_icon = SLAMetrics.get_sla_status(
+                dispatch_aging_days, SLAMetrics.DISPATCH_SLA_DAYS
+            )
+            delivery_sla_status, delivery_sla_icon = SLAMetrics.get_sla_status(
+                delivery_aging_days, SLAMetrics.DELIVERY_SLA_DAYS
+            )
+            pod_sla_status, pod_sla_icon = SLAMetrics.get_sla_status(
+                pending_pod_aging if primary.pod_status == "Pending" else pod_aging_days, 
+                SLAMetrics.POD_SLA_DAYS
+            )
+            
+            # ==========================================================
+            # EXCEPTION FLAGS
+            # ==========================================================
+            
+            exception_data = {
+                "total_value": total_value,
+                "dispatch_aging_days": dispatch_aging_days,
+                "pod_status": primary.pod_status,
+                "pending_pod_aging": pending_pod_aging,
+                "delivery_aging_days": delivery_aging_days,
+                "dealer_summary": {"health_score": dealer_health_score}
+            }
+            exception_flags = self._get_exception_flags(exception_data)
+            
+            # ==========================================================
             # FORMATTED RESPONSE
             # ==========================================================
             
@@ -230,6 +401,15 @@ class DNCentricDatabaseService:
                 product_list += f"   • {p[0]}: {p[1]['quantity']:,.0f} units (Rs {p[1]['value']:,.2f})\n"
             if len(product_summary) > 5:
                 product_list += f"   • ... and {len(product_summary) - 5} more products\n"
+            
+            # Build exception flags string
+            flags_str = ""
+            if exception_flags:
+                flags_str = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                flags_str += "🚨 *EXCEPTION FLAGS*\n"
+                flags_str += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                for flag in exception_flags:
+                    flags_str += f"   {flag}\n"
             
             response = f"""╔══════════════════════════════════════════════════════════════╗
 ║              📦 DN COMPLETE INTELLIGENCE REPORT                    ║
@@ -245,6 +425,8 @@ class DNCentricDatabaseService:
 • Total Units: {total_units:,.0f}
 • Total Value: Rs {total_value:,.2f}
 • Products: {len(product_summary)} items
+• Highest Qty Product: {highest_qty_product[0] if highest_qty_product[0] else 'N/A'} ({highest_qty_product[1]['quantity']:,.0f} units)
+• Highest Value Product: {highest_value_product[0] if highest_value_product[0] else 'N/A'} (Rs {highest_value_product[1]['value']:,.2f})
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📦 *PRODUCT BREAKDOWN*
@@ -256,7 +438,7 @@ class DNCentricDatabaseService:
 • 📅 DN Aging (Today - Create): {dn_aging_days} days
 • 🚚 Dispatch Aging (PGI - Create): {dispatch_aging_days} days
 • 🚛 Delivery Aging (Delivery - PGI): {delivery_aging_days} days
-• 📋 POD Aging (POD - Delivery): {pod_aging_days} days
+• 📋 POD Aging (POD - Delivery): {pod_aging_days if primary.pod_status == 'Received' else 'Pending'}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📊 *CURRENT STATUS*
@@ -264,6 +446,20 @@ class DNCentricDatabaseService:
 • Delivery Status: {'✅ DELIVERED' if primary.pgi_status == 'Completed' else '⏳ PENDING'}
 • POD Status: {'✅ RECEIVED' if primary.pod_status == 'Received' else '📋 PENDING'}
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💚 *DN HEALTH SCORE*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Health Score: {dn_health_score}/100
+{"✅ Excellent" if dn_health_score >= 80 else "⚠️ Needs Attention" if dn_health_score >= 50 else "🔴 Critical"}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏱️ *SLA MONITORING*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Dispatch SLA ({SLAMetrics.DISPATCH_SLA_DAYS} days): {dispatch_sla_icon} {dispatch_sla_status}
+• Delivery SLA ({SLAMetrics.DELIVERY_SLA_DAYS} days): {delivery_sla_icon} {delivery_sla_status}
+• POD SLA ({SLAMetrics.POD_SLA_DAYS} days): {pod_sla_icon} {pod_sla_status}
+
+{flags_str}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ⚠️ *RISK INTELLIGENCE*
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -290,16 +486,23 @@ class DNCentricDatabaseService:
 💡 *RECOMMENDATIONS*
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
+            recommendations = []
+            
             if dispatch_aging_days > 10:
-                response += "• 🚨 Escalate to warehouse - dispatch delay\n"
+                recommendations.append("• 🚨 Escalate to warehouse - dispatch delay")
             if delivery_aging_days > 7:
-                response += "• 🚛 Follow up with transporter\n"
-            if primary.pod_status == "Pending" and pod_aging_days > 7:
-                response += "• 📋 Urgent: Collect POD from dealer\n"
+                recommendations.append("• 🚛 Follow up with transporter")
+            if primary.pod_status == "Pending" and pending_pod_aging > 7:
+                recommendations.append("• 📋 Urgent: Collect POD from dealer")
             if dealer_pending > 0:
-                response += f"• 📦 Dealer has {dealer_pending} other pending DNs\n"
-            if not response:
-                response += "• ✅ No action needed\n"
+                recommendations.append(f"• 📦 Dealer has {dealer_pending} other pending DNs")
+            if dn_health_score < 50:
+                recommendations.append("• ⚠️ DN Health Critical - Immediate action required")
+            
+            if len(recommendations) == 0:
+                recommendations.append("• ✅ No action needed")
+            
+            response += "\n".join(recommendations) + "\n"
             
             return {
                 "success": True,
@@ -313,9 +516,12 @@ class DNCentricDatabaseService:
                 "dispatch_aging_days": dispatch_aging_days,
                 "delivery_aging_days": delivery_aging_days,
                 "pod_aging_days": pod_aging_days,
+                "pending_pod_aging": pending_pod_aging,
+                "dn_health_score": dn_health_score,
                 "risk_score": risk_score,
                 "risk_level": risk_level,
                 "risk_factors": risk_factors,
+                "exception_flags": exception_flags,
                 "dealer_summary": {
                     "total_dns": dealer_total_dns,
                     "delivered": dealer_delivered,
@@ -329,6 +535,96 @@ class DNCentricDatabaseService:
         except Exception as e:
             logger.error(f"DN intelligence error: {e}")
             return {"success": False, "message": f"Error: {str(e)}"}
+    
+    # ==========================================================
+    # DN STATUS ENGINE METHODS
+    # ==========================================================
+    
+    def get_pending_dns(self, limit: int = 20) -> List[Dict]:
+        """Get all pending DNs (PGI not completed)"""
+        try:
+            results = self.db.query(
+                DeliveryReport.dn_no,
+                DeliveryReport.customer_name,
+                DeliveryReport.dn_amount,
+                DeliveryReport.dn_create_date
+            ).filter(
+                DeliveryReport.pgi_status != "Completed"
+            ).order_by(
+                DeliveryReport.dn_create_date
+            ).limit(limit).all()
+            
+            return [{"dn_no": r.dn_no, "dealer": r.customer_name, 
+                     "amount": float(r.dn_amount or 0),
+                     "created_date": r.dn_create_date} for r in results]
+        except Exception as e:
+            logger.error(f"Error getting pending DNs: {e}")
+            return []
+    
+    def get_dns_older_than(self, days: int, limit: int = 20) -> List[Dict]:
+        """Get DNs older than specified days"""
+        try:
+            cutoff_date = datetime.now().date() - timedelta(days=days)
+            results = self.db.query(
+                DeliveryReport.dn_no,
+                DeliveryReport.customer_name,
+                DeliveryReport.dn_amount,
+                DeliveryReport.dn_create_date,
+                DeliveryReport.pgi_status
+            ).filter(
+                DeliveryReport.dn_create_date <= cutoff_date,
+                DeliveryReport.pgi_status != "Completed"
+            ).order_by(
+                DeliveryReport.dn_create_date
+            ).limit(limit).all()
+            
+            return [{"dn_no": r.dn_no, "dealer": r.customer_name,
+                     "amount": float(r.dn_amount or 0),
+                     "age_days": days,
+                     "status": r.pgi_status} for r in results]
+        except Exception as e:
+            logger.error(f"Error getting old DNs: {e}")
+            return []
+    
+    def get_delayed_dns(self, delay_threshold_days: int = 7, limit: int = 20) -> List[Dict]:
+        """Get DNs with dispatch delay beyond threshold"""
+        try:
+            results = self.db.query(
+                DeliveryReport.dn_no,
+                DeliveryReport.customer_name,
+                DeliveryReport.dn_amount,
+                DeliveryReport.dn_create_date,
+                DeliveryReport.good_issue_date
+            ).filter(
+                DeliveryReport.good_issue_date.isnot(None),
+                DeliveryReport.dn_create_date.isnot(None)
+            ).all()
+            
+            delayed = []
+            for r in results:
+                if isinstance(r.dn_create_date, datetime):
+                    create_date = r.dn_create_date.date()
+                else:
+                    create_date = r.dn_create_date
+                if isinstance(r.good_issue_date, datetime):
+                    pgi_date = r.good_issue_date.date()
+                else:
+                    pgi_date = r.good_issue_date
+                
+                dispatch_days = (pgi_date - create_date).days if pgi_date and create_date else 0
+                if dispatch_days > delay_threshold_days:
+                    delayed.append({
+                        "dn_no": r.dn_no,
+                        "dealer": r.customer_name,
+                        "amount": float(r.dn_amount or 0),
+                        "dispatch_delay_days": dispatch_days
+                    })
+            
+            delayed.sort(key=lambda x: x["dispatch_delay_days"], reverse=True)
+            return delayed[:limit]
+        except Exception as e:
+            logger.error(f"Error getting delayed DNs: {e}")
+            return []
     
     # ==========================================================
     # DEALER EXECUTIVE DASHBOARD (Optimized)
@@ -480,12 +776,17 @@ class DNCentricDatabaseService:
 💡 *RECOMMENDATIONS*
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
+            recs = []
             if pending > 0:
-                response += f"• Clear {pending} pending deliveries\n"
+                recs.append(f"• Clear {pending} pending deliveries")
             if pod_pending > 0:
-                response += f"• Collect POD for {pod_pending} delivered DNs\n"
+                recs.append(f"• Collect POD for {pod_pending} delivered DNs")
             if avg_aging > 15:
-                response += "• Review dispatch process for delays\n"
+                recs.append("• Review dispatch process for delays")
+            if len(recs) == 0:
+                recs.append("• ✅ No action needed")
+            
+            response += "\n".join(recs)
             
             return {
                 "success": True,
@@ -502,6 +803,121 @@ class DNCentricDatabaseService:
         except Exception as e:
             logger.error(f"Dealer dashboard error: {e}")
             return {"success": False, "message": f"Error: {str(e)}"}
+    
+    # ==========================================================
+    # POD INTELLIGENCE METHODS
+    # ==========================================================
+    
+    def get_pending_pods(self, limit: int = 20) -> List[Dict]:
+        """Get all pending PODs with aging"""
+        try:
+            results = self.db.query(
+                DeliveryReport.dn_no,
+                DeliveryReport.customer_name,
+                DeliveryReport.dn_amount,
+                DeliveryReport.delivery_date,
+                DeliveryReport.good_issue_date
+            ).filter(
+                DeliveryReport.pgi_status == "Completed",
+                DeliveryReport.pod_status == "Pending"
+            ).all()
+            
+            pending_pods = []
+            for r in results:
+                if r.delivery_date:
+                    if isinstance(r.delivery_date, datetime):
+                        delivery_date = r.delivery_date.date()
+                    else:
+                        delivery_date = r.delivery_date
+                    aging_days = (datetime.now().date() - delivery_date).days
+                elif r.good_issue_date:
+                    if isinstance(r.good_issue_date, datetime):
+                        pgi_date = r.good_issue_date.date()
+                    else:
+                        pgi_date = r.good_issue_date
+                    aging_days = (datetime.now().date() - pgi_date).days
+                else:
+                    aging_days = 0
+                
+                pending_pods.append({
+                    "dn_no": r.dn_no,
+                    "dealer": r.customer_name,
+                    "amount": float(r.dn_amount or 0),
+                    "aging_days": aging_days
+                })
+            
+            pending_pods.sort(key=lambda x: x["aging_days"], reverse=True)
+            return pending_pods[:limit]
+        except Exception as e:
+            logger.error(f"Error getting pending PODs: {e}")
+            return []
+    
+    def get_pod_delay_by_dealer(self, limit: int = 20) -> List[Dict]:
+        """Get dealers with maximum POD delay"""
+        try:
+            pending_pods = self.get_pending_pods(100)
+            dealer_delays = defaultdict(lambda: {"total_amount": 0, "count": 0, "max_aging": 0})
+            
+            for pod in pending_pods:
+                dealer_delays[pod["dealer"]]["total_amount"] += pod["amount"]
+                dealer_delays[pod["dealer"]]["count"] += 1
+                dealer_delays[pod["dealer"]]["max_aging"] = max(dealer_delays[pod["dealer"]]["max_aging"], pod["aging_days"])
+            
+            result = []
+            for dealer, data in dealer_delays.items():
+                result.append({
+                    "dealer": dealer,
+                    "pending_pod_count": data["count"],
+                    "pending_amount": data["total_amount"],
+                    "max_aging_days": data["max_aging"]
+                })
+            
+            result.sort(key=lambda x: x["max_aging_days"], reverse=True)
+            return result[:limit]
+        except Exception as e:
+            logger.error(f"Error getting POD delay by dealer: {e}")
+            return []
+    
+    # ==========================================================
+    # PGI INTELLIGENCE METHODS
+    # ==========================================================
+    
+    def get_pending_pgi(self, limit: int = 20) -> List[Dict]:
+        """Get all pending PGI DNs"""
+        try:
+            results = self.db.query(
+                DeliveryReport.dn_no,
+                DeliveryReport.customer_name,
+                DeliveryReport.dn_amount,
+                DeliveryReport.dn_create_date
+            ).filter(
+                DeliveryReport.pgi_status != "Completed"
+            ).order_by(
+                DeliveryReport.dn_create_date
+            ).limit(limit).all()
+            
+            pending = []
+            for r in results:
+                if r.dn_create_date:
+                    if isinstance(r.dn_create_date, datetime):
+                        create_date = r.dn_create_date.date()
+                    else:
+                        create_date = r.dn_create_date
+                    aging = (datetime.now().date() - create_date).days
+                else:
+                    aging = 0
+                
+                pending.append({
+                    "dn_no": r.dn_no,
+                    "dealer": r.customer_name,
+                    "amount": float(r.dn_amount or 0),
+                    "aging_days": aging
+                })
+            
+            return pending
+        except Exception as e:
+            logger.error(f"Error getting pending PGI: {e}")
+            return []
     
     # ==========================================================
     # NETWORK HEALTH (Optimized with SQL aggregation)
@@ -705,7 +1121,10 @@ class DNCentricDatabaseService:
             "top_risk_dealers": self.get_enhanced_top_risk_dealers(10),
             "city_performance": self.get_city_performance()[:5],
             "warehouse_performance": self.get_warehouse_performance()[:5],
-            "revenue_analysis": self.get_revenue_analysis()
+            "revenue_analysis": self.get_revenue_analysis(),
+            "pending_pods": self.get_pending_pods(5),
+            "pending_pgi": self.get_pending_pgi(5),
+            "delayed_dns": self.get_delayed_dns(7, 5)
         }
 
 
@@ -799,10 +1218,25 @@ class ResponseFormatter:
 💡 *PRIORITY ACTIONS:*
 1. Escalate top 5 risk dealers immediately
 2. Focus POD collection on pending DNs
-3. Review warehouse dispatch process for aging
+3. Review warehouse dispatch process for delays
 
 Type "Help" for all commands"""
         
+        return response
+    
+    @staticmethod
+    def pending_dns_response(dns_list: List, title: str = "Pending DNs") -> str:
+        if not dns_list:
+            return f"✅ No {title.lower()} found."
+        
+        response = f"📋 *{title}*\n\n"
+        for d in dns_list[:15]:
+            response += f"🔢 *{d['dn_no']}*\n"
+            response += f"   🏪 {d['dealer'][:30]}\n"
+            response += f"   💰 Rs {d['amount']:,.2f}\n"
+            if d.get('aging_days', 0) > 0:
+                response += f"   ⏱️ {d['aging_days']} days old\n"
+            response += "\n"
         return response
 
 
@@ -869,6 +1303,10 @@ class IntentType(str, Enum):
     WELCOME = "welcome"
     DEALER_LOOKUP = "dealer_lookup"
     DN_LOOKUP = "dn_lookup"
+    DN_STATUS = "dn_status"
+    DN_PENDING = "dn_pending"
+    DN_DELAYED = "dn_delayed"
+    DN_OLDER = "dn_older"
     TOP_DEALERS = "top_dealers"
     TOP_RISK_DEALERS = "top_risk_dealers"
     EXECUTIVE_SUMMARY = "executive_summary"
@@ -877,6 +1315,9 @@ class IntentType(str, Enum):
     WAREHOUSE_PERFORMANCE = "warehouse_performance"
     REVENUE_ANALYSIS = "revenue_analysis"
     OUTSTANDING_ANALYSIS = "outstanding_analysis"
+    POD_ANALYSIS = "pod_analysis"
+    PENDING_POD = "pending_pod"
+    PENDING_PGI = "pending_pgi"
     GENERAL_QUERY = "general_query"
 
 
@@ -890,16 +1331,30 @@ Welcome! I can analyze Dealers, DNs, PODs, Warehouses, Cities, Financial Perform
 
 🏪 *Dealers* - Type a dealer name
 🔢 *DN Tracking* - Send a 10-digit DN number
+📋 *DN Status* - "Pending DNs", "Delayed DNs"
+📋 *POD Status* - "Pending PODs"
 👑 *Executive Reports* - "Executive summary"
 🏭 *Warehouse* - "Warehouse performance"
 🌆 *Cities* - "City performance"
 💰 *Financial* - "Revenue analysis"
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 *Examples: "Exact Trading Co", "6243611920", "Executive summary"*"""
+💡 *Examples: "Exact Trading Co", "6243611920", "Executive summary", "Pending DNs"*"""
 
 
 class IntentDetector:
+    
+    # Keyword groups for better detection
+    DN_KEYWORDS = ["dn", "delivery note", "delivery order"]
+    PENDING_KEYWORDS = ["pending", "not delivered", "not pgi", "undelivered", "open"]
+    DELAYED_KEYWORDS = ["delay", "delayed", "late", "overdue", "breach"]
+    POD_KEYWORDS = ["pod", "proof of delivery", "pod pending"]
+    PGI_KEYWORDS = ["pgi", "goods issue", "dispatch"]
+    DEALER_KEYWORDS = ["dealer", "customer", "distributor"]
+    WAREHOUSE_KEYWORDS = ["warehouse", "godown", "stock point"]
+    CITY_KEYWORDS = ["city", "cities", "location"]
+    RISK_KEYWORDS = ["risk", "critical", "urgent", "escalate"]
+    REVENUE_KEYWORDS = ["revenue", "sales", "amount", "value", "financial"]
     
     @staticmethod
     def detect_dn(message: str) -> Tuple[bool, Optional[str]]:
@@ -943,30 +1398,55 @@ class IntentDetector:
         if is_dn:
             return IntentType.DN_LOOKUP, dn_num
         
-        if any(word in msg_lower for word in ["executive summary", "ceo summary"]):
+        # DN Status Queries
+        if any(word in msg_lower for word in IntentDetector.PENDING_KEYWORDS) and \
+           any(word in msg_lower for word in IntentDetector.DN_KEYWORDS):
+            return IntentType.DN_PENDING, None
+        
+        if any(word in msg_lower for word in IntentDetector.DELAYED_KEYWORDS) and \
+           any(word in msg_lower for word in IntentDetector.DN_KEYWORDS):
+            return IntentType.DN_DELAYED, None
+        
+        # POD Queries
+        if any(word in msg_lower for word in IntentDetector.POD_KEYWORDS):
+            if "pending" in msg_lower or "delay" in msg_lower:
+                return IntentType.PENDING_POD, None
+            return IntentType.POD_ANALYSIS, None
+        
+        # PGI Queries
+        if any(word in msg_lower for word in IntentDetector.PGI_KEYWORDS) and "pending" in msg_lower:
+            return IntentType.PENDING_PGI, None
+        
+        # Executive Queries
+        if any(word in msg_lower for word in ["executive summary", "ceo summary", "management summary"]):
             return IntentType.EXECUTIVE_SUMMARY, None
         
-        if any(word in msg_lower for word in ["network health", "health score"]):
+        if any(word in msg_lower for word in ["network health", "health score", "network status"]):
             return IntentType.NETWORK_HEALTH, None
         
-        if any(word in msg_lower for word in ["top risk", "risk dealers"]):
-            return IntentType.TOP_RISK_DEALERS, None
+        # Risk Queries
+        if any(word in msg_lower for word in IntentDetector.RISK_KEYWORDS):
+            if "dealer" in msg_lower or "top risk" in msg_lower:
+                return IntentType.TOP_RISK_DEALERS, None
         
-        if any(word in msg_lower for word in ["top dealer", "top performing"]):
+        # Dealer Queries
+        if any(word in msg_lower for word in ["top dealer", "top performing", "best dealer"]):
             return IntentType.TOP_DEALERS, None
         
-        if any(word in msg_lower for word in ["city", "city performance"]):
+        # Performance Queries
+        if any(word in msg_lower for word in IntentDetector.CITY_KEYWORDS):
             return IntentType.CITY_PERFORMANCE, None
         
-        if "warehouse" in msg_lower:
+        if any(word in msg_lower for word in IntentDetector.WAREHOUSE_KEYWORDS):
             return IntentType.WAREHOUSE_PERFORMANCE, None
         
-        if any(word in msg_lower for word in ["revenue", "revenue analysis"]):
+        # Financial Queries
+        if any(word in msg_lower for word in IntentDetector.REVENUE_KEYWORDS):
+            if "outstanding" in msg_lower or "pending value" in msg_lower:
+                return IntentType.OUTSTANDING_ANALYSIS, None
             return IntentType.REVENUE_ANALYSIS, None
         
-        if any(word in msg_lower for word in ["outstanding", "pending value"]):
-            return IntentType.OUTSTANDING_ANALYSIS, None
-        
+        # Default to dealer lookup for short text
         if len(msg_lower.split()) <= 5 and not msg_lower.isdigit():
             return IntentType.DEALER_LOOKUP, msg_original
         
@@ -987,7 +1467,7 @@ class AIQueryService:
         self.executive_cache = ExecutiveContextCache()
         self.db_hash = hashlib.md5(str(db).encode()).hexdigest()
         
-        # Initialize AI Provider
+        # Initialize AI Provider (GROQ)
         self.ai_provider = None
         self.ai_available = False
         
@@ -1001,7 +1481,7 @@ class AIQueryService:
                 self.ai_available = False
         
         logger.info("=" * 50)
-        logger.info("🚀 AI LOGISTICS INTELLIGENCE ASSISTANT v14.0 (DN-CENTRIC)")
+        logger.info("🚀 AI LOGISTICS INTELLIGENCE ASSISTANT v15.0 (DN-CENTRIC)")
         logger.info(f"GROQ Available: {self.ai_available}")
         logger.info("=" * 50)
     
@@ -1035,6 +1515,10 @@ class AIQueryService:
                 result = self._handle_dealer_lookup(entity)
             elif intent == IntentType.DN_LOOKUP:
                 result = self._handle_dn_lookup(entity)
+            elif intent == IntentType.DN_PENDING:
+                result = self._handle_pending_dns()
+            elif intent == IntentType.DN_DELAYED:
+                result = self._handle_delayed_dns()
             elif intent == IntentType.TOP_DEALERS:
                 result = self._handle_top_dealers()
             elif intent == IntentType.TOP_RISK_DEALERS:
@@ -1051,6 +1535,10 @@ class AIQueryService:
                 result = self._handle_revenue_analysis()
             elif intent == IntentType.OUTSTANDING_ANALYSIS:
                 result = self._handle_outstanding_analysis()
+            elif intent == IntentType.PENDING_POD:
+                result = self._handle_pending_pods()
+            elif intent == IntentType.PENDING_PGI:
+                result = self._handle_pending_pgi()
             else:
                 result = self._handle_general_query(question, user_phone, user_role, conversation_context)
             
@@ -1075,6 +1563,40 @@ class AIQueryService:
         """DN-Centric: Returns aggregated DN intelligence with all products"""
         result = self.db_service.get_dn_complete_intelligence(dn_number)
         return {"success": result["success"], "response": result.get("formatted_response", result.get("message", "DN not found"))}
+    
+    def _handle_pending_dns(self) -> Dict[str, Any]:
+        pending = self.db_service.get_pending_dns(20)
+        return {"success": True, "response": self.formatter.pending_dns_response(pending, "Pending DNs")}
+    
+    def _handle_delayed_dns(self) -> Dict[str, Any]:
+        delayed = self.db_service.get_delayed_dns(7, 20)
+        if not delayed:
+            return {"success": True, "response": "✅ No delayed DNs found (threshold: 7 days)"}
+        
+        response = "🚨 *DELAYED DNs (>7 days)*\n\n"
+        for d in delayed[:15]:
+            response += f"🔢 *{d['dn_no']}*\n"
+            response += f"   🏪 {d['dealer'][:30]}\n"
+            response += f"   💰 Rs {d['amount']:,.2f}\n"
+            response += f"   ⏱️ {d['dispatch_delay_days']} days delayed\n\n"
+        return {"success": True, "response": response}
+    
+    def _handle_pending_pods(self) -> Dict[str, Any]:
+        pending_pods = self.db_service.get_pending_pods(20)
+        if not pending_pods:
+            return {"success": True, "response": "✅ No pending PODs found."}
+        
+        response = "📋 *PENDING PODs*\n\n"
+        for p in pending_pods[:15]:
+            response += f"🔢 *{p['dn_no']}*\n"
+            response += f"   🏪 {p['dealer'][:30]}\n"
+            response += f"   💰 Rs {p['amount']:,.2f}\n"
+            response += f"   ⏱️ {p['aging_days']} days pending\n\n"
+        return {"success": True, "response": response}
+    
+    def _handle_pending_pgi(self) -> Dict[str, Any]:
+        pending_pgi = self.db_service.get_pending_pgi(20)
+        return {"success": True, "response": self.formatter.pending_dns_response(pending_pgi, "Pending PGI DNs")}
     
     def _handle_top_dealers(self) -> Dict[str, Any]:
         dealers = self.db_service.get_top_dealers(20)
@@ -1160,6 +1682,8 @@ BUSINESS CONTEXT:
 - Avg Dispatch Aging: {executive_context.get('network_health', {}).get('avg_dispatch_aging', 0)} days
 - Top Dealers: {executive_context.get('top_dealers', [])[:3]}
 - Top Risk Dealers: {executive_context.get('top_risk_dealers', [])[:3]}
+- Pending PODs: {len(executive_context.get('pending_pods', []))}
+- Delayed DNs: {len(executive_context.get('delayed_dns', []))}
 """
         
         if conversation_context:
@@ -1210,6 +1734,8 @@ I understand you're asking about: "{question[:50]}"
 👑 "Executive summary" - Leadership view
 🏆 "Top dealers" - Best performers
 🚨 "Top risk dealers" - Critical accounts
+📋 "Pending PODs" - POD collection required
+🚚 "Pending PGI" - Dispatch pending
 
 Type "Help" for complete menu."""
         
