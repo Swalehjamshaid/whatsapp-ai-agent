@@ -1,14 +1,19 @@
 # ==========================================================
-# FILE: app/services/ai_query_service.py (ENTERPRISE v4.0)
+# FILE: app/services/ai_query_service.py (ENTERPRISE v4.1)
 # ==========================================================
 # Central Intelligence Router for WhatsApp
+# Fixed: AI diagnostics, greeting intent, threshold 85, 
+#        context clearing, JSON safety, empty dashboard check,
+#        help command, auto-refresh cache, query history
 # ==========================================================
 
 import re
 import time
+import threading
 from typing import Dict, Any, List, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
+from collections import deque
 
 from sqlalchemy.orm import Session
 from loguru import logger
@@ -35,10 +40,16 @@ except ImportError:
 
 
 # ==========================================================
-# INTENT TYPES (Improvement 1)
+# INTENT TYPES (Improvement 1 + 4)
 # ==========================================================
 
 class IntentType(str, Enum):
+    # New intents for better UX
+    GREETING = "greeting"           # FIX #4: Added greeting intent
+    HELP = "help"                   # FIX #4: Added help intent
+    THANKS = "thanks"               # FIX #4: Added thanks intent
+    
+    # Existing intents
     DEALER_LOOKUP = "dealer_lookup"
     DN_LOOKUP = "dn_lookup"
     WAREHOUSE_LOOKUP = "warehouse_lookup"
@@ -55,42 +66,55 @@ class IntentType(str, Enum):
 
 
 # ==========================================================
-# DEALER MASTER DATA CACHE (Improvement 3)
+# DEALER MASTER DATA CACHE (Improvement 3 + 9)
 # ==========================================================
 
 class DealerMasterData:
-    """Cache dealer names for fuzzy matching"""
+    """Cache dealer names for fuzzy matching with auto-refresh"""
     
     _instance = None
     _dealers = []
     _dealer_names_lower = []
+    _last_refresh = None
+    _refresh_lock = threading.Lock()
+    _REFRESH_INTERVAL_MINUTES = 30  # FIX #9: Auto-refresh every 30 minutes
     
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
     
-    def load_dealers(self, db: Session):
-        """Load all dealer names from database"""
-        try:
-            from app.models import DeliveryReport
-            dealers = db.query(DeliveryReport.customer_name).distinct().filter(
-                DeliveryReport.customer_name.isnot(None)
-            ).limit(10000).all()
-            
-            self._dealers = [d[0] for d in dealers if d[0]]
-            self._dealer_names_lower = [d.lower() for d in self._dealers]
-            logger.info(f"Loaded {len(self._dealers)} dealers for fuzzy matching")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to load dealers: {e}")
-            return False
+    def load_dealers(self, db: Session, force: bool = False):
+        """Load all dealer names from database with auto-refresh"""
+        
+        # FIX #9: Check if refresh needed (30 minute interval)
+        if not force and self._last_refresh:
+            age = datetime.now() - self._last_refresh
+            if age < timedelta(minutes=self._REFRESH_INTERVAL_MINUTES):
+                logger.debug(f"Using cached dealers (age: {age.total_seconds()/60:.1f} min)")
+                return True
+        
+        with self._refresh_lock:
+            try:
+                from app.models import DeliveryReport
+                dealers = db.query(DeliveryReport.customer_name).distinct().filter(
+                    DeliveryReport.customer_name.isnot(None)
+                ).limit(10000).all()
+                
+                self._dealers = [d[0] for d in dealers if d[0]]
+                self._dealer_names_lower = [d.lower() for d in self._dealers]
+                self._last_refresh = datetime.now()
+                logger.info(f"Loaded/refreshed {len(self._dealers)} dealers for fuzzy matching")
+                return True
+            except Exception as e:
+                logger.error(f"Failed to load dealers: {e}")
+                return False
     
     def get_dealers(self) -> List[str]:
         return self._dealers
     
-    def match_dealer(self, query: str, threshold: int = 70) -> Tuple[Optional[str], int]:
-        """Fuzzy match dealer name using RapidFuzz"""
+    def match_dealer(self, query: str, threshold: int = 85) -> Tuple[Optional[str], int]:
+        """Fuzzy match dealer name using RapidFuzz - FIX #3: threshold increased to 85"""
         if not self._dealers:
             return None, 0
         
@@ -133,10 +157,14 @@ class DealerMasterData:
             return [(m[0], m[1]) for m in matches if m[1] >= 50]
         except Exception:
             return []
+    
+    def force_refresh(self, db: Session):
+        """Force immediate refresh of dealer cache"""
+        return self.load_dealers(db, force=True)
 
 
 # ==========================================================
-# INTENT DETECTION ENGINE (Improvement 1)
+# INTENT DETECTION ENGINE (Improvement 1 + 2 + 4 + 8)
 # ==========================================================
 
 class IntentDetector:
@@ -154,6 +182,23 @@ class IntentDetector:
         r'^status\s*\d{10}$',  # status 6243611361
         r'^POD\s*\d{10}$',     # POD 6243611361
         r'^pod\s*\d{10}$',     # pod 6243611361
+    ]
+    
+    # FIX #2 & #4: Greeting patterns
+    GREETING_PATTERNS = [
+        "hello", "hi", "hey", "salam", "assalam", "good morning", 
+        "good evening", "good afternoon", "howdy", "greetings"
+    ]
+    
+    # FIX #8: Help patterns
+    HELP_PATTERNS = [
+        "help", "menu", "commands", "what can you do", "how to use",
+        "available commands", "help me", "what do you do"
+    ]
+    
+    # Thanks patterns (FIX #4)
+    THANKS_PATTERNS = [
+        "thank", "thanks", "thx", "appreciate", "good job", "nice work"
     ]
     
     # City keywords
@@ -202,6 +247,24 @@ class IntentDetector:
         "recommendation", "suggest", "improve", "action plan",
         "what should we do", "how can we"
     ]
+    
+    @classmethod
+    def detect_greeting(cls, message: str) -> bool:
+        """Detect greeting in message - FIX #2 & #4"""
+        message_lower = message.lower().strip()
+        return any(g in message_lower for g in cls.GREETING_PATTERNS)
+    
+    @classmethod
+    def detect_help(cls, message: str) -> bool:
+        """Detect help request - FIX #8"""
+        message_lower = message.lower().strip()
+        return any(h in message_lower for h in cls.HELP_PATTERNS)
+    
+    @classmethod
+    def detect_thanks(cls, message: str) -> bool:
+        """Detect thanks - FIX #4"""
+        message_lower = message.lower().strip()
+        return any(t in message_lower for t in cls.THANKS_PATTERNS)
     
     @classmethod
     def detect_dn(cls, message: str) -> Tuple[bool, Optional[str]]:
@@ -261,15 +324,30 @@ class IntentDetector:
         message_clean = message.strip()
         message_lower = message.lower()
         
+        # FIX #4: Priority 0 - Thanks (before anything else)
+        if cls.detect_thanks(message_clean):
+            logger.info(f"Thanks detected")
+            return IntentType.THANKS, None
+        
+        # FIX #2 & #4: Priority 0.5 - Greetings (before dealer detection)
+        if cls.detect_greeting(message_clean):
+            logger.info(f"Greeting detected")
+            return IntentType.GREETING, None
+        
+        # FIX #8: Priority 0.75 - Help
+        if cls.detect_help(message_clean):
+            logger.info(f"Help detected")
+            return IntentType.HELP, None
+        
         # Priority 1: DN Lookup (Improvement 2)
         is_dn, dn_number = cls.detect_dn(message_clean)
         if is_dn:
             logger.info(f"DN detected: {dn_number}")
             return IntentType.DN_LOOKUP, dn_number
         
-        # Priority 2: Dealer Lookup using fuzzy matching (Improvement 3)
+        # Priority 2: Dealer Lookup using fuzzy matching (FIX #3: threshold 85)
         if dealer_matcher:
-            dealer_name, confidence = dealer_matcher.match_dealer(message_clean, threshold=65)
+            dealer_name, confidence = dealer_matcher.match_dealer(message_clean, threshold=85)  # FIX #3: 65 -> 85
             if dealer_name:
                 logger.info(f"Dealer detected via fuzzy matching: '{message_clean}' -> '{dealer_name}' (confidence: {confidence})")
                 return IntentType.DEALER_LOOKUP, dealer_name
@@ -321,57 +399,113 @@ class IntentDetector:
 
 
 # ==========================================================
-# SESSION CONTEXT MANAGER (Improvement 4)
+# SESSION CONTEXT MANAGER (Improvement 4 + 5 + 10)
 # ==========================================================
 
 class SessionContextManager:
-    """Manage conversation context using session_service"""
+    """Manage conversation context using session_service with history"""
     
     def __init__(self, session_service):
         self.session_service = session_service
     
-    def update_context(self, phone_number: str, intent: IntentType, entity: str = None):
+    def update_context(self, phone_number: str, intent: IntentType, entity: str = None, question: str = None, response: str = None):
         """Update session context based on intent"""
         if not self.session_service:
             return
         
         try:
+            # Get existing context for history
+            existing = self.get_context(phone_number)
+            history = existing.get("question_history", [])
+            response_history = existing.get("response_history", [])
+            
+            # FIX #10: Store last 10 questions and responses
+            if question:
+                history.append({
+                    "question": question[:200],
+                    "intent": intent.value,
+                    "entity": entity,
+                    "timestamp": datetime.now().isoformat()
+                })
+                # Keep only last 10
+                if len(history) > 10:
+                    history.pop(0)
+            
+            if response:
+                response_history.append({
+                    "response": response[:500],
+                    "timestamp": datetime.now().isoformat()
+                })
+                if len(response_history) > 10:
+                    response_history.pop(0)
+            
+            # Update context based on intent
             if intent == IntentType.DEALER_LOOKUP and entity:
                 self.session_service.update_session_context(
                     phone_number,
                     selected_dealer=entity,
                     last_intent=intent.value,
-                    last_question=f"Dealer lookup: {entity}"
+                    last_question=f"Dealer lookup: {entity}",
+                    question_history=history,
+                    response_history=response_history
                 )
             elif intent == IntentType.DN_LOOKUP and entity:
                 self.session_service.update_session_context(
                     phone_number,
                     selected_dn=entity,
                     last_intent=intent.value,
-                    last_question=f"DN lookup: {entity}"
+                    last_question=f"DN lookup: {entity}",
+                    question_history=history,
+                    response_history=response_history
                 )
             elif intent == IntentType.CITY_LOOKUP and entity:
                 self.session_service.update_session_context(
                     phone_number,
                     selected_city=entity,
                     last_intent=intent.value,
-                    last_question=f"City lookup: {entity}"
+                    last_question=f"City lookup: {entity}",
+                    question_history=history,
+                    response_history=response_history
                 )
             elif intent == IntentType.WAREHOUSE_LOOKUP and entity:
                 self.session_service.update_session_context(
                     phone_number,
                     selected_warehouse=entity,
                     last_intent=intent.value,
-                    last_question=f"Warehouse lookup: {entity}"
+                    last_question=f"Warehouse lookup: {entity}",
+                    question_history=history,
+                    response_history=response_history
                 )
             else:
                 self.session_service.update_session_context(
                     phone_number,
                     last_intent=intent.value,
-                    last_question=f"Query: {intent.value}"
+                    last_question=f"Query: {intent.value}",
+                    question_history=history,
+                    response_history=response_history
                 )
         except Exception as e:
             logger.warning(f"Failed to update session context: {e}")
+    
+    # FIX #5: Add clear_context method
+    def clear_context(self, phone_number: str):
+        """Clear stale session context for greetings and unrelated questions"""
+        if not self.session_service:
+            return
+        
+        try:
+            self.session_service.update_session_context(
+                phone_number,
+                selected_dealer=None,
+                selected_dn=None,
+                selected_city=None,
+                selected_warehouse=None,
+                last_intent=None,
+                last_question=None
+            )
+            logger.info(f"Cleared session context for {phone_number}")
+        except Exception as e:
+            logger.warning(f"Failed to clear context: {e}")
     
     def get_context(self, phone_number: str) -> Dict:
         """Get current session context"""
@@ -385,19 +519,106 @@ class SessionContextManager:
 
 
 # ==========================================================
-# RESPONSE FORMATTER
+# RESPONSE FORMATTER (Improvement 7 + 8)
 # ==========================================================
 
 class ResponseFormatter:
     """Format responses for WhatsApp"""
     
+    # FIX #8: Complete HELP menu
+    @staticmethod
+    def help_menu() -> str:
+        return """
+╔══════════════════════════════════════╗
+║      📱 WHATSAPP COMMAND CENTER      ║
+╚══════════════════════════════════════╝
+
+🔍 *DN TRACKING*
+• `6243611361` - Track single DN
+• `Status 6243611361` - Check status
+
+🏪 *DEALER ANALYTICS*
+• `Bhatti Electronics` - Dealer dashboard
+• `Top dealers` - Ranking by value
+
+🌆 *CITY INSIGHTS*
+• `Karachi situation` - City performance
+• `Lahore status` - City summary
+
+👑 *EXECUTIVE VIEW*
+• `Executive summary` - Network health
+• `POD status` - Pending acknowledgements
+
+💡 *Example Queries*
+• "Show me Rafi Electronics"
+• "What's the POD backlog?"
+• "Why is Karachi delayed?"
+
+Type your question naturally — I understand context!
+"""
+    
+    # FIX #4: Greeting response
+    @staticmethod
+    def greeting_response() -> str:
+        return """
+👋 *Hello! Welcome to the Logistics Intelligence Platform*
+
+I can help you with:
+
+📊 • Dealer Analytics & Performance
+🔢 • DN Tracking & Status Updates
+📋 • POD Status & Analysis
+🌆 • City-wise Performance Reports
+👑 • Executive Summary & Insights
+
+*Try these commands:*
+• Type a dealer name (e.g., "Bhatti Electronics")
+• Send a 10-digit DN number
+• Ask "Executive summary" for leadership view
+• Type "help" for complete menu
+
+What would you like to know today?
+"""
+    
+    # FIX #4: Thanks response
+    @staticmethod
+    def thanks_response() -> str:
+        return """
+🙏 *You're welcome!*
+
+I'm here to help with:
+• Dealer analytics
+• DN tracking
+• Performance insights
+
+Anything else I can assist you with today?
+"""
+    
     @staticmethod
     def dealer_response(dealer_name: str, dashboard: Dict) -> str:
-        """Format dealer dashboard response"""
+        """Format dealer dashboard response - FIX #7: Added empty data check"""
         if not dashboard.get("success"):
             return f"❌ Dealer '{dealer_name}' not found."
         
         kpis = dashboard.get("kpis", {})
+        
+        # FIX #7: Check if KPI data is actually populated
+        if not kpis or kpis.get('total_dns', 0) == 0:
+            return f"""
+╔══════════════════════════════╗
+║     📊 DEALER DASHBOARD      ║
+║        {dealer_name[:25]}        ║
+╚══════════════════════════════╝
+
+⚠️ *No activity data available*
+
+This dealer exists but has no delivery records in the current time period.
+
+💡 *Try:* 
+• Check spelling 
+• Use exact dealer name
+• Contact support for data sync
+"""
         
         return f"""
 ╔══════════════════════════════╗
@@ -473,6 +694,8 @@ Try:
 • `6243611361` - DN tracking
 • `Karachi situation` - City analysis
 • `Executive summary` - CEO view
+
+Type `help` for complete command menu.
 """
     
     @staticmethod
@@ -516,16 +739,32 @@ class AIQueryService:
         except Exception as e:
             logger.warning(f"Session service not available: {e}")
         
-        # AI availability (Groq only)
+        # FIX #1: AI availability with detailed diagnostics
         self.ai_enabled = getattr(config, 'ENABLE_DEEPSEEK_LOGISTICS', False) and getattr(config, 'AI_ANALYSIS_ENABLED', False)
         self.ai_available = self.ai_enabled and AI_PROVIDER_AVAILABLE and ai_provider_service is not None
         
+        # FIX #1: Enhanced AI diagnostic logging
         logger.info("=" * 50)
-        logger.info("🚀 AI QUERY SERVICE v4.0 INITIALIZED")
+        logger.info("🚀 AI QUERY SERVICE v4.1 INITIALIZED")
         logger.info(f"Dealers loaded: {len(self.dealer_master.get_dealers())}")
         logger.info(f"RapidFuzz: {RAPIDFUZZ_AVAILABLE}")
-        logger.info(f"AI Available (Groq): {self.ai_available}")
+        logger.info("-" * 30)
+        logger.info("🔍 AI AVAILABILITY DIAGNOSTIC:")
+        logger.info(f"  ENABLE_DEEPSEEK_LOGISTICS: {getattr(config, 'ENABLE_DEEPSEEK_LOGISTICS', False)}")
+        logger.info(f"  AI_ANALYSIS_ENABLED: {getattr(config, 'AI_ANALYSIS_ENABLED', False)}")
+        logger.info(f"  AI_PROVIDER_AVAILABLE: {AI_PROVIDER_AVAILABLE}")
+        logger.info(f"  ai_provider_service exists: {ai_provider_service is not None}")
+        logger.info(f"  → Final AI Available: {self.ai_available}")
         logger.info("=" * 50)
+        
+        # FIX #1: Warning if AI is disabled
+        if not self.ai_available:
+            logger.warning("⚠️⚠️⚠️ AI IS DISABLED ⚠️⚠️⚠️")
+            logger.warning("To enable AI features:")
+            logger.warning("  1. Set ENABLE_DEEPSEEK_LOGISTICS=True in config")
+            logger.warning("  2. Set AI_ANALYSIS_ENABLED=True in config")
+            logger.warning("  3. Verify Groq API key is configured")
+            logger.warning("  4. Restart the application")
     
     # ==========================================================
     # MAIN PROCESSING PIPELINE
@@ -551,13 +790,20 @@ class AIQueryService:
         # Log intent detection result (Improvement 8)
         logger.info(f"🎯 Intent detected: {intent.value} | Entity: {entity}")
         
-        # Update session context (Improvement 4)
-        if self.session_manager and user_phone:
-            self.session_manager.update_context(user_phone, intent, entity)
+        # FIX #5: Clear context for greetings or help
+        if intent in [IntentType.GREETING, IntentType.HELP, IntentType.THANKS]:
+            if self.session_manager and user_phone:
+                self.session_manager.clear_context(user_phone)
         
         # Route to appropriate handler (Improvement 6)
         try:
-            if intent == IntentType.DN_LOOKUP:
+            if intent == IntentType.GREETING:
+                result = self._route_greeting(user_phone)
+            elif intent == IntentType.HELP:
+                result = self._route_help(user_phone)
+            elif intent == IntentType.THANKS:
+                result = self._route_thanks(user_phone)
+            elif intent == IntentType.DN_LOOKUP:
                 result = self._route_dn_lookup(entity, user_phone)
             elif intent == IntentType.DEALER_LOOKUP:
                 result = self._route_dealer_lookup(entity, user_phone)
@@ -600,6 +846,14 @@ class AIQueryService:
         result["entity"] = entity
         result["processing_time_ms"] = int((time.time() - start_time) * 1000)
         
+        # FIX #10: Update context with question and response
+        if self.session_manager and user_phone:
+            self.session_manager.update_context(
+                user_phone, intent, entity, 
+                question=question, 
+                response=result.get("response", "")
+            )
+        
         # Log response (Improvement 8)
         logger.info(f"✅ RESPONSE: Intent={intent.value}, Time={result['processing_time_ms']}ms")
         
@@ -610,6 +864,24 @@ class AIQueryService:
     # ==========================================================
     # ROUTING HANDLERS (Improvement 6)
     # ==========================================================
+    
+    def _route_greeting(self, user_phone: str) -> Dict[str, Any]:
+        """Route greeting - FIX #2 & #4"""
+        logger.info(f"👋 Routing greeting")
+        response = self.response_formatter.greeting_response()
+        return {"success": True, "response": response, "ai_used": False}
+    
+    def _route_help(self, user_phone: str) -> Dict[str, Any]:
+        """Route help request - FIX #8"""
+        logger.info(f"❓ Routing help")
+        response = self.response_formatter.help_menu()
+        return {"success": True, "response": response, "ai_used": False}
+    
+    def _route_thanks(self, user_phone: str) -> Dict[str, Any]:
+        """Route thanks - FIX #4"""
+        logger.info(f"🙏 Routing thanks")
+        response = self.response_formatter.thanks_response()
+        return {"success": True, "response": response, "ai_used": False}
     
     def _route_dn_lookup(self, dn_number: str, user_phone: str) -> Dict[str, Any]:
         """Route DN lookup to logistics service"""
@@ -777,7 +1049,13 @@ class AIQueryService:
             try:
                 result = ai_provider_service.answer_question(question, structured=False, user_phone=user_phone)
                 if result.get("success"):
-                    return {"success": True, "response": self.response_formatter.general_response(result.get("content")), "ai_used": True}
+                    content = result.get("content")
+                    # FIX #6: Ensure content is string, not dict
+                    if isinstance(content, dict):
+                        content = content.get("response") or content.get("message") or str(content)
+                    elif content is None:
+                        content = "I understood your question but couldn't generate a response."
+                    return {"success": True, "response": self.response_formatter.general_response(content), "ai_used": True}
             except Exception as e:
                 logger.error(f"Root cause AI error: {e}")
         
@@ -802,7 +1080,13 @@ class AIQueryService:
             try:
                 result = ai_provider_service.answer_question(question, structured=False, user_phone=user_phone)
                 if result.get("success"):
-                    return {"success": True, "response": self.response_formatter.general_response(result.get("content")), "ai_used": True}
+                    content = result.get("content")
+                    # FIX #6: Ensure content is string, not dict
+                    if isinstance(content, dict):
+                        content = content.get("response") or content.get("message") or str(content)
+                    elif content is None:
+                        content = "I understood your question but couldn't generate a response."
+                    return {"success": True, "response": self.response_formatter.general_response(content), "ai_used": True}
             except Exception as e:
                 logger.error(f"Forecast AI error: {e}")
         
@@ -825,7 +1109,13 @@ class AIQueryService:
             try:
                 result = ai_provider_service.answer_question("Provide actionable recommendations for logistics improvement", structured=False, user_phone=user_phone)
                 if result.get("success"):
-                    return {"success": True, "response": self.response_formatter.general_response(result.get("content")), "ai_used": True}
+                    content = result.get("content")
+                    # FIX #6: Ensure content is string, not dict
+                    if isinstance(content, dict):
+                        content = content.get("response") or content.get("message") or str(content)
+                    elif content is None:
+                        content = "I understood your question but couldn't generate a response."
+                    return {"success": True, "response": self.response_formatter.general_response(content), "ai_used": True}
             except Exception as e:
                 logger.error(f"Recommendations AI error: {e}")
         
@@ -850,13 +1140,20 @@ Impact: Clear 500 pending DNs
             try:
                 result = ai_provider_service.answer_question(question, structured=False, user_phone=user_phone)
                 if result.get("success"):
-                    return {"success": True, "response": self.response_formatter.general_response(result.get("content")), "ai_used": True}
+                    content = result.get("content")
+                    # FIX #6: Ensure content is string, not dict (critical for JSON safety)
+                    if isinstance(content, dict):
+                        content = content.get("response") or content.get("message") or str(content)
+                    elif content is None:
+                        content = "I understood your question but couldn't generate a response."
+                    return {"success": True, "response": self.response_formatter.general_response(content), "ai_used": True}
             except Exception as e:
                 logger.error(f"General query AI error: {e}")
         
+        # FIX #2: Better fallback message when AI is unavailable
         return {
             "success": False,
-            "response": "⚠️ AI service unavailable. Try 'help' for available commands.",
+            "response": "⚠️ AI service is currently unavailable. Please try:\n\n• A specific dealer name\n• A 10-digit DN number\n• 'Executive summary'\n• 'help' for all commands\n\nOur team is working to restore AI features.",
             "ai_used": False
         }
     
