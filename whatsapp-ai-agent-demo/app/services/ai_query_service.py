@@ -1546,3 +1546,22 @@ def get_ai_provider_service(db):
         _ai_provider_instance = AIProviderService(db)
 
     return _ai_provider_instance
+# ==========================================================
+# Add this at the end of your ai_provider_service.py file
+# ==========================================================
+
+# Singleton instance
+_ai_provider_service = None
+
+
+def get_ai_provider_service(db=None):
+    """Get or create AI Provider Service singleton"""
+    global _ai_provider_service
+    if _ai_provider_service is None:
+        _ai_provider_service = AIProviderService(db)
+    return _ai_provider_service
+
+
+def init_ai_provider_service(db=None):
+    """Initialize AI Provider Service (alias)"""
+    return get_ai_provider_service(db)
