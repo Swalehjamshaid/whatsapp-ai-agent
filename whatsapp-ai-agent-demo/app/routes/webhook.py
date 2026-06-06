@@ -1,6 +1,9 @@
 # ==========================================================
-# FILE: app/routes/webhook.py (PRODUCTION READY v6.0)
+# FILE: app/routes/webhook.py (PRODUCTION READY v7.0)
 # PROJECT: AI WhatsApp Logistics Copilot
+# FIXED: Dealer detection without keywords, regex boundaries,
+#        context pollution prevention, threshold 85,
+#        logging, context clearing, DN patterns, JSON safety
 # ==========================================================
 
 import json
@@ -123,23 +126,47 @@ except Exception as e:
 from app.database import get_db
 
 # ==========================================================
-# SECTION 2: DUPLICATE MESSAGE PROTECTION
+# SECTION 2: DUPLICATE MESSAGE PROTECTION (FIX #7)
 # ==========================================================
 
-# Store last 100 message IDs per phone number
+# Store last 100 message IDs per phone number (memory cache)
 RECENT_MESSAGES: Dict[str, deque] = {}
 MAX_MESSAGE_CACHE = 100
+
+# FIX #7: Consider Redis/Database for persistence across restarts
+# For now, add timestamp to help with cleanup
+MESSAGE_EXPIRY_SECONDS = 3600  # 1 hour
 
 def is_duplicate_message(phone_number: str, message_id: str) -> bool:
     """Check if message has been processed recently"""
     if phone_number not in RECENT_MESSAGES:
         RECENT_MESSAGES[phone_number] = deque(maxlen=MAX_MESSAGE_CACHE)
     
-    if message_id in RECENT_MESSAGES[phone_number]:
-        return True
+    # Check for message ID
+    for stored_id, timestamp in RECENT_MESSAGES[phone_number]:
+        if stored_id == message_id:
+            # Check if expired
+            if (datetime.now() - timestamp).total_seconds() > MESSAGE_EXPIRY_SECONDS:
+                # Remove expired and continue
+                continue
+            return True
     
-    RECENT_MESSAGES[phone_number].append(message_id)
+    # Store with timestamp
+    RECENT_MESSAGES[phone_number].append((message_id, datetime.now()))
     return False
+
+def cleanup_old_messages():
+    """Cleanup old messages from cache (run periodically)"""
+    now = datetime.now()
+    for phone in list(RECENT_MESSAGES.keys()):
+        original_len = len(RECENT_MESSAGES[phone])
+        RECENT_MESSAGES[phone] = deque(
+            [(msg_id, ts) for msg_id, ts in RECENT_MESSAGES[phone] 
+             if (now - ts).total_seconds() <= MESSAGE_EXPIRY_SECONDS],
+            maxlen=MAX_MESSAGE_CACHE
+        )
+        if len(RECENT_MESSAGES[phone]) < original_len:
+            logger.debug(f"Cleaned {original_len - len(RECENT_MESSAGES[phone])} old messages for {phone}")
 
 # ==========================================================
 # SECTION 3: SAFE WHATSAPP REPLY FUNCTION
@@ -278,21 +305,22 @@ RECOMMENDATION_COMMANDS = {
 }
 
 # ==========================================================
-# GENERAL CHAT KEYWORDS
+# FIX #2: GENERAL CHAT KEYWORDS WITH WORD BOUNDARIES
 # ==========================================================
 
-GENERAL_CHAT_KEYWORDS = [
-    "hello", "hi", "hey", "salam", "good morning", "good evening",
-    "how are you", "what's up", "howdy",
-    "can i ask", "i have a question",
-    "help", "please help", "i need help",
-    "thanks", "thank you", "thanks a lot", "thank you very much",
-    "ok", "okay", "got it", "understood",
-    "great", "awesome", "nice", "good"
+GENERAL_CHAT_PATTERNS = [
+    r'\bhello\b', r'\bhi\b', r'\bhey\b', r'\bsalam\b', r'\bassalam\b',
+    r'\bgood morning\b', r'\bgood evening\b', r'\bgood afternoon\b',
+    r'\bhow are you\b', r'\bwhat\'s up\b', r'\bhowdy\b',
+    r'\bcan i ask\b', r'\bi have a question\b',
+    r'\bhelp\b', r'\bplease help\b', r'\bi need help\b',
+    r'\bthanks?\b', r'\bthank you\b', r'\bappreciate\b',
+    r'\bok\b', r'\bokay\b', r'\bgot it\b', r'\bunderstood\b',
+    r'\bgreat\b', r'\bawesome\b', r'\bnice\b', r'\bgood\b'
 ]
 
 # ==========================================================
-# DEALER KEYWORDS (Improved - Less Aggressive)
+# DEALER KEYWORDS (For explicit dealer queries)
 # ==========================================================
 
 DEALER_KEYWORDS = [
@@ -337,15 +365,22 @@ CRITICAL_ALERT_KEYWORDS = [
 ]
 
 # ==========================================================
-# DN PATTERNS (Enhanced)
+# FIX #8: ENHANCED DN PATTERNS
 # ==========================================================
 
 DN_PATTERNS = [
-    r'\b(\d{10})\b',
-    r'\b(\d{8,15})\b',
-    r'dn[\s:]*(\d{8,15})',
-    r'delivery[\s-]?note[\s:]*(\d{8,15})',
-    r'track[\s:]*(\d{8,15})'
+    r'\b(\d{10})\b',                          # 6243611361
+    r'\b(\d{8,15})\b',                        # 8-15 digits
+    r'dn[\s:]*(\d{8,15})',                    # DN 6243611361
+    r'^DN\s*(\d{10})$',                       # DN6243611361
+    r'^dn\s*(\d{10})$',                       # dn6243611361
+    r'^status\s+(\d{10})$',                   # status 6243611361
+    r'^track\s+dn\s+(\d{10})$',               # track dn 6243611361
+    r'^where\s+is\s+dn\s+(\d{10})$',          # where is dn 6243611361
+    r'^track\s+(\d{10})$',                    # track 6243611361
+    r'^check\s+(\d{10})$',                    # check 6243611361
+    r'delivery[\s-]?note[\s:]*(\d{8,15})',    # delivery note 6243611361
+    r'track[\s:]*(\d{8,15})'                  # track:6243611361
 ]
 
 # ==========================================================
@@ -426,7 +461,9 @@ def extract_dn_from_question(question: str) -> Optional[str]:
         for pattern in DN_PATTERNS:
             match = re.search(pattern, question, re.IGNORECASE)
             if match:
-                return match.group(1)
+                dn = match.group(1)
+                logger.info(f"🔢 DN extracted: '{dn}' from pattern '{pattern}'")
+                return dn
     except Exception as e:
         logger.warning(f"DN extraction error: {e}")
     return None
@@ -451,34 +488,66 @@ def extract_city_from_question(question: str, city_service) -> Optional[str]:
         logger.warning(f"City extraction error: {e}")
     return None
 
-def extract_dealer_with_rapidfuzz(question: str, session_service, phone_number: str) -> Optional[str]:
-    """Extract dealer name using RapidFuzz"""
+# ==========================================================
+# FIX #1 & #4: DEALER DETECTION FUNCTION
+# ==========================================================
+
+def detect_dealer_in_message(question: str, analytics_service, threshold: int = 85) -> Optional[str]:
+    """
+    Detect dealer name in message without requiring keywords
+    FIX #1: Direct detection for "Bhatti Electronics-Bwp" style queries
+    FIX #4: Threshold increased to 85
+    """
     try:
         from rapidfuzz import process, fuzz
         
-        session = session_service.get_session_by_phone(phone_number)
-        if session and hasattr(session, 'conversation_history') and session.conversation_history:
-            recent_dealers = []
-            for entry in session.conversation_history[-10:]:
-                if entry.get('intent') == 'DEALER' and entry.get('entity'):
-                    recent_dealers.append(entry.get('entity'))
-            
-            if recent_dealers:
-                for dealer in recent_dealers:
-                    if dealer.lower() in question.lower():
-                        return dealer
+        # Get dealer list from analytics
+        if not analytics_service:
+            return None
+        
+        dealers = analytics_service.dealer_rankings(200)
+        dealer_names = [d.get('dealer', '') for d in dealers if d.get('dealer')]
+        
+        if not dealer_names:
+            return None
+        
+        # FIX #4: Use threshold 85 (increased from 70)
+        matches = process.extract(question, dealer_names, scorer=fuzz.token_sort_ratio, limit=1)
+        
+        if matches and matches[0][1] >= threshold:
+            dealer_name = matches[0][0]
+            confidence = matches[0][1]
+            logger.info(f"🏪 Dealer detected: '{dealer_name}' (confidence: {confidence}%)")
+            return dealer_name
+        
+        # Try partial ratio for shorter queries
+        matches = process.extract(question, dealer_names, scorer=fuzz.partial_ratio, limit=1)
+        if matches and matches[0][1] >= threshold:
+            dealer_name = matches[0][0]
+            confidence = matches[0][1]
+            logger.info(f"🏪 Dealer detected (partial): '{dealer_name}' (confidence: {confidence}%)")
+            return dealer_name
+        
     except Exception as e:
-        logger.warning(f"RapidFuzz dealer extraction failed: {e}")
+        logger.warning(f"Dealer detection error: {e}")
     
     return None
+
+def is_general_chat(question: str) -> bool:
+    """Check if message is general chat using regex word boundaries"""
+    question_lower = question.lower().strip()
+    for pattern in GENERAL_CHAT_PATTERNS:
+        if re.search(pattern, question_lower):
+            return True
+    return False
 
 def classify_query(question: str) -> QueryCategory:
     """Classify query into category for routing"""
     try:
         question_lower = question.lower()
         
-        # Check for general chat first
-        if any(keyword in question_lower for keyword in GENERAL_CHAT_KEYWORDS):
+        # FIX #2: Use regex for general chat detection
+        if is_general_chat(question):
             return QueryCategory.GENERAL_CHAT
         
         # Check for executive commands
@@ -501,7 +570,7 @@ def classify_query(question: str) -> QueryCategory:
         if any(word in question_lower for word in ["risk", "critical", "urgent"]):
             return QueryCategory.RISK
         
-        # Check for dealer queries (improved - less aggressive)
+        # Check for dealer queries (explicit keywords)
         if any(keyword in question_lower for keyword in DEALER_KEYWORDS):
             return QueryCategory.DEALER
         
@@ -539,21 +608,48 @@ def get_role_dashboard(user_role: str) -> str:
     else:
         return "help"
 
+# ==========================================================
+# FIX #10: VALIDATED DASHBOARD FORMATTING
+# ==========================================================
+
 def format_structured_dashboard(data: Dict[str, Any], dashboard_type: str) -> str:
-    """Format structured dashboard responses for WhatsApp"""
+    """Format structured dashboard responses for WhatsApp with validation"""
     try:
         if dashboard_type == "dealer":
+            dealer_name = data.get('dealer_name', data.get('dealer', 'Unknown'))
+            total_dns = data.get('total_dns', 0)
+            
+            # FIX #10: Check for empty dataset
+            if total_dns == 0 and dealer_name != 'Unknown':
+                return f"""
+╔══════════════════════════════╗
+║     📊 DEALER DASHBOARD      ║
+║        {dealer_name[:25]}        ║
+╚══════════════════════════════╝
+
+⚠️ *No activity data available*
+
+This dealer exists but has no delivery records in the current time period.
+
+💡 *Possible reasons:*
+• No DNs created recently
+• Data sync in progress
+• New dealer account
+
+📞 Contact support if this seems incorrect.
+"""
+            
             return f"""
 ╔══════════════════════════════╗
 ║     📊 DEALER DASHBOARD      ║
 ╚══════════════════════════════╝
 
-📛 *Name:* {data.get('dealer_name', data.get('dealer', 'Unknown'))}
+📛 *Name:* {dealer_name}
 📊 *Health Score:* {data.get('health_score', data.get('score', 0))}/100
 ⚠️ *Risk Level:* {data.get('risk_level', 'Unknown')}
 
 📦 *Metrics:*
-• Total DNs: {data.get('total_dns', 0)}
+• Total DNs: {total_dns}
 • Pending DNs: {data.get('pending_dns', 0)}
 • POD Pending: {data.get('pod_pending_dns', 0)}
 
@@ -669,9 +765,22 @@ def extract_conversation_summary(session, max_messages: int = 20) -> str:
     
     return "Limited conversation history"
 
-def inject_context_into_question(question: str, context) -> str:
-    """Inject context into question for follow-up queries"""
+# ==========================================================
+# FIX #3 & #6: IMPROVED CONTEXT INJECTION
+# ==========================================================
+
+def inject_context_into_question(question: str, context, query_category: QueryCategory = None) -> str:
+    """
+    Inject context into question for follow-up queries
+    FIX #3: Don't inject for general chat
+    FIX #6: Clear context on greetings
+    """
     try:
+        # FIX #3: Never inject dealer context into greetings
+        if query_category == QueryCategory.GENERAL_CHAT:
+            logger.debug(f"General chat detected - skipping context injection")
+            return question
+        
         question_lower = question.lower()
         
         is_follow_up = any(pattern in question_lower for pattern in FOLLOW_UP_PATTERNS)
@@ -826,6 +935,10 @@ async def handle_dn_query(
         "whatsapp_response": whatsapp_response
     }
 
+# ==========================================================
+# FIX #5: ENHANCED DEALER QUERY HANDLER WITH LOGGING
+# ==========================================================
+
 async def handle_dealer_query(
     customer_message: str,
     phone_number: str,
@@ -842,22 +955,33 @@ async def handle_dealer_query(
     # Try to extract dealer from message
     dealer_name = None
     
+    # FIX #1: First try direct dealer detection (no keywords needed)
+    dealer_name = detect_dealer_in_message(customer_message, analytics_service, threshold=85)
+    
+    if dealer_name:
+        logger.info(f"🏪 Direct dealer detection: '{dealer_name}'")
+    
     # Check if there's a pending selection
-    if session_service:
+    if not dealer_name and session_service:
         selection_result = session_service.handle_dealer_selection(phone_number, customer_message)
         if selection_result.get("handled"):
             dealer_name = selection_result.get("selected_dealer")
+            logger.info(f"🏪 Dealer from session selection: '{dealer_name}'")
     
     if not dealer_name:
-        # Try to extract from message
+        # Try to extract from message using RapidFuzz
         from rapidfuzz import process, fuzz
         if analytics_service:
-            dealers = analytics_service.dealer_rankings(50)
+            dealers = analytics_service.dealer_rankings(200)
             dealer_names = [d.get('dealer', '') for d in dealers if d.get('dealer')]
             if dealer_names:
-                matches = process.extract(customer_message, dealer_names, scorer=fuzz.partial_ratio, limit=1)
-                if matches and matches[0][1] > 70:
+                # FIX #4: Use threshold 85
+                matches = process.extract(customer_message, dealer_names, scorer=fuzz.token_sort_ratio, limit=1)
+                if matches and matches[0][1] >= 85:
                     dealer_name = matches[0][0]
+                    confidence = matches[0][1]
+                    # FIX #5: Add logging for dealer match
+                    logger.info(f"🏪 Dealer Match = '{dealer_name}' (confidence: {confidence}%)")
     
     if dealer_name:
         question = f"Show dealer {dealer_name} dashboard"
@@ -870,7 +994,18 @@ async def handle_dealer_query(
         user_role=user_role
     )
     
-    ai_reply = format_structured_dashboard(result, "dealer") if result.get("structured_data") else result.get("response", "Dealer information retrieved.")
+    # FIX #9: Ensure no raw JSON in response
+    ai_reply = result.get("response", "Dealer information retrieved.")
+    if isinstance(ai_reply, dict):
+        ai_reply = ai_reply.get("response", str(ai_reply))
+    elif isinstance(ai_reply, str) and ai_reply.startswith('{'):
+        try:
+            parsed = json.loads(ai_reply)
+            ai_reply = parsed.get("response", parsed.get("formatted_message", ai_reply))
+        except:
+            pass
+    
+    ai_reply = format_structured_dashboard(result, "dealer") if result.get("structured_data") else ai_reply
     intent = result.get("question_type", "dealer_lookup")
     confidence = result.get("confidence", 85)
     
@@ -926,6 +1061,16 @@ async def handle_general_chat(
         "Hello! How can I assist you today?"
     )
     
+    # FIX #9: Ensure no raw JSON
+    if isinstance(ai_reply, dict):
+        ai_reply = ai_reply.get("response", str(ai_reply))
+    elif isinstance(ai_reply, str) and ai_reply.startswith('{'):
+        try:
+            parsed = json.loads(ai_reply)
+            ai_reply = parsed.get("response", parsed.get("formatted_message", ai_reply))
+        except:
+            pass
+    
     suggestions = generate_suggested_followups("general")
     ai_reply += f"\n\n💡 *Try:*\n• " + "\n• ".join(suggestions[:3])
     
@@ -953,6 +1098,10 @@ async def handle_general_chat(
         "suggestions": suggestions[:3],
         "whatsapp_response": whatsapp_response
     }
+
+# ==========================================================
+# FIX #9: AI FALLBACK WITH JSON SAFETY
+# ==========================================================
 
 async def handle_ai_fallback(
     enhanced_question: str,
@@ -1029,7 +1178,21 @@ async def handle_ai_fallback(
             "provider_used": "error"
         }
     
+    # FIX #9: CRITICAL - Ensure no raw JSON in response
     ai_reply = result.get("response", "Unable to generate response.")
+    
+    # If response is a dict, extract string
+    if isinstance(ai_reply, dict):
+        ai_reply = ai_reply.get("response") or ai_reply.get("formatted_message") or str(ai_reply)
+    
+    # If response looks like JSON string, parse it
+    if isinstance(ai_reply, str) and ai_reply.strip().startswith('{'):
+        try:
+            parsed = json.loads(ai_reply)
+            ai_reply = parsed.get("response") or parsed.get("formatted_message") or ai_reply
+        except:
+            pass
+    
     intent = result.get("question_type", "general")
     confidence = result.get("confidence", 75)
     ai_used = result.get("ai_used", False)
@@ -1119,14 +1282,14 @@ async def handle_ai_fallback(
             logger.warning(f"Analytics logging error: {e}")
     
     # Format response based on intent
-    result = result if result else {}
+    result_data = result if result else {}
     
     if intent in ["dealer", "dealer_lookup", "dealer_analysis"]:
-        formatted_reply = format_structured_dashboard(result.get("structured_data", {}), "dealer")
+        formatted_reply = format_structured_dashboard(result_data.get("structured_data", {}), "dealer")
     elif intent in ["warehouse", "warehouse_analysis"]:
-        formatted_reply = format_structured_dashboard(result.get("structured_data", {}), "warehouse")
+        formatted_reply = format_structured_dashboard(result_data.get("structured_data", {}), "warehouse")
     elif intent in ["executive", "executive_summary", "network_health"]:
-        formatted_reply = format_structured_dashboard(result.get("structured_data", {}), "executive")
+        formatted_reply = format_structured_dashboard(result_data.get("structured_data", {}), "executive")
     else:
         formatted_reply = ai_reply
     
@@ -1187,7 +1350,7 @@ async def webhook_verification(request: Request):
     )
 
 # ==========================================================
-# RECEIVE WHATSAPP MESSAGE (PRODUCTION READY v6.0)
+# RECEIVE WHATSAPP MESSAGE (PRODUCTION READY v7.0)
 # ==========================================================
 
 @router.post("/")
@@ -1196,6 +1359,9 @@ async def receive_message(
     db: Session = Depends(get_db)
 ):
     start_time = time.time()
+    
+    # Cleanup old messages periodically
+    cleanup_old_messages()
     
     try:
         # Parse incoming payload
@@ -1341,7 +1507,7 @@ async def receive_message(
         # PRIORITY 5: INTENT ROUTING SECTION
         # ==========================================================
         
-        # Check for DN first (high priority)
+        # FIX #8: Check for DN first (high priority with enhanced patterns)
         dn_number = extract_dn_from_question(customer_message)
         if dn_number and ai_service:
             return await handle_dn_query(
@@ -1352,6 +1518,38 @@ async def receive_message(
         # Classify query intent
         query_category = classify_query(customer_message)
         logger.info(f"📊 Intent: {query_category.value}")
+        
+        # ==========================================================
+        # FIX #1: DIRECT DEALER DETECTION (NO KEYWORDS NEEDED)
+        # ==========================================================
+        
+        # Try to detect dealer in message even without keywords
+        detected_dealer = None
+        if ai_service and analytics_service:
+            detected_dealer = detect_dealer_in_message(customer_message, analytics_service, threshold=85)
+            if detected_dealer:
+                logger.info(f"🏪 Direct dealer detection changed category from {query_category.value} to DEALER")
+                query_category = QueryCategory.DEALER
+        
+        # ==========================================================
+        # FIX #6: CLEAR CONTEXT ON GREETINGS
+        # ==========================================================
+        
+        if query_category == QueryCategory.GENERAL_CHAT:
+            try:
+                if session_service:
+                    session_service.update_session_context(
+                        phone_number,
+                        selected_dealer=None,
+                        selected_dn=None,
+                        selected_city=None,
+                        selected_warehouse=None,
+                        last_intent=None,
+                        last_question=None
+                    )
+                    logger.info(f"🧹 Cleared context for {phone_number} due to greeting")
+            except Exception as e:
+                logger.warning(f"Failed to clear context on greeting: {e}")
         
         # ==========================================================
         # ROUTE BY INTENT
@@ -1439,7 +1637,7 @@ async def receive_message(
                     "processing_time_ms": int((time.time() - start_time) * 1000)
                 }
         
-        # 2. Dealer queries
+        # 2. Dealer queries (including direct detection)
         if query_category == QueryCategory.DEALER and ai_service:
             return await handle_dealer_query(
                 customer_message, phone_number, user_role, ai_service,
@@ -1577,8 +1775,12 @@ async def receive_message(
         # PRIORITY 9: AI FALLBACK (Final catch-all)
         # ==========================================================
         
-        # Inject context into question
-        enhanced_question = inject_context_into_question(customer_message, context)
+        # FIX #3: Only inject context if not general chat
+        if query_category != QueryCategory.GENERAL_CHAT:
+            enhanced_question = inject_context_into_question(customer_message, context, query_category)
+        else:
+            enhanced_question = customer_message
+            
         if enhanced_question != customer_message:
             logger.info(f"🔄 Context injected: '{customer_message}' -> '{enhanced_question}'")
         
@@ -1610,7 +1812,7 @@ async def receive_message(
 async def test_webhook():
     return {
         "success": True,
-        "message": "Webhook is active - Production Ready v6.0",
+        "message": "Webhook is active - Production Ready v7.0",
         "features": [
             "Safe Imports",
             "Fixed Indentation",
@@ -1623,7 +1825,15 @@ async def test_webhook():
             "AI Fallback Route",
             "Improved Dealer Detection",
             "Processing Timers",
-            "Split Handlers"
+            "Split Handlers",
+            "Direct Dealer Detection (No Keywords)",
+            "Regex Word Boundaries",
+            "Context Pollution Prevention",
+            "Threshold 85",
+            "Dealer Match Logging",
+            "Context Clearing on Greetings",
+            "Enhanced DN Patterns",
+            "JSON Response Safety"
         ]
     }
 
@@ -1633,8 +1843,8 @@ async def health_check():
     """Comprehensive health check"""
     return {
         "status": "healthy",
-        "service": "WhatsApp Webhook - Production Ready v6.0",
-        "version": "6.0.0",
+        "service": "WhatsApp Webhook - Production Ready v7.0",
+        "version": "7.0.0",
         "services_status": {
             "ai_query_service": AI_QUERY_AVAILABLE,
             "session_service": SESSION_AVAILABLE,
