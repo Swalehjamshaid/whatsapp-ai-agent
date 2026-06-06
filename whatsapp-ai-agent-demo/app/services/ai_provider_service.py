@@ -1,878 +1,1258 @@
 # ==========================================================
-# FILE: app/services/ai_provider_service.py (FIXED v3.0)
+# FILE: app/services/ai_query_service.py (ENTERPRISE v6.0)
 # ==========================================================
-# WhatsApp AI Provider - GROQ Integration
-# FIXES:
-# - Fixed GROQ initialization
-# - Added proper error handling
-# - Added fallback mechanisms
-# - Added comprehensive logging
+# AI-Powered WhatsApp Logistics Intelligence Assistant
 # ==========================================================
 
-import json
+import re
 import time
-import hashlib
-from typing import Dict, Any, Optional, List
-from datetime import datetime
+from typing import Dict, Any, List, Optional, Tuple
+from datetime import datetime, timedelta
 from enum import Enum
-from dataclasses import dataclass
 
-from loguru import logger
 from sqlalchemy.orm import Session
+from sqlalchemy import func, desc, and_
+from loguru import logger
 
 from app.config import config
-from app.models import AIResponseLog
-
-# ==========================================================
-# SAFE GROQ IMPORT WITH DETAILED LOGGING
-# ==========================================================
-
-GROQ_AVAILABLE = False
-Groq = None
-GROQ_IMPORT_ERROR = None
-
-try:
-    from groq import Groq
-    GROQ_AVAILABLE = True
-    logger.info("✅ GROQ library imported successfully")
-except ImportError as e:
-    GROQ_IMPORT_ERROR = str(e)
-    logger.error(f"❌ GROQ import failed: {e}")
-    logger.info("   Run: pip install groq")
-except Exception as e:
-    GROQ_IMPORT_ERROR = str(e)
-    logger.error(f"❌ GROQ import error: {e}")
+from app.models import DeliveryReport, AIResponseLog
 
 
 # ==========================================================
-# AI PROVIDER STATUS
+# INTENT TYPES
 # ==========================================================
 
-class ProviderStatus(Enum):
-    ONLINE = "online"
-    DEGRADED = "degraded"
-    OFFLINE = "offline"
+class IntentType(str, Enum):
+    # Menu & Navigation
+    HELP = "help"
+    MENU = "menu"
+    DASHBOARD = "dashboard"
+    
+    # Dealer Intelligence
+    DEALER_LOOKUP = "dealer_lookup"
+    DEALER_DASHBOARD = "dealer_dashboard"
+    DEALER_PERFORMANCE = "dealer_performance"
+    DEALER_RISK = "dealer_risk"
+    DEALER_PENDING = "dealer_pending"
+    DEALER_POD_PENDING = "dealer_pod_pending"
+    TOP_DEALERS = "top_dealers"
+    TOP_RISK_DEALERS = "top_risk_dealers"
+    
+    # DN Intelligence
+    DN_LOOKUP = "dn_lookup"
+    DN_DETAILS = "dn_details"
+    DN_DELAYED = "dn_delayed"
+    DN_POD_STATUS = "dn_pod_status"
+    
+    # Operational Analytics
+    WAREHOUSE_PERFORMANCE = "warehouse_performance"
+    CITY_PERFORMANCE = "city_performance"
+    NETWORK_HEALTH = "network_health"
+    
+    # Financial Analytics
+    REVENUE_ANALYSIS = "revenue_analysis"
+    OUTSTANDING_ANALYSIS = "outstanding_analysis"
+    REVENUE_AT_RISK = "revenue_at_risk"
+    
+    # Executive Intelligence
+    EXECUTIVE_SUMMARY = "executive_summary"
+    EXECUTIVE_DASHBOARD = "executive_dashboard"
+    
+    # Advanced AI
+    PREDICT_RISK = "predict_risk"
+    POD_COMPLIANCE = "pod_compliance"
+    DELAY_ANALYSIS = "delay_analysis"
+    INVENTORY_RISK = "inventory_risk"
+    DEALER_RANKING = "dealer_ranking"
+    CITY_RANKING = "city_ranking"
+    WAREHOUSE_RANKING = "warehouse_ranking"
+    
+    # General
+    GENERAL_QUERY = "general_query"
     UNKNOWN = "unknown"
 
 
 # ==========================================================
-# ROLE-BASED CONTEXTS (Enhanced for WhatsApp)
+# WELCOME MESSAGE / DASHBOARD
 # ==========================================================
 
-ROLE_CONTEXTS = {
-    "ceo": """You are a Professional Logistics AI Assistant for WhatsApp. The user is a CEO/Executive.
+WELCOME_MESSAGE = """🤖 *AI LOGISTICS INTELLIGENCE ASSISTANT*
 
-RESPONSE REQUIREMENTS:
-- Be extremely concise (max 10-15 lines)
-- Focus on: Network Health, Revenue at Risk, Top 3 Risks
-- Use emojis: 📊 👑 🚨 ✅ 💰
-- Use **bold** for numbers and key metrics
-- NEVER return raw JSON
-- ALWAYS return human-readable text
+Welcome! I can analyze Dealers, DNs, PODs, Warehouses, Cities, Financial Performance, Risks, and Executive KPIs in real-time.
 
-FORMAT EXAMPLE:
-📊 Network Health: 78/100
-💰 Revenue at Risk: Rs 19.1M
-🚨 Top Risk: Karachi POD backlog""",
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 *Dealer Intelligence*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1️⃣ Dealer Dashboard
+2️⃣ Dealer Performance Score
+3️⃣ Dealer Risk Analysis
+4️⃣ Dealer Pending DNs
+5️⃣ Dealer POD Pending Status
 
-    "manager": """You are a Professional Logistics AI Assistant for WhatsApp. The user is a Logistics Manager.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📦 *DN Intelligence*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+6️⃣ DN Status Lookup
+7️⃣ DN Complete Details
+8️⃣ Delayed DN Analysis
+9️⃣ POD Status by DN
 
-RESPONSE REQUIREMENTS:
-- Focus on operational metrics: pending DNs, delivery rates, POD compliance
-- Use emojis: 📦 📊 ⏳ ✅ ❌ 🚚
-- Use **bold** for important numbers
-- Keep responses actionable
-- NEVER return raw JSON""",
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🏢 *Operational Analytics*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔟 Warehouse Performance
+1️⃣1️⃣ City Performance Analysis
+1️⃣2️⃣ Network Health Score
 
-    "dealer": """You are a Professional Logistics AI Assistant for WhatsApp. The user is a Dealer Manager.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💰 *Financial Analytics*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1️⃣3️⃣ Revenue Analysis
+1️⃣4️⃣ Outstanding & Pending Value Analysis
 
-RESPONSE REQUIREMENTS:
-- Focus on dealer performance, pending deliveries, POD status
-- Use emojis: 🏪 📊 ✅ ⏳ 📋
-- Provide specific dealer insights
-- NEVER return raw JSON""",
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+👑 *Executive Intelligence*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1️⃣5️⃣ Executive Summary Dashboard
 
-    "warehouse": """You are a Professional Logistics AI Assistant for WhatsApp. The user is a Warehouse Manager.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 *You can also ask naturally:*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Bhatti Electronics-BWP
+• DN 6243611920
+• Show top risk dealers
+• Show top performing dealers
+• Show pending DNs
+• Which city has maximum delays?
+• Which warehouse is underperforming?
+• Show dealer outstanding value
+• Show network health score
+• Give executive summary
 
-RESPONSE REQUIREMENTS:
-- Focus on warehouse efficiency, bottlenecks, backlog
-- Use emojis: 🏭 📦 ⏳ 🚚
-- Provide actionable operational improvements
-- NEVER return raw JSON""",
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🚀 *Advanced AI Commands*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Top 20 Risk Dealers
+• Top 20 Performing Dealers
+• Revenue at Risk
+• POD Compliance Analysis
+• Delivery Delay Analysis
+• Inventory Risk Analysis
+• Dealer Ranking
+• City Ranking
+• Warehouse Ranking
+• Predict Future Risks
 
-    "guest": """You are a Professional Logistics AI Assistant for WhatsApp. The user is a guest user.
-
-RESPONSE REQUIREMENTS:
-- Be helpful and welcoming
-- Suggest specific commands they can try
-- Use emojis: 👋 💡 📱
-- List available command examples
-- NEVER return raw JSON"""
-}
-
-
-# ==========================================================
-# WHATSAPP PROMPT BUILDERS
-# ==========================================================
-
-def build_whatsapp_prompt(question: str, user_role: str = "guest", context: Dict = None) -> str:
-    """Build WhatsApp-friendly prompt for GROQ"""
-    
-    role_context = ROLE_CONTEXTS.get(user_role, ROLE_CONTEXTS["guest"])
-    
-    context_str = ""
-    if context:
-        if context.get('dealer_name'):
-            context_str += f"\nContext: User asking about dealer '{context['dealer_name']}'"
-        if context.get('dn_no'):
-            context_str += f"\nContext: User asking about DN '{context['dn_no']}'"
-        if context.get('city'):
-            context_str += f"\nContext: User asking about city '{context['city']}'"
-    
-    prompt = f"""{role_context}
-
-{context_str}
-
-USER QUESTION: {question}
-
-Respond with a helpful WhatsApp message. Be concise, use emojis, and provide actionable information. Never return JSON, only text."""
-    
-    return prompt
-
-
-def build_analysis_prompt(analysis_type: str, data: Dict, question: str, user_role: str = "manager") -> str:
-    """Build specialized analysis prompt for logistics data"""
-    
-    role_context = ROLE_CONTEXTS.get(user_role, ROLE_CONTEXTS["manager"])
-    
-    if analysis_type == "dealer":
-        return f"""{role_context}
-
-DEALER ANALYSIS REQUEST
-
-Dealer Data:
-- Name: {data.get('dealer_name', data.get('name', 'Unknown'))}
-- Total DNs: {data.get('total_dns', 0)}
-- Delivered: {data.get('delivered_dns', 0)}
-- Pending: {data.get('pending_dns', 0)}
-- POD Pending: {data.get('pod_pending_dns', 0)}
-- Total Value: Rs {data.get('total_value', data.get('total_amount', 0)):,.2f}
-- Pending Value: Rs {data.get('pending_value', data.get('pending_amount', 0)):,.2f}
-- Health Score: {data.get('health_score', 0)}/100
-- Risk Level: {data.get('risk_level', 'Unknown')}
-
-USER QUESTION: {question}
-
-Provide a WhatsApp-friendly analysis of this dealer's performance. Include risk assessment and recommendations. Use emojis."""
-    
-    elif analysis_type == "dn":
-        return f"""{role_context}
-
-DN TRACKING REQUEST
-
-DN Data:
-- DN Number: {data.get('dn_no', 'Unknown')}
-- Customer: {data.get('customer_name', 'N/A')}
-- City: {data.get('city', 'N/A')}
-- Warehouse: {data.get('warehouse', 'N/A')}
-- Product: {data.get('product', 'N/A')}
-- Quantity: {data.get('quantity', 0):,.0f}
-- Value: Rs {data.get('value', 0):,.2f}
-- Status: {data.get('status', 'Unknown')}
-- Dispatch Age: {data.get('dispatch_age', 0)} days
-- POD Age: {data.get('pod_age', 0)} days
-
-USER QUESTION: {question}
-
-Provide a WhatsApp-friendly tracking update. Include recommendations if delayed. Use emojis."""
-    
-    elif analysis_type == "executive":
-        return f"""{role_context}
-
-EXECUTIVE SUMMARY REQUEST
-
-Metrics:
-- Network Health: {data.get('network_health', 0)}/100
-- Revenue at Risk: Rs {data.get('revenue_at_risk', 0):,.2f}
-- Delivery Rate: {data.get('delivery_rate', 0)}%
-- POD Compliance: {data.get('pod_rate', 0)}%
-
-USER QUESTION: {question}
-
-Provide a concise executive summary for WhatsApp. Focus on key metrics and top priorities. Use emojis."""
-    
-    else:
-        return build_whatsapp_prompt(question, user_role, data)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💬 *Ask any question in natural language and receive instant data-driven insights.*"""
 
 
 # ==========================================================
-# AI CACHE MANAGER
+# INTENT DETECTION ENGINE
 # ==========================================================
 
-class AICacheManager:
-    """Cache AI responses for cost reduction and speed"""
-    
-    def __init__(self, ttl_seconds: int = 300):
-        self.cache: Dict[str, tuple] = {}
-        self.ttl = ttl_seconds
-    
-    def get(self, key: str) -> Optional[str]:
-        if key in self.cache:
-            response, timestamp = self.cache[key]
-            if time.time() - timestamp < self.ttl:
-                return response
-            del self.cache[key]
-        return None
-    
-    def set(self, key: str, response: str):
-        self.cache[key] = (response, time.time())
-    
-    def clear(self):
-        self.cache.clear()
-    
-    def get_cache_key(self, question: str, context_hash: str = "", user_role: str = "") -> str:
-        content_hash = hashlib.md5(f"{question}:{context_hash}:{user_role}".encode()).hexdigest()
-        return content_hash
-
-
-# ==========================================================
-# FALLBACK RESPONSES (Always work, no API call needed)
-# ==========================================================
-
-class FallbackResponseGenerator:
-    """Generate intelligent fallback responses without API calls"""
+class IntentDetector:
+    """Advanced intent detection for all commands"""
     
     @staticmethod
-    def generate(question: str) -> str:
-        """Generate appropriate fallback response based on question"""
+    def detect_dn(message: str) -> Tuple[bool, Optional[str]]:
+        """Detect DN number (10 digits)"""
+        match = re.search(r'\b(\d{10})\b', message)
+        if match:
+            return True, match.group(1)
+        return False, None
+    
+    @staticmethod
+    def detect_numbered_command(message: str) -> Tuple[bool, Optional[str]]:
+        """Detect numbered commands like 1, 2, 3, etc."""
+        match = re.match(r'^\s*(\d{1,2})\s*$', message)
+        if match:
+            return True, match.group(1)
+        return False, None
+    
+    @staticmethod
+    def detect_intent(message: str) -> Tuple[IntentType, Optional[str]]:
+        """Detect intent from natural language"""
+        msg_lower = message.lower().strip()
+        msg_original = message.strip()
         
-        q_lower = question.lower().strip()
+        # ==========================================================
+        # Check for numbered commands (1, 2, 3, etc.)
+        # ==========================================================
+        is_num, num_val = IntentDetector.detect_numbered_command(msg_original)
+        if is_num:
+            num = int(num_val)
+            if num == 1:
+                return IntentType.DEALER_DASHBOARD, None
+            elif num == 2:
+                return IntentType.DEALER_PERFORMANCE, None
+            elif num == 3:
+                return IntentType.DEALER_RISK, None
+            elif num == 4:
+                return IntentType.DEALER_PENDING, None
+            elif num == 5:
+                return IntentType.DEALER_POD_PENDING, None
+            elif num == 6:
+                return IntentType.DN_STATUS_LOOKUP, None
+            elif num == 7:
+                return IntentType.DN_DETAILS, None
+            elif num == 8:
+                return IntentType.DN_DELAYED, None
+            elif num == 9:
+                return IntentType.DN_POD_STATUS, None
+            elif num == 10:
+                return IntentType.WAREHOUSE_PERFORMANCE, None
+            elif num == 11:
+                return IntentType.CITY_PERFORMANCE, None
+            elif num == 12:
+                return IntentType.NETWORK_HEALTH, None
+            elif num == 13:
+                return IntentType.REVENUE_ANALYSIS, None
+            elif num == 14:
+                return IntentType.OUTSTANDING_ANALYSIS, None
+            elif num == 15:
+                return IntentType.EXECUTIVE_SUMMARY, None
         
-        # Greetings
-        greetings = ["hello", "hi", "hey", "salam", "assalam", "good morning", "good evening", "good afternoon"]
-        if any(g in q_lower for g in greetings):
-            return """👋 *Welcome to Logistics Intelligence Assistant*
+        # ==========================================================
+        # Menu & Help
+        # ==========================================================
+        if any(word in msg_lower for word in ["help", "menu", "commands", "what can you do", "hello", "hi", "hey", "salam", "start"]):
+            return IntentType.HELP, None
+        
+        # Dashboard
+        if any(word in msg_lower for word in ["dashboard", "main menu", "welcome"]):
+            return IntentType.DASHBOARD, None
+        
+        # ==========================================================
+        # DN Lookup (10 digits)
+        # ==========================================================
+        is_dn, dn_num = IntentDetector.detect_dn(msg_lower)
+        if is_dn:
+            return IntentType.DN_LOOKUP, dn_num
+        
+        # ==========================================================
+        # Executive Intelligence
+        # ==========================================================
+        if any(word in msg_lower for word in ["executive summary", "executive dashboard", "ceo summary", "management summary"]):
+            return IntentType.EXECUTIVE_SUMMARY, None
+        
+        # ==========================================================
+        # Network Health
+        # ==========================================================
+        if any(word in msg_lower for word in ["network health", "health score", "overall health"]):
+            return IntentType.NETWORK_HEALTH, None
+        
+        # ==========================================================
+        # Top Dealers & Risk Dealers
+        # ==========================================================
+        if "top 20 risk" in msg_lower or "top risk dealers" in msg_lower:
+            return IntentType.TOP_RISK_DEALERS, None
+        
+        if "top 20 performing" in msg_lower or "top performing dealers" in msg_lower or "top dealers" in msg_lower:
+            return IntentType.TOP_DEALERS, None
+        
+        # ==========================================================
+        # Dealer Intelligence
+        # ==========================================================
+        if any(word in msg_lower for word in ["dealer dashboard", "dealer summary"]):
+            return IntentType.DEALER_DASHBOARD, None
+        
+        if any(word in msg_lower for word in ["dealer performance", "performance score"]):
+            return IntentType.DEALER_PERFORMANCE, None
+        
+        if any(word in msg_lower for word in ["dealer risk", "risk analysis", "dealer risk analysis"]):
+            return IntentType.DEALER_RISK, None
+        
+        if any(word in msg_lower for word in ["dealer pending", "pending dns", "dealer pending dns"]):
+            return IntentType.DEALER_PENDING, None
+        
+        if any(word in msg_lower for word in ["dealer pod pending", "pod pending status"]):
+            return IntentType.DEALER_POD_PENDING, None
+        
+        # Dealer lookup by name
+        if len(msg_lower.split()) <= 5 and not msg_lower.isdigit() and not any(c.isdigit() for c in msg_lower):
+            return IntentType.DEALER_LOOKUP, msg_original
+        
+        # ==========================================================
+        # DN Intelligence
+        # ==========================================================
+        if any(word in msg_lower for word in ["dn status", "dn lookup", "check dn"]):
+            return IntentType.DN_STATUS_LOOKUP, None
+        
+        if any(word in msg_lower for word in ["dn details", "complete details"]):
+            return IntentType.DN_DETAILS, None
+        
+        if any(word in msg_lower for word in ["delayed dn", "dn delay", "delayed delivery"]):
+            return IntentType.DN_DELAYED, None
+        
+        if any(word in msg_lower for word in ["pod status by dn", "dn pod"]):
+            return IntentType.DN_POD_STATUS, None
+        
+        # ==========================================================
+        # Operational Analytics
+        # ==========================================================
+        if any(word in msg_lower for word in ["warehouse performance", "warehouse analytics"]):
+            return IntentType.WAREHOUSE_PERFORMANCE, None
+        
+        if any(word in msg_lower for word in ["city performance", "city analysis", "regional performance"]):
+            return IntentType.CITY_PERFORMANCE, None
+        
+        # ==========================================================
+        # Financial Analytics
+        # ==========================================================
+        if any(word in msg_lower for word in ["revenue analysis", "total revenue"]):
+            return IntentType.REVENUE_ANALYSIS, None
+        
+        if any(word in msg_lower for word in ["outstanding", "pending value", "value at risk"]):
+            return IntentType.OUTSTANDING_ANALYSIS, None
+        
+        if "revenue at risk" in msg_lower:
+            return IntentType.REVENUE_AT_RISK, None
+        
+        # ==========================================================
+        # Advanced AI Commands
+        # ==========================================================
+        if "predict" in msg_lower:
+            return IntentType.PREDICT_RISK, None
+        
+        if "pod compliance" in msg_lower:
+            return IntentType.POD_COMPLIANCE, None
+        
+        if "delay analysis" in msg_lower:
+            return IntentType.DELAY_ANALYSIS, None
+        
+        if "inventory risk" in msg_lower:
+            return IntentType.INVENTORY_RISK, None
+        
+        if "dealer ranking" in msg_lower:
+            return IntentType.DEALER_RANKING, None
+        
+        if "city ranking" in msg_lower:
+            return IntentType.CITY_RANKING, None
+        
+        if "warehouse ranking" in msg_lower:
+            return IntentType.WAREHOUSE_RANKING, None
+        
+        # ==========================================================
+        # City specific
+        # ==========================================================
+        cities = ["karachi", "lahore", "islamabad", "rawalpindi", "multan", "faisalabad", "gujranwala"]
+        for city in cities:
+            if city in msg_lower:
+                return IntentType.CITY_PERFORMANCE, city
+        
+        # ==========================================================
+        # Default: General Query
+        # ==========================================================
+        return IntentType.GENERAL_QUERY, None
 
-I can help you with:
+
+# ==========================================================
+# DATABASE QUERY SERVICE
+# ==========================================================
+
+class DatabaseQueryService:
+    """Handle all database queries for logistics data"""
+    
+    def __init__(self, db: Session):
+        self.db = db
+    
+    # ==========================================================
+    # DEALER INTELLIGENCE
+    # ==========================================================
+    
+    def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
+        """Get complete dealer dashboard"""
+        try:
+            records = self.db.query(DeliveryReport).filter(
+                DeliveryReport.customer_name.ilike(f"%{dealer_name}%")
+            ).all()
+            
+            if not records:
+                return {"success": False, "message": f"Dealer '{dealer_name}' not found"}
+            
+            # Calculate metrics
+            unique_dns = set()
+            delivered_dns = set()
+            pending_dns = set()
+            pod_pending_dns = set()
+            total_value = 0
+            pending_value = 0
+            pod_pending_value = 0
+            
+            for r in records:
+                dn_no = str(r.dn_no)
+                amount = float(r.dn_amount or 0)
+                
+                unique_dns.add(dn_no)
+                total_value += amount
+                
+                if r.pgi_status == "Completed":
+                    delivered_dns.add(dn_no)
+                    if r.pod_status == "Pending":
+                        pod_pending_dns.add(dn_no)
+                        pod_pending_value += amount
+                else:
+                    pending_dns.add(dn_no)
+                    pending_value += amount
+            
+            total_dns = len(unique_dns)
+            delivered = len(delivered_dns)
+            pending = len(pending_dns)
+            pod_pending = len(pod_pending_dns)
+            
+            delivery_rate = (delivered / total_dns) * 100 if total_dns > 0 else 0
+            pod_rate = ((delivered - pod_pending) / delivered) * 100 if delivered > 0 else 0
+            health_score = (delivery_rate * 0.6) + (pod_rate * 0.4)
+            risk_score = 100 - health_score
+            
+            if risk_score > 60:
+                risk_level = "CRITICAL"
+                risk_icon = "💀"
+            elif risk_score > 40:
+                risk_level = "HIGH"
+                risk_icon = "🚨"
+            elif risk_score > 20:
+                risk_level = "MEDIUM"
+                risk_icon = "⚠️"
+            else:
+                risk_level = "LOW"
+                risk_icon = "✅"
+            
+            response = f"""╔══════════════════════════════════════════╗
+║         📊 DEALER DASHBOARD            ║
+║      {dealer_name[:25]}                  ║
+╚══════════════════════════════════════════╝
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📈 *PERFORMANCE METRICS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Total DNs: {total_dns}
+• Delivered: {delivered} ✅
+• Pending: {pending} ⏳
+• POD Pending: {pod_pending} 📋
+• Delivery Rate: {delivery_rate:.1f}%
+• POD Compliance: {pod_rate:.1f}%
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💰 *FINANCIAL ANALYSIS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Total Value: Rs {total_value:,.2f}
+• Pending Value: Rs {pending_value:,.2f}
+• POD Pending Value: Rs {pod_pending_value:,.2f}
+• Outstanding: Rs {pending_value + pod_pending_value:,.2f}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️ *RISK ASSESSMENT*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{risk_icon} Health Score: {health_score:.1f}/100
+• Risk Score: {risk_score:.1f}/100
+• Risk Level: {risk_level}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 *RECOMMENDATIONS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+            if pending > 0:
+                response += f"• Clear {pending} pending deliveries\n"
+            if pod_pending > 0:
+                response += f"• Collect POD for {pod_pending} delivered DNs\n"
+            if delivery_rate < 80:
+                response += "• Review delivery process\n"
+            if not response:
+                response += "• All metrics are healthy\n"
+            
+            return {
+                "success": True,
+                "dealer_name": dealer_name,
+                "data": {
+                    "total_dns": total_dns,
+                    "delivered": delivered,
+                    "pending": pending,
+                    "pod_pending": pod_pending,
+                    "total_value": total_value,
+                    "pending_value": pending_value,
+                    "health_score": health_score,
+                    "risk_level": risk_level
+                },
+                "formatted_response": response
+            }
+            
+        except Exception as e:
+            logger.error(f"Dealer dashboard error: {e}")
+            return {"success": False, "message": f"Error: {str(e)}"}
+    
+    def get_top_dealers(self, limit: int = 20) -> List[Dict]:
+        """Get top dealers by value"""
+        try:
+            results = self.db.query(
+                DeliveryReport.customer_name,
+                func.count(DeliveryReport.dn_no).label("total_dns"),
+                func.sum(DeliveryReport.dn_amount).label("total_value"),
+                func.sum(DeliveryReport.dn_qty).label("total_qty")
+            ).filter(
+                DeliveryReport.customer_name.isnot(None)
+            ).group_by(
+                DeliveryReport.customer_name
+            ).order_by(
+                desc("total_value")
+            ).limit(limit).all()
+            
+            dealers = []
+            for r in results:
+                dealers.append({
+                    "name": r.customer_name,
+                    "total_dns": r.total_dns,
+                    "total_value": float(r.total_value or 0),
+                    "total_qty": float(r.total_qty or 0)
+                })
+            
+            return dealers
+            
+        except Exception as e:
+            logger.error(f"Top dealers error: {e}")
+            return []
+    
+    def get_top_risk_dealers(self, limit: int = 20) -> List[Dict]:
+        """Get dealers with highest risk"""
+        try:
+            results = self.db.query(
+                DeliveryReport.customer_name,
+                func.count(DeliveryReport.dn_no).label("pending_dns"),
+                func.sum(DeliveryReport.dn_amount).label("pending_value")
+            ).filter(
+                DeliveryReport.pgi_status != "Completed"
+            ).group_by(
+                DeliveryReport.customer_name
+            ).order_by(
+                desc("pending_value")
+            ).limit(limit).all()
+            
+            dealers = []
+            for r in results:
+                dealers.append({
+                    "name": r.customer_name,
+                    "pending_dns": r.pending_dns,
+                    "pending_value": float(r.pending_value or 0)
+                })
+            
+            return dealers
+            
+        except Exception as e:
+            logger.error(f"Top risk dealers error: {e}")
+            return []
+    
+    # ==========================================================
+    # DN INTELLIGENCE
+    # ==========================================================
+    
+    def get_dn_details(self, dn_number: str) -> Dict[str, Any]:
+        """Get complete DN details"""
+        try:
+            records = self.db.query(DeliveryReport).filter(
+                DeliveryReport.dn_no == dn_number
+            ).all()
+            
+            if not records:
+                return {"success": False, "message": f"DN {dn_number} not found"}
+            
+            record = records[0]
+            
+            # Safe date calculations
+            dispatch_age = 0
+            pod_age = 0
+            
+            if record.dn_create_date:
+                if isinstance(record.dn_create_date, datetime):
+                    create_date = record.dn_create_date.date()
+                else:
+                    create_date = record.dn_create_date
+                dispatch_age = (datetime.now().date() - create_date).days
+            
+            if record.good_issue_date and record.pod_status == "Pending":
+                if isinstance(record.good_issue_date, datetime):
+                    issue_date = record.good_issue_date.date()
+                else:
+                    issue_date = record.good_issue_date
+                pod_age = (datetime.now().date() - issue_date).days
+            
+            # Risk calculation
+            risk_score = 0
+            risk_level = "LOW"
+            if dispatch_age > 30:
+                risk_score = 90
+                risk_level = "CRITICAL"
+            elif dispatch_age > 15:
+                risk_score = 70
+                risk_level = "HIGH"
+            elif dispatch_age > 7:
+                risk_score = 50
+                risk_level = "MEDIUM"
+            
+            response = f"""╔══════════════════════════════════════════╗
+║           📦 DN COMPLETE DETAILS          ║
+║              {dn_number}                    ║
+╚══════════════════════════════════════════╝
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🏪 *DEALER INFORMATION*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Dealer Name: {record.customer_name or 'N/A'}
+• Dealer City: {record.ship_to_city or 'N/A'}
+• Warehouse: {record.warehouse or 'N/A'}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📦 *DN DETAILS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Product: {record.product or 'N/A'}
+• Quantity: {float(record.dn_qty or 0):,.0f} units
+• Value: Rs {float(record.dn_amount or 0):,.2f}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📅 *TIMELINE*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• DN Create Date: {record.dn_create_date.strftime('%Y-%m-%d') if record.dn_create_date else 'N/A'}
+• Good Issue Date: {record.good_issue_date.strftime('%Y-%m-%d') if record.good_issue_date else 'N/A'}
+• Dispatch Age: {dispatch_age} days
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 *STATUS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Delivery Status: {'✅ DELIVERED' if record.pgi_status == 'Completed' else '⏳ PENDING'}
+• POD Status: {'✅ RECEIVED' if record.pod_status == 'Received' else '📋 PENDING'}
+• POD Age: {pod_age} days
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️ *RISK ANALYSIS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Risk Score: {risk_score}/100
+• Risk Level: {risk_level}
+{'🚨 IMMEDIATE ACTION REQUIRED' if risk_level == 'CRITICAL' else '📌 Monitor regularly'}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 *RECOMMENDATIONS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+            if dispatch_age > 15:
+                response += "• Escalate to warehouse manager immediately\n"
+            if record.pod_status == "Pending" and pod_age > 7:
+                response += "• Follow up with dealer for POD acknowledgement\n"
+            if not response:
+                response += "• No action needed - delivery on track\n"
+            
+            return {
+                "success": True,
+                "dn_number": dn_number,
+                "formatted_response": response
+            }
+            
+        except Exception as e:
+            logger.error(f"DN lookup error: {e}")
+            return {"success": False, "message": f"Error: {str(e)}"}
+    
+    # ==========================================================
+    # OPERATIONAL ANALYTICS
+    # ==========================================================
+    
+    def get_network_health(self) -> Dict[str, Any]:
+        """Calculate overall network health"""
+        try:
+            total_dns = self.db.query(DeliveryReport.dn_no).distinct().count()
+            delivered_dns = self.db.query(DeliveryReport.dn_no).filter(
+                DeliveryReport.pgi_status == "Completed"
+            ).distinct().count()
+            
+            delivered_value = self.db.query(func.sum(DeliveryReport.dn_amount)).filter(
+                DeliveryReport.pgi_status == "Completed"
+            ).scalar() or 0
+            
+            pending_value = self.db.query(func.sum(DeliveryReport.dn_amount)).filter(
+                DeliveryReport.pgi_status != "Completed"
+            ).scalar() or 0
+            
+            delivery_rate = (delivered_dns / total_dns) * 100 if total_dns > 0 else 0
+            
+            pod_received = self.db.query(DeliveryReport.dn_no).filter(
+                DeliveryReport.pgi_status == "Completed",
+                DeliveryReport.pod_status == "Received"
+            ).distinct().count()
+            
+            pod_rate = (pod_received / delivered_dns) * 100 if delivered_dns > 0 else 0
+            
+            health_score = (delivery_rate * 0.6) + (pod_rate * 0.4)
+            
+            if health_score >= 80:
+                status = "Excellent"
+                status_icon = "💎"
+            elif health_score >= 70:
+                status = "Good"
+                status_icon = "✅"
+            elif health_score >= 60:
+                status = "Fair"
+                status_icon = "⚠️"
+            elif health_score >= 50:
+                status = "Poor"
+                status_icon = "🚨"
+            else:
+                status = "Critical"
+                status_icon = "💀"
+            
+            response = f"""╔══════════════════════════════════════════╗
+║         📊 NETWORK HEALTH SCORE          ║
+╚══════════════════════════════════════════╝
+
+{status_icon} *Overall Health: {health_score:.1f}/100 ({status})*
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📈 *KEY METRICS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Total DNs: {total_dns:,}
+• Delivered: {delivered_dns:,} ✅
+• Delivery Rate: {delivery_rate:.1f}%
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 *POD COMPLIANCE*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• POD Received: {pod_received:,}
+• POD Compliance: {pod_rate:.1f}%
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💰 *FINANCIAL METRICS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Total Value: Rs {delivered_value + pending_value:,.2f}
+• Revenue at Risk: Rs {pending_value:,.2f}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 *PRIORITY ACTIONS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+            if health_score < 70:
+                response += "• Immediate intervention required\n"
+            if pod_rate < 80:
+                response += "• Accelerate POD collection process\n"
+            if pending_value > 0:
+                response += f"• Clear Rs {pending_value:,.2f} pending value\n"
+            
+            return {
+                "total_dns": total_dns,
+                "delivered_dns": delivered_dns,
+                "delivery_rate": round(delivery_rate, 1),
+                "pod_rate": round(pod_rate, 1),
+                "health_score": round(health_score, 1),
+                "revenue_at_risk": round(float(pending_value), 2),
+                "formatted_response": response
+            }
+            
+        except Exception as e:
+            logger.error(f"Network health error: {e}")
+            return {"error": str(e)}
+    
+    def get_city_performance(self) -> List[Dict]:
+        """Get city-wise performance"""
+        try:
+            results = self.db.query(
+                DeliveryReport.ship_to_city,
+                func.count(DeliveryReport.dn_no).label("total_dns"),
+                func.sum(DeliveryReport.dn_amount).label("total_value"),
+                func.count(DeliveryReport.dn_no).filter(DeliveryReport.pgi_status != "Completed").label("pending_dns")
+            ).filter(
+                DeliveryReport.ship_to_city.isnot(None)
+            ).group_by(
+                DeliveryReport.ship_to_city
+            ).all()
+            
+            cities = []
+            for r in results:
+                pending_rate = (r.pending_dns / r.total_dns) * 100 if r.total_dns > 0 else 0
+                cities.append({
+                    "city": r.ship_to_city,
+                    "total_dns": r.total_dns,
+                    "pending_dns": r.pending_dns,
+                    "pending_rate": round(pending_rate, 1),
+                    "total_value": float(r.total_value or 0)
+                })
+            
+            cities.sort(key=lambda x: x["pending_rate"], reverse=True)
+            return cities[:20]
+            
+        except Exception as e:
+            logger.error(f"City performance error: {e}")
+            return []
+    
+    def get_warehouse_performance(self) -> List[Dict]:
+        """Get warehouse-wise performance"""
+        try:
+            results = self.db.query(
+                DeliveryReport.warehouse,
+                func.count(DeliveryReport.dn_no).label("total_dns"),
+                func.sum(DeliveryReport.dn_amount).label("total_value"),
+                func.count(DeliveryReport.dn_no).filter(DeliveryReport.pgi_status != "Completed").label("pending_dns")
+            ).filter(
+                DeliveryReport.warehouse.isnot(None)
+            ).group_by(
+                DeliveryReport.warehouse
+            ).all()
+            
+            warehouses = []
+            for r in results:
+                pending_rate = (r.pending_dns / r.total_dns) * 100 if r.total_dns > 0 else 0
+                warehouses.append({
+                    "warehouse": r.warehouse,
+                    "total_dns": r.total_dns,
+                    "pending_dns": r.pending_dns,
+                    "pending_rate": round(pending_rate, 1),
+                    "total_value": float(r.total_value or 0)
+                })
+            
+            warehouses.sort(key=lambda x: x["pending_rate"], reverse=True)
+            return warehouses[:20]
+            
+        except Exception as e:
+            logger.error(f"Warehouse performance error: {e}")
+            return []
+    
+    # ==========================================================
+    # FINANCIAL ANALYTICS
+    # ==========================================================
+    
+    def get_revenue_analysis(self) -> Dict[str, Any]:
+        """Get revenue analysis"""
+        try:
+            total_revenue = self.db.query(func.sum(DeliveryReport.dn_amount)).scalar() or 0
+            delivered_revenue = self.db.query(func.sum(DeliveryReport.dn_amount)).filter(
+                DeliveryReport.pgi_status == "Completed"
+            ).scalar() or 0
+            pending_revenue = self.db.query(func.sum(DeliveryReport.dn_amount)).filter(
+                DeliveryReport.pgi_status != "Completed"
+            ).scalar() or 0
+            pod_pending_revenue = self.db.query(func.sum(DeliveryReport.dn_amount)).filter(
+                DeliveryReport.pgi_status == "Completed",
+                DeliveryReport.pod_status == "Pending"
+            ).scalar() or 0
+            
+            return {
+                "total_revenue": float(total_revenue),
+                "delivered_revenue": float(delivered_revenue),
+                "pending_revenue": float(pending_revenue),
+                "pod_pending_revenue": float(pod_pending_revenue),
+                "realized_revenue": float(delivered_revenue - pod_pending_revenue)
+            }
+            
+        except Exception as e:
+            logger.error(f"Revenue analysis error: {e}")
+            return {}
+
+
+# ==========================================================
+# RESPONSE FORMATTER
+# ==========================================================
+
+class ResponseFormatter:
+    """Format all responses for WhatsApp"""
+    
+    @staticmethod
+    def welcome() -> str:
+        return WELCOME_MESSAGE
+    
+    @staticmethod
+    def help() -> str:
+        return WELCOME_MESSAGE
+    
+    @staticmethod
+    def executive_summary(health: Dict, top_dealers: List, risk_dealers: List, cities: List) -> str:
+        """Format executive summary"""
+        
+        response = f"""╔══════════════════════════════════════════╗
+║         👑 EXECUTIVE SUMMARY            ║
+╚══════════════════════════════════════════╝
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 *NETWORK HEALTH*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Health Score: {health.get('health_score', 0)}/100
+• Delivery Rate: {health.get('delivery_rate', 0)}%
+• POD Compliance: {health.get('pod_rate', 0)}%
+• Revenue at Risk: Rs {health.get('revenue_at_risk', 0):,.2f}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🏆 *TOP 5 PERFORMING DEALERS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+        for i, d in enumerate(top_dealers[:5], 1):
+            response += f"{i}. {d['name'][:25]}\n"
+            response += f"   💰 Rs {d['total_value']:,.2f} | 📦 {d['total_dns']} DNs\n\n"
+        
+        response += """━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🚨 *TOP 5 RISK DEALERS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+        for i, d in enumerate(risk_dealers[:5], 1):
+            response += f"{i}. {d['name'][:25]}\n"
+            response += f"   ⏳ {d['pending_dns']} pending | Rs {d['pending_value']:,.2f}\n\n"
+        
+        response += """━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🌆 *TOP 5 RISK CITIES*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+        for i, c in enumerate(cities[:5], 1):
+            response += f"{i}. {c['city'][:20]}\n"
+            response += f"   📦 {c['total_dns']} DNs | ⏳ {c['pending_dns']} pending ({c['pending_rate']:.0f}%)\n\n"
+        
+        response += """━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 *PRIORITY ACTIONS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. Escalate top 5 risk dealers immediately
+2. Focus POD collection on pending cities
+3. Review warehouse processes for delays
+
+Type "Help" for complete command menu."""
+        
+        return response
+    
+    @staticmethod
+    def top_dealers_response(dealers: List, title: str = "TOP PERFORMING DEALERS") -> str:
+        """Format top dealers response"""
+        if not dealers:
+            return "No dealer data available."
+        
+        response = f"📊 *{title}*\n\n"
+        for i, d in enumerate(dealers[:20], 1):
+            response += f"{i}. *{d['name'][:30]}*\n"
+            response += f"   💰 Rs {d['total_value']:,.2f}\n"
+            response += f"   📦 {d['total_dns']} DNs\n\n"
+        
+        response += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        response += "💡 Type a dealer name for detailed dashboard"
+        
+        return response
+    
+    @staticmethod
+    def top_risk_dealers_response(dealers: List) -> str:
+        """Format top risk dealers response"""
+        if not dealers:
+            return "No risk data available."
+        
+        response = "🚨 *TOP RISK DEALERS*\n\n"
+        for i, d in enumerate(dealers[:20], 1):
+            response += f"{i}. *{d['name'][:30]}*\n"
+            response += f"   ⏳ {d['pending_dns']} pending DNs\n"
+            response += f"   💰 Rs {d['pending_value']:,.2f} at risk\n\n"
+        
+        response += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        response += "💡 Escalate these dealers immediately"
+        
+        return response
+    
+    @staticmethod
+    def city_performance_response(cities: List) -> str:
+        """Format city performance response"""
+        if not cities:
+            return "No city data available."
+        
+        response = "🌆 *CITY PERFORMANCE ANALYSIS*\n\n"
+        for c in cities[:15]:
+            if c['pending_rate'] > 30:
+                status = "🔴"
+            elif c['pending_rate'] > 15:
+                status = "🟡"
+            else:
+                status = "🟢"
+            
+            response += f"{status} *{c['city'][:25]}*\n"
+            response += f"   📦 {c['total_dns']} DNs | ⏳ {c['pending_dns']} pending ({c['pending_rate']:.0f}%)\n"
+            response += f"   💰 Rs {c['total_value']:,.2f}\n\n"
+        
+        response += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        response += "💡 Type 'Help' for more commands"
+        
+        return response
+    
+    @staticmethod
+    def warehouse_performance_response(warehouses: List) -> str:
+        """Format warehouse performance response"""
+        if not warehouses:
+            return "No warehouse data available."
+        
+        response = "🏭 *WAREHOUSE PERFORMANCE ANALYSIS*\n\n"
+        for w in warehouses[:15]:
+            if w['pending_rate'] > 30:
+                status = "🔴"
+            elif w['pending_rate'] > 15:
+                status = "🟡"
+            else:
+                status = "🟢"
+            
+            response += f"{status} *{w['warehouse'][:25]}*\n"
+            response += f"   📦 {w['total_dns']} DNs | ⏳ {w['pending_dns']} pending ({w['pending_rate']:.0f}%)\n"
+            response += f"   💰 Rs {w['total_value']:,.2f}\n\n"
+        
+        response += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        response += "💡 Review underperforming warehouses"
+        
+        return response
+    
+    @staticmethod
+    def revenue_analysis_response(revenue: Dict) -> str:
+        """Format revenue analysis response"""
+        return f"""╔══════════════════════════════════════════╗
+║         💰 REVENUE ANALYSIS             ║
+╚══════════════════════════════════════════╝
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 *REVENUE BREAKDOWN*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Total Revenue: Rs {revenue.get('total_revenue', 0):,.2f}
+• Realized Revenue: Rs {revenue.get('realized_revenue', 0):,.2f} ✅
+• Pending Revenue: Rs {revenue.get('pending_revenue', 0):,.2f} ⏳
+• POD Pending Revenue: Rs {revenue.get('pod_pending_revenue', 0):,.2f} 📋
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📈 *PERCENTAGES*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Realization Rate: {(revenue.get('realized_revenue', 0) / revenue.get('total_revenue', 1)) * 100:.1f}%
+• Revenue at Risk: {(revenue.get('pending_revenue', 0) / revenue.get('total_revenue', 1)) * 100:.1f}%
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 *RECOMMENDATIONS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+        if revenue.get('pod_pending_revenue', 0) > 0:
+            response += "• Collect POD to recognize pending revenue\n"
+        if revenue.get('pending_revenue', 0) > 0:
+            response += "• Expedite pending deliveries\n"
+    
+    @staticmethod
+    def general_response(content: str) -> str:
+        """Format general AI response"""
+        return content
+
+
+# ==========================================================
+# MAIN AI QUERY SERVICE
+# ==========================================================
+
+class AIQueryService:
+    """Main service for processing WhatsApp queries"""
+    
+    def __init__(self, db: Session):
+        self.db = db
+        self.db_service = DatabaseQueryService(db)
+        self.formatter = ResponseFormatter()
+    
+    def process_query(self, question: str, user_phone: str = None, user_role: str = None) -> Dict[str, Any]:
+        """Process user query and return response"""
+        start_time = time.time()
+        question = question.strip()
+        
+        logger.info(f"📱 Processing: {question[:100]}")
+        
+        # Detect intent
+        intent, entity = IntentDetector.detect_intent(question)
+        logger.info(f"🎯 Intent: {intent.value}, Entity: {entity}")
+        
+        try:
+            # Route to appropriate handler
+            if intent == IntentType.HELP or intent == IntentType.MENU:
+                result = self._handle_help()
+            elif intent == IntentType.DASHBOARD:
+                result = self._handle_dashboard()
+            elif intent == IntentType.DN_LOOKUP:
+                result = self._handle_dn_lookup(entity)
+            elif intent == IntentType.DEALER_LOOKUP:
+                result = self._handle_dealer_lookup(entity)
+            elif intent == IntentType.DEALER_DASHBOARD:
+                result = self._handle_dealer_dashboard_prompt()
+            elif intent == IntentType.TOP_DEALERS:
+                result = self._handle_top_dealers()
+            elif intent == IntentType.TOP_RISK_DEALERS:
+                result = self._handle_top_risk_dealers()
+            elif intent == IntentType.EXECUTIVE_SUMMARY:
+                result = self._handle_executive_summary()
+            elif intent == IntentType.NETWORK_HEALTH:
+                result = self._handle_network_health()
+            elif intent == IntentType.CITY_PERFORMANCE:
+                result = self._handle_city_performance(entity)
+            elif intent == IntentType.WAREHOUSE_PERFORMANCE:
+                result = self._handle_warehouse_performance()
+            elif intent == IntentType.REVENUE_ANALYSIS:
+                result = self._handle_revenue_analysis()
+            elif intent == IntentType.OUTSTANDING_ANALYSIS:
+                result = self._handle_outstanding_analysis()
+            else:
+                result = self._handle_general_query(question)
+            
+            result["processing_time_ms"] = int((time.time() - start_time) * 1000)
+            return result
+            
+        except Exception as e:
+            logger.error(f"Processing error: {e}")
+            return {
+                "success": False,
+                "response": "⚠️ Service temporarily unavailable. Please try again.",
+                "processing_time_ms": int((time.time() - start_time) * 1000)
+            }
+    
+    def _handle_help(self) -> Dict[str, Any]:
+        """Handle help request"""
+        return {"success": True, "response": self.formatter.welcome()}
+    
+    def _handle_dashboard(self) -> Dict[str, Any]:
+        """Handle dashboard request"""
+        return {"success": True, "response": self.formatter.welcome()}
+    
+    def _handle_dn_lookup(self, dn_number: str) -> Dict[str, Any]:
+        """Handle DN lookup"""
+        result = self.db_service.get_dn_details(dn_number)
+        return {
+            "success": result["success"],
+            "response": result.get("formatted_response", result.get("message", "DN not found"))
+        }
+    
+    def _handle_dealer_lookup(self, dealer_name: str) -> Dict[str, Any]:
+        """Handle dealer lookup"""
+        result = self.db_service.get_dealer_dashboard(dealer_name)
+        return {
+            "success": result["success"],
+            "response": result.get("formatted_response", result.get("message", "Dealer not found"))
+        }
+    
+    def _handle_dealer_dashboard_prompt(self) -> Dict[str, Any]:
+        """Prompt for dealer name"""
+        return {
+            "success": True,
+            "response": "🏪 *Dealer Dashboard*\n\nPlease type the dealer name you want to analyze.\n\n📝 *Example:* `Bhatti Electronics`"
+        }
+    
+    def _handle_top_dealers(self) -> Dict[str, Any]:
+        """Handle top dealers request"""
+        dealers = self.db_service.get_top_dealers(20)
+        response = self.formatter.top_dealers_response(dealers, "TOP PERFORMING DEALERS")
+        return {"success": True, "response": response}
+    
+    def _handle_top_risk_dealers(self) -> Dict[str, Any]:
+        """Handle top risk dealers request"""
+        dealers = self.db_service.get_top_risk_dealers(20)
+        response = self.formatter.top_risk_dealers_response(dealers)
+        return {"success": True, "response": response}
+    
+    def _handle_executive_summary(self) -> Dict[str, Any]:
+        """Handle executive summary request"""
+        health = self.db_service.get_network_health()
+        top_dealers = self.db_service.get_top_dealers(10)
+        risk_dealers = self.db_service.get_top_risk_dealers(10)
+        cities = self.db_service.get_city_performance()
+        
+        response = self.formatter.executive_summary(health, top_dealers, risk_dealers, cities)
+        return {"success": True, "response": response}
+    
+    def _handle_network_health(self) -> Dict[str, Any]:
+        """Handle network health request"""
+        health = self.db_service.get_network_health()
+        response = health.get("formatted_response", "Network health data unavailable")
+        return {"success": True, "response": response}
+    
+    def _handle_city_performance(self, city_name: str = None) -> Dict[str, Any]:
+        """Handle city performance request"""
+        cities = self.db_service.get_city_performance()
+        
+        if city_name:
+            for c in cities:
+                if city_name.lower() in c['city'].lower():
+                    response = f"""🌆 *CITY PERFORMANCE: {c['city'].upper()}*
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 *METRICS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Total DNs: {c['total_dns']:,}
+• Pending DNs: {c['pending_dns']}
+• Pending Rate: {c['pending_rate']:.1f}%
+• Total Value: Rs {c['total_value']:,.2f}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{'⚠️ This city requires immediate attention' if c['pending_rate'] > 30 else '✅ Performance is satisfactory'}"""
+                    return {"success": True, "response": response}
+        
+        response = self.formatter.city_performance_response(cities)
+        return {"success": True, "response": response}
+    
+    def _handle_warehouse_performance(self) -> Dict[str, Any]:
+        """Handle warehouse performance request"""
+        warehouses = self.db_service.get_warehouse_performance()
+        response = self.formatter.warehouse_performance_response(warehouses)
+        return {"success": True, "response": response}
+    
+    def _handle_revenue_analysis(self) -> Dict[str, Any]:
+        """Handle revenue analysis request"""
+        revenue = self.db_service.get_revenue_analysis()
+        response = self.formatter.revenue_analysis_response(revenue)
+        return {"success": True, "response": response}
+    
+    def _handle_outstanding_analysis(self) -> Dict[str, Any]:
+        """Handle outstanding analysis request"""
+        revenue = self.db_service.get_revenue_analysis()
+        response = f"""💰 *OUTSTANDING & PENDING VALUE ANALYSIS*
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 *VALUE BREAKDOWN*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Total Outstanding: Rs {revenue.get('pending_revenue', 0) + revenue.get('pod_pending_revenue', 0):,.2f}
+• Pending Delivery: Rs {revenue.get('pending_revenue', 0):,.2f}
+• POD Pending: Rs {revenue.get('pod_pending_revenue', 0):,.2f}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 *RECOMMENDATIONS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Escalate pending deliveries
+• Accelerate POD collection
+• Review top risk dealers
+
+Type "Top risk dealers" for detailed list."""
+        return {"success": True, "response": response}
+    
+    def _handle_general_query(self, question: str) -> Dict[str, Any]:
+        """Handle general queries"""
+        response = f"""🤖 *I understand you're asking about: "{question[:50]}"*
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 *Try these commands for instant insights:*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 📊 *Dealer Analytics*
-• Type a dealer name to see their dashboard
-• "Top dealers" - Performance ranking
-• "Top risk dealers" - Critical accounts
-
-🔢 *DN Tracking*
-• Send a 10-digit DN number
-• Example: `6243611920`
-
-👑 *Executive Views*
-• "Executive summary" - Leadership briefing
-• "Network health" - Overall status
-
-🌆 *City Analysis*
-• "City analysis" - Regional performance
-• "Karachi situation" - Specific city
-
-💡 *What would you like to know?*"""
-        
-        # Help
-        help_words = ["help", "menu", "commands", "what can you do", "how to use"]
-        if any(h in q_lower for h in help_words):
-            return """📱 *AVAILABLE COMMANDS*
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔍 *DN TRACKING*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Send a 10-digit DN number
-• Example: `6243611920`
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🏪 *DEALER ANALYTICS*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 • Type any dealer name
 • "Top dealers" - Best performers
 • "Top risk dealers" - Critical accounts
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-👑 *EXECUTIVE VIEWS*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔢 *DN Tracking*
+• Send a 10-digit DN number
+
+👑 *Executive Views*
 • "Executive summary" - Leadership view
-• "Network health" - Overall performance
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🌆 *CITY & REGIONAL*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• "City analysis" - Regional breakdown
-• "Karachi situation" - Specific city
-
-💡 *Try any command now!*"""
-        
-        # Executive summary
-        executive_words = ["executive summary", "ceo summary", "management summary", "executive dashboard"]
-        if any(e in q_lower for e in executive_words):
-            return """👑 *EXECUTIVE SUMMARY*
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📊 *NETWORK HEALTH*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Overall Score: 78/100
-• Delivery Rate: 94.2%
-• POD Compliance: 73.1%
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💰 *REVENUE AT RISK*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Total at Risk: Rs 1,199,887,262
-• Pending DNs: 0
-• POD Pending: 376 DNs
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🚨 *TOP 3 RISKS*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. POD collection backlog (376 DNs)
-2. Regional performance variation
-3. Dealer acknowledgement delays
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 *PRIORITY ACTIONS*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. Escalate POD collection for top dealers
-2. Focus on Karachi region
-3. Implement daily follow-up system
-
-Type "Top risk dealers" for detailed list."""
-        
-        # Network health
-        health_words = ["network health", "health score", "overall health"]
-        if any(h in q_lower for h in health_words):
-            return """📊 *NETWORK HEALTH REPORT*
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📈 *KEY METRICS*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Health Score: 78/100
-• Total DNs: 18,467
-• Delivered: 17,402 ✅
-• Delivery Rate: 94.2%
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📋 *POD COMPLIANCE*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• POD Received: 12,729
-• POD Pending: 4,673
-• Compliance Rate: 73.1%
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💰 *FINANCIAL METRICS*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Total Value: Rs 4,308,681,954
-• Revenue at Risk: Rs 1,199,887,262
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{'🟢 Network is stable' if True else '🟡 Needs attention'}
-
-Type "Executive summary" for detailed analysis."""
-        
-        # Top dealers
-        top_dealer_words = ["top dealer", "best dealer", "top performing"]
-        if any(t in q_lower for t in top_dealer_words):
-            return """📊 *TOP PERFORMING DEALERS*
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. *Bismillah Electronics*
-   💰 Rs 1,100,950,248 | 📦 1,500 DNs
-
-2. *Imran Electronics*
-   💰 Rs 1,086,839,903 | 📦 2,937 DNs
-
-3. *Afzal Electronics*
-   💰 Rs 813,902,177 | 📦 2,865 DNs
-
-4. *Naeem Electronics*
-   💰 Rs 651,310,718 | 📦 2,741 DNs
-
-5. *STM Associates*
-   💰 Rs 577,840,141 | 📦 332 DNs
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 Type a dealer name for detailed dashboard"""
-        
-        # Top risk dealers
-        risk_words = ["top risk", "risk dealers", "critical dealers"]
-        if any(r in q_lower for r in risk_words):
-            return """🚨 *TOP RISK DEALERS*
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⚠️ *HIGHEST PENDING VALUE*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. *Bismillah Electronics*
-   📋 376 POD Pending
-   💰 Rs 1,199,887,262 at risk
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📋 *POD PENDING LEADERS*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Focus on POD collection
-• 376 DNs awaiting acknowledgement
-• Total value at risk: Rs 1.2B
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 *RECOMMENDATIONS*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. Escalate Bismillah Electronics
-2. Deploy collection team
-3. Implement daily follow-up
-
-Type a dealer name for detailed dashboard."""
-        
-        # City analysis
-        city_words = ["city analysis", "regional performance", "city wise"]
-        if any(c in q_lower for c in city_words) or any(city in q_lower for city in ["karachi", "lahore", "faisalabad"]):
-            return """🌆 *CITY-WISE PERFORMANCE*
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🟢 *Lahore* (Best)
-   📦 12,444 DNs | ⏳ 95 pending (1%)
-   💰 Rs 4,308,681,954
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🟢 *Karachi*
-   📦 10,810 DNs | ⏳ 17 pending (0%)
-   💰 Rs 3,586,058,427
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🟢 *Gujrat*
-   📦 434 DNs | ⏳ 2 pending (0%)
-   💰 Rs 70,777,472
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🟡 *Faisalabad* (Needs Attention)
-   📦 5 DNs | ⏳ 1 pending (20%)
-   💰 Rs 643,846
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 Type a city name for detailed analysis"""
-        
-        # DN tracking (10 digits)
-        if q_lower.isdigit() and len(q_lower) == 10:
-            return f"""🔢 *DN TRACKING - {question}*
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📋 *SEARCHING DATABASE*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-⏳ Fetching complete DN details...
-
-*This includes:*
-• Customer information
-• Delivery status
-• POD status
-• Financial details
-• Risk assessment
-
-Please wait while I retrieve the data..."""
-        
-        # Dealer name (likely)
-        if len(q_lower.split()) <= 4 and not q_lower.isdigit():
-            return f"""🏪 *DEALER LOOKUP - "{question}"*
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📊 *SEARCHING DATABASE*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-⏳ Fetching complete dealer dashboard...
-
-*This includes:*
-• Delivery performance metrics
-• Financial analysis
-• Risk assessment
-• Pending DNs
-• POD status
-
-Please wait while I retrieve the data..."""
-        
-        # Default response
-        return f"""🤖 *Logistics Assistant*
-
-I understand you're asking: "{question[:50]}"
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 *Here's what I can help with:*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🔍 *Track a DN*
-• Send a 10-digit number
-
-🏪 *Check a Dealer*
-• Type their name
-
-👑 *Executive Reports*
-• "Executive summary"
-• "Network health"
+• "Network health" - Overall status
 
 🌆 *Regional Analysis*
-• "City analysis"
-• "Karachi situation"
+• "City performance" - City-wise breakdown
+• "Warehouse performance" - Hub efficiency
 
-📋 *Try one of these commands!*"""
+💰 *Financial Insights*
+• "Revenue analysis" - Total revenue
+• "Outstanding analysis" - Pending value
 
-
-# ==========================================================
-# MAIN AI PROVIDER SERVICE
-# ==========================================================
-
-class AIProviderService:
-    """
-    Enterprise AI Provider Service with GROQ integration
-    Includes fallback mechanisms for reliability
-    """
-    
-    def __init__(self, db: Session = None):
-        self.db = db
-        self.cache = AICacheManager(ttl_seconds=300)
-        self.fallback = FallbackResponseGenerator()
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Type "Help" for complete command menu."""
         
-        # GROQ Configuration
-        self.groq_api_key = getattr(config, 'GROQ_API_KEY', None)
-        self.groq_model = getattr(config, 'GROQ_MODEL', 'llama-3.3-70b-versatile')
-        self.groq_client = None
-        self.status = ProviderStatus.OFFLINE
-        self.is_available = False
-        
-        # Log startup
-        self._log_startup()
-        
-        # Initialize GROQ if available
-        if self.groq_api_key and GROQ_AVAILABLE:
-            self._init_groq()
-        elif not self.groq_api_key:
-            logger.error("❌ GROQ_API_KEY not found in environment variables")
-            logger.info("   Add GROQ_API_KEY to Railway variables")
-        elif not GROQ_AVAILABLE:
-            logger.error(f"❌ GROQ library not available: {GROQ_IMPORT_ERROR}")
-            logger.info("   Run: pip install groq")
-        
-        # Final status
-        self.is_available = self.status == ProviderStatus.ONLINE
-        self._log_final_status()
-    
-    def _log_startup(self):
-        """Log startup information"""
-        logger.info("=" * 60)
-        logger.info("🤖 AI PROVIDER SERVICE v3.0 INITIALIZING")
-        logger.info(f"GROQ Library Available: {GROQ_AVAILABLE}")
-        logger.info(f"GROQ_API_KEY Present: {bool(self.groq_api_key)}")
-        logger.info(f"GROQ Model: {self.groq_model}")
-        logger.info("=" * 60)
-    
-    def _init_groq(self):
-        """Initialize GROQ client"""
-        try:
-            self.groq_client = Groq(api_key=self.groq_api_key)
-            self.status = ProviderStatus.ONLINE
-            logger.success("✅ GROQ client initialized successfully!")
-            logger.info(f"   Model: {self.groq_model}")
-        except Exception as e:
-            self.status = ProviderStatus.OFFLINE
-            logger.error(f"❌ GROQ initialization failed: {e}")
-    
-    def _log_final_status(self):
-        """Log final initialization status"""
-        logger.info("=" * 60)
-        if self.is_available:
-            logger.success("✅ AI PROVIDER SERVICE IS READY")
-            logger.info("   GROQ is online and available")
-        else:
-            logger.warning("⚠️ AI PROVIDER SERVICE IN FALLBACK MODE")
-            logger.info("   Using rule-based responses")
-            logger.info("   GROQ will be used when available")
-        logger.info("=" * 60)
-    
-    # ==========================================================
-    # CORE METHODS
-    # ==========================================================
-    
-    def get_cache_key(self, question: str, context: Dict = None, user_role: str = "") -> str:
-        """Generate cache key"""
-        context_hash = str(hash(str(context))) if context else ""
-        content_hash = hashlib.md5(f"{question}:{context_hash}:{user_role}".encode()).hexdigest()
-        return content_hash
-    
-    def answer_question(
-        self,
-        question: str,
-        context: Dict[str, Any] = None,
-        structured: bool = False,
-        user_phone: str = None,
-        user_role: str = "guest",
-        max_tokens: int = 500,
-        temperature: float = 0.7,
-        analysis_type: str = None
-    ) -> Dict[str, Any]:
-        """
-        Answer a question using GROQ or fallback
-        
-        Args:
-            question: User's question
-            context: Optional context data
-            structured: Return structured data (not used for WhatsApp)
-            user_phone: User's phone number
-            user_role: User's role (ceo, manager, guest, etc.)
-            max_tokens: Max tokens for response
-            temperature: Temperature for response
-            analysis_type: Type of analysis (dealer, dn, executive, etc.)
-        
-        Returns:
-            Dictionary with response content
-        """
-        start_time = time.time()
-        
-        logger.info(f"🚀 AI REQUEST - User: {user_phone}, Role: {user_role}")
-        logger.debug(f"Question: {question[:100]}...")
-        
-        # Check cache
-        cache_key = self.get_cache_key(question, context, user_role)
-        cached_response = self.cache.get(cache_key)
-        if cached_response:
-            logger.info(f"✅ Cache hit for: {question[:50]}...")
-            return {
-                "success": True,
-                "content": cached_response,
-                "provider_used": "cache",
-                "processing_time_ms": 0,
-                "cached": True
-            }
-        
-        # Build prompt based on analysis type
-        if analysis_type and context:
-            prompt = build_analysis_prompt(analysis_type, context, question, user_role)
-        else:
-            prompt = build_whatsapp_prompt(question, user_role, context)
-        
-        # Try GROQ first
-        response = None
-        provider_used = "fallback"
-        
-        if self.is_available:
-            logger.info("📡 Calling GROQ API...")
-            response = self._call_groq(prompt, max_tokens, temperature)
-            if response.get("success"):
-                provider_used = "groq"
-                logger.info("✅ GROQ response received")
-            else:
-                logger.warning(f"⚠️ GROQ failed: {response.get('error')}")
-        
-        # Use fallback if GROQ failed or not available
-        if not response or not response.get("success"):
-            logger.info("📋 Using fallback response")
-            content = self.fallback.generate(question)
-            response = {"success": True, "content": content}
-            provider_used = "fallback"
-        
-        content = response.get("content", "")
-        
-        # Clean response for WhatsApp
-        content = self._clean_response(content)
-        
-        # Cache successful response
-        if response.get("success") and provider_used == "groq":
-            self.cache.set(cache_key, content)
-        
-        processing_time = int((time.time() - start_time) * 1000)
-        
-        logger.info(f"✅ RESPONSE - Provider: {provider_used}, Time: {processing_time}ms")
-        
-        # Log to database (async, don't block)
-        self._log_usage(
-            user_phone=user_phone,
-            question=question,
-            response=content,
-            provider=provider_used,
-            success=response.get("success", False),
-            processing_time_ms=processing_time
-        )
-        
-        return {
-            "success": response.get("success", False),
-            "content": content,
-            "provider_used": provider_used,
-            "processing_time_ms": processing_time,
-            "cached": False
-        }
-    
-    def _call_groq(self, prompt: str, max_tokens: int = 500, temperature: float = 0.7) -> Dict[str, Any]:
-        """Call GROQ API with error handling"""
-        
-        if not self.groq_client:
-            return {"success": False, "content": "", "error": "GROQ client not initialized"}
-        
-        try:
-            logger.debug(f"Calling GROQ with model: {self.groq_model}")
-            
-            response = self.groq_client.chat.completions.create(
-                model=self.groq_model,
-                messages=[
-                    {
-                        "role": "system", 
-                        "content": "You are a helpful WhatsApp logistics assistant. Return ONLY human-readable text with emojis and simple formatting. NEVER return raw JSON. Be concise and helpful."
-                    },
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=max_tokens,
-                temperature=temperature
-            )
-            
-            content = response.choices[0].message.content
-            logger.debug(f"GROQ response length: {len(content)} chars")
-            
-            return {
-                "success": True,
-                "content": content,
-                "model": self.groq_model,
-                "usage": {
-                    "prompt_tokens": getattr(response.usage, 'prompt_tokens', 0),
-                    "completion_tokens": getattr(response.usage, 'completion_tokens', 0),
-                    "total_tokens": getattr(response.usage, 'total_tokens', 0)
-                }
-            }
-            
-        except Exception as e:
-            logger.error(f"GROQ API error: {e}")
-            return {"success": False, "content": "", "error": str(e)}
-    
-    def _clean_response(self, content: str) -> str:
-        """Clean response for WhatsApp display"""
-        
-        if not content:
-            return "I couldn't generate a response. Please try again."
-        
-        # Remove any JSON that might have slipped through
-        if content.strip().startswith('{'):
-            try:
-                parsed = json.loads(content)
-                if isinstance(parsed, dict):
-                    content = parsed.get("response") or parsed.get("content") or parsed.get("message") or content
-            except:
-                pass
-        
-        # Remove code blocks
-        content = re.sub(r'```json\s*', '', content)
-        content = re.sub(r'```\s*', '', content)
-        
-        # Ensure response has emojis for better UX
-        emojis = ['📊', '✅', '❌', '🚨', '💡', '📦', '🏪', '🔢', '🌆', '👑', '📍', '⏳', '📋', '👋', '💰', '⚠️']
-        if not any(e in content for e in emojis):
-            content = "📋 " + content
-        
-        # Truncate if too long (WhatsApp limit ~4000 chars)
-        if len(content) > 3800:
-            content = content[:3800] + "\n\n... (response truncated)"
-        
-        return content
-    
-    def _log_usage(self, user_phone: str, question: str, response: str, provider: str, success: bool, processing_time_ms: int):
-        """Log usage to database (non-blocking)"""
-        
-        if not self.db:
-            return
-        
-        try:
-            log_entry = AIResponseLog(
-                conversation_id=None,
-                prompt=question[:500],
-                ai_response=response[:2000],
-                model_name=provider,
-                success=success,
-                created_at=datetime.utcnow()
-            )
-            self.db.add(log_entry)
-            self.db.commit()
-        except Exception as e:
-            logger.debug(f"Logging failed (non-critical): {e}")
-            if self.db:
-                self.db.rollback()
-    
-    # ==========================================================
-    # SPECIALIZED METHODS
-    # ==========================================================
-    
-    def analyze_dealer(self, dealer_data: Dict, user_phone: str = None, user_role: str = "manager") -> Dict[str, Any]:
-        """Analyze dealer performance"""
-        return self.answer_question(
-            question=f"Analyze dealer {dealer_data.get('dealer_name', 'Unknown')}",
-            context=dealer_data,
-            user_phone=user_phone,
-            user_role=user_role,
-            analysis_type="dealer"
-        )
-    
-    def analyze_dn(self, dn_data: Dict, user_phone: str = None, user_role: str = "guest") -> Dict[str, Any]:
-        """Analyze DN status"""
-        return self.answer_question(
-            question=f"Track DN {dn_data.get('dn_no', 'Unknown')}",
-            context=dn_data,
-            user_phone=user_phone,
-            user_role=user_role,
-            analysis_type="dn"
-        )
-    
-    def generate_executive_summary(self, metrics: Dict, user_phone: str = None) -> Dict[str, Any]:
-        """Generate executive summary"""
-        return self.answer_question(
-            question="Provide executive summary",
-            context=metrics,
-            user_phone=user_phone,
-            user_role="ceo",
-            analysis_type="executive"
-        )
-    
-    def get_status(self) -> Dict[str, Any]:
-        """Get service status"""
-        return {
-            "available": self.is_available,
-            "status": self.status.value,
-            "model": self.groq_model if self.is_available else None,
-            "cache_size": len(self.cache.cache),
-            "groq_library": GROQ_AVAILABLE
-        }
+        return {"success": True, "response": response}
 
 
 # ==========================================================
-# SINGLETON INSTANCE
+# FACTORY FUNCTION
 # ==========================================================
 
-import re
-
-_ai_provider_service = None
-
-
-def init_ai_provider_service(db: Session = None) -> AIProviderService:
-    """Initialize AI Provider Service singleton"""
-    global _ai_provider_service
-    
-    if _ai_provider_service is None:
-        _ai_provider_service = AIProviderService(db)
-    
-    return _ai_provider_service
-
-
-def get_ai_provider_service() -> Optional[AIProviderService]:
-    """Get the AI Provider Service instance"""
-    return _ai_provider_service
-
-
-def reset_ai_provider_service():
-    """Reset singleton (for testing)"""
-    global _ai_provider_service
-    _ai_provider_service = None
-
-
-# ==========================================================
-# AUTO-INITIALIZATION (Safe - Won't crash)
-# ==========================================================
-
-try:
-    _ai_provider_service = AIProviderService(db=None)
-    logger.info("AI Provider Service auto-initialized")
-except Exception as e:
-    logger.error(f"Auto-initialization failed: {e}")
-    _ai_provider_service = None
+def process_whatsapp_query(question: str, db: Session, user_phone: str = None, user_role: str = None) -> str:
+    """Process WhatsApp query and return response"""
+    try:
+        service = AIQueryService(db)
+        result = service.process_query(question, user_phone, user_role)
+        return result.get("response", "Unable to process your request. Please try again.")
+    except Exception as e:
+        logger.error(f"Query processing error: {e}")
+        return "⚠️ Service temporarily unavailable. Please try again later."
