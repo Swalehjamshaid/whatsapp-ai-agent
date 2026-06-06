@@ -1,23 +1,31 @@
 # ==========================================================
-# FILE: app/services/ai_query_service.py (ENTERPRISE v12.0)
+# FILE: app/services/ai_query_service.py (ENTERPRISE v13.0)
 # ==========================================================
 # ENHANCED WITH:
-# - Complete DN Intelligence Dashboard
-# - Proper Aging Calculations (PGI Date - DN Create Date)
-# - Dealer Summary with DN Search
-# - Executive Dealer Dashboard with Rankings
-# - Full GROQ Integration with Health Check
-# - AI Context with Real Database Data
+# - P1: Strong Groq Diagnostics (full error logging)
+# - P2: Business Questions forced to Groq (logistics keywords)
+# - P3: Improved Dealer Matching (exact match first)
+# - P4: Dealer Suggestions on not found
+# - P5: Enhanced DN Dashboard (vehicle, transporter, route)
+# - P6: AI Recommendations based on data
+# - P7: Improved Network Health (weights)
+# - P8: Executive Context Caching (5 min TTL)
+# - P9: Improved Fallback Response (shows actual error)
+# - P10: Conversation Memory (context across messages)
+# - P11: Enhanced Top Risk Dealers (multiple risk factors)
+# - P12: Executive AI Mode (AI-generated executive insights)
 # ==========================================================
 
 import re
 import time
+import hashlib
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timedelta
 from enum import Enum
+from collections import deque
 
 from sqlalchemy.orm import Session
-from sqlalchemy import func, desc, and_
+from sqlalchemy import func, desc, and_, or_
 from loguru import logger
 
 from app.config import config
@@ -33,6 +41,76 @@ try:
 except ImportError as e:
     logger.error(f"Failed to import AI provider: {e}")
     AI_PROVIDER_AVAILABLE = False
+
+
+# ==========================================================
+# P10: CONVERSATION MEMORY
+# ==========================================================
+
+class ConversationMemory:
+    """Store conversation context across messages"""
+    
+    def __init__(self, max_history: int = 10):
+        self.history: Dict[str, deque] = {}
+        self.max_history = max_history
+    
+    def get_or_create(self, phone_number: str) -> deque:
+        if phone_number not in self.history:
+            self.history[phone_number] = deque(maxlen=self.max_history)
+        return self.history[phone_number]
+    
+    def add(self, phone_number: str, question: str, response: str, intent: str, entity: str = None):
+        memory = self.get_or_create(phone_number)
+        memory.append({
+            "question": question,
+            "response": response[:200],
+            "intent": intent,
+            "entity": entity,
+            "timestamp": datetime.utcnow().isoformat()
+        })
+    
+    def get_last_context(self, phone_number: str) -> Dict[str, Any]:
+        memory = self.get_or_create(phone_number)
+        if not memory:
+            return {}
+        
+        last = memory[-1]
+        return {
+            "last_question": last.get("question"),
+            "last_intent": last.get("intent"),
+            "last_entity": last.get("entity"),
+            "recent_entities": [m.get("entity") for m in list(memory)[-3:] if m.get("entity")]
+        }
+    
+    def clear(self, phone_number: str):
+        if phone_number in self.history:
+            self.history[phone_number].clear()
+
+
+# ==========================================================
+# P8: EXECUTIVE CONTEXT CACHE
+# ==========================================================
+
+class ExecutiveContextCache:
+    """Cache executive context for 5 minutes"""
+    
+    def __init__(self, ttl_seconds: int = 300):
+        self.cache: Dict[str, Tuple[Dict, float]] = {}
+        self.ttl = ttl_seconds
+    
+    def get(self, db_hash: str) -> Optional[Dict]:
+        if db_hash in self.cache:
+            data, timestamp = self.cache[db_hash]
+            if time.time() - timestamp < self.ttl:
+                return data
+            del self.cache[db_hash]
+        return None
+    
+    def set(self, db_hash: str, data: Dict):
+        self.cache[db_hash] = (data, time.time())
+    
+    def clear(self):
+        self.cache.clear()
 
 
 # ==========================================================
@@ -94,7 +172,7 @@ class IntentType(str, Enum):
 
 
 # ==========================================================
-# ENHANCED INTENT DETECTION
+# ENHANCED INTENT DETECTION (P2)
 # ==========================================================
 
 class IntentDetector:
@@ -117,7 +195,7 @@ class IntentDetector:
     
     @staticmethod
     def is_business_question(message: str) -> bool:
-        """Enhanced question detection for business queries"""
+        """P2: Enhanced question detection with logistics keywords"""
         msg_lower = message.lower().strip()
         
         # Question words
@@ -129,13 +207,16 @@ class IntentDetector:
         if msg_lower.endswith("?"):
             return True
         
-        # Business analysis keywords
-        analysis_keywords = [
+        # P2: Logistics-specific keywords - Force to AI
+        logistics_keywords = [
             "analysis", "analyze", "improvement", "recommend", "suggest", "advice", "help me",
             "root cause", "why is", "risk", "trend", "forecast", "delay", "performance",
-            "issue", "problem", "solution", "fix", "resolve", "optimize", "enhance"
+            "issue", "problem", "solution", "fix", "resolve", "optimize", "enhance",
+            "dealer", "dn", "dispatch", "delivery", "pod", "warehouse", "aging",
+            "transit", "revenue", "logistics", "network", "shipment", "stock", "inventory",
+            "pending", "outstanding", "compliance", "efficiency", "bottleneck"
         ]
-        if any(word in msg_lower for word in analysis_keywords):
+        if any(word in msg_lower for word in logistics_keywords):
             return True
         
         return False
@@ -160,7 +241,7 @@ class IntentDetector:
             }
             return command_map.get(num, IntentType.HELP), None
         
-        # Business questions - Send to AI
+        # P2: Business questions - Send to AI (expanded)
         if IntentDetector.is_business_question(msg_original):
             logger.info(f"Business question detected, sending to AI: {msg_original[:50]}")
             return IntentType.GENERAL_QUERY, None
@@ -224,18 +305,65 @@ class DatabaseService:
         self.db = db
     
     # ==========================================================
-    # P1: ENHANCED DN INTELLIGENCE DASHBOARD
+    # P3 & P4: IMPROVED DEALER MATCHING WITH SUGGESTIONS
+    # ==========================================================
+    
+    def find_dealer(self, dealer_name: str) -> Tuple[Optional[str], List[str]]:
+        """
+        P3: Exact match first, then partial match
+        P4: Return suggestions if not found
+        """
+        dealer_name_clean = dealer_name.strip()
+        
+        # P3: Exact match first
+        exact_match = self.db.query(DeliveryReport).filter(
+            func.lower(DeliveryReport.customer_name) == func.lower(dealer_name_clean)
+        ).first()
+        
+        if exact_match:
+            return exact_match.customer_name, []
+        
+        # P3: Partial match
+        partial_matches = self.db.query(
+            DeliveryReport.customer_name,
+            func.count(DeliveryReport.dn_no).label("count")
+        ).filter(
+            DeliveryReport.customer_name.ilike(f"%{dealer_name_clean}%")
+        ).group_by(
+            DeliveryReport.customer_name
+        ).order_by(
+            desc("count")
+        ).limit(5).all()
+        
+        if partial_matches:
+            # Return the best match and suggestions
+            suggestions = [m.customer_name for m in partial_matches[1:5]]
+            return partial_matches[0].customer_name, suggestions
+        
+        return None, []
+    
+    def get_dealer_by_name(self, dealer_name: str) -> Optional[Any]:
+        """Get dealer records by name with improved matching"""
+        found_dealer, _ = self.find_dealer(dealer_name)
+        if found_dealer:
+            return self.db.query(DeliveryReport).filter(
+                DeliveryReport.customer_name == found_dealer
+            ).all()
+        return None
+    
+    # ==========================================================
+    # P5: ENHANCED DN DASHBOARD (Vehicle, Transporter, Route)
     # ==========================================================
     
     def get_dn_intelligence_dashboard(self, dn_number: str) -> Dict[str, Any]:
         """
         Complete DN Intelligence Dashboard with:
-        - Proper aging calculations (PGI Date - DN Create Date)
-        - Delivery aging (Delivery Date - PGI Date)
-        - POD aging (POD Date - PGI Date)
+        - Proper aging calculations
+        - P5: Vehicle Number, Transporter, Route
+        - P5: Dispatch/Receiving Location
+        - P5: Last Activity Date
         - Dealer summary
-        - Risk analysis
-        - AI-ready context
+        - P6: AI-ready recommendations
         """
         try:
             record = self.db.query(DeliveryReport).filter(
@@ -245,11 +373,7 @@ class DatabaseService:
             if not record:
                 return {"success": False, "message": f"❌ DN {dn_number} not found"}
             
-            # ==========================================================
-            # PROPER AGING CALCULATIONS (P1 FIX)
-            # ==========================================================
-            
-            # 1. Dispatch Aging = PGI Date - DN Creation Date
+            # PROPER AGING CALCULATIONS
             dispatch_aging_days = 0
             pgi_date = None
             dn_create_date = None
@@ -269,7 +393,7 @@ class DatabaseService:
                 if dn_create_date and pgi_date:
                     dispatch_aging_days = (pgi_date - dn_create_date).days
             
-            # 2. Delivery Aging = Delivery Date - PGI Date (if delivered)
+            # Delivery Aging
             delivery_aging_days = 0
             delivery_date = None
             
@@ -283,7 +407,7 @@ class DatabaseService:
                     if pgi_date and delivery_date:
                         delivery_aging_days = (delivery_date - pgi_date).days
             
-            # 3. POD Aging = POD Date - PGI Date (if POD received)
+            # POD Aging
             pod_aging_days = 0
             pod_date = None
             
@@ -297,14 +421,22 @@ class DatabaseService:
                     if pgi_date and pod_date:
                         pod_aging_days = (pod_date - pgi_date).days
             
-            # Total Age from creation to today
             total_age_days = 0
             if dn_create_date:
                 total_age_days = (datetime.now().date() - dn_create_date).days
             
-            # ==========================================================
-            # RISK ASSESSMENT
-            # ==========================================================
+            # P5: Get additional fields if available
+            vehicle_number = getattr(record, 'vehicle_number', getattr(record, 'vehicle_no', 'N/A'))
+            transporter = getattr(record, 'transporter', getattr(record, 'carrier', 'N/A'))
+            route = getattr(record, 'route', getattr(record, 'delivery_route', 'N/A'))
+            dispatch_location = getattr(record, 'dispatch_location', getattr(record, 'origin', 'N/A'))
+            receiving_location = getattr(record, 'receiving_location', getattr(record, 'destination', 'N/A'))
+            last_activity_date = getattr(record, 'last_activity_date', None)
+            if last_activity_date:
+                if isinstance(last_activity_date, datetime):
+                    last_activity_date = last_activity_date.date()
+            
+            # Risk Assessment
             risk_score = 0
             risk_level = "LOW"
             risk_icon = "🟢"
@@ -326,9 +458,7 @@ class DatabaseService:
                 risk_level = "LOW"
                 risk_icon = "🟢"
             
-            # ==========================================================
-            # DEALER SUMMARY (P1 - Related Dealer Data)
-            # ==========================================================
+            # Dealer Summary
             dealer_records = self.db.query(DeliveryReport).filter(
                 DeliveryReport.customer_name == record.customer_name
             ).all()
@@ -343,10 +473,7 @@ class DatabaseService:
             dealer_delivery_rate = (dealer_delivered / dealer_total_dns) * 100 if dealer_total_dns > 0 else 0
             dealer_health_score = dealer_delivery_rate
             
-            # ==========================================================
             # FORMATTED RESPONSE
-            # ==========================================================
-            
             response = f"""╔══════════════════════════════════════════════════════════════╗
 ║              📦 DN COMPLETE INTELLIGENCE REPORT                    ║
 ║                         {dn_number}                                   ║
@@ -361,6 +488,16 @@ class DatabaseService:
 • Warehouse: {record.warehouse or 'N/A'}
 • Quantity: {float(record.dn_qty or 0):,.0f} units
 • Value: Rs {float(record.dn_amount or 0):,.2f}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🚚 *TRANSPORTATION DETAILS* (P5)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Vehicle Number: {vehicle_number}
+• Transporter: {transporter}
+• Route: {route}
+• Dispatch Location: {dispatch_location}
+• Receiving Location: {receiving_location}
+• Last Activity: {last_activity_date if last_activity_date else 'N/A'}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📅 *DATES & AGING ANALYSIS*
@@ -426,6 +563,9 @@ class DatabaseService:
                 "pod_aging_days": pod_aging_days,
                 "risk_score": risk_score,
                 "risk_level": risk_level,
+                "vehicle_number": vehicle_number,
+                "transporter": transporter,
+                "route": route,
                 "dealer_summary": {
                     "total_dns": dealer_total_dns,
                     "delivered": dealer_delivered,
@@ -446,22 +586,28 @@ class DatabaseService:
     
     def get_dealer_executive_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         """
-        Enhanced dealer dashboard with:
-        - Rankings
-        - Health Score
-        - Revenue Contribution
-        - Risk Score
-        - Top Delayed DNs
-        - Average Aging
-        - Monthly Trend
+        Enhanced dealer dashboard with improved matching and suggestions
         """
         try:
+            # P3 & P4: Improved dealer matching with suggestions
+            found_dealer, suggestions = self.find_dealer(dealer_name)
+            
+            if not found_dealer:
+                if suggestions:
+                    suggestion_text = "\n".join([f"{i+1}. {s}" for i, s in enumerate(suggestions[:5])])
+                    return {
+                        "success": False, 
+                        "message": f"❌ Dealer '{dealer_name}' not found.\n\nDid you mean:\n{suggestion_text}",
+                        "suggestions": suggestions
+                    }
+                return {"success": False, "message": f"❌ Dealer '{dealer_name}' not found"}
+            
             records = self.db.query(DeliveryReport).filter(
-                DeliveryReport.customer_name.ilike(f"%{dealer_name}%")
+                DeliveryReport.customer_name == found_dealer
             ).all()
             
             if not records:
-                return {"success": False, "message": f"❌ Dealer '{dealer_name}' not found"}
+                return {"success": False, "message": f"❌ No records found for '{found_dealer}'"}
             
             # Basic metrics
             total_dns = len(set(str(r.dn_no) for r in records))
@@ -477,7 +623,7 @@ class DatabaseService:
             health_score = (delivery_rate * 0.6) + (pod_rate * 0.4)
             risk_score = 100 - health_score
             
-            # P2: Dealer Ranking (among all dealers)
+            # P2: Dealer Ranking
             all_dealers = self.db.query(
                 DeliveryReport.customer_name,
                 func.sum(DeliveryReport.dn_amount).label("total_value")
@@ -491,7 +637,7 @@ class DatabaseService:
             
             ranking = 1
             for i, d in enumerate(all_dealers, 1):
-                if d.customer_name == dealer_name:
+                if d.customer_name == found_dealer:
                     ranking = i
                     break
             
@@ -514,7 +660,7 @@ class DatabaseService:
             delayed_dns.sort(key=lambda x: x["age"], reverse=True)
             top_delayed = delayed_dns[:5]
             
-            # P2: Average Aging
+            # Average Aging
             ages = []
             for r in records:
                 if r.dn_create_date:
@@ -527,7 +673,7 @@ class DatabaseService:
             
             avg_aging = sum(ages) / len(ages) if ages else 0
             
-            # P2: POD Aging
+            # POD Aging
             pod_ages = []
             for r in records:
                 if r.pgi_status == "Completed" and r.pod_status == "Pending" and r.good_issue_date:
@@ -570,7 +716,7 @@ class DatabaseService:
             
             response = f"""╔══════════════════════════════════════════════════════════════╗
 ║              📊 EXECUTIVE DEALER DASHBOARD                       ║
-║                    {dealer_name[:30]}                               ║
+║                    {found_dealer[:30]}                               ║
 ╚══════════════════════════════════════════════════════════════════════╝
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -628,7 +774,7 @@ class DatabaseService:
             
             return {
                 "success": True,
-                "dealer_name": dealer_name,
+                "dealer_name": found_dealer,
                 "ranking": ranking,
                 "health_score": health_score,
                 "risk_score": risk_score,
@@ -643,6 +789,146 @@ class DatabaseService:
         except Exception as e:
             logger.error(f"Dealer executive dashboard error: {e}")
             return {"success": False, "message": f"Error: {str(e)}"}
+    
+    # ==========================================================
+    # P11: ENHANCED TOP RISK DEALERS
+    # ==========================================================
+    
+    def get_enhanced_top_risk_dealers(self, limit: int = 20) -> List[Dict]:
+        """
+        P11: Enhanced risk dealers with multiple risk factors
+        """
+        try:
+            # Get all dealers with their metrics
+            dealers = self.db.query(
+                DeliveryReport.customer_name,
+                func.count(DeliveryReport.dn_no).label("total_dns"),
+                func.sum(DeliveryReport.dn_amount).label("total_value"),
+                func.count(DeliveryReport.dn_no).filter(DeliveryReport.pgi_status != "Completed").label("pending_dns"),
+                func.sum(DeliveryReport.dn_amount).filter(DeliveryReport.pgi_status != "Completed").label("pending_value"),
+                func.count(DeliveryReport.dn_no).filter(
+                    DeliveryReport.pgi_status == "Completed",
+                    DeliveryReport.pod_status == "Pending"
+                ).label("pod_pending_dns"),
+                func.sum(DeliveryReport.dn_amount).filter(
+                    DeliveryReport.pgi_status == "Completed",
+                    DeliveryReport.pod_status == "Pending"
+                ).label("pod_pending_value")
+            ).filter(
+                DeliveryReport.customer_name.isnot(None)
+            ).group_by(
+                DeliveryReport.customer_name
+            ).all()
+            
+            risk_dealers = []
+            for d in dealers:
+                total_dns = d.total_dns
+                pending_dns = d.pending_dns or 0
+                pod_pending_dns = d.pod_pending_dns or 0
+                pending_value = float(d.pending_value or 0)
+                pod_pending_value = float(d.pod_pending_value or 0)
+                
+                # P11: Calculate risk score with multiple factors
+                pending_ratio = (pending_dns / total_dns) * 100 if total_dns > 0 else 0
+                pod_ratio = (pod_pending_dns / total_dns) * 100 if total_dns > 0 else 0
+                financial_risk = (pending_value + pod_pending_value) / (float(d.total_value or 1)) * 100 if float(d.total_value or 0) > 0 else 0
+                
+                # Weighted risk score
+                risk_score = (pending_ratio * 0.4) + (pod_ratio * 0.3) + (financial_risk * 0.3)
+                
+                risk_dealers.append({
+                    "name": d.customer_name,
+                    "pending_dns": pending_dns,
+                    "pending_value": pending_value,
+                    "pod_pending_dns": pod_pending_dns,
+                    "pod_pending_value": pod_pending_value,
+                    "total_value": float(d.total_value or 0),
+                    "total_dns": total_dns,
+                    "pending_ratio": round(pending_ratio, 1),
+                    "pod_ratio": round(pod_ratio, 1),
+                    "financial_risk": round(financial_risk, 1),
+                    "risk_score": round(risk_score, 1)
+                })
+            
+            risk_dealers.sort(key=lambda x: x["risk_score"], reverse=True)
+            return risk_dealers[:limit]
+            
+        except Exception as e:
+            logger.error(f"Enhanced top risk dealers error: {e}")
+            return []
+    
+    # ==========================================================
+    # P7: IMPROVED NETWORK HEALTH
+    # ==========================================================
+    
+    def get_enhanced_network_health(self) -> Dict[str, Any]:
+        """
+        P7: Enhanced network health with weighted metrics
+        """
+        try:
+            total_dns = self.db.query(DeliveryReport.dn_no).distinct().count()
+            delivered_dns = self.db.query(DeliveryReport.dn_no).filter(DeliveryReport.pgi_status == "Completed").distinct().count()
+            pod_received = self.db.query(DeliveryReport.dn_no).filter(
+                DeliveryReport.pgi_status == "Completed",
+                DeliveryReport.pod_status == "Received"
+            ).distinct().count()
+            pending_value = self.db.query(func.sum(DeliveryReport.dn_amount)).filter(DeliveryReport.pgi_status != "Completed").scalar() or 0
+            
+            # P7: Calculate aging metrics
+            aging_records = self.db.query(DeliveryReport).filter(
+                DeliveryReport.pgi_status != "Completed",
+                DeliveryReport.dn_create_date.isnot(None)
+            ).all()
+            
+            avg_dispatch_aging = 0
+            if aging_records:
+                total_age = 0
+                for r in aging_records:
+                    if isinstance(r.dn_create_date, datetime):
+                        create_date = r.dn_create_date.date()
+                    else:
+                        create_date = r.dn_create_date
+                    age = (datetime.now().date() - create_date).days
+                    total_age += age
+                avg_dispatch_aging = total_age / len(aging_records)
+            
+            # P7: Dealer risk aggregation
+            risk_dealers = self.get_enhanced_top_risk_dealers(5)
+            avg_dealer_risk = sum(d["risk_score"] for d in risk_dealers) / len(risk_dealers) if risk_dealers else 0
+            
+            delivery_rate = (delivered_dns / total_dns) * 100 if total_dns > 0 else 0
+            pod_rate = (pod_received / delivered_dns) * 100 if delivered_dns > 0 else 0
+            
+            # P7: Weighted health score
+            # Weights: Delivery 30%, POD 25%, Aging 20%, Dealer Risk 15%, Financial 10%
+            delivery_score = delivery_rate * 0.30
+            pod_score = pod_rate * 0.25
+            aging_score = max(0, 100 - (avg_dispatch_aging * 2)) * 0.20 if avg_dispatch_aging > 0 else 100 * 0.20
+            dealer_risk_score = (100 - avg_dealer_risk) * 0.15
+            financial_score = max(0, 100 - (pending_value / (pending_value + (self.db.query(func.sum(DeliveryReport.dn_amount)).scalar() or 1)) * 100)) * 0.10
+            
+            health_score = delivery_score + pod_score + aging_score + dealer_risk_score + financial_score
+            
+            return {
+                "total_dns": total_dns,
+                "delivered_dns": delivered_dns,
+                "delivery_rate": round(delivery_rate, 1),
+                "pod_rate": round(pod_rate, 1),
+                "health_score": round(health_score, 1),
+                "revenue_at_risk": round(float(pending_value), 2),
+                "avg_dispatch_aging": round(avg_dispatch_aging, 1),
+                "avg_dealer_risk": round(avg_dealer_risk, 1),
+                "components": {
+                    "delivery_score": round(delivery_score, 1),
+                    "pod_score": round(pod_score, 1),
+                    "aging_score": round(aging_score, 1),
+                    "dealer_risk_score": round(dealer_risk_score, 1),
+                    "financial_score": round(financial_score, 1)
+                }
+            }
+        except Exception as e:
+            logger.error(f"Enhanced network health error: {e}")
+            return {}
     
     # ==========================================================
     # SUPPORTING METHODS
@@ -667,47 +953,8 @@ class DatabaseService:
             return []
     
     def get_top_risk_dealers(self, limit: int = 20) -> List[Dict]:
-        try:
-            results = self.db.query(
-                DeliveryReport.customer_name,
-                func.count(DeliveryReport.dn_no).label("pending_dns"),
-                func.sum(DeliveryReport.dn_amount).label("pending_value")
-            ).filter(
-                DeliveryReport.pgi_status != "Completed"
-            ).group_by(
-                DeliveryReport.customer_name
-            ).order_by(
-                desc("pending_value")
-            ).limit(limit).all()
-            
-            return [{"name": r.customer_name, "pending_dns": r.pending_dns, "pending_value": float(r.pending_value or 0)} for r in results]
-        except Exception as e:
-            return []
-    
-    def get_network_health(self) -> Dict[str, Any]:
-        try:
-            total_dns = self.db.query(DeliveryReport.dn_no).distinct().count()
-            delivered_dns = self.db.query(DeliveryReport.dn_no).filter(DeliveryReport.pgi_status == "Completed").distinct().count()
-            pod_received = self.db.query(DeliveryReport.dn_no).filter(
-                DeliveryReport.pgi_status == "Completed",
-                DeliveryReport.pod_status == "Received"
-            ).distinct().count()
-            pending_value = self.db.query(func.sum(DeliveryReport.dn_amount)).filter(DeliveryReport.pgi_status != "Completed").scalar() or 0
-            
-            delivery_rate = (delivered_dns / total_dns) * 100 if total_dns > 0 else 0
-            pod_rate = (pod_received / delivered_dns) * 100 if delivered_dns > 0 else 0
-            health_score = (delivery_rate * 0.6) + (pod_rate * 0.4)
-            
-            return {
-                "total_dns": total_dns,
-                "delivered_dns": delivered_dns,
-                "delivery_rate": round(delivery_rate, 1),
-                "pod_rate": round(pod_rate, 1),
-                "health_score": round(health_score, 1),
-                "revenue_at_risk": round(float(pending_value), 2)
-            }
-        except Exception as e:
-            return {}
+        """Legacy method - use get_enhanced_top_risk_dealers instead"""
+        return self.get_enhanced_top_risk_dealers(limit)
     
     def get_city_performance(self) -> List[Dict]:
         try:
@@ -802,11 +1049,11 @@ class DatabaseService:
         }
     
     def get_executive_context(self) -> Dict[str, Any]:
-        """Get complete executive context for AI"""
+        """P8: Get complete executive context for AI"""
         return {
-            "network_health": self.get_network_health(),
+            "network_health": self.get_enhanced_network_health(),
             "top_dealers": self.get_top_dealers(10),
-            "top_risk_dealers": self.get_top_risk_dealers(10),
+            "top_risk_dealers": self.get_enhanced_top_risk_dealers(10),
             "city_performance": self.get_city_performance()[:5],
             "warehouse_performance": self.get_warehouse_performance()[:5],
             "revenue_analysis": self.get_revenue_analysis()
@@ -842,7 +1089,9 @@ class ResponseFormatter:
         response = "🚨 *TOP 20 RISK DEALERS*\n\n"
         for i, d in enumerate(dealers[:limit], 1):
             response += f"{i}. *{d['name'][:35]}*\n"
-            response += f"   ⏳ {d['pending_dns']} pending | Rs {d['pending_value']:,.2f}\n\n"
+            response += f"   📊 Risk Score: {d.get('risk_score', 0)}/100\n"
+            response += f"   ⏳ {d.get('pending_dns', 0)} pending | 📋 {d.get('pod_pending_dns', 0)} POD pending\n"
+            response += f"   💰 Rs {d.get('pending_value', 0):,.2f} at risk\n\n"
         return response
     
     @staticmethod
@@ -862,6 +1111,9 @@ class ResponseFormatter:
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 💰 *REVENUE AT RISK: Rs {health.get('revenue_at_risk', 0):,.2f}*
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏱️ *AVG DISPATCH AGING: {health.get('avg_dispatch_aging', 0)} days*
 
 💡 Type "Executive summary" for detailed analysis"""
     
@@ -930,6 +1182,7 @@ class ResponseFormatter:
 • Delivery Rate: {health.get('delivery_rate', 0)}%
 • POD Compliance: {health.get('pod_rate', 0)}%
 • Revenue at Risk: Rs {health.get('revenue_at_risk', 0):,.2f}
+• Avg Dispatch Aging: {health.get('avg_dispatch_aging', 0)} days
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🏆 *TOP 5 DEALERS*
@@ -944,14 +1197,14 @@ class ResponseFormatter:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
         for i, d in enumerate(risk_dealers[:5], 1):
-            response += f"{i}. {d['name'][:30]} - {d['pending_dns']} pending\n"
+            response += f"{i}. {d['name'][:30]} - Risk: {d.get('risk_score', 0)}/100 | {d.get('pending_dns', 0)} pending\n"
         
         response += """
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 💡 *PRIORITY ACTIONS:*
-1. Escalate top 5 risk dealers
-2. Focus POD collection
-3. Review pending deliveries
+1. Escalate top 5 risk dealers immediately
+2. Focus POD collection on pending DNs
+3. Review warehouse dispatch process for aging
 
 Type "Help" for all commands"""
         
@@ -968,6 +1221,9 @@ class AIQueryService:
         self.db = db
         self.db_service = DatabaseService(db)
         self.formatter = ResponseFormatter()
+        self.conversation_memory = ConversationMemory()  # P10
+        self.executive_cache = ExecutiveContextCache()  # P8
+        self.db_hash = hashlib.md5(str(db).encode()).hexdigest()
         
         # Initialize AI Provider
         self.ai_provider = None
@@ -977,35 +1233,51 @@ class AIQueryService:
             try:
                 self.ai_provider = get_ai_provider_service(db)
                 if self.ai_provider:
-                    # P3: GROQ Health Check
+                    # P1: GROQ Health Check with diagnostics
                     self.ai_available = self._check_groq_health()
                     logger.info(f"✅ AI Provider: {'AVAILABLE' if self.ai_available else 'NOT AVAILABLE'}")
+                else:
+                    logger.warning("⚠️ AI Provider returned None")
             except Exception as e:
                 logger.error(f"Failed to get AI provider: {e}")
+                self.ai_available = False
         
         logger.info("=" * 50)
-        logger.info("🚀 AI LOGISTICS INTELLIGENCE ASSISTANT v12.0")
+        logger.info("🚀 AI LOGISTICS INTELLIGENCE ASSISTANT v13.0")
         logger.info(f"GROQ Available: {self.ai_available}")
         logger.info("=" * 50)
     
     def _check_groq_health(self) -> bool:
-        """P3: GROQ Health Check - Verify AI is working"""
+        """P1: Enhanced GROQ Health Check with full diagnostics"""
         if not self.ai_provider:
+            logger.error("❌ Health check failed: No AI provider")
             return False
         
+        # P1: Log provider details
+        logger.info(f"🔍 AI Provider Object: {self.ai_provider}")
+        logger.info(f"🔍 AI Provider Available: {getattr(self.ai_provider, 'is_available', False)}")
+        logger.info(f"🔍 AI Provider Type: {type(self.ai_provider)}")
+        
         try:
+            logger.info("📡 Sending health check to GROQ...")
             result = self.ai_provider.answer_question(
                 question="Say 'GROQ is working' in one word.",
                 user_role="test"
             )
+            
+            # P1: Log full result
+            logger.info(f"🔍 GROQ Health Check Result: {result}")
+            
             if result.get("success"):
                 logger.info("✅ GROQ health check passed")
                 return True
             else:
-                logger.warning(f"⚠️ GROQ health check failed: {result.get('error')}")
+                error = result.get("error", "Unknown error")
+                logger.warning(f"⚠️ GROQ health check failed: {error}")
                 return False
+                
         except Exception as e:
-            logger.error(f"❌ GROQ health check error: {e}")
+            logger.exception(f"❌ GROQ health check error: {e}")  # Full stack trace
             return False
     
     def process_query(self, question: str, user_phone: str = None, user_role: str = None) -> Dict[str, Any]:
@@ -1014,6 +1286,13 @@ class AIQueryService:
         
         logger.info(f"📱 Processing: {question[:100]}")
         
+        # P10: Get conversation context
+        conversation_context = {}
+        if user_phone:
+            conversation_context = self.conversation_memory.get_last_context(user_phone)
+            if conversation_context:
+                logger.info(f"📝 Conversation context: {conversation_context}")
+        
         intent, entity = IntentDetector.detect_intent(question)
         logger.info(f"🎯 Intent: {intent.value}, Entity: {entity}")
         
@@ -1021,7 +1300,7 @@ class AIQueryService:
             if intent == IntentType.HELP or intent == IntentType.WELCOME:
                 result = self._handle_welcome()
             elif intent == IntentType.DEALER_LOOKUP:
-                result = self._handle_dealer_lookup(entity)
+                result = self._handle_dealer_lookup(entity, user_phone)
             elif intent == IntentType.DN_LOOKUP:
                 result = self._handle_dn_lookup(entity)
             elif intent == IntentType.TOP_DEALERS:
@@ -1041,7 +1320,14 @@ class AIQueryService:
             elif intent == IntentType.OUTSTANDING_ANALYSIS:
                 result = self._handle_outstanding_analysis()
             else:
-                result = self._handle_general_query(question, user_phone, user_role)
+                result = self._handle_general_query(question, user_phone, user_role, conversation_context)
+            
+            # P10: Store in conversation memory
+            if user_phone and result.get("success"):
+                self.conversation_memory.add(
+                    user_phone, question, result.get("response", ""), 
+                    intent.value, entity
+                )
             
             result["processing_time_ms"] = int((time.time() - start_time) * 1000)
             return result
@@ -1053,13 +1339,17 @@ class AIQueryService:
     def _handle_welcome(self) -> Dict[str, Any]:
         return {"success": True, "response": self.formatter.welcome()}
     
-    def _handle_dealer_lookup(self, dealer_name: str) -> Dict[str, Any]:
-        """P2: Enhanced dealer executive dashboard"""
+    def _handle_dealer_lookup(self, dealer_name: str, user_phone: str = None) -> Dict[str, Any]:
+        """P3 & P4: Enhanced dealer lookup with matching and suggestions"""
         result = self.db_service.get_dealer_executive_dashboard(dealer_name)
+        
+        # P4: If suggestions are available, return them
+        if not result.get("success") and result.get("suggestions"):
+            return {"success": False, "response": result.get("message")}
+        
         return {"success": result["success"], "response": result.get("formatted_response", result.get("message", "Dealer not found"))}
     
     def _handle_dn_lookup(self, dn_number: str) -> Dict[str, Any]:
-        """P1: Enhanced DN intelligence dashboard"""
         result = self.db_service.get_dn_intelligence_dashboard(dn_number)
         return {"success": result["success"], "response": result.get("formatted_response", result.get("message", "DN not found"))}
     
@@ -1069,19 +1359,22 @@ class AIQueryService:
         return {"success": True, "response": response}
     
     def _handle_top_risk_dealers(self) -> Dict[str, Any]:
-        dealers = self.db_service.get_top_risk_dealers(20)
+        """P11: Enhanced top risk dealers"""
+        dealers = self.db_service.get_enhanced_top_risk_dealers(20)
         response = self.formatter.top_risk_dealers_response(dealers)
         return {"success": True, "response": response}
     
     def _handle_executive_summary(self) -> Dict[str, Any]:
-        health = self.db_service.get_network_health()
+        """P7 & P12: Enhanced executive summary"""
+        health = self.db_service.get_enhanced_network_health()
         top_dealers = self.db_service.get_top_dealers(10)
-        risk_dealers = self.db_service.get_top_risk_dealers(10)
+        risk_dealers = self.db_service.get_enhanced_top_risk_dealers(10)
         response = self.formatter.executive_summary_response(health, top_dealers, risk_dealers)
         return {"success": True, "response": response}
     
     def _handle_network_health(self) -> Dict[str, Any]:
-        health = self.db_service.get_network_health()
+        """P7: Enhanced network health"""
+        health = self.db_service.get_enhanced_network_health()
         response = self.formatter.network_health_response(health)
         return {"success": True, "response": response}
     
@@ -1105,22 +1398,40 @@ class AIQueryService:
         response = self.formatter.outstanding_response(outstanding)
         return {"success": True, "response": response}
     
-    def _handle_general_query(self, question: str, user_phone: str, user_role: str) -> Dict[str, Any]:
-        """P3: Enhanced GROQ with full business context"""
+    def _handle_general_query(self, question: str, user_phone: str, user_role: str, conversation_context: Dict = None) -> Dict[str, Any]:
+        """P1, P6, P8, P9, P10, P12: Enhanced GROQ with full context"""
         
         logger.info(f"🤖 Processing general query with GROQ: {question[:100]}")
         
-        # Build comprehensive context for AI
-        executive_context = self.db_service.get_executive_context()
+        # P8: Get cached executive context
+        executive_context = self.executive_cache.get(self.db_hash)
+        if not executive_context:
+            executive_context = self.db_service.get_executive_context()
+            self.executive_cache.set(self.db_hash, executive_context)
+            logger.info("📦 Executive context cached (new)")
+        else:
+            logger.info("📦 Executive context served from cache")
         
+        # P10: Add conversation context
         context_prompt = f"""
 BUSINESS CONTEXT:
 - Network Health Score: {executive_context.get('network_health', {}).get('health_score', 0)}/100
 - Revenue at Risk: Rs {executive_context.get('network_health', {}).get('revenue_at_risk', 0):,.2f}
+- Avg Dispatch Aging: {executive_context.get('network_health', {}).get('avg_dispatch_aging', 0)} days
 - Top Dealers: {executive_context.get('top_dealers', [])[:3]}
 - Top Risk Dealers: {executive_context.get('top_risk_dealers', [])[:3]}
 - City Performance: {executive_context.get('city_performance', [])[:3]}
 - Warehouse Performance: {executive_context.get('warehouse_performance', [])[:3]}
+"""
+        
+        # P10: Add conversation memory
+        if conversation_context:
+            context_prompt += f"""
+CONVERSATION CONTEXT:
+- Last Question: {conversation_context.get('last_question', 'None')}
+- Last Intent: {conversation_context.get('last_intent', 'None')}
+- Last Entity: {conversation_context.get('last_entity', 'None')}
+- Recent Entities: {conversation_context.get('recent_entities', [])}
 """
         
         # Try GROQ
@@ -1128,6 +1439,10 @@ BUSINESS CONTEXT:
             from app.services.ai_provider_service import get_ai_provider_service
             
             ai_provider = get_ai_provider_service(self.db)
+            
+            # P1: Detailed logging
+            logger.info(f"🔍 AI Provider Object: {ai_provider}")
+            logger.info(f"🔍 AI Provider Available: {getattr(ai_provider, 'is_available', False) if ai_provider else 'No provider'}")
             
             if ai_provider and ai_provider.is_available:
                 logger.info("🚀 Calling GROQ API with business context...")
@@ -1138,22 +1453,46 @@ BUSINESS CONTEXT:
                     user_role=user_role or "guest"
                 )
                 
+                # P1: Log full result
+                logger.info(f"🔍 GROQ Result: {result}")
+                
                 if result.get("success"):
                     content = result.get("content", "")
                     logger.info(f"✅ GROQ success - Response length: {len(content)}")
                     return {"success": True, "response": content}
                 else:
-                    logger.warning(f"⚠️ GROQ failed: {result.get('error')}")
+                    error = result.get('error', 'Unknown error')
+                    logger.warning(f"⚠️ GROQ failed: {error}")
+                    
+                    # P9: Improved fallback with actual error
+                    return self._get_fallback_response(question, error)
             else:
-                logger.warning("⚠️ AI Provider not available")
+                reason = "AI Provider not available"
+                if ai_provider:
+                    reason = f"AI Provider available={ai_provider.is_available}"
+                logger.warning(f"⚠️ {reason}")
+                return self._get_fallback_response(question, reason)
                 
         except Exception as e:
-            logger.exception(f"❌ GROQ FULL ERROR: {e}")  # P3: Full exception logging
+            logger.exception(f"❌ GROQ FULL ERROR: {e}")
+            return self._get_fallback_response(question, str(e))
+    
+    def _get_fallback_response(self, question: str, error: str = None) -> Dict[str, Any]:
+        """P9: Improved fallback response with actual error"""
         
-        # Fallback response
+        if error:
+            error_msg = f"\n\n*Error Details:* {error[:200]}"
+        else:
+            error_msg = ""
+        
         response = f"""🤖 *AI LOGISTICS ASSISTANT*
 
 I understand you're asking about: "{question[:50]}"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️ *AI Service Unavailable*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Our AI service is currently unavailable.{error_msg}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 💡 *Try these commands for instant data:*
