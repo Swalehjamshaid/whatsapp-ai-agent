@@ -44,7 +44,7 @@ class ProviderHealth:
 
 
 # ==========================================================
-# DEDICATED PROMPT TEMPLATES (Improvement 6)
+# DEDICATED PROMPT TEMPLATES
 # ==========================================================
 
 def dealer_analysis_prompt(dealer_data: Dict, question: str, role_context: str) -> str:
@@ -297,7 +297,7 @@ Return a VALID JSON object:
 
 
 # ==========================================================
-# ROLE-BASED CONTEXTS (Improvement 4)
+# ROLE-BASED CONTEXTS
 # ==========================================================
 
 ROLE_CONTEXTS = {
@@ -391,7 +391,7 @@ class AISafetyLayer:
 
 
 # ==========================================================
-# AI COST TRACKER (Improvement 7)
+# AI COST TRACKER
 # ==========================================================
 
 class AICostTracker:
@@ -437,7 +437,6 @@ class AICostTracker:
             "timestamp": datetime.utcnow().isoformat()
         })
         
-        # Keep only last 1000 requests
         if len(self.requests_log) > 1000:
             self.requests_log = self.requests_log[-1000:]
     
@@ -465,18 +464,6 @@ class AICostTracker:
 class AIProviderService:
     """
     Enterprise AI Provider Service v3.0
-    
-    Features:
-    - DeepSeek as PRIMARY provider (Improvement 1)
-    - OpenAI as fallback
-    - Rule-based as final fallback
-    - Comprehensive logging (Improvement 2)
-    - Dedicated logistics analysis functions (Improvement 3)
-    - Role-based responses (Improvement 4)
-    - Structured JSON responses (Improvement 5)
-    - Prompt templates (Improvement 6)
-    - Cost tracking (Improvement 7)
-    - Context-aware follow-ups (Improvement 8)
     """
     
     def __init__(self, db: Session = None):
@@ -486,7 +473,7 @@ class AIProviderService:
         self.retry_count = 3
         self.retry_delay = 1
         
-        # PRIMARY: DeepSeek (Improvement 1)
+        # PRIMARY: DeepSeek
         self.deepseek_api_key = getattr(config, 'DEEPSEEK_API_KEY', None)
         self.deepseek_client = None
         self.deepseek_status = ProviderStatus.UNKNOWN
@@ -546,7 +533,7 @@ class AIProviderService:
         logger.info("=" * 60)
     
     # ==========================================================
-    # DEDICATED LOGISTICS ANALYSIS FUNCTIONS (Improvement 3)
+    # DEDICATED LOGISTICS ANALYSIS FUNCTIONS
     # ==========================================================
     
     def generate_logistics_analysis(
@@ -557,15 +544,10 @@ class AIProviderService:
         user_role: str = "manager",
         conversation_context: Dict = None
     ) -> Dict[str, Any]:
-        """
-        Generate logistics analysis using appropriate template
+        """Generate logistics analysis using appropriate template"""
         
-        Supported types: dealer, warehouse, city, executive, forecast, root_cause, recommendation
-        """
-        # Get role-specific context
         role_context = ROLE_CONTEXTS.get(user_role, ROLE_CONTEXTS["manager"])
         
-        # Select appropriate prompt template
         if analysis_type == "dealer":
             prompt = dealer_analysis_prompt(logistics_data, "Analyze this dealer's performance.", role_context)
         elif analysis_type == "warehouse":
@@ -583,56 +565,46 @@ class AIProviderService:
         else:
             prompt = f"Analyze this logistics data: {json.dumps(logistics_data, default=str)}"
         
-        # Add conversation context for follow-ups (Improvement 8)
         if conversation_context:
             prompt += f"\n\nCONVERSATION CONTEXT: {json.dumps(conversation_context)}"
         
-        # Call AI
         result = self.answer_question(
             question=prompt,
             context=logistics_data,
             structured=True,
             user_phone=user_phone,
-            template=None,  # Using our custom prompt
+            template=None,
             require_json=True
         )
         
         return result
     
     def generate_dealer_analysis(self, dealer_data: Dict, user_role: str = "manager", user_phone: str = None) -> Dict:
-        """Generate dealer analysis"""
         return self.generate_logistics_analysis("dealer", dealer_data, user_phone, user_role)
     
     def generate_warehouse_analysis(self, warehouse_data: Dict, user_role: str = "manager", user_phone: str = None) -> Dict:
-        """Generate warehouse analysis"""
         return self.generate_logistics_analysis("warehouse", warehouse_data, user_phone, user_role)
     
     def generate_city_analysis(self, city_data: Dict, user_role: str = "manager", user_phone: str = None) -> Dict:
-        """Generate city analysis"""
         return self.generate_logistics_analysis("city", city_data, user_phone, user_role)
     
     def generate_executive_summary_enhanced(self, metrics: Dict, user_role: str = "ceo", user_phone: str = None) -> Dict:
-        """Generate enhanced executive summary"""
         return self.generate_logistics_analysis("executive", metrics, user_phone, user_role)
     
     def generate_forecast_analysis(self, forecast_data: Dict, user_role: str = "manager", user_phone: str = None) -> Dict:
-        """Generate forecast analysis"""
         return self.generate_logistics_analysis("forecast", forecast_data, user_phone, user_role)
     
     def generate_root_cause_analysis(self, root_cause_data: Dict, user_role: str = "manager", user_phone: str = None) -> Dict:
-        """Generate root cause analysis"""
         return self.generate_logistics_analysis("root_cause", root_cause_data, user_phone, user_role)
     
     def generate_recommendations_enhanced(self, recommendation_data: Dict, user_role: str = "manager", user_phone: str = None) -> Dict:
-        """Generate enhanced recommendations"""
         return self.generate_logistics_analysis("recommendation", recommendation_data, user_phone, user_role)
     
     # ==========================================================
-    # WHAT SHOULD I FOCUS ON TODAY? (Improvement 10)
+    # EXECUTIVE FOCUS
     # ==========================================================
     
     def generate_executive_focus(self, metrics: Dict, user_phone: str = None) -> Dict[str, Any]:
-        """Generate executive focus for 'What should I focus on today?'"""
         role_context = ROLE_CONTEXTS["ceo"]
         
         prompt = f"""
@@ -691,15 +663,11 @@ Return a VALID JSON object:
         temperature: float = 0.7,
         require_json: bool = True
     ) -> Dict[str, Any]:
-        """
-        Answer a question using AI with DeepSeek as primary (Improvement 1 & 2)
-        """
+        """Answer a question using AI with DeepSeek as primary"""
         start_time = time.time()
         
-        # Log incoming request (Improvement 2)
         logger.info(f"🚀 AI REQUEST - Provider: DeepSeek (primary), User: {user_phone}, Question: {question[:100]}...")
         
-        # Validate prompt safety
         is_safe, error_msg = AISafetyLayer.validate_prompt(question)
         if not is_safe:
             logger.warning(f"Unsafe prompt blocked: {error_msg}")
@@ -713,10 +681,8 @@ Return a VALID JSON object:
                 "processing_time_ms": int((time.time() - start_time) * 1000)
             }
         
-        # Build prompt
         prompt = self._build_prompt(question, context, template)
         
-        # Check cache
         cache_key = self.cache.get_cache_key(
             prompt, "deepseek",
             context_hash=str(hash(str(context))),
@@ -736,7 +702,6 @@ Return a VALID JSON object:
                 "cached": True
             }
         
-        # PRIMARY: Try DeepSeek first (Improvement 1)
         response = None
         provider_used = None
         latency_ms = 0
@@ -759,7 +724,6 @@ Return a VALID JSON object:
             else:
                 logger.warning(f"⚠️ DeepSeek failed: {response.get('error')} - Falling back to OpenAI")
         
-        # FALLBACK 1: OpenAI
         if not response or not response.get("success"):
             if self.openai_status == ProviderStatus.ONLINE:
                 logger.warning("⚠️ Falling back to OpenAI...")
@@ -779,17 +743,14 @@ Return a VALID JSON object:
                 else:
                     logger.error(f"❌ OpenAI also failed: {response.get('error')}")
         
-        # FALLBACK 2: Rule-based
         if not response or not response.get("success"):
             logger.error("❌ Both DeepSeek and OpenAI failed - Using rule-based fallback")
             response = self._call_fallback(question)
             provider_used = "fallback"
         
-        # Process response
         content = response.get("content", "")
         content = AISafetyLayer.sanitize_response(content)
         
-        # Extract structured data
         structured_data = None
         confidence = 50
         
@@ -797,16 +758,13 @@ Return a VALID JSON object:
             structured_data = AISafetyLayer.extract_json_from_response(content)
             confidence = self._calculate_confidence(structured_data, provider_used, response.get("usage", {}))
         
-        # Cache successful response
         if response.get("success") and provider_used in ["deepseek", "openai"]:
             self.cache.set(cache_key, content, {"confidence": confidence})
         
         processing_time = int((time.time() - start_time) * 1000)
         
-        # Log final result (Improvement 2)
         logger.info(f"✅ AI REQUEST COMPLETE - Provider: {provider_used}, Success: {response.get('success')}, Confidence: {confidence}%, Total Time: {processing_time}ms")
         
-        # Log to database
         self._log_usage(
             user_phone=user_phone,
             question=question,
@@ -832,7 +790,6 @@ Return a VALID JSON object:
         return result
     
     def _calculate_confidence(self, structured_data: Optional[Dict], provider: str, usage: Dict) -> int:
-        """Calculate confidence score"""
         confidence = 70
         
         if not structured_data:
@@ -854,7 +811,6 @@ Return a VALID JSON object:
         return min(100, confidence)
     
     def _build_prompt(self, question: str, context: Dict = None, template: str = None) -> str:
-        """Build prompt using context"""
         if template:
             return template.format(context=json.dumps(context, default=str) if context else "No context", question=question)
         
@@ -874,7 +830,6 @@ Return a VALID JSON response when appropriate. Be concise, professional, and dat
 """
     
     def _call_deepseek(self, prompt: str, max_tokens: int = 1000, temperature: float = 0.7) -> Dict[str, Any]:
-        """Call DeepSeek API with retry logic"""
         if not self.deepseek_client:
             return {"success": False, "error": "DeepSeek client not initialized"}
         
@@ -917,7 +872,6 @@ Return a VALID JSON response when appropriate. Be concise, professional, and dat
         return {"success": False, "error": "Max retries exceeded"}
     
     def _call_openai(self, prompt: str, max_tokens: int = 1000, temperature: float = 0.7) -> Dict[str, Any]:
-        """Call OpenAI API with retry logic"""
         if not self.openai_client:
             return {"success": False, "error": "OpenAI client not initialized"}
         
@@ -960,7 +914,6 @@ Return a VALID JSON response when appropriate. Be concise, professional, and dat
         return {"success": False, "error": "Max retries exceeded"}
     
     def _call_fallback(self, question: str) -> Dict[str, Any]:
-        """Rule-based fallback when AI is unavailable"""
         logger.info(f"Using fallback for: {question[:50]}")
         
         question_lower = question.lower()
@@ -1024,7 +977,6 @@ Return a VALID JSON response when appropriate. Be concise, professional, and dat
                 self.db.rollback()
     
     def get_cost_summary(self) -> Dict[str, Any]:
-        """Get AI usage cost summary"""
         return self.cost_tracker.get_summary()
 
 
@@ -1036,7 +988,6 @@ ai_provider_service = None
 
 
 def init_ai_provider_service(db: Session = None) -> AIProviderService:
-    """Initialize AI Provider Service singleton"""
     global ai_provider_service
     
     try:
@@ -1060,17 +1011,4 @@ def init_ai_provider_service(db: Session = None) -> AIProviderService:
 
 
 def get_ai_provider_service() -> Optional[AIProviderService]:
-    """Get the AI Provider Service instance"""
     return ai_provider_service
-
-
-# ==========================================================
-# AUTO-INITIALIZATION
-# ==========================================================
-
-try:
-    ai_provider_service = AIProviderService(db=None)
-    logger.info("AI Provider Service v3.0 auto-initialized (no DB)")
-except Exception as e:
-    logger.error(f"Auto-initialization failed: {e}")
-    ai_provider_service = None
