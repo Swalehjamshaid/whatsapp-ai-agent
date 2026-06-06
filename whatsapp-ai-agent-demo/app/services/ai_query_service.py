@@ -1,20 +1,19 @@
 # ==========================================================
-# FILE: app/services/ai_query_service.py (ENTERPRISE v10.0)
+# FILE: app/services/ai_query_service.py (ENTERPRISE v12.0)
 # ==========================================================
-# AI LOGISTICS INTELLIGENCE ASSISTANT
-# - Complete dealer intelligence (1-5)
-# - Complete DN intelligence (6-9)
-# - Complete operational analytics (10-12)
-# - Complete financial analytics (13-14)
-# - Complete executive intelligence (15)
-# - Natural language support
-# - GROQ AI integration
+# ENHANCED WITH:
+# - Complete DN Intelligence Dashboard
+# - Proper Aging Calculations (PGI Date - DN Create Date)
+# - Dealer Summary with DN Search
+# - Executive Dealer Dashboard with Rankings
+# - Full GROQ Integration with Health Check
+# - AI Context with Real Database Data
 # ==========================================================
 
 import re
 import time
 from typing import Dict, Any, List, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 
 from sqlalchemy.orm import Session
@@ -37,7 +36,7 @@ except ImportError as e:
 
 
 # ==========================================================
-# WELCOME MESSAGE - COMPLETE DASHBOARD
+# WELCOME MESSAGE
 # ==========================================================
 
 WELCOME_MESSAGE = """🤖 *AI LOGISTICS INTELLIGENCE ASSISTANT*
@@ -45,70 +44,33 @@ WELCOME_MESSAGE = """🤖 *AI LOGISTICS INTELLIGENCE ASSISTANT*
 Welcome! I can analyze Dealers, DNs, PODs, Warehouses, Cities, Financial Performance, Risks, and Executive KPIs in real-time.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📊 *Dealer Intelligence*
+📊 *What You Can Ask:*
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1️⃣ Dealer Dashboard
-2️⃣ Dealer Performance Score
-3️⃣ Dealer Risk Analysis
-4️⃣ Dealer Pending DNs
-5️⃣ Dealer POD Pending Status
+
+🏪 *Dealers*
+• Type a dealer name (e.g., "Exact Trading Co")
+• "Top dealers" - Best performers
+• "Top risk dealers" - Critical accounts
+
+🔢 *DN Tracking*
+• Send a 10-digit DN number
+
+👑 *Executive Reports*
+• "Executive summary"
+• "Network health"
+
+🏭 *Warehouse*
+• "Warehouse performance"
+
+🌆 *Cities*
+• "City performance"
+
+💰 *Financial*
+• "Revenue analysis"
+• "Outstanding analysis"
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📦 *DN Intelligence*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-6️⃣ DN Status Lookup
-7️⃣ DN Complete Details
-8️⃣ Delayed DN Analysis
-9️⃣ POD Status by DN
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🏢 *Operational Analytics*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔟 Warehouse Performance
-1️⃣1️⃣ City Performance Analysis
-1️⃣2️⃣ Network Health Score
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💰 *Financial Analytics*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1️⃣3️⃣ Revenue Analysis
-1️⃣4️⃣ Outstanding & Pending Value Analysis
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-👑 *Executive Intelligence*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1️⃣5️⃣ Executive Summary Dashboard
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 *You can also ask naturally:*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Bhatti Electronics-BWP
-• DN 6243611920
-• Show top risk dealers
-• Show top performing dealers
-• Show pending DNs
-• Which city has maximum delays?
-• Which warehouse is underperforming?
-• Show dealer outstanding value
-• Show network health score
-• Give executive summary
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🚀 *Advanced AI Commands*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Top 20 Risk Dealers
-• Top 20 Performing Dealers
-• Revenue at Risk
-• POD Compliance Analysis
-• Delivery Delay Analysis
-• Inventory Risk Analysis
-• Dealer Ranking
-• City Ranking
-• Warehouse Ranking
-• Predict Future Risks
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💬 *Ask any question in natural language and receive instant data-driven insights.*"""
+💡 *Examples: "Exact Trading Co", "6243611920", "Executive summary"*"""
 
 
 # ==========================================================
@@ -116,54 +78,29 @@ Welcome! I can analyze Dealers, DNs, PODs, Warehouses, Cities, Financial Perform
 # ==========================================================
 
 class IntentType(str, Enum):
-    # Navigation
     HELP = "help"
-    MENU = "menu"
     WELCOME = "welcome"
-    
-    # Dealer Intelligence (1-5)
-    DEALER_DASHBOARD = "dealer_dashboard"
-    DEALER_PERFORMANCE = "dealer_performance"
-    DEALER_RISK = "dealer_risk"
-    DEALER_PENDING = "dealer_pending"
-    DEALER_POD_PENDING = "dealer_pod_pending"
     DEALER_LOOKUP = "dealer_lookup"
+    DN_LOOKUP = "dn_lookup"
     TOP_DEALERS = "top_dealers"
     TOP_RISK_DEALERS = "top_risk_dealers"
-    
-    # DN Intelligence (6-9)
-    DN_LOOKUP = "dn_lookup"
-    DN_DETAILS = "dn_details"
-    DN_STATUS = "dn_status"
-    DN_DELAYED = "dn_delayed"
-    DN_POD_STATUS = "dn_pod_status"
-    
-    # Operational Analytics (10-12)
-    WAREHOUSE_PERFORMANCE = "warehouse_performance"
-    CITY_PERFORMANCE = "city_performance"
+    EXECUTIVE_SUMMARY = "executive_summary"
     NETWORK_HEALTH = "network_health"
-    
-    # Financial Analytics (13-14)
+    CITY_PERFORMANCE = "city_performance"
+    WAREHOUSE_PERFORMANCE = "warehouse_performance"
     REVENUE_ANALYSIS = "revenue_analysis"
     OUTSTANDING_ANALYSIS = "outstanding_analysis"
-    REVENUE_AT_RISK = "revenue_at_risk"
-    
-    # Executive Intelligence (15)
-    EXECUTIVE_SUMMARY = "executive_summary"
-    
-    # General
     GENERAL_QUERY = "general_query"
 
 
 # ==========================================================
-# INTENT DETECTION ENGINE
+# ENHANCED INTENT DETECTION
 # ==========================================================
 
 class IntentDetector:
     
     @staticmethod
     def detect_dn(message: str) -> Tuple[bool, Optional[str]]:
-        """Detect 10-digit DN number"""
         match = re.search(r'\b(\d{10})\b', message)
         if match:
             return True, match.group(1)
@@ -171,7 +108,6 @@ class IntentDetector:
     
     @staticmethod
     def detect_numbered_command(message: str) -> Tuple[bool, Optional[int]]:
-        """Detect numbered commands (1-15)"""
         msg_clean = message.strip()
         if msg_clean.isdigit():
             num = int(msg_clean)
@@ -180,39 +116,58 @@ class IntentDetector:
         return False, None
     
     @staticmethod
+    def is_business_question(message: str) -> bool:
+        """Enhanced question detection for business queries"""
+        msg_lower = message.lower().strip()
+        
+        # Question words
+        question_words = ["how", "what", "why", "when", "where", "who", "which", "can you", "could you", "please", "tell me"]
+        if any(msg_lower.startswith(q) for q in question_words):
+            return True
+        
+        # Ends with question mark
+        if msg_lower.endswith("?"):
+            return True
+        
+        # Business analysis keywords
+        analysis_keywords = [
+            "analysis", "analyze", "improvement", "recommend", "suggest", "advice", "help me",
+            "root cause", "why is", "risk", "trend", "forecast", "delay", "performance",
+            "issue", "problem", "solution", "fix", "resolve", "optimize", "enhance"
+        ]
+        if any(word in msg_lower for word in analysis_keywords):
+            return True
+        
+        return False
+    
+    @staticmethod
     def detect_intent(message: str) -> Tuple[IntentType, Optional[str]]:
-        """Detect intent from message"""
         msg_lower = message.lower().strip()
         msg_original = message.strip()
         
-        # Check for numbered commands (1-15)
+        # Check for numbered commands
         is_num, num = IntentDetector.detect_numbered_command(msg_original)
         if is_num:
             command_map = {
-                1: IntentType.DEALER_DASHBOARD,
-                2: IntentType.DEALER_PERFORMANCE,
-                3: IntentType.DEALER_RISK,
-                4: IntentType.DEALER_PENDING,
-                5: IntentType.DEALER_POD_PENDING,
-                6: IntentType.DN_STATUS,
-                7: IntentType.DN_DETAILS,
-                8: IntentType.DN_DELAYED,
-                9: IntentType.DN_POD_STATUS,
-                10: IntentType.WAREHOUSE_PERFORMANCE,
-                11: IntentType.CITY_PERFORMANCE,
-                12: IntentType.NETWORK_HEALTH,
-                13: IntentType.REVENUE_ANALYSIS,
-                14: IntentType.OUTSTANDING_ANALYSIS,
-                15: IntentType.EXECUTIVE_SUMMARY,
+                1: IntentType.TOP_DEALERS,
+                2: IntentType.TOP_RISK_DEALERS,
+                3: IntentType.EXECUTIVE_SUMMARY,
+                4: IntentType.NETWORK_HEALTH,
+                5: IntentType.CITY_PERFORMANCE,
+                6: IntentType.WAREHOUSE_PERFORMANCE,
+                7: IntentType.REVENUE_ANALYSIS,
+                8: IntentType.OUTSTANDING_ANALYSIS,
             }
             return command_map.get(num, IntentType.HELP), None
         
-        # Help / Menu / Welcome
-        if any(word in msg_lower for word in ["help", "menu", "commands", "welcome", "start"]):
-            return IntentType.HELP, None
+        # Business questions - Send to AI
+        if IntentDetector.is_business_question(msg_original):
+            logger.info(f"Business question detected, sending to AI: {msg_original[:50]}")
+            return IntentType.GENERAL_QUERY, None
         
-        if any(word in msg_lower for word in ["hello", "hi", "hey", "salam"]):
-            return IntentType.WELCOME, None
+        # Help / Welcome
+        if any(word in msg_lower for word in ["help", "menu", "commands", "welcome", "start", "hello", "hi", "hey"]):
+            return IntentType.HELP, None
         
         # DN Lookup (10 digits)
         is_dn, dn_num = IntentDetector.detect_dn(msg_lower)
@@ -220,11 +175,11 @@ class IntentDetector:
             return IntentType.DN_LOOKUP, dn_num
         
         # Executive Summary
-        if any(word in msg_lower for word in ["executive summary", "executive dashboard", "ceo summary", "management summary"]):
+        if any(word in msg_lower for word in ["executive summary", "executive dashboard", "ceo summary"]):
             return IntentType.EXECUTIVE_SUMMARY, None
         
         # Network Health
-        if any(word in msg_lower for word in ["network health", "health score", "overall health"]):
+        if any(word in msg_lower for word in ["network health", "health score"]):
             return IntentType.NETWORK_HEALTH, None
         
         # Top Risk Dealers
@@ -235,32 +190,32 @@ class IntentDetector:
         if any(word in msg_lower for word in ["top dealer", "best dealer", "top performing", "top 20"]):
             return IntentType.TOP_DEALERS, None
         
-        # City Analysis
-        if any(word in msg_lower for word in ["city", "karachi", "lahore", "islamabad", "city performance"]):
+        # City Performance
+        if any(word in msg_lower for word in ["city", "city performance"]):
             return IntentType.CITY_PERFORMANCE, None
         
         # Warehouse Performance
-        if any(word in msg_lower for word in ["warehouse", "godown", "warehouse performance"]):
+        if any(word in msg_lower for word in ["warehouse", "warehouse performance"]):
             return IntentType.WAREHOUSE_PERFORMANCE, None
         
         # Revenue Analysis
-        if any(word in msg_lower for word in ["revenue", "financial", "revenue analysis"]):
+        if any(word in msg_lower for word in ["revenue", "revenue analysis"]):
             return IntentType.REVENUE_ANALYSIS, None
         
         # Outstanding Analysis
-        if any(word in msg_lower for word in ["outstanding", "pending value", "value at risk"]):
+        if any(word in msg_lower for word in ["outstanding", "pending value"]):
             return IntentType.OUTSTANDING_ANALYSIS, None
         
         # Dealer lookup by name
-        if len(msg_lower.split()) <= 6 and not msg_lower.isdigit():
+        if len(msg_lower.split()) <= 5 and not msg_lower.isdigit():
             return IntentType.DEALER_LOOKUP, msg_original
         
-        # Default to general query (will use GROQ AI)
+        # Default to general query (AI)
         return IntentType.GENERAL_QUERY, None
 
 
 # ==========================================================
-# DATABASE SERVICE
+# ENHANCED DATABASE SERVICE
 # ==========================================================
 
 class DatabaseService:
@@ -269,11 +224,237 @@ class DatabaseService:
         self.db = db
     
     # ==========================================================
-    # DEALER INTELLIGENCE
+    # P1: ENHANCED DN INTELLIGENCE DASHBOARD
     # ==========================================================
     
-    def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
-        """Get complete dealer dashboard"""
+    def get_dn_intelligence_dashboard(self, dn_number: str) -> Dict[str, Any]:
+        """
+        Complete DN Intelligence Dashboard with:
+        - Proper aging calculations (PGI Date - DN Create Date)
+        - Delivery aging (Delivery Date - PGI Date)
+        - POD aging (POD Date - PGI Date)
+        - Dealer summary
+        - Risk analysis
+        - AI-ready context
+        """
+        try:
+            record = self.db.query(DeliveryReport).filter(
+                DeliveryReport.dn_no == dn_number
+            ).first()
+            
+            if not record:
+                return {"success": False, "message": f"❌ DN {dn_number} not found"}
+            
+            # ==========================================================
+            # PROPER AGING CALCULATIONS (P1 FIX)
+            # ==========================================================
+            
+            # 1. Dispatch Aging = PGI Date - DN Creation Date
+            dispatch_aging_days = 0
+            pgi_date = None
+            dn_create_date = None
+            
+            if record.dn_create_date:
+                if isinstance(record.dn_create_date, datetime):
+                    dn_create_date = record.dn_create_date.date()
+                else:
+                    dn_create_date = record.dn_create_date
+            
+            if hasattr(record, 'good_issue_date') and record.good_issue_date:
+                if isinstance(record.good_issue_date, datetime):
+                    pgi_date = record.good_issue_date.date()
+                else:
+                    pgi_date = record.good_issue_date
+                
+                if dn_create_date and pgi_date:
+                    dispatch_aging_days = (pgi_date - dn_create_date).days
+            
+            # 2. Delivery Aging = Delivery Date - PGI Date (if delivered)
+            delivery_aging_days = 0
+            delivery_date = None
+            
+            if record.pgi_status == "Completed":
+                if hasattr(record, 'delivery_date') and record.delivery_date:
+                    if isinstance(record.delivery_date, datetime):
+                        delivery_date = record.delivery_date.date()
+                    else:
+                        delivery_date = record.delivery_date
+                    
+                    if pgi_date and delivery_date:
+                        delivery_aging_days = (delivery_date - pgi_date).days
+            
+            # 3. POD Aging = POD Date - PGI Date (if POD received)
+            pod_aging_days = 0
+            pod_date = None
+            
+            if record.pod_status == "Received":
+                if hasattr(record, 'pod_date') and record.pod_date:
+                    if isinstance(record.pod_date, datetime):
+                        pod_date = record.pod_date.date()
+                    else:
+                        pod_date = record.pod_date
+                    
+                    if pgi_date and pod_date:
+                        pod_aging_days = (pod_date - pgi_date).days
+            
+            # Total Age from creation to today
+            total_age_days = 0
+            if dn_create_date:
+                total_age_days = (datetime.now().date() - dn_create_date).days
+            
+            # ==========================================================
+            # RISK ASSESSMENT
+            # ==========================================================
+            risk_score = 0
+            risk_level = "LOW"
+            risk_icon = "🟢"
+            
+            if dispatch_aging_days > 15:
+                risk_score = 90
+                risk_level = "CRITICAL"
+                risk_icon = "💀"
+            elif dispatch_aging_days > 10:
+                risk_score = 70
+                risk_level = "HIGH"
+                risk_icon = "🔴"
+            elif dispatch_aging_days > 5:
+                risk_score = 50
+                risk_level = "MEDIUM"
+                risk_icon = "🟡"
+            elif dispatch_aging_days > 0:
+                risk_score = 30
+                risk_level = "LOW"
+                risk_icon = "🟢"
+            
+            # ==========================================================
+            # DEALER SUMMARY (P1 - Related Dealer Data)
+            # ==========================================================
+            dealer_records = self.db.query(DeliveryReport).filter(
+                DeliveryReport.customer_name == record.customer_name
+            ).all()
+            
+            dealer_total_dns = len(set(str(r.dn_no) for r in dealer_records))
+            dealer_delivered = len(set(str(r.dn_no) for r in dealer_records if r.pgi_status == "Completed"))
+            dealer_pending = dealer_total_dns - dealer_delivered
+            dealer_pod_pending = len(set(str(r.dn_no) for r in dealer_records if r.pgi_status == "Completed" and r.pod_status == "Pending"))
+            dealer_total_value = sum(float(r.dn_amount or 0) for r in dealer_records)
+            dealer_pending_value = sum(float(r.dn_amount or 0) for r in dealer_records if r.pgi_status != "Completed")
+            
+            dealer_delivery_rate = (dealer_delivered / dealer_total_dns) * 100 if dealer_total_dns > 0 else 0
+            dealer_health_score = dealer_delivery_rate
+            
+            # ==========================================================
+            # FORMATTED RESPONSE
+            # ==========================================================
+            
+            response = f"""╔══════════════════════════════════════════════════════════════╗
+║              📦 DN COMPLETE INTELLIGENCE REPORT                    ║
+║                         {dn_number}                                   ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 *DN DETAILS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• DN Number: {dn_number}
+• Dealer: {record.customer_name or 'N/A'}
+• City: {record.ship_to_city or 'N/A'}
+• Warehouse: {record.warehouse or 'N/A'}
+• Quantity: {float(record.dn_qty or 0):,.0f} units
+• Value: Rs {float(record.dn_amount or 0):,.2f}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📅 *DATES & AGING ANALYSIS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• DN Creation Date: {dn_create_date if dn_create_date else 'N/A'}
+• PGI (Goods Issue) Date: {pgi_date if pgi_date else 'N/A'}
+• Delivery Date: {delivery_date if delivery_date else 'N/A'}
+• POD Date: {pod_date if pod_date else 'N/A'}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏱️ *AGING BREAKDOWN*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• 🚚 Dispatch Aging (PGI - DN Create): {dispatch_aging_days} days
+• 🚛 Transit Aging (Delivery - PGI): {delivery_aging_days} days
+• 📋 POD Aging (POD - PGI): {pod_aging_days} days
+• 📅 Total Age (Today - Create): {total_age_days} days
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 *CURRENT STATUS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Delivery Status: {'✅ DELIVERED' if record.pgi_status == 'Completed' else '⏳ PENDING'}
+• POD Status: {'✅ RECEIVED' if record.pod_status == 'Received' else '📋 PENDING'}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️ *RISK ASSESSMENT*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{risk_icon} Risk Score: {risk_score}/100
+• Risk Level: {risk_level}
+{'🚨 IMMEDIATE ACTION REQUIRED' if risk_level == 'CRITICAL' else '📌 Monitor regularly' if risk_level == 'HIGH' else '✅ On track'}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🏪 *DEALER SUMMARY - {record.customer_name}*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Total DNs: {dealer_total_dns}
+• Delivered: {dealer_delivered} ✅
+• Pending: {dealer_pending} ⏳
+• POD Pending: {dealer_pod_pending} 📋
+• Total Value: Rs {dealer_total_value:,.2f}
+• Pending Value: Rs {dealer_pending_value:,.2f}
+• Health Score: {dealer_health_score:.1f}/100
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 *RECOMMENDATIONS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+            if dispatch_aging_days > 10:
+                response += "• 🚨 Escalate to warehouse - dispatch delay detected\n"
+            if delivery_aging_days > 5:
+                response += "• 🚛 Follow up with transporter for delivery\n"
+            if record.pod_status == "Pending" and pod_aging_days > 7:
+                response += "• 📋 Urgent: Collect POD acknowledgement from dealer\n"
+            if dealer_pending > 0:
+                response += f"• 📦 Dealer has {dealer_pending} other pending DNs\n"
+            if not response:
+                response += "• ✅ No action needed - delivery on track\n"
+            
+            return {
+                "success": True,
+                "dn_number": dn_number,
+                "dealer_name": record.customer_name,
+                "dispatch_aging_days": dispatch_aging_days,
+                "delivery_aging_days": delivery_aging_days,
+                "pod_aging_days": pod_aging_days,
+                "risk_score": risk_score,
+                "risk_level": risk_level,
+                "dealer_summary": {
+                    "total_dns": dealer_total_dns,
+                    "delivered": dealer_delivered,
+                    "pending": dealer_pending,
+                    "total_value": dealer_total_value,
+                    "health_score": dealer_health_score
+                },
+                "formatted_response": response
+            }
+            
+        except Exception as e:
+            logger.error(f"DN intelligence error: {e}")
+            return {"success": False, "message": f"Error: {str(e)}"}
+    
+    # ==========================================================
+    # P2: ENHANCED DEALER EXECUTIVE DASHBOARD
+    # ==========================================================
+    
+    def get_dealer_executive_dashboard(self, dealer_name: str) -> Dict[str, Any]:
+        """
+        Enhanced dealer dashboard with:
+        - Rankings
+        - Health Score
+        - Revenue Contribution
+        - Risk Score
+        - Top Delayed DNs
+        - Average Aging
+        - Monthly Trend
+        """
         try:
             records = self.db.query(DeliveryReport).filter(
                 DeliveryReport.customer_name.ilike(f"%{dealer_name}%")
@@ -282,7 +463,7 @@ class DatabaseService:
             if not records:
                 return {"success": False, "message": f"❌ Dealer '{dealer_name}' not found"}
             
-            # Calculate metrics
+            # Basic metrics
             total_dns = len(set(str(r.dn_no) for r in records))
             delivered = len(set(str(r.dn_no) for r in records if r.pgi_status == "Completed"))
             pending = total_dns - delivered
@@ -294,7 +475,86 @@ class DatabaseService:
             delivery_rate = (delivered / total_dns) * 100 if total_dns > 0 else 0
             pod_rate = ((delivered - pod_pending) / delivered) * 100 if delivered > 0 else 0
             health_score = (delivery_rate * 0.6) + (pod_rate * 0.4)
+            risk_score = 100 - health_score
             
+            # P2: Dealer Ranking (among all dealers)
+            all_dealers = self.db.query(
+                DeliveryReport.customer_name,
+                func.sum(DeliveryReport.dn_amount).label("total_value")
+            ).filter(
+                DeliveryReport.customer_name.isnot(None)
+            ).group_by(
+                DeliveryReport.customer_name
+            ).order_by(
+                desc("total_value")
+            ).all()
+            
+            ranking = 1
+            for i, d in enumerate(all_dealers, 1):
+                if d.customer_name == dealer_name:
+                    ranking = i
+                    break
+            
+            total_all_dealers_value = sum(float(d.total_value or 0) for d in all_dealers)
+            revenue_contribution = (total_value / total_all_dealers_value) * 100 if total_all_dealers_value > 0 else 0
+            
+            # P2: Top Delayed DNs
+            delayed_dns = []
+            for r in records:
+                if r.pgi_status != "Completed":
+                    age = 0
+                    if r.dn_create_date:
+                        if isinstance(r.dn_create_date, datetime):
+                            create_date = r.dn_create_date.date()
+                        else:
+                            create_date = r.dn_create_date
+                        age = (datetime.now().date() - create_date).days
+                    delayed_dns.append({"dn_no": r.dn_no, "age": age, "value": float(r.dn_amount or 0)})
+            
+            delayed_dns.sort(key=lambda x: x["age"], reverse=True)
+            top_delayed = delayed_dns[:5]
+            
+            # P2: Average Aging
+            ages = []
+            for r in records:
+                if r.dn_create_date:
+                    if isinstance(r.dn_create_date, datetime):
+                        create_date = r.dn_create_date.date()
+                    else:
+                        create_date = r.dn_create_date
+                    age = (datetime.now().date() - create_date).days
+                    ages.append(age)
+            
+            avg_aging = sum(ages) / len(ages) if ages else 0
+            
+            # P2: POD Aging
+            pod_ages = []
+            for r in records:
+                if r.pgi_status == "Completed" and r.pod_status == "Pending" and r.good_issue_date:
+                    if isinstance(r.good_issue_date, datetime):
+                        issue_date = r.good_issue_date.date()
+                    else:
+                        issue_date = r.good_issue_date
+                    pod_age = (datetime.now().date() - issue_date).days
+                    pod_ages.append(pod_age)
+            
+            avg_pod_aging = sum(pod_ages) / len(pod_ages) if pod_ages else 0
+            
+            # Risk level
+            if risk_score >= 70:
+                risk_level = "CRITICAL"
+                risk_icon = "💀"
+            elif risk_score >= 50:
+                risk_level = "HIGH"
+                risk_icon = "🚨"
+            elif risk_score >= 30:
+                risk_level = "MEDIUM"
+                risk_icon = "⚠️"
+            else:
+                risk_level = "LOW"
+                risk_icon = "✅"
+            
+            # Health status
             if health_score >= 80:
                 health_status = "Excellent"
                 health_icon = "💎"
@@ -308,14 +568,14 @@ class DatabaseService:
                 health_status = "Critical"
                 health_icon = "🚨"
             
-            response = f"""╔══════════════════════════════════════════╗
-║         📊 DEALER DASHBOARD            ║
-║      {dealer_name[:25]}                  ║
-╚══════════════════════════════════════════╝
+            response = f"""╔══════════════════════════════════════════════════════════════╗
+║              📊 EXECUTIVE DEALER DASHBOARD                       ║
+║                    {dealer_name[:30]}                               ║
+╚══════════════════════════════════════════════════════════════════════╝
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📈 *PERFORMANCE METRICS*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 • Total DNs: {total_dns:,}
 • Delivered: {delivered} ✅
 • Pending: {pending} ⏳
@@ -323,144 +583,72 @@ class DatabaseService:
 • Delivery Rate: {delivery_rate:.1f}%
 • POD Compliance: {pod_rate:.1f}%
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 💰 *FINANCIAL ANALYSIS*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 • Total Value: Rs {total_value:,.2f}
 • Pending Value: Rs {pending_value:,.2f}
 • POD Pending Value: Rs {pod_pending_value:,.2f}
+• Revenue Contribution: {revenue_contribution:.1f}% of total
+• Rank: #{ranking} of {len(all_dealers)} dealers
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⚠️ *HEALTH ASSESSMENT*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️ *RISK & HEALTH ASSESSMENT*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {health_icon} Health Score: {health_score:.1f}/100 ({health_status})
-• Risk Level: {'LOW' if health_score >= 70 else 'MEDIUM' if health_score >= 50 else 'HIGH'}
+{risk_icon} Risk Score: {risk_score:.1f}/100
+• Risk Level: {risk_level}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 Type "Help" for more commands"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏱️ *AGING ANALYSIS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Average Dispatch Aging: {avg_aging:.1f} days
+• Average POD Aging: {avg_pod_aging:.1f} days
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🚨 *TOP DELAYED DNS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+            for d in top_delayed[:3]:
+                response += f"• DN {d['dn_no']} - {d['age']} days delayed - Rs {d['value']:,.2f}\n"
             
-            return {"success": True, "formatted_response": response, "data": {
-                "total_dns": total_dns, "delivered": delivered, "pending": pending,
-                "pod_pending": pod_pending, "total_value": total_value,
-                "pending_value": pending_value, "health_score": health_score
-            }}
+            response += """
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 *RECOMMENDATIONS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+            if pending > 0:
+                response += f"• Clear {pending} pending deliveries\n"
+            if pod_pending > 0:
+                response += f"• Collect POD for {pod_pending} delivered DNs\n"
+            if avg_aging > 15:
+                response += "• Review dispatch process for delays\n"
+            if avg_pod_aging > 10:
+                response += "• Implement daily POD follow-up\n"
+            
+            return {
+                "success": True,
+                "dealer_name": dealer_name,
+                "ranking": ranking,
+                "health_score": health_score,
+                "risk_score": risk_score,
+                "risk_level": risk_level,
+                "revenue_contribution": revenue_contribution,
+                "avg_aging": avg_aging,
+                "avg_pod_aging": avg_pod_aging,
+                "top_delayed": top_delayed,
+                "formatted_response": response
+            }
             
         except Exception as e:
-            logger.error(f"Dealer dashboard error: {e}")
+            logger.error(f"Dealer executive dashboard error: {e}")
             return {"success": False, "message": f"Error: {str(e)}"}
     
-    def get_dealer_performance_score(self, dealer_name: str) -> Dict[str, Any]:
-        """Get dealer performance score"""
-        result = self.get_dealer_dashboard(dealer_name)
-        if not result.get("success"):
-            return result
-        
-        data = result.get("data", {})
-        response = f"""📊 *DEALER PERFORMANCE SCORE*
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🏪 *Dealer:* {dealer_name[:30]}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-📈 *Performance Breakdown:*
-• Delivery Score: {data.get('delivery_rate', 0):.1f}/100
-• POD Score: {((data.get('delivered', 1) - data.get('pod_pending', 0)) / data.get('delivered', 1) * 100) if data.get('delivered', 0) > 0 else 0:.1f}/100
-• Financial Score: {((data.get('total_value', 1) - data.get('pending_value', 0)) / data.get('total_value', 1) * 100) if data.get('total_value', 0) > 0 else 100:.1f}/100
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🎯 *Overall Score: {data.get('health_score', 0):.1f}/100*"""
-        
-        return {"success": True, "formatted_response": response}
-    
-    def get_dealer_risk_analysis(self, dealer_name: str) -> Dict[str, Any]:
-        """Get dealer risk analysis"""
-        result = self.get_dealer_dashboard(dealer_name)
-        if not result.get("success"):
-            return result
-        
-        data = result.get("data", {})
-        pending = data.get('pending', 0)
-        pod_pending = data.get('pod_pending', 0)
-        pending_value = data.get('pending_value', 0)
-        
-        risk_score = (pending / data.get('total_dns', 1) * 40) + (pod_pending / data.get('delivered', 1) * 30) if data.get('delivered', 0) > 0 else 0
-        risk_score = min(100, risk_score + (pending_value / data.get('total_value', 1) * 30) if data.get('total_value', 0) > 0 else 0)
-        
-        if risk_score >= 70:
-            risk_level = "🔴 CRITICAL"
-            action = "Immediate escalation required"
-        elif risk_score >= 40:
-            risk_level = "🟡 HIGH"
-            action = "Monitor closely"
-        else:
-            risk_level = "🟢 LOW"
-            action = "Regular monitoring sufficient"
-        
-        response = f"""⚠️ *DEALER RISK ANALYSIS*
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🏪 *Dealer:* {dealer_name[:30]}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-📊 *Risk Breakdown:*
-• Pending DNs: {pending} ({ (pending / data.get('total_dns', 1) * 100):.1f}%)
-• POD Pending: {pod_pending}
-• Financial Exposure: Rs {pending_value:,.2f}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🎯 *Risk Score: {risk_score:.1f}/100*
-{risk_level}
-
-💡 *Action:* {action}"""
-        
-        return {"success": True, "formatted_response": response}
-    
-    def get_dealer_pending_dns(self, dealer_name: str) -> Dict[str, Any]:
-        """Get dealer pending DNs"""
-        try:
-            records = self.db.query(DeliveryReport).filter(
-                DeliveryReport.customer_name.ilike(f"%{dealer_name}%"),
-                DeliveryReport.pgi_status != "Completed"
-            ).all()
-            
-            if not records:
-                return {"success": True, "formatted_response": f"✅ No pending DNs for {dealer_name}"}
-            
-            response = f"⏳ *PENDING DNS FOR {dealer_name[:30]}*\n\n"
-            for r in records[:10]:
-                response += f"• DN {r.dn_no}: Rs {float(r.dn_amount or 0):,.2f}\n"
-            
-            if len(records) > 10:
-                response += f"\n... and {len(records) - 10} more"
-            
-            return {"success": True, "formatted_response": response}
-            
-        except Exception as e:
-            return {"success": False, "message": str(e)}
-    
-    def get_dealer_pod_pending(self, dealer_name: str) -> Dict[str, Any]:
-        """Get dealer POD pending status"""
-        try:
-            records = self.db.query(DeliveryReport).filter(
-                DeliveryReport.customer_name.ilike(f"%{dealer_name}%"),
-                DeliveryReport.pgi_status == "Completed",
-                DeliveryReport.pod_status == "Pending"
-            ).all()
-            
-            if not records:
-                return {"success": True, "formatted_response": f"✅ No POD pending for {dealer_name}"}
-            
-            response = f"📋 *POD PENDING FOR {dealer_name[:30]}*\n\n"
-            for r in records[:10]:
-                response += f"• DN {r.dn_no}: Rs {float(r.dn_amount or 0):,.2f}\n"
-            
-            return {"success": True, "formatted_response": response}
-            
-        except Exception as e:
-            return {"success": False, "message": str(e)}
+    # ==========================================================
+    # SUPPORTING METHODS
+    # ==========================================================
     
     def get_top_dealers(self, limit: int = 20) -> List[Dict]:
-        """Get top dealers by value"""
         try:
             results = self.db.query(
                 DeliveryReport.customer_name,
@@ -476,11 +664,9 @@ class DatabaseService:
             
             return [{"name": r.customer_name, "total_dns": r.total_dns, "total_value": float(r.total_value or 0)} for r in results]
         except Exception as e:
-            logger.error(f"Top dealers error: {e}")
             return []
     
     def get_top_risk_dealers(self, limit: int = 20) -> List[Dict]:
-        """Get top risk dealers"""
         try:
             results = self.db.query(
                 DeliveryReport.customer_name,
@@ -496,175 +682,34 @@ class DatabaseService:
             
             return [{"name": r.customer_name, "pending_dns": r.pending_dns, "pending_value": float(r.pending_value or 0)} for r in results]
         except Exception as e:
-            logger.error(f"Top risk dealers error: {e}")
             return []
     
-    # ==========================================================
-    # DN INTELLIGENCE
-    # ==========================================================
-    
-    def get_dn_details(self, dn_number: str) -> Dict[str, Any]:
-        """Get complete DN details"""
+    def get_network_health(self) -> Dict[str, Any]:
         try:
-            record = self.db.query(DeliveryReport).filter(
-                DeliveryReport.dn_no == dn_number
-            ).first()
+            total_dns = self.db.query(DeliveryReport.dn_no).distinct().count()
+            delivered_dns = self.db.query(DeliveryReport.dn_no).filter(DeliveryReport.pgi_status == "Completed").distinct().count()
+            pod_received = self.db.query(DeliveryReport.dn_no).filter(
+                DeliveryReport.pgi_status == "Completed",
+                DeliveryReport.pod_status == "Received"
+            ).distinct().count()
+            pending_value = self.db.query(func.sum(DeliveryReport.dn_amount)).filter(DeliveryReport.pgi_status != "Completed").scalar() or 0
             
-            if not record:
-                return {"success": False, "message": f"❌ DN {dn_number} not found"}
+            delivery_rate = (delivered_dns / total_dns) * 100 if total_dns > 0 else 0
+            pod_rate = (pod_received / delivered_dns) * 100 if delivered_dns > 0 else 0
+            health_score = (delivery_rate * 0.6) + (pod_rate * 0.4)
             
-            # Calculate ages
-            dispatch_age = 0
-            if record.dn_create_date:
-                if isinstance(record.dn_create_date, datetime):
-                    create_date = record.dn_create_date.date()
-                else:
-                    create_date = record.dn_create_date
-                dispatch_age = (datetime.now().date() - create_date).days
-            
-            pod_age = 0
-            if record.good_issue_date and record.pod_status == "Pending":
-                if isinstance(record.good_issue_date, datetime):
-                    issue_date = record.good_issue_date.date()
-                else:
-                    issue_date = record.good_issue_date
-                pod_age = (datetime.now().date() - issue_date).days
-            
-            # Risk level
-            if dispatch_age > 30:
-                risk = "🔴 CRITICAL"
-            elif dispatch_age > 15:
-                risk = "🟡 HIGH"
-            elif dispatch_age > 7:
-                risk = "🟠 MEDIUM"
-            else:
-                risk = "🟢 LOW"
-            
-            response = f"""╔══════════════════════════════════════════╗
-║           📦 DN COMPLETE DETAILS          ║
-║              {dn_number}                    ║
-╚══════════════════════════════════════════╝
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🏪 *DEALER INFORMATION*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Dealer: {record.customer_name or 'N/A'}
-• City: {record.ship_to_city or 'N/A'}
-• Warehouse: {record.warehouse or 'N/A'}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📦 *DN DETAILS*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Product: {record.product or 'N/A'}
-• Quantity: {float(record.dn_qty or 0):,.0f} units
-• Value: Rs {float(record.dn_amount or 0):,.2f}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📅 *TIMELINE*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Create Date: {record.dn_create_date.strftime('%Y-%m-%d') if record.dn_create_date else 'N/A'}
-• Dispatch Age: {dispatch_age} days
-• POD Age: {pod_age} days
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📊 *STATUS*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Delivery: {'✅ DELIVERED' if record.pgi_status == 'Completed' else '⏳ PENDING'}
-• POD: {'✅ RECEIVED' if record.pod_status == 'Received' else '📋 PENDING'}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⚠️ *RISK ASSESSMENT: {risk}*
-
-💡 Type "Help" for more commands"""
-            
-            return {"success": True, "formatted_response": response}
-            
+            return {
+                "total_dns": total_dns,
+                "delivered_dns": delivered_dns,
+                "delivery_rate": round(delivery_rate, 1),
+                "pod_rate": round(pod_rate, 1),
+                "health_score": round(health_score, 1),
+                "revenue_at_risk": round(float(pending_value), 2)
+            }
         except Exception as e:
-            logger.error(f"DN lookup error: {e}")
-            return {"success": False, "message": f"Error: {str(e)}"}
-    
-    def get_dn_status(self, dn_number: str) -> Dict[str, Any]:
-        """Get DN status only"""
-        record = self.db.query(DeliveryReport).filter(DeliveryReport.dn_no == dn_number).first()
-        if not record:
-            return {"success": False, "message": f"❌ DN {dn_number} not found"}
-        
-        status = "✅ DELIVERED" if record.pgi_status == "Completed" else "⏳ PENDING"
-        pod = "✅ RECEIVED" if record.pod_status == "Received" else "📋 PENDING"
-        
-        response = f"""🔢 *DN {dn_number} STATUS*
-• Delivery: {status}
-• POD: {pod}"""
-        
-        return {"success": True, "formatted_response": response}
-    
-    def get_dn_pod_status(self, dn_number: str) -> Dict[str, Any]:
-        """Get DN POD status"""
-        record = self.db.query(DeliveryReport).filter(DeliveryReport.dn_no == dn_number).first()
-        if not record:
-            return {"success": False, "message": f"❌ DN {dn_number} not found"}
-        
-        if record.pgi_status != "Completed":
-            return {"success": True, "formatted_response": f"📋 *POD STATUS*\nDN {dn_number} is not yet delivered. POD will be available after delivery."}
-        
-        pod_status = "✅ RECEIVED" if record.pod_status == "Received" else "📋 PENDING"
-        response = f"""📋 *POD STATUS - DN {dn_number}*
-• Status: {pod_status}
-• Value: Rs {float(record.dn_amount or 0):,.2f}"""
-        
-        return {"success": True, "formatted_response": response}
-    
-    def get_delayed_dns(self, days_threshold: int = 7) -> List[Dict]:
-        """Get delayed DNs"""
-        try:
-            cutoff = datetime.now().date() - timedelta(days=days_threshold)
-            records = self.db.query(DeliveryReport).filter(
-                DeliveryReport.dn_create_date <= cutoff,
-                DeliveryReport.pgi_status != "Completed"
-            ).all()
-            
-            return [{"dn_no": r.dn_no, "customer": r.customer_name, "age": (datetime.now().date() - r.dn_create_date.date()).days, "value": float(r.dn_amount or 0)} for r in records]
-        except Exception as e:
-            return []
-    
-    # ==========================================================
-    # OPERATIONAL ANALYTICS
-    # ==========================================================
-    
-    def get_warehouse_performance(self) -> List[Dict]:
-        """Get warehouse performance"""
-        try:
-            results = self.db.query(
-                DeliveryReport.warehouse,
-                func.count(DeliveryReport.dn_no).label("total_dns"),
-                func.sum(DeliveryReport.dn_amount).label("total_value"),
-                func.count(DeliveryReport.dn_no).filter(DeliveryReport.pgi_status != "Completed").label("pending_dns")
-            ).filter(
-                DeliveryReport.warehouse.isnot(None)
-            ).group_by(
-                DeliveryReport.warehouse
-            ).all()
-            
-            warehouses = []
-            for r in results:
-                pending_rate = (r.pending_dns / r.total_dns) * 100 if r.total_dns > 0 else 0
-                status = "🔴" if pending_rate > 30 else "🟡" if pending_rate > 15 else "🟢"
-                warehouses.append({
-                    "warehouse": r.warehouse,
-                    "total_dns": r.total_dns,
-                    "pending_dns": r.pending_dns,
-                    "pending_rate": round(pending_rate, 1),
-                    "total_value": float(r.total_value or 0),
-                    "status": status
-                })
-            
-            warehouses.sort(key=lambda x: x["pending_rate"], reverse=True)
-            return warehouses[:20]
-        except Exception as e:
-            return []
+            return {}
     
     def get_city_performance(self) -> List[Dict]:
-        """Get city performance"""
         try:
             results = self.db.query(
                 DeliveryReport.ship_to_city,
@@ -695,48 +740,38 @@ class DatabaseService:
         except Exception as e:
             return []
     
-    def get_network_health(self) -> Dict[str, Any]:
-        """Get network health"""
+    def get_warehouse_performance(self) -> List[Dict]:
         try:
-            total_dns = self.db.query(DeliveryReport.dn_no).distinct().count()
-            delivered_dns = self.db.query(DeliveryReport.dn_no).filter(DeliveryReport.pgi_status == "Completed").distinct().count()
-            pod_received = self.db.query(DeliveryReport.dn_no).filter(
-                DeliveryReport.pgi_status == "Completed",
-                DeliveryReport.pod_status == "Received"
-            ).distinct().count()
-            pending_value = self.db.query(func.sum(DeliveryReport.dn_amount)).filter(DeliveryReport.pgi_status != "Completed").scalar() or 0
+            results = self.db.query(
+                DeliveryReport.warehouse,
+                func.count(DeliveryReport.dn_no).label("total_dns"),
+                func.sum(DeliveryReport.dn_amount).label("total_value"),
+                func.count(DeliveryReport.dn_no).filter(DeliveryReport.pgi_status != "Completed").label("pending_dns")
+            ).filter(
+                DeliveryReport.warehouse.isnot(None)
+            ).group_by(
+                DeliveryReport.warehouse
+            ).all()
             
-            delivery_rate = (delivered_dns / total_dns) * 100 if total_dns > 0 else 0
-            pod_rate = (pod_received / delivered_dns) * 100 if delivered_dns > 0 else 0
-            health_score = (delivery_rate * 0.6) + (pod_rate * 0.4)
+            warehouses = []
+            for r in results:
+                pending_rate = (r.pending_dns / r.total_dns) * 100 if r.total_dns > 0 else 0
+                status = "🔴" if pending_rate > 30 else "🟡" if pending_rate > 15 else "🟢"
+                warehouses.append({
+                    "warehouse": r.warehouse,
+                    "total_dns": r.total_dns,
+                    "pending_dns": r.pending_dns,
+                    "pending_rate": round(pending_rate, 1),
+                    "total_value": float(r.total_value or 0),
+                    "status": status
+                })
             
-            if health_score >= 80:
-                status = "💎 EXCELLENT"
-            elif health_score >= 60:
-                status = "✅ GOOD"
-            elif health_score >= 40:
-                status = "⚠️ FAIR"
-            else:
-                status = "🚨 CRITICAL"
-            
-            return {
-                "total_dns": total_dns,
-                "delivered_dns": delivered_dns,
-                "delivery_rate": round(delivery_rate, 1),
-                "pod_rate": round(pod_rate, 1),
-                "health_score": round(health_score, 1),
-                "revenue_at_risk": round(float(pending_value), 2),
-                "status": status
-            }
+            warehouses.sort(key=lambda x: x["pending_rate"], reverse=True)
+            return warehouses[:20]
         except Exception as e:
-            return {}
-    
-    # ==========================================================
-    # FINANCIAL ANALYTICS
-    # ==========================================================
+            return []
     
     def get_revenue_analysis(self) -> Dict[str, Any]:
-        """Get revenue analysis"""
         try:
             total = self.db.query(func.sum(DeliveryReport.dn_amount)).scalar() or 0
             delivered = self.db.query(func.sum(DeliveryReport.dn_amount)).filter(DeliveryReport.pgi_status == "Completed").scalar() or 0
@@ -759,13 +794,22 @@ class DatabaseService:
             return {}
     
     def get_outstanding_analysis(self) -> Dict[str, Any]:
-        """Get outstanding value analysis"""
         revenue = self.get_revenue_analysis()
         return {
             "outstanding_value": revenue.get("pending_revenue", 0) + revenue.get("pod_pending_revenue", 0),
             "pending_delivery": revenue.get("pending_revenue", 0),
-            "pod_pending": revenue.get("pod_pending_revenue", 0),
-            "percentage_of_revenue": ((revenue.get("pending_revenue", 0) + revenue.get("pod_pending_revenue", 0)) / revenue.get("total_revenue", 1) * 100) if revenue.get("total_revenue", 0) > 0 else 0
+            "pod_pending": revenue.get("pod_pending_revenue", 0)
+        }
+    
+    def get_executive_context(self) -> Dict[str, Any]:
+        """Get complete executive context for AI"""
+        return {
+            "network_health": self.get_network_health(),
+            "top_dealers": self.get_top_dealers(10),
+            "top_risk_dealers": self.get_top_risk_dealers(10),
+            "city_performance": self.get_city_performance()[:5],
+            "warehouse_performance": self.get_warehouse_performance()[:5],
+            "revenue_analysis": self.get_revenue_analysis()
         }
 
 
@@ -778,42 +822,6 @@ class ResponseFormatter:
     @staticmethod
     def welcome() -> str:
         return WELCOME_MESSAGE
-    
-    @staticmethod
-    def help() -> str:
-        return WELCOME_MESSAGE
-    
-    @staticmethod
-    def dealer_dashboard_prompt() -> str:
-        return "🏪 *Dealer Dashboard*\n\nPlease type the dealer name you want to analyze.\n\n📝 *Example:* `Bhatti Electronics`"
-    
-    @staticmethod
-    def dealer_performance_prompt() -> str:
-        return "📊 *Dealer Performance Score*\n\nPlease type the dealer name to see their performance score.\n\n📝 *Example:* `Bhatti Electronics`"
-    
-    @staticmethod
-    def dealer_risk_prompt() -> str:
-        return "⚠️ *Dealer Risk Analysis*\n\nPlease type the dealer name to analyze risks.\n\n📝 *Example:* `Bhatti Electronics`"
-    
-    @staticmethod
-    def dealer_pending_prompt() -> str:
-        return "⏳ *Dealer Pending DNs*\n\nPlease type the dealer name to see pending deliveries.\n\n📝 *Example:* `Bhatti Electronics`"
-    
-    @staticmethod
-    def dealer_pod_pending_prompt() -> str:
-        return "📋 *Dealer POD Pending Status*\n\nPlease type the dealer name to see POD status.\n\n📝 *Example:* `Bhatti Electronics`"
-    
-    @staticmethod
-    def dn_status_prompt() -> str:
-        return "🔢 *DN Status Lookup*\n\nPlease send a 10-digit DN number to check status.\n\n📝 *Example:* `6243611920`"
-    
-    @staticmethod
-    def dn_details_prompt() -> str:
-        return "📦 *DN Complete Details*\n\nPlease send a 10-digit DN number for complete details.\n\n📝 *Example:* `6243611920`"
-    
-    @staticmethod
-    def dn_pod_prompt() -> str:
-        return "📋 *POD Status by DN*\n\nPlease send a 10-digit DN number to check POD status.\n\n📝 *Example:* `6243611920`"
     
     @staticmethod
     def top_dealers_response(dealers: List, limit: int = 20) -> str:
@@ -838,16 +846,24 @@ class ResponseFormatter:
         return response
     
     @staticmethod
-    def warehouse_performance_response(warehouses: List) -> str:
-        if not warehouses:
-            return "🏭 No warehouse data available."
-        
-        response = "🏭 *WAREHOUSE PERFORMANCE*\n\n"
-        for w in warehouses[:15]:
-            response += f"{w['status']} *{w['warehouse'][:25]}*\n"
-            response += f"   📦 {w['total_dns']} DNs | ⏳ {w['pending_dns']} pending ({w['pending_rate']:.0f}%)\n"
-            response += f"   💰 Rs {w['total_value']:,.2f}\n\n"
-        return response
+    def network_health_response(health: Dict) -> str:
+        return f"""📊 *NETWORK HEALTH SCORE*
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📈 *KEY METRICS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Health Score: {health.get('health_score', 0)}/100
+• Total DNs: {health.get('total_dns', 0):,}
+• Delivered: {health.get('delivered_dns', 0):,}
+• Delivery Rate: {health.get('delivery_rate', 0)}%
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 *POD COMPLIANCE: {health.get('pod_rate', 0)}%*
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💰 *REVENUE AT RISK: Rs {health.get('revenue_at_risk', 0):,.2f}*
+
+💡 Type "Executive summary" for detailed analysis"""
     
     @staticmethod
     def city_performance_response(cities: List) -> str:
@@ -862,24 +878,16 @@ class ResponseFormatter:
         return response
     
     @staticmethod
-    def network_health_response(health: Dict) -> str:
-        return f"""📊 *NETWORK HEALTH SCORE*
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📈 *KEY METRICS*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Health Score: {health.get('health_score', 0)}/100 {health.get('status', '')}
-• Total DNs: {health.get('total_dns', 0):,}
-• Delivered: {health.get('delivered_dns', 0):,}
-• Delivery Rate: {health.get('delivery_rate', 0)}%
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📋 *POD COMPLIANCE: {health.get('pod_rate', 0)}%*
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💰 *REVENUE AT RISK: Rs {health.get('revenue_at_risk', 0):,.2f}*
-
-💡 Type "Executive summary" for detailed analysis"""
+    def warehouse_performance_response(warehouses: List) -> str:
+        if not warehouses:
+            return "🏭 No warehouse data available."
+        
+        response = "🏭 *WAREHOUSE PERFORMANCE*\n\n"
+        for w in warehouses[:15]:
+            response += f"{w['status']} *{w['warehouse'][:25]}*\n"
+            response += f"   📦 {w['total_dns']} DNs | ⏳ {w['pending_dns']} pending ({w['pending_rate']:.0f}%)\n"
+            response += f"   💰 Rs {w['total_value']:,.2f}\n\n"
+        return response
     
     @staticmethod
     def revenue_analysis_response(revenue: Dict) -> str:
@@ -909,13 +917,10 @@ class ResponseFormatter:
 • Pending Delivery: Rs {outstanding.get('pending_delivery', 0):,.2f} ⏳
 • POD Pending: Rs {outstanding.get('pod_pending', 0):,.2f} 📋
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📈 *{outstanding.get('percentage_of_revenue', 0):.1f}% of total revenue*
-
 💡 Type "Top risk dealers" for detailed list."""
     
     @staticmethod
-    def executive_summary_response(health: Dict, top_dealers: List, risk_dealers: List, cities: List) -> str:
+    def executive_summary_response(health: Dict, top_dealers: List, risk_dealers: List) -> str:
         response = f"""👑 *EXECUTIVE SUMMARY DASHBOARD*
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -941,20 +946,12 @@ class ResponseFormatter:
         for i, d in enumerate(risk_dealers[:5], 1):
             response += f"{i}. {d['name'][:30]} - {d['pending_dns']} pending\n"
         
-        response += f"""
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🌆 *TOP 5 RISK CITIES*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-"""
-        for i, c in enumerate(cities[:5], 1):
-            response += f"{i}. {c['city'][:25]} - {c['pending_rate']:.0f}% pending\n"
-        
         response += """
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 💡 *PRIORITY ACTIONS:*
 1. Escalate top 5 risk dealers
-2. Focus POD collection on risk cities
-3. Review warehouse performance
+2. Focus POD collection
+3. Review pending deliveries
 
 Type "Help" for all commands"""
         
@@ -980,15 +977,36 @@ class AIQueryService:
             try:
                 self.ai_provider = get_ai_provider_service(db)
                 if self.ai_provider:
-                    self.ai_available = self.ai_provider.is_available
+                    # P3: GROQ Health Check
+                    self.ai_available = self._check_groq_health()
                     logger.info(f"✅ AI Provider: {'AVAILABLE' if self.ai_available else 'NOT AVAILABLE'}")
             except Exception as e:
                 logger.error(f"Failed to get AI provider: {e}")
         
         logger.info("=" * 50)
-        logger.info("🚀 AI LOGISTICS INTELLIGENCE ASSISTANT v10.0")
+        logger.info("🚀 AI LOGISTICS INTELLIGENCE ASSISTANT v12.0")
         logger.info(f"GROQ Available: {self.ai_available}")
         logger.info("=" * 50)
+    
+    def _check_groq_health(self) -> bool:
+        """P3: GROQ Health Check - Verify AI is working"""
+        if not self.ai_provider:
+            return False
+        
+        try:
+            result = self.ai_provider.answer_question(
+                question="Say 'GROQ is working' in one word.",
+                user_role="test"
+            )
+            if result.get("success"):
+                logger.info("✅ GROQ health check passed")
+                return True
+            else:
+                logger.warning(f"⚠️ GROQ health check failed: {result.get('error')}")
+                return False
+        except Exception as e:
+            logger.error(f"❌ GROQ health check error: {e}")
+            return False
     
     def process_query(self, question: str, user_phone: str = None, user_role: str = None) -> Dict[str, Any]:
         start_time = time.time()
@@ -1000,57 +1018,28 @@ class AIQueryService:
         logger.info(f"🎯 Intent: {intent.value}, Entity: {entity}")
         
         try:
-            # Route based on intent
             if intent == IntentType.HELP or intent == IntentType.WELCOME:
                 result = self._handle_welcome()
-            
-            # Dealer Intelligence (1-5)
-            elif intent == IntentType.DEALER_DASHBOARD:
-                result = self._handle_dealer_dashboard_prompt()
-            elif intent == IntentType.DEALER_PERFORMANCE:
-                result = self._handle_dealer_performance_prompt()
-            elif intent == IntentType.DEALER_RISK:
-                result = self._handle_dealer_risk_prompt()
-            elif intent == IntentType.DEALER_PENDING:
-                result = self._handle_dealer_pending_prompt()
-            elif intent == IntentType.DEALER_POD_PENDING:
-                result = self._handle_dealer_pod_pending_prompt()
             elif intent == IntentType.DEALER_LOOKUP:
                 result = self._handle_dealer_lookup(entity)
+            elif intent == IntentType.DN_LOOKUP:
+                result = self._handle_dn_lookup(entity)
             elif intent == IntentType.TOP_DEALERS:
                 result = self._handle_top_dealers()
             elif intent == IntentType.TOP_RISK_DEALERS:
                 result = self._handle_top_risk_dealers()
-            
-            # DN Intelligence (6-9)
-            elif intent == IntentType.DN_STATUS:
-                result = self._handle_dn_status_prompt()
-            elif intent == IntentType.DN_DETAILS:
-                result = self._handle_dn_details_prompt()
-            elif intent == IntentType.DN_POD_STATUS:
-                result = self._handle_dn_pod_prompt()
-            elif intent == IntentType.DN_LOOKUP:
-                result = self._handle_dn_lookup(entity)
-            
-            # Operational Analytics (10-12)
-            elif intent == IntentType.WAREHOUSE_PERFORMANCE:
-                result = self._handle_warehouse_performance()
-            elif intent == IntentType.CITY_PERFORMANCE:
-                result = self._handle_city_performance()
+            elif intent == IntentType.EXECUTIVE_SUMMARY:
+                result = self._handle_executive_summary()
             elif intent == IntentType.NETWORK_HEALTH:
                 result = self._handle_network_health()
-            
-            # Financial Analytics (13-14)
+            elif intent == IntentType.CITY_PERFORMANCE:
+                result = self._handle_city_performance()
+            elif intent == IntentType.WAREHOUSE_PERFORMANCE:
+                result = self._handle_warehouse_performance()
             elif intent == IntentType.REVENUE_ANALYSIS:
                 result = self._handle_revenue_analysis()
             elif intent == IntentType.OUTSTANDING_ANALYSIS:
                 result = self._handle_outstanding_analysis()
-            
-            # Executive Intelligence (15)
-            elif intent == IntentType.EXECUTIVE_SUMMARY:
-                result = self._handle_executive_summary()
-            
-            # General Query (AI-powered)
             else:
                 result = self._handle_general_query(question, user_phone, user_role)
             
@@ -1061,35 +1050,18 @@ class AIQueryService:
             logger.error(f"Processing error: {e}")
             return {"success": False, "response": "⚠️ Service unavailable. Please try again.", "processing_time_ms": int((time.time() - start_time) * 1000)}
     
-    # ==========================================================
-    # WELCOME & HELP
-    # ==========================================================
-    
     def _handle_welcome(self) -> Dict[str, Any]:
         return {"success": True, "response": self.formatter.welcome()}
     
-    # ==========================================================
-    # DEALER INTELLIGENCE HANDLERS
-    # ==========================================================
-    
-    def _handle_dealer_dashboard_prompt(self) -> Dict[str, Any]:
-        return {"success": True, "response": self.formatter.dealer_dashboard_prompt()}
-    
-    def _handle_dealer_performance_prompt(self) -> Dict[str, Any]:
-        return {"success": True, "response": self.formatter.dealer_performance_prompt()}
-    
-    def _handle_dealer_risk_prompt(self) -> Dict[str, Any]:
-        return {"success": True, "response": self.formatter.dealer_risk_prompt()}
-    
-    def _handle_dealer_pending_prompt(self) -> Dict[str, Any]:
-        return {"success": True, "response": self.formatter.dealer_pending_prompt()}
-    
-    def _handle_dealer_pod_pending_prompt(self) -> Dict[str, Any]:
-        return {"success": True, "response": self.formatter.dealer_pod_pending_prompt()}
-    
     def _handle_dealer_lookup(self, dealer_name: str) -> Dict[str, Any]:
-        result = self.db_service.get_dealer_dashboard(dealer_name)
+        """P2: Enhanced dealer executive dashboard"""
+        result = self.db_service.get_dealer_executive_dashboard(dealer_name)
         return {"success": result["success"], "response": result.get("formatted_response", result.get("message", "Dealer not found"))}
+    
+    def _handle_dn_lookup(self, dn_number: str) -> Dict[str, Any]:
+        """P1: Enhanced DN intelligence dashboard"""
+        result = self.db_service.get_dn_intelligence_dashboard(dn_number)
+        return {"success": result["success"], "response": result.get("formatted_response", result.get("message", "DN not found"))}
     
     def _handle_top_dealers(self) -> Dict[str, Any]:
         dealers = self.db_service.get_top_dealers(20)
@@ -1101,35 +1073,11 @@ class AIQueryService:
         response = self.formatter.top_risk_dealers_response(dealers)
         return {"success": True, "response": response}
     
-    # ==========================================================
-    # DN INTELLIGENCE HANDLERS
-    # ==========================================================
-    
-    def _handle_dn_status_prompt(self) -> Dict[str, Any]:
-        return {"success": True, "response": self.formatter.dn_status_prompt()}
-    
-    def _handle_dn_details_prompt(self) -> Dict[str, Any]:
-        return {"success": True, "response": self.formatter.dn_details_prompt()}
-    
-    def _handle_dn_pod_prompt(self) -> Dict[str, Any]:
-        return {"success": True, "response": self.formatter.dn_pod_prompt()}
-    
-    def _handle_dn_lookup(self, dn_number: str) -> Dict[str, Any]:
-        result = self.db_service.get_dn_details(dn_number)
-        return {"success": result["success"], "response": result.get("formatted_response", result.get("message", "DN not found"))}
-    
-    # ==========================================================
-    # OPERATIONAL ANALYTICS HANDLERS
-    # ==========================================================
-    
-    def _handle_warehouse_performance(self) -> Dict[str, Any]:
-        warehouses = self.db_service.get_warehouse_performance()
-        response = self.formatter.warehouse_performance_response(warehouses)
-        return {"success": True, "response": response}
-    
-    def _handle_city_performance(self) -> Dict[str, Any]:
-        cities = self.db_service.get_city_performance()
-        response = self.formatter.city_performance_response(cities)
+    def _handle_executive_summary(self) -> Dict[str, Any]:
+        health = self.db_service.get_network_health()
+        top_dealers = self.db_service.get_top_dealers(10)
+        risk_dealers = self.db_service.get_top_risk_dealers(10)
+        response = self.formatter.executive_summary_response(health, top_dealers, risk_dealers)
         return {"success": True, "response": response}
     
     def _handle_network_health(self) -> Dict[str, Any]:
@@ -1137,9 +1085,15 @@ class AIQueryService:
         response = self.formatter.network_health_response(health)
         return {"success": True, "response": response}
     
-    # ==========================================================
-    # FINANCIAL ANALYTICS HANDLERS
-    # ==========================================================
+    def _handle_city_performance(self) -> Dict[str, Any]:
+        cities = self.db_service.get_city_performance()
+        response = self.formatter.city_performance_response(cities)
+        return {"success": True, "response": response}
+    
+    def _handle_warehouse_performance(self) -> Dict[str, Any]:
+        warehouses = self.db_service.get_warehouse_performance()
+        response = self.formatter.warehouse_performance_response(warehouses)
+        return {"success": True, "response": response}
     
     def _handle_revenue_analysis(self) -> Dict[str, Any]:
         revenue = self.db_service.get_revenue_analysis()
@@ -1151,26 +1105,23 @@ class AIQueryService:
         response = self.formatter.outstanding_response(outstanding)
         return {"success": True, "response": response}
     
-    # ==========================================================
-    # EXECUTIVE INTELLIGENCE HANDLERS
-    # ==========================================================
-    
-    def _handle_executive_summary(self) -> Dict[str, Any]:
-        health = self.db_service.get_network_health()
-        top_dealers = self.db_service.get_top_dealers(10)
-        risk_dealers = self.db_service.get_top_risk_dealers(10)
-        cities = self.db_service.get_city_performance()
-        response = self.formatter.executive_summary_response(health, top_dealers, risk_dealers, cities)
-        return {"success": True, "response": response}
-    
-    # ==========================================================
-    # GENERAL QUERY (GROQ AI)
-    # ==========================================================
-    
     def _handle_general_query(self, question: str, user_phone: str, user_role: str) -> Dict[str, Any]:
-        """Use GROQ AI for general questions"""
+        """P3: Enhanced GROQ with full business context"""
         
         logger.info(f"🤖 Processing general query with GROQ: {question[:100]}")
+        
+        # Build comprehensive context for AI
+        executive_context = self.db_service.get_executive_context()
+        
+        context_prompt = f"""
+BUSINESS CONTEXT:
+- Network Health Score: {executive_context.get('network_health', {}).get('health_score', 0)}/100
+- Revenue at Risk: Rs {executive_context.get('network_health', {}).get('revenue_at_risk', 0):,.2f}
+- Top Dealers: {executive_context.get('top_dealers', [])[:3]}
+- Top Risk Dealers: {executive_context.get('top_risk_dealers', [])[:3]}
+- City Performance: {executive_context.get('city_performance', [])[:3]}
+- Warehouse Performance: {executive_context.get('warehouse_performance', [])[:3]}
+"""
         
         # Try GROQ
         try:
@@ -1179,10 +1130,10 @@ class AIQueryService:
             ai_provider = get_ai_provider_service(self.db)
             
             if ai_provider and ai_provider.is_available:
-                logger.info("🚀 Calling GROQ API...")
+                logger.info("🚀 Calling GROQ API with business context...")
                 
                 result = ai_provider.answer_question(
-                    question=question,
+                    question=f"{context_prompt}\n\nUSER QUESTION: {question}\n\nProvide a helpful, data-driven response for WhatsApp.",
                     user_phone=user_phone,
                     user_role=user_role or "guest"
                 )
@@ -1197,7 +1148,7 @@ class AIQueryService:
                 logger.warning("⚠️ AI Provider not available")
                 
         except Exception as e:
-            logger.error(f"❌ GROQ error: {e}")
+            logger.exception(f"❌ GROQ FULL ERROR: {e}")  # P3: Full exception logging
         
         # Fallback response
         response = f"""🤖 *AI LOGISTICS ASSISTANT*
@@ -1205,15 +1156,28 @@ class AIQueryService:
 I understand you're asking about: "{question[:50]}"
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 *Try these commands:*
+💡 *Try these commands for instant data:*
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-📊 *Dealer Intelligence* - Type dealer name, "Top dealers", "Top risk dealers"
-🔢 *DN Tracking* - Send 10-digit DN number
-👑 *Executive Reports* - "Executive summary", "Network health"
-🏭 *Warehouse* - "Warehouse performance"
-🌆 *Cities* - "City performance"
-💰 *Financial* - "Revenue analysis", "Outstanding analysis"
+📊 *Dealer Analytics*
+• Type a dealer name (e.g., "Exact Trading Co")
+• "Top dealers" - Best performers
+• "Top risk dealers" - Critical accounts
+
+🔢 *DN Tracking*
+• Send a 10-digit DN number (complete dashboard with aging)
+
+👑 *Executive Reports*
+• "Executive summary"
+• "Network health"
+
+🏭 *Warehouse & Cities*
+• "Warehouse performance"
+• "City performance"
+
+💰 *Financial Analytics*
+• "Revenue analysis"
+• "Outstanding analysis"
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Type "Help" for complete menu."""
