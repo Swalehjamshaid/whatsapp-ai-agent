@@ -1,10 +1,9 @@
 # ==========================================================
-# FILE: app/services/ai_query_service.py (ENTERPRISE v4.1)
+# FILE: app/services/ai_query_service.py (ENTERPRISE v4.2)
 # ==========================================================
 # Central Intelligence Router for WhatsApp
-# Fixed: AI diagnostics, greeting intent, threshold 85, 
-#        context clearing, JSON safety, empty dashboard check,
-#        help command, auto-refresh cache, query history
+# Fixed: Removed dangerous contains-match, improved regex boundaries,
+#       service singleton, enhanced logging, AI protection
 # ==========================================================
 
 import re
@@ -37,6 +36,13 @@ try:
     RAPIDFUZZ_AVAILABLE = True
 except ImportError:
     RAPIDFUZZ_AVAILABLE = False
+
+
+# ==========================================================
+# FIX #6: SINGLETON SERVICE INSTANCE
+# ==========================================================
+
+_ai_query_service_instance = None
 
 
 # ==========================================================
@@ -77,7 +83,7 @@ class DealerMasterData:
     _dealer_names_lower = []
     _last_refresh = None
     _refresh_lock = threading.Lock()
-    _REFRESH_INTERVAL_MINUTES = 30  # FIX #9: Auto-refresh every 30 minutes
+    _REFRESH_INTERVAL_MINUTES = 10  # FIX #9: Changed from 30 to 10 minutes
     
     def __new__(cls):
         if cls._instance is None:
@@ -87,7 +93,7 @@ class DealerMasterData:
     def load_dealers(self, db: Session, force: bool = False):
         """Load all dealer names from database with auto-refresh"""
         
-        # FIX #9: Check if refresh needed (30 minute interval)
+        # FIX #9: Check if refresh needed (10 minute interval)
         if not force and self._last_refresh:
             age = datetime.now() - self._last_refresh
             if age < timedelta(minutes=self._REFRESH_INTERVAL_MINUTES):
@@ -114,23 +120,24 @@ class DealerMasterData:
         return self._dealers
     
     def match_dealer(self, query: str, threshold: int = 85) -> Tuple[Optional[str], int]:
-        """Fuzzy match dealer name using RapidFuzz - FIX #3: threshold increased to 85"""
+        """
+        Fuzzy match dealer name using RapidFuzz
+        FIX #1: Removed dangerous contains-match
+        """
         if not self._dealers:
             return None, 0
         
         query_clean = query.strip()
         
-        # Exact match
+        # FIX #1: REMOVED CONTAINS MATCH - was causing false positives
+        # Example: "BBC" would match "BBC Electronics" incorrectly
+        
+        # Exact match (case insensitive)
         for dealer in self._dealers:
             if dealer.lower() == query_clean.lower():
                 return dealer, 100
         
-        # Contains match
-        for dealer in self._dealers:
-            if query_clean.lower() in dealer.lower():
-                return dealer, 90
-        
-        # RapidFuzz matching
+        # RapidFuzz matching only
         if RAPIDFUZZ_AVAILABLE:
             try:
                 # Token sort ratio (best for word order variations)
@@ -170,33 +177,37 @@ class DealerMasterData:
 class IntentDetector:
     """Detect user intent from WhatsApp message"""
     
-    # DN patterns (Improvement 2)
+    # FIX #5: Enhanced DN patterns
     DN_PATTERNS = [
-        r'^\d{10}$',           # Exactly 10 digits
-        r'\b\d{10}\b',         # 10 digits in text
-        r'^DN\s*\d{10}$',      # DN 6243611361
-        r'^dn\s*\d{10}$',      # dn 6243611361
-        r'^Track\s*\d{10}$',   # Track 6243611361
-        r'^track\s*\d{10}$',   # track 6243611361
-        r'^Status\s*\d{10}$',  # Status 6243611361
-        r'^status\s*\d{10}$',  # status 6243611361
-        r'^POD\s*\d{10}$',     # POD 6243611361
-        r'^pod\s*\d{10}$',     # pod 6243611361
+        r'^\d{10}$',                    # Exactly 10 digits
+        r'\b\d{10}\b',                  # 10 digits in text
+        r'^DN\s*\d{10}$',               # DN 6243611361
+        r'^dn\s*\d{10}$',               # dn 6243611361
+        r'^Track\s*\d{10}$',            # Track 6243611361
+        r'^track\s*\d{10}$',            # track 6243611361
+        r'^Status\s*\d{10}$',           # Status 6243611361
+        r'^status\s*\d{10}$',           # status 6243611361
+        r'^POD\s*\d{10}$',              # POD 6243611361
+        r'^pod\s*\d{10}$',              # pod 6243611361
+        r'^check\s+\d{10}$',            # FIX #5: check 6243611361
+        r'^track\s+dn\s+\d{10}$',       # FIX #5: track dn 6243611361
+        r'^where\s+is\s+\d{10}$',       # FIX #5: where is 6243611361
+        r'^dn\s+status\s+\d{10}$',      # FIX #5: dn status 6243611361
     ]
     
-    # FIX #2 & #4: Greeting patterns
+    # FIX #2: Greeting patterns with word boundaries
     GREETING_PATTERNS = [
         "hello", "hi", "hey", "salam", "assalam", "good morning", 
         "good evening", "good afternoon", "howdy", "greetings"
     ]
     
-    # FIX #8: Help patterns
+    # FIX #3: Help patterns with word boundaries
     HELP_PATTERNS = [
         "help", "menu", "commands", "what can you do", "how to use",
         "available commands", "help me", "what do you do"
     ]
     
-    # Thanks patterns (FIX #4)
+    # FIX #4: Thanks patterns with word boundaries
     THANKS_PATTERNS = [
         "thank", "thanks", "thx", "appreciate", "good job", "nice work"
     ]
@@ -250,25 +261,42 @@ class IntentDetector:
     
     @classmethod
     def detect_greeting(cls, message: str) -> bool:
-        """Detect greeting in message - FIX #2 & #4"""
+        """Detect greeting in message - FIX #2: Added word boundaries"""
         message_lower = message.lower().strip()
-        return any(g in message_lower for g in cls.GREETING_PATTERNS)
+        
+        # Use regex with word boundaries to prevent false positives
+        # Example: "shipment" no longer matches "hi"
+        for greeting in cls.GREETING_PATTERNS:
+            pattern = rf'\b{re.escape(greeting)}\b'
+            if re.search(pattern, message_lower):
+                return True
+        return False
     
     @classmethod
     def detect_help(cls, message: str) -> bool:
-        """Detect help request - FIX #8"""
+        """Detect help request - FIX #3: Added word boundaries"""
         message_lower = message.lower().strip()
-        return any(h in message_lower for h in cls.HELP_PATTERNS)
+        
+        for help_word in cls.HELP_PATTERNS:
+            pattern = rf'\b{re.escape(help_word)}\b'
+            if re.search(pattern, message_lower):
+                return True
+        return False
     
     @classmethod
     def detect_thanks(cls, message: str) -> bool:
-        """Detect thanks - FIX #4"""
+        """Detect thanks - FIX #4: Added word boundaries"""
         message_lower = message.lower().strip()
-        return any(t in message_lower for t in cls.THANKS_PATTERNS)
+        
+        for thanks_word in cls.THANKS_PATTERNS:
+            pattern = rf'\b{re.escape(thanks_word)}\b'
+            if re.search(pattern, message_lower):
+                return True
+        return False
     
     @classmethod
     def detect_dn(cls, message: str) -> Tuple[bool, Optional[str]]:
-        """Detect DN number in message (Improvement 2)"""
+        """Detect DN number in message - FIX #5: Enhanced patterns"""
         message_clean = message.strip()
         
         for pattern in cls.DN_PATTERNS:
@@ -324,6 +352,11 @@ class IntentDetector:
         message_clean = message.strip()
         message_lower = message.lower()
         
+        # FIX #10: Protect against very short messages
+        if len(message_clean) <= 2:
+            logger.info(f"Very short message detected: '{message_clean}' -> treating as UNKNOWN")
+            return IntentType.UNKNOWN, None
+        
         # FIX #4: Priority 0 - Thanks (before anything else)
         if cls.detect_thanks(message_clean):
             logger.info(f"Thanks detected")
@@ -334,12 +367,12 @@ class IntentDetector:
             logger.info(f"Greeting detected")
             return IntentType.GREETING, None
         
-        # FIX #8: Priority 0.75 - Help
+        # FIX #3: Priority 0.75 - Help
         if cls.detect_help(message_clean):
             logger.info(f"Help detected")
             return IntentType.HELP, None
         
-        # Priority 1: DN Lookup (Improvement 2)
+        # Priority 1: DN Lookup (Improvement 2 + FIX #5)
         is_dn, dn_number = cls.detect_dn(message_clean)
         if is_dn:
             logger.info(f"DN detected: {dn_number}")
@@ -347,7 +380,7 @@ class IntentDetector:
         
         # Priority 2: Dealer Lookup using fuzzy matching (FIX #3: threshold 85)
         if dealer_matcher:
-            dealer_name, confidence = dealer_matcher.match_dealer(message_clean, threshold=85)  # FIX #3: 65 -> 85
+            dealer_name, confidence = dealer_matcher.match_dealer(message_clean, threshold=85)
             if dealer_name:
                 logger.info(f"Dealer detected via fuzzy matching: '{message_clean}' -> '{dealer_name}' (confidence: {confidence})")
                 return IntentType.DEALER_LOOKUP, dealer_name
@@ -536,6 +569,8 @@ class ResponseFormatter:
 🔍 *DN TRACKING*
 • `6243611361` - Track single DN
 • `Status 6243611361` - Check status
+• `check 6243611361` - Quick lookup
+• `where is 6243611361` - Location query
 
 🏪 *DEALER ANALYTICS*
 • `Bhatti Electronics` - Dealer dashboard
@@ -592,6 +627,20 @@ I'm here to help with:
 • Performance insights
 
 Anything else I can assist you with today?
+"""
+    
+    # FIX #10: Unknown response for very short queries
+    @staticmethod
+    def unknown_short_response() -> str:
+        return """
+❓ I didn't understand that.
+
+Please type:
+• A dealer name (e.g., "Bhatti Electronics")
+• A 10-digit DN number
+• "help" for all commands
+
+I'm here to help with logistics analytics!
 """
     
     @staticmethod
@@ -745,7 +794,7 @@ class AIQueryService:
         
         # FIX #1: Enhanced AI diagnostic logging
         logger.info("=" * 50)
-        logger.info("🚀 AI QUERY SERVICE v4.1 INITIALIZED")
+        logger.info("🚀 AI QUERY SERVICE v4.2 INITIALIZED")
         logger.info(f"Dealers loaded: {len(self.dealer_master.get_dealers())}")
         logger.info(f"RapidFuzz: {RAPIDFUZZ_AVAILABLE}")
         logger.info("-" * 30)
@@ -783,6 +832,18 @@ class AIQueryService:
         logger.info(f"User: {user_phone}")
         logger.info(f"Message: {question}")
         logger.info("=" * 60)
+        
+        # FIX #10: Check for very short queries
+        if len(question) <= 2:
+            logger.info(f"Very short query detected: '{question}' -> returning unknown response")
+            return {
+                "success": True,
+                "response": self.response_formatter.unknown_short_response(),
+                "ai_used": False,
+                "question_type": "unknown",
+                "entity": None,
+                "processing_time_ms": int((time.time() - start_time) * 1000)
+            }
         
         # Detect intent (Improvement 1)
         intent, entity = IntentDetector.detect_intent(question, self.dealer_master)
@@ -888,7 +949,18 @@ class AIQueryService:
         logger.info(f"🔢 Routing DN lookup: {dn_number}")
         
         try:
+            # FIX #8: Add logging before DN retrieval
+            logger.info(f"📋 DN Requested = {dn_number}")
+            
             dn_data = self.logistics.get_dn_complete_dashboard(self.db, dn_number)
+            
+            # FIX #8: Add logging after DN retrieval
+            logger.info(f"📋 DN Result success = {dn_data.get('success')}")
+            if dn_data.get("success"):
+                logger.info(f"📋 DN Status = {dn_data.get('status')}")
+            else:
+                logger.warning(f"📋 DN not found: {dn_data.get('message')}")
+            
             response = self.response_formatter.dn_response(dn_data)
             
             # Add AI analysis if available
@@ -917,7 +989,18 @@ class AIQueryService:
         logger.info(f"🏪 Routing dealer lookup: {dealer_name}")
         
         try:
+            # FIX #7: Add logging before dashboard retrieval
+            logger.info(f"📊 Dealer Query = '{dealer_name}'")
+            
             dashboard = self.logistics.get_dealer_complete_dashboard(self.db, dealer_name, page=1, page_size=10)
+            
+            # FIX #7: Add logging after dashboard retrieval
+            logger.info(f"📊 Dashboard Response success = {dashboard.get('success')}")
+            if dashboard.get("success"):
+                kpis = dashboard.get("kpis", {})
+                logger.info(f"📊 Dealer KPIs: {kpis.get('total_dns', 0)} DNs, Rs {kpis.get('total_amount', 0):,.2f}")
+            else:
+                logger.warning(f"📊 Dealer not found or error: {dashboard.get('message')}")
             
             if not dashboard.get("success"):
                 suggestions = self.dealer_master.get_suggestions(dealer_name, 3)
@@ -1177,16 +1260,33 @@ Impact: Clear 500 pending DNs
 
 
 # ==========================================================
-# FACTORY FUNCTIONS
+# FIX #6: FACTORY FUNCTIONS WITH SINGLETON
 # ==========================================================
 
 def get_ai_query_service(db: Session) -> AIQueryService:
-    """Get AI Query Service instance"""
-    return AIQueryService(db)
+    """Get AI Query Service instance - FIX #6: Singleton pattern for performance"""
+    global _ai_query_service_instance
+    
+    if _ai_query_service_instance is None:
+        logger.info("🔄 Creating new AI Query Service instance (first time)")
+        _ai_query_service_instance = AIQueryService(db)
+    else:
+        logger.debug("♻️ Reusing existing AI Query Service instance")
+        # Update DB connection in case it changed
+        _ai_query_service_instance.db = db
+    
+    return _ai_query_service_instance
+
+
+def reset_ai_query_service():
+    """Reset singleton instance - useful for testing"""
+    global _ai_query_service_instance
+    _ai_query_service_instance = None
+    logger.info("🔄 AI Query Service singleton reset")
 
 
 def process_whatsapp_query(question: str, db: Session, user_phone: str = None, user_role: str = None) -> str:
     """Process WhatsApp query and return response"""
-    service = AIQueryService(db)
+    service = get_ai_query_service(db)  # FIX #6: Use singleton
     result = service.process_query(question, user_phone, user_role)
     return result.get("response", "Unable to process your request. Please try again.")
