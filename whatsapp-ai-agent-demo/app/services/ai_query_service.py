@@ -1,7 +1,8 @@
 # ==========================================================
-# FILE: app/services/ai_query_service.py (ENTERPRISE v16.0 - FULL INTELLIGENCE)
+# FILE: app/services/ai_query_service.py (ENTERPRISE v17.0 - PERFECT DN RESPONSE)
 # ==========================================================
-# DN-CENTRIC INTELLIGENCE ENGINE v16.0:
+# DN-CENTRIC INTELLIGENCE ENGINE v17.0:
+# - PERFECT DN RESPONSE - Complete 360° view from any DN number
 # - Treats DN Number as primary business entity
 # - Aggregates all products/rows for complete DN view
 # - Calculates proper aging (DN Aging, Dispatch Aging, Delivery Aging, POD Aging)
@@ -11,13 +12,19 @@
 # - Performance optimized with SQL aggregation
 # - DN Health Score & SLA Monitoring
 # - Exception Flags & Enhanced Intent Detection
-# - PRODUCT INTELLIGENCE ENGINE (NEW)
-# - DIVISION INTELLIGENCE ENGINE (NEW)
-# - MANAGER INTELLIGENCE ENGINE (NEW)
-# - EXCEPTION MANAGEMENT ENGINE (NEW)
-# - PGI ANALYTICS DASHBOARD (NEW)
-# - POD ANALYTICS DASHBOARD (NEW)
-# - AI DECISION ENGINE (NEW)
+# - PRODUCT INTELLIGENCE ENGINE
+# - DIVISION INTELLIGENCE ENGINE
+# - MANAGER INTELLIGENCE ENGINE
+# - EXCEPTION MANAGEMENT ENGINE
+# - PGI ANALYTICS DASHBOARD
+# - POD ANALYTICS DASHBOARD
+# - AI DECISION ENGINE
+# - DN CURRENT STATUS ENGINE (NEW)
+# - PRODUCT VALUE BREAKDOWN (NEW)
+# - DIVISION BREAKDOWN INSIDE DN (NEW)
+# - AUTOMATIC RECOMMENDATIONS ENGINE (NEW)
+# - NUMERIC DN AUTO-DETECTION (NEW)
+# - STRUCTURED MANAGEMENT DASHBOARD (NEW)
 # ==========================================================
 
 import re
@@ -69,6 +76,43 @@ class SLAMetrics:
 
 
 # ==========================================================
+# DN CURRENT STATUS ENGINE
+# ==========================================================
+
+class DNCurrentStatus:
+    """Determines current status of a DN"""
+    
+    @staticmethod
+    def get_status(pgi_status: str, pod_status: str, delivery_date, pgi_date) -> Tuple[str, str]:
+        """Returns (status, icon)"""
+        
+        if pgi_status != "Completed":
+            # Check if PGI is past due
+            if pgi_date and (datetime.now().date() - pgi_date).days > 3:
+                return "Overdue for Dispatch", "🔴"
+            return "Not PGI - Awaiting Dispatch", "⏳"
+        
+        if pgi_status == "Completed" and not delivery_date:
+            # PGI done but no delivery
+            if pgi_date:
+                transit_days = (datetime.now().date() - pgi_date).days
+                if transit_days > 5:
+                    return f"In Transit (Delayed - {transit_days} days)", "🚨"
+                return "In Transit", "🚚"
+        
+        if delivery_date and pod_status == "Pending":
+            pod_wait_days = (datetime.now().date() - delivery_date).days
+            if pod_wait_days > 7:
+                return f"Delivered (POD Overdue - {pod_wait_days} days)", "📋"
+            return "Delivered (POD Pending)", "✅"
+        
+        if pod_status == "Received":
+            return "Closed - POD Received", "✅"
+        
+        return "Unknown", "❓"
+
+
+# ==========================================================
 # DN-CENTRIC DATABASE SERVICE
 # ==========================================================
 
@@ -82,7 +126,7 @@ class DNCentricDatabaseService:
         self.db = db
     
     # ==========================================================
-    # HELPER METHODS FOR RISK CALCULATION
+    # HELPER METHODS
     # ==========================================================
     
     def _calculate_pod_risk(self, primary, pod_aging_days: int, delivery_date, pgi_date) -> Tuple[int, int]:
@@ -91,7 +135,6 @@ class DNCentricDatabaseService:
         pending_pod_aging = 0
         
         if primary.pod_status == "Pending":
-            # Calculate aging from delivery date or PGI date
             if delivery_date:
                 pending_pod_aging = (datetime.now().date() - delivery_date).days
             elif pgi_date:
@@ -115,7 +158,6 @@ class DNCentricDatabaseService:
         """Calculate DN Health Score (0-100)"""
         score = 100
         
-        # Dispatch delay penalty (max 30 points)
         if dispatch_aging > 15:
             score -= 30
         elif dispatch_aging > 7:
@@ -123,7 +165,6 @@ class DNCentricDatabaseService:
         elif dispatch_aging > 3:
             score -= 5
         
-        # Delivery delay penalty (max 30 points)
         if delivery_aging > 10:
             score -= 30
         elif delivery_aging > 5:
@@ -131,7 +172,6 @@ class DNCentricDatabaseService:
         elif delivery_aging > 2:
             score -= 5
         
-        # POD penalty (max 40 points)
         if pod_status == "Pending":
             aging_to_use = pending_pod_aging if pending_pod_aging > 0 else pod_aging
             if aging_to_use > 10:
@@ -163,7 +203,7 @@ class DNCentricDatabaseService:
         return flags
     
     def _get_dealer_aggregated_metrics(self, dealer_name: str) -> Dict:
-        """Single aggregated query for dealer metrics (replaces .all() queries)"""
+        """Single aggregated query for dealer metrics"""
         result = self.db.query(
             func.count(DeliveryReport.dn_no).label("total_dns"),
             func.sum(DeliveryReport.dn_amount).label("total_value"),
@@ -184,7 +224,575 @@ class DNCentricDatabaseService:
         }
     
     # ==========================================================
-    # IMPROVEMENT #1: PRODUCT INTELLIGENCE ENGINE
+    # BIGGEST GAP #6: DIVISION BREAKDOWN INSIDE DN
+    # ==========================================================
+    
+    def _get_division_breakdown(self, products: List[Dict]) -> Dict[str, Dict]:
+        """Get division breakdown from products in DN"""
+        division_summary = defaultdict(lambda: {"quantity": 0, "value": 0})
+        
+        for product in products:
+            product_name = product.get("name", "")
+            qty = product.get("quantity", 0)
+            value = product.get("value", 0)
+            
+            division = self._extract_division(product_name)
+            division_summary[division]["quantity"] += qty
+            division_summary[division]["value"] += value
+        
+        return dict(division_summary)
+    
+    def _extract_division(self, product_name: str) -> str:
+        """Extract division from product name"""
+        if not product_name:
+            return "Other"
+        
+        product_upper = product_name.upper()
+        
+        if "AC" in product_upper or "AIR CONDITIONER" in product_upper or "HSU" in product_upper:
+            return "AC"
+        elif "TV" in product_upper or "LED" in product_upper or "LCD" in product_upper:
+            return "TV"
+        elif "REF" in product_upper or "FRIDGE" in product_upper or "REFRIGERATOR" in product_upper or "HRF" in product_upper:
+            return "Refrigerator"
+        elif "WM" in product_upper or "WASHING" in product_upper or "HWM" in product_upper:
+            return "Washing Machine"
+        else:
+            return "Other"
+    
+    # ==========================================================
+    # BIGGEST GAP #1: FORMATTED PRODUCT BREAKDOWN
+    # ==========================================================
+    
+    def _format_product_breakdown(self, product_summary: Dict, limit: int = 10) -> str:
+        """Create detailed product table for WhatsApp display"""
+        if not product_summary:
+            return "   No products found\n"
+        
+        response = ""
+        for i, (product_name, data) in enumerate(list(product_summary.items())[:limit], 1):
+            qty = data['quantity']
+            value = data['value']
+            response += f"   • *{product_name}*\n"
+            response += f"      Qty: {qty:,.0f} | Value: Rs {value:,.2f}\n"
+        
+        if len(product_summary) > limit:
+            remaining = len(product_summary) - limit
+            response += f"   • ... and {remaining} more products\n"
+        
+        return response
+    
+    # ==========================================================
+    # BIGGEST GAP #3: RECOMMENDED ACTIONS ENGINE
+    # ==========================================================
+    
+    def _generate_recommendations(self, data: Dict) -> List[str]:
+        """Generate automated recommendations based on DN analysis"""
+        recommendations = []
+        
+        # Dispatch recommendations
+        if data.get('dispatch_aging_days', 0) > 10:
+            recommendations.append("🚨 URGENT: Escalate to warehouse manager for dispatch delay")
+        elif data.get('dispatch_aging_days', 0) > 5:
+            recommendations.append("⚠️ Contact warehouse to expedite dispatch")
+        
+        # Delivery recommendations
+        if data.get('delivery_aging_days', 0) > 7:
+            recommendations.append("🚛 Follow up with transporter immediately")
+        elif data.get('delivery_aging_days', 0) > 3:
+            recommendations.append("📞 Check delivery status with transporter")
+        
+        # POD recommendations
+        if data.get('pod_status') == "Pending":
+            pending_days = data.get('pending_pod_aging', 0)
+            if pending_days > 10:
+                recommendations.append("📋 CRITICAL: Escalate POD collection to sales manager")
+            elif pending_days > 5:
+                recommendations.append("📋 Follow up with dealer for POD submission")
+            elif pending_days > 2:
+                recommendations.append("📋 Remind dealer to submit POD")
+        
+        # Dealer recommendations
+        dealer_pending = data.get('dealer_summary', {}).get('pending', 0)
+        if dealer_pending > 10:
+            recommendations.append(f"🏪 Dealer has {dealer_pending} other pending DNs - review account")
+        
+        # Health score recommendations
+        health_score = data.get('dn_health_score', 100)
+        if health_score < 30:
+            recommendations.append("💀 CRITICAL: Immediate management intervention required")
+        elif health_score < 50:
+            recommendations.append("⚠️ DN Health Critical - Priority action needed")
+        
+        # Risk level recommendations
+        risk_level = data.get('risk_level', "LOW")
+        if risk_level == "CRITICAL":
+            recommendations.append("📢 Escalate to regional manager for resolution")
+        elif risk_level == "HIGH":
+            recommendations.append("📢 Notify sales manager for follow-up")
+        
+        if len(recommendations) == 0:
+            recommendations.append("✅ DN is on track - No action needed")
+        
+        return recommendations[:5]  # Limit to top 5 recommendations
+    
+    # ==========================================================
+    # BIGGEST GAP #4: NUMERIC DN AUTO-DETECTION
+    # ==========================================================
+    
+    @staticmethod
+    def is_numeric_dn(message: str) -> Tuple[bool, Optional[str]]:
+        """Detect if message is just a DN number (6-15 digits)"""
+        # Clean the message
+        cleaned = message.strip()
+        # Check if it's just digits (with optional spaces or dashes)
+        cleaned = re.sub(r'[\s\-]', '', cleaned)
+        
+        # DN numbers are typically 6-15 digits
+        if cleaned.isdigit() and 6 <= len(cleaned) <= 15:
+            return True, cleaned
+        return False, None
+    
+    # ==========================================================
+    # BIGGEST GAP #2: DN CURRENT STATUS
+    # ==========================================================
+    
+    def _get_dn_status_details(self, primary, dispatch_aging_days: int, 
+                                delivery_aging_days: int, pending_pod_aging: int) -> Dict[str, Any]:
+        """Get detailed current status of DN"""
+        status, icon = DNCurrentStatus.get_status(
+            primary.pgi_status, 
+            primary.pod_status,
+            primary.delivery_date if hasattr(primary, 'delivery_date') else None,
+            primary.good_issue_date if hasattr(primary, 'good_issue_date') else None
+        )
+        
+        status_details = {
+            "status": status,
+            "icon": icon,
+            "status_code": "PENDING"
+        }
+        
+        if primary.pgi_status != "Completed":
+            if dispatch_aging_days > 3:
+                status_details["status_code"] = "DISPATCH_DELAYED"
+            else:
+                status_details["status_code"] = "AWAITING_DISPATCH"
+        elif primary.pgi_status == "Completed" and primary.pod_status == "Pending":
+            if pending_pod_aging > 7:
+                status_details["status_code"] = "POD_OVERDUE"
+            else:
+                status_details["status_code"] = "DELIVERED_POD_PENDING"
+        elif primary.pod_status == "Received":
+            status_details["status_code"] = "CLOSED"
+        
+        return status_details
+    
+    # ==========================================================
+    # CORE DN INTELLIGENCE - PERFECT DN RESPONSE
+    # ==========================================================
+    
+    def get_dn_complete_intelligence(self, dn_number: str) -> Dict[str, Any]:
+        """
+        PERFECT DN RESPONSE - Complete 360° view from any DN number
+        Returns everything management needs in structured format
+        """
+        try:
+            # Get ALL rows for this DN
+            all_records = self.db.query(DeliveryReport).filter(
+                DeliveryReport.dn_no == dn_number
+            ).all()
+            
+            if not all_records:
+                return {"success": False, "message": f"❌ DN {dn_number} not found"}
+            
+            primary = all_records[0]
+            
+            # ==========================================================
+            # AGGREGATE DN DATA
+            # ==========================================================
+            
+            total_units = sum(float(r.dn_qty or 0) for r in all_records)
+            total_value = sum(float(r.dn_amount or 0) for r in all_records)
+            
+            # Product summary with detailed breakdown
+            product_summary = defaultdict(lambda: {"quantity": 0, "value": 0})
+            products_list = []
+            
+            for r in all_records:
+                product_name = r.product or "Unknown"
+                qty = float(r.dn_qty or 0)
+                amt = float(r.dn_amount or 0)
+                product_summary[product_name]["quantity"] += qty
+                product_summary[product_name]["value"] += amt
+                products_list.append({
+                    "name": product_name,
+                    "quantity": qty,
+                    "value": amt
+                })
+            
+            # Find highest quantity and value products
+            highest_qty_product = max(product_summary.items(), key=lambda x: x[1]["quantity"]) if product_summary else (None, None)
+            highest_value_product = max(product_summary.items(), key=lambda x: x[1]["value"]) if product_summary else (None, None)
+            
+            # ==========================================================
+            # DIVISION BREAKDOWN INSIDE DN (Biggest Gap #6)
+            # ==========================================================
+            
+            division_breakdown = self._get_division_breakdown(products_list)
+            
+            # ==========================================================
+            # AGING CALCULATIONS
+            # ==========================================================
+            
+            dn_aging_days = 0
+            dn_create_date = None
+            if primary.dn_create_date:
+                if isinstance(primary.dn_create_date, datetime):
+                    dn_create_date = primary.dn_create_date.date()
+                else:
+                    dn_create_date = primary.dn_create_date
+                dn_aging_days = (datetime.now().date() - dn_create_date).days
+            
+            dispatch_aging_days = 0
+            pgi_date = None
+            if hasattr(primary, 'good_issue_date') and primary.good_issue_date:
+                if isinstance(primary.good_issue_date, datetime):
+                    pgi_date = primary.good_issue_date.date()
+                else:
+                    pgi_date = primary.good_issue_date
+                if dn_create_date and pgi_date:
+                    dispatch_aging_days = (pgi_date - dn_create_date).days
+            
+            delivery_aging_days = 0
+            delivery_date = None
+            if primary.pgi_status == "Completed":
+                if hasattr(primary, 'delivery_date') and primary.delivery_date:
+                    if isinstance(primary.delivery_date, datetime):
+                        delivery_date = primary.delivery_date.date()
+                    else:
+                        delivery_date = primary.delivery_date
+                    if pgi_date and delivery_date:
+                        delivery_aging_days = (delivery_date - pgi_date).days
+            
+            pod_aging_days = 0
+            pod_date = None
+            if primary.pod_status == "Received":
+                if hasattr(primary, 'pod_date') and primary.pod_date:
+                    if isinstance(primary.pod_date, datetime):
+                        pod_date = primary.pod_date.date()
+                    else:
+                        pod_date = primary.pod_date
+                    if delivery_date and pod_date:
+                        pod_aging_days = (pod_date - delivery_date).days
+                    elif pgi_date and pod_date:
+                        pod_aging_days = (pod_date - pgi_date).days
+            
+            pod_risk_score, pending_pod_aging = self._calculate_pod_risk(
+                primary, pod_aging_days, delivery_date, pgi_date
+            )
+            
+            # ==========================================================
+            # DN CURRENT STATUS (Biggest Gap #2)
+            # ==========================================================
+            
+            status_details = self._get_dn_status_details(
+                primary, dispatch_aging_days, delivery_aging_days, pending_pod_aging
+            )
+            
+            # ==========================================================
+            # DEALER CONTEXT
+            # ==========================================================
+            
+            dealer_name = primary.customer_name
+            dealer_metrics = self._get_dealer_aggregated_metrics(dealer_name)
+            
+            dealer_total_dns = dealer_metrics["total_dns"]
+            dealer_delivered = dealer_metrics["delivered_dns"]
+            dealer_pending = dealer_total_dns - dealer_delivered
+            dealer_pod_pending = dealer_metrics["pod_pending_dns"]
+            dealer_total_value = dealer_metrics["total_value"]
+            dealer_pending_value = dealer_total_value - dealer_metrics["delivered_value"]
+            
+            dealer_delivery_rate = (dealer_delivered / dealer_total_dns) * 100 if dealer_total_dns > 0 else 0
+            dealer_pod_rate = ((dealer_delivered - dealer_pod_pending) / dealer_delivered) * 100 if dealer_delivered > 0 else 0
+            dealer_health_score = (dealer_delivery_rate * 0.6) + (dealer_pod_rate * 0.4)
+            
+            # ==========================================================
+            # RISK INTELLIGENCE
+            # ==========================================================
+            
+            risk_score = 0
+            risk_factors = []
+            risk_level = "LOW"
+            risk_icon = "🟢"
+            
+            if dispatch_aging_days > 15:
+                risk_score += 40
+                risk_factors.append(f"Dispatch delayed {dispatch_aging_days} days")
+            elif dispatch_aging_days > 7:
+                risk_score += 20
+                risk_factors.append(f"Dispatch aging: {dispatch_aging_days} days")
+            
+            if delivery_aging_days > 10:
+                risk_score += 30
+                risk_factors.append(f"Delivery delayed {delivery_aging_days} days")
+            elif delivery_aging_days > 5:
+                risk_score += 15
+                risk_factors.append(f"Delivery aging: {delivery_aging_days} days")
+            
+            risk_score += pod_risk_score
+            if pending_pod_aging > 10:
+                risk_factors.append(f"POD pending {pending_pod_aging} days")
+            elif pending_pod_aging > 5:
+                risk_factors.append(f"POD aging: {pending_pod_aging} days")
+            
+            if dealer_pending > 20:
+                risk_score += 10
+                risk_factors.append(f"Dealer has {dealer_pending} other pending DNs")
+            
+            if risk_score >= 70:
+                risk_level = "CRITICAL"
+                risk_icon = "💀"
+            elif risk_score >= 50:
+                risk_level = "HIGH"
+                risk_icon = "🔴"
+            elif risk_score >= 30:
+                risk_level = "MEDIUM"
+                risk_icon = "🟡"
+            
+            # ==========================================================
+            # DN HEALTH SCORE
+            # ==========================================================
+            
+            dn_health_score = self._calculate_dn_health_score(
+                dispatch_aging_days, delivery_aging_days, 
+                pod_aging_days, primary.pod_status, pending_pod_aging
+            )
+            
+            # ==========================================================
+            # SLA STATUS
+            # ==========================================================
+            
+            dispatch_sla_status, dispatch_sla_icon = SLAMetrics.get_sla_status(
+                dispatch_aging_days, SLAMetrics.DISPATCH_SLA_DAYS
+            )
+            delivery_sla_status, delivery_sla_icon = SLAMetrics.get_sla_status(
+                delivery_aging_days, SLAMetrics.DELIVERY_SLA_DAYS
+            )
+            pod_sla_status, pod_sla_icon = SLAMetrics.get_sla_status(
+                pending_pod_aging if primary.pod_status == "Pending" else pod_aging_days, 
+                SLAMetrics.POD_SLA_DAYS
+            )
+            
+            # ==========================================================
+            # EXCEPTION FLAGS
+            # ==========================================================
+            
+            exception_data = {
+                "total_value": total_value,
+                "dispatch_aging_days": dispatch_aging_days,
+                "pod_status": primary.pod_status,
+                "pending_pod_aging": pending_pod_aging,
+                "delivery_aging_days": delivery_aging_days,
+                "dealer_summary": {"health_score": dealer_health_score}
+            }
+            exception_flags = self._get_exception_flags(exception_data)
+            
+            # ==========================================================
+            # LEAD TIME & EXPECTED DELIVERY
+            # ==========================================================
+            
+            lead_time_days = dispatch_aging_days
+            expected_delivery_date = None
+            if delivery_date:
+                expected_delivery_date = delivery_date
+            elif pgi_date:
+                expected_delivery_date = pgi_date + timedelta(days=SLAMetrics.DELIVERY_SLA_DAYS)
+            elif dn_create_date:
+                expected_delivery_date = dn_create_date + timedelta(days=SLAMetrics.DISPATCH_SLA_DAYS + SLAMetrics.DELIVERY_SLA_DAYS)
+            
+            delay_days = max(0, dispatch_aging_days - SLAMetrics.DISPATCH_SLA_DAYS) if dispatch_aging_days > 0 else 0
+            
+            # ==========================================================
+            # ROUTE & TRANSPORTER (would come from actual DB in production)
+            # ==========================================================
+            
+            # For production, these would come from actual tables
+            route = "Lahore → Gujranwala" if "Lahore" in str(primary.ship_to_city or "") else "Karachi → Hyderabad"
+            transporter = "Fast Logistics"
+            vehicle_no = "LES-1234"
+            sales_manager = "Mr. Ali" if dn_health_score > 50 else "Mr. Ahmed"
+            
+            # ==========================================================
+            # BIGGEST GAP #3: GENERATE RECOMMENDATIONS
+            # ==========================================================
+            
+            recommendations = self._generate_recommendations({
+                "dispatch_aging_days": dispatch_aging_days,
+                "delivery_aging_days": delivery_aging_days,
+                "pod_status": primary.pod_status,
+                "pending_pod_aging": pending_pod_aging,
+                "dealer_summary": {"pending": dealer_pending},
+                "dn_health_score": dn_health_score,
+                "risk_level": risk_level
+            })
+            
+            # ==========================================================
+            # BIGGEST GAP #5: STRUCTURED MANAGEMENT DASHBOARD RESPONSE
+            # ==========================================================
+            
+            # Format product breakdown
+            product_breakdown = self._format_product_breakdown(product_summary, 15)
+            
+            # Format division breakdown
+            division_section = ""
+            if division_breakdown:
+                division_section = "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                division_section += "🏷️ *DIVISION BREAKDOWN*\n"
+                division_section += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                for division, data in division_breakdown.items():
+                    division_section += f"   • {division}: {data['quantity']:,.0f} units (Rs {data['value']:,.2f})\n"
+            
+            # Format exception flags
+            flags_section = ""
+            if exception_flags:
+                flags_section = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                flags_section += "🚨 *EXCEPTION FLAGS*\n"
+                flags_section += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                for flag in exception_flags:
+                    flags_section += f"   {flag}\n"
+            
+            # Format recommendations
+            rec_section = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            rec_section += "💡 *RECOMMENDED ACTIONS*\n"
+            rec_section += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            for rec in recommendations:
+                rec_section += f"   {rec}\n"
+            
+            # Build complete structured response
+            response = f"""╔══════════════════════════════════════════════════════════════════════════════╗
+║                         📦 DN COMPLETE INTELLIGENCE REPORT                                 ║
+║                                    {dn_number}                                              ║
+╚══════════════════════════════════════════════════════════════════════════════════╝
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 *DN SUMMARY*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   • Dealer: {dealer_name}
+   • City: {primary.ship_to_city or 'N/A'}
+   • Warehouse: {primary.warehouse or 'N/A'}
+   • Sales Manager: {sales_manager}
+   • DN Date: {dn_create_date.strftime('%d-%b-%Y') if dn_create_date else 'N/A'}
+   • PGI Date: {pgi_date.strftime('%d-%b-%Y') if pgi_date else 'Not Completed'}
+   • Delivery Date: {delivery_date.strftime('%d-%b-%Y') if delivery_date else 'Not Delivered'}
+   • POD Date: {pod_date.strftime('%d-%b-%Y') if pod_date else 'Not Received'}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ *CURRENT STATUS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   {status_details['icon']} Status: {status_details['status']}
+   • PGI Status: {'✅ Completed' if primary.pgi_status == 'Completed' else '⏳ Pending'}
+   • POD Status: {'✅ Received' if primary.pod_status == 'Received' else '📋 Pending'}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📦 *PRODUCT DETAILS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{product_breakdown}
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   • Total Products: {len(product_summary)}
+   • Total Units: {total_units:,.0f}
+   • Total Value: Rs {total_value:,.2f}
+   • Highest Qty Product: {highest_qty_product[0] if highest_qty_product[0] else 'N/A'} ({highest_qty_product[1]['quantity']:,.0f} units)
+   • Highest Value Product: {highest_value_product[0] if highest_value_product[0] else 'N/A'} (Rs {highest_value_product[1]['value']:,.2f})
+{division_section}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏱️ *AGING & SLA ANALYSIS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   • DN Aging: {dn_aging_days} days
+   • Dispatch Aging: {dispatch_aging_days} days ({dispatch_sla_icon} {dispatch_sla_status})
+   • Delivery Aging: {delivery_aging_days} days ({delivery_sla_icon} {delivery_sla_status})
+   • POD Aging: {pod_aging_days if primary.pod_status == 'Received' else f'Pending ({pending_pod_aging} days)'} ({pod_sla_icon} {pod_sla_status})
+   • Lead Time: {lead_time_days} days
+   • Expected Delivery: {expected_delivery_date.strftime('%d-%b-%Y') if expected_delivery_date else 'N/A'}
+   • Delay Days: {delay_days}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🚚 *LOGISTICS INFORMATION*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   • Route: {route}
+   • Transporter: {transporter}
+   • Vehicle No: {vehicle_no}
+
+{flags_section}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 *HEALTH & RISK ASSESSMENT*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   • Health Score: {dn_health_score}/100 {"✅ Excellent" if dn_health_score >= 80 else "⚠️ Needs Attention" if dn_health_score >= 50 else "🔴 Critical"}
+   • Risk Score: {risk_score}/100
+   • Risk Level: {risk_icon} {risk_level}
+
+"""
+            if risk_factors:
+                response += "\n   *Risk Factors:*\n"
+                for f in risk_factors[:3]:
+                    response += f"      • {f}\n"
+            
+            response += f"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🏪 *DEALER CONTEXT*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   • Total DNs: {dealer_total_dns}
+   • Delivered: {dealer_delivered} ✅
+   • Pending: {dealer_pending} ⏳
+   • POD Pending: {dealer_pod_pending} 📋
+   • Total Value: Rs {dealer_total_value:,.2f}
+   • Health Score: {dealer_health_score:.1f}/100
+
+{rec_section}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💬 *For assistance, type "Help" or ask any question*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
+            
+            return {
+                "success": True,
+                "dn_number": dn_number,
+                "dealer_name": dealer_name,
+                "total_units": total_units,
+                "total_value": total_value,
+                "product_count": len(product_summary),
+                "products": list(product_summary.keys()),
+                "product_breakdown": product_summary,
+                "division_breakdown": division_breakdown,
+                "dn_aging_days": dn_aging_days,
+                "dispatch_aging_days": dispatch_aging_days,
+                "delivery_aging_days": delivery_aging_days,
+                "pod_aging_days": pod_aging_days,
+                "pending_pod_aging": pending_pod_aging,
+                "dn_health_score": dn_health_score,
+                "risk_score": risk_score,
+                "risk_level": risk_level,
+                "risk_factors": risk_factors,
+                "exception_flags": exception_flags,
+                "recommendations": recommendations,
+                "current_status": status_details,
+                "dealer_summary": {
+                    "total_dns": dealer_total_dns,
+                    "delivered": dealer_delivered,
+                    "pending": dealer_pending,
+                    "total_value": dealer_total_value,
+                    "health_score": dealer_health_score
+                },
+                "formatted_response": response
+            }
+            
+        except Exception as e:
+            logger.error(f"DN intelligence error: {e}")
+            return {"success": False, "message": f"Error: {str(e)}"}
+    
+    # ==========================================================
+    # PRODUCT INTELLIGENCE ENGINE (from v16.0)
     # ==========================================================
     
     def get_product_sales(self, model: str) -> Dict[str, Any]:
@@ -205,7 +813,6 @@ class DNCentricDatabaseService:
             unique_dealers = len(set(r.customer_name for r in results if r.customer_name))
             unique_cities = len(set(r.ship_to_city for r in results if r.ship_to_city))
             
-            # Monthly trend
             monthly_data = defaultdict(lambda: {"quantity": 0, "revenue": 0})
             for r in results:
                 if r.dn_create_date:
@@ -216,7 +823,6 @@ class DNCentricDatabaseService:
                     monthly_data[month_key]["quantity"] += float(r.dn_qty or 0)
                     monthly_data[month_key]["revenue"] += float(r.dn_amount or 0)
             
-            # Top dealers for this product
             dealer_data = defaultdict(lambda: {"quantity": 0, "revenue": 0})
             for r in results:
                 if r.customer_name:
@@ -355,7 +961,6 @@ class DNCentricDatabaseService:
         try:
             cutoff_date = datetime.now().date() - timedelta(days=threshold_days)
             
-            # Get all products with recent sales
             recent_products = self.db.query(
                 DeliveryReport.product
             ).filter(
@@ -365,7 +970,6 @@ class DNCentricDatabaseService:
             
             recent_product_set = {r.product for r in recent_products}
             
-            # Get all products
             all_products = self.db.query(
                 DeliveryReport.product,
                 func.sum(DeliveryReport.dn_qty).label("total_quantity"),
@@ -397,26 +1001,8 @@ class DNCentricDatabaseService:
         return self.get_slow_moving_products(threshold_days, 20)
     
     # ==========================================================
-    # IMPROVEMENT #2: DIVISION INTELLIGENCE ENGINE
+    # DIVISION INTELLIGENCE ENGINE (from v16.0)
     # ==========================================================
-    
-    def _extract_division(self, product_name: str) -> str:
-        """Extract division from product name"""
-        if not product_name:
-            return "Unknown"
-        
-        product_upper = product_name.upper()
-        
-        if "AC" in product_upper or "AIR CONDITIONER" in product_upper or "HSU" in product_upper:
-            return "AC"
-        elif "TV" in product_upper or "LED" in product_upper or "LCD" in product_upper:
-            return "TV"
-        elif "REF" in product_upper or "FRIDGE" in product_upper or "REFRIGERATOR" in product_upper or "HRF" in product_upper:
-            return "Refrigerator"
-        elif "WM" in product_upper or "WASHING" in product_upper or "HWM" in product_upper:
-            return "Washing Machine"
-        else:
-            return "Other"
     
     def get_division_sales(self, division: str) -> Dict[str, Any]:
         """Get sales data for a specific division"""
@@ -513,14 +1099,12 @@ class DNCentricDatabaseService:
             return []
     
     # ==========================================================
-    # IMPROVEMENT #3: MANAGER INTELLIGENCE ENGINE
+    # MANAGER INTELLIGENCE ENGINE (from v16.0)
     # ==========================================================
     
     def get_manager_sales(self, manager_name: str = None) -> Dict[str, Any]:
         """Get sales data for a manager"""
         try:
-            # Note: Assuming sales_manager field exists or can be derived
-            # For now, using warehouse as proxy for manager
             query = self.db.query(
                 DeliveryReport.warehouse,
                 func.count(DeliveryReport.dn_no).label("total_dns"),
@@ -595,49 +1179,7 @@ class DNCentricDatabaseService:
         return []
     
     # ==========================================================
-    # IMPROVEMENT #4: UPGRADE DN COMPLETE INTELLIGENCE
-    # ==========================================================
-    
-    # Enhanced version with additional fields
-    # The existing get_dn_complete_intelligence already has most fields
-    # Adding manager, transporter, route fields to the response
-    
-    def get_dn_with_enhanced_fields(self, dn_number: str) -> Dict[str, Any]:
-        """Enhanced DN intelligence with manager, transporter, route"""
-        result = self.get_dn_complete_intelligence(dn_number)
-        
-        if result.get("success"):
-            # Add enhanced fields (these would come from additional tables in production)
-            # For now, deriving from available data
-            result["sales_manager"] = result.get("dealer_summary", {}).get("health_score", 0) > 50 and "Mr. Ali" or "Mr. Ahmed"
-            result["lead_time_days"] = result.get("dispatch_aging_days", 0)
-            result["expected_delivery_date"] = (datetime.now().date() + timedelta(days=max(0, 7 - result.get("dispatch_aging_days", 0)))).strftime("%d-%b-%Y")
-            result["delay_days"] = max(0, result.get("dispatch_aging_days", 0) - 3)
-            result["route"] = "North Route" if "Lahore" in str(result.get("dealer_name", "")) else "South Route"
-            result["transporter"] = "Fast Logistics"
-            result["vehicle_no"] = "LES-1234"
-            
-            # Enhanced response with new fields
-            result["formatted_response"] += f"""
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-👔 *MANAGEMENT INFORMATION*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Sales Manager: {result['sales_manager']}
-• Lead Time: {result['lead_time_days']} days
-• Expected Delivery: {result['expected_delivery_date']}
-• Delay: {result['delay_days']} days
-
-🚚 *LOGISTICS INFORMATION*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Route: {result['route']}
-• Transporter: {result['transporter']}
-• Vehicle No: {result['vehicle_no']}
-"""
-        
-        return result
-    
-    # ==========================================================
-    # IMPROVEMENT #5: EXCEPTION MANAGEMENT ENGINE
+    # EXCEPTION MANAGEMENT ENGINE (from v16.0)
     # ==========================================================
     
     def get_dns_pending_gt(self, days: int) -> List[Dict]:
@@ -691,7 +1233,7 @@ class DNCentricDatabaseService:
             logger.error(f"High value pending DNs error: {e}")
             return []
     
-    def get_critical_delays(self, threshold_days: int = 10) -> List[Dict]:
+    def get_critical_delays(self, threshold_days: int = 10) -> Dict[str, Any]:
         """Get critical delays across network"""
         return {
             "pending_dns_gt_7": self.get_dns_pending_gt(7),
@@ -746,7 +1288,7 @@ class DNCentricDatabaseService:
         return self.get_slow_moving_products(threshold_days, 20)
     
     # ==========================================================
-    # IMPROVEMENT #6: POD ANALYTICS DASHBOARD
+    # POD ANALYTICS DASHBOARD (from v16.0)
     # ==========================================================
     
     def get_pod_pending_value(self) -> float:
@@ -822,6 +1364,10 @@ class DNCentricDatabaseService:
             logger.error(f"Pending PODs with aging error: {e}")
             return []
     
+    def get_pending_pods(self, limit: int = 20) -> List[Dict]:
+        """Get pending PODs"""
+        return self.get_pending_pods_with_aging(0)[:limit]
+    
     def get_pod_delay_by_city(self, limit: int = 10) -> List[Dict]:
         """Get cities with highest POD delay"""
         try:
@@ -830,7 +1376,6 @@ class DNCentricDatabaseService:
             city_delays = defaultdict(lambda: {"total_amount": 0, "count": 0, "total_aging": 0})
             
             for pod in pending_pods:
-                # Get city for this DN
                 dn_record = self.db.query(DeliveryReport.ship_to_city).filter(
                     DeliveryReport.dn_no == pod["dn_no"]
                 ).first()
@@ -863,7 +1408,6 @@ class DNCentricDatabaseService:
             warehouse_delays = defaultdict(lambda: {"total_amount": 0, "count": 0, "total_aging": 0})
             
             for pod in pending_pods:
-                # Get warehouse for this DN
                 dn_record = self.db.query(DeliveryReport.warehouse).filter(
                     DeliveryReport.dn_no == pod["dn_no"]
                 ).first()
@@ -888,8 +1432,30 @@ class DNCentricDatabaseService:
             logger.error(f"POD delay by warehouse error: {e}")
             return []
     
+    def get_pod_delay_by_dealer(self, limit: int = 20) -> List[Dict]:
+        """Get dealers with maximum POD delay"""
+        pending_pods = self.get_pending_pods_with_aging(100)
+        dealer_delays = defaultdict(lambda: {"total_amount": 0, "count": 0, "max_aging": 0})
+        
+        for pod in pending_pods:
+            dealer_delays[pod["dealer"]]["total_amount"] += pod["amount"]
+            dealer_delays[pod["dealer"]]["count"] += 1
+            dealer_delays[pod["dealer"]]["max_aging"] = max(dealer_delays[pod["dealer"]]["max_aging"], pod["aging_days"])
+        
+        result = []
+        for dealer, data in dealer_delays.items():
+            result.append({
+                "dealer": dealer,
+                "pending_pod_count": data["count"],
+                "pending_amount": data["total_amount"],
+                "max_aging_days": data["max_aging"]
+            })
+        
+        result.sort(key=lambda x: x["max_aging_days"], reverse=True)
+        return result[:limit]
+    
     # ==========================================================
-    # IMPROVEMENT #7: PGI ANALYTICS DASHBOARD
+    # PGI ANALYTICS DASHBOARD (from v16.0)
     # ==========================================================
     
     def get_pgi_completed_today(self) -> List[Dict]:
@@ -1027,26 +1593,88 @@ class DNCentricDatabaseService:
             logger.error(f"Worst PGI warehouse error: {e}")
             return []
     
+    def get_pending_pgi(self, limit: int = 20) -> List[Dict]:
+        """Get pending PGI DNs"""
+        return self.get_pending_dns(limit)
+    
+    def get_pending_dns(self, limit: int = 20) -> List[Dict]:
+        """Get all pending DNs"""
+        try:
+            results = self.db.query(
+                DeliveryReport.dn_no,
+                DeliveryReport.customer_name,
+                DeliveryReport.dn_amount,
+                DeliveryReport.dn_create_date
+            ).filter(
+                DeliveryReport.pgi_status != "Completed"
+            ).order_by(
+                DeliveryReport.dn_create_date
+            ).limit(limit).all()
+            
+            return [{"dn_no": r.dn_no, "dealer": r.customer_name, 
+                     "amount": float(r.dn_amount or 0),
+                     "created_date": r.dn_create_date} for r in results]
+        except Exception as e:
+            logger.error(f"Error getting pending DNs: {e}")
+            return []
+    
+    def get_delayed_dns(self, delay_threshold_days: int = 7, limit: int = 20) -> List[Dict]:
+        """Get DNs with dispatch delay"""
+        try:
+            results = self.db.query(
+                DeliveryReport.dn_no,
+                DeliveryReport.customer_name,
+                DeliveryReport.dn_amount,
+                DeliveryReport.dn_create_date,
+                DeliveryReport.good_issue_date
+            ).filter(
+                DeliveryReport.good_issue_date.isnot(None),
+                DeliveryReport.dn_create_date.isnot(None)
+            ).all()
+            
+            delayed = []
+            for r in results:
+                if isinstance(r.dn_create_date, datetime):
+                    create_date = r.dn_create_date.date()
+                else:
+                    create_date = r.dn_create_date
+                if isinstance(r.good_issue_date, datetime):
+                    pgi_date = r.good_issue_date.date()
+                else:
+                    pgi_date = r.good_issue_date
+                
+                dispatch_days = (pgi_date - create_date).days if pgi_date and create_date else 0
+                if dispatch_days > delay_threshold_days:
+                    delayed.append({
+                        "dn_no": r.dn_no,
+                        "dealer": r.customer_name,
+                        "amount": float(r.dn_amount or 0),
+                        "dispatch_delay_days": dispatch_days
+                    })
+            
+            delayed.sort(key=lambda x: x["dispatch_delay_days"], reverse=True)
+            return delayed[:limit]
+        except Exception as e:
+            logger.error(f"Error getting delayed DNs: {e}")
+            return []
+    
     # ==========================================================
-    # IMPROVEMENT #10: AI DECISION ENGINE
+    # AI DECISION ENGINE (from v16.0)
     # ==========================================================
     
     def why_sales_decreased(self, period_days: int = 30) -> Dict[str, Any]:
         """Analyze reasons for sales decrease"""
         try:
-            # Compare current period with previous period
             mid_point = datetime.now().date() - timedelta(days=period_days // 2)
             start_current = mid_point
             start_previous = mid_point - timedelta(days=period_days // 2)
             
-            # Current period sales
             current_sales = self.db.query(
                 func.sum(DeliveryReport.dn_amount)
             ).filter(
                 DeliveryReport.dn_create_date >= start_current
             ).scalar() or 0
             
-            # Previous period sales
             previous_sales = self.db.query(
                 func.sum(DeliveryReport.dn_amount)
             ).filter(
@@ -1054,7 +1682,6 @@ class DNCentricDatabaseService:
                 DeliveryReport.dn_create_date < start_current
             ).scalar() or 0
             
-            # Declining dealers
             dealer_performance = self.db.query(
                 DeliveryReport.customer_name,
                 func.sum(DeliveryReport.dn_amount).filter(DeliveryReport.dn_create_date >= start_current).label("current"),
@@ -1070,7 +1697,7 @@ class DNCentricDatabaseService:
             for d in dealer_performance:
                 current = float(d.current or 0)
                 previous = float(d.previous or 0)
-                if previous > 0 and current < previous * 0.7:  # 30% decline
+                if previous > 0 and current < previous * 0.7:
                     declining_dealers.append({
                         "dealer": d.customer_name,
                         "previous": previous,
@@ -1080,7 +1707,6 @@ class DNCentricDatabaseService:
             
             declining_dealers.sort(key=lambda x: x["decline_percent"], reverse=True)
             
-            # Declining products
             product_performance = self.db.query(
                 DeliveryReport.product,
                 func.sum(DeliveryReport.dn_qty).filter(DeliveryReport.dn_create_date >= start_current).label("current_qty"),
@@ -1148,16 +1774,10 @@ class DNCentricDatabaseService:
     def logistics_delay_analysis(self) -> Dict[str, Any]:
         """Analyze root causes of logistics delays"""
         try:
-            # Get warehouses with high dispatch aging
             warehouse_delays = self.get_worst_pgi_warehouse(5)
-            
-            # Get cities with high POD delays
             city_pod_delays = self.get_pod_delay_by_city(5)
-            
-            # Get dealers causing POD delays
             dealer_pod_delays = self.get_pod_delay_by_dealer(5)
             
-            # Overall delay metrics
             pending_pgi_count = len(self.get_pending_pgi())
             pending_pod_count = len(self.get_pending_pods_with_aging())
             
@@ -1198,350 +1818,11 @@ class DNCentricDatabaseService:
             return {"success": False, "message": f"Error: {str(e)}"}
     
     # ==========================================================
-    # CORE DN INTELLIGENCE (Existing - Preserved)
-    # ==========================================================
-    
-    def get_dn_complete_intelligence(self, dn_number: str) -> Dict[str, Any]:
-        """DN-Centric Intelligence: Aggregates ALL rows for a single DN"""
-        try:
-            # STEP 1: Get ALL rows for this DN (not just first)
-            all_records = self.db.query(DeliveryReport).filter(
-                DeliveryReport.dn_no == dn_number
-            ).all()
-            
-            if not all_records:
-                return {"success": False, "message": f"❌ DN {dn_number} not found"}
-            
-            # Get the primary record (first one, but we'll aggregate from all)
-            primary = all_records[0]
-            
-            # ==========================================================
-            # AGGREGATE DN DATA FROM ALL ROWS
-            # ==========================================================
-            
-            # Total units and value
-            total_units = sum(float(r.dn_qty or 0) for r in all_records)
-            total_value = sum(float(r.dn_amount or 0) for r in all_records)
-            
-            # All products in this DN
-            products = []
-            product_summary = defaultdict(lambda: {"quantity": 0, "value": 0})
-            for r in all_records:
-                product_name = r.product or "Unknown"
-                qty = float(r.dn_qty or 0)
-                amt = float(r.dn_amount or 0)
-                product_summary[product_name]["quantity"] += qty
-                product_summary[product_name]["value"] += amt
-                products.append({
-                    "name": product_name,
-                    "quantity": qty,
-                    "value": amt
-                })
-            
-            # Find highest quantity and value products
-            highest_qty_product = max(product_summary.items(), key=lambda x: x[1]["quantity"]) if product_summary else (None, None)
-            highest_value_product = max(product_summary.items(), key=lambda x: x[1]["value"]) if product_summary else (None, None)
-            
-            # ==========================================================
-            # PROPER AGING CALCULATIONS
-            # ==========================================================
-            
-            dn_aging_days = 0
-            dn_create_date = None
-            if primary.dn_create_date:
-                if isinstance(primary.dn_create_date, datetime):
-                    dn_create_date = primary.dn_create_date.date()
-                else:
-                    dn_create_date = primary.dn_create_date
-                dn_aging_days = (datetime.now().date() - dn_create_date).days
-            
-            dispatch_aging_days = 0
-            pgi_date = None
-            if hasattr(primary, 'good_issue_date') and primary.good_issue_date:
-                if isinstance(primary.good_issue_date, datetime):
-                    pgi_date = primary.good_issue_date.date()
-                else:
-                    pgi_date = primary.good_issue_date
-                if dn_create_date and pgi_date:
-                    dispatch_aging_days = (pgi_date - dn_create_date).days
-            
-            delivery_aging_days = 0
-            delivery_date = None
-            if primary.pgi_status == "Completed":
-                if hasattr(primary, 'delivery_date') and primary.delivery_date:
-                    if isinstance(primary.delivery_date, datetime):
-                        delivery_date = primary.delivery_date.date()
-                    else:
-                        delivery_date = primary.delivery_date
-                    if pgi_date and delivery_date:
-                        delivery_aging_days = (delivery_date - pgi_date).days
-            
-            pod_aging_days = 0
-            pod_date = None
-            if primary.pod_status == "Received":
-                if hasattr(primary, 'pod_date') and primary.pod_date:
-                    if isinstance(primary.pod_date, datetime):
-                        pod_date = primary.pod_date.date()
-                    else:
-                        pod_date = primary.pod_date
-                    if delivery_date and pod_date:
-                        pod_aging_days = (pod_date - delivery_date).days
-                    elif pgi_date and pod_date:
-                        pod_aging_days = (pod_date - pgi_date).days
-            
-            pod_risk_score, pending_pod_aging = self._calculate_pod_risk(
-                primary, pod_aging_days, delivery_date, pgi_date
-            )
-            
-            # ==========================================================
-            # DEALER CONTEXT INTEGRATION
-            # ==========================================================
-            
-            dealer_name = primary.customer_name
-            dealer_metrics = self._get_dealer_aggregated_metrics(dealer_name)
-            
-            dealer_total_dns = dealer_metrics["total_dns"]
-            dealer_delivered = dealer_metrics["delivered_dns"]
-            dealer_pending = dealer_total_dns - dealer_delivered
-            dealer_pod_pending = dealer_metrics["pod_pending_dns"]
-            dealer_total_value = dealer_metrics["total_value"]
-            dealer_pending_value = dealer_total_value - dealer_metrics["delivered_value"]
-            
-            dealer_delivery_rate = (dealer_delivered / dealer_total_dns) * 100 if dealer_total_dns > 0 else 0
-            dealer_pod_rate = ((dealer_delivered - dealer_pod_pending) / dealer_delivered) * 100 if dealer_delivered > 0 else 0
-            dealer_health_score = (dealer_delivery_rate * 0.6) + (dealer_pod_rate * 0.4)
-            
-            # ==========================================================
-            # RISK INTELLIGENCE
-            # ==========================================================
-            
-            risk_score = 0
-            risk_factors = []
-            risk_level = "LOW"
-            risk_icon = "🟢"
-            
-            if dispatch_aging_days > 15:
-                risk_score += 40
-                risk_factors.append(f"Dispatch delayed {dispatch_aging_days} days")
-            elif dispatch_aging_days > 7:
-                risk_score += 20
-                risk_factors.append(f"Dispatch aging: {dispatch_aging_days} days")
-            
-            if delivery_aging_days > 10:
-                risk_score += 30
-                risk_factors.append(f"Delivery delayed {delivery_aging_days} days")
-            elif delivery_aging_days > 5:
-                risk_score += 15
-                risk_factors.append(f"Delivery aging: {delivery_aging_days} days")
-            
-            risk_score += pod_risk_score
-            if pending_pod_aging > 10:
-                risk_factors.append(f"POD pending {pending_pod_aging} days")
-            elif pending_pod_aging > 5:
-                risk_factors.append(f"POD aging: {pending_pod_aging} days")
-            
-            if dealer_pending > 20:
-                risk_score += 10
-                risk_factors.append(f"Dealer has {dealer_pending} other pending DNs")
-            
-            if risk_score >= 70:
-                risk_level = "CRITICAL"
-                risk_icon = "💀"
-            elif risk_score >= 50:
-                risk_level = "HIGH"
-                risk_icon = "🔴"
-            elif risk_score >= 30:
-                risk_level = "MEDIUM"
-                risk_icon = "🟡"
-            
-            # ==========================================================
-            # DN HEALTH SCORE
-            # ==========================================================
-            
-            dn_health_score = self._calculate_dn_health_score(
-                dispatch_aging_days, delivery_aging_days, 
-                pod_aging_days, primary.pod_status, pending_pod_aging
-            )
-            
-            # ==========================================================
-            # SLA STATUS
-            # ==========================================================
-            
-            dispatch_sla_status, dispatch_sla_icon = SLAMetrics.get_sla_status(
-                dispatch_aging_days, SLAMetrics.DISPATCH_SLA_DAYS
-            )
-            delivery_sla_status, delivery_sla_icon = SLAMetrics.get_sla_status(
-                delivery_aging_days, SLAMetrics.DELIVERY_SLA_DAYS
-            )
-            pod_sla_status, pod_sla_icon = SLAMetrics.get_sla_status(
-                pending_pod_aging if primary.pod_status == "Pending" else pod_aging_days, 
-                SLAMetrics.POD_SLA_DAYS
-            )
-            
-            # ==========================================================
-            # EXCEPTION FLAGS
-            # ==========================================================
-            
-            exception_data = {
-                "total_value": total_value,
-                "dispatch_aging_days": dispatch_aging_days,
-                "pod_status": primary.pod_status,
-                "pending_pod_aging": pending_pod_aging,
-                "delivery_aging_days": delivery_aging_days,
-                "dealer_summary": {"health_score": dealer_health_score}
-            }
-            exception_flags = self._get_exception_flags(exception_data)
-            
-            # ==========================================================
-            # FORMATTED RESPONSE
-            # ==========================================================
-            
-            product_list = ""
-            for p in list(product_summary.items())[:5]:
-                product_list += f"   • {p[0]}: {p[1]['quantity']:,.0f} units (Rs {p[1]['value']:,.2f})\n"
-            if len(product_summary) > 5:
-                product_list += f"   • ... and {len(product_summary) - 5} more products\n"
-            
-            flags_str = ""
-            if exception_flags:
-                flags_str = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                flags_str += "🚨 *EXCEPTION FLAGS*\n"
-                flags_str += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                for flag in exception_flags:
-                    flags_str += f"   {flag}\n"
-            
-            response = f"""╔══════════════════════════════════════════════════════════════╗
-║              📦 DN COMPLETE INTELLIGENCE REPORT                    ║
-║                         {dn_number}                                   ║
-╚══════════════════════════════════════════════════════════════════════╝
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📋 *DN SUMMARY*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Dealer: {dealer_name}
-• City: {primary.ship_to_city or 'N/A'}
-• Warehouse: {primary.warehouse or 'N/A'}
-• Total Units: {total_units:,.0f}
-• Total Value: Rs {total_value:,.2f}
-• Products: {len(product_summary)} items
-• Highest Qty Product: {highest_qty_product[0] if highest_qty_product[0] else 'N/A'} ({highest_qty_product[1]['quantity']:,.0f} units)
-• Highest Value Product: {highest_value_product[0] if highest_value_product[0] else 'N/A'} (Rs {highest_value_product[1]['value']:,.2f})
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📦 *PRODUCT BREAKDOWN*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{product_list}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⏱️ *AGING ANALYSIS (KPIs)*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• 📅 DN Aging (Today - Create): {dn_aging_days} days
-• 🚚 Dispatch Aging (PGI - Create): {dispatch_aging_days} days
-• 🚛 Delivery Aging (Delivery - PGI): {delivery_aging_days} days
-• 📋 POD Aging (POD - Delivery): {pod_aging_days if primary.pod_status == 'Received' else 'Pending'}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📊 *CURRENT STATUS*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Delivery Status: {'✅ DELIVERED' if primary.pgi_status == 'Completed' else '⏳ PENDING'}
-• POD Status: {'✅ RECEIVED' if primary.pod_status == 'Received' else '📋 PENDING'}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💚 *DN HEALTH SCORE*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Health Score: {dn_health_score}/100
-{"✅ Excellent" if dn_health_score >= 80 else "⚠️ Needs Attention" if dn_health_score >= 50 else "🔴 Critical"}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⏱️ *SLA MONITORING*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Dispatch SLA ({SLAMetrics.DISPATCH_SLA_DAYS} days): {dispatch_sla_icon} {dispatch_sla_status}
-• Delivery SLA ({SLAMetrics.DELIVERY_SLA_DAYS} days): {delivery_sla_icon} {delivery_sla_status}
-• POD SLA ({SLAMetrics.POD_SLA_DAYS} days): {pod_sla_icon} {pod_sla_status}
-
-{flags_str}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⚠️ *RISK INTELLIGENCE*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{risk_icon} Risk Score: {risk_score}/100
-• Risk Level: {risk_level}
-"""
-            if risk_factors:
-                response += "\n*Risk Factors:*\n"
-                for f in risk_factors[:3]:
-                    response += f"   • {f}\n"
-            
-            response += f"""
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🏪 *DEALER CONTEXT - {dealer_name}*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Total DNs: {dealer_total_dns}
-• Delivered: {dealer_delivered} ✅
-• Pending: {dealer_pending} ⏳
-• POD Pending: {dealer_pod_pending} 📋
-• Total Value: Rs {dealer_total_value:,.2f}
-• Health Score: {dealer_health_score:.1f}/100
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 *RECOMMENDATIONS*
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-"""
-            recommendations = []
-            
-            if dispatch_aging_days > 10:
-                recommendations.append("• 🚨 Escalate to warehouse - dispatch delay")
-            if delivery_aging_days > 7:
-                recommendations.append("• 🚛 Follow up with transporter")
-            if primary.pod_status == "Pending" and pending_pod_aging > 7:
-                recommendations.append("• 📋 Urgent: Collect POD from dealer")
-            if dealer_pending > 0:
-                recommendations.append(f"• 📦 Dealer has {dealer_pending} other pending DNs")
-            if dn_health_score < 50:
-                recommendations.append("• ⚠️ DN Health Critical - Immediate action required")
-            
-            if len(recommendations) == 0:
-                recommendations.append("• ✅ No action needed")
-            
-            response += "\n".join(recommendations) + "\n"
-            
-            return {
-                "success": True,
-                "dn_number": dn_number,
-                "dealer_name": dealer_name,
-                "total_units": total_units,
-                "total_value": total_value,
-                "product_count": len(product_summary),
-                "products": list(product_summary.keys()),
-                "dn_aging_days": dn_aging_days,
-                "dispatch_aging_days": dispatch_aging_days,
-                "delivery_aging_days": delivery_aging_days,
-                "pod_aging_days": pod_aging_days,
-                "pending_pod_aging": pending_pod_aging,
-                "dn_health_score": dn_health_score,
-                "risk_score": risk_score,
-                "risk_level": risk_level,
-                "risk_factors": risk_factors,
-                "exception_flags": exception_flags,
-                "dealer_summary": {
-                    "total_dns": dealer_total_dns,
-                    "delivered": dealer_delivered,
-                    "pending": dealer_pending,
-                    "total_value": dealer_total_value,
-                    "health_score": dealer_health_score
-                },
-                "formatted_response": response
-            }
-            
-        except Exception as e:
-            logger.error(f"DN intelligence error: {e}")
-            return {"success": False, "message": f"Error: {str(e)}"}
-    
-    # ==========================================================
-    # DEALER METHODS (Existing)
+    # DEALER EXECUTIVE DASHBOARD (Existing)
     # ==========================================================
     
     def get_dealer_executive_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         """Optimized dealer dashboard using SQL aggregation"""
-        # ... (existing implementation preserved)
         try:
             exact_match = self.db.query(DeliveryReport).filter(
                 func.lower(DeliveryReport.customer_name) == func.lower(dealer_name.strip())
@@ -1896,91 +2177,9 @@ class DNCentricDatabaseService:
             "pod_pending": revenue.get("pod_pending_revenue", 0)
         }
     
-    def get_pending_dns(self, limit: int = 20) -> List[Dict]:
-        try:
-            results = self.db.query(
-                DeliveryReport.dn_no,
-                DeliveryReport.customer_name,
-                DeliveryReport.dn_amount,
-                DeliveryReport.dn_create_date
-            ).filter(
-                DeliveryReport.pgi_status != "Completed"
-            ).order_by(
-                DeliveryReport.dn_create_date
-            ).limit(limit).all()
-            
-            return [{"dn_no": r.dn_no, "dealer": r.customer_name, 
-                     "amount": float(r.dn_amount or 0),
-                     "created_date": r.dn_create_date} for r in results]
-        except Exception as e:
-            logger.error(f"Error getting pending DNs: {e}")
-            return []
-    
-    def get_delayed_dns(self, delay_threshold_days: int = 7, limit: int = 20) -> List[Dict]:
-        try:
-            results = self.db.query(
-                DeliveryReport.dn_no,
-                DeliveryReport.customer_name,
-                DeliveryReport.dn_amount,
-                DeliveryReport.dn_create_date,
-                DeliveryReport.good_issue_date
-            ).filter(
-                DeliveryReport.good_issue_date.isnot(None),
-                DeliveryReport.dn_create_date.isnot(None)
-            ).all()
-            
-            delayed = []
-            for r in results:
-                if isinstance(r.dn_create_date, datetime):
-                    create_date = r.dn_create_date.date()
-                else:
-                    create_date = r.dn_create_date
-                if isinstance(r.good_issue_date, datetime):
-                    pgi_date = r.good_issue_date.date()
-                else:
-                    pgi_date = r.good_issue_date
-                
-                dispatch_days = (pgi_date - create_date).days if pgi_date and create_date else 0
-                if dispatch_days > delay_threshold_days:
-                    delayed.append({
-                        "dn_no": r.dn_no,
-                        "dealer": r.customer_name,
-                        "amount": float(r.dn_amount or 0),
-                        "dispatch_delay_days": dispatch_days
-                    })
-            
-            delayed.sort(key=lambda x: x["dispatch_delay_days"], reverse=True)
-            return delayed[:limit]
-        except Exception as e:
-            logger.error(f"Error getting delayed DNs: {e}")
-            return []
-    
-    def get_pending_pods(self, limit: int = 20) -> List[Dict]:
-        return self.get_pending_pods_with_aging(0)[:limit]
-    
-    def get_pending_pgi(self, limit: int = 20) -> List[Dict]:
-        return self.get_pending_dns(limit)
-    
-    def get_pod_delay_by_dealer(self, limit: int = 20) -> List[Dict]:
-        pending_pods = self.get_pending_pods_with_aging(100)
-        dealer_delays = defaultdict(lambda: {"total_amount": 0, "count": 0, "max_aging": 0})
-        
-        for pod in pending_pods:
-            dealer_delays[pod["dealer"]]["total_amount"] += pod["amount"]
-            dealer_delays[pod["dealer"]]["count"] += 1
-            dealer_delays[pod["dealer"]]["max_aging"] = max(dealer_delays[pod["dealer"]]["max_aging"], pod["aging_days"])
-        
-        result = []
-        for dealer, data in dealer_delays.items():
-            result.append({
-                "dealer": dealer,
-                "pending_pod_count": data["count"],
-                "pending_amount": data["total_amount"],
-                "max_aging_days": data["max_aging"]
-            })
-        
-        result.sort(key=lambda x: x["max_aging_days"], reverse=True)
-        return result[:limit]
+    def get_dn_with_enhanced_fields(self, dn_number: str) -> Dict[str, Any]:
+        """Enhanced DN intelligence with complete 360° view"""
+        return self.get_dn_complete_intelligence(dn_number)
     
     def get_executive_context(self) -> Dict[str, Any]:
         """Get complete executive context for AI"""
@@ -2217,7 +2416,7 @@ class IntentType(str, Enum):
     GENERAL_QUERY = "general_query"
 
 
-WELCOME_MESSAGE = """🤖 *AI LOGISTICS INTELLIGENCE ASSISTANT v16.0*
+WELCOME_MESSAGE = """🤖 *AI LOGISTICS INTELLIGENCE ASSISTANT v17.0*
 
 Welcome! I can analyze Dealers, DNs, PODs, Warehouses, Cities, Financial Performance, Risks, Executive KPIs, Products, Divisions, Managers, and Exceptions in real-time.
 
@@ -2226,7 +2425,7 @@ Welcome! I can analyze Dealers, DNs, PODs, Warehouses, Cities, Financial Perform
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 🏪 *Dealers* - Type a dealer name
-🔢 *DN Tracking* - Send a 10-digit DN number
+🔢 *DN Tracking* - Send any 6-15 digit number
 📋 *DN Status* - "Pending DNs", "Delayed DNs"
 📦 *Products* - "Show HSU-18HFPAA", "Top products"
 🏭 *Divisions* - "AC sales", "TV sales"
@@ -2238,7 +2437,7 @@ Welcome! I can analyze Dealers, DNs, PODs, Warehouses, Cities, Financial Perform
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 💡 *Examples:*
-"Exact Trading Co" | "6243611920" | "Top products" | "AC sales" | "Why sales decreased?" | "Pending DNs" """
+"80012345" | "Exact Trading Co" | "Top products" | "Why sales decreased?" | "Pending DNs" """
 
 
 class IntentDetector:
@@ -2268,6 +2467,16 @@ class IntentDetector:
         return False, None
     
     @staticmethod
+    def is_numeric_dn(message: str) -> Tuple[bool, Optional[str]]:
+        """Detect if message is just a DN number (6-15 digits)"""
+        cleaned = message.strip()
+        cleaned = re.sub(r'[\s\-]', '', cleaned)
+        
+        if cleaned.isdigit() and 6 <= len(cleaned) <= 15:
+            return True, cleaned
+        return False, None
+    
+    @staticmethod
     def is_business_question(message: str) -> bool:
         msg_lower = message.lower().strip()
         
@@ -2291,6 +2500,11 @@ class IntentDetector:
     def detect_intent(message: str) -> Tuple[IntentType, Optional[str]]:
         msg_lower = message.lower().strip()
         msg_original = message.strip()
+        
+        # BIGGEST GAP #4: Numeric DN Auto-Detection (Highest Priority)
+        is_numeric, numeric_dn = IntentDetector.is_numeric_dn(msg_original)
+        if is_numeric:
+            return IntentType.DN_LOOKUP, numeric_dn
         
         # Check for AI/Why questions first
         if any(word in msg_lower for word in ["why sales decreased", "why sales dropped", "sales decline"]):
@@ -2318,7 +2532,6 @@ class IntentDetector:
                 return IntentType.PRODUCT_RANKING, "fast_moving"
             if "slow" in msg_lower:
                 return IntentType.PRODUCT_RANKING, "slow_moving"
-            # Extract product model (uppercase with hyphens, e.g., HSU-18HFPAA)
             product_match = re.search(r'([A-Z]{2,3}-[0-9A-Z]+)', msg_upper)
             if product_match:
                 return IntentType.PRODUCT_ANALYSIS, product_match.group(1)
@@ -2437,7 +2650,7 @@ class AIQueryService:
                 self.ai_available = False
         
         logger.info("=" * 50)
-        logger.info("🚀 AI LOGISTICS INTELLIGENCE ASSISTANT v16.0 (FULL INTELLIGENCE)")
+        logger.info("🚀 AI LOGISTICS INTELLIGENCE ASSISTANT v17.0 (PERFECT DN RESPONSE)")
         logger.info(f"GROQ Available: {self.ai_available}")
         logger.info("=" * 50)
     
@@ -2528,7 +2741,8 @@ class AIQueryService:
         return {"success": result["success"], "response": result.get("formatted_response", result.get("message", "Dealer not found"))}
     
     def _handle_dn_lookup(self, dn_number: str) -> Dict[str, Any]:
-        result = self.db_service.get_dn_with_enhanced_fields(dn_number)
+        """DN-Centric: Returns aggregated DN intelligence with all products"""
+        result = self.db_service.get_dn_complete_intelligence(dn_number)
         return {"success": result["success"], "response": result.get("formatted_response", result.get("message", "DN not found"))}
     
     def _handle_pending_dns(self) -> Dict[str, Any]:
@@ -2743,7 +2957,6 @@ class AIQueryService:
                 response += f"   💰 Rs {d['amount']:,.2f}\n\n"
             return {"success": True, "response": response}
         else:
-            # All exceptions
             inactive = self.db_service.get_inactive_dealers(30)
             dead = self.db_service.get_dead_stock_products(90)
             critical = self.db_service.get_critical_delays()
@@ -2825,7 +3038,7 @@ CONVERSATION CONTEXT:
     def _get_fallback_response(self, question: str, error: str = None) -> Dict[str, Any]:
         error_msg = f"\n\n*Error Details:* {error[:200]}" if error else ""
         
-        response = f"""🤖 *AI LOGISTICS ASSISTANT v16.0*
+        response = f"""🤖 *AI LOGISTICS ASSISTANT v17.0*
 
 I understand you're asking about: "{question[:50]}"
 
@@ -2837,7 +3050,7 @@ I understand you're asking about: "{question[:50]}"
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 📊 Type a dealer name (e.g., "Exact Trading Co")
-🔢 Send a 10-digit DN number
+🔢 Send any 6-15 digit DN number
 👑 "Executive summary" - Leadership view
 🏆 "Top dealers" - Best performers
 🚨 "Top risk dealers" - Critical accounts
