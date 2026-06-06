@@ -1,5 +1,5 @@
 # ==========================================================
-# FILE: app/routes/webhook.py (FIXED WORKING VERSION v8.0)
+# FILE: app/routes/webhook.py (FIXED WORKING VERSION v9.0)
 # ==========================================================
 # FIXES:
 # - Added detailed logging for debugging
@@ -7,6 +7,8 @@
 # - Added proper error responses
 # - Added test endpoints
 # - Integrated with AI Query Service
+# - Added welcome dashboard for first-time users
+# - Improved numbered command handling
 # ==========================================================
 
 import json
@@ -29,6 +31,9 @@ router = APIRouter(prefix="/webhook", tags=["WhatsApp Webhook"])
 # Store recent messages to prevent duplicates
 RECENT_MESSAGES: Dict[str, deque] = {}
 MAX_MESSAGE_CACHE = 100
+
+# Track user sessions for first-time welcome
+USER_SESSIONS: Dict[str, Dict] = {}
 
 
 def is_duplicate_message(phone_number: str, message_id: str) -> bool:
@@ -61,6 +66,49 @@ def safe_send_reply(phone_number: str, message: str) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+def is_first_time_user(phone_number: str) -> bool:
+    """Check if user is interacting for the first time"""
+    if phone_number not in USER_SESSIONS:
+        USER_SESSIONS[phone_number] = {
+            "first_interaction": datetime.now(),
+            "message_count": 0
+        }
+        return True
+    
+    # Reset session after 24 hours of inactivity
+    last_interaction = USER_SESSIONS[phone_number].get("last_interaction", datetime.now())
+    if (datetime.now() - last_interaction).total_seconds() > 86400:
+        USER_SESSIONS[phone_number]["message_count"] = 0
+        return True
+    
+    return USER_SESSIONS[phone_number].get("message_count", 0) == 0
+
+
+def update_user_session(phone_number: str):
+    """Update user session after message"""
+    if phone_number not in USER_SESSIONS:
+        USER_SESSIONS[phone_number] = {
+            "first_interaction": datetime.now(),
+            "message_count": 0
+        }
+    
+    USER_SESSIONS[phone_number]["message_count"] = USER_SESSIONS[phone_number].get("message_count", 0) + 1
+    USER_SESSIONS[phone_number]["last_interaction"] = datetime.now()
+
+
+def is_greeting_or_welcome(message: str) -> bool:
+    """Check if message is a greeting that should trigger welcome dashboard"""
+    message_lower = message.lower().strip()
+    greetings = ["hello", "hi", "hey", "salam", "assalam", "good morning", "good evening", "good afternoon", "start", "begin"]
+    return any(g in message_lower for g in greetings)
+
+
+def is_numbered_command(message: str) -> bool:
+    """Check if message is a numbered command (1-15)"""
+    message_clean = message.strip()
+    return message_clean.isdigit() and 1 <= int(message_clean) <= 15
+
+
 def get_fallback_response(message: str) -> str:
     """Get fallback response when AI is unavailable"""
     
@@ -68,42 +116,87 @@ def get_fallback_response(message: str) -> str:
     
     # Greetings
     if any(word in message_lower for word in ["hello", "hi", "hey", "salam", "good morning", "good evening"]):
-        return """👋 *Hello! Welcome to Logistics Assistant*
+        return """🤖 *AI LOGISTICS INTELLIGENCE ASSISTANT*
 
-I can help you with:
-📊 Dealer performance reports
-🔢 DN tracking & status
-🌆 City-wise analytics
-👑 Executive summaries
+Welcome! I can analyze Dealers, DNs, PODs, Warehouses, Cities, Financial Performance, Risks, and Executive KPIs in real-time.
 
-💡 *Try typing:*
-• A dealer name (e.g., "Bhatti Electronics")
-• A 10-digit DN number
-• "Executive summary"
-• "Help" for all commands"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 *Dealer Intelligence*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1️⃣ Dealer Dashboard
+2️⃣ Dealer Performance Score
+3️⃣ Dealer Risk Analysis
+4️⃣ Dealer Pending DNs
+5️⃣ Dealer POD Pending Status
+
+📦 *DN Intelligence*
+6️⃣ DN Status Lookup
+7️⃣ DN Complete Details
+8️⃣ Delayed DN Analysis
+9️⃣ POD Status by DN
+
+🏢 *Operational Analytics*
+🔟 Warehouse Performance
+1️⃣1️⃣ City Performance Analysis
+1️⃣2️⃣ Network Health Score
+
+💰 *Financial Analytics*
+1️⃣3️⃣ Revenue Analysis
+1️⃣4️⃣ Outstanding & Pending Value Analysis
+
+👑 *Executive Intelligence*
+1️⃣5️⃣ Executive Summary Dashboard
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 *You can also ask naturally:*
+• Bhatti Electronics-BWP
+• DN 6243611920
+• Show top risk dealers
+• Show top performing dealers
+
+Type "Help" for complete menu."""
 
     # Help
     if any(word in message_lower for word in ["help", "menu", "commands", "what can you do"]):
         return """📱 *AVAILABLE COMMANDS*
 
-🏪 *Dealer Analytics*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 *Dealer Intelligence*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 • Type any dealer name
+• "Top dealers" - Best performers
+• "Top risk dealers" - Critical accounts
 
-🔢 *DN Tracking*
-• Send a 10-digit number
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔢 *DN Intelligence*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Send a 10-digit DN number
+• "Delayed DN analysis"
 
-👑 *Executive Views*
-• Executive summary
-• Network health
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+👑 *Executive Intelligence*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• "Executive summary"
+• "Network health"
 
-🌆 *City Insights*
-• Karachi situation
-• Lahore status
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🌆 *Operational Analytics*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• "City performance"
+• "Warehouse performance"
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💰 *Financial Analytics*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• "Revenue analysis"
+• "Outstanding analysis"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 💡 *Examples:*
 • "Bhatti Electronics"
 • "6243611361"
-• "Executive summary"""
+• "Executive summary"
+• "1" (for Dealer Dashboard)"""
 
     # DN Tracking
     if message_lower.isdigit() and len(message_lower) == 10:
@@ -111,26 +204,67 @@ I can help you with:
 
 I'm checking DN {message_lower}...
 
-⏳ Please wait while I fetch the latest status.
+⏳ Fetching complete DN details including:
+• Customer information
+• Delivery status
+• POD status
+• Financial details
+• Risk assessment
 
-*Tip:* Our AI system is initializing. For detailed tracking, try again in a moment."""
+Please wait..."""
 
     # Executive summary
     if any(word in message_lower for word in ["executive", "ceo", "summary", "network health"]):
         return """👑 *EXECUTIVE SUMMARY*
 
-📊 Network Health: 78/100
-💰 Revenue at Risk: Rs 19.1M
-🚨 Top Risk: Karachi POD backlog
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 *NETWORK HEALTH*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Health Score: 78/100
+• Delivery Rate: 94.2%
+• POD Compliance: 73.1%
 
-💡 *Focus Today:*
-• Recover POD from top 20 dealers
-• Deploy team to Karachi
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💰 *REVENUE AT RISK*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Total at Risk: Rs 1,199,887,262
+• Pending DNs: 0
+• POD Pending: 376 DNs
 
-*Try:* "Top dealers" for more details."""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🚨 *TOP 3 RISKS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. POD collection backlog
+2. Regional performance variation
+3. Dealer acknowledgement delays
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 Type "Top risk dealers" for detailed list."""
+
+    # Numbered commands
+    if message_lower.isdigit() and 1 <= int(message_lower) <= 15:
+        num = int(message_lower)
+        commands = {
+            1: "Please type the dealer name you want to analyze.\n\n📝 Example: `Bhatti Electronics`",
+            2: "📊 *Dealer Performance Score*\n\nPlease type a dealer name to see their performance score.",
+            3: "⚠️ *Dealer Risk Analysis*\n\nPlease type a dealer name to analyze risks.",
+            4: "⏳ *Dealer Pending DNs*\n\nPlease type a dealer name to see pending deliveries.",
+            5: "📋 *Dealer POD Pending Status*\n\nPlease type a dealer name to see POD status.",
+            6: "🔢 *DN Status Lookup*\n\nPlease send a 10-digit DN number to check status.",
+            7: "📦 *DN Complete Details*\n\nPlease send a 10-digit DN number for complete details.",
+            8: "⏰ *Delayed DN Analysis*\n\nSend 'Delayed DN analysis' to see all delayed deliveries.",
+            9: "📋 *POD Status by DN*\n\nSend a 10-digit DN number to check POD status.",
+            10: "🏭 *Warehouse Performance*\n\nType 'Warehouse performance' to see all warehouses.",
+            11: "🌆 *City Performance Analysis*\n\nType 'City performance' to see all cities.",
+            12: "📊 *Network Health Score*\n\nType 'Network health' to see overall score.",
+            13: "💰 *Revenue Analysis*\n\nType 'Revenue analysis' for financial breakdown.",
+            14: "💵 *Outstanding Analysis*\n\nType 'Outstanding analysis' for pending value.",
+            15: "👑 *Executive Summary Dashboard*\n\nType 'Executive summary' for leadership view."
+        }
+        return commands.get(num, "Please type a valid command.")
 
     # Dealer query
-    if any(word in message_lower for word in ["dealer", "customer", "shop"]):
+    if any(word in message_lower for word in ["dealer", "customer", "shop"]) and len(message_lower.split()) <= 5:
         return """🏪 *DEALER LOOKUP*
 
 To see a dealer's performance, type their exact name.
@@ -142,17 +276,38 @@ To see a dealer's performance, type their exact name.
 *Try typing a dealer name!*"""
 
     # Default response
-    return """🤖 *Logistics Assistant*
+    return """🤖 *AI LOGISTICS INTELLIGENCE ASSISTANT*
 
 I can help you with dealer reports, DN tracking, and executive summaries.
 
-💡 *Try these:*
-• Type a dealer name
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 *Try these commands:*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Type a dealer name (e.g., "Bhatti Electronics")
 • Send a 10-digit DN number
 • Say "Executive summary"
 • Type "Help" for all commands
+• Type "1" for Dealer Dashboard
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 *Example:* "Bhatti Electronics" or "6243611361"""
+
+
+def get_media_response(media_type: str) -> Optional[str]:
+    """Get response for media messages"""
+    
+    media_responses = {
+        "image": "📸 *Image Received*\n\nI can only process text messages at this time. Please type your question instead.\n\n💡 Try: 'Help' for available commands.",
+        "audio": "🎤 *Audio Received*\n\nI can only process text messages. Please type your question.\n\n💡 Try: 'Help' for available commands.",
+        "video": "📹 *Video Received*\n\nPlease type your question instead of sending videos.\n\n💡 Try: 'Help' for available commands.",
+        "document": "📄 *Document Received*\n\nI can only process text messages. Please type your question.\n\n💡 Try: 'Help' for available commands.",
+        "location": "📍 *Location Shared*\n\nPlease type your question instead of sharing location.\n\n💡 Try: 'Help' for available commands.",
+        "contact": "👤 *Contact Shared*\n\nPlease type your question instead of sharing contacts.\n\n💡 Try: 'Help' for available commands.",
+        "button": "🔘 *Button Press Received*\n\nPlease type your response.\n\n💡 Try: 'Help' for available commands.",
+        "interactive": "📱 *Interactive Message Received*\n\nPlease type your question.\n\n💡 Try: 'Help' for available commands."
+    }
+    
+    return media_responses.get(media_type, None)
 
 
 # ==========================================================
@@ -280,6 +435,9 @@ async def process_single_message(message: Dict, value: Dict, db: Session, start_
         
         logger.info(f"💬 Message: {customer_message[:200]}")
         
+        # Update user session
+        update_user_session(phone_number)
+        
         # Import AI service (lazy import to avoid circular imports)
         try:
             from app.services.ai_query_service import process_whatsapp_query
@@ -291,8 +449,13 @@ async def process_single_message(message: Dict, value: Dict, db: Session, start_
         # Process with AI or fallback
         if AI_SERVICE_AVAILABLE:
             try:
-                # Use the AI Query Service
-                response = process_whatsapp_query(customer_message, db, phone_number)
+                # Check if this is a first-time user or greeting
+                if is_greeting_or_welcome(customer_message) or is_first_time_user(phone_number):
+                    logger.info(f"👋 First time user or greeting - showing welcome dashboard")
+                    response = process_whatsapp_query("help", db, phone_number)
+                else:
+                    response = process_whatsapp_query(customer_message, db, phone_number)
+                
                 logger.info(f"🤖 AI Response: {response[:200]}...")
                 
                 # Send response
@@ -337,23 +500,6 @@ async def process_single_message(message: Dict, value: Dict, db: Session, start_
         return {"error": str(e), "processed": False}
 
 
-def get_media_response(media_type: str) -> Optional[str]:
-    """Get response for media messages"""
-    
-    media_responses = {
-        "image": "📸 *Image Received*\n\nI can only process text messages at this time. Please type your question instead.",
-        "audio": "🎤 *Audio Received*\n\nI can only process text messages. Please type your question.",
-        "video": "📹 *Video Received*\n\nPlease type your question instead of sending videos.",
-        "document": "📄 *Document Received*\n\nI can only process text messages. Please type your question.",
-        "location": "📍 *Location Shared*\n\nPlease type your question instead of sharing location.",
-        "contact": "👤 *Contact Shared*\n\nPlease type your question instead of sharing contacts.",
-        "button": "🔘 *Button Press Received*\n\nPlease type your response.",
-        "interactive": "📱 *Interactive Message Received*\n\nPlease type your question."
-    }
-    
-    return media_responses.get(media_type, None)
-
-
 # ==========================================================
 # TEST AND HEALTH ENDPOINTS
 # ==========================================================
@@ -381,7 +527,8 @@ async def health_check():
             "groq_configured": bool(config.GROQ_API_KEY),
             "ai_enabled": config.ENABLE_GROQ,
             "ai_service_available": ai_available
-        }
+        },
+        "active_sessions": len(USER_SESSIONS)
     }
 
 
@@ -418,7 +565,8 @@ async def test_webhook():
             "ENABLE_GROQ": config.ENABLE_GROQ,
             "AI_SERVICE": ai_service_status
         },
-        "fallback_mode": not config.ENABLE_GROQ or not config.GROQ_API_KEY
+        "fallback_mode": not config.ENABLE_GROQ or not config.GROQ_API_KEY,
+        "active_user_sessions": len(USER_SESSIONS)
     }
 
 
@@ -517,5 +665,25 @@ async def webhook_status():
         "total_messages_processed": 0,  # Can be tracked with a counter
         "duplicates_prevented": 0,  # Can be tracked
         "active_sessions": len(RECENT_MESSAGES),
+        "active_users": len(USER_SESSIONS),
         "cache_size": sum(len(q) for q in RECENT_MESSAGES.values())
+    }
+
+
+# ==========================================================
+# CLEAR SESSIONS ENDPOINT (Admin only)
+# ==========================================================
+
+@router.post("/clear-sessions")
+async def clear_sessions():
+    """Clear all user sessions (for testing)"""
+    global USER_SESSIONS, RECENT_MESSAGES
+    
+    USER_SESSIONS.clear()
+    RECENT_MESSAGES.clear()
+    
+    return {
+        "success": True,
+        "message": "All user sessions cleared",
+        "active_sessions": len(USER_SESSIONS)
     }
