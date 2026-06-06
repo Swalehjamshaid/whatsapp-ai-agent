@@ -1537,3 +1537,12 @@ def process_whatsapp_query(question: str, db: Session, user_phone: str = None, u
     except Exception as e:
         logger.error(f"Query processing error: {e}")
         return "⚠️ Service temporarily unavailable. Please try again later."
+_ai_provider_instance = None
+
+def get_ai_provider_service(db):
+    global _ai_provider_instance
+
+    if _ai_provider_instance is None:
+        _ai_provider_instance = AIProviderService(db)
+
+    return _ai_provider_instance
