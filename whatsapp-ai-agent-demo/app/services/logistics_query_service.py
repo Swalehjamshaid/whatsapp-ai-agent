@@ -1,7 +1,13 @@
 # ==========================================================
-# FILE: app/services/logistics_query_service.py (ENTERPRISE v2.0)
+# FILE: app/services/logistics_query_service.py (ENTERPRISE v2.1)
 # ==========================================================
 # COMPLETE WITH ALL 15 PHASES OF IMPROVEMENTS
+# FIXED: get_dealer_complete_dashboard() - Real queries instead of placeholder
+# FIXED: Dealer search threshold increased from 65 to 85
+# FIXED: Added comprehensive logging
+# FIXED: Added DN search functionality
+# FIXED: Improved fuzzy search with WRatio
+# FIXED: Empty dataset protection
 # ==========================================================
 
 from sqlalchemy.orm import Session
@@ -11,6 +17,8 @@ from datetime import datetime, date, timedelta
 import re
 import json
 from collections import defaultdict
+
+from loguru import logger  # FIX #3: Added logging
 
 # RapidFuzz for advanced dealer search
 try:
@@ -1082,7 +1090,7 @@ class LogisticsQueryService:
     # ======================================================
     
     @staticmethod
-    def search_dealer_advanced(db: Session, query: str, threshold: int = 70, limit: int = 10) -> Dict[str, Any]:
+    def search_dealer_advanced(db: Session, query: str, threshold: int = 85, limit: int = 10) -> Dict[str, Any]:  # FIX #2: threshold 65 -> 85
         """
         Advanced dealer search using RapidFuzz fuzzy matching
         Handles typos: "Rafi Electornics" -> "Rafi Electronics"
@@ -1112,8 +1120,8 @@ class LogisticsQueryService:
                 "matches": [{"dealer_name": m[0], "score": 100} for m in matches if m[0]]
             }
         
-        # Use RapidFuzz for fuzzy matching
-        results = process.extract(query, dealer_list, scorer=fuzz.token_sort_ratio, limit=limit)
+        # FIX #6: Use WRatio for better matching with city suffixes
+        results = process.extract(query, dealer_list, scorer=fuzz.WRatio, limit=limit)
         
         matches = []
         for match, score, _ in results:
@@ -1149,17 +1157,22 @@ class LogisticsQueryService:
         Handles any dealer query and returns complete intelligence
         """
         # Step 1: Search for dealer using advanced fuzzy matching
-        search_result = LogisticsQueryService.search_dealer_advanced(db, dealer_input, threshold=65)
+        search_result = LogisticsQueryService.search_dealer_advanced(db, dealer_input, threshold=85)
         
         if not search_result["success"] or not search_result["matches"]:
+            # FIX #4: Return clear message instead of routing to dashboard
             return {
                 "success": False,
-                "message": f"No dealer found matching '{dealer_input}'",
+                "message": "Please enter a valid dealer name or DN number.",
                 "suggestions": [m["dealer_name"] for m in search_result.get("matches", [])[:5]]
             }
         
         dealer_name = search_result["best_match"]["dealer_name"]
         confidence = search_result["best_match"]["score"]
+        
+        # FIX #3: Add logging to show which dealer is selected
+        logger.info(f"🔍 Dealer Intelligence Report - Matched: '{dealer_input}' -> '{dealer_name}'")
+        logger.info(f"   Confidence: {confidence}%")
         
         # Step 2: Get complete dashboard
         dashboard = LogisticsQueryService.get_dealer_complete_dashboard(db, dealer_name)
@@ -1317,35 +1330,301 @@ Dealers:
         return data.get("formatted_message", str(data))
     
     # ======================================================
-    # EXISTING METHODS (Kept for compatibility)
+    # FIX #5: DN SEARCH FUNCTIONALITY
     # ======================================================
     
     @staticmethod
-    def calculate_dispatch_age(record) -> int:
-        if not record.dn_create_date or not record.good_issue_date:
-            return 0
-        create_date = record.dn_create_date.date() if isinstance(record.dn_create_date, datetime) else record.dn_create_date
-        issue_date = record.good_issue_date.date() if isinstance(record.good_issue_date, datetime) else record.good_issue_date
-        return (issue_date - create_date).days
+    def search_dn(db: Session, dn_no: str) -> List[Any]:
+        """
+        Search for DN records by DN number
+        Returns list of DeliveryReport records
+        """
+        try:
+            # Clean the DN number (remove DN prefix if present)
+            dn_clean = re.sub(r'^DN\s*', '', str(dn_no), flags=re.IGNORECASE)
+            dn_clean = re.sub(r'^Track\s*', '', dn_clean, flags=re.IGNORECASE)
+            dn_clean = re.sub(r'^Status\s*', '', dn_clean, flags=re.IGNORECASE)
+            dn_clean = re.sub(r'^POD\s*', '', dn_clean, flags=re.IGNORECASE)
+            dn_clean = dn_clean.strip()
+            
+            logger.info(f"🔢 Searching for DN: {dn_clean}")
+            
+            records = db.query(DeliveryReport).filter(
+                DeliveryReport.dn_no == dn_clean
+            ).all()
+            
+            return records
+        except Exception as e:
+            logger.error(f"DN search error: {e}")
+            return []
     
     @staticmethod
-    def calculate_pod_age(record) -> int:
-        if not record.good_issue_date:
-            return 0
-        issue_date = record.good_issue_date.date() if isinstance(record.good_issue_date, datetime) else record.good_issue_date
-        return (datetime.now().date() - issue_date).days
+    def get_dn_complete_dashboard(db: Session, dn_no: str) -> Dict[str, Any]:
+        """
+        Get complete dashboard for a specific DN number
+        FIX #5: Dedicated DN lookup function
+        """
+        try:
+            records = LogisticsQueryService.search_dn(db, dn_no)
+            
+            # FIX #7: Empty dataset protection
+            if not records:
+                return {
+                    "success": False,
+                    "message": f"❌ DN '{dn_no}' not found in the system.",
+                    "dn_no": dn_no
+                }
+            
+            # Take the first record as primary (should be unique by DN)
+            record = records[0]
+            
+            # Calculate ages
+            dispatch_age = LogisticsQueryService.calculate_dispatch_age(record)
+            pod_age = LogisticsQueryService.calculate_pod_age(record) if record.pgi_status == "Completed" else 0
+            
+            # Determine status and color
+            if record.pgi_status == "Completed":
+                if record.pod_status == "Pending":
+                    status = "DELIVERED - POD PENDING"
+                    status_icon = "📋"
+                    status_color = "🟡"
+                else:
+                    status = "DELIVERED - POD RECEIVED"
+                    status_icon = "✅"
+                    status_color = "🟢"
+            else:
+                status = f"IN TRANSIT - PENDING DISPATCH"
+                status_icon = "🚚"
+                status_color = "🔴"
+            
+            # Build response
+            formatted_message = f"""
+╔══════════════════════════════════════════╗
+║           📦 DN TRACKING REPORT          ║
+║              {dn_no}                      ║
+╚══════════════════════════════════════════╝
+
+{status_color} *Status:* {status_icon} {status}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 *DN DETAILS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Customer: {record.customer_name or 'N/A'}
+• City: {record.ship_to_city or 'N/A'}
+• Warehouse: {record.warehouse or 'N/A'}
+• Product: {record.product or 'N/A'}
+• Quantity: {float(record.dn_qty or 0):,.0f}
+• Value: Rs {float(record.dn_amount or 0):,.2f}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⏱️ *TIMELINE*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• DN Create Date: {record.dn_create_date.strftime('%Y-%m-%d') if record.dn_create_date else 'N/A'}
+• Good Issue Date: {record.good_issue_date.strftime('%Y-%m-%d') if record.good_issue_date else 'N/A'}
+• Dispatch Age: {dispatch_age} days
+
+"""
+            if record.pgi_status == "Completed":
+                formatted_message += f"""• POD Status: {record.pod_status or 'Pending'}
+• POD Age: {pod_age} days
+"""
+            
+            formatted_message += """
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 *Need more?* Try:
+• `POD {dn_no}` - Check POD status
+• `Status {dn_no}` - Refresh tracking
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+            
+            return {
+                "success": True,
+                "dn_no": dn_no,
+                "records": records,
+                "status": status,
+                "status_icon": status_icon,
+                "dispatch_age": dispatch_age,
+                "pod_age": pod_age if record.pgi_status == "Completed" else None,
+                "formatted_message": formatted_message
+            }
+            
+        except Exception as e:
+            logger.error(f"DN dashboard error for {dn_no}: {e}")
+            return {
+                "success": False,
+                "message": f"❌ Error retrieving DN {dn_no}: {str(e)}",
+                "dn_no": dn_no
+            }
+    
+    # ======================================================
+    # FIX #1: REAL DEALER COMPLETE DASHBOARD
+    # ======================================================
     
     @staticmethod
     def get_dealer_complete_dashboard(db: Session, dealer_name: str, page: int = 1, page_size: int = 10) -> Dict[str, Any]:
-        """Original dashboard method - kept for compatibility"""
-        # This would contain the original implementation
-        # For brevity, returning a placeholder
-        return {
-            "success": True,
-            "dealer_name": dealer_name,
-            "kpis": {"total_dns": 0, "total_amount": 0},
-            "formatted_message": f"Dashboard for {dealer_name}"
-        }
+        """
+        Complete dealer dashboard with real database queries
+        FIX #1: Replaced placeholder with actual implementation
+        """
+        try:
+            # Get all records for this dealer
+            records = db.query(DeliveryReport).filter(
+                DeliveryReport.customer_name == dealer_name
+            ).all()
+            
+            # FIX #7: Empty dataset protection
+            if not records:
+                logger.warning(f"No records found for dealer: {dealer_name}")
+                return {
+                    "success": False,
+                    "message": f"No records found for {dealer_name}",
+                    "dealer_name": dealer_name,
+                    "kpis": {
+                        "total_dns": 0,
+                        "delivered_dns": 0,
+                        "pending_dns": 0,
+                        "pod_pending_dns": 0,
+                        "total_amount": 0,
+                        "pending_amount": 0,
+                        "pod_pending_amount": 0,
+                        "outstanding_amount": 0
+                    }
+                }
+            
+            # Calculate KPIs
+            unique_dns = set()
+            delivered_dns = set()
+            pending_dns = set()
+            pod_pending_dns = set()
+            total_amount = 0
+            pending_amount = 0
+            pod_pending_amount = 0
+            
+            # For breakdowns
+            city_data = defaultdict(lambda: {"dns": 0, "amount": 0})
+            warehouse_data = defaultdict(lambda: {"dns": 0, "amount": 0})
+            product_data = defaultdict(lambda: {"quantity": 0, "amount": 0})
+            
+            pending_list = []
+            pod_pending_list = []
+            
+            for r in records:
+                dn_no = str(r.dn_no)
+                amount = float(r.dn_amount or 0)
+                
+                unique_dns.add(dn_no)
+                total_amount += amount
+                
+                # City breakdown
+                city = r.ship_to_city or "Unknown"
+                city_data[city]["dns"] += 1
+                city_data[city]["amount"] += amount
+                
+                # Warehouse breakdown
+                warehouse = r.warehouse or "Unknown"
+                warehouse_data[warehouse]["dns"] += 1
+                warehouse_data[warehouse]["amount"] += amount
+                
+                # Product breakdown
+                product = r.product or "Unknown"
+                product_data[product]["quantity"] += float(r.dn_qty or 0)
+                product_data[product]["amount"] += amount
+                
+                # Status tracking
+                if r.pgi_status == "Completed":
+                    delivered_dns.add(dn_no)
+                    if r.pod_status == "Pending":
+                        pod_pending_dns.add(dn_no)
+                        pod_pending_amount += amount
+                        pod_pending_list.append({
+                            "dn_no": dn_no,
+                            "amount": amount,
+                            "product": r.product,
+                            "good_issue_date": r.good_issue_date.strftime("%Y-%m-%d") if r.good_issue_date else "Unknown",
+                            "pod_age": LogisticsQueryService.calculate_pod_age(r)
+                        })
+                else:
+                    pending_dns.add(dn_no)
+                    pending_amount += amount
+                    pending_list.append({
+                        "dn_no": dn_no,
+                        "amount": amount,
+                        "product": r.product,
+                        "create_date": r.dn_create_date.strftime("%Y-%m-%d") if r.dn_create_date else "Unknown",
+                        "dispatch_age": LogisticsQueryService.calculate_dispatch_age(r)
+                    })
+            
+            # Sort pending lists by age (oldest first)
+            pending_list.sort(key=lambda x: x.get("dispatch_age", 0), reverse=True)
+            pod_pending_list.sort(key=lambda x: x.get("pod_age", 0), reverse=True)
+            
+            # Paginate pending lists
+            offset = (page - 1) * page_size
+            pending_paginated = pending_list[offset:offset + page_size]
+            pod_pending_paginated = pod_pending_list[offset:offset + page_size]
+            
+            # Calculate outstanding amount (pending + pod pending)
+            outstanding_amount = pending_amount + pod_pending_amount
+            
+            # Build city breakdown
+            city_breakdown = [{"city": c, "dns": data["dns"], "amount": data["amount"]} 
+                            for c, data in sorted(city_data.items(), key=lambda x: x[1]["amount"], reverse=True)]
+            
+            # Build warehouse breakdown
+            warehouse_breakdown = [{"warehouse": w, "dns": data["dns"], "amount": data["amount"]} 
+                                 for w, data in sorted(warehouse_data.items(), key=lambda x: x[1]["amount"], reverse=True)]
+            
+            # Build product summary
+            product_summary = [{"product": p, "quantity": data["quantity"], "amount": data["amount"]} 
+                             for p, data in sorted(product_data.items(), key=lambda x: x[1]["amount"], reverse=True)]
+            
+            # Get oldest pending
+            oldest_pending = pending_list[0] if pending_list else {}
+            oldest_pod = pod_pending_list[0] if pod_pending_list else {}
+            
+            logger.info(f"📊 Dealer Dashboard Generated for {dealer_name}: {len(unique_dns)} DNs, Rs {total_amount:,.2f}")
+            
+            return {
+                "success": True,
+                "dealer_name": dealer_name,
+                "kpis": {
+                    "total_dns": len(unique_dns),
+                    "delivered_dns": len(delivered_dns),
+                    "pending_dns": len(pending_dns),
+                    "pod_pending_dns": len(pod_pending_dns),
+                    "total_amount": round(total_amount, 2),
+                    "pending_amount": round(pending_amount, 2),
+                    "pod_pending_amount": round(pod_pending_amount, 2),
+                    "outstanding_amount": round(outstanding_amount, 2)
+                },
+                "alerts": {
+                    "oldest_pending_dn": {
+                        "dn_no": oldest_pending.get("dn_no", ""),
+                        "dispatch_age": oldest_pending.get("dispatch_age", 0),
+                        "amount": oldest_pending.get("amount", 0)
+                    },
+                    "oldest_pod_pending_dn": {
+                        "dn_no": oldest_pod.get("dn_no", ""),
+                        "pod_age": oldest_pod.get("pod_age", 0),
+                        "amount": oldest_pod.get("amount", 0)
+                    }
+                },
+                "city_breakdown": city_breakdown[:10],
+                "warehouse_breakdown": warehouse_breakdown[:10],
+                "product_summary": product_summary[:10],
+                "pending_dns": pending_paginated,
+                "pod_pending_dns": pod_pending_paginated,
+                "total_pages": (len(pending_list) + page_size - 1) // page_size,
+                "page": page
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in get_dealer_complete_dashboard for {dealer_name}: {e}")
+            return {
+                "success": False,
+                "message": f"Error loading dealer data: {str(e)}",
+                "dealer_name": dealer_name
+            }
 
 
 # ======================================================
@@ -1373,5 +1652,12 @@ def generate_recommendations(db: Session) -> List[Dict[str, Any]]:
 def predict_dealer_risk(db: Session, dealer_name: str) -> Dict[str, Any]:
     return LogisticsQueryService.predict_dealer_risk(db, dealer_name)
 
-def search_dealer(db: Session, query: str, threshold: int = 70) -> Dict[str, Any]:
+def search_dealer(db: Session, query: str, threshold: int = 85) -> Dict[str, Any]:  # FIX #2: threshold 85
     return LogisticsQueryService.search_dealer_advanced(db, query, threshold)
+
+# FIX #5: DN search convenience functions
+def search_dn(db: Session, dn_no: str) -> List[Any]:
+    return LogisticsQueryService.search_dn(db, dn_no)
+
+def get_dn_complete_dashboard(db: Session, dn_no: str) -> Dict[str, Any]:
+    return LogisticsQueryService.get_dn_complete_dashboard(db, dn_no)
