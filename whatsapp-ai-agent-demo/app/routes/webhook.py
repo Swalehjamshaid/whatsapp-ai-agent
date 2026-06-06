@@ -6,6 +6,7 @@
 # - Fixed message parsing
 # - Added proper error responses
 # - Added test endpoints
+# - Integrated with AI Query Service
 # ==========================================================
 
 import json
@@ -58,6 +59,100 @@ def safe_send_reply(phone_number: str, message: str) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"WhatsApp send failed for {phone_number}: {e}")
         return {"success": False, "error": str(e)}
+
+
+def get_fallback_response(message: str) -> str:
+    """Get fallback response when AI is unavailable"""
+    
+    message_lower = message.lower().strip()
+    
+    # Greetings
+    if any(word in message_lower for word in ["hello", "hi", "hey", "salam", "good morning", "good evening"]):
+        return """👋 *Hello! Welcome to Logistics Assistant*
+
+I can help you with:
+📊 Dealer performance reports
+🔢 DN tracking & status
+🌆 City-wise analytics
+👑 Executive summaries
+
+💡 *Try typing:*
+• A dealer name (e.g., "Bhatti Electronics")
+• A 10-digit DN number
+• "Executive summary"
+• "Help" for all commands"""
+
+    # Help
+    if any(word in message_lower for word in ["help", "menu", "commands", "what can you do"]):
+        return """📱 *AVAILABLE COMMANDS*
+
+🏪 *Dealer Analytics*
+• Type any dealer name
+
+🔢 *DN Tracking*
+• Send a 10-digit number
+
+👑 *Executive Views*
+• Executive summary
+• Network health
+
+🌆 *City Insights*
+• Karachi situation
+• Lahore status
+
+💡 *Examples:*
+• "Bhatti Electronics"
+• "6243611361"
+• "Executive summary"""
+
+    # DN Tracking
+    if message_lower.isdigit() and len(message_lower) == 10:
+        return f"""🔢 *DN TRACKING*
+
+I'm checking DN {message_lower}...
+
+⏳ Please wait while I fetch the latest status.
+
+*Tip:* Our AI system is initializing. For detailed tracking, try again in a moment."""
+
+    # Executive summary
+    if any(word in message_lower for word in ["executive", "ceo", "summary", "network health"]):
+        return """👑 *EXECUTIVE SUMMARY*
+
+📊 Network Health: 78/100
+💰 Revenue at Risk: Rs 19.1M
+🚨 Top Risk: Karachi POD backlog
+
+💡 *Focus Today:*
+• Recover POD from top 20 dealers
+• Deploy team to Karachi
+
+*Try:* "Top dealers" for more details."""
+
+    # Dealer query
+    if any(word in message_lower for word in ["dealer", "customer", "shop"]):
+        return """🏪 *DEALER LOOKUP*
+
+To see a dealer's performance, type their exact name.
+
+📝 *Examples:*
+• Bhatti Electronics
+• Rafi Electronics Oghi
+
+*Try typing a dealer name!*"""
+
+    # Default response
+    return """🤖 *Logistics Assistant*
+
+I can help you with dealer reports, DN tracking, and executive summaries.
+
+💡 *Try these:*
+• Type a dealer name
+• Send a 10-digit DN number
+• Say "Executive summary"
+• Type "Help" for all commands
+
+*Example:* "Bhatti Electronics" or "6243611361"""
 
 
 # ==========================================================
@@ -168,6 +263,12 @@ async def process_single_message(message: Dict, value: Dict, db: Session, start_
         # Handle non-text messages
         if message_type != "text":
             logger.info(f"⏭️ Non-text message ignored: {message_type}")
+            
+            # Send appropriate response for media
+            media_response = get_media_response(message_type)
+            if media_response:
+                safe_send_reply(phone_number, media_response)
+            
             return {"skipped": True, "reason": f"non-text ({message_type})"}
         
         # Extract text message
@@ -182,46 +283,53 @@ async def process_single_message(message: Dict, value: Dict, db: Session, start_
         # Import AI service (lazy import to avoid circular imports)
         try:
             from app.services.ai_query_service import process_whatsapp_query
+            AI_SERVICE_AVAILABLE = True
         except ImportError as e:
             logger.error(f"Failed to import AI service: {e}")
-            # Send fallback response
-            fallback_response = get_fallback_response(customer_message)
-            safe_send_reply(phone_number, fallback_response)
-            return {
-                "processed": True,
-                "ai_used": False,
-                "fallback": True,
-                "message": customer_message[:100]
-            }
+            AI_SERVICE_AVAILABLE = False
         
-        # Process with AI
-        try:
-            response = process_whatsapp_query(customer_message, db, phone_number)
-            logger.info(f"🤖 AI Response: {response[:200]}...")
-            
-            # Send response
-            send_result = safe_send_reply(phone_number, response)
-            logger.info(f"📤 Send result: {send_result.get('success', False)}")
-            
-            return {
-                "processed": True,
-                "phone_number": phone_number,
-                "message_length": len(customer_message),
-                "response_length": len(response),
-                "send_success": send_result.get("success", False),
-                "processing_time_ms": int((time.time() - start_time) * 1000)
-            }
-            
-        except Exception as e:
-            logger.error(f"AI processing error: {e}")
-            # Send fallback response on error
+        # Process with AI or fallback
+        if AI_SERVICE_AVAILABLE:
+            try:
+                # Use the AI Query Service
+                response = process_whatsapp_query(customer_message, db, phone_number)
+                logger.info(f"🤖 AI Response: {response[:200]}...")
+                
+                # Send response
+                send_result = safe_send_reply(phone_number, response)
+                logger.info(f"📤 Send result: {send_result.get('success', False)}")
+                
+                return {
+                    "processed": True,
+                    "phone_number": phone_number,
+                    "message_length": len(customer_message),
+                    "response_length": len(response),
+                    "send_success": send_result.get("success", False),
+                    "processing_time_ms": int((time.time() - start_time) * 1000),
+                    "ai_used": True
+                }
+                
+            except Exception as e:
+                logger.error(f"AI processing error: {e}")
+                # Send fallback response on error
+                fallback_response = get_fallback_response(customer_message)
+                safe_send_reply(phone_number, fallback_response)
+                return {
+                    "processed": True,
+                    "error": str(e),
+                    "fallback": True,
+                    "message": customer_message[:100],
+                    "processing_time_ms": int((time.time() - start_time) * 1000)
+                }
+        else:
+            # AI service not available, use fallback
             fallback_response = get_fallback_response(customer_message)
             safe_send_reply(phone_number, fallback_response)
             return {
                 "processed": True,
-                "error": str(e),
                 "fallback": True,
-                "message": customer_message[:100]
+                "message": customer_message[:100],
+                "processing_time_ms": int((time.time() - start_time) * 1000)
             }
         
     except Exception as e:
@@ -229,98 +337,21 @@ async def process_single_message(message: Dict, value: Dict, db: Session, start_
         return {"error": str(e), "processed": False}
 
 
-def get_fallback_response(message: str) -> str:
-    """Get fallback response when AI is unavailable"""
+def get_media_response(media_type: str) -> Optional[str]:
+    """Get response for media messages"""
     
-    message_lower = message.lower().strip()
+    media_responses = {
+        "image": "📸 *Image Received*\n\nI can only process text messages at this time. Please type your question instead.",
+        "audio": "🎤 *Audio Received*\n\nI can only process text messages. Please type your question.",
+        "video": "📹 *Video Received*\n\nPlease type your question instead of sending videos.",
+        "document": "📄 *Document Received*\n\nI can only process text messages. Please type your question.",
+        "location": "📍 *Location Shared*\n\nPlease type your question instead of sharing location.",
+        "contact": "👤 *Contact Shared*\n\nPlease type your question instead of sharing contacts.",
+        "button": "🔘 *Button Press Received*\n\nPlease type your response.",
+        "interactive": "📱 *Interactive Message Received*\n\nPlease type your question."
+    }
     
-    # Greetings
-    if any(word in message_lower for word in ["hello", "hi", "hey", "salam", "good morning", "good evening"]):
-        return """👋 *Hello! Welcome to Logistics Assistant*
-
-I can help you with:
-📊 Dealer performance reports
-🔢 DN tracking & status
-🌆 City-wise analytics
-👑 Executive summaries
-
-💡 *Try typing:*
-• A dealer name (e.g., "Bhatti Electronics")
-• A 10-digit DN number
-• "Executive summary"
-• "Help" for all commands"""
-
-    # Help
-    if any(word in message_lower for word in ["help", "menu", "commands", "what can you do"]):
-        return """📱 *AVAILABLE COMMANDS*
-
-🏪 *Dealer Analytics*
-• Type any dealer name
-
-🔢 *DN Tracking*
-• Send a 10-digit number
-
-👑 *Executive Views*
-• Executive summary
-• Network health
-
-🌆 *City Insights*
-• Karachi situation
-• Lahore status
-
-💡 *Examples:*
-• "Bhatti Electronics"
-• "6243611361"
-• "Executive summary"""
-
-    # DN Tracking
-    if message_lower.isdigit() and len(message_lower) == 10:
-        return f"""🔢 *DN TRACKING*
-
-I'm checking DN {message_lower}...
-
-⏳ Please wait while I fetch the latest status.
-
-*Tip:* Our AI system is initializing. For detailed tracking, try again in a moment."""
-
-    # Executive summary
-    if any(word in message_lower for word in ["executive", "ceo", "summary", "network health"]):
-        return """👑 *EXECUTIVE SUMMARY*
-
-📊 Network Health: 78/100
-💰 Revenue at Risk: Rs 19.1M
-🚨 Top Risk: Karachi POD backlog
-
-💡 *Focus Today:*
-• Recover POD from top 20 dealers
-• Deploy team to Karachi
-
-*Try:* "Top dealers" for more details."""
-
-    # Dealer query
-    if any(word in message_lower for word in ["dealer", "customer", "shop"]):
-        return """🏪 *DEALER LOOKUP*
-
-To see a dealer's performance, type their exact name.
-
-📝 *Examples:*
-• Bhatti Electronics
-• Rafi Electronics Oghi
-
-*Try typing a dealer name!*"""
-
-    # Default response
-    return """🤖 *Logistics Assistant*
-
-I can help you with dealer reports, DN tracking, and executive summaries.
-
-💡 *Try these:*
-• Type a dealer name
-• Send a 10-digit DN number
-• Say "Executive summary"
-• Type "Help" for all commands
-
-*Example:* "Bhatti Electronics" or "6243611361"""
+    return media_responses.get(media_type, None)
 
 
 # ==========================================================
@@ -330,14 +361,26 @@ I can help you with dealer reports, DN tracking, and executive summaries.
 @router.get("/health")
 async def health_check():
     """Health check endpoint"""
+    
+    # Check AI service availability
+    ai_available = False
+    try:
+        from app.services.ai_query_service import process_whatsapp_query
+        ai_available = True
+    except ImportError:
+        ai_available = False
+    
     return {
         "status": "healthy",
         "service": "WhatsApp Webhook",
         "timestamp": datetime.utcnow().isoformat(),
         "config": {
             "whatsapp_configured": bool(config.WHATSAPP_ACCESS_TOKEN),
+            "whatsapp_phone_id": bool(config.WHATSAPP_PHONE_NUMBER_ID),
+            "whatsapp_token": bool(config.WHATSAPP_VERIFY_TOKEN),
             "groq_configured": bool(config.GROQ_API_KEY),
-            "ai_enabled": config.ENABLE_GROQ
+            "ai_enabled": config.ENABLE_GROQ,
+            "ai_service_available": ai_available
         }
     }
 
@@ -345,6 +388,17 @@ async def health_check():
 @router.get("/test")
 async def test_webhook():
     """Test endpoint to verify webhook is working"""
+    
+    # Check AI service
+    ai_service_status = "Unknown"
+    try:
+        from app.services.ai_query_service import process_whatsapp_query
+        ai_service_status = "Available"
+    except ImportError as e:
+        ai_service_status = f"Import Error: {str(e)[:50]}"
+    except Exception as e:
+        ai_service_status = f"Error: {str(e)[:50]}"
+    
     return {
         "success": True,
         "message": "Webhook service is running!",
@@ -352,15 +406,19 @@ async def test_webhook():
             "GET /webhook/": "Webhook verification",
             "POST /webhook/": "Receive messages",
             "GET /webhook/health": "Health check",
-            "GET /webhook/test": "This test endpoint"
+            "GET /webhook/test": "This test endpoint",
+            "POST /webhook/test-send": "Manual send test",
+            "POST /webhook/test-webhook": "Simulate webhook"
         },
         "config_status": {
             "WHATSAPP_ACCESS_TOKEN": "✅ Set" if config.WHATSAPP_ACCESS_TOKEN else "❌ Missing",
             "WHATSAPP_PHONE_NUMBER_ID": "✅ Set" if config.WHATSAPP_PHONE_NUMBER_ID else "❌ Missing",
             "WHATSAPP_VERIFY_TOKEN": "✅ Set" if config.WHATSAPP_VERIFY_TOKEN else "❌ Missing",
             "GROQ_API_KEY": "✅ Set" if config.GROQ_API_KEY else "❌ Missing",
-            "ENABLE_GROQ": config.ENABLE_GROQ
-        }
+            "ENABLE_GROQ": config.ENABLE_GROQ,
+            "AI_SERVICE": ai_service_status
+        },
+        "fallback_mode": not config.ENABLE_GROQ or not config.GROQ_API_KEY
     }
 
 
@@ -369,6 +427,12 @@ async def test_send_message(phone_number: str, message: str):
     """Test endpoint to manually send a message (for debugging)"""
     
     logger.info(f"Test send to {phone_number}: {message}")
+    
+    if not phone_number or not message:
+        return {
+            "success": False,
+            "error": "Phone number and message are required"
+        }
     
     result = safe_send_reply(phone_number, message)
     
@@ -381,7 +445,7 @@ async def test_send_message(phone_number: str, message: str):
 
 
 @router.post("/test-webhook")
-async def test_webhook_post(request: Request):
+async def test_webhook_post(request: Request, db: Session = Depends(get_db)):
     """Test endpoint to simulate a webhook message"""
     
     try:
@@ -399,12 +463,32 @@ async def test_webhook_post(request: Request):
         for message in messages:
             phone_number = message.get("from", "test_user")
             text = message.get("text", {}).get("body", "Test message")
+            message_type = message.get("type", "text")
             
-            results.append({
-                "phone_number": phone_number,
-                "message": text,
-                "status": "received"
-            })
+            if message_type == "text" and text:
+                # Process with actual AI service
+                try:
+                    from app.services.ai_query_service import process_whatsapp_query
+                    response = process_whatsapp_query(text, db, phone_number)
+                    results.append({
+                        "phone_number": phone_number,
+                        "message": text,
+                        "response": response[:200],
+                        "status": "processed"
+                    })
+                except Exception as e:
+                    results.append({
+                        "phone_number": phone_number,
+                        "message": text,
+                        "error": str(e),
+                        "status": "error"
+                    })
+            else:
+                results.append({
+                    "phone_number": phone_number,
+                    "message": text or f"[{message_type} message]",
+                    "status": "received"
+                })
         
         return {
             "success": True,
@@ -416,3 +500,22 @@ async def test_webhook_post(request: Request):
     except Exception as e:
         logger.error(f"Test webhook error: {e}")
         return {"success": False, "error": str(e)}
+
+
+# ==========================================================
+# STATUS ENDPOINT
+# ==========================================================
+
+@router.get("/status")
+async def webhook_status():
+    """Get detailed webhook status"""
+    
+    return {
+        "webhook_url": "/webhook/",
+        "verified": True,
+        "last_message_time": None,  # Can be tracked with a global variable
+        "total_messages_processed": 0,  # Can be tracked with a counter
+        "duplicates_prevented": 0,  # Can be tracked
+        "active_sessions": len(RECENT_MESSAGES),
+        "cache_size": sum(len(q) for q in RECENT_MESSAGES.values())
+    }
