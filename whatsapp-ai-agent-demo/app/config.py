@@ -17,7 +17,7 @@ load_dotenv()
 # ==========================================================
 
 APP_NAME = "AI WhatsApp Customer Service Agent"
-APP_VERSION = "1.0.0"
+APP_VERSION = "2.0.0"
 
 DEBUG = os.getenv(
     "DEBUG",
@@ -55,24 +55,53 @@ SECRET_KEY = os.getenv(
 # AI PROVIDER SELECTION
 # ==========================================================
 
-# Primary AI Provider (deepseek, openai, claude, gemini, ollama)
+# Primary AI Provider (groq, deepseek, openai, claude, gemini, ollama)
 AI_PROVIDER = os.getenv(
     "AI_PROVIDER",
-    "deepseek"
+    "groq"  # CHANGED: Default to GROQ
 )
 
 # Single fallback provider if primary fails
 AI_FALLBACK_PROVIDER = os.getenv(
     "AI_FALLBACK_PROVIDER",
-    "openai"
+    "deepseek"
 )
 
 # Multiple fallback providers in order (comma-separated)
-# Example: "openai,claude,gemini"
+# Example: "deepseek,openai,claude"
 AI_FALLBACK_PROVIDERS = os.getenv(
     "AI_FALLBACK_PROVIDERS",
-    "openai,claude"
+    "deepseek,openai"
 )
+
+# ==========================================================
+# GROQ (Fastest for WhatsApp - Recommended)
+# ==========================================================
+
+GROQ_API_KEY = os.getenv(
+    "GROQ_API_KEY",
+    ""
+)
+
+# Available GROQ models:
+# - llama3-70b-8192 (Most capable, 70B parameters)
+# - llama3-8b-8192 (Fastest, 8B parameters)
+# - mixtral-8x7b-32768 (Good balance, 32K context)
+# - gemma2-9b-it (Google's model)
+GROQ_MODEL = os.getenv(
+    "GROQ_MODEL",
+    "llama3-70b-8192"
+)
+
+GROQ_MAX_TOKENS = int(os.getenv(
+    "GROQ_MAX_TOKENS",
+    "500"  # Lower for WhatsApp speed
+))
+
+GROQ_TEMPERATURE = float(os.getenv(
+    "GROQ_TEMPERATURE",
+    "0.7"
+))
 
 # ==========================================================
 # OPENAI
@@ -136,7 +165,6 @@ DEEPSEEK_MODEL = os.getenv(
     "deepseek-chat"
 )
 
-# FIX: DeepSeek base URL without /v1 - SDK appends the path automatically
 DEEPSEEK_BASE_URL = os.getenv(
     "DEEPSEEK_BASE_URL",
     "https://api.deepseek.com"
@@ -184,13 +212,11 @@ OLLAMA_MODEL = os.getenv(
 # REDIS CACHE SETTINGS
 # ==========================================================
 
-# Option 1: Direct Redis URL (for Railway, Heroku, etc.)
 REDIS_URL = os.getenv(
     "REDIS_URL",
     ""
 )
 
-# Option 2: Individual Redis settings (for self-hosted)
 REDIS_HOST = os.getenv(
     "REDIS_HOST",
     "localhost"
@@ -224,23 +250,20 @@ REDIS_SSL = os.getenv(
 # AI TIMEOUT & PERFORMANCE
 # ==========================================================
 
-# Timeout for AI API calls in seconds (critical for WhatsApp)
 AI_TIMEOUT_SECONDS = int(
     os.getenv(
         "AI_TIMEOUT_SECONDS",
-        "30"
+        "15"  # Reduced for WhatsApp speed
     )
 )
 
-# Retry count for failed AI calls
 AI_MAX_RETRIES = int(
     os.getenv(
         "AI_MAX_RETRIES",
-        "3"
+        "2"  # Reduced for WhatsApp speed
     )
 )
 
-# Retry delay in seconds
 AI_RETRY_DELAY_SECONDS = int(
     os.getenv(
         "AI_RETRY_DELAY_SECONDS",
@@ -252,7 +275,6 @@ AI_RETRY_DELAY_SECONDS = int(
 # AI ANALYSIS TOGGLE (Emergency Kill Switch)
 # ==========================================================
 
-# Master switch to enable/disable AI analysis
 AI_ANALYSIS_ENABLED = os.getenv(
     "AI_ANALYSIS_ENABLED",
     "True"
@@ -261,6 +283,12 @@ AI_ANALYSIS_ENABLED = os.getenv(
 # Enable DeepSeek specifically for logistics
 ENABLE_DEEPSEEK_LOGISTICS = os.getenv(
     "ENABLE_DEEPSEEK_LOGISTICS",
+    "False"  # Changed: GROQ is now primary
+).lower() == "true" and AI_ANALYSIS_ENABLED
+
+# Enable GROQ for WhatsApp responses
+ENABLE_GROQ = os.getenv(
+    "ENABLE_GROQ",
     "True"
 ).lower() == "true" and AI_ANALYSIS_ENABLED
 
@@ -315,7 +343,6 @@ WHATSAPP_API_URL = os.getenv(
     "https://graph.facebook.com"
 )
 
-# WhatsApp message timeout (seconds)
 WHATSAPP_MESSAGE_TIMEOUT = int(os.getenv(
     "WHATSAPP_MESSAGE_TIMEOUT",
     "60"
@@ -355,7 +382,40 @@ Always be professional,
 helpful and concise.
 """
 
-# DeepSeek Logistics System Prompt
+# GROQ System Prompt for WhatsApp
+GROQ_SYSTEM_PROMPT = """
+You are a Professional Logistics Operations Manager responding on WhatsApp.
+
+YOUR CAPABILITIES:
+- Answer logistics queries about deliveries, DNs, warehouses, cities, and dealers
+- Analyze pending dispatches, POD delays, and aging reports
+- Provide executive summaries and action plans
+- Generate data-driven recommendations
+
+BUSINESS RULES (NEVER SHOW RAW CODES):
+- PGI Status "Completed" = "Delivered"
+- PGI Status "Pending" = "Pending Dispatch"  
+- POD Status "Received" = "Acknowledged"
+- POD Status "Pending" = "Awaiting Acknowledgement"
+- Dispatch Age > 15 days = "Critical"
+- POD Age > 15 days = "Urgent"
+
+WHATSAPP RESPONSE FORMATTING (CRITICAL):
+- Use emojis for visual cues: 📊 🚨 ✅ ❌ 💡 📦 🏪 🔢 🌆 👑
+- Use **bold** for important numbers (e.g., **15 pending deliveries**)
+- Use bullet points with • or -
+- Keep paragraphs short (2-3 lines)
+- NEVER return raw JSON or code blocks
+- ALWAYS return human-readable text
+
+EXAMPLE RESPONSES:
+1. For pending query: "⏳ There are *15 pending deliveries* totaling *2,500 units* worth *Rs 12.5M*."
+2. For dealer dashboard: "🏪 *DEALER: ABC TRADERS*\n\n📊 Total DNs: 45\n⏳ Pending: 12\n📋 POD Pending: 8"
+
+Always prioritize critical issues and provide clear next steps. Be conversational and helpful.
+"""
+
+# DeepSeek Logistics System Prompt (fallback)
 DEEPSEEK_SYSTEM_PROMPT = """
 You are a Professional Logistics Operations Manager and AI Customer Support Agent.
 
@@ -409,6 +469,12 @@ class Config:
     AI_FALLBACK_PROVIDER = AI_FALLBACK_PROVIDER
     AI_FALLBACK_PROVIDERS = AI_FALLBACK_PROVIDERS
     
+    # GROQ (NEW)
+    GROQ_API_KEY = GROQ_API_KEY
+    GROQ_MODEL = GROQ_MODEL
+    GROQ_MAX_TOKENS = GROQ_MAX_TOKENS
+    GROQ_TEMPERATURE = GROQ_TEMPERATURE
+    
     # OpenAI
     OPENAI_API_KEY = OPENAI_API_KEY
     OPENAI_MODEL = OPENAI_MODEL
@@ -452,6 +518,7 @@ class Config:
     # AI Analysis Toggle
     AI_ANALYSIS_ENABLED = AI_ANALYSIS_ENABLED
     ENABLE_DEEPSEEK_LOGISTICS = ENABLE_DEEPSEEK_LOGISTICS
+    ENABLE_GROQ = ENABLE_GROQ
     CACHE_AI_RESPONSES = CACHE_AI_RESPONSES
     AI_RESPONSE_CACHE_TTL = AI_RESPONSE_CACHE_TTL
     AI_FALLBACK_TO_RULE_BASED = AI_FALLBACK_TO_RULE_BASED
@@ -475,26 +542,25 @@ class Config:
     
     # System Prompts
     SYSTEM_PROMPT = SYSTEM_PROMPT
+    GROQ_SYSTEM_PROMPT = GROQ_SYSTEM_PROMPT
     DEEPSEEK_SYSTEM_PROMPT = DEEPSEEK_SYSTEM_PROMPT
     
-    # Helper method to get Redis URL (supports both direct URL and individual settings)
     @property
     def REDIS_CONNECTION_URL(self):
         """Generate Redis connection URL from settings or environment"""
-        # Priority 1: Direct REDIS_URL from environment (for Railway, Heroku)
         if self.REDIS_URL:
             return self.REDIS_URL
         
-        # Priority 2: Build from individual settings (for self-hosted)
         if self.REDIS_PASSWORD:
             return f"redis://:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
         return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
     
-    # Helper method to get available providers list
     @property
     def AVAILABLE_PROVIDERS(self):
         """Return list of configured AI providers"""
         providers = []
+        if self.GROQ_API_KEY:
+            providers.append("groq")
         if self.OPENAI_API_KEY:
             providers.append("openai")
         if self.DEEPSEEK_API_KEY:
@@ -505,24 +571,24 @@ class Config:
             providers.append("gemini")
         return providers
     
-    # Helper method to check if AI is properly configured
     @property
     def AI_READY(self):
         """Check if at least one AI provider is configured"""
         return len(self.AVAILABLE_PROVIDERS) > 0 and self.AI_ANALYSIS_ENABLED
 
+
 # ==========================================================
-# GLOBAL CONFIG INSTANCE (MUST be before validation)
+# GLOBAL CONFIG INSTANCE
 # ==========================================================
 
 config = Config()
 
 # ==========================================================
-# VALIDATION & WARNINGS (Now config exists)
+# VALIDATION & WARNINGS
 # ==========================================================
 
 print("===================================")
-print("CONFIG LOADED")
+print("CONFIG LOADED - GROQ EDITION")
 print("===================================")
 print(f"DATABASE: {'✓' if DATABASE_URL else '✗'}")
 print(f"WHATSAPP: {'✓' if WHATSAPP_ACCESS_TOKEN else '✗'}")
@@ -534,8 +600,9 @@ print(f"  FALLBACK: {AI_FALLBACK_PROVIDER}")
 print(f"  FALLBACK CHAIN: {AI_FALLBACK_PROVIDERS}")
 print("===================================")
 print("API KEYS:")
-print(f"  OPENAI: {'✓' if OPENAI_API_KEY else '✗'} (Model: {OPENAI_MODEL})")
+print(f"  GROQ: {'✓' if GROQ_API_KEY else '✗'} (Model: {GROQ_MODEL}) ← PRIMARY")
 print(f"  DEEPSEEK: {'✓' if DEEPSEEK_API_KEY else '✗'} (Model: {DEEPSEEK_MODEL})")
+print(f"  OPENAI: {'✓' if OPENAI_API_KEY else '✗'} (Model: {OPENAI_MODEL})")
 print(f"  CLAUDE: {'✓' if ANTHROPIC_API_KEY else '✗'} (Model: {CLAUDE_MODEL})")
 print(f"  GEMINI: {'✓' if GEMINI_API_KEY else '✗'} (Model: {GEMINI_MODEL})")
 print("===================================")
@@ -556,11 +623,12 @@ print(f"  RETRY DELAY: {AI_RETRY_DELAY_SECONDS}s")
 print("===================================")
 print("AI CONFIGURATION:")
 print(f"  AI_ANALYSIS_ENABLED: {AI_ANALYSIS_ENABLED}")
+print(f"  ENABLE_GROQ: {ENABLE_GROQ}")
 print(f"  ENABLE_DEEPSEEK_LOGISTICS: {ENABLE_DEEPSEEK_LOGISTICS}")
 print(f"  AI_FALLBACK_TO_RULE_BASED: {AI_FALLBACK_TO_RULE_BASED}")
 print("===================================")
 
-# Warnings (Now config is defined)
+# Warnings
 if not AI_ANALYSIS_ENABLED:
     print("⚠️  WARNING: AI_ANALYSIS_ENABLED = False")
     print("   AI features are disabled. Using rule-based responses only.")
@@ -569,7 +637,16 @@ if not AI_ANALYSIS_ENABLED:
 
 if AI_ANALYSIS_ENABLED and len(config.AVAILABLE_PROVIDERS) == 0:
     print("⚠️  WARNING: AI_ANALYSIS_ENABLED = True but no API keys configured")
-    print("   Please add at least one API key (OPENAI_API_KEY, DEEPSEEK_API_KEY, etc.)")
+    print("   Please add at least one API key:")
+    print("   - GROQ_API_KEY (recommended, fastest)")
+    print("   - DEEPSEEK_API_KEY")
+    print("   - OPENAI_API_KEY")
+    print("===================================")
+
+if AI_PROVIDER == "groq" and not GROQ_API_KEY:
+    print("⚠️  WARNING: Primary provider 'groq' is not configured")
+    print("   GROQ_API_KEY is missing!")
+    print("   Get your API key from: https://console.groq.com")
     print("===================================")
 
 if AI_PROVIDER not in config.AVAILABLE_PROVIDERS and config.AVAILABLE_PROVIDERS:
@@ -579,7 +656,8 @@ if AI_PROVIDER not in config.AVAILABLE_PROVIDERS and config.AVAILABLE_PROVIDERS:
     print("===================================")
 
 # Success message
-print("✅ CONFIGURATION VALIDATION COMPLETE")
+print("✅ GROQ CONFIGURATION LOADED SUCCESSFULLY")
+print("   WhatsApp responses will use GROQ for fast AI replies")
 print("===================================")
 
 # ==========================================================
