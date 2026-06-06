@@ -1,7 +1,7 @@
 # ==========================================================
-# FILE: app/services/ai_query_service.py (ENTERPRISE v8.0)
+# FILE: app/services/ai_query_service.py (ENTERPRISE v9.0 - GROQ WORKING)
 # ==========================================================
-# FULLY INTEGRATED WITH GROQ AI
+# FULLY INTEGRATED WITH GROQ AI - WORKING VERSION
 # ==========================================================
 
 import re
@@ -24,6 +24,7 @@ from app.models import DeliveryReport
 try:
     from app.services.ai_provider_service import get_ai_provider_service
     AI_PROVIDER_AVAILABLE = True
+    logger.info("✅ AI Provider service available")
 except ImportError as e:
     logger.error(f"Failed to import AI provider: {e}")
     AI_PROVIDER_AVAILABLE = False
@@ -335,8 +336,23 @@ class AIQueryService:
     def __init__(self, db: Session):
         self.db = db
         self.db_service = DatabaseService(db)
-        self.ai_provider = get_ai_provider_service(db) if AI_PROVIDER_AVAILABLE else None
-        self.ai_available = self.ai_provider is not None and self.ai_provider.is_available
+        
+        # Initialize AI Provider
+        self.ai_provider = None
+        self.ai_available = False
+        
+        if AI_PROVIDER_AVAILABLE:
+            try:
+                self.ai_provider = get_ai_provider_service(db)
+                if self.ai_provider:
+                    self.ai_available = self.ai_provider.is_available
+                    logger.info(f"✅ AI Provider: {'AVAILABLE' if self.ai_available else 'NOT AVAILABLE'}")
+                else:
+                    logger.warning("⚠️ AI Provider returned None")
+            except Exception as e:
+                logger.error(f"Failed to get AI provider: {e}")
+        else:
+            logger.warning("⚠️ AI Provider not available (import failed)")
         
         logger.info("=" * 50)
         logger.info("🚀 AI QUERY SERVICE INITIALIZED")
@@ -528,36 +544,62 @@ class AIQueryService:
         
         return {"success": True, "response": response}
     
+    # ==========================================================
+    # FIXED: GROQ GENERAL QUERY HANDLER
+    # ==========================================================
+    
     def _handle_general_query(self, question: str, user_phone: str, user_role: str) -> Dict[str, Any]:
-        """Use GROQ AI for general questions"""
+        """Use GROQ AI for general questions - FULLY WORKING"""
         
-        # Try to use GROQ
-        if self.ai_available and self.ai_provider:
-            try:
-                result = self.ai_provider.answer_question(
+        logger.info(f"🤖 Processing general query with GROQ: {question[:100]}")
+        
+        # ALWAYS try to use GROQ - Get fresh instance
+        try:
+            from app.services.ai_provider_service import get_ai_provider_service
+            
+            # Get fresh provider instance
+            ai_provider = get_ai_provider_service(self.db)
+            
+            if ai_provider:
+                logger.info(f"🚀 Calling GROQ API - Status: {ai_provider.is_available}")
+                
+                result = ai_provider.answer_question(
                     question=question,
                     user_phone=user_phone,
                     user_role=user_role or "guest"
                 )
+                
                 if result.get("success"):
-                    return {"success": True, "response": result.get("content")}
-            except Exception as e:
-                logger.error(f"GROQ error: {e}")
+                    content = result.get("content", "")
+                    logger.info(f"✅ GROQ success - Response length: {len(content)}")
+                    return {"success": True, "response": content}
+                else:
+                    logger.warning(f"⚠️ GROQ failed: {result.get('error')}")
+            else:
+                logger.warning("⚠️ AI Provider is None - check ai_provider_service.py")
+                
+        except ImportError as e:
+            logger.error(f"❌ Cannot import AI provider: {e}")
+        except Exception as e:
+            logger.error(f"❌ GROQ error: {e}")
         
-        # Fallback to intelligent response
-        response = f"""🤖 *I understand you're asking about: "{question[:50]}"*
+        # Fallback response (only if GROQ completely fails)
+        logger.info("📋 Using fallback response")
+        response = f"""🤖 *AI LOGISTICS ASSISTANT*
+
+I understand you're asking about: "{question[:50]}"
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 💡 *Try these commands:*
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-📊 • Type a dealer name (e.g., "Bhatti Electronics")
-🔢 • Send a 10-digit DN number
-👑 • "Executive summary" - Leadership view
-🏆 • "Top dealers" - Best performers
-🚨 • "Top risk dealers" - Critical accounts
-🌆 • "City analysis" - Regional performance
-💰 • "Revenue analysis" - Financial view
+🏪 *Dealers* - Type any dealer name
+🔢 *DN Tracking* - Send 10-digit number
+👑 *Executive* - "Executive summary"
+🏆 *Top Dealers* - "Top dealers"
+🚨 *Risk Dealers* - "Top risk dealers"
+🌆 *Cities* - "City analysis"
+💰 *Revenue* - "Revenue analysis"
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Type "Help" for complete menu."""
