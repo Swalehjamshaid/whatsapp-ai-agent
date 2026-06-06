@@ -58,7 +58,7 @@ SECRET_KEY = os.getenv(
 # Primary AI Provider (groq, deepseek, openai, claude, gemini, ollama)
 AI_PROVIDER = os.getenv(
     "AI_PROVIDER",
-    "groq"  # CHANGED: Default to GROQ
+    "groq"
 )
 
 # Single fallback provider if primary fails
@@ -68,14 +68,13 @@ AI_FALLBACK_PROVIDER = os.getenv(
 )
 
 # Multiple fallback providers in order (comma-separated)
-# Example: "deepseek,openai,claude"
 AI_FALLBACK_PROVIDERS = os.getenv(
     "AI_FALLBACK_PROVIDERS",
     "deepseek,openai"
 )
 
 # ==========================================================
-# GROQ (Fastest for WhatsApp - Recommended)
+# GROQ API (NEW - PRIMARY FOR WHATSAPP)
 # ==========================================================
 
 GROQ_API_KEY = os.getenv(
@@ -84,18 +83,18 @@ GROQ_API_KEY = os.getenv(
 )
 
 # Available GROQ models:
-# - llama3-70b-8192 (Most capable, 70B parameters)
-# - llama3-8b-8192 (Fastest, 8B parameters)
-# - mixtral-8x7b-32768 (Good balance, 32K context)
-# - gemma2-9b-it (Google's model)
+# - llama-3.3-70b-versatile (Most capable - RECOMMENDED)
+# - llama3-70b-8192 (Alternative)
+# - llama3-8b-8192 (Fastest)
+# - mixtral-8x7b-32768 (Good balance)
 GROQ_MODEL = os.getenv(
     "GROQ_MODEL",
-    "llama3-70b-8192"
+    "llama-3.3-70b-versatile"
 )
 
 GROQ_MAX_TOKENS = int(os.getenv(
     "GROQ_MAX_TOKENS",
-    "500"  # Lower for WhatsApp speed
+    "500"
 ))
 
 GROQ_TEMPERATURE = float(os.getenv(
@@ -253,14 +252,14 @@ REDIS_SSL = os.getenv(
 AI_TIMEOUT_SECONDS = int(
     os.getenv(
         "AI_TIMEOUT_SECONDS",
-        "15"  # Reduced for WhatsApp speed
+        "15"
     )
 )
 
 AI_MAX_RETRIES = int(
     os.getenv(
         "AI_MAX_RETRIES",
-        "2"  # Reduced for WhatsApp speed
+        "2"
     )
 )
 
@@ -283,10 +282,10 @@ AI_ANALYSIS_ENABLED = os.getenv(
 # Enable DeepSeek specifically for logistics
 ENABLE_DEEPSEEK_LOGISTICS = os.getenv(
     "ENABLE_DEEPSEEK_LOGISTICS",
-    "False"  # Changed: GROQ is now primary
+    "False"
 ).lower() == "true" and AI_ANALYSIS_ENABLED
 
-# Enable GROQ for WhatsApp responses
+# Enable GROQ for WhatsApp responses (NEW)
 ENABLE_GROQ = os.getenv(
     "ENABLE_GROQ",
     "True"
@@ -382,40 +381,29 @@ Always be professional,
 helpful and concise.
 """
 
-# GROQ System Prompt for WhatsApp
+# GROQ System Prompt for WhatsApp (NEW)
 GROQ_SYSTEM_PROMPT = """
 You are a Professional Logistics Operations Manager responding on WhatsApp.
 
-YOUR CAPABILITIES:
-- Answer logistics queries about deliveries, DNs, warehouses, cities, and dealers
-- Analyze pending dispatches, POD delays, and aging reports
-- Provide executive summaries and action plans
-- Generate data-driven recommendations
-
-BUSINESS RULES (NEVER SHOW RAW CODES):
-- PGI Status "Completed" = "Delivered"
-- PGI Status "Pending" = "Pending Dispatch"  
-- POD Status "Received" = "Acknowledged"
-- POD Status "Pending" = "Awaiting Acknowledgement"
-- Dispatch Age > 15 days = "Critical"
-- POD Age > 15 days = "Urgent"
-
-WHATSAPP RESPONSE FORMATTING (CRITICAL):
-- Use emojis for visual cues: 📊 🚨 ✅ ❌ 💡 📦 🏪 🔢 🌆 👑
-- Use **bold** for important numbers (e.g., **15 pending deliveries**)
+WHATSAPP FORMATTING RULES (CRITICAL):
+- Use emojis: 📊 🚨 ✅ ❌ 💡 📦 🏪 🔢 🌆 👑
+- Use **bold** for numbers: **15 pending deliveries**
 - Use bullet points with • or -
 - Keep paragraphs short (2-3 lines)
-- NEVER return raw JSON or code blocks
+- NEVER return raw JSON
 - ALWAYS return human-readable text
 
-EXAMPLE RESPONSES:
-1. For pending query: "⏳ There are *15 pending deliveries* totaling *2,500 units* worth *Rs 12.5M*."
-2. For dealer dashboard: "🏪 *DEALER: ABC TRADERS*\n\n📊 Total DNs: 45\n⏳ Pending: 12\n📋 POD Pending: 8"
+BUSINESS RULES:
+- "Completed" = "Delivered" ✅
+- "Pending" = "Pending Dispatch" ⏳
+- POD "Received" = "Acknowledged" ✅
+- POD "Pending" = "Awaiting Acknowledgement" 📋
+- Age > 15 days = "Critical" 🚨
 
-Always prioritize critical issues and provide clear next steps. Be conversational and helpful.
+Be conversational, helpful, and concise.
 """
 
-# DeepSeek Logistics System Prompt (fallback)
+# DeepSeek Logistics System Prompt (preserved)
 DEEPSEEK_SYSTEM_PROMPT = """
 You are a Professional Logistics Operations Manager and AI Customer Support Agent.
 
@@ -540,7 +528,7 @@ class Config:
     DASHBOARD_TITLE = DASHBOARD_TITLE
     ENABLE_ANALYTICS = ENABLE_ANALYTICS
     
-    # System Prompts
+    # System Prompts (preserved)
     SYSTEM_PROMPT = SYSTEM_PROMPT
     GROQ_SYSTEM_PROMPT = GROQ_SYSTEM_PROMPT
     DEEPSEEK_SYSTEM_PROMPT = DEEPSEEK_SYSTEM_PROMPT
@@ -637,10 +625,7 @@ if not AI_ANALYSIS_ENABLED:
 
 if AI_ANALYSIS_ENABLED and len(config.AVAILABLE_PROVIDERS) == 0:
     print("⚠️  WARNING: AI_ANALYSIS_ENABLED = True but no API keys configured")
-    print("   Please add at least one API key:")
-    print("   - GROQ_API_KEY (recommended, fastest)")
-    print("   - DEEPSEEK_API_KEY")
-    print("   - OPENAI_API_KEY")
+    print("   Please add at least one API key (GROQ_API_KEY recommended)")
     print("===================================")
 
 if AI_PROVIDER == "groq" and not GROQ_API_KEY:
@@ -655,7 +640,6 @@ if AI_PROVIDER not in config.AVAILABLE_PROVIDERS and config.AVAILABLE_PROVIDERS:
     print(f"   Will fallback to: {AI_FALLBACK_PROVIDER}")
     print("===================================")
 
-# Success message
 print("✅ GROQ CONFIGURATION LOADED SUCCESSFULLY")
 print("   WhatsApp responses will use GROQ for fast AI replies")
 print("===================================")
