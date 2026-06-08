@@ -1,25 +1,29 @@
 # ==========================================================
-# FILE: app/services/control_tower_service.py
+# FILE: app/services/control_tower_service.py (ENTERPRISE v2.0)
 # ==========================================================
-# CONTROL TOWER - CRITICAL ALERTS SERVICE
+# CONTROL TOWER SERVICE
+# - Critical alerts and monitoring
+# - Real-time operational issues
+# - High-risk DNs and dealers
+# - Revenue at risk alerts
 # ==========================================================
 
-from typing import Dict, Any, List, Optional
-from datetime import datetime, timedelta, date
+from typing import Dict, Any, List
+from datetime import date, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc
 from loguru import logger
 
 from app.models import DeliveryReport
-from app.services.business_rules_service import BusinessRulesService
 
 
 class ControlTowerService:
-    """Control tower for critical alerts and monitoring"""
+    """Control Tower - Critical Operational Alerts"""
     
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, cache_service=None):
         self.db = db
-        self.business_rules = BusinessRulesService()
+        self.cache = cache_service
+        logger.info("✅ Control Tower Service initialized")
     
     def get_control_tower_dashboard(self) -> Dict[str, Any]:
         """Get complete control tower dashboard"""
@@ -27,159 +31,130 @@ class ControlTowerService:
             "critical_dns": self.get_critical_dns(10),
             "high_risk_dns": self.get_high_risk_dns(10),
             "critical_pods": self.get_critical_pods(10),
-            "high_value_pending": self.get_high_value_pending_dns(10),
+            "high_risk_dealers": self.get_high_risk_dealers(10),
             "summary": self._get_alert_summary()
         }
     
     def get_critical_dns(self, limit: int = 20) -> List[Dict]:
-        """Get critical DNs (delayed > 15 days)"""
-        critical_dns = []
-        
+        """Get critically delayed DNs (>15 days)"""
         try:
-            cutoff_date = date.today() - timedelta(days=15)
+            threshold_date = date.today() - timedelta(days=15)
             
-            results = self.db.query(
+            records = self.db.query(
                 DeliveryReport.dn_no,
                 DeliveryReport.customer_name,
                 DeliveryReport.dn_amount,
-                DeliveryReport.dn_create_date,
-                DeliveryReport.pgi_status
+                DeliveryReport.dn_create_date
             ).filter(
                 DeliveryReport.pgi_status != "Completed",
-                DeliveryReport.dn_create_date <= cutoff_date
+                DeliveryReport.dn_create_date <= threshold_date
             ).order_by(
                 DeliveryReport.dn_create_date
             ).limit(limit).all()
             
-            for dn in results:
-                aging = self.business_rules.calculate_pending_delivery_aging(dn)
-                
-                critical_dns.append({
-                    "dn_no": dn.dn_no,
-                    "dealer": dn.customer_name,
-                    "value": float(dn.dn_amount or 0),
-                    "aging_days": aging,
-                    "severity": self._get_severity(aging),
-                    "action": "URGENT - Escalate to regional manager"
-                })
-        
+            return [{
+                "dn_no": r.dn_no,
+                "dealer": r.customer_name,
+                "value": float(r.dn_amount or 0),
+                "aging_days": (date.today() - r.dn_create_date).days if r.dn_create_date else 0,
+                "severity": "CRITICAL",
+                "action": "IMMEDIATE ESCALATION REQUIRED"
+            } for r in records]
         except Exception as e:
-            logger.error(f"Error getting critical DNs: {e}")
-        
-        return critical_dns
+            logger.error(f"Critical DNs error: {e}")
+            return []
     
     def get_high_risk_dns(self, limit: int = 20) -> List[Dict]:
         """Get high-risk DNs (high value + delayed)"""
-        high_risk_dns = []
-        
         try:
-            # Get DNs with high value and delay
-            results = self.db.query(
+            records = self.db.query(
                 DeliveryReport.dn_no,
                 DeliveryReport.customer_name,
                 DeliveryReport.dn_amount,
-                DeliveryReport.dn_create_date,
-                DeliveryReport.pgi_status
+                DeliveryReport.dn_create_date
             ).filter(
                 DeliveryReport.pgi_status != "Completed",
-                DeliveryReport.dn_amount > 500000  # High value threshold
+                DeliveryReport.dn_amount > 1_000_000
             ).order_by(
                 desc(DeliveryReport.dn_amount)
             ).limit(limit).all()
             
-            for dn in results:
-                aging = self.business_rules.calculate_pending_delivery_aging(dn)
-                
-                high_risk_dns.append({
-                    "dn_no": dn.dn_no,
-                    "dealer": dn.customer_name,
-                    "value": float(dn.dn_amount or 0),
-                    "aging_days": aging,
-                    "risk_score": self._calculate_risk_score(dn),
-                    "action": "PRIORITY - High value at risk"
-                })
-        
+            return [{
+                "dn_no": r.dn_no,
+                "dealer": r.customer_name,
+                "value": float(r.dn_amount or 0),
+                "aging_days": (date.today() - r.dn_create_date).days if r.dn_create_date else 0,
+                "risk_score": min(100, (float(r.dn_amount or 0) / 1_000_000) * 50),
+                "action": "PRIORITY - High value at risk"
+            } for r in records]
         except Exception as e:
-            logger.error(f"Error getting high-risk DNs: {e}")
-        
-        return high_risk_dns
+            logger.error(f"High risk DNs error: {e}")
+            return []
     
     def get_critical_pods(self, limit: int = 20) -> List[Dict]:
-        """Get critical pending PODs (pending > 7 days)"""
-        critical_pods = []
-        
+        """Get critical pending PODs (>7 days)"""
         try:
-            cutoff_date = date.today() - timedelta(days=7)
+            threshold_date = date.today() - timedelta(days=7)
             
-            results = self.db.query(
+            records = self.db.query(
                 DeliveryReport.dn_no,
                 DeliveryReport.customer_name,
                 DeliveryReport.dn_amount,
-                DeliveryReport.delivery_date,
-                DeliveryReport.good_issue_date
+                DeliveryReport.delivery_date
             ).filter(
                 DeliveryReport.pgi_status == "Completed",
-                DeliveryReport.pod_status == "Pending",
-                DeliveryReport.delivery_date <= cutoff_date
+                DeliveryReport.pod_status != "Received",
+                DeliveryReport.delivery_date <= threshold_date
             ).order_by(
                 DeliveryReport.delivery_date
             ).limit(limit).all()
             
-            for pod in results:
-                pending_days = self.business_rules.calculate_pending_pod_aging(pod)
-                
-                critical_pods.append({
-                    "dn_no": pod.dn_no,
-                    "dealer": pod.customer_name,
-                    "value": float(pod.dn_amount or 0),
-                    "pending_days": pending_days,
-                    "action": "Send escalation notice to customer"
-                })
-        
+            return [{
+                "dn_no": r.dn_no,
+                "dealer": r.customer_name,
+                "value": float(r.dn_amount or 0),
+                "delivery_date": r.delivery_date,
+                "pending_days": (date.today() - r.delivery_date).days if r.delivery_date else 0,
+                "action": "Send escalation notice to customer"
+            } for r in records]
         except Exception as e:
-            logger.error(f"Error getting critical PODs: {e}")
-        
-        return critical_pods
+            logger.error(f"Critical PODs error: {e}")
+            return []
     
-    def get_high_value_pending_dns(self, limit: int = 20) -> List[Dict]:
-        """Get high-value pending DNs"""
-        high_value_dns = []
-        
+    def get_high_risk_dealers(self, limit: int = 10) -> List[Dict]:
+        """Get high-risk dealers"""
         try:
             results = self.db.query(
-                DeliveryReport.dn_no,
                 DeliveryReport.customer_name,
-                DeliveryReport.dn_amount,
-                DeliveryReport.dn_create_date,
-                DeliveryReport.pgi_status
+                func.count(DeliveryReport.dn_no).label("total_dns"),
+                func.sum(case((DeliveryReport.pgi_status != "Completed", 1), else_=0)).label("pending_dns"),
+                func.sum(case((DeliveryReport.pgi_status != "Completed", DeliveryReport.dn_amount), else_=0)).label("pending_value")
             ).filter(
-                DeliveryReport.pgi_status != "Completed"
+                DeliveryReport.customer_name.isnot(None)
+            ).group_by(
+                DeliveryReport.customer_name
+            ).having(
+                func.sum(case((DeliveryReport.pgi_status != "Completed", 1), else_=0)) > 0
             ).order_by(
-                desc(DeliveryReport.dn_amount)
+                desc("pending_value")
             ).limit(limit).all()
             
-            for dn in results:
-                if float(dn.dn_amount or 0) > 1000000:  # > 10 Lakh
-                    high_value_dns.append({
-                        "dn_no": dn.dn_no,
-                        "dealer": dn.customer_name,
-                        "value": float(dn.dn_amount or 0),
-                        "created_date": dn.dn_create_date,
-                        "aging_days": self.business_rules.calculate_pending_delivery_aging(dn),
-                        "priority": "CRITICAL"
-                    })
-        
+            return [{
+                "dealer": r.customer_name,
+                "pending_dns": r.pending_dns,
+                "pending_value": float(r.pending_value or 0),
+                "risk_score": round((r.pending_dns / r.total_dns * 100) if r.total_dns else 0, 1)
+            } for r in results if r.customer_name]
         except Exception as e:
-            logger.error(f"Error getting high-value pending DNs: {e}")
-        
-        return high_value_dns
+            logger.error(f"High risk dealers error: {e}")
+            return []
     
     def get_top_risks(self, limit: int = 10) -> List[Dict]:
         """Get top risks across the network"""
         risks = []
         
         # Risk 1: High-value pending DNs
-        high_value = self.get_high_value_pending_dns(5)
+        high_value = self.get_high_risk_dns(5)
         if high_value:
             total_value = sum(h["value"] for h in high_value)
             risks.append({
@@ -220,40 +195,19 @@ class ControlTowerService:
             "critical_dns_count": len(self.get_critical_dns(100)),
             "high_risk_count": len(self.get_high_risk_dns(100)),
             "critical_pods_count": len(self.get_critical_pods(100)),
-            "high_value_pending_count": len(self.get_high_value_pending_dns(100)),
-            "total_revenue_at_risk": self._get_total_revenue_at_risk()
+            "high_risk_dealers_count": len(self.get_high_risk_dealers(100))
         }
-    
-    def _get_severity(self, aging_days: int) -> str:
-        """Get severity based on aging"""
-        if aging_days > 30:
-            return "SEVERE"
-        elif aging_days > 15:
-            return "CRITICAL"
-        elif aging_days > 7:
-            return "HIGH"
-        else:
-            return "MEDIUM"
-    
-    def _calculate_risk_score(self, dn) -> int:
-        """Calculate risk score for a DN"""
-        aging = self.business_rules.calculate_pending_delivery_aging(dn)
-        value = float(dn.dn_amount or 0)
-        
-        return self.business_rules.calculate_risk_score(aging, value)
-    
-    def _get_total_revenue_at_risk(self) -> float:
-        """Get total revenue at risk"""
-        try:
-            pending_delivery = self.db.query(func.sum(DeliveryReport.dn_amount)).filter(
-                DeliveryReport.pgi_status != "Completed"
-            ).scalar() or 0
-            
-            pending_pod = self.db.query(func.sum(DeliveryReport.dn_amount)).filter(
-                DeliveryReport.pgi_status == "Completed",
-                DeliveryReport.pod_status == "Pending"
-            ).scalar() or 0
-            
-            return float(pending_delivery + pending_pod)
-        except:
-            return 0
+
+
+# Helper for SQL CASE
+def case(when, then, else_=0):
+    from sqlalchemy import case as sa_case
+    return sa_case(when, then, else_=else_)
+
+
+# ==========================================================
+# FACTORY FUNCTION
+# ==========================================================
+
+def get_control_tower_service(db: Session, cache_service=None) -> ControlTowerService:
+    return ControlTowerService(db, cache_service)
