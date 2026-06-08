@@ -1,15 +1,13 @@
 # ==========================================================
-# FILE: app/routes/webhook.py (PRODUCTION READY v16.0)
+# FILE: app/routes/webhook.py (PRODUCTION READY v17.0)
 # ==========================================================
-# CRITICAL FIXES v16.0:
-# - FIXED: safe_background_task returns None (now direct call)
-# - FIXED: AI health check no longer calls AI (removed dangerous call)
-# - FIXED: Blocking time.sleep() replaced with asyncio.sleep()
-# - FIXED: Database session thread safety (new session per thread)
-# - FIXED: Duplicate cache now stores send status
-# - ADDED: WhatsApp API response logging
-# - ADDED: Cache only successful responses
-# - FIXED: Signature verification for production
+# CRITICAL FIXES v17.0:
+# - REMOVED: send_typing_indicator import (function doesn't exist)
+# - FIXED: WhatsApp service import now works
+# - FIXED: MOCK mode no longer triggers (real API calls work)
+# - REMOVED: safe_typing_indicator function
+# - FIXED: AI processing function signature
+# - ADDED: Proper error messages for debugging
 # ==========================================================
 
 import os
@@ -47,7 +45,6 @@ MAX_MESSAGE_LENGTH = 1000
 MAX_RETRIES = 3
 RETRY_DELAYS = [1, 2, 4]
 AI_TIMEOUT_SECONDS = 30
-TYPING_INDICATOR_TIMEOUT = 5
 CACHE_MAX_SIZE = 1000
 RATE_LIMIT_MAX_REQUESTS = 20
 RATE_LIMIT_WINDOW = 60
@@ -77,24 +74,24 @@ except ImportError:
     REDIS_AVAILABLE = False
     logger.warning("⚠️ Redis not available")
 
+# CRITICAL FIX: Remove send_typing_indicator - it doesn't exist!
 try:
-    from app.services.whatsapp_service import send_text_message, send_typing_indicator
+    from app.services.whatsapp_service import send_text_message
     WHATSAPP_SERVICE_AVAILABLE = True
     logger.info("✅ WhatsApp service loaded at startup")
 except ImportError as e:
     WHATSAPP_SERVICE_AVAILABLE = False
     logger.error(f"❌ WhatsApp service import failed: {e}")
+except Exception as e:
+    WHATSAPP_SERVICE_AVAILABLE = False
+    logger.exception(f"❌ WhatsApp service init failed: {e}")
 
 # ==========================================================
-# WEBHOOK SIGNATURE VERIFICATION (SECURITY)
+# WEBHOOK SIGNATURE VERIFICATION
 # ==========================================================
 
 def verify_webhook_signature(payload: bytes, signature: str, secret: str) -> bool:
-    """
-    Verify WhatsApp webhook signature using SHA256
-    CRITICAL SECURITY: Prevents spoofed webhook calls
-    """
-    # CRITICAL FIX #8: In production, require signature
+    """Verify WhatsApp webhook signature using SHA256"""
     if not secret:
         logger.warning("Webhook secret not configured - skipping verification")
         return True
@@ -116,18 +113,12 @@ def verify_webhook_signature(payload: bytes, signature: str, secret: str) -> boo
         return False
 
 # ==========================================================
-# RUNTIME HEALTH CHECK FUNCTIONS (FIXED - NO AI CALL)
+# RUNTIME HEALTH CHECK FUNCTIONS
 # ==========================================================
 
 def is_ai_service_healthy() -> bool:
-    """
-    Runtime health check for AI service
-    FIXED: No longer calls AI - just returns availability status
-    """
+    """Runtime health check for AI service"""
     global AI_SERVICE_AVAILABLE
-    
-    # Simple check - just return the last known status
-    # Actual health check is done at startup
     return AI_SERVICE_AVAILABLE
 
 def is_database_healthy(db: Session) -> bool:
@@ -194,7 +185,7 @@ def clear_current_context():
     _request_context.set(None)
 
 # ==========================================================
-# ENHANCED DUPLICATE DETECTOR (Stores send status)
+# ENHANCED DUPLICATE DETECTOR
 # ==========================================================
 
 class EnhancedDuplicateDetector:
@@ -216,10 +207,6 @@ class EnhancedDuplicateDetector:
                 logger.warning(f"Redis duplicate detection failed: {e}")
     
     def is_duplicate_and_was_sent(self, phone_number: str, message_id: str) -> Tuple[bool, bool]:
-        """
-        Returns (is_duplicate, was_sent)
-        If duplicate but not sent, we should resend
-        """
         if not message_id:
             return False, False
         
@@ -228,12 +215,10 @@ class EnhancedDuplicateDetector:
                 key = f"msg:{phone_number}:{message_id}"
                 data = self.redis_client.get(key)
                 if data:
-                    # Parse stored data
                     stored = json.loads(data)
                     return True, stored.get("sent", False)
                 return False, False
             
-            # Memory fallback
             if phone_number in self.memory_messages:
                 if message_id in self.memory_messages[phone_number]:
                     stored = self.memory_messages[phone_number][message_id]
@@ -245,7 +230,6 @@ class EnhancedDuplicateDetector:
             return False, False
     
     def mark_processed(self, phone_number: str, message_id: str, sent: bool = True):
-        """Mark message as processed with send status"""
         if not message_id:
             return
         
@@ -257,11 +241,9 @@ class EnhancedDuplicateDetector:
                 self.redis_client.setex(key, self.expiry, data)
                 return
             
-            # Memory fallback
             if phone_number not in self.memory_messages:
                 self.memory_messages[phone_number] = {}
             
-            # Clean expired entries
             now = time.time()
             expired = [k for k, v in self.memory_messages[phone_number].items() 
                       if now - v.get("timestamp", 0) > self.expiry]
@@ -276,7 +258,7 @@ class EnhancedDuplicateDetector:
 duplicate_detector = EnhancedDuplicateDetector()
 
 # ==========================================================
-# CACHE WITH SIZE LIMIT (Only stores successful responses)
+# CACHE WITH SIZE LIMIT
 # ==========================================================
 
 class RedisCacheService:
@@ -319,8 +301,6 @@ class RedisCacheService:
             return None
     
     def set(self, key: str, value: str):
-        """Only cache successful, non-error responses"""
-        # CRITICAL FIX #7: Don't cache error responses
         if not value:
             return
         
@@ -332,7 +312,6 @@ class RedisCacheService:
                 logger.debug(f"Not caching error response: {value[:50]}")
                 return
         
-        # Also don't cache very short responses
         if len(value) < 50:
             logger.debug(f"Not caching short response: {len(value)} chars")
             return
@@ -368,7 +347,7 @@ class RedisCacheService:
 cache_service = RedisCacheService()
 
 # ==========================================================
-# ASYNC RATE LIMITER (No blocking sleep)
+# ASYNC RATE LIMITER
 # ==========================================================
 
 class AsyncRateLimiter:
@@ -418,7 +397,6 @@ class AsyncRateLimiter:
                 }
                 return True, 0, headers
             
-            # Memory fallback
             now = time.time()
             if phone_number not in self.memory_limits:
                 self.memory_limits[phone_number] = []
@@ -478,7 +456,7 @@ class Metrics:
 metrics = Metrics()
 
 # ==========================================================
-# ASYNC WHATSAPP SENDER WITH RETRY (No blocking sleep)
+# ASYNC WHATSAPP SENDER WITH RETRY
 # ==========================================================
 
 async def safe_send_reply_async(phone_number: str, message: str, request_id: str = None) -> Dict:
@@ -489,12 +467,10 @@ async def safe_send_reply_async(phone_number: str, message: str, request_id: str
         logger.error(f"[{rid}] Cannot send reply: Missing phone number")
         return {"success": False, "error": "Missing phone number"}
     
-    # Validate response before sending
     if not message or len(message.strip()) == 0:
         logger.error(f"[{rid}] Cannot send empty message to {phone_number}")
         message = "⚠️ No response generated. Please try again."
     
-    # Limit message size
     if len(message) > MAX_WHATSAPP_LENGTH:
         message = message[:MAX_WHATSAPP_LENGTH] + "\n\n... (message truncated)"
         logger.warning(f"[{rid}] Message truncated to {MAX_WHATSAPP_LENGTH} chars")
@@ -504,7 +480,6 @@ async def safe_send_reply_async(phone_number: str, message: str, request_id: str
             if WHATSAPP_SERVICE_AVAILABLE:
                 result = send_text_message(phone_number, message)
                 
-                # Log WhatsApp API response (CRITICAL FIX #6)
                 logger.info(f"[{rid}] WhatsApp API Response: success={result.get('success')}, "
                            f"status={result.get('status_code')}, "
                            f"message_id={result.get('message_id')}, "
@@ -519,23 +494,22 @@ async def safe_send_reply_async(phone_number: str, message: str, request_id: str
                     metrics.record_retry()
                     wait_time = RETRY_DELAYS[attempt]
                     logger.warning(f"[{rid}] ⚠️ Send attempt {attempt + 1} failed, retrying in {wait_time}s")
-                    await asyncio.sleep(wait_time)  # FIXED: Non-blocking sleep
+                    await asyncio.sleep(wait_time)
                     continue
                 else:
                     metrics.record_send_failed()
                     logger.error(f"[{rid}] ❌ Send failed after {MAX_RETRIES} attempts")
                     return result
             else:
-                logger.info(f"[{rid}] MOCK SEND to {phone_number}: {message[:100]}")
-                metrics.record_send_success()
-                return {"success": True, "mode": "mock"}
+                logger.error(f"[{rid}] ❌ WhatsApp service NOT AVAILABLE - cannot send message")
+                return {"success": False, "error": "WhatsApp service not available", "mode": "unavailable"}
                 
         except Exception as e:
             if attempt < MAX_RETRIES - 1:
                 metrics.record_retry()
                 wait_time = RETRY_DELAYS[attempt]
                 logger.warning(f"[{rid}] ⚠️ Send exception on attempt {attempt + 1}, retrying in {wait_time}s: {e}")
-                await asyncio.sleep(wait_time)  # FIXED: Non-blocking sleep
+                await asyncio.sleep(wait_time)
             else:
                 metrics.record_send_failed()
                 logger.exception(f"[{rid}] ❌ Send failed after {MAX_RETRIES} attempts: {e}")
@@ -547,31 +521,11 @@ def get_media_response(media_type: str) -> str:
     return "📱 Please send text messages only. Type 'Help' for available commands."
 
 # ==========================================================
-# BACKGROUND TASK (Simplified)
-# ==========================================================
-
-async def safe_typing_indicator(phone_number: str):
-    """Send typing indicator with timeout"""
-    try:
-        if WHATSAPP_SERVICE_AVAILABLE:
-            await asyncio.wait_for(
-                asyncio.to_thread(send_typing_indicator, phone_number),
-                timeout=TYPING_INDICATOR_TIMEOUT
-            )
-    except asyncio.TimeoutError:
-        logger.warning(f"Typing indicator timeout for {phone_number}")
-    except Exception as e:
-        logger.error(f"Typing indicator failed: {e}")
-
-# ==========================================================
-# AI PROCESSING WITH TIMEOUT (Thread-safe DB session)
+# AI PROCESSING WITH TIMEOUT
 # ==========================================================
 
 async def process_with_timeout(question: str, phone_number: str, request_id: str) -> str:
-    """
-    Process AI query with timeout
-    FIXED: Creates new DB session in thread to avoid cross-thread issues
-    """
+    """Process AI query with timeout"""
     rid = request_id[:8]
     
     if not is_ai_service_healthy():
@@ -582,12 +536,15 @@ async def process_with_timeout(question: str, phone_number: str, request_id: str
     
     def _run_ai():
         """Run AI in separate thread with its own DB session"""
-        # CRITICAL FIX #4: Create new DB session in this thread
         from app.database import SessionLocal
         db = SessionLocal()
         try:
-            result = process_whatsapp_query(question, db, phone_number)
+            # Correct function signature: process_whatsapp_query(question, db, user_phone, user_role)
+            result = process_whatsapp_query(question, db, phone_number, "guest")
             return result
+        except Exception as e:
+            logger.exception(f"AI processing error: {e}")
+            return f"⚠️ Error: {str(e)[:100]}"
         finally:
             db.close()
     
@@ -606,7 +563,7 @@ async def process_with_timeout(question: str, phone_number: str, request_id: str
     except Exception as e:
         logger.exception(f"[{rid}] ❌ AI processing error: {e}")
         metrics.record_ai_error()
-        raise
+        return f"⚠️ Processing error: {str(e)[:100]}"
 
 # ==========================================================
 # WEBHOOK VERIFICATION (GET)
@@ -783,7 +740,6 @@ async def process_single_message(
             return {"skipped": True, "reason": "duplicate_already_sent"}
         elif is_dup and not was_sent:
             logger.info(f"[{rid}] Duplicate message - previous send failed, retrying")
-            # Continue processing - we need to resend
         
         # Cache check
         cache_key = cache_service.get_cache_key(customer_message)
@@ -795,7 +751,6 @@ async def process_single_message(
             send_result = await safe_send_reply_async(phone_number, cached_response, rid)
             logger.info(f"[{rid}] Cache send result: {send_result.get('success')}")
             
-            # Mark as processed with send status
             duplicate_detector.mark_processed(phone_number, message_id, send_result.get("success", False))
             
             if is_dn_query and dn_query_start:
@@ -813,7 +768,7 @@ async def process_single_message(
             duplicate_detector.mark_processed(phone_number, message_id, send_result.get("success", False))
             return {"error": "ai_unavailable"}
         
-        # Process with AI (FIXED: No DB session passed)
+        # Process with AI
         try:
             logger.info(f"[{rid}] 🤖 Calling AI service...")
             response = await process_with_timeout(customer_message, phone_number, rid)
@@ -828,25 +783,22 @@ async def process_single_message(
                     metrics.record_dn_found()
                     logger.info(f"[{rid}] 🔢 DN FOUND: {customer_message} ({dn_query_time:.0f}ms)")
             
-            # Cache only successful responses (FIXED)
+            # Cache only successful responses
             if response and len(response) > 100 and not response.startswith("⚠️"):
                 cache_service.set(cache_key, response)
                 logger.info(f"[{rid}] 💾 Response cached")
             
-            # Send response - DIRECT CALL (FIXED: No safe_background_task)
+            # Send response
             send_result = await safe_send_reply_async(phone_number, response, rid)
             
-            # CRITICAL FIX #1: Log send result
             logger.info(f"[{rid}] 📤 WhatsApp Send Result: success={send_result.get('success')}, "
                        f"message_id={send_result.get('message_id')}, "
                        f"error={send_result.get('error', 'none')}")
             
-            # Mark as processed with send status
             duplicate_detector.mark_processed(phone_number, message_id, send_result.get("success", False))
             
             total_time = context.get_total_time_ms()
             
-            # Flow summary
             logger.info(
                 f"[{rid}] 📊 FLOW SUMMARY | "
                 f"Phone={phone_number} | "
@@ -884,7 +836,7 @@ async def health_check():
     """Health check endpoint"""
     return {
         "status": "healthy" if (AI_SERVICE_AVAILABLE and WHATSAPP_SERVICE_AVAILABLE) else "degraded",
-        "version": "16.0",
+        "version": "17.0",
         "timestamp": datetime.utcnow().isoformat(),
         "components": {
             "ai_service": AI_SERVICE_AVAILABLE,
@@ -934,7 +886,7 @@ async def test_dn_lookup(dn_number: str):
 async def status():
     """Detailed status endpoint"""
     return {
-        "service": "WhatsApp Webhook v16.0",
+        "service": "WhatsApp Webhook v17.0",
         "ai_service": AI_SERVICE_AVAILABLE,
         "whatsapp_service": WHATSAPP_SERVICE_AVAILABLE,
         "redis_available": REDIS_AVAILABLE,
@@ -956,4 +908,4 @@ async def status():
 
 @router.get("/test")
 async def test():
-    return {"success": True, "message": "Webhook is running", "version": "16.0"}
+    return {"success": True, "message": "Webhook is running", "version": "17.0"}
