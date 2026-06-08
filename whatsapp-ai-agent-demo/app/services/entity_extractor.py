@@ -1,11 +1,17 @@
 # ==========================================================
-# FILE: app/services/entity_extractor.py
+# FILE: app/services/entity_extractor.py (ENTERPRISE v3.0)
+# ==========================================================
+# ENTITY EXTRACTION ENGINE
+# - Extracts structured entities from natural language
+# - Supports DN, Dealer, Product, City, Warehouse, etc.
+# - Fuzzy matching for dealer names
 # ==========================================================
 
 import re
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Any, Optional, List, Tuple
 from dataclasses import dataclass
+from collections import defaultdict
 
 
 class EntityType(str, Enum):
@@ -32,33 +38,42 @@ class ExtractedEntity:
 
 class EntityExtractor:
     """
-    Entity extraction engine.
-    Extracts structured entities from natural language.
+    Entity Extraction Engine
+    
+    Extracts structured entities from natural language queries.
+    Supports pattern matching, keyword detection, and fuzzy matching.
     """
     
-    # Entity patterns
+    # ==========================================================
+    # ENTITY PATTERNS
+    # ==========================================================
+    
     PATTERNS = {
         EntityType.DN_NUMBER: [
-            r'\b(\d{6,15})\b',
-            r'DN[:\s]*(\d{6,15})',
-            r'Delivery\s*Note[:\s]*(\d{6,15})',
+            r'\b(\d{10,15})\b',
+            r'DN[:\s]*(\d{10,15})',
+            r'Delivery\s*Note[:\s]*(\d{10,15})',
+            r'DN\s*#?\s*(\d{10,15})',
         ],
         EntityType.DEALER: [
             r'dealer[:\s]+([A-Za-z0-9\s&\.]+?)(?:\s+(?:dashboard|performance|risk|sales|report)|$|,|\.)',
             r'(?:for|of|with)\s+dealer\s+([A-Za-z0-9\s&\.]+?)(?:\s+(?:dashboard|performance)|$|,|\.)',
+            r'^([A-Za-z0-9\s&\.]{2,50})(?:\s+(?:dashboard|performance|report|sales|details|info|status)|$)',
         ],
         EntityType.PRODUCT: [
             r'product[:\s]+([A-Z0-9\-]+)',
             r'([A-Z]{2,3}-[0-9A-Z\-]+)',
-            r'\b(HSU|HSP|HSW|HSE|HRF|HVF)[-\s]*[0-9A-Z]+\b',
+            r'\b(HSU|HSP|HSW|HSE|HRF|HVF|HWM|HTV)[-\s]*[0-9A-Z]+\b',
         ],
         EntityType.WAREHOUSE: [
             r'warehouse[:\s]+([A-Za-z\s]+?)(?:\s+(?:dashboard|performance|report)|$|,|\.)',
             r'wh[:\s]+([A-Za-z\s]+?)(?:\s+(?:performance)|$|,)',
+            r'^([A-Za-z\s]+)\s+warehouse$',
         ],
         EntityType.CITY: [
             r'city[:\s]+([A-Za-z\s]+?)(?:\s+(?:dashboard|performance|report)|$|,|\.)',
             r'in\s+([A-Za-z\s]+?)(?:\s+(?:city|region)|$|,|\.)',
+            r'^([A-Za-z\s]+)\s+city$',
         ],
         EntityType.DIVISION: [
             r'division[:\s]+([A-Za-z\s]+?)(?:\s+(?:dashboard|performance)|$|,|\.)',
@@ -75,24 +90,27 @@ class EntityExtractor:
         EntityType.DATE_RANGE: [
             r'(?:last|past)\s+(\d+)\s+(day|week|month|year)s?',
             r'(?:from|between)\s+(\d{4}-\d{2}-\d{2})\s+(?:to|and)\s+(\d{4}-\d{2}-\d{2})',
+            r'(?:last|previous)\s+(week|month|quarter|year)',
         ],
     }
     
-    # City names (Pakistan major cities)
+    # Known cities in Pakistan (for implicit detection)
     PAKISTAN_CITIES = {
         'karachi', 'lahore', 'islamabad', 'rawalpindi', 'faisalabad',
         'multan', 'peshawar', 'quetta', 'gujranwala', 'sialkot',
-        'hyderabad', 'sukkur', 'bahawalpur', 'sargodha', 'jhelum'
+        'hyderabad', 'sukkur', 'bahawalpur', 'sargodha', 'jhelum',
+        'gujrat', 'sheikhupura', 'jhang', 'dera ghazi khan'
     }
     
-    # Warehouse names
+    # Known warehouses
     WAREHOUSES = {
-        'lahore', 'karachi', 'islamabad', 'faisalabad', 'multan',
-        'sukkur', 'hyderabad', 'peshawar', 'quetta', 'gujranwala'
+        'lahore', 'karachi', 'islamabad', 'rawalpindi', 'faisalabad',
+        'multan', 'sukkur', 'hyderabad', 'peshawar', 'quetta', 'gujranwala',
+        'lahore warehouse', 'karachi warehouse', 'islamabad warehouse'
     }
     
     def __init__(self):
-        # Compile all patterns
+        """Initialize with compiled regex patterns"""
         self.compiled_patterns = {}
         for entity_type, patterns in self.PATTERNS.items():
             self.compiled_patterns[entity_type] = [
@@ -113,27 +131,23 @@ class EntityExtractor:
             for pattern in patterns:
                 match = pattern.search(text)
                 if match:
-                    # Get the captured group
                     groups = match.groups()
                     if groups:
                         value = groups[0].strip()
-                        
-                        # Post-process value
                         value = self._post_process(entity_type, value)
-                        
                         if value:
                             entities[entity_type] = ExtractedEntity(
                                 type=entity_type,
                                 value=value,
                                 confidence=0.95
                             )
-                            break  # Take first match for this entity type
+                            break
         
-        # Special handling: detect cities without "city" keyword
+        # Implicit detection for cities
         self._detect_implicit_cities(text, entities)
         
-        # Special handling: detect products by pattern
-        self._detect_product_patterns(text, entities)
+        # Implicit detection for warehouses
+        self._detect_implicit_warehouses(text, entities)
         
         return entities
     
@@ -143,7 +157,7 @@ class EntityExtractor:
         
         if entity_type == EntityType.DEALER:
             # Remove common suffixes
-            for suffix in ['dashboard', 'performance', 'risk', 'sales', 'report']:
+            for suffix in ['dashboard', 'performance', 'risk', 'sales', 'report', 'details', 'info', 'status']:
                 if value.lower().endswith(suffix):
                     value = value[:-len(suffix)].strip()
         
@@ -167,10 +181,8 @@ class EntityExtractor:
         
         for city in self.PAKISTAN_CITIES:
             if city in text_lower:
-                # Check if not already extracted as city
                 if EntityType.CITY not in entities:
-                    # Check if it's likely a city reference
-                    if any(keyword in text_lower for keyword in ['in', 'at', 'from', 'to', 'for']):
+                    if any(keyword in text_lower for keyword in ['in', 'at', 'from', 'to', 'for', 'city']):
                         entities[EntityType.CITY] = ExtractedEntity(
                             type=EntityType.CITY,
                             value=city.title(),
@@ -178,20 +190,24 @@ class EntityExtractor:
                         )
                         break
     
-    def _detect_product_patterns(self, text: str, entities: Dict):
-        """Detect product codes using specific patterns"""
-        if EntityType.PRODUCT in entities:
-            return
+    def _detect_implicit_warehouses(self, text: str, entities: Dict):
+        """Detect warehouse names without explicit 'warehouse' keyword"""
+        text_lower = text.lower()
         
-        # Look for Haier product patterns
-        haier_pattern = re.compile(r'\b(H[A-Z]{2}-\d{2,}[A-Z0-9]*)\b', re.IGNORECASE)
-        match = haier_pattern.search(text.upper())
-        if match:
-            entities[EntityType.PRODUCT] = ExtractedEntity(
-                type=EntityType.PRODUCT,
-                value=match.group(1),
-                confidence=0.90
-            )
+        for warehouse in self.WAREHOUSES:
+            if warehouse in text_lower:
+                if EntityType.WAREHOUSE not in entities:
+                    if any(keyword in text_lower for keyword in ['warehouse', 'wh', 'from', 'at']):
+                        entities[EntityType.WAREHOUSE] = ExtractedEntity(
+                            type=EntityType.WAREHOUSE,
+                            value=warehouse.title(),
+                            confidence=0.80
+                        )
+                        break
+    
+    # ==========================================================
+    # SINGLE ENTITY EXTRACTION METHODS
+    # ==========================================================
     
     def extract_dn_number(self, text: str) -> Optional[str]:
         """Extract DN number specifically"""
@@ -212,8 +228,9 @@ class EntityExtractor:
     
     def extract_product(self, text: str) -> Optional[str]:
         """Extract product code specifically"""
+        text_upper = text.upper()
         for pattern in self.compiled_patterns[EntityType.PRODUCT]:
-            match = pattern.search(text.upper())
+            match = pattern.search(text_upper)
             if match:
                 return match.group(1).strip()
         return None
@@ -250,11 +267,17 @@ class EntityExtractor:
             if match:
                 groups = match.groups()
                 if len(groups) == 2:
-                    # Relative range: "last 30 days"
-                    days = int(groups[0])
-                    unit = groups[1]
-                    return ('relative', f"{days} {unit}")
+                    return ('relative', groups[0], groups[1])
                 elif len(groups) == 3:
-                    # Absolute range: "from 2024-01-01 to 2024-12-31"
                     return ('absolute', groups[1], groups[2])
         return None
+    
+    def get_entity_summary(self, entities: Dict) -> Dict:
+        """Get human-readable summary of extracted entities"""
+        summary = {}
+        for entity_type, entity in entities.items():
+            summary[entity_type.value] = {
+                "value": entity.value,
+                "confidence": entity.confidence
+            }
+        return summary
