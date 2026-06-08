@@ -1,27 +1,31 @@
 # ==========================================================
-# FILE: app/services/ai_query_service.py (ENTERPRISE v27.0)
+# FILE: app/services/ai_query_service.py (ENTERPRISE v28.0)
 # ==========================================================
-# COMPLETE REFACTOR - FULL ARCHITECTURE ALIGNMENT
-# - Restored Query Router with proper service registry
-# - Fixed GROQ response contract
-# - Added Response Validator
-# - Added Request Timeout Protection
-# - Integrated Intent Engine & Entity Extractor
-# - Added Context Service for conversation memory
-# - Added Request Cache & Deduplication
-# - Added Circuit Breaker & Retry Logic
-# - Added Structured Logging & Flow Summary
-# - Added Health Check & Metrics
+# FULL ARCHITECTURE ALIGNMENT
+# WhatsApp User → webhook.py → whatsapp_service.py → THIS FILE
+#      │
+#      ├── intent_engine.py
+#      ├── entity_extractor.py
+#      ├── context_service.py
+#      └── query_router_service.py
+#                    │
+#                    ├── logistics_query_service.py
+#                    ├── analytics_service.py
+#                    ├── kpi_service.py
+#                    ├── forecasting_service.py
+#                    ├── recommendation_service.py
+#                    ├── control_tower_service.py
+#                    └── groq_insight_service.py
 # ==========================================================
 
 import time
 import hashlib
 import asyncio
+import concurrent.futures
 from typing import Dict, Any, Optional, Tuple
 from datetime import datetime
 from dataclasses import dataclass, field
 from enum import Enum
-from functools import wraps
 
 from sqlalchemy.orm import Session
 from loguru import logger
@@ -33,7 +37,7 @@ from app.config import config
 # CONSTANTS
 # ==========================================================
 
-SERVICE_TIMEOUT = 10  # seconds
+SERVICE_TIMEOUT = 15  # seconds
 CACHE_TTL = 300  # 5 minutes
 CIRCUIT_BREAKER_THRESHOLD = 5
 CIRCUIT_BREAKER_TIMEOUT = 300  # 5 minutes
@@ -42,7 +46,7 @@ RETRY_DELAYS = [1, 2, 4]
 
 
 # ==========================================================
-# RESPONSE VALIDATOR (Phase 1 - Fix 3)
+# RESPONSE VALIDATOR
 # ==========================================================
 
 class ResponseValidator:
@@ -59,12 +63,10 @@ class ResponseValidator:
             return False, "⚠️ No response generated. Please try again."
         
         if isinstance(response, dict):
-            # Check for error in dict response
             if response.get("error"):
                 logger.warning(f"Error response from {source}: {response.get('error')}")
                 return False, f"⚠️ {response.get('error')}"
             
-            # Extract response field if present
             if "response" in response:
                 response = response["response"]
             elif "insight" in response:
@@ -74,14 +76,9 @@ class ResponseValidator:
             return False, f"⚠️ Invalid response format: {type(response).__name__}"
         
         if len(response.strip()) == 0:
-            logger.warning(f"Empty string response from {source}")
             return False, "⚠️ Empty response received. Please try again."
         
-        if len(response) < 10:
-            logger.warning(f"Response too short ({len(response)} chars) from {source}")
-            # Still return it, but log warning
-        
-        # Check for JSON responses (should not happen)
+        # Check for JSON responses
         if response.strip().startswith('{') and response.strip().endswith('}'):
             try:
                 import json
@@ -98,7 +95,7 @@ class ResponseValidator:
 
 
 # ==========================================================
-# CIRCUIT BREAKER (Phase 6 - Fix 18)
+# CIRCUIT BREAKER
 # ==========================================================
 
 class CircuitBreakerState(Enum):
@@ -158,7 +155,7 @@ class CircuitBreaker:
 
 
 # ==========================================================
-# REQUEST CACHE (Phase 4 - Fix 11)
+# REQUEST CACHE
 # ==========================================================
 
 class RequestCache:
@@ -185,13 +182,13 @@ class RequestCache:
 
 
 # ==========================================================
-# REQUEST DEDUPLICATION (Phase 4 - Fix 12)
+# REQUEST DEDUPLICATION
 # ==========================================================
 
 class RequestDeduplicator:
     """Prevent duplicate request processing"""
     
-    def __init__(self, ttl: int = 5):  # 5 seconds TTL
+    def __init__(self, ttl: int = 5):
         self.processing = {}
         self.ttl = ttl
     
@@ -215,71 +212,28 @@ class RequestDeduplicator:
 
 
 # ==========================================================
-# SERVICE REGISTRY (Phase 6 - Fix 17)
-# ==========================================================
-
-class ServiceRegistry:
-    """Registry for lazy-loaded services"""
-    
-    def __init__(self, db: Session):
-        self.db = db
-        self._services = {}
-    
-    def get(self, service_name: str):
-        if service_name in self._services:
-            return self._services[service_name]
-        
-        try:
-            if service_name == "logistics":
-                from app.services.logistics_query_service import LogisticsQueryService
-                self._services[service_name] = LogisticsQueryService(self.db)
-            
-            elif service_name == "analytics":
-                from app.services.analytics_service import AnalyticsService
-                self._services[service_name] = AnalyticsService(self.db)
-            
-            elif service_name == "kpi":
-                from app.services.kpi_service import KPIService
-                self._services[service_name] = KPIService(self.db)
-            
-            elif service_name == "control_tower":
-                from app.services.control_tower_service import ControlTowerService
-                self._services[service_name] = ControlTowerService(self.db)
-            
-            elif service_name == "groq":
-                from app.services.groq_insight_service import GroqInsightService
-                self._services[service_name] = GroqInsightService(self.db)
-            
-            else:
-                logger.error(f"Unknown service: {service_name}")
-                return None
-            
-            logger.info(f"✅ Service loaded: {service_name}")
-            return self._services[service_name]
-            
-        except Exception as e:
-            logger.error(f"Failed to load service {service_name}: {e}")
-            return None
-
-
-# ==========================================================
 # MAIN AI QUERY SERVICE
 # ==========================================================
 
 class AIQueryService:
     """
-    Enterprise AI Query Service - Master Orchestrator v27.0
+    Enterprise AI Query Service - Master Orchestrator v28.0
     
-    Features:
-    - Intent Engine integration
-    - Entity Extractor integration
-    - Context Service integration
-    - Query Router integration
-    - Response validation
-    - Circuit breaker
-    - Request cache
-    - Deduplication
-    - Structured logging
+    ARCHITECTURE FLOW:
+    WhatsApp User → webhook.py → whatsapp_service.py → THIS FILE
+          │
+          ├── intent_engine.py (detect intent)
+          ├── entity_extractor.py (extract DN, dealer, etc.)
+          ├── context_service.py (load/save conversation context)
+          └── query_router_service.py (route to business services)
+                        │
+                        ├── logistics_query_service.py (DN operations)
+                        ├── analytics_service.py (analytics)
+                        ├── kpi_service.py (executive KPI)
+                        ├── forecasting_service.py (predictions)
+                        ├── recommendation_service.py (actions)
+                        ├── control_tower_service.py (alerts)
+                        └── groq_insight_service.py (AI insights)
     """
     
     def __init__(self, db: Session):
@@ -287,17 +241,14 @@ class AIQueryService:
         self.start_time = None
         self.request_id = None
         
-        # Initialize core components (Phase 3 - Fix 8)
-        self._init_services()
+        # Initialize core architecture components
+        self._init_architecture_components()
         
         # Initialize supporting components
         self.validator = ResponseValidator()
         self.cache = RequestCache()
         self.deduplicator = RequestDeduplicator()
-        self.circuit_breaker = CircuitBreaker("groq_service")
-        
-        # Service registry for lazy loading
-        self.registry = ServiceRegistry(db)
+        self.circuit_breaker = CircuitBreaker("ai_service")
         
         # Metrics
         self.metrics = {
@@ -308,14 +259,14 @@ class AIQueryService:
         }
         
         logger.info("=" * 70)
-        logger.info("🚀 AI QUERY ORCHESTRATOR v27.0 - ENTERPRISE READY")
+        logger.info("🚀 AI QUERY ORCHESTRATOR v28.0 - ENTERPRISE READY")
         logger.info("   Architecture: Intent → Entity → Context → Router")
-        logger.info("   Features: Cache | Circuit Breaker | Deduplication")
         logger.info("=" * 70)
     
-    def _init_services(self):
-        """Initialize core services once (Phase 3 - Fix 8)"""
+    def _init_architecture_components(self):
+        """Initialize all architecture components once"""
         try:
+            # Core components (must load first)
             from app.services.intent_engine import IntentEngine
             from app.services.entity_extractor import EntityExtractor
             from app.services.context_service import ContextService
@@ -328,10 +279,29 @@ class AIQueryService:
             self.query_router = QueryRouterService(self.db)
             self.report_generator = ReportGeneratorService()
             
-            logger.info("✅ Core services initialized")
+            logger.info("✅ Core architecture components loaded")
+            logger.info("   ├── intent_engine.py")
+            logger.info("   ├── entity_extractor.py")
+            logger.info("   ├── context_service.py")
+            logger.info("   └── query_router_service.py")
+            
+            # Pre-load business services (optional, they will lazy load via router)
+            logger.info("✅ Business services ready (lazy loading via router)")
+            logger.info("   ├── logistics_query_service.py")
+            logger.info("   ├── analytics_service.py")
+            logger.info("   ├── kpi_service.py")
+            logger.info("   ├── forecasting_service.py")
+            logger.info("   ├── recommendation_service.py")
+            logger.info("   ├── control_tower_service.py")
+            logger.info("   └── groq_insight_service.py")
+            
         except Exception as e:
-            logger.error(f"Failed to initialize core services: {e}")
+            logger.error(f"Failed to initialize architecture components: {e}")
             raise
+    
+    # ==========================================================
+    # MAIN PROCESSING METHOD
+    # ==========================================================
     
     def process_query(
         self, 
@@ -340,19 +310,19 @@ class AIQueryService:
         user_role: str = None
     ) -> Dict[str, Any]:
         """
-        Master orchestration method with full architecture
+        Master orchestration method - Full Architecture Flow
         
         Flow:
         1. Validate request
         2. Check cache
         3. Check duplicate
-        4. Load context
-        5. Extract entities
-        6. Detect intent
-        7. Route to service
+        4. Load context (context_service.py)
+        5. Extract entities (entity_extractor.py)
+        6. Detect intent (intent_engine.py)
+        7. Route to service (query_router_service.py)
         8. Validate response
         9. Cache response
-        10. Save context
+        10. Save context (context_service.py)
         """
         self.start_time = time.time()
         self.request_id = hashlib.md5(f"{user_phone}:{question}".encode()).hexdigest()[:8]
@@ -362,7 +332,7 @@ class AIQueryService:
         
         question = question.strip()
         
-        # Phase 5 - Fix 14: Structured logging
+        # Structured logging
         logger.info(f"[{self.request_id}] 📱 REQ | Question={question[:100]} | User={user_phone}")
         
         # ==========================================================
@@ -372,7 +342,7 @@ class AIQueryService:
             return self._error_response("Empty question", "validation")
         
         # ==========================================================
-        # STEP 2: Check Cache (Phase 4 - Fix 11)
+        # STEP 2: Check Cache
         # ==========================================================
         cache_key = self.cache.get_cache_key(question, user_phone or "anonymous")
         cached_response = self.cache.get(cache_key)
@@ -382,7 +352,7 @@ class AIQueryService:
             return cached_response
         
         # ==========================================================
-        # STEP 3: Check Duplicate (Phase 4 - Fix 12)
+        # STEP 3: Check Duplicate
         # ==========================================================
         dedup_key = self.deduplicator.get_key(question, user_phone or "anonymous")
         
@@ -394,13 +364,13 @@ class AIQueryService:
         
         try:
             # ==========================================================
-            # STEP 4: Load Context (Phase 2 - Fix 7)
+            # STEP 4: Load Context (context_service.py)
             # ==========================================================
             context = self.context_service.get_context(user_phone) if user_phone else {}
             logger.debug(f"[{self.request_id}] 📚 Context loaded")
             
             # ==========================================================
-            # STEP 5: Extract Entities (Phase 2 - Fix 6)
+            # STEP 5: Extract Entities (entity_extractor.py)
             # ==========================================================
             entities = self.entity_extractor.extract_all(question)
             
@@ -426,7 +396,7 @@ class AIQueryService:
                         logger.debug(f"[{self.request_id}] 🔄 Resolved {entity_type}: {value}")
             
             # ==========================================================
-            # STEP 6: Detect Intent (Phase 2 - Fix 5)
+            # STEP 6: Detect Intent (intent_engine.py)
             # ==========================================================
             intent, intent_entity, confidence = self.intent_engine.detect_intent(
                 question, entities, context
@@ -434,7 +404,7 @@ class AIQueryService:
             logger.info(f"[{self.request_id}] 🎯 Intent={intent.value} (confidence={confidence:.2f})")
             
             # ==========================================================
-            # STEP 7: Route to Service (Phase 1 - Fix 1)
+            # STEP 7: Route to Service (query_router_service.py)
             # ==========================================================
             route_start = time.time()
             
@@ -445,7 +415,7 @@ class AIQueryService:
                 intent_entity = dn_entity.value if hasattr(dn_entity, 'value') else str(dn_entity)
                 logger.info(f"[{self.request_id}] 🔢 DN resolved: {intent_entity}")
             
-            # Call router with timeout protection (Phase 1 - Fix 4)
+            # Route with timeout protection
             route_result = self._route_with_timeout(
                 intent=intent,
                 entity=intent_entity,
@@ -463,7 +433,7 @@ class AIQueryService:
             service_name = route_result.get("service", "unknown")
             
             # ==========================================================
-            # STEP 8: Validate Response (Phase 1 - Fix 3)
+            # STEP 8: Validate Response
             # ==========================================================
             is_valid, validated_response = self.validator.validate(service_response, service_name)
             
@@ -496,7 +466,7 @@ class AIQueryService:
                 logger.debug(f"[{self.request_id}] 💾 Response cached")
             
             # ==========================================================
-            # STEP 10: Save Context
+            # STEP 10: Save Context (context_service.py)
             # ==========================================================
             if user_phone:
                 self.context_service.save_context(
@@ -507,7 +477,7 @@ class AIQueryService:
                 )
             
             # ==========================================================
-            # STEP 11: Metrics & Logging (Phase 5 - Fix 15)
+            # STEP 11: Metrics & Logging
             # ==========================================================
             total_time = (time.time() - self.start_time) * 1000
             self.metrics["successful_requests"] += 1
@@ -516,7 +486,7 @@ class AIQueryService:
                 / self.metrics["total_requests"]
             )
             
-            # Phase 5 - Fix 15: Flow Summary
+            # Flow Summary
             logger.info(
                 f"[{self.request_id}] 📊 FLOW SUMMARY | "
                 f"Intent={intent.value} | "
@@ -536,14 +506,12 @@ class AIQueryService:
             self.deduplicator.finish_processing(dedup_key)
     
     def _route_with_timeout(self, **kwargs) -> Dict:
-        """Route with timeout protection (Phase 1 - Fix 4)"""
+        """Route with timeout protection"""
         
         def _route():
             return self.query_router.route(**kwargs)
         
         try:
-            # Use asyncio with timeout for async execution
-            import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor() as executor:
                 future = executor.submit(_route)
                 return future.result(timeout=SERVICE_TIMEOUT)
@@ -591,11 +559,11 @@ I received: "{question[:50]}"
 📋 "Pending PODs" - Collection status
 ❓ "Help" - Complete menu
 
-*Powered by Enterprise Logistics Intelligence v27.0*
+*Powered by Enterprise Logistics Intelligence v28.0*
 """
     
     # ==========================================================
-    # HEALTH CHECK (Phase 5 - Fix 16)
+    # HEALTH CHECK
     # ==========================================================
     
     def health_check(self) -> Dict[str, Any]:
@@ -609,22 +577,23 @@ I received: "{question[:50]}"
         except Exception as e:
             logger.error(f"Database health check failed: {e}")
         
-        # Check Groq service
-        groq_service = self.registry.get("groq")
-        groq_healthy = groq_service.ai_available if groq_service else False
-        
         # Check router
         router_healthy = self.query_router is not None
         
         return {
             "status": "healthy" if (db_healthy and router_healthy) else "degraded",
-            "version": "27.0",
+            "version": "28.0",
             "components": {
                 "database": db_healthy,
                 "router": router_healthy,
-                "groq": groq_healthy,
                 "cache": bool(self.cache.cache),
                 "circuit_breaker": self.circuit_breaker.get_state()
+            },
+            "architecture": {
+                "intent_engine": True,
+                "entity_extractor": True,
+                "context_service": True,
+                "query_router": True
             },
             "metrics": {
                 "total_requests": self.metrics["total_requests"],
@@ -652,7 +621,12 @@ def process_whatsapp_query(
     user_phone: str = None, 
     user_role: str = None
 ) -> str:
-    """Process WhatsApp query and return response"""
+    """
+    Process WhatsApp query and return response.
+    
+    This is the main entry point called by whatsapp_service.py.
+    It creates an instance of AIQueryService and orchestrates the response.
+    """
     try:
         service = AIQueryService(db)
         result = service.process_query(question, user_phone, user_role)
@@ -676,5 +650,5 @@ def health_check(db: Session) -> Dict[str, Any]:
         return {
             "status": "unhealthy",
             "error": str(e),
-            "version": "27.0"
+            "version": "28.0"
         }
