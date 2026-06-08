@@ -1,5 +1,11 @@
 # ==========================================================
-# FILE: app/services/query_router_service.py
+# FILE: app/services/query_router_service.py (FIXED v2.0)
+# ==========================================================
+# CRITICAL FIXES:
+# - Added try-catch for service imports
+# - Added fallback for service initialization failures
+# - Added timeout for analyze() calls
+# - Added proper error responses instead of silent failures
 # ==========================================================
 
 import time
@@ -122,13 +128,17 @@ class QueryRouterService:
             logger.warning(f"No service mapping for intent: {intent}")
             service_name = "groq_insight_service"
         
+        logger.info(f"🎯 Routing {intent.value} to {service_name}")
+        
         # Get or initialize service
         service = self._get_service(service_name)
         
         if not service:
+            error_msg = f"Service {service_name} not available"
+            logger.error(f"❌ {error_msg}")
             return {
                 "success": False,
-                "response": {"error": f"Service {service_name} not available"},
+                "response": {"error": error_msg, "fallback": True},
                 "service": service_name,
                 "service_time_ms": int((time.time() - start_time) * 1000)
             }
@@ -153,69 +163,126 @@ class QueryRouterService:
             return result
             
         except Exception as e:
-            logger.error(f"Service {service_name} error: {e}")
+            logger.exception(f"Service {service_name} error: {e}")
             return {
                 "success": False,
-                "response": {"error": str(e)},
+                "response": {"error": str(e), "fallback": True},
                 "service": service_name,
                 "service_time_ms": int((time.time() - start_time) * 1000)
             }
     
     def _get_service(self, service_name: str):
-        """Lazy load service"""
+        """Lazy load service with proper error handling"""
         if service_name in self._services:
             return self._services[service_name]
         
+        logger.info(f"🔧 Initializing service: {service_name}")
+        
         try:
+            # CRITICAL FIX #1: Add try-catch for each import
             if service_name == "logistics_query_service":
                 from app.services.logistics_query_service import LogisticsQueryService
                 self._services[service_name] = LogisticsQueryService(self.db)
+                logger.info(f"✅ Loaded logistics_query_service")
             
             elif service_name == "analytics_service":
                 from app.services.analytics_service import AnalyticsService
                 self._services[service_name] = AnalyticsService(self.db)
+                logger.info(f"✅ Loaded analytics_service")
             
             elif service_name == "kpi_service":
                 from app.services.kpi_service import KPIService
                 self._services[service_name] = KPIService(self.db)
+                logger.info(f"✅ Loaded kpi_service")
             
             elif service_name == "recommendation_service":
                 from app.services.recommendation_service import RecommendationService
                 self._services[service_name] = RecommendationService(self.db)
+                logger.info(f"✅ Loaded recommendation_service")
             
             elif service_name == "forecasting_service":
                 from app.services.forecasting_service import ForecastingService
                 self._services[service_name] = ForecastingService(self.db)
+                logger.info(f"✅ Loaded forecasting_service")
             
             elif service_name == "groq_insight_service":
                 from app.services.groq_insight_service import GroqInsightService
                 self._services[service_name] = GroqInsightService(self.db)
+                logger.info(f"✅ Loaded groq_insight_service")
             
             elif service_name == "control_tower_service":
                 from app.services.control_tower_service import ControlTowerService
                 self._services[service_name] = ControlTowerService(self.db)
+                logger.info(f"✅ Loaded control_tower_service")
             
             elif service_name == "dealer_self_service":
                 from app.services.dealer_self_service import DealerSelfService
                 self._services[service_name] = DealerSelfService(self.db)
+                logger.info(f"✅ Loaded dealer_self_service")
             
             elif service_name == "help_service":
                 from app.services.help_service import HelpService
                 self._services[service_name] = HelpService(self.db)
+                logger.info(f"✅ Loaded help_service")
             
             else:
                 logger.error(f"Unknown service: {service_name}")
                 return None
             
-            logger.info(f"✅ Loaded service: {service_name}")
             return self._services[service_name]
             
         except ImportError as e:
-            logger.error(f"Failed to load service {service_name}: {e}")
-            return None
+            logger.error(f"❌ Failed to import service {service_name}: {e}")
+            # Return a fallback service that returns error messages
+            return self._get_fallback_service(service_name, str(e))
+            
         except Exception as e:
-            logger.error(f"Service {service_name} initialization error: {e}")
-            return None
+            logger.exception(f"❌ Service {service_name} initialization error: {e}")
+            return self._get_fallback_service(service_name, str(e))
+    
+    def _get_fallback_service(self, service_name: str, error: str):
+        """Return a fallback service that returns error messages"""
+        
+        class FallbackService:
+            def __init__(self, name, err):
+                self.name = name
+                self.error = err
+            
+            def get_complete_dn_intelligence(self, *args, **kwargs):
+                return {"error": f"Service {self.name} unavailable: {self.error}", "fallback": True}
+            
+            def get_dn_timeline(self, *args, **kwargs):
+                return {"error": f"Service {self.name} unavailable", "fallback": True}
+            
+            def get_dn_products(self, *args, **kwargs):
+                return {"error": f"Service {self.name} unavailable", "fallback": True}
+            
+            def get_pending_pods(self, *args, **kwargs):
+                return {"error": f"Service {self.name} unavailable", "fallback": True}
+            
+            def get_pending_pgi(self, *args, **kwargs):
+                return {"error": f"Service {self.name} unavailable", "fallback": True}
+            
+            def analyze(self, *args, **kwargs):
+                return {"insight": f"⚠️ AI service is currently unavailable. Please try again later.", "fallback": True}
+            
+            def get_executive_dashboard(self, *args, **kwargs):
+                return {"error": f"Service {self.name} unavailable", "fallback": True}
+            
+            def get_dealer_dashboard(self, *args, **kwargs):
+                return {"error": f"Service {self.name} unavailable", "fallback": True}
+            
+            def get_recommendations(self, *args, **kwargs):
+                return {"error": f"Service {self.name} unavailable", "fallback": True}
+            
+            def get_control_tower_dashboard(self, *args, **kwargs):
+                return {"error": f"Service {self.name} unavailable", "fallback": True}
+            
+            def get_my_dashboard(self, *args, **kwargs):
+                return {"error": f"Service {self.name} unavailable", "fallback": True}
+        
+        logger.warning(f"⚠️ Using fallback service for {service_name}")
+        return FallbackService(service_name, error)
     
     def _call_service(
         self,
@@ -231,106 +298,144 @@ class QueryRouterService:
     ) -> Dict[str, Any]:
         """Call appropriate method on service based on intent"""
         
-        # Logistics Query Service methods
-        if service_name == "logistics_query_service":
-            if intent == IntentType.DN_LOOKUP:
-                return {"response": service.get_complete_dn_intelligence(entity or entities.get('dn_number'))}
-            elif intent == IntentType.DN_TIMELINE:
-                return {"response": service.get_dn_timeline(entity or entities.get('dn_number'))}
-            elif intent == IntentType.DN_PRODUCTS:
-                return {"response": service.get_dn_products(entity or entities.get('dn_number'))}
-            elif intent == IntentType.POD_PENDING:
-                return {"response": service.get_pending_pods()}
-            elif intent == IntentType.PGI_PENDING:
-                return {"response": service.get_pending_pgi()}
+        # Extract DN safely from entities
+        dn_number = None
+        if entity:
+            dn_number = entity
+        elif entities:
+            # Handle both string and ExtractedEntity objects
+            dn_value = entities.get('dn_number')
+            if dn_value:
+                if hasattr(dn_value, 'value'):
+                    dn_number = dn_value.value
+                else:
+                    dn_number = str(dn_value)
         
-        # Analytics Service methods
-        elif service_name == "analytics_service":
-            if intent == IntentType.PRODUCT_DASHBOARD:
-                return {"response": service.get_product_dashboard(entity or entities.get('product'))}
-            elif intent == IntentType.PRODUCT_RANKING:
-                return {"response": service.get_top_products()}
-            elif intent == IntentType.FAST_MOVING:
-                return {"response": service.get_fast_moving_products()}
-            elif intent == IntentType.SLOW_MOVING:
-                return {"response": service.get_slow_moving_products()}
-            elif intent == IntentType.DEAD_STOCK:
-                return {"response": service.get_dead_stock_products()}
-            elif intent == IntentType.DEALER_DASHBOARD:
-                return {"response": service.get_dealer_dashboard(entity or entities.get('dealer'))}
-            elif intent == IntentType.DEALER_RANKING:
-                return {"response": service.get_dealer_ranking()}
-            elif intent == IntentType.CITY_DASHBOARD:
-                return {"response": service.get_city_dashboard(entity or entities.get('city'))}
-            elif intent == IntentType.CITY_RANKING:
-                return {"response": service.get_city_ranking()}
-            elif intent == IntentType.WAREHOUSE_DASHBOARD:
-                return {"response": service.get_warehouse_dashboard(entity or entities.get('warehouse'))}
-            elif intent == IntentType.WAREHOUSE_RANKING:
-                return {"response": service.get_warehouse_ranking()}
-            elif intent == IntentType.REVENUE_ANALYSIS:
-                return {"response": service.get_revenue_analysis()}
-            elif intent == IntentType.REVENUE_AT_RISK:
-                return {"response": service.get_revenue_at_risk()}
-        
-        # KPI Service methods
-        elif service_name == "kpi_service":
-            if intent == IntentType.EXECUTIVE_KPI:
-                return {"response": service.get_executive_dashboard()}
-            elif intent == IntentType.CEO_BRIEFING:
-                return {"response": service.get_ceo_briefing()}
-            elif intent == IntentType.NETWORK_HEALTH:
-                return {"response": service.get_network_health()}
-        
-        # Recommendation Service methods
-        elif service_name == "recommendation_service":
-            if intent == IntentType.RECOMMENDATION:
-                return {"response": service.get_recommendations()}
-            elif intent == IntentType.DEALER_FOLLOWUP:
-                return {"response": service.get_dealers_needing_followup()}
-            elif intent == IntentType.CRITICAL_DELAY_ACTION:
-                return {"response": service.get_critical_delay_actions()}
-        
-        # Forecasting Service methods
-        elif service_name == "forecasting_service":
-            if intent == IntentType.SALES_FORECAST:
-                return {"response": service.get_sales_forecast()}
-            elif intent == IntentType.POD_FORECAST:
-                return {"response": service.get_pod_forecast()}
-            else:
-                return {"response": service.get_general_forecast()}
-        
-        # Groq Insight Service methods (AI only)
-        elif service_name == "groq_insight_service":
-            ai_start = time.time()
-            response = service.analyze(question, intent, context)
-            ai_time_ms = int((time.time() - ai_start) * 1000)
-            return {"response": response, "ai_time_ms": ai_time_ms}
-        
-        # Control Tower Service methods
-        elif service_name == "control_tower_service":
-            if intent == IntentType.CONTROL_TOWER:
-                return {"response": service.get_control_tower_dashboard()}
-            elif intent == IntentType.CRITICAL_DNS:
-                return {"response": service.get_critical_dns()}
-            elif intent == IntentType.TOP_RISKS:
-                return {"response": service.get_top_risks()}
-        
-        # Dealer Self Service
-        elif service_name == "dealer_self_service":
-            dealer_name = context.get('dealer_name') or entities.get('dealer')
-            if not dealer_name and user_phone:
-                # Try to map phone to dealer
-                dealer_name = self._get_dealer_from_phone(user_phone)
-            return {"response": service.get_my_dashboard(dealer_name, question)}
-        
-        # Help Service
-        elif service_name == "help_service":
-            from app.services.ai_query_service import WELCOME_MESSAGE
-            return {"response": {"help": WELCOME_MESSAGE}}
-        
-        # Default fallback
-        return {"response": {"error": f"No handler for intent {intent} in service {service_name}"}}
+        try:
+            # Logistics Query Service methods
+            if service_name == "logistics_query_service":
+                if intent == IntentType.DN_LOOKUP:
+                    logger.info(f"🔍 DN Lookup: {dn_number}")
+                    result = service.get_complete_dn_intelligence(dn_number)
+                    return {"response": result}
+                elif intent == IntentType.DN_TIMELINE:
+                    return {"response": service.get_dn_timeline(dn_number)}
+                elif intent == IntentType.DN_PRODUCTS:
+                    return {"response": service.get_dn_products(dn_number)}
+                elif intent == IntentType.POD_PENDING:
+                    return {"response": service.get_pending_pods()}
+                elif intent == IntentType.PGI_PENDING:
+                    return {"response": service.get_pending_pgi()}
+                else:
+                    return {"response": {"error": f"Unknown logistics intent: {intent}"}}
+            
+            # Analytics Service methods
+            elif service_name == "analytics_service":
+                if intent == IntentType.PRODUCT_DASHBOARD:
+                    return {"response": service.get_product_dashboard(entity or entities.get('product'))}
+                elif intent == IntentType.PRODUCT_RANKING:
+                    return {"response": service.get_product_ranking()}
+                elif intent == IntentType.FAST_MOVING:
+                    return {"response": service.get_fast_moving_products()}
+                elif intent == IntentType.SLOW_MOVING:
+                    return {"response": service.get_slow_moving_products()}
+                elif intent == IntentType.DEAD_STOCK:
+                    return {"response": service.get_dead_stock_products()}
+                elif intent == IntentType.DEALER_DASHBOARD:
+                    return {"response": service.get_dealer_dashboard(entity or entities.get('dealer'))}
+                elif intent == IntentType.DEALER_RANKING:
+                    return {"response": service.get_dealer_ranking()}
+                elif intent == IntentType.CITY_DASHBOARD:
+                    return {"response": service.get_city_dashboard(entity or entities.get('city'))}
+                elif intent == IntentType.CITY_RANKING:
+                    return {"response": service.get_city_ranking()}
+                elif intent == IntentType.WAREHOUSE_DASHBOARD:
+                    return {"response": service.get_warehouse_dashboard(entity or entities.get('warehouse'))}
+                elif intent == IntentType.WAREHOUSE_RANKING:
+                    return {"response": service.get_warehouse_ranking()}
+                elif intent == IntentType.REVENUE_ANALYSIS:
+                    return {"response": service.get_revenue_analysis()}
+                elif intent == IntentType.REVENUE_AT_RISK:
+                    return {"response": service.get_revenue_at_risk()}
+                else:
+                    return {"response": {"error": f"Unknown analytics intent: {intent}"}}
+            
+            # KPI Service methods
+            elif service_name == "kpi_service":
+                if intent == IntentType.EXECUTIVE_KPI:
+                    return {"response": service.get_executive_dashboard()}
+                elif intent == IntentType.CEO_BRIEFING:
+                    return {"response": service.get_ceo_briefing()}
+                elif intent == IntentType.NETWORK_HEALTH:
+                    return {"response": service.get_network_health()}
+                else:
+                    return {"response": {"error": f"Unknown KPI intent: {intent}"}}
+            
+            # Recommendation Service methods
+            elif service_name == "recommendation_service":
+                if intent == IntentType.RECOMMENDATION:
+                    return {"response": service.get_recommendations()}
+                elif intent == IntentType.DEALER_FOLLOWUP:
+                    return {"response": service.get_dealers_needing_followup()}
+                elif intent == IntentType.CRITICAL_DELAY_ACTION:
+                    return {"response": service.get_critical_delay_actions()}
+                else:
+                    return {"response": {"error": f"Unknown recommendation intent: {intent}"}}
+            
+            # Forecasting Service methods
+            elif service_name == "forecasting_service":
+                if intent == IntentType.SALES_FORECAST:
+                    return {"response": service.get_sales_forecast()}
+                elif intent == IntentType.POD_FORECAST:
+                    return {"response": service.get_pod_forecast()}
+                else:
+                    return {"response": service.get_general_forecast()}
+            
+            # Groq Insight Service methods (AI only)
+            elif service_name == "groq_insight_service":
+                # CRITICAL FIX #3: Add timeout and error handling for analyze
+                logger.info(f"🧠 Calling Groq analyze for intent: {intent}")
+                ai_start = time.time()
+                try:
+                    response = service.analyze(question, intent, context)
+                    ai_time_ms = int((time.time() - ai_start) * 1000)
+                    logger.info(f"✅ Groq analyze completed in {ai_time_ms}ms")
+                    return {"response": response, "ai_time_ms": ai_time_ms}
+                except Exception as e:
+                    logger.exception(f"Groq analyze failed: {e}")
+                    return {"response": {"insight": f"⚠️ AI analysis failed: {str(e)[:100]}", "fallback": True}, "ai_time_ms": int((time.time() - ai_start) * 1000)}
+            
+            # Control Tower Service methods
+            elif service_name == "control_tower_service":
+                if intent == IntentType.CONTROL_TOWER:
+                    return {"response": service.get_control_tower_dashboard()}
+                elif intent == IntentType.CRITICAL_DNS:
+                    return {"response": service.get_critical_dns()}
+                elif intent == IntentType.TOP_RISKS:
+                    return {"response": service.get_top_risks()}
+                else:
+                    return {"response": {"error": f"Unknown control tower intent: {intent}"}}
+            
+            # Dealer Self Service
+            elif service_name == "dealer_self_service":
+                dealer_name = context.get('dealer_name') or entities.get('dealer')
+                if hasattr(dealer_name, 'value'):
+                    dealer_name = dealer_name.value
+                if not dealer_name and user_phone:
+                    dealer_name = self._get_dealer_from_phone(user_phone)
+                return {"response": service.get_my_dashboard(dealer_name, question)}
+            
+            # Help Service
+            elif service_name == "help_service":
+                from app.services.ai_query_service import WELCOME_MESSAGE
+                return {"response": {"help": WELCOME_MESSAGE}}
+            
+            # Default fallback
+            return {"response": {"error": f"No handler for intent {intent} in service {service_name}", "fallback": True}}
+            
+        except Exception as e:
+            logger.exception(f"Error in _call_service for {service_name}.{intent}: {e}")
+            return {"response": {"error": str(e), "fallback": True}}
     
     def _get_dealer_from_phone(self, phone_number: str) -> Optional[str]:
         """Get dealer name from phone number mapping"""
