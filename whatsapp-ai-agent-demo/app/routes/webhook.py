@@ -1,644 +1,471 @@
 # ==========================================================
-# FILE: app/routes/webhook.py (PRODUCTION READY v14.0)
+# FILE: app/services/whatsapp_service.py (ENTERPRISE v3.0)
 # ==========================================================
 # CRITICAL IMPROVEMENTS:
-# - Added WhatsApp number validation
-# - Added final flow summary logging
-# - Added send result tracking
-# - Added queue architecture preparation
+# - Added send result logging with detailed status
+# - Added empty response validation
+# - Added layer timing support
+# - Added flow summary logging
+# - Enhanced error tracking
 # ==========================================================
 
-import os
+import requests
+import logging
 import json
-import time
 import re
-import uuid
-import traceback
-import asyncio
+import time
+from typing import Optional, Dict, Any, List, Union, Tuple
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, List, Tuple
 from collections import deque
-from contextvars import ContextVar
+from dataclasses import dataclass, field
+from enum import Enum
 
-from fastapi import APIRouter, Request, Depends, HTTPException, BackgroundTasks
-from fastapi.responses import PlainTextResponse
-from sqlalchemy.orm import Session
-from sqlalchemy import text
-from loguru import logger
+from app.config import (
+    WHATSAPP_ACCESS_TOKEN,
+    WHATSAPP_PHONE_NUMBER_ID,
+    WHATSAPP_API_VERSION,
+    WHATSAPP_API_URL
+)
 
-from app.config import config
-from app.database import get_db
-
-router = APIRouter(prefix="/webhook", tags=["WhatsApp Webhook"])
-
-# ==========================================================
-# CONSTANTS
-# ==========================================================
-
-MAX_WHATSAPP_LENGTH = 3500
-MAX_RESPONSE_PARTS = 5
-MAX_MESSAGE_LENGTH = 500
-MAX_RETRIES = 3
-AI_TIMEOUT_SECONDS = 30
+logger = logging.getLogger(__name__)
 
 # ==========================================================
-# IMPORTS
+# PROCESSED MESSAGES CACHE (Duplicate Detection)
 # ==========================================================
 
-try:
-    from app.services.ai_query_service import process_whatsapp_query
-    AI_SERVICE_AVAILABLE = True
-    logger.info("✅ AI Query Service loaded at startup")
-except ImportError as e:
-    AI_SERVICE_AVAILABLE = False
-    logger.error(f"❌ AI Query Service import failed: {e}")
-except Exception as e:
-    AI_SERVICE_AVAILABLE = False
-    logger.exception(f"❌ AI Query Service init failed: {e}")
+PROCESSED_MESSAGES = deque(maxlen=10000)
 
-try:
-    import redis
-    REDIS_AVAILABLE = True
-except ImportError:
-    REDIS_AVAILABLE = False
-    logger.warning("⚠️ Redis not available")
-
-try:
-    from app.services.whatsapp_service import send_text_message, send_typing_indicator
-    WHATSAPP_SERVICE_AVAILABLE = True
-except ImportError as e:
-    WHATSAPP_SERVICE_AVAILABLE = False
-    logger.error(f"❌ WhatsApp service import failed: {e}")
-
-# ==========================================================
-# REQUEST CONTEXT
-# ==========================================================
-
-_request_context: ContextVar[Optional[Dict]] = ContextVar("request_context", default=None)
-
-class RequestContext:
-    def __init__(self, request_id: str, phone_number: str = None):
-        self.request_id = request_id
-        self.phone_number = phone_number
-        self.start_time = time.time()
-        self.layers = {}
-        self.status = "processing"
-    
-    def set_phone_number(self, phone_number: str):
-        self.phone_number = phone_number
-    
-    def start_layer(self, layer_name: str):
-        self.layers[layer_name] = {"start": time.time()}
-    
-    def end_layer(self, layer_name: str):
-        if layer_name in self.layers:
-            self.layers[layer_name]["end"] = time.time()
-            self.layers[layer_name]["duration_ms"] = (self.layers[layer_name]["end"] - self.layers[layer_name]["start"]) * 1000
-    
-    def get_total_time_ms(self) -> float:
-        return (time.time() - self.start_time) * 1000
-    
-    def get_layer_summary(self) -> Dict:
-        return {k: v.get("duration_ms", 0) for k, v in self.layers.items()}
-
-def get_current_context() -> Optional[RequestContext]:
-    ctx = _request_context.get()
-    if ctx and isinstance(ctx, dict):
-        return ctx.get("context")
-    return None
-
-def get_or_create_context(request_id: str, phone_number: str = None) -> RequestContext:
-    context = get_current_context()
-    if context is None:
-        context = RequestContext(request_id, phone_number)
-        set_current_context(context)
-    return context
-
-def set_current_context(context: RequestContext):
-    _request_context.set({"context": context})
-
-def clear_current_context():
-    _request_context.set(None)
-
-# ==========================================================
-# SIMPLE MEMORY CACHE
-# ==========================================================
-
-class SimpleCache:
-    def __init__(self):
-        self.cache = {}
-        self.ttl = 300
-    
-    def get(self, key: str) -> Optional[str]:
-        if key in self.cache:
-            data, expiry = self.cache[key]
-            if time.time() < expiry:
-                return data
-            del self.cache[key]
-        return None
-    
-    def set(self, key: str, value: str):
-        self.cache[key] = (value, time.time() + self.ttl)
-    
-    def get_cache_key(self, message: str) -> str:
-        normalized = message.lower().strip()
-        normalized = re.sub(r'\s+', ' ', normalized)
-        if re.match(r'^\d{10,15}$', normalized):
-            return f"dn:{normalized}"
-        return normalized
-
-cache_service = SimpleCache()
-
-# ==========================================================
-# RATE LIMITER
-# ==========================================================
-
-class SimpleRateLimiter:
-    def __init__(self):
-        self.requests = {}
-        self.max_requests = 20
-        self.window = 60
-    
-    def check(self, phone_number: str) -> Tuple[bool, int]:
-        now = time.time()
-        if phone_number not in self.requests:
-            self.requests[phone_number] = []
-        
-        self.requests[phone_number] = [t for t in self.requests[phone_number] if now - t < self.window]
-        
-        if len(self.requests[phone_number]) >= self.max_requests:
-            wait = int(self.window - (now - self.requests[phone_number][0]))
-            return False, wait
-        
-        self.requests[phone_number].append(now)
-        return True, 0
-
-rate_limiter = SimpleRateLimiter()
-
-# ==========================================================
-# DUPLICATE DETECTOR
-# ==========================================================
-
-class SimpleDuplicateDetector:
-    def __init__(self):
-        self.processed = {}
-        self.expiry = 3600
-    
-    def is_duplicate(self, phone_number: str, message_id: str) -> bool:
-        if not message_id:
-            return False
-        
-        key = f"{phone_number}:{message_id}"
-        if key in self.processed:
-            return True
-        
-        self.processed[key] = time.time()
-        now = time.time()
-        expired = [k for k, v in self.processed.items() if now - v > self.expiry]
-        for k in expired:
-            del self.processed[k]
-        
+def is_duplicate_message(message_id: str) -> bool:
+    if not message_id:
         return False
+    for stored_id, timestamp in PROCESSED_MESSAGES:
+        if stored_id == message_id:
+            return True
+    return False
 
-duplicate_detector = SimpleDuplicateDetector()
-
-# ==========================================================
-# METRICS
-# ==========================================================
-
-class Metrics:
-    def __init__(self):
-        self.dn_queries = 0
-        self.dn_found = 0
-        self.dn_not_found = 0
-        self.ai_errors = 0
-        self.timeouts = 0
-        self.webhook_calls = 0
-        self.status_updates = 0
-        self.send_success = 0
-        self.send_failed = 0
-    
-    def record_dn_query(self):
-        self.dn_queries += 1
-    
-    def record_dn_found(self):
-        self.dn_found += 1
-    
-    def record_dn_not_found(self):
-        self.dn_not_found += 1
-    
-    def record_ai_error(self):
-        self.ai_errors += 1
-    
-    def record_timeout(self):
-        self.timeouts += 1
-    
-    def record_webhook_call(self):
-        self.webhook_calls += 1
-    
-    def record_status_update(self):
-        self.status_updates += 1
-    
-    def record_send_success(self):
-        self.send_success += 1
-    
-    def record_send_failed(self):
-        self.send_failed += 1
-
-metrics = Metrics()
+def mark_message_processed(message_id: str):
+    if message_id:
+        PROCESSED_MESSAGES.append((message_id, datetime.utcnow()))
 
 # ==========================================================
-# WHATSAPP SENDER
+# PHONE NUMBER VALIDATION
 # ==========================================================
 
-def safe_send_reply(phone_number: str, message: str) -> Dict:
-    """Send WhatsApp reply with validation and tracking"""
-    
-    # CRITICAL IMPROVEMENT 9: Validate phone number
+def validate_phone_number(phone_number: str) -> bool:
     if not phone_number:
-        logger.error("❌ Cannot send reply: Missing phone number")
-        return {"success": False, "error": "Missing phone number"}
+        return False
+    cleaned = phone_number.lstrip('+')
+    if not cleaned.isdigit():
+        return False
+    if len(cleaned) < 8 or len(cleaned) > 15:
+        return False
+    return True
+
+def normalize_phone_number(phone_number: str) -> str:
+    return phone_number.lstrip('+')
+
+# ==========================================================
+# WHATSAPP SESSION MANAGEMENT
+# ==========================================================
+
+class WhatsAppSession:
+    _instance = None
+    _session = None
     
-    try:
-        if WHATSAPP_SERVICE_AVAILABLE:
-            result = send_text_message(phone_number, message)
-            if result.get("success"):
-                metrics.record_send_success()
-                logger.info(f"✅ WhatsApp message sent successfully to {phone_number}")
-            else:
-                metrics.record_send_failed()
-                logger.error(f"❌ WhatsApp send failed to {phone_number}: {result.get('error')}")
-            return result
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._session = requests.Session()
+            cls._session.headers.update({"Content-Type": "application/json"})
+        return cls._instance
+    
+    def get_session(self) -> requests.Session:
+        return self._session
+
+_whatsapp_session = WhatsAppSession()
+
+# ==========================================================
+# URL CONSTRUCTION
+# ==========================================================
+
+def get_whatsapp_url():
+    api_version = WHATSAPP_API_VERSION or "v25.0"
+    api_url = WHATSAPP_API_URL or "https://graph.facebook.com"
+    return f"{api_url}/{api_version}/{WHATSAPP_PHONE_NUMBER_ID}/messages"
+
+# ==========================================================
+# MESSAGE CLEANING
+# ==========================================================
+
+def clean_message_for_whatsapp(message: Union[str, Dict, Any]) -> str:
+    if isinstance(message, dict):
+        cleaned = message.get("response") or message.get("formatted_message") or message.get("message") or str(message)
+    elif isinstance(message, str):
+        cleaned = message
+    else:
+        cleaned = str(message)
+    
+    if cleaned.strip().startswith('{') or cleaned.strip().startswith('['):
+        try:
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict):
+                cleaned = parsed.get("response") or parsed.get("formatted_message") or parsed.get("message") or cleaned
+        except:
+            pass
+    return cleaned
+
+MAX_MESSAGE_LENGTH = 4000
+
+# ==========================================================
+# CRITICAL IMPROVEMENT: Send Result Tracking
+# ==========================================================
+
+@dataclass
+class SendResult:
+    """Detailed send result tracking"""
+    success: bool
+    message_id: Optional[str] = None
+    error: Optional[str] = None
+    status_code: Optional[int] = None
+    mode: str = "api"
+    processing_time_ms: float = 0
+    message_length: int = 0
+    phone_number: str = ""
+    
+    def to_dict(self) -> Dict:
+        return {
+            "success": self.success,
+            "message_id": self.message_id,
+            "error": self.error,
+            "status_code": self.status_code,
+            "mode": self.mode,
+            "processing_time_ms": self.processing_time_ms,
+            "message_length": self.message_length,
+            "phone_number": self.phone_number
+        }
+    
+    def log_summary(self):
+        if self.success:
+            logger.info(f"WhatsApp Send SUCCESS | Phone={self.phone_number} | ID={self.message_id} | Time={self.processing_time_ms:.0f}ms | Len={self.message_length}")
         else:
-            logger.info(f"MOCK SEND to {phone_number}: {message[:100]}")
-            metrics.record_send_success()
-            return {"success": True, "mode": "mock"}
-    except Exception as e:
-        metrics.record_send_failed()
-        logger.exception(f"Send failed for {phone_number}: {e}")
-        return {"success": False, "error": str(e)}
-
-def get_media_response(media_type: str) -> str:
-    return "📱 Please send text messages only. Type 'Help' for available commands."
+            logger.error(f"WhatsApp Send FAILED | Phone={self.phone_number} | Error={self.error} | Status={self.status_code}")
 
 # ==========================================================
-# AI PROCESSING WITH TIMEOUT
+# MAIN SEND FUNCTION WITH ENHANCED LOGGING
 # ==========================================================
 
-async def process_with_timeout(question: str, db: Session, phone_number: str) -> str:
-    logger.info(f"⏱️ Starting AI processing for: {question[:50]}")
+def send_text_message(phone_number: str, message: Union[str, Dict, Any]) -> Dict[str, Any]:
+    """
+    Send text message via WhatsApp Cloud API with enhanced logging
+    """
+    start_time = time.time()
     
-    try:
-        loop = asyncio.get_event_loop()
-        result = await asyncio.wait_for(
-            loop.run_in_executor(None, process_whatsapp_query, question, db, phone_number),
-            timeout=AI_TIMEOUT_SECONDS
-        )
-        logger.info(f"✅ AI processing completed, response length: {len(result) if result else 0}")
+    # CRITICAL IMPROVEMENT: Empty response validation
+    if not message:
+        logger.error("Empty message provided to send_text_message")
+        return {
+            "success": False, 
+            "error": "Empty message",
+            "mode": "validation_error"
+        }
+    
+    clean_message = clean_message_for_whatsapp(message)
+    
+    # CRITICAL IMPROVEMENT: Empty message after cleaning
+    if not clean_message or len(clean_message.strip()) == 0:
+        logger.error("Message became empty after cleaning")
+        return {
+            "success": False,
+            "error": "Message empty after cleaning",
+            "mode": "validation_error"
+        }
+    
+    # Validate phone number
+    if not validate_phone_number(phone_number):
+        logger.error(f"Invalid phone number format: {phone_number}")
+        return {
+            "success": False, 
+            "error": "Invalid phone number format",
+            "phone_number": phone_number,
+            "mode": "validation_error"
+        }
+    
+    normalized_phone = normalize_phone_number(phone_number)
+    message_length = len(clean_message)
+    
+    logger.info(f"📤 Sending WhatsApp message to: {normalized_phone}")
+    logger.info(f"   Message length: {message_length} chars")
+    logger.info(f"   Message preview: {clean_message[:100]}...")
+    
+    # Demo mode (no credentials)
+    if not WHATSAPP_ACCESS_TOKEN or not WHATSAPP_PHONE_NUMBER_ID:
+        processing_time = (time.time() - start_time) * 1000
+        result = {
+            "success": True, 
+            "mode": "demo", 
+            "phone_number": normalized_phone, 
+            "message": clean_message[:MAX_MESSAGE_LENGTH],
+            "message_length": message_length,
+            "processing_time_ms": processing_time
+        }
+        logger.warning(f"DEMO MODE: Would send to {normalized_phone}: {clean_message[:100]}...")
         return result
-    except asyncio.TimeoutError:
-        logger.error(f"⏰ AI processing TIMEOUT after {AI_TIMEOUT_SECONDS}s")
-        metrics.record_timeout()
-        return "⚠️ Request timeout. Please try again."
+    
+    # Real API call
+    try:
+        headers = {"Authorization": f"Bearer {WHATSAPP_ACCESS_TOKEN}"}
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": normalized_phone,
+            "type": "text",
+            "text": {"body": clean_message[:MAX_MESSAGE_LENGTH], "preview_url": False}
+        }
+        
+        session = _whatsapp_session.get_session()
+        response = session.post(get_whatsapp_url(), headers=headers, json=payload, timeout=60)
+        
+        processing_time = (time.time() - start_time) * 1000
+        
+        # CRITICAL IMPROVEMENT: Detailed response logging
+        if response.status_code in [200, 201]:
+            response_data = response.json()
+            message_id = response_data.get("messages", [{}])[0].get("id")
+            
+            logger.info(f"✅ WhatsApp API SUCCESS | Status={response.status_code} | ID={message_id} | Time={processing_time:.0f}ms")
+            
+            return {
+                "success": True,
+                "message_id": message_id,
+                "status_code": response.status_code,
+                "mode": "api",
+                "processing_time_ms": processing_time,
+                "message_length": message_length,
+                "phone_number": normalized_phone
+            }
+        else:
+            # Log failure details
+            logger.error(f"❌ WhatsApp API FAILED | Status={response.status_code} | Time={processing_time:.0f}ms")
+            logger.error(f"   Response: {response.text[:200]}")
+            
+            return {
+                "success": False,
+                "status_code": response.status_code,
+                "error": response.text[:200],
+                "mode": "api",
+                "processing_time_ms": processing_time,
+                "message_length": message_length,
+                "phone_number": normalized_phone
+            }
+        
+    except requests.exceptions.Timeout as e:
+        processing_time = (time.time() - start_time) * 1000
+        logger.error(f"❌ WhatsApp API TIMEOUT | Time={processing_time:.0f}ms | Error={e}")
+        return {
+            "success": False,
+            "error": f"Timeout: {str(e)}",
+            "mode": "api",
+            "processing_time_ms": processing_time,
+            "message_length": message_length,
+            "phone_number": normalized_phone
+        }
+        
     except Exception as e:
-        logger.exception(f"❌ AI processing error: {e}")
-        metrics.record_ai_error()
-        raise
+        processing_time = (time.time() - start_time) * 1000
+        logger.exception(f"❌ WhatsApp API ERROR | Time={processing_time:.0f}ms | Error={e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "mode": "api",
+            "processing_time_ms": processing_time,
+            "message_length": message_length,
+            "phone_number": normalized_phone
+        }
 
 # ==========================================================
-# WEBHOOK VERIFICATION (GET)
+# ENHANCED SEND FUNCTION WITH RESULT OBJECT
 # ==========================================================
 
-@router.get("/")
-async def webhook_verification(request: Request):
-    hub_mode = request.query_params.get("hub.mode")
-    hub_verify_token = request.query_params.get("hub.verify_token")
-    hub_challenge = request.query_params.get("hub.challenge")
+def send_text_message_with_result(phone_number: str, message: Union[str, Dict, Any]) -> SendResult:
+    """
+    Send message and return detailed SendResult object
+    """
+    start_time = time.time()
     
-    logger.info("=" * 50)
-    logger.info("📞 WEBHOOK VERIFICATION REQUEST")
-    logger.info(f"hub.mode: {hub_mode}")
-    logger.info(f"hub.verify_token: {hub_verify_token}")
-    logger.info(f"hub.challenge: {hub_challenge}")
-    
-    if hub_mode == "subscribe" and hub_verify_token == config.WHATSAPP_VERIFY_TOKEN and hub_challenge:
-        logger.success("✅ Webhook verification successful!")
-        return PlainTextResponse(content=hub_challenge)
-    
-    logger.error("❌ Webhook verification failed")
-    raise HTTPException(status_code=403, detail="Verification failed")
-
-# ==========================================================
-# MAIN WEBHOOK ENDPOINT (POST)
-# ==========================================================
-
-@router.post("/")
-async def receive_message(
-    request: Request, 
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
-):
-    metrics.record_webhook_call()
-    request_id = str(uuid.uuid4())
-    context = RequestContext(request_id)
-    set_current_context(context)
-    
-    logger.info("=" * 60)
-    logger.info(f"📨 [REQ:{request_id[:8]}] WEBHOOK CALL RECEIVED")
+    result = SendResult(
+        success=False,
+        phone_number=phone_number,
+        message_length=len(str(message)) if message else 0
+    )
     
     try:
-        # Parse JSON payload
-        payload = await request.json()
+        api_result = send_text_message(phone_number, message)
         
-        # Log payload structure
-        logger.info(f"[REQ:{request_id[:8]}] Payload keys: {list(payload.keys())}")
+        result.success = api_result.get("success", False)
+        result.message_id = api_result.get("message_id")
+        result.error = api_result.get("error")
+        result.status_code = api_result.get("status_code")
+        result.mode = api_result.get("mode", "api")
+        result.processing_time_ms = (time.time() - start_time) * 1000
         
-        # Extract message data
+        result.log_summary()
+        return result
+        
+    except Exception as e:
+        result.error = str(e)
+        result.processing_time_ms = (time.time() - start_time) * 1000
+        logger.exception(f"Send failed: {e}")
+        return result
+
+# ==========================================================
+# BULK SEND WITH RATE LIMITING
+# ==========================================================
+
+def send_bulk_messages(messages: List[Tuple[str, str]]) -> List[SendResult]:
+    """
+    Send multiple messages with rate limiting
+    """
+    results = []
+    for i, (phone_number, message) in enumerate(messages):
+        if i > 0:
+            time.sleep(0.5)  # Rate limiting between messages
+        result = send_text_message_with_result(phone_number, message)
+        results.append(result)
+    return results
+
+# ==========================================================
+# PARSE WHATSAPP WEBHOOK
+# ==========================================================
+
+def parse_whatsapp_message(payload: dict) -> Optional[List[Dict[str, Any]]]:
+    try:
         entry = payload.get("entry", [{}])[0]
         changes = entry.get("changes", [{}])[0]
         value = changes.get("value", {})
         
-        # Handle status updates
-        if value.get("statuses"):
-            metrics.record_status_update()
-            statuses = value.get("statuses", [])
-            logger.info(f"[REQ:{request_id[:8]}] STATUS UPDATE - {len(statuses)} status(es)")
-            return {"success": True, "type": "status_update", "request_id": request_id}
+        parsed_messages = []
         
-        # Handle messages
         messages = value.get("messages", [])
-        
-        if not messages:
-            logger.warning(f"[REQ:{request_id[:8]}] NO MESSAGES IN PAYLOAD")
-            return {"success": True, "type": "no_messages", "request_id": request_id}
-        
-        logger.info(f"[REQ:{request_id[:8]}] 📨 MESSAGES FOUND: {len(messages)}")
-        
-        # Process each message
-        results = []
         for message in messages:
-            result = await process_single_message(message, db, background_tasks, request_id)
-            results.append(result)
-        
-        processing_time = int((time.time() - context.start_time) * 1000)
-        logger.info(f"[REQ:{request_id[:8]}] ✅ Processed {len(results)} messages in {processing_time}ms")
-        
-        return {
-            "success": True,
-            "request_id": request_id,
-            "messages_processed": len(results),
-            "processing_time_ms": processing_time
-        }
-        
-    except json.JSONDecodeError as e:
-        logger.error(f"[REQ:{request_id[:8]}] Invalid JSON: {e}")
-        return {"success": False, "error": "Invalid JSON", "request_id": request_id}
-    except Exception as e:
-        logger.exception(f"[REQ:{request_id[:8]}] Webhook error: {e}")
-        return {"success": False, "error": str(e), "request_id": request_id}
-    finally:
-        clear_current_context()
-
-# ==========================================================
-# PROCESS SINGLE MESSAGE
-# ==========================================================
-
-async def process_single_message(
-    message: Dict, 
-    db: Session, 
-    background_tasks: BackgroundTasks,
-    request_id: str
-) -> Dict:
-    context = get_or_create_context(request_id)
-    dn_query_start = None
-    send_result = None
-    
-    try:
-        message_type = message.get("type", "unknown")
-        phone_number = message.get("from")
-        message_id = message.get("id")
-        
-        # CRITICAL IMPROVEMENT 9: Validate phone number
-        if not phone_number:
-            logger.error(f"[REQ:{request_id[:8]}] ❌ Missing phone number in message")
-            return {"error": "Missing phone number", "processed": False}
-        
-        context.set_phone_number(phone_number)
-        
-        logger.info(f"[REQ:{request_id[:8]}] 📱 Phone: {phone_number}")
-        logger.info(f"[REQ:{request_id[:8]}] 📂 Type: {message_type}")
-        
-        if message_type != "text":
-            logger.info(f"[REQ:{request_id[:8]}] Non-text message: {message_type}")
-            media_response = get_media_response(message_type)
-            send_result = safe_send_reply(phone_number, media_response)
+            message_type = message.get("type", "unknown")
+            from_phone = message.get("from")
+            message_id = message.get("id")
             
-            # Log send result
-            logger.info(f"[REQ:{request_id[:8]}] Send Result: success={send_result.get('success')}")
+            if is_duplicate_message(message_id):
+                continue
+            mark_message_processed(message_id)
             
-            return {"skipped": True, "reason": f"non-text ({message_type})"}
-        
-        customer_message = message.get("text", {}).get("body", "")
-        
-        if not customer_message:
-            logger.warning(f"[REQ:{request_id[:8]}] Empty message")
-            return {"skipped": True, "reason": "empty"}
-        
-        logger.info(f"[REQ:{request_id[:8]}] 💬 Message: {customer_message[:200]}")
-        
-        # DN query detection
-        is_dn_query = bool(re.match(r'^\d{10,15}$', customer_message.strip()))
-        
-        if is_dn_query:
-            dn_query_start = time.time()
-            metrics.record_dn_query()
-            logger.info(f"[REQ:{request_id[:8]}] 🔢 DN QUERY: {customer_message}")
-        
-        # Rate limiting
-        rate_ok, wait_time = rate_limiter.check(phone_number)
-        if not rate_ok:
-            error_msg = f"⚠️ Rate limit. Please wait {wait_time}s."
-            send_result = safe_send_reply(phone_number, error_msg)
-            logger.info(f"[REQ:{request_id[:8]}] Send Result: success={send_result.get('success')}")
-            return {"error": "rate_limit", "wait_seconds": wait_time}
-        
-        # Duplicate check
-        if duplicate_detector.is_duplicate(phone_number, message_id):
-            logger.info(f"[REQ:{request_id[:8]}] Duplicate ignored")
-            return {"skipped": True, "reason": "duplicate"}
-        
-        # Cache check
-        cache_key = cache_service.get_cache_key(customer_message)
-        cached_response = cache_service.get(cache_key)
-        
-        if cached_response:
-            logger.info(f"[REQ:{request_id[:8]}] Cache HIT")
-            send_result = safe_send_reply(phone_number, cached_response)
+            parsed = {"type": message_type, "message_id": message_id, "from_phone": from_phone}
             
-            # CRITICAL IMPROVEMENT: Log send result
-            logger.info(f"[REQ:{request_id[:8]}] Send Result: success={send_result.get('success')}, mode={send_result.get('mode', 'api')}")
-            
-            if is_dn_query and dn_query_start:
-                dn_query_time = (time.time() - dn_query_start) * 1000
-                logger.info(f"[REQ:{request_id[:8]}] 🔢 DN QUERY COMPLETE (CACHED): {customer_message} ({dn_query_time:.0f}ms)")
-            
-            return {"processed": True, "cached": True}
-        
-        # AI service check
-        if not AI_SERVICE_AVAILABLE:
-            error_msg = "⚠️ AI Service unavailable. Please try again later."
-            send_result = safe_send_reply(phone_number, error_msg)
-            logger.info(f"[REQ:{request_id[:8]}] Send Result: success={send_result.get('success')}")
-            return {"error": "ai_unavailable"}
-        
-        # Process with AI
-        try:
-            logger.info(f"[REQ:{request_id[:8]}] 🤖 Calling AI service...")
-            response = await process_with_timeout(customer_message, db, phone_number)
-            
-            # Log AI response status
-            if response:
-                logger.info(f"[REQ:{request_id[:8]}] ✅ AI response received, length={len(response)}")
+            if message_type == "text":
+                parsed["text"] = message.get("text", {}).get("body", "")
             else:
-                logger.error(f"[REQ:{request_id[:8]}] ❌ AI response is None or empty")
-                response = "⚠️ Unable to generate response. Please try again."
+                parsed["text"] = f"[{message_type} message received]"
             
-            # DN query result logging
-            if is_dn_query and dn_query_start:
-                dn_query_time = (time.time() - dn_query_start) * 1000
-                if "not found" in response.lower() or "couldn't find" in response.lower():
-                    metrics.record_dn_not_found()
-                    logger.warning(f"[REQ:{request_id[:8]}] 🔢 DN NOT FOUND: {customer_message} ({dn_query_time:.0f}ms)")
-                else:
-                    metrics.record_dn_found()
-                    logger.info(f"[REQ:{request_id[:8]}] 🔢 DN FOUND: {customer_message} ({dn_query_time:.0f}ms)")
-            
-            # Cache response
-            if response and len(response) > 10:
-                cache_service.set(cache_key, response)
-                logger.info(f"[REQ:{request_id[:8]}] 💾 Response cached")
-            
-            # ==========================================================
-            # CRITICAL IMPROVEMENT: Send response and log result
-            # ==========================================================
-            logger.info(f"[REQ:{request_id[:8]}] 📤 Sending response to {phone_number}")
-            send_result = safe_send_reply(phone_number, response)
-            
-            # Log send result details
-            logger.info(f"[REQ:{request_id[:8]}] Send Result: success={send_result.get('success')}, mode={send_result.get('mode', 'api')}")
-            if not send_result.get("success"):
-                logger.error(f"[REQ:{request_id[:8]}] Send failed: {send_result.get('error')}")
-            
-            total_time = context.get_total_time_ms()
-            
-            # ==========================================================
-            # CRITICAL IMPROVEMENT 10: Log Final Flow Summary
-            # ==========================================================
-            logger.info(
-                f"[REQ:{request_id[:8]}] 📊 FLOW SUMMARY | "
-                f"Phone={phone_number} | "
-                f"Message={customer_message[:50]} | "
-                f"ResponseLen={len(response)} | "
-                f"SendSuccess={send_result.get('success')} | "
-                f"Time={total_time:.0f}ms"
-            )
-            
-            return {
-                "processed": True, 
-                "response_length": len(response),
-                "send_success": send_result.get("success"),
-                "total_time_ms": total_time
-            }
-            
-        except Exception as e:
-            logger.exception(f"[REQ:{request_id[:8]}] AI error: {e}")
-            metrics.record_ai_error()
-            error_response = "⚠️ Error processing request. Please try again."
-            
-            # Send error response and log result
-            send_result = safe_send_reply(phone_number, error_response)
-            logger.info(f"[REQ:{request_id[:8]}] Send Result (error): success={send_result.get('success')}")
-            
-            # Log final summary even on error
-            total_time = context.get_total_time_ms()
-            logger.info(
-                f"[REQ:{request_id[:8]}] 📊 FLOW SUMMARY (ERROR) | "
-                f"Phone={phone_number} | "
-                f"Message={customer_message[:50]} | "
-                f"Error={str(e)[:50]} | "
-                f"Time={total_time:.0f}ms"
-            )
-            
-            return {"processed": True, "error": str(e), "fallback": True}
+            parsed_messages.append(parsed)
+        
+        return parsed_messages if parsed_messages else None
         
     except Exception as e:
-        logger.exception(f"[REQ:{request_id[:8]}] Message error: {e}")
-        return {"error": str(e), "processed": False}
+        logger.error(f"Error parsing webhook: {e}")
+        return None
 
 # ==========================================================
-# TEST ENDPOINTS
+# SEND STRUCTURED MESSAGE (Alias for compatibility)
 # ==========================================================
 
-@router.get("/health")
-async def health_check():
-    return {
-        "status": "healthy",
-        "version": "14.0",
-        "timestamp": datetime.utcnow().isoformat(),
-        "services": {
-            "ai_service": AI_SERVICE_AVAILABLE,
-            "whatsapp_service": WHATSAPP_SERVICE_AVAILABLE
-        },
-        "metrics": {
-            "dn_queries": metrics.dn_queries,
-            "dn_found": metrics.dn_found,
-            "dn_not_found": metrics.dn_not_found,
-            "dn_success_rate": round(metrics.dn_found / max(1, metrics.dn_queries) * 100, 1),
-            "send_success": metrics.send_success,
-            "send_failed": metrics.send_failed,
-            "send_success_rate": round(metrics.send_success / max(1, metrics.send_success + metrics.send_failed) * 100, 1)
-        }
-    }
+def send_structured_message(phone_number: str, message: str) -> Dict[str, Any]:
+    """
+    Alias for send_text_message - maintains backward compatibility
+    """
+    return send_text_message(phone_number, message)
 
-@router.get("/test-dn/{dn_number}")
-async def test_dn_lookup(dn_number: str, db: Session = Depends(get_db)):
-    from app.services.logistics_query_service import LogisticsQueryService
+# ==========================================================
+# SEND TYPING INDICATOR
+# ==========================================================
+
+def send_typing_indicator(phone_number: str) -> Dict[str, Any]:
+    """
+    Send typing indicator to WhatsApp
+    """
+    if not validate_phone_number(phone_number):
+        return {"success": False, "error": "Invalid phone number"}
     
-    start_time = time.time()
+    normalized_phone = normalize_phone_number(phone_number)
+    
+    if not WHATSAPP_ACCESS_TOKEN or not WHATSAPP_PHONE_NUMBER_ID:
+        logger.info(f"DEMO: Typing indicator to {normalized_phone}")
+        return {"success": True, "mode": "demo"}
     
     try:
-        service = LogisticsQueryService(db)
-        result = service.get_complete_dn_intelligence(dn_number)
-        elapsed_ms = (time.time() - start_time) * 1000
-        
-        if "error" in result:
-            return {"found": False, "dn": dn_number, "error": result["error"], "elapsed_ms": elapsed_ms}
-        else:
-            return {
-                "found": True,
-                "dn": dn_number,
-                "dealer": result.get("dealer"),
-                "total_value": result.get("total_value"),
-                "elapsed_ms": elapsed_ms
-            }
-    except Exception as e:
-        return {"found": False, "error": str(e), "dn": dn_number}
-
-@router.get("/status")
-async def status():
-    return {
-        "service": "WhatsApp Webhook v14.0",
-        "ai_service": AI_SERVICE_AVAILABLE,
-        "whatsapp_service": WHATSAPP_SERVICE_AVAILABLE,
-        "metrics": {
-            "dn_queries": metrics.dn_queries,
-            "dn_found": metrics.dn_found,
-            "dn_not_found": metrics.dn_not_found,
-            "send_success": metrics.send_success,
-            "send_failed": metrics.send_failed
+        headers = {"Authorization": f"Bearer {WHATSAPP_ACCESS_TOKEN}"}
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": normalized_phone,
+            "type": "reaction",
+            "reaction": {"message_id": "typing_indicator"}
         }
-    }
+        
+        session = _whatsapp_session.get_session()
+        response = session.post(get_whatsapp_url(), headers=headers, json=payload, timeout=10)
+        
+        if response.status_code in [200, 201]:
+            logger.info(f"Typing indicator sent to {normalized_phone}")
+            return {"success": True}
+        else:
+            logger.warning(f"Typing indicator failed: {response.status_code}")
+            return {"success": False, "status_code": response.status_code}
+            
+    except Exception as e:
+        logger.error(f"Typing indicator error: {e}")
+        return {"success": False, "error": str(e)}
 
-@router.get("/test")
-async def test():
-    return {"success": True, "message": "Webhook is running", "version": "14.0"}
+# ==========================================================
+# METRICS AND STATISTICS
+# ==========================================================
+
+class WhatsAppMetrics:
+    """Track WhatsApp send metrics"""
+    
+    def __init__(self):
+        self.total_sent = 0
+        self.successful_sends = 0
+        self.failed_sends = 0
+        self.total_processing_time_ms = 0
+        self.last_error = None
+    
+    def record_send(self, result: SendResult):
+        self.total_sent += 1
+        if result.success:
+            self.successful_sends += 1
+        else:
+            self.failed_sends += 1
+            self.last_error = result.error
+        self.total_processing_time_ms += result.processing_time_ms
+    
+    def get_stats(self) -> Dict:
+        return {
+            "total_sent": self.total_sent,
+            "successful_sends": self.successful_sends,
+            "failed_sends": self.failed_sends,
+            "success_rate": round(self.successful_sends / max(1, self.total_sent) * 100, 1),
+            "avg_processing_time_ms": round(self.total_processing_time_ms / max(1, self.total_sent), 2),
+            "last_error": self.last_error
+        }
+
+# Global metrics instance
+whatsapp_metrics = WhatsAppMetrics()
+
+# ==========================================================
+# HEALTH CHECK FUNCTION
+# ==========================================================
+
+def check_whatsapp_health() -> Dict[str, Any]:
+    """Check WhatsApp service health"""
+    return {
+        "available": bool(WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID),
+        "mode": "production" if (WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID) else "demo",
+        "api_version": WHATSAPP_API_VERSION or "v25.0",
+        "phone_number_id": WHATSAPP_PHONE_NUMBER_ID[:10] + "..." if WHATSAPP_PHONE_NUMBER_ID else None,
+        "metrics": whatsapp_metrics.get_stats(),
+        "cache_size": len(PROCESSED_MESSAGES)
+    }
