@@ -1,7 +1,7 @@
 # ==========================================================
 # FILE: app/services/ai_query_service.py (ENTERPRISE v22.0)
 # ==========================================================
-# MASTER ORCHESTRATOR - NO BUSINESS LOGIC
+# MASTER ORCHESTRATOR WITH FULL GROQ AI INTEGRATION
 # ==========================================================
 
 import time
@@ -16,7 +16,7 @@ from loguru import logger
 from app.config import config
 
 # ==========================================================
-# SERVICE IMPORTS (All new modular services)
+# SERVICE IMPORTS
 # ==========================================================
 
 from app.services.intent_engine import IntentEngine, IntentType
@@ -24,9 +24,10 @@ from app.services.entity_extractor import EntityExtractor, EntityType, Extracted
 from app.services.context_service import ContextService
 from app.services.query_router_service import QueryRouterService
 from app.services.report_generator_service import ReportGeneratorService
+from app.services.groq_insight_service import GroqInsightService
 
 # ==========================================================
-# CACHE INTEGRATION (Phase 12)
+# CACHE INTEGRATION
 # ==========================================================
 
 try:
@@ -38,7 +39,7 @@ except ImportError:
 
 
 # ==========================================================
-# PERFORMANCE METRICS (Phase 13)
+# PERFORMANCE METRICS
 # ==========================================================
 
 @dataclass
@@ -66,7 +67,7 @@ class QueryMetrics:
 
 @dataclass
 class QueryAnalytics:
-    """Track query analytics for monitoring (Phase 13)"""
+    """Track query analytics for monitoring"""
     most_asked_dns: Dict[str, int] = field(default_factory=dict)
     most_asked_dealers: Dict[str, int] = field(default_factory=dict)
     most_asked_products: Dict[str, int] = field(default_factory=dict)
@@ -88,7 +89,6 @@ class QueryAnalytics:
             "reason": reason,
             "timestamp": datetime.utcnow().isoformat()
         })
-        # Keep only last 1000
         if len(self.failed_queries) > 1000:
             self.failed_queries = self.failed_queries[-1000:]
     
@@ -97,19 +97,19 @@ class QueryAnalytics:
 
 
 # ==========================================================
-# REDIS CACHE SERVICE (Phase 12)
+# REDIS CACHE SERVICE
 # ==========================================================
 
 class RedisCacheService:
     """Redis cache for frequently accessed data"""
     
-    DEFAULT_TTL = 300  # 5 minutes
+    DEFAULT_TTL = 300
     
     def __init__(self):
         self.client = None
         self.enabled = False
         
-        if REDIS_AVAILABLE and config.REDIS_URL:
+        if REDIS_AVAILABLE and hasattr(config, 'REDIS_URL') and config.REDIS_URL:
             try:
                 self.client = redis.from_url(config.REDIS_URL, decode_responses=True)
                 self.client.ping()
@@ -166,26 +166,29 @@ class AIQueryService:
     """
     Master orchestrator for all logistics queries.
     NO BUSINESS LOGIC - only orchestration.
+    FULL GROQ AI INTEGRATION.
     """
     
     def __init__(self, db: Session):
         self.db = db
         self.start_time = None
         
-        # Initialize all services (Phase 1-14)
+        # Initialize all services
         self.intent_engine = IntentEngine()
         self.entity_extractor = EntityExtractor()
         self.context_service = ContextService(db)
         self.query_router = QueryRouterService(db)
         self.report_generator = ReportGeneratorService()
         self.cache = RedisCacheService()
+        self.groq_service = GroqInsightService(db)  # GROQ AI Service
         
-        # Analytics tracking (Phase 13)
+        # Analytics tracking
         self.query_analytics = QueryAnalytics()
         
         logger.info("=" * 60)
         logger.info("🚀 AI QUERY ORCHESTRATOR v22.0")
         logger.info(f"   Redis Cache: {'Enabled' if self.cache.enabled else 'Disabled'}")
+        logger.info(f"   GROQ AI: {'Available' if self.groq_service.ai_available else 'Not Available'}")
         logger.info("   Architecture: Modular Enterprise")
         logger.info("=" * 60)
     
@@ -196,16 +199,7 @@ class AIQueryService:
         user_role: str = None
     ) -> Dict[str, Any]:
         """
-        Master orchestration method.
-        
-        Flow:
-        1. Load context
-        2. Extract entities
-        3. Detect intent
-        4. Route to service
-        5. Generate response
-        6. Save context
-        7. Track metrics
+        Master orchestration method with GROQ AI fallback.
         """
         self.start_time = time.time()
         metrics = QueryMetrics()
@@ -214,23 +208,17 @@ class AIQueryService:
         logger.info(f"📱 Processing: {question[:100]}")
         
         try:
-            # ==========================================================
-            # STEP 1: Load Context (Phase 4)
-            # ==========================================================
+            # STEP 1: Load Context
             context_start = time.time()
             context = {}
             if user_phone:
                 context = self.context_service.get_context(user_phone)
             metrics.context_time_ms = int((time.time() - context_start) * 1000)
-            logger.debug(f"📚 Context loaded in {metrics.context_time_ms}ms")
             
-            # ==========================================================
-            # STEP 2: Extract Entities (Phase 3)
-            # ==========================================================
+            # STEP 2: Extract Entities
             entity_start = time.time()
             entities = self.entity_extractor.extract_all(question)
             
-            # Resolve follow-up using context
             if user_phone:
                 resolved = self.context_service.resolve_follow_up(user_phone, question)
                 for entity_type, value in resolved.items():
@@ -241,7 +229,6 @@ class AIQueryService:
                         )
             
             metrics.entity_time_ms = int((time.time() - entity_start) * 1000)
-            logger.debug(f"🔍 Entities: {list(entities.keys())} in {metrics.entity_time_ms}ms")
             
             # Track entity analytics
             if EntityType.DN_NUMBER in entities:
@@ -251,23 +238,17 @@ class AIQueryService:
             if EntityType.PRODUCT in entities:
                 self.query_analytics.record_product_query(entities[EntityType.PRODUCT].value)
             
-            # ==========================================================
-            # STEP 3: Detect Intent (Phase 2)
-            # ==========================================================
+            # STEP 3: Detect Intent
             intent_start = time.time()
             intent, intent_entity, confidence = self.intent_engine.detect_intent(
                 question, entities, context
             )
             metrics.intent_time_ms = int((time.time() - intent_start) * 1000)
             
-            # Track intent analytics
             self.query_analytics.record_intent(intent.value)
+            logger.info(f"🎯 Intent: {intent.value} (confidence: {confidence:.2f})")
             
-            logger.info(f"🎯 Intent: {intent.value} (confidence: {confidence:.2f}) in {metrics.intent_time_ms}ms")
-            
-            # ==========================================================
-            # STEP 4: Route to Service (Phase 5)
-            # ==========================================================
+            # STEP 4: Route to Service
             route_start = time.time()
             route_result = self.query_router.route(
                 intent=intent,
@@ -285,20 +266,14 @@ class AIQueryService:
             metrics.service_time_ms = route_result.get("service_time_ms", 0)
             metrics.ai_time_ms = route_result.get("ai_time_ms", 0)
             
-            logger.info(f"🚦 Routed to {service_name} in {metrics.route_time_ms}ms")
-            
-            # ==========================================================
-            # STEP 5: Generate Response (Phase 11)
-            # ==========================================================
+            # STEP 5: Generate Response
             response_text = self.report_generator.format_response(
                 data=service_response,
                 intent=intent,
                 format_type="whatsapp"
             )
             
-            # ==========================================================
-            # STEP 6: Save Context (Phase 4)
-            # ==========================================================
+            # STEP 6: Save Context
             if user_phone and service_response:
                 self.context_service.save_context(
                     phone_number=user_phone,
@@ -307,17 +282,12 @@ class AIQueryService:
                     response=response_text[:500]
                 )
             
-            # ==========================================================
-            # STEP 7: Calculate Total Metrics
-            # ==========================================================
+            # STEP 7: Calculate Metrics
             metrics.total_time_ms = int((time.time() - self.start_time) * 1000)
             
-            # Log performance summary
-            logger.info(f"⚡ Performance Summary | Total: {metrics.total_time_ms}ms | "
+            logger.info(f"⚡ Performance | Total: {metrics.total_time_ms}ms | "
                        f"Intent: {metrics.intent_time_ms}ms | "
-                       f"Entity: {metrics.entity_time_ms}ms | "
-                       f"Route: {metrics.route_time_ms}ms | "
-                       f"Service: {metrics.service_time_ms}ms")
+                       f"AI: {metrics.ai_time_ms}ms")
             
             return {
                 "success": True,
@@ -332,6 +302,20 @@ class AIQueryService:
         except Exception as e:
             logger.error(f"Query processing error: {e}")
             self.query_analytics.record_failed_query(question, str(e))
+            
+            # Try GROQ AI as final fallback
+            if self.groq_service.ai_available:
+                try:
+                    ai_response = self.groq_service.analyze(question, IntentType.GENERAL_QUERY, {})
+                    if ai_response.get("insight"):
+                        return {
+                            "success": True,
+                            "response": ai_response["insight"],
+                            "intent": "groq_fallback",
+                            "metrics": {"total_time_ms": int((time.time() - self.start_time) * 1000)}
+                        }
+                except Exception as ai_err:
+                    logger.error(f"GROQ fallback error: {ai_err}")
             
             metrics.total_time_ms = int((time.time() - self.start_time) * 1000) if self.start_time else 0
             
@@ -358,7 +342,7 @@ I'm having trouble processing your request right now.
 Please try again in a few moments."""
     
     def get_query_analytics(self) -> Dict:
-        """Get query analytics for monitoring (Phase 13)"""
+        """Get query analytics for monitoring"""
         return {
             "most_asked_dns": dict(sorted(
                 self.query_analytics.most_asked_dns.items(),
@@ -376,7 +360,8 @@ Please try again in a few moments."""
                 reverse=True
             )[:10]),
             "intent_counts": self.query_analytics.intent_counts,
-            "failed_queries_count": len(self.query_analytics.failed_queries)
+            "failed_queries_count": len(self.query_analytics.failed_queries),
+            "groq_status": "available" if self.groq_service.ai_available else "unavailable"
         }
 
 
@@ -401,12 +386,12 @@ def process_whatsapp_query(
 
 
 # ==========================================================
-# WELCOME MESSAGE (Moved from orchestrator)
+# WELCOME MESSAGE
 # ==========================================================
 
 WELCOME_MESSAGE = """🤖 *AI LOGISTICS INTELLIGENCE ASSISTANT v22.0*
 
-Complete logistics intelligence with enterprise-grade architecture.
+Complete logistics intelligence with GROQ AI integration.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📊 *WHAT YOU CAN ASK:*
@@ -433,19 +418,15 @@ Complete logistics intelligence with enterprise-grade architecture.
 📦 *PRODUCT ANALYTICS*
    • "Product HSU-18HFPAA" - Product dashboard
    • "Top products" - Best sellers
-   • "Fast moving products" - Velocity analysis
 
 👑 *EXECUTIVE REPORTS*
    • "Executive summary" - Complete dashboard
    • "CEO briefing" - Leadership view
-   • "Network health" - System status
-   • "Top risks" - Critical issues
-   • "Recommendations" - Action items
 
-📈 *ADVANCED ANALYTICS*
-   • "Why are deliveries delayed?" - Root cause
+🧠 *AI INSIGHTS (Powered by GROQ)*
+   • "Why are deliveries delayed?" - Root cause analysis
    • "What are the trends?" - Trend analysis
-   • "Forecast next month sales" - Predictive
+   • "Forecast next month sales" - Predictive analysis
 
 📋 *POD & PGI*
    • "Pending PODs" - Collection required
@@ -453,14 +434,12 @@ Complete logistics intelligence with enterprise-grade architecture.
 
 💰 *REVENUE*
    • "Revenue analysis" - Complete breakdown
-   • "Revenue at risk" - Exposure analysis
 
 🚨 *CONTROL TOWER*
    • "Control tower" - Critical alerts
-   • "Critical DNs" - Urgent attention needed
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 💡 *PRO TIPS:* I remember context! Ask "What products?" after a DN query.
     Type "Help" anytime for this menu.
 
-*Powered by AI Logistics Intelligence v22.0 | Enterprise Architecture*"""
+*Powered by GROQ AI | Enterprise Logistics Intelligence*"""
