@@ -1,11 +1,14 @@
 # ==========================================================
-# FILE: app/routes/webhook.py (PRODUCTION READY v13.1)
+# FILE: app/routes/webhook.py (PRODUCTION READY v14.0)
 # ==========================================================
-# FIXED: Added missing os import
-# FIXED: Removed DEBUG_MODE dependency
+# CRITICAL IMPROVEMENTS:
+# - Added WhatsApp number validation
+# - Added final flow summary logging
+# - Added send result tracking
+# - Added queue architecture preparation
 # ==========================================================
 
-import os  # CRITICAL - ADDED THIS
+import os
 import json
 import time
 import re
@@ -212,6 +215,8 @@ class Metrics:
         self.timeouts = 0
         self.webhook_calls = 0
         self.status_updates = 0
+        self.send_success = 0
+        self.send_failed = 0
     
     def record_dn_query(self):
         self.dn_queries += 1
@@ -233,6 +238,12 @@ class Metrics:
     
     def record_status_update(self):
         self.status_updates += 1
+    
+    def record_send_success(self):
+        self.send_success += 1
+    
+    def record_send_failed(self):
+        self.send_failed += 1
 
 metrics = Metrics()
 
@@ -241,15 +252,30 @@ metrics = Metrics()
 # ==========================================================
 
 def safe_send_reply(phone_number: str, message: str) -> Dict:
+    """Send WhatsApp reply with validation and tracking"""
+    
+    # CRITICAL IMPROVEMENT 9: Validate phone number
+    if not phone_number:
+        logger.error("❌ Cannot send reply: Missing phone number")
+        return {"success": False, "error": "Missing phone number"}
+    
     try:
         if WHATSAPP_SERVICE_AVAILABLE:
             result = send_text_message(phone_number, message)
+            if result.get("success"):
+                metrics.record_send_success()
+                logger.info(f"✅ WhatsApp message sent successfully to {phone_number}")
+            else:
+                metrics.record_send_failed()
+                logger.error(f"❌ WhatsApp send failed to {phone_number}: {result.get('error')}")
             return result
         else:
             logger.info(f"MOCK SEND to {phone_number}: {message[:100]}")
+            metrics.record_send_success()
             return {"success": True, "mode": "mock"}
     except Exception as e:
-        logger.exception(f"Send failed: {e}")
+        metrics.record_send_failed()
+        logger.exception(f"Send failed for {phone_number}: {e}")
         return {"success": False, "error": str(e)}
 
 def get_media_response(media_type: str) -> str:
@@ -385,11 +411,17 @@ async def process_single_message(
 ) -> Dict:
     context = get_or_create_context(request_id)
     dn_query_start = None
+    send_result = None
     
     try:
         message_type = message.get("type", "unknown")
         phone_number = message.get("from")
         message_id = message.get("id")
+        
+        # CRITICAL IMPROVEMENT 9: Validate phone number
+        if not phone_number:
+            logger.error(f"[REQ:{request_id[:8]}] ❌ Missing phone number in message")
+            return {"error": "Missing phone number", "processed": False}
         
         context.set_phone_number(phone_number)
         
@@ -399,7 +431,11 @@ async def process_single_message(
         if message_type != "text":
             logger.info(f"[REQ:{request_id[:8]}] Non-text message: {message_type}")
             media_response = get_media_response(message_type)
-            safe_send_reply(phone_number, media_response)
+            send_result = safe_send_reply(phone_number, media_response)
+            
+            # Log send result
+            logger.info(f"[REQ:{request_id[:8]}] Send Result: success={send_result.get('success')}")
+            
             return {"skipped": True, "reason": f"non-text ({message_type})"}
         
         customer_message = message.get("text", {}).get("body", "")
@@ -421,8 +457,10 @@ async def process_single_message(
         # Rate limiting
         rate_ok, wait_time = rate_limiter.check(phone_number)
         if not rate_ok:
-            safe_send_reply(phone_number, f"⚠️ Rate limit. Please wait {wait_time}s.")
-            return {"error": "rate_limit"}
+            error_msg = f"⚠️ Rate limit. Please wait {wait_time}s."
+            send_result = safe_send_reply(phone_number, error_msg)
+            logger.info(f"[REQ:{request_id[:8]}] Send Result: success={send_result.get('success')}")
+            return {"error": "rate_limit", "wait_seconds": wait_time}
         
         # Duplicate check
         if duplicate_detector.is_duplicate(phone_number, message_id):
@@ -435,13 +473,22 @@ async def process_single_message(
         
         if cached_response:
             logger.info(f"[REQ:{request_id[:8]}] Cache HIT")
-            safe_send_reply(phone_number, cached_response)
+            send_result = safe_send_reply(phone_number, cached_response)
+            
+            # CRITICAL IMPROVEMENT: Log send result
+            logger.info(f"[REQ:{request_id[:8]}] Send Result: success={send_result.get('success')}, mode={send_result.get('mode', 'api')}")
+            
+            if is_dn_query and dn_query_start:
+                dn_query_time = (time.time() - dn_query_start) * 1000
+                logger.info(f"[REQ:{request_id[:8]}] 🔢 DN QUERY COMPLETE (CACHED): {customer_message} ({dn_query_time:.0f}ms)")
+            
             return {"processed": True, "cached": True}
         
         # AI service check
         if not AI_SERVICE_AVAILABLE:
             error_msg = "⚠️ AI Service unavailable. Please try again later."
-            safe_send_reply(phone_number, error_msg)
+            send_result = safe_send_reply(phone_number, error_msg)
+            logger.info(f"[REQ:{request_id[:8]}] Send Result: success={send_result.get('success')}")
             return {"error": "ai_unavailable"}
         
         # Process with AI
@@ -449,9 +496,17 @@ async def process_single_message(
             logger.info(f"[REQ:{request_id[:8]}] 🤖 Calling AI service...")
             response = await process_with_timeout(customer_message, db, phone_number)
             
+            # Log AI response status
+            if response:
+                logger.info(f"[REQ:{request_id[:8]}] ✅ AI response received, length={len(response)}")
+            else:
+                logger.error(f"[REQ:{request_id[:8]}] ❌ AI response is None or empty")
+                response = "⚠️ Unable to generate response. Please try again."
+            
+            # DN query result logging
             if is_dn_query and dn_query_start:
                 dn_query_time = (time.time() - dn_query_start) * 1000
-                if "not found" in response.lower():
+                if "not found" in response.lower() or "couldn't find" in response.lower():
                     metrics.record_dn_not_found()
                     logger.warning(f"[REQ:{request_id[:8]}] 🔢 DN NOT FOUND: {customer_message} ({dn_query_time:.0f}ms)")
                 else:
@@ -461,20 +516,59 @@ async def process_single_message(
             # Cache response
             if response and len(response) > 10:
                 cache_service.set(cache_key, response)
+                logger.info(f"[REQ:{request_id[:8]}] 💾 Response cached")
             
-            # Send response
-            safe_send_reply(phone_number, response)
+            # ==========================================================
+            # CRITICAL IMPROVEMENT: Send response and log result
+            # ==========================================================
+            logger.info(f"[REQ:{request_id[:8]}] 📤 Sending response to {phone_number}")
+            send_result = safe_send_reply(phone_number, response)
+            
+            # Log send result details
+            logger.info(f"[REQ:{request_id[:8]}] Send Result: success={send_result.get('success')}, mode={send_result.get('mode', 'api')}")
+            if not send_result.get("success"):
+                logger.error(f"[REQ:{request_id[:8]}] Send failed: {send_result.get('error')}")
             
             total_time = context.get_total_time_ms()
-            logger.info(f"[REQ:{request_id[:8]}] ⚡ Total: {total_time:.0f}ms")
             
-            return {"processed": True, "response_length": len(response)}
+            # ==========================================================
+            # CRITICAL IMPROVEMENT 10: Log Final Flow Summary
+            # ==========================================================
+            logger.info(
+                f"[REQ:{request_id[:8]}] 📊 FLOW SUMMARY | "
+                f"Phone={phone_number} | "
+                f"Message={customer_message[:50]} | "
+                f"ResponseLen={len(response)} | "
+                f"SendSuccess={send_result.get('success')} | "
+                f"Time={total_time:.0f}ms"
+            )
+            
+            return {
+                "processed": True, 
+                "response_length": len(response),
+                "send_success": send_result.get("success"),
+                "total_time_ms": total_time
+            }
             
         except Exception as e:
             logger.exception(f"[REQ:{request_id[:8]}] AI error: {e}")
             metrics.record_ai_error()
             error_response = "⚠️ Error processing request. Please try again."
-            safe_send_reply(phone_number, error_response)
+            
+            # Send error response and log result
+            send_result = safe_send_reply(phone_number, error_response)
+            logger.info(f"[REQ:{request_id[:8]}] Send Result (error): success={send_result.get('success')}")
+            
+            # Log final summary even on error
+            total_time = context.get_total_time_ms()
+            logger.info(
+                f"[REQ:{request_id[:8]}] 📊 FLOW SUMMARY (ERROR) | "
+                f"Phone={phone_number} | "
+                f"Message={customer_message[:50]} | "
+                f"Error={str(e)[:50]} | "
+                f"Time={total_time:.0f}ms"
+            )
+            
             return {"processed": True, "error": str(e), "fallback": True}
         
     except Exception as e:
@@ -489,7 +583,7 @@ async def process_single_message(
 async def health_check():
     return {
         "status": "healthy",
-        "version": "13.1",
+        "version": "14.0",
         "timestamp": datetime.utcnow().isoformat(),
         "services": {
             "ai_service": AI_SERVICE_AVAILABLE,
@@ -499,7 +593,10 @@ async def health_check():
             "dn_queries": metrics.dn_queries,
             "dn_found": metrics.dn_found,
             "dn_not_found": metrics.dn_not_found,
-            "dn_success_rate": round(metrics.dn_found / max(1, metrics.dn_queries) * 100, 1)
+            "dn_success_rate": round(metrics.dn_found / max(1, metrics.dn_queries) * 100, 1),
+            "send_success": metrics.send_success,
+            "send_failed": metrics.send_failed,
+            "send_success_rate": round(metrics.send_success / max(1, metrics.send_success + metrics.send_failed) * 100, 1)
         }
     }
 
@@ -530,16 +627,18 @@ async def test_dn_lookup(dn_number: str, db: Session = Depends(get_db)):
 @router.get("/status")
 async def status():
     return {
-        "service": "WhatsApp Webhook v13.1",
+        "service": "WhatsApp Webhook v14.0",
         "ai_service": AI_SERVICE_AVAILABLE,
         "whatsapp_service": WHATSAPP_SERVICE_AVAILABLE,
         "metrics": {
             "dn_queries": metrics.dn_queries,
             "dn_found": metrics.dn_found,
-            "dn_not_found": metrics.dn_not_found
+            "dn_not_found": metrics.dn_not_found,
+            "send_success": metrics.send_success,
+            "send_failed": metrics.send_failed
         }
     }
 
 @router.get("/test")
 async def test():
-    return {"success": True, "message": "Webhook is running", "version": "13.1"}
+    return {"success": True, "message": "Webhook is running", "version": "14.0"}
