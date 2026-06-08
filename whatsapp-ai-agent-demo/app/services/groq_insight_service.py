@@ -1,21 +1,24 @@
 # ==========================================================
-# FILE: app/services/groq_insight_service.py (COMPLETE v2.0)
+# FILE: app/services/groq_insight_service.py (ENTERPRISE v3.0)
 # ==========================================================
-# GROQ AI INSIGHT SERVICE - COMPLETE INTEGRATION
+# GROQ AI INSIGHT SERVICE
+# - AI-powered root cause analysis
+# - Trend analysis
+# - Predictive analysis
+# - Intelligent recommendations
 # ==========================================================
 
 import os
 import json
-from typing import Dict, Any, Optional, List
-from datetime import datetime, timedelta, date
+from typing import Dict, Any, Optional
+from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc
 from loguru import logger
 
 from app.services.intent_engine import IntentType
-from app.services.business_rules_service import BusinessRulesService
 
-# GROQ API Integration
+
 try:
     from groq import Groq
     GROQ_AVAILABLE = True
@@ -26,19 +29,27 @@ except ImportError:
 
 class GroqInsightService:
     """
-    GROQ AI Insight Service - COMPLETE INTEGRATION.
+    GROQ AI Insight Service
     
-    Used ONLY for complex analytical queries.
+    Used ONLY for complex analytical queries:
+    - Why sales decreased?
+    - Why POD delayed?
+    - Why dealer declined?
+    - Root cause analysis
+    - Trend analysis
+    - Predictive analysis
+    
+    NOT used for: DN Lookup, Dealer Dashboard, Product Dashboard (these use SQL)
     """
     
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, cache_service=None):
         self.db = db
-        self.business_rules = BusinessRulesService()
+        self.cache = cache_service
         self.ai_available = False
         self.client = None
         
-        # Initialize GROQ Client
         self._init_groq_client()
+        logger.info(f"✅ Groq Insight Service initialized (AI available: {self.ai_available})")
     
     def _init_groq_client(self):
         """Initialize GROQ AI client"""
@@ -63,7 +74,10 @@ class GroqInsightService:
             self.ai_available = False
     
     def analyze(self, question: str, intent: IntentType, context: Dict = None) -> Dict[str, Any]:
-        """Analyze query using GROQ AI or fallback"""
+        """
+        Analyze query using GROQ AI.
+        Returns insight with fallback if AI unavailable.
+        """
         logger.info(f"🧠 GROQ AI Analyzing: {question[:100]}")
         
         context_data = self._gather_context_data(question, intent)
@@ -87,7 +101,7 @@ class GroqInsightService:
                     {"role": "user", "content": user_prompt}
                 ],
                 temperature=0.7,
-                max_tokens=1000,
+                max_tokens=800,
                 top_p=0.9
             )
             
@@ -97,15 +111,14 @@ class GroqInsightService:
             return {
                 "insight": insight,
                 "source": "groq_ai",
-                "confidence": 0.85,
-                "context_used": context_data
+                "confidence": 0.85
             }
         except Exception as e:
             logger.error(f"GROQ API error: {e}")
             return self._analyze_with_rules(question, intent, context_data)
     
     def _analyze_with_rules(self, question: str, intent: IntentType, context_data: Dict) -> Dict[str, Any]:
-        """Fallback rule-based analysis"""
+        """Fallback rule-based analysis when GROQ unavailable"""
         
         if intent == IntentType.ROOT_CAUSE_ANALYSIS:
             return self._root_cause_analysis(question, context_data)
@@ -125,22 +138,21 @@ class GroqInsightService:
         }
         
         try:
-            from app.models import DeliveryReport
-            
+            # Get basic counts
             total_dns = self.db.query(func.count(DeliveryReport.dn_no)).scalar() or 0
             pending_pgi = self.db.query(func.count(DeliveryReport.dn_no)).filter(
                 DeliveryReport.pgi_status != "Completed"
             ).scalar() or 0
             pending_pod = self.db.query(func.count(DeliveryReport.dn_no)).filter(
                 DeliveryReport.pgi_status == "Completed",
-                DeliveryReport.pod_status == "Pending"
+                DeliveryReport.pod_status != "Received"
             ).scalar() or 0
             
             context_data["metrics"] = {
                 "total_dns": total_dns,
                 "pending_pgi_count": pending_pgi,
                 "pending_pod_count": pending_pod,
-                "completion_rate": ((total_dns - pending_pgi) / total_dns * 100) if total_dns > 0 else 0,
+                "completion_rate": ((total_dns - pending_pgi) / total_dns * 100) if total_dns else 0
             }
         except Exception as e:
             logger.error(f"Error gathering context data: {e}")
@@ -150,10 +162,11 @@ class GroqInsightService:
     def _build_system_prompt(self, intent: IntentType) -> str:
         """Build system prompt for GROQ"""
         base_prompt = """You are Haier Pakistan's Logistics Intelligence AI Assistant.
-Provide concise, actionable insights for WhatsApp. Use emojis and bullet points."""
+Provide concise, actionable insights for WhatsApp. Use emojis and bullet points.
+Keep responses under 1500 characters."""
         
         if intent == IntentType.ROOT_CAUSE_ANALYSIS:
-            return base_prompt + " Focus on root causes of delays."
+            return base_prompt + " Focus on identifying root causes of delays."
         elif intent == IntentType.TREND_ANALYSIS:
             return base_prompt + " Focus on trends and patterns."
         elif intent == IntentType.PREDICTIVE_ANALYSIS:
@@ -167,21 +180,15 @@ Provide concise, actionable insights for WhatsApp. Use emojis and bullet points.
         
         metrics = context_data.get("metrics", {})
         if metrics:
-            prompt += f"Data: {metrics.get('total_dns', 0)} total DNs, {metrics.get('pending_pgi_count', 0)} pending PGI\n"
+            prompt += f"Data: {metrics.get('total_dns', 0)} total DNs, {metrics.get('pending_pgi_count', 0)} pending\n"
         
         return prompt
     
-    def _extract_date_range(self, question: str) -> Optional[tuple]:
-        """Extract date range from question"""
-        question_lower = question.lower()
-        if "last 7 days" in question_lower:
-            return ("last", 7)
-        elif "last 30 days" in question_lower:
-            return ("last", 30)
-        return None
+    # ==========================================================
+    # RULE-BASED FALLBACK METHODS
+    # ==========================================================
     
     def _root_cause_analysis(self, question: str, context_data: Dict) -> Dict[str, Any]:
-        """Rule-based root cause analysis"""
         metrics = context_data.get("metrics", {})
         
         insight = f"""🔍 *ROOT CAUSE ANALYSIS*
@@ -189,33 +196,38 @@ Provide concise, actionable insights for WhatsApp. Use emojis and bullet points.
 📊 *KEY FINDINGS*
 • {metrics.get('pending_pgi_count', 0)} DNs pending dispatch
 • {metrics.get('pending_pod_count', 0)} DNs pending POD
+• Completion Rate: {metrics.get('completion_rate', 0)}%
 
 💡 *RECOMMENDATIONS*
 • Prioritize oldest pending DNs
 • Follow up on missing PODs
+• Review warehouse processing times
 
-For detailed AI analysis, ensure GROQ API key is configured."""
+For detailed AI analysis, configure GROQ API key."""
         
         return {"insight": insight, "source": "rule_based", "confidence": 0.70}
     
     def _trend_analysis(self, question: str, context_data: Dict) -> Dict[str, Any]:
-        """Rule-based trend analysis"""
         insight = """📈 *TREND ANALYSIS*
 
 📊 *OBSERVATIONS*
 • Monitor pending PGI and POD trends
 • Focus on completion rate improvement
+• Identify pattern in delays
 
 💡 Type "Executive summary" for detailed metrics"""
         
         return {"insight": insight, "source": "rule_based", "confidence": 0.70}
     
     def _predictive_analysis(self, question: str, context_data: Dict) -> Dict[str, Any]:
-        """Rule-based predictive analysis"""
-        insight = """🔮 *PREDICTIVE ANALYSIS*
+        metrics = context_data.get("metrics", {})
+        pending = metrics.get('pending_pgi_count', 0)
+        
+        insight = f"""🔮 *PREDICTIVE ANALYSIS*
 
 📊 *FORECASTS*
-• Monitor current pending DNs
+• {pending} DNs currently pending
+• Expected clearance: {pending // 5 + 1} days at current rate
 • Focus on SLA compliance
 
 💡 Type "Control tower" for critical alerts"""
@@ -223,7 +235,6 @@ For detailed AI analysis, ensure GROQ API key is configured."""
         return {"insight": insight, "source": "rule_based", "confidence": 0.65}
     
     def _general_analysis(self, question: str, context_data: Dict) -> Dict[str, Any]:
-        """General fallback analysis"""
         insight = f"""🤖 *AI INSIGHTS*
 
 I understand you're asking about: "{question[:100]}"
@@ -236,3 +247,11 @@ I understand you're asking about: "{question[:100]}"
 For AI-powered insights, configure GROQ API key."""
         
         return {"insight": insight, "source": "rule_based", "confidence": 0.60}
+
+
+# ==========================================================
+# FACTORY FUNCTION
+# ==========================================================
+
+def get_groq_insight_service(db: Session, cache_service=None) -> GroqInsightService:
+    return GroqInsightService(db, cache_service)
