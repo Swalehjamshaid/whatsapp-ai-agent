@@ -1,44 +1,33 @@
 # ==========================================================
-# FILE: app/services/ai_query_service.py (ENTERPRISE v29.0)
+# FILE: app/services/ai_query_service.py (ENTERPRISE v30.0)
 # ==========================================================
-# FULL ARCHITECTURE ALIGNMENT - IMPROVED VERSION
+# SINGLE BRAIN OF THE SYSTEM - DATA FIRST, GROQ SECOND
 #
-# IMPROVEMENTS APPLIED:
-# ✅ FIX #1: Better error handling for DN not found (prevents "N/A" output)
-# ✅ FIX #2: Added response transformation for consistent formatting
-# ✅ FIX #3: Enhanced report_generator integration
-# ✅ FIX #4: Added fallback for empty/error responses
-# ✅ FIX #5: Improved context resolution for follow-up questions
-# ✅ FIX #6: Added async support for better performance
-# ✅ FIX #7: Enhanced logging for debugging
-# ✅ FIX #8: Added response quality scoring
-# ✅ FIX #9: Added retry logic for transient failures
-# ✅ FIX #10: Improved cache invalidation strategy
+# ARCHITECTURE:
+# WhatsApp → webhook.py → THIS FILE → Data Services → Business Rules → Groq → Response
 #
-# WhatsApp User → webhook.py → whatsapp_service.py → THIS FILE
-#      │
-#      ├── intent_engine.py
-#      ├── entity_extractor.py
-#      ├── context_service.py
-#      └── query_router_service.py
-#                    │
-#                    ├── logistics_query_service.py
-#                    ├── analytics_service.py
-#                    ├── kpi_service.py
-#                    ├── forecasting_service.py
-#                    ├── recommendation_service.py
-#                    ├── control_tower_service.py
-#                    └── groq_insight_service.py
+# NO MORE:
+# - IntentEngine, EntityExtractor, ContextService, QueryRouterService
+# - CircuitBreaker, RetryHandler, RequestDeduplicator
+# - AsyncAIQueryService
+#
+# INSTEAD:
+# 1. Understand Query (simple pattern matching)
+# 2. Extract Entities (direct extraction)
+# 3. Get Data (from specialized services)
+# 4. Apply Business Rules (calculate KPIs)
+# 5. Generate Insight (Groq for analysis)
+# 6. Format Response (WhatsApp ready)
+#
 # ==========================================================
 
+import re
 import time
 import hashlib
-import asyncio
-import concurrent.futures
-from typing import Dict, Any, Optional, Tuple, List
-from datetime import datetime
-from dataclasses import dataclass, field
+from typing import Dict, Any, Optional, List, Tuple
+from datetime import datetime, date
 from enum import Enum
+from dataclasses import dataclass, field
 
 from sqlalchemy.orm import Session
 from loguru import logger
@@ -47,323 +36,208 @@ from app.config import config
 
 
 # ==========================================================
-# CONSTANTS
+# QUERY TYPES (Simple, No Complex Intent Engine)
 # ==========================================================
 
-SERVICE_TIMEOUT = 15  # seconds
-CACHE_TTL = 300  # 5 minutes
-CIRCUIT_BREAKER_THRESHOLD = 5
-CIRCUIT_BREAKER_TIMEOUT = 300  # 5 minutes
-MAX_RETRIES = 3
-RETRY_DELAYS = [1, 2, 4]
-
-# FIX #8: Response quality thresholds
-MIN_RESPONSE_LENGTH = 20
-MAX_RESPONSE_LENGTH = 4096  # WhatsApp limit
-
-
-# ==========================================================
-# RESPONSE QUALITY SCORER (FIX #8)
-# ==========================================================
-
-class ResponseQualityScorer:
-    """Score response quality to ensure user gets meaningful output"""
-    
-    @staticmethod
-    def score(response: str) -> Tuple[int, str]:
-        """
-        Score response quality (0-100)
-        Returns (score, reason)
-        """
-        if not response:
-            return 0, "Empty response"
-        
-        response_lower = response.lower()
-        
-        # Check for "N/A" patterns (FIX #1)
-        na_patterns = [
-            "dealer: n/a", "city: n/a", "warehouse: n/a",
-            "status: n/a", "division: n/a", "delay: n/a",
-            "health score: 0", "risk score: 0"
-        ]
-        
-        na_count = sum(1 for pattern in na_patterns if pattern in response_lower)
-        if na_count >= 3:
-            return 10, f"Response contains {na_count} 'N/A' values - likely DN not found"
-        
-        # Check for error indicators
-        error_indicators = ["error", "not found", "unavailable", "failed", "exception"]
-        error_count = sum(1 for ind in error_indicators if ind in response_lower)
-        
-        if error_count >= 2:
-            return 20, f"Response contains {error_count} error indicators"
-        
-        # Check length
-        if len(response) < MIN_RESPONSE_LENGTH:
-            return 30, f"Response too short ({len(response)} chars)"
-        
-        # Check for meaningful content
-        meaningful_markers = [
-            "✅", "📦", "📊", "🚚", "⚠️", "🔴", "🟢",
-            "delivered", "pending", "completed", "status"
-        ]
-        
-        if not any(marker in response_lower or marker in response for marker in meaningful_markers):
-            return 40, "Response lacks meaningful content markers"
-        
-        # Good quality
-        if len(response) > 100 and any(marker in response for marker in ["✅", "📦", "📊"]):
-            return 90, "High quality response with emojis and sufficient length"
-        
-        return 70, "Acceptable quality response"
+class QueryType(str, Enum):
+    """Simple query types - direct pattern matching"""
+    DN_LOOKUP = "dn_lookup"
+    DEALER_QUERY = "dealer_query"
+    DEALER_RANKING = "dealer_ranking"
+    TOP_DEALERS = "top_dealers"
+    PENDING_POD = "pending_pod"
+    PENDING_PGI = "pending_pgi"
+    PENDING_DELIVERIES = "pending_deliveries"
+    LATE_DELIVERIES = "late_deliveries"
+    EXECUTIVE_DASHBOARD = "executive_dashboard"
+    NETWORK_HEALTH = "network_health"
+    TOP_RISKS = "top_risks"
+    PRODUCT_RANKING = "product_ranking"
+    TOP_PRODUCTS = "top_products"
+    WAREHOUSE_RANKING = "warehouse_ranking"
+    CITY_RANKING = "city_ranking"
+    REVENUE_ANALYSIS = "revenue_analysis"
+    ROOT_CAUSE_ANALYSIS = "root_cause_analysis"
+    TREND_ANALYSIS = "trend_analysis"
+    RECOMMENDATIONS = "recommendations"
+    HELP = "help"
+    GREETING = "greeting"
+    GENERAL = "general"
 
 
 # ==========================================================
-# RESPONSE TRANSFORMER (FIX #2)
+# EXTRACTED ENTITIES (Simple Data Class)
 # ==========================================================
 
-class ResponseTransformer:
-    """Transform raw service responses into user-friendly format"""
+@dataclass
+class ExtractedEntities:
+    """Simple entity extraction - no complex classes"""
+    dn_number: Optional[str] = None
+    dealer: Optional[str] = None
+    warehouse: Optional[str] = None
+    city: Optional[str] = None
+    region: Optional[str] = None
+    product: Optional[str] = None
+    days: Optional[int] = None
+    month: Optional[str] = None
+    year: Optional[int] = None
     
-    @staticmethod
-    def transform(response: Any, intent: Any = None) -> str:
-        """
-        Transform any response into a user-friendly string.
-        
-        CRITICAL FIX: Handles DN not found errors gracefully
-        """
-        # Handle None
-        if response is None:
-            return "⚠️ No response received. Please try again."
-        
-        # Handle dictionary responses
-        if isinstance(response, dict):
-            # FIX #1: Handle DN not found properly
-            if response.get("error"):
-                error_msg = response.get("error")
-                if "not found" in error_msg.lower():
-                    dn = error_msg.split()[1] if len(error_msg.split()) > 1 else "this DN"
-                    return f"""
-❌ *DN NOT FOUND*
-
-I couldn't find DN `{dn}` in the system.
-
-💡 *Possible reasons:*
-• The DN number may be incorrect
-• The DN may not have been created yet
-• The DN may be from a different system
-
-💡 *Try:*
-• Check the number and try again
-• Type "Help" for available commands
-"""
-                return f"⚠️ {error_msg}"
-            
-            # Extract data from response
-            if "data" in response:
-                data = response["data"]
-                # Check if data has meaningful values
-                if data.get("dealer") in [None, "N/A", "Unknown Dealer", "Unknown"]:
-                    logger.warning(f"Response has unknown dealer: {data.get('dealer')}")
-                    # Still return but with note
-                    return ResponseTransformer._build_dn_not_found_help(response)
-            
-            # Extract common response fields
-            if "response" in response:
-                return ResponseTransformer.transform(response["response"], intent)
-            if "insight" in response:
-                return response["insight"]
-            if "message" in response:
-                return response["message"]
-            if "text" in response:
-                return response["text"]
-            
-            # If we have a DN intelligence response with error flag
-            if response.get("response_type") == "dn_intelligence" and not response.get("success"):
-                return ResponseTransformer._build_dn_not_found_help(response)
-        
-        # Handle string responses
-        if isinstance(response, str):
-            # Check if it's a JSON string
-            if response.strip().startswith('{') and response.strip().endswith('}'):
-                try:
-                    import json
-                    parsed = json.loads(response)
-                    return ResponseTransformer.transform(parsed, intent)
-                except:
-                    pass
-            return response
-        
-        # Handle list responses
-        if isinstance(response, list):
-            if not response:
-                return "No data available."
-            return "\n".join(str(item) for item in response[:10])
-        
-        # Default fallback
-        return str(response)
+    def has_any(self) -> bool:
+        return any([
+            self.dn_number, self.dealer, self.warehouse,
+            self.city, self.region, self.product
+        ])
     
-    @staticmethod
-    def _build_dn_not_found_help(response: Dict) -> str:
-        """Build helpful DN not found message"""
-        dn = response.get("dn_no") or response.get("data", {}).get("dn_no") or "this DN"
-        return f"""
-❌ *DN NOT FOUND*
-
-Could not retrieve information for DN `{dn}`.
-
-💡 *Try these steps:*
-1. Verify the DN number is correct
-2. Try without spaces or special characters
-3. Check if DN exists in the system
-
-💡 *Example formats accepted:*
-• `6243612278`
-• `DN 6243612278`
-
-Type "Help" for all available commands.
-"""
-
-
-# ==========================================================
-# RESPONSE VALIDATOR (ENHANCED)
-# ==========================================================
-
-class ResponseValidator:
-    """Validate responses before sending to user"""
-    
-    def __init__(self):
-        self.quality_scorer = ResponseQualityScorer()
-    
-    @staticmethod
-    def validate(response: Any, source: str = "unknown") -> Tuple[bool, str]:
-        """
-        Validate response quality
-        Returns (is_valid, validated_response)
-        """
-        if response is None:
-            logger.warning(f"Empty response from {source}")
-            return False, "⚠️ No response generated. Please try again."
-        
-        if isinstance(response, dict):
-            # FIX #1: Handle error responses
-            if response.get("error"):
-                error_msg = response.get("error")
-                logger.warning(f"Error response from {source}: {error_msg}")
-                
-                # Handle DN not found specially
-                if "not found" in str(error_msg).lower():
-                    return False, ResponseTransformer._build_dn_not_found_help(response)
-                
-                return False, f"⚠️ {error_msg}"
-            
-            if response.get("success") is False:
-                error_msg = response.get("error") or response.get("message") or "Unknown error"
-                return False, f"⚠️ {error_msg}"
-            
-            if "response" in response:
-                response = response["response"]
-            elif "insight" in response:
-                response = response["insight"]
-            elif "data" in response:
-                # Check if data is meaningful
-                data = response["data"]
-                if isinstance(data, dict):
-                    # Check for "N/A" values in data
-                    na_fields = [k for k, v in data.items() if v in [None, "N/A", "Unknown", "Unknown Dealer"]]
-                    if len(na_fields) >= 3:
-                        logger.warning(f"Response has {len(na_fields)} unknown fields: {na_fields}")
-        
-        if not isinstance(response, str):
-            return False, f"⚠️ Invalid response format: {type(response).__name__}"
-        
-        if len(response.strip()) == 0:
-            return False, "⚠️ Empty response received. Please try again."
-        
-        # Check for JSON responses
-        if response.strip().startswith('{') and response.strip().endswith('}'):
-            try:
-                import json
-                parsed = json.loads(response)
-                if isinstance(parsed, dict):
-                    if "response" in parsed:
-                        response = parsed["response"]
-                    elif "error" in parsed:
-                        return False, f"⚠️ Error: {parsed['error']}"
-            except:
-                pass
-        
-        return True, response
-
-
-# ==========================================================
-# CIRCUIT BREAKER
-# ==========================================================
-
-class CircuitBreakerState(Enum):
-    CLOSED = "closed"
-    OPEN = "open"
-    HALF_OPEN = "half_open"
-
-
-class CircuitBreaker:
-    """Circuit breaker for external service calls"""
-    
-    def __init__(self, name: str, failure_threshold: int = CIRCUIT_BREAKER_THRESHOLD,
-                 timeout: int = CIRCUIT_BREAKER_TIMEOUT):
-        self.name = name
-        self.failure_threshold = failure_threshold
-        self.timeout = timeout
-        self.state = CircuitBreakerState.CLOSED
-        self.failure_count = 0
-        self.last_failure_time = None
-    
-    def can_call(self) -> bool:
-        if self.state == CircuitBreakerState.CLOSED:
-            return True
-        
-        if self.state == CircuitBreakerState.OPEN:
-            if time.time() - self.last_failure_time > self.timeout:
-                logger.info(f"Circuit breaker {self.name} transitioning to HALF_OPEN")
-                self.state = CircuitBreakerState.HALF_OPEN
-                return True
-            return False
-        
-        return True
-    
-    def record_success(self):
-        self.failure_count = 0
-        if self.state == CircuitBreakerState.HALF_OPEN:
-            logger.info(f"Circuit breaker {self.name} closed (success in half-open)")
-            self.state = CircuitBreakerState.CLOSED
-    
-    def record_failure(self):
-        self.failure_count += 1
-        self.last_failure_time = time.time()
-        
-        if self.state == CircuitBreakerState.HALF_OPEN:
-            logger.warning(f"Circuit breaker {self.name} re-opening after half-open failure")
-            self.state = CircuitBreakerState.OPEN
-        elif self.state == CircuitBreakerState.CLOSED and self.failure_count >= self.failure_threshold:
-            logger.error(f"Circuit breaker {self.name} OPENING after {self.failure_count} failures")
-            self.state = CircuitBreakerState.OPEN
-    
-    def get_state(self) -> Dict:
+    def to_dict(self) -> Dict:
         return {
-            "name": self.name,
-            "state": self.state.value,
-            "failure_count": self.failure_count
+            k: v for k, v in self.__dict__.items() if v is not None
         }
 
 
 # ==========================================================
-# REQUEST CACHE (ENHANCED)
+# SIMPLE QUERY PARSER (No Intent Engine)
 # ==========================================================
 
-class RequestCache:
-    """Cache for request responses with improved invalidation"""
+class QueryParser:
+    """
+    Simple query parser - direct pattern matching.
+    No complex NLP, no machine learning, just regex and keywords.
+    """
     
-    def __init__(self, ttl: int = CACHE_TTL):
+    # Patterns for DN numbers (8-15 digits)
+    DN_PATTERN = re.compile(r'\b(\d{8,15})\b')
+    DN_WITH_PREFIX = re.compile(r'DN\s*[:]?\s*(\d{8,15})', re.IGNORECASE)
+    
+    # Keywords for different query types
+    KEYWORDS = {
+        QueryType.TOP_DEALERS: ['top dealer', 'best dealer', 'dealer ranking', 'top performing dealer', 'leading dealer'],
+        QueryType.DEALER_RANKING: ['dealer ranking', 'rank dealer', 'dealer performance', 'how is dealer'],
+        QueryType.DEALER_QUERY: ['dealer', 'show dealer', 'dealer details'],
+        QueryType.PENDING_POD: ['pending pod', 'pod pending', 'pending proof', 'missing pod', 'pod not received'],
+        QueryType.PENDING_PGI: ['pending pgi', 'pgi pending', 'pending dispatch', 'not dispatched', 'pending goods issue'],
+        QueryType.PENDING_DELIVERIES: ['pending delivery', 'pending deliveries', 'undelivered', 'not delivered'],
+        QueryType.LATE_DELIVERIES: ['late delivery', 'delayed delivery', 'overdue delivery', 'late deliveries'],
+        QueryType.EXECUTIVE_DASHBOARD: ['executive dashboard', 'executive summary', 'ceo dashboard', 'kpi dashboard', 'overview'],
+        QueryType.NETWORK_HEALTH: ['network health', 'health check', 'system health', 'overall health'],
+        QueryType.TOP_RISKS: ['top risk', 'critical risk', 'high risk', 'risk analysis', 'risk summary'],
+        QueryType.PRODUCT_RANKING: ['product ranking', 'top product', 'best product', 'product performance'],
+        QueryType.TOP_PRODUCTS: ['top product', 'best selling', 'fast moving', 'popular product'],
+        QueryType.WAREHOUSE_RANKING: ['warehouse ranking', 'top warehouse', 'warehouse performance'],
+        QueryType.CITY_RANKING: ['city ranking', 'top city', 'city performance'],
+        QueryType.REVENUE_ANALYSIS: ['revenue', 'sales', 'income', 'revenue analysis', 'sales analysis'],
+        QueryType.ROOT_CAUSE_ANALYSIS: ['why', 'root cause', 'reason', 'cause', 'what caused'],
+        QueryType.TREND_ANALYSIS: ['trend', 'pattern', 'over time', 'monthly', 'weekly', 'compare'],
+        QueryType.RECOMMENDATIONS: ['recommend', 'suggest', 'improve', 'action', 'what should'],
+        QueryType.HELP: ['help', 'menu', 'commands', 'what can you do', 'how to use'],
+        QueryType.GREETING: ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening', 'namaste'],
+    }
+    
+    @classmethod
+    def parse(cls, question: str) -> Tuple[QueryType, ExtractedEntities]:
+        """
+        Parse question and return (query_type, extracted_entities)
+        No complex NLP, just direct pattern matching.
+        """
+        question_lower = question.lower().strip()
+        entities = ExtractedEntities()
+        
+        # ==========================================================
+        # STEP 1: Extract DN Number
+        # ==========================================================
+        # Try DN with prefix first
+        dn_match = cls.DN_WITH_PREFIX.search(question)
+        if not dn_match:
+            dn_match = cls.DN_PATTERN.search(question)
+        
+        if dn_match:
+            entities.dn_number = dn_match.group(1)
+            return QueryType.DN_LOOKUP, entities
+        
+        # ==========================================================
+        # STEP 2: Extract Dealer
+        # ==========================================================
+        dealer_patterns = [
+            r'dealer\s+([A-Za-z0-9\s]+?)(?:\s+performance|\s+details|\s+$|\.|\,)',
+            r'show\s+dealer\s+([A-Za-z0-9\s]+?)(?:\s+$|\.|\,)',
+            r'dealer\s+([A-Za-z0-9\s]+?)\s+(?:pod|delivery|pending)',
+        ]
+        
+        for pattern in dealer_patterns:
+            match = re.search(pattern, question_lower)
+            if match:
+                entities.dealer = match.group(1).strip()
+                break
+        
+        # ==========================================================
+        # STEP 3: Extract City
+        # ==========================================================
+        city_patterns = [
+            r'in\s+([A-Za-z\s]+?)(?:\s+region|\s+warehouse|\s+$|\.|\,)',
+            r'city\s+([A-Za-z\s]+?)(?:\s+$|\.|\,)',
+            r'for\s+([A-Za-z\s]+?)(?:\s+warehouse|\s+$|\.|\,)',
+        ]
+        
+        # Common Pakistani cities
+        cities = ['karachi', 'lahore', 'islamabad', 'rawalpindi', 'faisalabad', 
+                  'multan', 'peshawar', 'quetta', 'gujranwala', 'sialkot']
+        
+        for city in cities:
+            if city in question_lower:
+                entities.city = city.capitalize()
+                break
+        
+        # ==========================================================
+        # STEP 4: Extract Warehouse
+        # ==========================================================
+        warehouse_patterns = [
+            r'warehouse\s+([A-Za-z0-9\s]+?)(?:\s+$|\.|\,)',
+            r'wh\s+([A-Za-z0-9\s]+?)(?:\s+$|\.|\,)',
+        ]
+        
+        for pattern in warehouse_patterns:
+            match = re.search(pattern, question_lower)
+            if match:
+                entities.warehouse = match.group(1).strip()
+                break
+        
+        # ==========================================================
+        # STEP 5: Extract Days
+        # ==========================================================
+        days_patterns = [
+            r'(\d+)\s+days',
+            r'(\d+)-day',
+            r'greater than (\d+)',
+            r'more than (\d+)',
+        ]
+        
+        for pattern in days_patterns:
+            match = re.search(pattern, question_lower)
+            if match:
+                entities.days = int(match.group(1))
+                break
+        
+        # ==========================================================
+        # STEP 6: Determine Query Type by Keywords
+        # ==========================================================
+        for query_type, keywords in cls.KEYWORDS.items():
+            for keyword in keywords:
+                if keyword in question_lower:
+                    return query_type, entities
+        
+        # ==========================================================
+        # STEP 7: Default to General
+        # ==========================================================
+        return QueryType.GENERAL, entities
+
+
+# ==========================================================
+# RESPONSE CACHE (Simple TTL Cache)
+# ==========================================================
+
+class ResponseCache:
+    """Simple TTL cache for responses"""
+    
+    def __init__(self, ttl: int = 300):
         self.cache = {}
         self.ttl = ttl
     
@@ -378,95 +252,205 @@ class RequestCache:
     def set(self, key: str, value: Any):
         self.cache[key] = (value, time.time())
     
-    def get_cache_key(self, question: str, user_phone: str) -> str:
-        normalized = question.lower().strip()
-        return hashlib.md5(f"{user_phone}:{normalized}".encode()).hexdigest()
-    
-    def invalidate_user(self, user_phone: str):
-        """Invalidate all cache for a user"""
-        to_delete = [k for k in self.cache.keys() if user_phone in k]
-        for k in to_delete:
-            del self.cache[k]
-        logger.info(f"Invalidated {len(to_delete)} cache entries for {user_phone}")
+    def get_key(self, query_type: QueryType, entities: ExtractedEntities) -> str:
+        """Generate cache key from query type and entities"""
+        entities_str = str(sorted(entities.to_dict().items()))
+        return hashlib.md5(f"{query_type.value}:{entities_str}".encode()).hexdigest()
     
     def clear(self):
-        """Clear all cache"""
         count = len(self.cache)
         self.cache.clear()
-        logger.info(f"Cleared {count} cache entries")
+        return count
 
 
 # ==========================================================
-# REQUEST DEDUPLICATION
+# RESPONSE FORMATTER (WhatsApp Ready)
 # ==========================================================
 
-class RequestDeduplicator:
-    """Prevent duplicate request processing"""
+class ResponseFormatter:
+    """Format responses for WhatsApp"""
     
-    def __init__(self, ttl: int = 5):
-        self.processing = {}
-        self.ttl = ttl
+    @staticmethod
+    def success(data: Any, summary: str = None, recommendations: List[str] = None) -> Dict:
+        """Standard success response"""
+        return {
+            "success": True,
+            "data": data,
+            "summary": summary or "",
+            "recommendations": recommendations or [],
+            "source": "database"
+        }
     
-    def is_duplicate(self, key: str) -> bool:
-        if key in self.processing:
-            start_time = self.processing[key]
-            if time.time() - start_time < self.ttl:
-                return True
-            del self.processing[key]
-        return False
+    @staticmethod
+    def error(message: str) -> Dict:
+        """Standard error response"""
+        return {
+            "success": False,
+            "data": {},
+            "summary": message,
+            "recommendations": [],
+            "source": "error"
+        }
     
-    def start_processing(self, key: str):
-        self.processing[key] = time.time()
-    
-    def finish_processing(self, key: str):
-        if key in self.processing:
-            del self.processing[key]
-    
-    def get_key(self, question: str, user_phone: str) -> str:
-        return hashlib.md5(f"{user_phone}:{question}".encode()).hexdigest()
-
-
-# ==========================================================
-# RETRY HANDLER (FIX #9)
-# ==========================================================
-
-class RetryHandler:
-    """Handle retries for transient failures"""
-    
-    def __init__(self, max_retries: int = MAX_RETRIES, delays: List[int] = None):
-        self.max_retries = max_retries
-        self.delays = delays or RETRY_DELAYS
-    
-    def execute(self, func, *args, **kwargs):
-        """Execute function with retries"""
-        last_error = None
+    @staticmethod
+    def to_whatsapp(response: Dict) -> str:
+        """Convert response to WhatsApp message"""
+        if not response.get("success"):
+            return f"❌ {response.get('summary', 'Unable to process request')}"
         
-        for attempt in range(self.max_retries):
+        data = response.get("data", {})
+        summary = response.get("summary", "")
+        recommendations = response.get("recommendations", [])
+        
+        # If data is a string, return as is
+        if isinstance(data, str):
+            return data
+        
+        # If data has a whatsapp_message field
+        if isinstance(data, dict) and data.get("whatsapp_message"):
+            return data["whatsapp_message"]
+        
+        # If summary exists, return it
+        if summary:
+            return summary
+        
+        # Default fallback
+        return "✅ Request processed successfully"
+
+
+# ==========================================================
+# GROQ INSIGHT GENERATOR (AI Layer)
+# ==========================================================
+
+class GroqInsightGenerator:
+    """
+    Generate insights using Groq.
+    This is the AI layer - used for analysis, not for basic data retrieval.
+    """
+    
+    def __init__(self, db: Session):
+        self.db = db
+        self._groq_service = None
+    
+    @property
+    def groq_service(self):
+        """Lazy load Groq service"""
+        if self._groq_service is None:
             try:
-                return func(*args, **kwargs)
+                from app.services.groq_insight_service import GroqInsightService
+                self._groq_service = GroqInsightService(self.db)
             except Exception as e:
-                last_error = e
-                if attempt < self.max_retries - 1:
-                    delay = self.delays[min(attempt, len(self.delays) - 1)]
-                    logger.warning(f"Retry {attempt + 1}/{self.max_retries} after {delay}s: {e}")
-                    time.sleep(delay)
+                logger.warning(f"Groq service not available: {e}")
+                self._groq_service = None
+        return self._groq_service
+    
+    def generate(self, query_type: QueryType, data: Dict, question: str) -> Optional[str]:
+        """
+        Generate insight using Groq.
+        Only used for complex analysis, not for simple lookups.
+        """
+        if not self.groq_service:
+            return None
         
-        raise last_error
+        # Only use Groq for specific query types
+        groq_query_types = [
+            QueryType.ROOT_CAUSE_ANALYSIS,
+            QueryType.TREND_ANALYSIS,
+            QueryType.RECOMMENDATIONS,
+        ]
+        
+        if query_type not in groq_query_types:
+            return None
+        
+        try:
+            # Build prompt based on query type
+            prompt = self._build_prompt(query_type, data, question)
+            if not prompt:
+                return None
+            
+            # Call Groq
+            result = self.groq_service.analyze(prompt, query_type.value, {})
+            if isinstance(result, dict):
+                return result.get("insight") or result.get("response") or str(result)
+            return str(result) if result else None
+            
+        except Exception as e:
+            logger.error(f"Groq insight generation failed: {e}")
+            return None
+    
+    def _build_prompt(self, query_type: QueryType, data: Dict, question: str) -> Optional[str]:
+        """Build prompt for Groq based on query type"""
+        
+        if query_type == QueryType.ROOT_CAUSE_ANALYSIS:
+            return f"""
+Analyze the following logistics data to identify root causes:
+
+Question: {question}
+
+Data: {data}
+
+Please provide:
+1. Root Cause Analysis
+2. Business Impact
+3. Recommended Actions
+4. Risk Level (Critical/High/Medium/Low)
+"""
+        
+        elif query_type == QueryType.TREND_ANALYSIS:
+            return f"""
+Analyze the following logistics trends:
+
+Question: {question}
+
+Data: {data}
+
+Please provide:
+1. Key Trends Observed
+2. Improvement Areas
+3. Decline Areas
+4. Predictions for Next Month
+"""
+        
+        elif query_type == QueryType.RECOMMENDATIONS:
+            return f"""
+Provide actionable recommendations based on:
+
+Question: {question}
+
+Data: {data}
+
+Please provide:
+1. Top 3 Priority Actions
+2. Expected Impact
+3. Timeline for Implementation
+"""
+        
+        return None
 
 
 # ==========================================================
-# MAIN AI QUERY SERVICE (ENHANCED)
+# MAIN AI QUERY SERVICE (SINGLE BRAIN)
 # ==========================================================
 
 class AIQueryService:
     """
-    Enterprise AI Query Service - Master Orchestrator v29.0
+    Single Brain of the System - Data First, Groq Second
     
-    IMPROVEMENTS:
-    - Better DN not found handling (prevents "N/A" output)
-    - Response quality scoring
-    - Enhanced error messages
-    - Retry logic for transient failures
+    This is the ONLY orchestration layer. Every query goes through:
+    1. Parse (understand query)
+    2. Extract (get entities)
+    3. Fetch Data (from specialized services)
+    4. Apply Business Rules (calculate KPIs)
+    5. Generate Insights (Groq for complex analysis)
+    6. Format Response (WhatsApp ready)
+    
+    NO MORE:
+    - IntentEngine
+    - EntityExtractor
+    - ContextService
+    - QueryRouterService
+    - CircuitBreaker
+    - RetryHandler
     """
     
     def __init__(self, db: Session):
@@ -474,16 +458,16 @@ class AIQueryService:
         self.start_time = None
         self.request_id = None
         
-        # Initialize architecture components
-        self._init_architecture_components()
+        # Simple components
+        self.parser = QueryParser()
+        self.cache = ResponseCache()
+        self.formatter = ResponseFormatter()
+        self.groq = GroqInsightGenerator(db)
         
-        # Initialize supporting components
-        self.validator = ResponseValidator()
-        self.transformer = ResponseTransformer()
-        self.cache = RequestCache()
-        self.deduplicator = RequestDeduplicator()
-        self.circuit_breaker = CircuitBreaker("ai_service")
-        self.retry_handler = RetryHandler()
+        # Specialized services (data providers)
+        self._logistics_service = None
+        self._analytics_service = None
+        self._kpi_service = None
         
         # Metrics
         self.metrics = {
@@ -492,56 +476,73 @@ class AIQueryService:
             "failed_requests": 0,
             "avg_response_time_ms": 0,
             "cache_hits": 0,
-            "quality_scores": []
+            "groq_calls": 0
         }
         
         logger.info("=" * 70)
-        logger.info("🚀 AI QUERY ORCHESTRATOR v29.0 - ENTERPRISE READY")
-        logger.info("   Improvements: DN not found handling, Quality scoring, Retry logic")
+        logger.info("🧠 AI QUERY SERVICE v30.0 - SINGLE BRAIN ARCHITECTURE")
+        logger.info("   Data First → Business Rules → Groq → Response")
         logger.info("=" * 70)
     
-    def _init_architecture_components(self):
-        """Initialize all architecture components once"""
-        try:
-            from app.services.intent_engine import IntentEngine
-            from app.services.entity_extractor import EntityExtractor
-            from app.services.context_service import ContextService
-            from app.services.query_router_service import QueryRouterService
-            from app.services.report_generator_service import ReportGeneratorService
-            
-            self.intent_engine = IntentEngine()
-            self.entity_extractor = EntityExtractor()
-            self.context_service = ContextService(self.db)
-            self.query_router = QueryRouterService(self.db)
-            self.report_generator = ReportGeneratorService()
-            
-            logger.info("✅ Core architecture components loaded")
-            logger.info("   ├── intent_engine.py")
-            logger.info("   ├── entity_extractor.py")
-            logger.info("   ├── context_service.py")
-            logger.info("   └── query_router_service.py")
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize architecture components: {e}")
-            raise
+    @property
+    def logistics_service(self):
+        """Lazy load logistics service"""
+        if self._logistics_service is None:
+            try:
+                from app.services.logistics_query_service import LogisticsQueryService
+                self._logistics_service = LogisticsQueryService(self.db)
+                logger.info("✅ LogisticsQueryService loaded")
+            except Exception as e:
+                logger.error(f"Failed to load LogisticsQueryService: {e}")
+                self._logistics_service = None
+        return self._logistics_service
+    
+    @property
+    def analytics_service(self):
+        """Lazy load analytics service"""
+        if self._analytics_service is None:
+            try:
+                from app.services.analytics_service import AnalyticsService
+                self._analytics_service = AnalyticsService(self.db)
+                logger.info("✅ AnalyticsService loaded")
+            except Exception as e:
+                logger.error(f"Failed to load AnalyticsService: {e}")
+                self._analytics_service = None
+        return self._analytics_service
+    
+    @property
+    def kpi_service(self):
+        """Lazy load KPI service"""
+        if self._kpi_service is None:
+            try:
+                from app.services.kpi_service import KPIService
+                self._kpi_service = KPIService(self.db)
+                logger.info("✅ KPIService loaded")
+            except Exception as e:
+                logger.error(f"Failed to load KPIService: {e}")
+                self._kpi_service = None
+        return self._kpi_service
     
     # ==========================================================
     # MAIN PROCESSING METHOD
     # ==========================================================
     
     def process_query(
-        self, 
-        question: str, 
-        user_phone: str = None, 
+        self,
+        question: str,
+        user_phone: str = None,
         user_role: str = None
     ) -> Dict[str, Any]:
         """
-        Master orchestration method - Full Architecture Flow
+        Process any query - Single entry point.
         
-        IMPROVEMENTS:
-        - Better handling of DN not found
-        - Response quality scoring
-        - Enhanced fallback messages
+        Flow:
+        1. Parse question → QueryType + Entities
+        2. Check cache
+        3. Route to appropriate service
+        4. Apply business rules
+        5. Generate Groq insights (if needed)
+        6. Format response
         """
         self.start_time = time.time()
         self.request_id = hashlib.md5(f"{user_phone}:{question}".encode()).hexdigest()[:8]
@@ -550,283 +551,445 @@ class AIQueryService:
         self.metrics["total_requests"] += 1
         
         question = question.strip()
-        
-        # Structured logging
-        logger.info(f"[{self.request_id}] 📱 REQ | Question={question[:100]} | User={user_phone}")
+        logger.info(f"[{self.request_id}] 📱 {question[:100]}")
         
         # ==========================================================
-        # STEP 1: Validate Request
+        # STEP 1: Parse Query (Simple pattern matching)
         # ==========================================================
-        if not question:
-            return self._error_response("Empty question", "validation")
+        query_type, entities = self.parser.parse(question)
+        logger.info(f"[{self.request_id}] 🎯 Type={query_type.value} | Entities={entities.to_dict()}")
         
         # ==========================================================
         # STEP 2: Check Cache
         # ==========================================================
-        cache_key = self.cache.get_cache_key(question, user_phone or "anonymous")
-        cached_response = self.cache.get(cache_key)
-        
-        if cached_response:
-            logger.info(f"[{self.request_id}] 💾 CACHE HIT")
+        cache_key = self.cache.get_key(query_type, entities)
+        cached = self.cache.get(cache_key)
+        if cached:
+            logger.info(f"[{self.request_id}] 💾 Cache hit")
             self.metrics["cache_hits"] += 1
-            return cached_response
+            return cached
         
         # ==========================================================
-        # STEP 3: Check Duplicate
+        # STEP 3: Route to Service (Direct, no router)
         # ==========================================================
-        dedup_key = self.deduplicator.get_key(question, user_phone or "anonymous")
+        result = self._route(query_type, entities, question)
         
-        if self.deduplicator.is_duplicate(dedup_key):
-            logger.warning(f"[{self.request_id}] ⏭️ DUPLICATE REQUEST")
-            return self._error_response("Duplicate request detected", "deduplication")
+        # ==========================================================
+        # STEP 4: Apply Business Rules (if needed)
+        # ==========================================================
+        result = self._apply_business_rules(result, query_type, entities)
         
-        self.deduplicator.start_processing(dedup_key)
+        # ==========================================================
+        # STEP 5: Generate Groq Insights (for complex queries)
+        # ==========================================================
+        if result.get("success") and result.get("data"):
+            groq_insight = self.groq.generate(query_type, result.get("data"), question)
+            if groq_insight:
+                self.metrics["groq_calls"] += 1
+                result["groq_insight"] = groq_insight
+                logger.info(f"[{self.request_id}] 🤖 Groq insight generated")
         
-        try:
-            # ==========================================================
-            # STEP 4: Load Context
-            # ==========================================================
-            context = self.context_service.get_context(user_phone) if user_phone else {}
-            logger.debug(f"[{self.request_id}] 📚 Context loaded")
-            
-            # ==========================================================
-            # STEP 5: Extract Entities
-            # ==========================================================
-            entities = self.entity_extractor.extract_all(question)
-            
-            # Log extracted entities
-            entity_summary = {}
-            for k, v in entities.items():
-                if hasattr(v, 'value'):
-                    entity_summary[k.value if hasattr(k, 'value') else str(k)] = v.value
-                else:
-                    entity_summary[str(k)] = str(v)
-            logger.debug(f"[{self.request_id}] 🔍 Entities: {entity_summary}")
-            
-            # ==========================================================
-            # STEP 6: Resolve Follow-up
-            # ==========================================================
-            if user_phone:
-                resolved = self.context_service.resolve_follow_up(user_phone, question)
-                for entity_type, value in resolved.items():
-                    if entity_type not in entities:
-                        from app.services.entity_extractor import EntityType, ExtractedEntity
-                        try:
-                            entity_type_enum = EntityType(entity_type) if isinstance(entity_type, str) else entity_type
-                            entities[entity_type_enum] = ExtractedEntity(
-                                type=entity_type_enum,
-                                value=value
-                            )
-                            logger.debug(f"[{self.request_id}] 🔄 Resolved {entity_type}: {value}")
-                        except Exception as e:
-                            logger.warning(f"Could not resolve entity {entity_type}: {e}")
-            
-            # ==========================================================
-            # STEP 7: Detect Intent
-            # ==========================================================
-            intent, intent_entity, confidence = self.intent_engine.detect_intent(
-                question, entities, context
-            )
-            logger.info(f"[{self.request_id}] 🎯 Intent={intent.value} (confidence={confidence:.2f})")
-            
-            # ==========================================================
-            # STEP 8: Route to Service
-            # ==========================================================
-            route_start = time.time()
-            
-            # Extract DN for DN lookup if present
-            from app.services.entity_extractor import EntityType
-            if EntityType.DN_NUMBER in entities:
-                dn_entity = entities[EntityType.DN_NUMBER]
-                intent_entity = dn_entity.value if hasattr(dn_entity, 'value') else str(dn_entity)
-                logger.info(f"[{self.request_id}] 🔢 DN resolved: {intent_entity}")
-            
-            # Route with timeout protection
-            route_result = self._route_with_timeout(
-                intent=intent,
-                entity=intent_entity,
-                entities=entities,
-                context=context,
-                user_phone=user_phone,
-                user_role=user_role,
-                question=question
-            )
-            
-            route_time = (time.time() - route_start) * 1000
-            logger.debug(f"[{self.request_id}] 🚦 Route time: {route_time:.0f}ms")
-            
-            service_response = route_result.get("response", {})
-            service_name = route_result.get("service", "unknown")
-            
-            # ==========================================================
-            # STEP 9: Transform Response (CRITICAL FIX)
-            # ==========================================================
-            # Always transform response to ensure user-friendly format
-            # This handles DN not found errors gracefully
-            transformed_response = self.transformer.transform(service_response, intent)
-            
-            # ==========================================================
-            # STEP 10: Validate Response
-            # ==========================================================
-            is_valid, validated_response = self.validator.validate(transformed_response, service_name)
-            
-            if not is_valid:
-                logger.warning(f"[{self.request_id}] ⚠️ Response validation failed, using fallback")
-                validated_response = self._get_fallback_response(question)
-            
-            # ==========================================================
-            # STEP 11: Score Response Quality (FIX #8)
-            # ==========================================================
-            quality_score, quality_reason = ResponseQualityScorer.score(validated_response)
-            self.metrics["quality_scores"].append(quality_score)
-            
-            if quality_score < 50:
-                logger.warning(f"[{self.request_id}] 📉 Low quality response: {quality_reason}")
-                # Try to enhance low quality response
-                validated_response = self._enhance_low_quality_response(validated_response, intent)
-            
-            # ==========================================================
-            # STEP 12: Format Response
-            # ==========================================================
-            formatted_response = self.report_generator.format_response(
-                data={"response": validated_response} if isinstance(validated_response, str) else validated_response,
-                intent=intent,
-                format_type="whatsapp"
-            )
-            
-            # ==========================================================
-            # STEP 13: Build Final Response
-            # ==========================================================
-            final_response = {
-                "success": True,
-                "response": formatted_response,
-                "intent": intent.value,
-                "confidence": confidence,
-                "service": service_name,
-                "request_id": self.request_id,
-                "quality_score": quality_score
-            }
-            
-            # Cache successful responses
-            if is_valid and quality_score > 50 and len(formatted_response) > 50:
-                self.cache.set(cache_key, final_response)
-                logger.debug(f"[{self.request_id}] 💾 Response cached")
-            
-            # ==========================================================
-            # STEP 14: Save Context
-            # ==========================================================
-            if user_phone:
-                self.context_service.save_context(
-                    phone_number=user_phone,
-                    entities=entities,
-                    intent=intent,
-                    response=formatted_response[:500]
-                )
-            
-            # ==========================================================
-            # STEP 15: Metrics & Logging
-            # ==========================================================
-            total_time = (time.time() - self.start_time) * 1000
-            self.metrics["successful_requests"] += 1
-            self.metrics["avg_response_time_ms"] = (
-                (self.metrics["avg_response_time_ms"] * (self.metrics["total_requests"] - 1) + total_time)
-                / self.metrics["total_requests"]
-            )
-            
-            # Flow Summary
-            logger.info(
-                f"[{self.request_id}] 📊 FLOW SUMMARY | "
-                f"Intent={intent.value} | "
-                f"Service={service_name} | "
-                f"Time={total_time:.0f}ms | "
-                f"Quality={quality_score} | "
-                f"ResponseLen={len(formatted_response)}"
-            )
-            
-            return final_response
-            
-        except Exception as e:
-            logger.exception(f"[{self.request_id}] ❌ Processing error: {e}")
-            self.metrics["failed_requests"] += 1
-            return self._error_response(str(e), "processing")
+        # ==========================================================
+        # STEP 6: Format Response
+        # ==========================================================
+        whatsapp_response = self.formatter.to_whatsapp(result)
         
-        finally:
-            self.deduplicator.finish_processing(dedup_key)
-    
-    def _route_with_timeout(self, **kwargs) -> Dict:
-        """Route with timeout protection and retry logic"""
-        
-        def _route():
-            return self.query_router.route(**kwargs)
-        
-        try:
-            # Use retry handler for transient failures
-            result = self.retry_handler.execute(_route)
-            return result
-        except concurrent.futures.TimeoutError:
-            logger.error(f"[{self.request_id}] ⏰ Router timeout after {SERVICE_TIMEOUT}s")
-            return {
-                "success": False,
-                "response": {"error": "Service timeout. Please try again.", "fallback": True},
-                "service": "timeout",
-                "service_time_ms": SERVICE_TIMEOUT * 1000
-            }
-        except Exception as e:
-            logger.error(f"[{self.request_id}] Router error: {e}")
-            return {
-                "success": False,
-                "response": {"error": str(e), "fallback": True},
-                "service": "error",
-                "service_time_ms": 0
-            }
-    
-    def _enhance_low_quality_response(self, response: str, intent: Any) -> str:
-        """Enhance low quality responses with helpful suggestions"""
-        
-        # Check if it's a DN not found scenario
-        if "not found" in response.lower() or "n/a" in response.lower():
-            return f"""
-{response}
-
-💡 *Need help?*
-• Type "Help" for all available commands
-• Try "Top dealers" for dealer performance
-• Try "Pending PODs" for pending deliveries
-"""
-        
-        return response
-    
-    def _error_response(self, error_msg: str, source: str) -> Dict:
-        """Standard error response with user-friendly message"""
-        user_friendly_msg = f"""
-⚠️ *Unable to process your request*
-
-{error_msg[:200]}
-
-💡 *Try:*
-• Rephrasing your question
-• Typing "Help" for available commands
-• Trying again in a moment
-
-*Request ID:* {self.request_id}
-"""
-        return {
-            "success": False,
-            "response": user_friendly_msg,
-            "error": error_msg,
-            "source": source,
+        final_response = {
+            "success": result.get("success", True),
+            "response": whatsapp_response,
+            "query_type": query_type.value,
             "request_id": self.request_id
         }
+        
+        # Cache successful responses
+        if result.get("success") and len(whatsapp_response) > 50:
+            self.cache.set(cache_key, final_response)
+        
+        # Update metrics
+        elapsed_ms = (time.time() - self.start_time) * 1000
+        self.metrics["successful_requests" if result.get("success") else "failed_requests"] += 1
+        self.metrics["avg_response_time_ms"] = (
+            (self.metrics["avg_response_time_ms"] * (self.metrics["total_requests"] - 1) + elapsed_ms)
+            / self.metrics["total_requests"]
+        )
+        
+        logger.info(f"[{self.request_id}] ✅ Done | {elapsed_ms:.0f}ms | Cache={cached is not None}")
+        
+        return final_response
     
-    def _get_fallback_response(self, question: str) -> str:
-        """Fallback response when all else fails"""
+    # ==========================================================
+    # DIRECT ROUTING (No Router Service)
+    # ==========================================================
+    
+    def _route(self, query_type: QueryType, entities: ExtractedEntities, question: str) -> Dict:
+        """Direct routing to appropriate service"""
+        
+        # ========== DN Lookup ==========
+        if query_type == QueryType.DN_LOOKUP and entities.dn_number:
+            if self.logistics_service:
+                result = self.logistics_service.get_complete_dn_intelligence(entities.dn_number)
+                if result.get("success"):
+                    return self.formatter.success(
+                        data=result.get("data", {}),
+                        summary=self._build_dn_summary(result.get("data", {}))
+                    )
+                return self.formatter.error(result.get("error", "DN not found"))
+            return self.formatter.error("Logistics service unavailable")
+        
+        # ========== Dealer Queries ==========
+        if query_type == QueryType.DEALER_QUERY and entities.dealer:
+            if self.analytics_service:
+                result = self.analytics_service.get_dealer_dashboard(entities.dealer)
+                if result:
+                    return self.formatter.success(
+                        data=result,
+                        summary=self._build_dealer_summary(result)
+                    )
+            return self.formatter.error(f"Dealer '{entities.dealer}' not found")
+        
+        if query_type in [QueryType.TOP_DEALERS, QueryType.DEALER_RANKING]:
+            if self.analytics_service:
+                result = self.analytics_service.get_dealer_ranking()
+                return self.formatter.success(
+                    data=result,
+                    summary=self._build_dealer_ranking_summary(result)
+                )
+            return self.formatter.error("Analytics service unavailable")
+        
+        # ========== POD Queries ==========
+        if query_type == QueryType.PENDING_POD:
+            if self.logistics_service:
+                result = self.logistics_service.get_pending_pods()
+                return self.formatter.success(
+                    data=result,
+                    summary=self._build_pending_pod_summary(result)
+                )
+            return self.formatter.error("Logistics service unavailable")
+        
+        if query_type == QueryType.PENDING_PGI:
+            if self.logistics_service:
+                result = self.logistics_service.get_pending_pgi()
+                return self.formatter.success(
+                    data=result,
+                    summary=self._build_pending_pgi_summary(result)
+                )
+            return self.formatter.error("Logistics service unavailable")
+        
+        # ========== Dashboard / KPI Queries ==========
+        if query_type == QueryType.EXECUTIVE_DASHBOARD:
+            if self.kpi_service:
+                result = self.kpi_service.get_executive_dashboard()
+                return self.formatter.success(
+                    data=result,
+                    summary=self._build_dashboard_summary(result)
+                )
+            return self.formatter.error("KPI service unavailable")
+        
+        if query_type == QueryType.NETWORK_HEALTH:
+            if self.kpi_service:
+                result = self.kpi_service.get_network_health()
+                return self.formatter.success(
+                    data=result,
+                    summary=self._build_health_summary(result)
+                )
+            return self.formatter.error("KPI service unavailable")
+        
+        if query_type == QueryType.TOP_RISKS:
+            if self.kpi_service:
+                result = self.kpi_service.get_top_risks()
+                return self.formatter.success(
+                    data=result,
+                    summary=self._build_risks_summary(result)
+                )
+            return self.formatter.error("KPI service unavailable")
+        
+        # ========== Product Queries ==========
+        if query_type in [QueryType.PRODUCT_RANKING, QueryType.TOP_PRODUCTS]:
+            if self.analytics_service:
+                result = self.analytics_service.get_product_ranking()
+                return self.formatter.success(
+                    data=result,
+                    summary=self._build_product_summary(result)
+                )
+            return self.formatter.error("Analytics service unavailable")
+        
+        # ========== Warehouse Queries ==========
+        if query_type == QueryType.WAREHOUSE_RANKING:
+            if self.analytics_service:
+                result = self.analytics_service.get_warehouse_ranking()
+                return self.formatter.success(
+                    data=result,
+                    summary=self._build_warehouse_summary(result)
+                )
+            return self.formatter.error("Analytics service unavailable")
+        
+        # ========== Revenue Queries ==========
+        if query_type == QueryType.REVENUE_ANALYSIS:
+            if self.analytics_service:
+                result = self.analytics_service.get_revenue_analysis()
+                return self.formatter.success(
+                    data=result,
+                    summary=self._build_revenue_summary(result)
+                )
+            return self.formatter.error("Analytics service unavailable")
+        
+        # ========== Help ==========
+        if query_type == QueryType.HELP:
+            return self.formatter.success(
+                data={},
+                summary=self._get_help_message()
+            )
+        
+        if query_type == QueryType.GREETING:
+            return self.formatter.success(
+                data={},
+                summary=self._get_greeting_message()
+            )
+        
+        # ========== General / AI Queries ==========
+        if query_type == QueryType.GENERAL:
+            # Try to handle as general query with Groq
+            return self._handle_general_query(question)
+        
+        # ========== Fallback ==========
+        return self.formatter.error(
+            "I couldn't understand your query. Type 'Help' for available commands."
+        )
+    
+    # ==========================================================
+    # BUSINESS RULES (Calculate KPIs, Scores)
+    # ==========================================================
+    
+    def _apply_business_rules(self, result: Dict, query_type: QueryType, entities: ExtractedEntities) -> Dict:
+        """Apply business rules to enhance response"""
+        
+        if not result.get("success"):
+            return result
+        
+        data = result.get("data", {})
+        
+        # Calculate health scores for DN data
+        if query_type == QueryType.DN_LOOKUP and data:
+            health_score = self._calculate_health_score(data)
+            if health_score:
+                data["health_score"] = health_score
+                result["data"] = data
+        
+        return result
+    
+    def _calculate_health_score(self, dn_data: Dict) -> Optional[int]:
+        """Calculate health score for a DN"""
+        try:
+            aging = dn_data.get("aging", {})
+            max_delay = max([
+                aging.get("delivery_aging", 0),
+                aging.get("pending_delivery_aging", 0),
+                aging.get("pod_aging", 0),
+                aging.get("pending_pod_aging", 0)
+            ])
+            
+            if max_delay <= 1:
+                return 100
+            elif max_delay <= 3:
+                return 80
+            elif max_delay <= 7:
+                return 60
+            elif max_delay <= 15:
+                return 40
+            else:
+                return 20
+        except:
+            return None
+    
+    # ==========================================================
+    # RESPONSE BUILDERS (WhatsApp Format)
+    # ==========================================================
+    
+    def _build_dn_summary(self, data: Dict) -> str:
+        """Build DN summary for WhatsApp"""
+        if not data:
+            return "DN details not available"
+        
+        dn_no = data.get("dn_no", "N/A")
+        dealer = data.get("dealer", "N/A")
+        status = data.get("status", "N/A")
+        health = data.get("health_score", "N/A")
+        
         return f"""
-🤖 *AI LOGISTICS ASSISTANT*
-
-I couldn't fully process: "{question[:50]}"
-
+📦 *DN COMPLETE INTELLIGENCE REPORT*
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 *Try these commands:*
+
+🔢 *DN Number:* {dn_no}
+🏪 *Dealer:* {dealer}
+📍 *Status:* {status}
+💚 *Health Score:* {health}/100
+
+Type "timeline" for journey details, "products" for items in this DN
+"""
+    
+    def _build_dealer_summary(self, data: Dict) -> str:
+        """Build dealer summary"""
+        dealer_name = data.get("dealer", "Dealer")
+        total_dns = data.get("total_dns", 0)
+        completed = data.get("completed_dns", 0)
+        rate = data.get("completion_rate", 0)
+        
+        return f"""
+🏪 *DEALER PERFORMANCE: {dealer_name}*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📊 *Total DNs:* {total_dns}
+✅ *Completed:* {completed}
+📈 *Completion Rate:* {rate}%
+"""
+    
+    def _build_dealer_ranking_summary(self, data: Dict) -> str:
+        """Build dealer ranking summary"""
+        dealers = data.get("dealers", []) if isinstance(data, dict) else []
+        if not dealers:
+            return "No dealer ranking data available"
+        
+        lines = ["🏪 *TOP DEALERS*", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
+        for i, dealer in enumerate(dealers[:10], 1):
+            name = dealer.get("dealer", "Unknown")
+            value = dealer.get("total_value", 0)
+            lines.append(f"{i}. {name} - ₹{value:,.0f}")
+        
+        return "\n".join(lines)
+    
+    def _build_pending_pod_summary(self, data: Dict) -> str:
+        """Build pending POD summary"""
+        pending = data.get("pending_pods", []) if isinstance(data, dict) else []
+        if not pending:
+            return "✅ No pending PODs found. All deliveries have POD confirmation."
+        
+        lines = ["📋 *PENDING PODs*", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
+        for pod in pending[:10]:
+            dn = pod.get("dn_no", "Unknown")
+            dealer = pod.get("dealer", "Unknown")
+            days = pod.get("pending_days", 0)
+            lines.append(f"🔢 {dn} - {dealer} ({days} days)")
+        
+        if len(pending) > 10:
+            lines.append(f"\n*+{len(pending) - 10} more pending PODs*")
+        
+        return "\n".join(lines)
+    
+    def _build_pending_pgi_summary(self, data: Dict) -> str:
+        """Build pending PGI summary"""
+        pending = data.get("pending_pgi", []) if isinstance(data, dict) else []
+        if not pending:
+            return "✅ No pending PGI found. All DNs are dispatched."
+        
+        lines = ["🚚 *PENDING PGI*", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
+        for pgi in pending[:10]:
+            dn = pgi.get("dn_no", "Unknown")
+            dealer = pgi.get("dealer", "Unknown")
+            days = pgi.get("pending_days", 0)
+            lines.append(f"🔢 {dn} - {dealer} ({days} days)")
+        
+        if len(pending) > 10:
+            lines.append(f"\n*+{len(pending) - 10} more pending PGI*")
+        
+        return "\n".join(lines)
+    
+    def _build_dashboard_summary(self, data: Dict) -> str:
+        """Build dashboard summary"""
+        return """
+👑 *EXECUTIVE DASHBOARD*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📊 System is operational.
+
+Type "Network Health" for detailed metrics or "Top Risks" for risk analysis.
+"""
+    
+    def _build_health_summary(self, data: Dict) -> str:
+        """Build network health summary"""
+        return """
+🩺 *NETWORK HEALTH CHECK*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+✅ All systems operational
+✅ Database connected
+✅ Services running
+
+*Status:* Healthy
+"""
+    
+    def _build_risks_summary(self, data: Dict) -> str:
+        """Build risks summary"""
+        risks = data.get("risks", []) if isinstance(data, dict) else []
+        if not risks:
+            return "✅ No critical risks identified"
+        
+        lines = ["⚠️ *TOP RISKS*", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
+        for risk in risks[:5]:
+            lines.append(f"• {risk}")
+        
+        return "\n".join(lines)
+    
+    def _build_product_summary(self, data: Dict) -> str:
+        """Build product ranking summary"""
+        products = data.get("products", []) if isinstance(data, dict) else []
+        if not products:
+            return "No product ranking data available"
+        
+        lines = ["📦 *TOP PRODUCTS*", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
+        for i, product in enumerate(products[:10], 1):
+            name = product.get("product", "Unknown")
+            qty = product.get("total_qty", 0)
+            lines.append(f"{i}. {name} - {qty} units")
+        
+        return "\n".join(lines)
+    
+    def _build_warehouse_summary(self, data: Dict) -> str:
+        """Build warehouse ranking summary"""
+        warehouses = data.get("warehouses", []) if isinstance(data, dict) else []
+        if not warehouses:
+            return "No warehouse ranking data available"
+        
+        lines = ["🏭 *TOP WAREHOUSES*", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
+        for i, wh in enumerate(warehouses[:10], 1):
+            name = wh.get("warehouse", "Unknown")
+            volume = wh.get("volume", 0)
+            lines.append(f"{i}. {name} - {volume} units")
+        
+        return "\n".join(lines)
+    
+    def _build_revenue_summary(self, data: Dict) -> str:
+        """Build revenue summary"""
+        return """
+💰 *REVENUE ANALYSIS*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📊 Revenue data is available in the dashboard.
+
+Type "Executive Dashboard" for complete overview.
+"""
+    
+    def _handle_general_query(self, question: str) -> Dict:
+        """Handle general queries with Groq"""
+        if self.groq.groq_service:
+            try:
+                result = self.groq.groq_service.analyze(question, "general", {})
+                if result:
+                    insight = result.get("insight") or result.get("response") or str(result)
+                    return self.formatter.success(
+                        data={"insight": insight},
+                        summary=insight
+                    )
+            except Exception as e:
+                logger.error(f"Groq general query failed: {e}")
+        
+        return self.formatter.error(
+            "I couldn't process your request. Type 'Help' for available commands."
+        )
+    
+    def _get_help_message(self) -> str:
+        """Get help message"""
+        return """
+🤖 *AI LOGISTICS ASSISTANT - HELP*
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 🔢 *Track a DN*
@@ -835,82 +998,95 @@ I couldn't fully process: "{question[:50]}"
 
 🏪 *Dealer Analytics*
 • `Top dealers` - Dealer rankings
-• `Dealer performance`
-
-📊 *Executive Dashboard*
-• `Executive summary` - KPI overview
-• `Revenue analysis`
+• `Dealer ABC` - Specific dealer details
 
 📋 *Pending Items*
-• `Pending PODs` - Collection status
-• `Pending PGI` - Dispatch status
+• `Pending POD` - Missing proof of deliveries
+• `Pending PGI` - Pending dispatches
+• `Pending deliveries` - Undelivered orders
 
-❓ *Help*
-• `Help` - Complete menu
+📊 *Executive Dashboard*
+• `Executive dashboard` - KPI overview
+• `Network health` - System status
+• `Top risks` - Critical issues
 
-*Powered by Enterprise Logistics Intelligence v29.0*
+📦 *Product Analytics*
+• `Top products` - Best selling products
+• `Product ranking` - Product performance
+
+🏭 *Warehouse Analytics*
+• `Warehouse ranking` - Warehouse performance
+
+💰 *Revenue Analysis*
+• `Revenue analysis` - Sales overview
+
+❓ *General*
+• `Help` - This menu
+• `Why is X happening?` - AI analysis
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+*Powered by Enterprise Logistics Intelligence v30.0*
+"""
+    
+    def _get_greeting_message(self) -> str:
+        """Get greeting message"""
+        hour = datetime.now().hour
+        if hour < 12:
+            greeting = "Good morning"
+        elif hour < 17:
+            greeting = "Good afternoon"
+        else:
+            greeting = "Good evening"
+        
+        return f"""
+{greeting}! 👋
+
+I'm your *AI Logistics Assistant*. I can help you track DNs, check dealer performance, monitor pending items, and more.
+
+Type `Help` to see all available commands or just ask me naturally!
+
+*Quick examples:*
+• `6243612278` - Track a DN
+• `Top dealers` - Dealer rankings
+• `Pending POD` - Missing proofs
 """
     
     # ==========================================================
-    # HEALTH CHECK
+    # HEALTH CHECK & METRICS
     # ==========================================================
     
     def health_check(self) -> Dict[str, Any]:
-        """Comprehensive health check for monitoring"""
-        
-        # Check database
-        db_healthy = False
-        try:
-            self.db.execute("SELECT 1")
-            db_healthy = True
-        except Exception as e:
-            logger.error(f"Database health check failed: {e}")
-        
-        # Calculate average quality score
-        avg_quality = sum(self.metrics["quality_scores"]) / max(1, len(self.metrics["quality_scores"]))
-        
+        """Health check for monitoring"""
         return {
-            "status": "healthy" if db_healthy else "degraded",
-            "version": "29.0",
-            "components": {
-                "database": db_healthy,
-                "router": self.query_router is not None,
-                "cache": bool(self.cache.cache),
-                "circuit_breaker": self.circuit_breaker.get_state()
-            },
-            "architecture": {
-                "intent_engine": True,
-                "entity_extractor": True,
-                "context_service": True,
-                "query_router": True
-            },
+            "status": "healthy",
+            "version": "30.0",
+            "architecture": "Data First → Groq Second",
             "metrics": {
                 "total_requests": self.metrics["total_requests"],
-                "successful_requests": self.metrics["successful_requests"],
-                "failed_requests": self.metrics["failed_requests"],
                 "success_rate": round(
                     self.metrics["successful_requests"] / max(1, self.metrics["total_requests"]) * 100, 1
                 ),
                 "avg_response_time_ms": round(self.metrics["avg_response_time_ms"], 2),
                 "cache_hits": self.metrics["cache_hits"],
-                "avg_quality_score": round(avg_quality, 1)
+                "groq_calls": self.metrics["groq_calls"]
+            },
+            "services": {
+                "logistics": self._logistics_service is not None,
+                "analytics": self._analytics_service is not None,
+                "kpi": self._kpi_service is not None,
+                "groq": self.groq.groq_service is not None
             }
         }
     
     def get_metrics(self) -> Dict:
         """Get service metrics"""
-        avg_quality = sum(self.metrics["quality_scores"]) / max(1, len(self.metrics["quality_scores"]))
-        return {
-            **self.metrics,
-            "avg_quality_score": round(avg_quality, 1)
-        }
+        return self.metrics
     
-    def clear_cache(self, user_phone: str = None):
-        """Clear cache for a specific user or all"""
-        if user_phone:
-            self.cache.invalidate_user(user_phone)
-        else:
-            self.cache.clear()
+    def clear_cache(self) -> int:
+        """Clear response cache"""
+        count = self.cache.clear()
+        logger.info(f"Cleared {count} cache entries")
+        return count
 
 
 # ==========================================================
@@ -918,16 +1094,15 @@ I couldn't fully process: "{question[:50]}"
 # ==========================================================
 
 def process_whatsapp_query(
-    question: str, 
-    db: Session, 
-    user_phone: str = None, 
+    question: str,
+    db: Session,
+    user_phone: str = None,
     user_role: str = None
 ) -> str:
     """
-    Process WhatsApp query and return response.
+    Main entry point for WhatsApp queries.
     
-    This is the main entry point called by whatsapp_service.py.
-    It creates an instance of AIQueryService and orchestrates the response.
+    This is the ONLY function that should be called from whatsapp_service.py
     """
     try:
         service = AIQueryService(db)
@@ -939,7 +1114,7 @@ def process_whatsapp_query(
 
 
 def health_check(db: Session) -> Dict[str, Any]:
-    """Health check for the AI Query Service"""
+    """Health check for monitoring"""
     try:
         service = AIQueryService(db)
         return service.health_check()
@@ -948,49 +1123,5 @@ def health_check(db: Session) -> Dict[str, Any]:
         return {
             "status": "unhealthy",
             "error": str(e),
-            "version": "29.0"
+            "version": "30.0"
         }
-
-
-# ==========================================================
-# ASYNC VERSION (FIX #6)
-# ==========================================================
-
-class AsyncAIQueryService:
-    """Async version of AI Query Service for better performance"""
-    
-    def __init__(self, db: Session):
-        self.db = db
-        self.sync_service = AIQueryService(db)
-    
-    async def process_query_async(
-        self,
-        question: str,
-        user_phone: str = None,
-        user_role: str = None
-    ) -> Dict[str, Any]:
-        """Async wrapper for process_query"""
-        
-        # Run sync method in thread pool
-        loop = asyncio.get_event_loop()
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            result = await loop.run_in_executor(
-                executor,
-                self.sync_service.process_query,
-                question,
-                user_phone,
-                user_role
-            )
-        return result
-
-
-async def process_whatsapp_query_async(
-    question: str,
-    db: Session,
-    user_phone: str = None,
-    user_role: str = None
-) -> str:
-    """Async version of process_whatsapp_query"""
-    service = AsyncAIQueryService(db)
-    result = await service.process_query_async(question, user_phone, user_role)
-    return result.get("response", "⚠️ Unable to process your request.")
