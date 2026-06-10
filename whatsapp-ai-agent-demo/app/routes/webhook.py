@@ -1,42 +1,22 @@
 # ==========================================================
-# FILE: app/routes/webhook.py (REFACTORED v20.0)
+# FILE: app/routes/webhook.py (INTEGRATED v21.0)
 # ==========================================================
 # PURPOSE: PURE ENTRY POINT CONTROLLER - Thin Layer Only
 #
 # ARCHITECTURE:
 # WhatsApp User → webhook.py → ai_query_service.py → Service Layer → Response
-#
-# RESPONSIBILITIES (ONLY):
-# 1. Verify Webhook (GET)
-# 2. Receive Messages (POST)
-# 3. Call AI Service
-# 4. Send Response via WhatsApp
-# 5. Health Check
-# 6. Centralized Error Handling
-#
-# WHAT THIS FILE DOES NOT CONTAIN:
-# - No Database Logic
-# - No Intent Detection
-# - No Entity Extraction
-# - No Conversation Context
-# - No Statistics Tracking
-# - No Rate Limiting
-# - No Business Rules
-# - No Analytics
-# - No KPI Calculations
 # ==========================================================
 
 import json
 import time
 import uuid
+import asyncio
 from typing import Dict, Any
-from fastapi import APIRouter, Request, Depends, HTTPException
+from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import PlainTextResponse, JSONResponse
-from sqlalchemy.orm import Session
 from loguru import logger
 
 from app.config import config
-from app.database import get_db
 
 router = APIRouter(prefix="/webhook", tags=["WhatsApp Webhook"])
 
@@ -62,7 +42,7 @@ except Exception as e:
     logger.error(f"❌ AI Service failed: {e}")
 
 try:
-    from app.services.whatsapp_service import send_text_message
+    from app.services.whatsapp_service import send_text_message, send_help_message
     WHATSAPP_SERVICE_AVAILABLE = True
     logger.info("✅ WhatsApp Service loaded")
 except Exception as e:
@@ -70,15 +50,12 @@ except Exception as e:
 
 
 # ==========================================================
-# PHASE 1: WEBHOOK VERIFICATION (Pure Entry Point)
+# WEBHOOK VERIFICATION
 # ==========================================================
 
 @router.get("/")
 async def verify_webhook(request: Request):
-    """
-    WhatsApp webhook verification endpoint.
-    Meta requires this for initial setup.
-    """
+    """WhatsApp webhook verification endpoint."""
     hub_mode = request.query_params.get("hub.mode")
     hub_verify_token = request.query_params.get("hub.verify_token")
     hub_challenge = request.query_params.get("hub.challenge")
@@ -89,121 +66,66 @@ async def verify_webhook(request: Request):
         logger.success("✅ Webhook verified successfully")
         return PlainTextResponse(content=hub_challenge)
     
-    logger.error("❌ Webhook verification failed - Invalid token")
+    logger.error("❌ Webhook verification failed")
     raise HTTPException(status_code=403, detail="Verification failed")
 
 
 # ==========================================================
-# PHASE 2: RECEIVE MESSAGE (Pure Entry Point)
+# WHATSAPP SENDER HELPER
 # ==========================================================
 
-@router.post("/")
-async def receive_message(request: Request):
-    """
-    Main webhook endpoint for receiving WhatsApp messages.
-    Pure entry point - only calls services, no business logic.
-    """
-    request_id = str(uuid.uuid4())[:8]
-    start_time = time.time()
+async def _send_response(phone_number: str, message: str, request_id: str, context_msg_id: str = None) -> Dict:
+    """Send message via WhatsApp service."""
+    if not WHATSAPP_SERVICE_AVAILABLE:
+        logger.error(f"[{request_id}] WhatsApp Service unavailable")
+        return {"success": False, "error": "Service unavailable"}
     
-    logger.info(f"[{request_id}] 📨 Webhook received")
+    if not config.WHATSAPP_ACCESS_TOKEN or not config.WHATSAPP_PHONE_NUMBER_ID:
+        logger.error(f"[{request_id}] Missing WhatsApp credentials")
+        return {"success": False, "error": "Missing credentials"}
     
-    try:
-        # Parse request body
-        raw_body = await request.body()
-        payload = json.loads(raw_body.decode('utf-8'))
-        
-        # Extract message data
-        entry = payload.get("entry", [{}])[0]
-        changes = entry.get("changes", [{}])[0]
-        value = changes.get("value", {})
-        
-        # Handle status updates (ignore, just log)
-        if value.get("statuses"):
-            statuses = value.get("statuses", [])
-            for status in statuses:
-                logger.debug(f"[{request_id}] Status update: {status.get('status')}")
-            return {"success": True, "type": "status_update"}
-        
-        # Extract messages
-        messages = value.get("messages", [])
-        if not messages:
-            logger.warning(f"[{request_id}] No messages in webhook")
-            return {"success": True, "type": "no_messages"}
-        
-        # Process each message
-        for message in messages:
-            phone_number = message.get("from")
-            msg_id = message.get("id")
-            msg_type = message.get("type", "unknown")
+    if len(message) > MAX_MESSAGE_LENGTH:
+        message = message[:MAX_MESSAGE_LENGTH - 50] + "\n\n... (truncated)"
+    
+    for attempt in range(3):
+        try:
+            if context_msg_id:
+                result = send_text_message(phone_number, message, message_id=context_msg_id)
+            else:
+                result = send_text_message(phone_number, message)
             
-            logger.info(f"[{request_id}] 📱 From: {phone_number}, Type: {msg_type}")
-            
-            # Only process text messages
-            if msg_type != "text":
-                await _send_response(
-                    phone_number,
-                    "📱 Please send text messages only.\n\nType 'help' for available commands.",
-                    request_id,
-                    msg_id
-                )
+            if result.get("success"):
+                return result
+                
+            if attempt < 2:
+                await asyncio.sleep([1, 2][attempt])
                 continue
+                
+            return result
             
-            # Extract user message
-            user_message = message.get("text", {}).get("body", "").strip()
-            if not user_message:
-                continue
-            
-            logger.info(f"[{request_id}] 💬 Message: {user_message[:100]}")
-            
-            # PHASE 3: Call AI Service (all logic delegated)
-            response = await _process_with_ai(user_message, phone_number, request_id)
-            
-            # PHASE 4: Send response
-            await _send_response(phone_number, response, request_id, msg_id)
-        
-        # Log processing time
-        processing_time = (time.time() - start_time) * 1000
-        logger.info(f"[{request_id}] ✅ Completed in {processing_time:.0f}ms")
-        
-        return {
-            "success": True,
-            "request_id": request_id,
-            "processing_time_ms": round(processing_time, 2)
-        }
-        
-    except json.JSONDecodeError as e:
-        logger.error(f"[{request_id}] Invalid JSON: {e}")
-        return JSONResponse(
-            status_code=400,
-            content={"success": False, "error": "Invalid JSON payload"}
-        )
-        
-    except Exception as e:
-        # PHASE 8: Centralized error handling
-        return _handle_error(e, request_id)
+        except Exception as e:
+            if attempt < 2:
+                await asyncio.sleep([1, 2][attempt])
+            else:
+                logger.exception(f"[{request_id}] Send failed: {e}")
+                return {"success": False, "error": str(e)}
+    
+    return {"success": False, "error": "Max retries exceeded"}
 
 
 # ==========================================================
-# PHASE 3: AI PROCESSING (Delegated to Service)
+# AI PROCESSING HELPER
 # ==========================================================
 
 async def _process_with_ai(question: str, phone_number: str, request_id: str) -> str:
-    """
-    Process query through AI service.
-    All business logic delegated to ai_query_service.py
-    """
+    """Process query through AI service."""
     if not AI_SERVICE_AVAILABLE:
-        logger.error(f"[{request_id}] AI Service unavailable")
         return "⚠️ AI service is unavailable. Please try again later."
     
     try:
-        # Import here to avoid circular imports
         from app.database import SessionLocal
         from app.services.ai_query_service import process_whatsapp_query
         
-        # Run AI processing in thread pool to avoid blocking
-        import asyncio
         loop = asyncio.get_event_loop()
         
         def _run_ai():
@@ -226,199 +148,143 @@ async def _process_with_ai(question: str, phone_number: str, request_id: str) ->
         return result
         
     except asyncio.TimeoutError:
-        logger.error(f"[{request_id}] AI timeout after {REQUEST_TIMEOUT_SECONDS}s")
+        logger.error(f"[{request_id}] AI timeout")
         return "⚠️ Request timeout. Please try again."
-        
     except Exception as e:
         logger.exception(f"[{request_id}] AI processing failed: {e}")
         return f"⚠️ Processing error. Please try again later."
 
 
 # ==========================================================
-# PHASE 4: SEND RESPONSE (Delegated to WhatsApp Service)
+# COMMAND HANDLERS
 # ==========================================================
 
-async def _send_response(phone_number: str, message: str, request_id: str, context_msg_id: str = None) -> Dict:
-    """
-    Send message via WhatsApp service.
-    All WhatsApp logic delegated to whatsapp_service.py
-    """
-    if not WHATSAPP_SERVICE_AVAILABLE:
-        logger.error(f"[{request_id}] WhatsApp Service unavailable")
-        return {"success": False, "error": "Service unavailable"}
-    
-    # Check credentials
-    if not config.WHATSAPP_ACCESS_TOKEN or not config.WHATSAPP_PHONE_NUMBER_ID:
-        logger.error(f"[{request_id}] Missing WhatsApp credentials")
-        return {"success": False, "error": "Missing credentials"}
-    
-    # Truncate message if too long
-    if len(message) > MAX_MESSAGE_LENGTH:
-        message = message[:MAX_MESSAGE_LENGTH - 50] + "\n\n... (truncated)"
-    
-    # Retry logic
-    max_retries = 3
-    retry_delays = [1, 2, 4]
-    
-    for attempt in range(max_retries):
+async def _handle_help_command(phone_number: str, request_id: str, msg_id: str = None) -> bool:
+    """Handle help command - sends help message directly."""
+    if WHATSAPP_SERVICE_AVAILABLE:
         try:
-            # Call WhatsApp service
-            if context_msg_id:
-                result = send_text_message(phone_number, message, message_id=context_msg_id)
-            else:
-                result = send_text_message(phone_number, message)
-            
-            logger.info(f"[{request_id}] Send result: success={result.get('success')}, "
-                       f"status={result.get('status_code')}")
-            
+            # send_help_message sends directly via WhatsApp service
+            result = send_help_message(phone_number)
             if result.get("success"):
-                return result
-                
-            if attempt < max_retries - 1:
-                import asyncio
-                await asyncio.sleep(retry_delays[attempt])
-                continue
-                
-            return result
-            
+                logger.info(f"[{request_id}] Help message sent")
+                return True
         except Exception as e:
-            if attempt < max_retries - 1:
-                import asyncio
-                await asyncio.sleep(retry_delays[attempt])
-            else:
-                logger.exception(f"[{request_id}] Send failed: {e}")
-                return {"success": False, "error": str(e)}
+            logger.error(f"[{request_id}] Help command failed: {e}")
     
-    return {"success": False, "error": "Max retries exceeded"}
+    # Fallback
+    await _send_response(phone_number, "📋 Type 'help' for available commands.", request_id, msg_id)
+    return True
 
 
 # ==========================================================
-# PHASE 8: CENTRALIZED ERROR HANDLING
+# MAIN WEBHOOK ENDPOINT
 # ==========================================================
 
-def _handle_error(error: Exception, request_id: str) -> Dict:
-    """
-    Centralized error handler.
-    Never exposes stack traces to users.
-    """
-    error_type = type(error).__name__
-    logger.exception(f"[{request_id}] Webhook error: {error_type} - {error}")
+@router.post("/")
+async def receive_message(request: Request):
+    """Main webhook endpoint for receiving WhatsApp messages."""
+    request_id = str(uuid.uuid4())[:8]
+    start_time = time.time()
     
-    # User-friendly messages for common errors
-    if "timeout" in str(error).lower():
-        user_message = "Request timeout. Please try again."
-    elif "connection" in str(error).lower():
-        user_message = "Service temporarily unavailable. Please try again later."
-    else:
-        user_message = "An unexpected error occurred. Please try again."
+    logger.info(f"[{request_id}] 📨 Webhook received")
     
-    return {
-        "success": False,
-        "error": user_message,
-        "request_id": request_id,
-        "type": error_type
-    }
+    try:
+        raw_body = await request.body()
+        payload = json.loads(raw_body.decode('utf-8'))
+        
+        entry = payload.get("entry", [{}])[0]
+        changes = entry.get("changes", [{}])[0]
+        value = changes.get("value", {})
+        
+        # Handle status updates
+        if value.get("statuses"):
+            logger.debug(f"[{request_id}] Status update ignored")
+            return {"success": True, "type": "status_update"}
+        
+        messages = value.get("messages", [])
+        if not messages:
+            logger.warning(f"[{request_id}] No messages")
+            return {"success": True, "type": "no_messages"}
+        
+        for message in messages:
+            phone_number = message.get("from")
+            msg_id = message.get("id")
+            msg_type = message.get("type", "unknown")
+            
+            logger.info(f"[{request_id}] 📱 From: {phone_number}, Type: {msg_type}")
+            
+            if msg_type != "text":
+                await _send_response(
+                    phone_number,
+                    "📱 Please send text messages only.\n\nType 'help' for available commands.",
+                    request_id,
+                    msg_id
+                )
+                continue
+            
+            user_message = message.get("text", {}).get("body", "").strip()
+            if not user_message:
+                continue
+            
+            logger.info(f"[{request_id}] 💬 Message: {user_message[:100]}")
+            
+            # Handle help command
+            if user_message.lower() in ["help", "menu", "commands"]:
+                await _handle_help_command(phone_number, request_id, msg_id)
+                continue
+            
+            # Process with AI
+            response = await _process_with_ai(user_message, phone_number, request_id)
+            
+            # Send response
+            await _send_response(phone_number, response, request_id, msg_id)
+        
+        processing_time = (time.time() - start_time) * 1000
+        logger.info(f"[{request_id}] ✅ Completed in {processing_time:.0f}ms")
+        
+        return {
+            "success": True,
+            "request_id": request_id,
+            "processing_time_ms": round(processing_time, 2)
+        }
+        
+    except json.JSONDecodeError as e:
+        logger.error(f"[{request_id}] Invalid JSON: {e}")
+        return JSONResponse(
+            status_code=400,
+            content={"success": False, "error": "Invalid JSON payload"}
+        )
+    except Exception as e:
+        logger.exception(f"[{request_id}] Webhook error: {e}")
+        return {
+            "success": False,
+            "error": "An unexpected error occurred",
+            "request_id": request_id
+        }
 
 
 # ==========================================================
-# PHASE 10: HEALTH CHECK ENDPOINT
+# HEALTH ENDPOINTS
 # ==========================================================
 
 @router.get("/health")
 async def health_check():
-    """
-    Health check endpoint for monitoring.
-    Calls service health checks for accurate status.
-    """
-    health_status = {
-        "status": "healthy",
-        "timestamp": None,
-        "services": {}
+    """Health check endpoint."""
+    return {
+        "status": "healthy" if (AI_SERVICE_AVAILABLE and WHATSAPP_SERVICE_AVAILABLE) else "degraded",
+        "version": "21.0",
+        "whatsapp_service": WHATSAPP_SERVICE_AVAILABLE,
+        "ai_service": AI_SERVICE_AVAILABLE,
+        "timestamp": __import__('datetime').datetime.utcnow().isoformat()
     }
-    
-    from datetime import datetime
-    health_status["timestamp"] = datetime.utcnow().isoformat()
-    
-    # Check AI Service
-    try:
-        from app.database import SessionLocal
-        from app.services.ai_query_service import AIQueryService
-        
-        db = SessionLocal()
-        try:
-            ai_service = AIQueryService(db)
-            ai_health = ai_service.health_check()
-            health_status["services"]["ai"] = {
-                "status": "healthy" if ai_health.get("status") == "healthy" else "degraded",
-                "version": ai_health.get("version", "unknown"),
-                "mode": ai_health.get("mode", "unknown")
-            }
-        finally:
-            db.close()
-    except Exception as e:
-        logger.error(f"AI health check failed: {e}")
-        health_status["services"]["ai"] = {"status": "unhealthy", "error": str(e)}
-        health_status["status"] = "degraded"
-    
-    # Check WhatsApp Service
-    try:
-        from app.services.whatsapp_service import get_whatsapp_service
-        
-        whatsapp = get_whatsapp_service()
-        whatsapp_health = whatsapp.health_check()
-        health_status["services"]["whatsapp"] = {
-            "status": "healthy" if whatsapp_health.get("configured") else "degraded",
-            "configured": whatsapp_health.get("configured", False),
-            "version": whatsapp_health.get("version", "unknown")
-        }
-        if not whatsapp_health.get("configured"):
-            health_status["status"] = "degraded"
-    except Exception as e:
-        logger.error(f"WhatsApp health check failed: {e}")
-        health_status["services"]["whatsapp"] = {"status": "unhealthy", "error": str(e)}
-        health_status["status"] = "degraded"
-    
-    # Check Database (via simple connection test)
-    try:
-        from app.database import SessionLocal
-        db = SessionLocal()
-        db.execute("SELECT 1")
-        db.close()
-        health_status["services"]["database"] = {"status": "healthy"}
-    except Exception as e:
-        logger.error(f"Database health check failed: {e}")
-        health_status["services"]["database"] = {"status": "unhealthy", "error": str(e)}
-        health_status["status"] = "degraded"
-    
-    # Check Groq (via AI Provider)
-    try:
-        from app.services.ai_provider_service import get_ai_provider
-        provider = get_ai_provider()
-        health_status["services"]["groq"] = {
-            "status": "healthy" if provider.provider else "degraded",
-            "provider": provider.provider or "none",
-            "model": provider.model or "none"
-        }
-        if not provider.provider:
-            health_status["status"] = "degraded"
-    except Exception as e:
-        logger.error(f"Groq health check failed: {e}")
-        health_status["services"]["groq"] = {"status": "unhealthy", "error": str(e)}
-        health_status["status"] = "degraded"
-    
-    return health_status
 
-
-# ==========================================================
-# SIMPLE STATUS ENDPOINT
-# ==========================================================
 
 @router.get("/status")
 async def status():
-    """Simple status endpoint for basic monitoring"""
+    """Simple status endpoint."""
     return {
         "service": "WhatsApp Webhook",
-        "version": "20.0",
+        "version": "21.0",
         "status": "running",
         "ai_service": AI_SERVICE_AVAILABLE,
         "whatsapp_service": WHATSAPP_SERVICE_AVAILABLE,
@@ -431,7 +297,6 @@ async def status():
 # ==========================================================
 
 logger.info("=" * 60)
-logger.info("📡 WEBHOOK v20.0 - Pure Entry Point Controller")
+logger.info("📡 WEBHOOK v21.0 - Pure Entry Point Controller")
 logger.info("   Responsibilities: Verify | Receive | Route | Send | Health")
-logger.info("   NO Database | NO Intent | NO Context | NO Stats | NO Rate Limit")
 logger.info("=" * 60)
