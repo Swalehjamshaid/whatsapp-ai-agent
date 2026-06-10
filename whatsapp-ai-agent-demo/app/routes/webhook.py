@@ -1,7 +1,7 @@
 # ==========================================================
-# FILE: app/routes/webhook.py (FINAL v22.0)
+# FILE: app/routes/webhook.py (FINAL v23.0 - ENTERPRISE READY)
 # ==========================================================
-# PURPOSE: PURE ENTRY POINT CONTROLLER - 100% Error Free
+# PURPOSE: PURE ENTRY POINT CONTROLLER - Production Grade
 #
 # ARCHITECTURE:
 # WhatsApp User → webhook.py → ai_query_service.py → Service Layer → Response
@@ -10,12 +10,14 @@
 import json
 import time
 import uuid
+import re
 import asyncio
-import concurrent.futures
 from typing import Dict, Any, Optional
 from fastapi import APIRouter, Request, HTTPException, BackgroundTasks
 from fastapi.responses import PlainTextResponse, JSONResponse
+from sqlalchemy import text
 from loguru import logger
+from cachetools import TTLCache
 
 from app.config import config
 
@@ -27,29 +29,44 @@ router = APIRouter(prefix="/webhook", tags=["WhatsApp Webhook"])
 # ==========================================================
 
 MAX_MESSAGE_LENGTH = 3500
-REQUEST_TIMEOUT_SECONDS = 25
+REQUEST_TIMEOUT_SECONDS = 15  # Reduced from 25 for Railway
 MAX_RETRIES = 3
 RETRY_DELAYS = [1, 2, 4]
+
+# Rate limiting
+RATE_LIMIT_MAX_MESSAGES = 10  # per minute
+RATE_LIMIT_WINDOW = 60  # seconds
+
+# ==========================================================
+# CACHES & METRICS
+# ==========================================================
+
+# PRIORITY 4: Duplicate message protection cache
+processed_messages = TTLCache(maxsize=5000, ttl=3600)
+
+# PRIORITY 11: Rate limiting cache (phone_number -> timestamps list)
+rate_limit_cache = TTLCache(maxsize=10000, ttl=RATE_LIMIT_WINDOW)
+
+# PRIORITY 11: Metrics
+metrics = {
+    "total_requests": 0,
+    "successful_requests": 0,
+    "failed_requests": 0,
+    "timeout_requests": 0,
+    "rate_limited_requests": 0,
+    "duplicate_messages": 0,
+    "start_time": time.time()
+}
 
 # ==========================================================
 # SERVICE AVAILABILITY FLAGS
 # ==========================================================
 
-AI_SERVICE_AVAILABLE = False
 WHATSAPP_SERVICE_AVAILABLE = False
 
 # ==========================================================
-# SERVICE IMPORTS (with error handling)
+# SERVICE IMPORTS (with lazy loading - PRIORITY 3)
 # ==========================================================
-
-try:
-    from app.services.ai_query_service import process_whatsapp_query
-    AI_SERVICE_AVAILABLE = True
-    logger.info("✅ AI Query Service loaded successfully")
-except ImportError as e:
-    logger.error(f"❌ AI Query Service import failed: {e}")
-except Exception as e:
-    logger.error(f"❌ AI Query Service error: {e}")
 
 try:
     from app.services.whatsapp_service import send_text_message
@@ -59,6 +76,9 @@ except ImportError as e:
     logger.error(f"❌ WhatsApp Service import failed: {e}")
 except Exception as e:
     logger.error(f"❌ WhatsApp Service error: {e}")
+
+# AI Service will be imported lazily at runtime (PRIORITY 3)
+
 
 # ==========================================================
 # HELPER FUNCTIONS
@@ -74,6 +94,32 @@ def _is_greeting(message: str) -> bool:
     """Check if message is a greeting."""
     greetings = ["hi", "hello", "hey", "good morning", "good afternoon", "good evening", "hola"]
     return message.lower().strip() in greetings
+
+
+def _should_retry(status_code: int) -> bool:
+    """Determine if a request should be retried based on status code (PRIORITY 5)."""
+    retryable_statuses = {429, 500, 502, 503, 504}
+    return status_code in retryable_statuses
+
+
+def _check_rate_limit(phone_number: str) -> bool:
+    """Check if user has exceeded rate limit (PRIORITY 12)."""
+    import time
+    current_time = time.time()
+    
+    # Get user's request timestamps
+    timestamps = rate_limit_cache.get(phone_number, [])
+    
+    # Clean old timestamps
+    timestamps = [t for t in timestamps if current_time - t < RATE_LIMIT_WINDOW]
+    
+    if len(timestamps) >= RATE_LIMIT_MAX_MESSAGES:
+        logger.warning(f"Rate limit exceeded for {phone_number}")
+        return False
+    
+    timestamps.append(current_time)
+    rate_limit_cache[phone_number] = timestamps
+    return True
 
 
 def _get_help_message() -> str:
@@ -168,7 +214,7 @@ async def send_whatsapp_message(
     context_msg_id: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Send WhatsApp message with retry logic.
+    Send WhatsApp message with smart retry logic.
     
     Args:
         phone_number: Recipient's phone number
@@ -200,17 +246,18 @@ async def send_whatsapp_message(
             else:
                 result = send_text_message(phone_number, message)
             
+            status_code = result.get('status_code', 0)
             logger.info(
                 f"[{request_id}] Send attempt {attempt + 1}: "
                 f"success={result.get('success')}, "
-                f"status={result.get('status_code')}"
+                f"status={status_code}"
             )
             
             if result.get("success"):
                 return result
             
-            # Retry on failure
-            if attempt < MAX_RETRIES - 1:
+            # PRIORITY 5: Only retry on certain status codes
+            if attempt < MAX_RETRIES - 1 and _should_retry(status_code):
                 await asyncio.sleep(RETRY_DELAYS[attempt])
                 continue
             
@@ -233,6 +280,7 @@ async def process_with_ai(
 ) -> str:
     """
     Process user query through AI service.
+    PRIORITY 3: Lazy import to prevent startup failure.
     
     Args:
         question: User's question
@@ -242,15 +290,14 @@ async def process_with_ai(
     Returns:
         AI response string
     """
-    if not AI_SERVICE_AVAILABLE:
-        logger.error(f"[{request_id}] AI service not available")
-        return "⚠️ AI service is temporarily unavailable. Please try again later."
-    
     logger.info(f"[{request_id}] 🤖 Processing: {question[:50]}...")
     
     def _run_ai():
         """Synchronous AI processing function (runs in thread pool)."""
+        # PRIORITY 3: Import inside function for lazy loading
         from app.database import SessionLocal
+        from app.services.ai_query_service import process_whatsapp_query
+        
         db = SessionLocal()
         try:
             result = process_whatsapp_query(question, db, phone_number, phone_number)
@@ -274,6 +321,7 @@ async def process_with_ai(
         
     except asyncio.TimeoutError:
         logger.error(f"[{request_id}] ⏰ AI timeout after {REQUEST_TIMEOUT_SECONDS}s")
+        metrics["timeout_requests"] += 1
         return "⚠️ Request timeout. Please try again in a moment."
         
     except Exception as e:
@@ -299,6 +347,9 @@ async def receive_message(
     request_id = str(uuid.uuid4())[:8]
     start_time = time.time()
     
+    # Update metrics
+    metrics["total_requests"] += 1
+    
     logger.info(f"[{request_id}] 📨 Webhook received - Processing started")
     
     try:
@@ -308,6 +359,11 @@ async def receive_message(
         
         # Log webhook payload for debugging (truncated)
         logger.debug(f"[{request_id}] Payload: {json.dumps(payload)[:500]}")
+        
+        # PRIORITY 7: Validate payload structure
+        if "entry" not in payload:
+            logger.error(f"[{request_id}] Invalid payload structure - missing 'entry'")
+            return {"success": False, "error": "Invalid payload", "request_id": request_id}
         
         # Extract message data
         entry = payload.get("entry", [{}])[0]
@@ -338,9 +394,39 @@ async def receive_message(
             msg_type = message.get("type", "unknown")
             timestamp = message.get("timestamp")
             
+            # PRIORITY 6: Phone number validation
+            if not phone_number:
+                logger.warning(f"[{request_id}] Missing phone number in message")
+                continue
+            
+            if len(str(phone_number)) < 10:
+                logger.warning(f"[{request_id}] Invalid phone number: {phone_number}")
+                continue
+            
             logger.info(f"[{request_id}] 📱 Message from: {phone_number}, Type: {msg_type}, ID: {msg_id}")
             
-            # Handle non-text messages
+            # PRIORITY 4: Duplicate message protection
+            if msg_id and msg_id in processed_messages:
+                logger.info(f"[{request_id}] ⏭️ Duplicate message detected: {msg_id}")
+                metrics["duplicate_messages"] += 1
+                continue
+            
+            if msg_id:
+                processed_messages[msg_id] = True
+            
+            # PRIORITY 12: Rate limiting
+            if not _check_rate_limit(phone_number):
+                logger.warning(f"[{request_id}] Rate limit exceeded for {phone_number}")
+                metrics["rate_limited_requests"] += 1
+                await send_whatsapp_message(
+                    phone_number,
+                    "⚠️ You are sending messages too quickly. Please wait a moment before sending more.",
+                    request_id,
+                    msg_id
+                )
+                continue
+            
+            # PRIORITY 9: Handle non-text messages
             if msg_type != "text":
                 await send_whatsapp_message(
                     phone_number,
@@ -374,7 +460,6 @@ async def receive_message(
                 continue
             
             # Check if it's a DN query (numeric only, 10-15 digits)
-            import re
             if re.match(r'^\d{10,15}$', user_message):
                 logger.info(f"[{request_id}] 🔢 DN QUERY: {user_message}")
             
@@ -386,8 +471,10 @@ async def receive_message(
             
             if send_result.get("success"):
                 logger.info(f"[{request_id}] 📤 Response sent successfully")
+                metrics["successful_requests"] += 1
             else:
                 logger.error(f"[{request_id}] 📤 Failed to send response: {send_result.get('error')}")
+                metrics["failed_requests"] += 1
             
             processed_count += 1
         
@@ -404,6 +491,7 @@ async def receive_message(
         
     except json.JSONDecodeError as e:
         logger.error(f"[{request_id}] ❌ Invalid JSON payload: {e}")
+        metrics["failed_requests"] += 1
         return JSONResponse(
             status_code=400,
             content={
@@ -417,6 +505,7 @@ async def receive_message(
         # Centralized error handling - never expose stack traces to users
         error_type = type(e).__name__
         logger.exception(f"[{request_id}] ❌ Webhook error: {error_type} - {str(e)}")
+        metrics["failed_requests"] += 1
         
         # Return user-friendly error message
         return {
@@ -425,6 +514,59 @@ async def receive_message(
             "request_id": request_id,
             "error_type": error_type
         }
+
+
+# ==========================================================
+# PRIORITY 11: METRICS ENDPOINT
+# ==========================================================
+
+@router.get("/metrics")
+async def get_metrics() -> Dict[str, Any]:
+    """
+    Get webhook processing metrics for monitoring.
+    
+    Returns:
+        Detailed metrics about webhook performance
+    """
+    uptime_seconds = time.time() - metrics["start_time"]
+    
+    return {
+        "uptime_seconds": round(uptime_seconds, 2),
+        "uptime_hours": round(uptime_seconds / 3600, 2),
+        "total_requests": metrics["total_requests"],
+        "successful_requests": metrics["successful_requests"],
+        "failed_requests": metrics["failed_requests"],
+        "timeout_requests": metrics["timeout_requests"],
+        "rate_limited_requests": metrics["rate_limited_requests"],
+        "duplicate_messages": metrics["duplicate_messages"],
+        "success_rate": round(
+            (metrics["successful_requests"] / max(1, metrics["total_requests"])) * 100, 2
+        ),
+        "cache_size": len(processed_messages),
+        "rate_limit_cache_size": len(rate_limit_cache),
+        "timestamp": __import__('datetime').datetime.utcnow().isoformat()
+    }
+
+
+# ==========================================================
+# PRIORITY 11: ERRORS ENDPOINT
+# ==========================================================
+
+@router.get("/errors")
+async def get_errors() -> Dict[str, Any]:
+    """
+    Get error statistics for monitoring.
+    
+    Returns:
+        Error counts and recent error types
+    """
+    return {
+        "total_failures": metrics["failed_requests"],
+        "total_timeouts": metrics["timeout_requests"],
+        "total_rate_limited": metrics["rate_limited_requests"],
+        "total_duplicates": metrics["duplicate_messages"],
+        "timestamp": __import__('datetime').datetime.utcnow().isoformat()
+    }
 
 
 # ==========================================================
@@ -441,29 +583,37 @@ async def health_check() -> Dict[str, Any]:
     """
     from datetime import datetime
     
-    # Check database connectivity
+    # PRIORITY 2: Fix database health check for SQLAlchemy 2.0
     db_healthy = False
     try:
         from app.database import SessionLocal
         db = SessionLocal()
-        db.execute("SELECT 1")
+        db.execute(text("SELECT 1"))  # Fixed: using text()
         db.close()
         db_healthy = True
     except Exception as e:
         logger.error(f"Database health check failed: {e}")
     
+    # Check AI service availability (lazy)
+    ai_available = False
+    try:
+        from app.services.ai_query_service import process_whatsapp_query
+        ai_available = True
+    except ImportError:
+        pass
+    
     # Determine overall status
-    all_services_healthy = AI_SERVICE_AVAILABLE and WHATSAPP_SERVICE_AVAILABLE and db_healthy
+    all_services_healthy = ai_available and WHATSAPP_SERVICE_AVAILABLE and db_healthy
     overall_status = "healthy" if all_services_healthy else "degraded"
     
     return {
         "status": overall_status,
-        "version": "22.0",
+        "version": "23.0",
         "timestamp": datetime.utcnow().isoformat(),
         "services": {
             "ai_service": {
-                "status": "healthy" if AI_SERVICE_AVAILABLE else "unavailable",
-                "available": AI_SERVICE_AVAILABLE
+                "status": "healthy" if ai_available else "unavailable",
+                "available": ai_available
             },
             "whatsapp_service": {
                 "status": "healthy" if WHATSAPP_SERVICE_AVAILABLE else "unavailable",
@@ -473,6 +623,12 @@ async def health_check() -> Dict[str, Any]:
                 "status": "healthy" if db_healthy else "unavailable",
                 "connected": db_healthy
             }
+        },
+        "metrics": {
+            "total_requests": metrics["total_requests"],
+            "success_rate": round(
+                (metrics["successful_requests"] / max(1, metrics["total_requests"])) * 100, 2
+            )
         },
         "credentials": {
             "whatsapp_token": "✓ configured" if config.WHATSAPP_ACCESS_TOKEN else "✗ missing",
@@ -492,14 +648,13 @@ async def status() -> Dict[str, Any]:
     """
     return {
         "service": "WhatsApp Logistics Webhook",
-        "version": "22.0",
+        "version": "23.0",
         "status": "running",
         "services": {
-            "ai": AI_SERVICE_AVAILABLE,
             "whatsapp": WHATSAPP_SERVICE_AVAILABLE
         },
         "message": "Ready to receive WhatsApp messages",
-        "uptime": "Active"
+        "uptime_seconds": round(time.time() - metrics["start_time"], 2)
     }
 
 
@@ -517,24 +672,96 @@ async def ping() -> Dict[str, Any]:
     }
 
 
+@router.get("/ai-health")
+async def ai_health() -> Dict[str, Any]:
+    """
+    AI service health check endpoint.
+    
+    Returns:
+        AI service status
+    """
+    ai_available = False
+    try:
+        from app.services.ai_query_service import process_whatsapp_query
+        ai_available = True
+    except ImportError:
+        pass
+    
+    return {
+        "service": "ai_query_service",
+        "status": "healthy" if ai_available else "unavailable",
+        "available": ai_available,
+        "lazy_load": True,
+        "timestamp": __import__('datetime').datetime.utcnow().isoformat()
+    }
+
+
+@router.get("/whatsapp-health")
+async def whatsapp_health() -> Dict[str, Any]:
+    """
+    WhatsApp service health check endpoint.
+    
+    Returns:
+        WhatsApp service status
+    """
+    return {
+        "service": "whatsapp_service",
+        "status": "healthy" if WHATSAPP_SERVICE_AVAILABLE else "unavailable",
+        "available": WHATSAPP_SERVICE_AVAILABLE,
+        "credentials": {
+            "token_configured": bool(config.WHATSAPP_ACCESS_TOKEN),
+            "phone_id_configured": bool(config.WHATSAPP_PHONE_NUMBER_ID),
+            "verify_token_configured": bool(config.WHATSAPP_VERIFY_TOKEN)
+        },
+        "timestamp": __import__('datetime').datetime.utcnow().isoformat()
+    }
+
+
+@router.get("/rate-limit-status")
+async def rate_limit_status() -> Dict[str, Any]:
+    """
+    Get rate limit cache status for monitoring.
+    
+    Returns:
+        Rate limit cache statistics
+    """
+    return {
+        "active_users": len(rate_limit_cache),
+        "max_users": rate_limit_cache.maxsize,
+        "max_messages_per_minute": RATE_LIMIT_MAX_MESSAGES,
+        "window_seconds": RATE_LIMIT_WINDOW,
+        "cache_usage_percent": round((len(rate_limit_cache) / rate_limit_cache.maxsize) * 100, 2),
+        "timestamp": __import__('datetime').datetime.utcnow().isoformat()
+    }
+
+
 # ==========================================================
 # INITIALIZATION LOGGING
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("📡 WEBHOOK v22.0 - 100% Error Free Entry Point Controller")
+logger.info("📡 WEBHOOK v23.0 - Enterprise Grade Entry Point Controller")
 logger.info("=" * 70)
 logger.info("✅ Service Status:")
-logger.info(f"   • AI Query Service: {'✓ Available' if AI_SERVICE_AVAILABLE else '✗ Unavailable'}")
 logger.info(f"   • WhatsApp Service: {'✓ Available' if WHATSAPP_SERVICE_AVAILABLE else '✗ Unavailable'}")
+logger.info(f"   • AI Service: Lazy Load (will load on first request)")
 logger.info(f"   • WhatsApp Token: {'✓ Configured' if config.WHATSAPP_ACCESS_TOKEN else '✗ Missing'}")
 logger.info(f"   • WhatsApp Phone ID: {'✓ Configured' if config.WHATSAPP_PHONE_NUMBER_ID else '✗ Missing'}")
 logger.info(f"   • Verify Token: {'✓ Configured' if config.WHATSAPP_VERIFY_TOKEN else '✗ Missing'}")
 logger.info("=" * 70)
-logger.info("🚀 Webhook endpoints available at:")
-logger.info(f"   • GET  /webhook/ - Verification endpoint")
-logger.info(f"   • POST /webhook/ - Message receiving endpoint")
-logger.info(f"   • GET  /webhook/health - Health check")
-logger.info(f"   • GET  /webhook/status - Status check")
-logger.info(f"   • GET  /webhook/ping - Ping test")
+logger.info("🚀 New Features in v23.0:")
+logger.info("   • Duplicate Message Protection (TTL Cache)")
+logger.info("   • Rate Limiting (10 messages/minute per user)")
+logger.info("   • Smart Retry Logic (only retry 429,5xx)")
+logger.info("   • Lazy AI Import (webhook starts even if AI fails)")
+logger.info("   • Metrics & Monitoring Endpoints")
+logger.info("   • SQLAlchemy 2.0 Compatible")
+logger.info("=" * 70)
+logger.info("📊 Available Monitoring Endpoints:")
+logger.info("   • GET /webhook/metrics - Performance metrics")
+logger.info("   • GET /webhook/errors - Error statistics")
+logger.info("   • GET /webhook/health - Service health")
+logger.info("   • GET /webhook/ai-health - AI service status")
+logger.info("   • GET /webhook/whatsapp-health - WhatsApp status")
+logger.info("   • GET /webhook/rate-limit-status - Rate limit cache")
 logger.info("=" * 70)
