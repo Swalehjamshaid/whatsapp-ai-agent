@@ -3,8 +3,6 @@
 # PROJECT: AI WhatsApp Customer Service Agent
 # ==========================================================
 
-
-
 import os
 from dotenv import load_dotenv
 
@@ -20,6 +18,9 @@ load_dotenv()
 
 APP_NAME = "AI WhatsApp Customer Service Agent"
 APP_VERSION = "2.0.0"
+
+# FIXED: Added missing ENVIRONMENT attribute
+ENVIRONMENT = os.getenv("ENVIRONMENT", "production")
 
 DEBUG = os.getenv(
     "DEBUG",
@@ -446,6 +447,7 @@ class Config:
     # Application
     APP_NAME = APP_NAME
     APP_VERSION = APP_VERSION
+    ENVIRONMENT = ENVIRONMENT  # FIXED: Added missing attribute
     DEBUG = DEBUG
     
     # Database
@@ -582,6 +584,7 @@ print("CONFIG LOADED - GROQ EDITION")
 print("===================================")
 print(f"DATABASE: {'✓' if DATABASE_URL else '✗'}")
 print(f"WHATSAPP: {'✓' if WHATSAPP_ACCESS_TOKEN else '✗'}")
+print(f"ENVIRONMENT: {ENVIRONMENT}")  # FIXED: Added to validation output
 print(f"WHATSAPP API VERSION: {WHATSAPP_API_VERSION}")
 print("===================================")
 print("AI PROVIDERS:")
@@ -647,8 +650,6 @@ print("   WhatsApp responses will use GROQ for fast AI replies")
 print("===================================")
 
 
-APP_VERSION = "2.0.0"
-ENVIRONMENT = os.getenv("ENVIRONMENT", "production")  # ADD THIS
 # ==========================================================
 # END FILE
 # ==========================================================
