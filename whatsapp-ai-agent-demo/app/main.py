@@ -1,5 +1,5 @@
 # ==========================================================
-# FILE: app/main.py (ENTERPRISE v2.0)
+# FILE: app/main.py (ENTERPRISE v3.0 - FIXED)
 # PROJECT: AI WhatsApp Customer Service Agent
 # ==========================================================
 
@@ -16,39 +16,28 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, PlainTextResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 from sqlalchemy import inspect, func, text, case
 from loguru import logger
 
 # ==========================================================
-# PRIORITY 1: Safe AI Query Service Import
+# PRIORITY 1: Fixed Import (test_connection → check_database_connection)
 # ==========================================================
 
-AI_QUERY_AVAILABLE = False
-AIQueryService = None
-
-try:
-    from app.services.ai_query_service import AIQueryService
-    AI_QUERY_AVAILABLE = True
-    logger.info("✅ AIQueryService imported successfully")
-except ImportError as e:
-    logger.error(f"❌ AIQueryService Import Failed: {e}")
-except Exception as e:
-    logger.error(f"❌ AIQueryService initialization error: {e}")
-
-# Import SessionLocal from database
 from app.database import (
     engine,
     DATABASE_URL,
     Base,
     get_db,
-    test_connection,
-    SessionLocal
+    check_database_connection,  # FIXED: was test_connection
+    SessionLocal,
+    validate_database_setup,
+    get_database_health
 )
 
 import app.models
 
-# Import all models explicitly including new ones
+# Import all models explicitly
 from app.models import (
     Customer,
     Conversation,
@@ -72,148 +61,240 @@ from app.services.whatsapp_service import send_text_message
 # Import routers
 from app.routes.upload import router as upload_router
 from app.routes.webhook import router as webhook_router
-
+from app.routes.dashboard import router as dashboard_router
+from app.routes.logistics import router as logistics_router
+from app.routes.customers import router as customers_router
+from app.routes.conversations import router as conversations_router
+from app.routes.analytics import router as analytics_router
 
 # ==========================================================
-# PRIORITY 7: STARTUP DIAGNOSTICS
+# PRIORITY 9: Environment Validation (Fail Fast)
+# ==========================================================
+
+REQUIRED_ENV_VARS = [
+    "DATABASE_URL",
+    "GROQ_API_KEY",
+    "WHATSAPP_ACCESS_TOKEN",
+    "WHATSAPP_PHONE_NUMBER_ID"
+]
+
+OPTIONAL_ENV_VARS = [
+    "WHATSAPP_VERIFY_TOKEN",
+    "ENVIRONMENT",
+    "GROQ_MODEL"
+]
+
+def validate_environment():
+    """Validate required environment variables at startup"""
+    missing_vars = []
+    for var in REQUIRED_ENV_VARS:
+        if not os.getenv(var):
+            missing_vars.append(var)
+    
+    if missing_vars:
+        error_msg = f"Missing required environment variables: {', '.join(missing_vars)}"
+        logger.error(error_msg)
+        raise ValueError(error_msg)
+    
+    logger.info("✅ All required environment variables are set")
+    
+    # Log optional vars status
+    for var in OPTIONAL_ENV_VARS:
+        if os.getenv(var):
+            logger.debug(f"Optional var {var} is set")
+        else:
+            logger.debug(f"Optional var {var} is not set (using default)")
+
+# ==========================================================
+# PRIORITY 1: Safe AI Query Service Import
+# ==========================================================
+
+AI_QUERY_AVAILABLE = False
+AIQueryService = None
+
+try:
+    from app.services.ai_query_service import AIQueryService
+    AI_QUERY_AVAILABLE = True
+    logger.info("✅ AIQueryService imported successfully")
+except ImportError as e:
+    logger.error(f"❌ AIQueryService Import Failed: {e}")
+except Exception as e:
+    logger.error(f"❌ AIQueryService initialization error: {e}")
+
+# ==========================================================
+# PRIORITY 7: Startup Diagnostics (Using logger)
 # ==========================================================
 
 def print_startup_diagnostics():
-    """Print comprehensive startup diagnostics"""
-    print("=" * 80)
-    print("SYSTEM DIAGNOSTICS")
-    print("=" * 80)
+    """Print comprehensive startup diagnostics using logger"""
+    logger.info("=" * 80)
+    logger.info("SYSTEM DIAGNOSTICS")
+    logger.info("=" * 80)
     
-    # Database
-    db_connected = test_connection()
-    print(f"Database: {'✅ CONNECTED' if db_connected else '❌ FAILED'}")
+    # Database - FIXED: using correct function name
+    db_connected = check_database_connection()
+    logger.info(f"Database: {'✅ CONNECTED' if db_connected else '❌ FAILED'}")
     
-    # Groq (Priority 3 - Groq Only)
+    # Groq
     groq_key = os.getenv("GROQ_API_KEY")
-    print(f"Groq API Key: {'✅ SET' if groq_key else '❌ NOT SET'}")
+    logger.info(f"Groq API Key: {'✅ SET' if groq_key else '❌ NOT SET'}")
     
     # WhatsApp
     whatsapp_token = os.getenv("WHATSAPP_ACCESS_TOKEN")
     whatsapp_phone_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
     whatsapp_verify = os.getenv("WHATSAPP_VERIFY_TOKEN")
-    print(f"WhatsApp Token: {'✅ SET' if whatsapp_token else '❌ NOT SET'}")
-    print(f"WhatsApp Phone ID: {'✅ SET' if whatsapp_phone_id else '❌ NOT SET'}")
-    print(f"WhatsApp Verify Token: {'✅ SET' if whatsapp_verify else '❌ NOT SET'}")
+    logger.info(f"WhatsApp Token: {'✅ SET' if whatsapp_token else '❌ NOT SET'}")
+    logger.info(f"WhatsApp Phone ID: {'✅ SET' if whatsapp_phone_id else '❌ NOT SET'}")
+    logger.info(f"WhatsApp Verify Token: {'✅ SET' if whatsapp_verify else '❌ NOT SET'}")
     
     # AI Service
-    print(f"AIQueryService: {'✅ AVAILABLE' if AI_QUERY_AVAILABLE else '❌ UNAVAILABLE'}")
+    logger.info(f"AIQueryService: {'✅ AVAILABLE' if AI_QUERY_AVAILABLE else '❌ UNAVAILABLE'}")
     
     # Environment
-    print(f"Environment: {os.getenv('ENVIRONMENT', 'production')}")
-    print(f"Railway: {'✅ YES' if os.getenv('RAILWAY_ENVIRONMENT') else '❌ NO'}")
+    logger.info(f"Environment: {os.getenv('ENVIRONMENT', 'production')}")
+    logger.info(f"Railway: {'✅ YES' if os.getenv('RAILWAY_ENVIRONMENT') else '❌ NO'}")
     
-    print("=" * 80)
+    logger.info("=" * 80)
 
 
 # ==========================================================
-# LIFESPAN HANDLER (Safe Startup - Priority 10)
+# PRIORITY 11: Request Logging Middleware
+# ==========================================================
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log all requests with timing information"""
+    start_time = time.time()
+    
+    # Log request
+    logger.debug(f"→ {request.method} {request.url.path}")
+    
+    try:
+        response = await call_next(request)
+        
+        # Calculate duration
+        duration_ms = (time.time() - start_time) * 1000
+        
+        # Log response
+        logger.info(
+            f"← {request.method} {request.url.path} | "
+            f"Status: {response.status_code} | "
+            f"Duration: {duration_ms:.2f}ms"
+        )
+        
+        return response
+    except Exception as e:
+        duration_ms = (time.time() - start_time) * 1000
+        logger.error(f"✗ {request.method} {request.url.path} | Error: {e} | Duration: {duration_ms:.2f}ms")
+        raise
+
+
+# ==========================================================
+# LIFESPAN HANDLER (Safe Startup)
 # ==========================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    print("=" * 80)
-    print("🤖 AI WHATSAPP AGENT STARTING")
-    print("=" * 80)
+    logger.info("=" * 80)
+    logger.info("🤖 AI WHATSAPP AGENT STARTING v3.0")
+    logger.info("=" * 80)
+    
+    # Priority 9: Validate environment first
+    try:
+        validate_environment()
+    except ValueError as e:
+        logger.error(f"Environment validation failed: {e}")
+        # Don't raise - allow limited functionality for debugging
     
     # Priority 7: Print diagnostics
     print_startup_diagnostics()
     
-    # Priority 2 & 10: Safe AI Service Test (won't crash)
+    # Priority 4: Safe AI Service Test (using health_check only)
     if AI_QUERY_AVAILABLE:
         try:
             test_db = SessionLocal()
             ai_service = AIQueryService(test_db)
-            print("✅ AI Query Service initialized successfully")
+            # Use health_check instead of full process_query
+            health = ai_service.health_check()
+            logger.info(f"✅ AI Query Service health check passed: {health.get('status', 'unknown')}")
             test_db.close()
         except Exception as e:
             logger.error(f"⚠️ AI Query Service initialization warning: {e}")
-            print(f"⚠️ AI Query Service unavailable: {e}")
     else:
-        print("⚠️ AI Query Service not available - skipping initialization")
+        logger.warning("⚠️ AI Query Service not available - skipping initialization")
     
     # Priority 4: Safe Table Creation
-    print("\n📊 DATABASE SETUP")
-    print("-" * 40)
+    logger.info("\n📊 DATABASE SETUP")
+    logger.info("-" * 40)
     
     try:
-        # Test database connection first (Priority 10 - No crash)
-        if not test_connection():
-            print("❌ Database Connection Failed - Starting in limited mode")
+        # Test database connection first
+        if not check_database_connection():
+            logger.error("❌ Database Connection Failed - Starting in limited mode")
         else:
-            print("✅ Database Connection Successful")
+            logger.info("✅ Database Connection Successful")
             
             # Priority 4: Safe table creation
             try:
                 Base.metadata.create_all(bind=engine)
-                print("✅ Tables created/verified successfully")
+                logger.info("✅ Tables created/verified successfully")
             except Exception as e:
                 logger.error(f"Table creation error: {e}")
-                print(f"❌ Table creation failed: {e}")
             
             # Show actual tables
             try:
                 inspector = inspect(engine)
                 tables = inspector.get_table_names()
-                print(f"📊 Tables in database: {len(tables)}")
+                logger.info(f"📊 Tables in database: {len(tables)}")
                 if tables:
-                    print(f"   Tables: {', '.join(tables[:10])}")
+                    logger.info(f"   Tables: {', '.join(tables[:10])}")
                     if len(tables) > 10:
-                        print(f"   ... and {len(tables) - 10} more")
+                        logger.info(f"   ... and {len(tables) - 10} more")
             except Exception as e:
-                print(f"⚠️ Could not inspect tables: {e}")
+                logger.warning(f"Could not inspect tables: {e}")
             
             # Priority 5: Safe schema check
             db = SessionLocal()
             try:
                 check_schema_version(db)
-                print("✅ Schema check completed")
+                logger.info("✅ Schema check completed")
                 
                 schema_info = get_schema_info(db)
-                print(f"📊 Schema: App v{schema_info['app_version']}, DB v{schema_info['db_version']}")
-                if schema_info['needs_migration']:
-                    print(f"⚠️ Schema migration needed")
+                logger.info(f"📊 Schema: App v{schema_info['app_version']}, DB v{schema_info.get('db_version', 'unknown')}")
+                if schema_info.get('needs_migration'):
+                    logger.warning(f"⚠️ Schema migration needed")
             except Exception as e:
                 logger.exception("Schema check failed")
-                print(f"⚠️ Schema check failed: {e}")
+                logger.warning(f"⚠️ Schema check failed: {e}")
             finally:
                 db.close()
     
     except Exception as e:
         logger.error(f"Database setup error: {e}")
-        print(f"❌ Database setup error: {e}")
     
     # Create upload directory
-    print("\n📁 FILE SYSTEM")
-    print("-" * 40)
+    logger.info("\n📁 FILE SYSTEM")
+    logger.info("-" * 40)
     try:
         os.makedirs("uploads", exist_ok=True)
-        print("✅ Upload directory ready")
+        logger.info("✅ Upload directory ready")
     except Exception as e:
-        print(f"⚠️ Could not create upload directory: {e}")
+        logger.warning(f"Could not create upload directory: {e}")
     
-    # Check Excel service
-    try:
-        from app.services.excel_import_service import ExcelImportService
-        print("✅ Excel Service Available")
-    except ImportError:
-        print("⚠️ Excel Service Not Installed")
+    # Priority 3: Remove dead Excel import code
+    # Excel service check removed - not used
     
-    print("\n" + "=" * 80)
-    print("✅ APPLICATION STARTUP COMPLETE")
-    print("=" * 80 + "\n")
+    logger.info("\n" + "=" * 80)
+    logger.info("✅ APPLICATION STARTUP COMPLETE")
+    logger.info("=" * 80 + "\n")
     
     yield
     
     # Shutdown
-    print("\n" + "=" * 80)
-    print("🛑 AI WHATSAPP AGENT SHUTTING DOWN")
-    print("=" * 80)
+    logger.info("\n" + "=" * 80)
+    logger.info("🛑 AI WHATSAPP AGENT SHUTTING DOWN")
+    logger.info("=" * 80)
 
 
 # ==========================================================
@@ -222,29 +303,51 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="AI WhatsApp Agent",
-    version="2.0.0",
+    version="3.0.0",
     description="AI WhatsApp Customer Service Agent - Groq Powered",
     lifespan=lifespan
 )
 
 # ==========================================================
-# CORS
+# PRIORITY 10: Production CORS Configuration
 # ==========================================================
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Get allowed origins from environment (comma-separated)
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:8000,https://yourdomain.com").split(",")
+ENVIRONMENT = os.getenv("ENVIRONMENT", "production")
+
+if ENVIRONMENT == "production":
+    # Production: strict origins
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=ALLOWED_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
+    logger.info(f"CORS configured for production with origins: {ALLOWED_ORIGINS}")
+else:
+    # Development: allow all
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    logger.info("CORS configured for development (allow all)")
 
 # ==========================================================
-# REGISTER ROUTERS
+# PRIORITY 7: REGISTER ROUTERS (Moved from main.py)
 # ==========================================================
 
 app.include_router(upload_router)
 app.include_router(webhook_router)
+app.include_router(dashboard_router)
+app.include_router(logistics_router)
+app.include_router(customers_router)
+app.include_router(conversations_router)
+app.include_router(analytics_router)
 
 # ==========================================================
 # TEMPLATES
@@ -272,7 +375,7 @@ class ChatResponse(BaseModel):
 
 
 # ==========================================================
-# PRIORITY 9: GROQ HEALTH ENDPOINT
+# PRIORITY 9: GROQ HEALTH ENDPOINT (Fixed typo)
 # ==========================================================
 
 @app.get("/groq-health", tags=["Health"])
@@ -282,7 +385,7 @@ async def groq_health():
     
     # Try to import Groq and test
     groq_available = False
-    groq_model = os.getenv("GROQ_MODEL", "qwen-qwq-32b")
+    groq_model = os.getenv("GROQ_MODEL", "mixtral-8x7b-32768")
     
     if groq_key:
         try:
@@ -295,12 +398,14 @@ async def groq_health():
                 max_tokens=5
             )
             groq_available = True
+            logger.debug("Groq health check passed")
         except Exception as e:
             logger.warning(f"Groq health check failed: {e}")
     
+    # FIXED: was grook_key, now groq_key
     return {
         "provider": "groq",
-        "api_key_set": bool(grook_key),
+        "api_key_set": bool(groq_key),
         "available": groq_available,
         "model": groq_model,
         "ai_query_service_available": AI_QUERY_AVAILABLE,
@@ -324,15 +429,20 @@ async def health(db: Session = Depends(get_db)):
     try:
         db.execute(text("SELECT 1")).scalar()
         db_status = "connected"
-    except:
+    except Exception as e:
+        logger.error(f"Database health check failed: {e}")
         db_status = "disconnected"
     
     whatsapp_token = os.getenv("WHATSAPP_ACCESS_TOKEN")
     uploads_folder_exists = os.path.exists("uploads")
     
+    # Get detailed database health
+    db_health = get_database_health()
+    
     return {
         "status": "healthy" if db_status == "connected" else "degraded",
         "database": db_status,
+        "database_details": db_health,
         "whatsapp": "connected" if whatsapp_token else "disconnected",
         "schema_version": APP_SCHEMA_VERSION,
         "uploads_folder": uploads_folder_exists,
@@ -341,10 +451,6 @@ async def health(db: Session = Depends(get_db)):
         "timestamp": datetime.utcnow().isoformat()
     }
 
-
-# ==========================================================
-# PRIORITY 3: AI STATUS (Groq Only)
-# ==========================================================
 
 @app.get("/ai-status", tags=["AI"])
 async def ai_status(db: Session = Depends(get_db)):
@@ -355,21 +461,24 @@ async def ai_status(db: Session = Depends(get_db)):
     except:
         db_connected = False
     
-    # Groq configuration (Priority 3)
+    # Groq configuration
     groq_key = os.getenv("GROQ_API_KEY")
-    groq_model = os.getenv("GROQ_MODEL", "qwen-qwq-32b")
+    groq_model = os.getenv("GROQ_MODEL", "mixtral-8x7b-32768")
     ai_provider = os.getenv("AI_PROVIDER", "groq")
     
-    # Check if AI service is ready
+    # Check if AI service is ready (using health_check only)
     ai_service_ready = False
+    ai_service_error = None
     if AI_QUERY_AVAILABLE:
         try:
             test_db = SessionLocal()
             ai_service = AIQueryService(test_db)
-            ai_service_ready = True
+            health = ai_service.health_check()
+            ai_service_ready = health.get("status") == "healthy"
             test_db.close()
         except Exception as e:
             ai_service_error = str(e)
+            logger.warning(f"AI service health check failed: {e}")
     
     return {
         "ai_provider": ai_provider,
@@ -378,6 +487,7 @@ async def ai_status(db: Session = Depends(get_db)):
         "database_connected": db_connected,
         "ai_service_available": AI_QUERY_AVAILABLE,
         "ai_service_ready": ai_service_ready,
+        "ai_service_error": ai_service_error,
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -407,13 +517,16 @@ async def db_health(db: Session = Depends(get_db)):
 
 
 # ==========================================================
-# UPLOAD ENDPOINTS
+# UPLOAD ENDPOINTS (Remaining - will be moved to upload router)
 # ==========================================================
 
 @app.get("/upload-center", tags=["Upload"])
 async def upload_center(request: Request, db: Session = Depends(get_db)):
     """Render upload center page"""
     try:
+        # Import dashboard service for helper functions
+        from app.services.dashboard_service import get_latest_uploads
+        
         latest_uploads = get_latest_uploads(db, limit=20)
         total_batches = db.query(DeliveryReport.upload_batch_id).distinct().count()
         total_records = db.query(DeliveryReport).count()
@@ -429,7 +542,7 @@ async def upload_center(request: Request, db: Session = Depends(get_db)):
             }
         )
     except Exception as e:
-        print(f"Upload center error: {str(e)}")
+        logger.error(f"Upload center error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -518,13 +631,14 @@ async def status(db: Session = Depends(get_db)):
             },
             "schema": {
                 "app_version": schema_info["app_version"],
-                "db_version": schema_info["db_version"],
-                "needs_migration": schema_info["needs_migration"]
+                "db_version": schema_info.get("db_version", "unknown"),
+                "needs_migration": schema_info.get("needs_migration", False)
             },
             "last_upload_date": last_upload[0].isoformat() if last_upload else None,
             "timestamp": datetime.utcnow().isoformat()
         }
     except Exception as e:
+        logger.error(f"Status endpoint error: {e}")
         return {
             "application": "AI WhatsApp Agent",
             "database": "postgresql",
@@ -541,8 +655,9 @@ async def status(db: Session = Depends(get_db)):
 async def db_test():
     """Debug endpoint to test database connectivity"""
     try:
-        from app.database import test_connection
-        connected = test_connection()
+        from app.database import check_database_connection, get_database_health
+        connected = check_database_connection()
+        health = get_database_health()
         
         inspector = inspect(engine)
         tables = inspector.get_table_names()
@@ -550,56 +665,51 @@ async def db_test():
         return {
             "connected": connected,
             "database_url_exists": bool(DATABASE_URL),
+            "health": health,
             "tables": tables,
             "table_count": len(tables)
         }
     except Exception as e:
+        logger.error(f"DB test error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 # ==========================================================
-# DASHBOARD ENDPOINT
+# DASHBOARD ENDPOINT (Using Dashboard Service)
 # ==========================================================
 
 @app.get("/dashboard", tags=["Dashboard"])
 async def dashboard(request: Request, db: Session = Depends(get_db)):
     """Render the dashboard HTML page"""
     try:
-        total_records = db.query(DeliveryReport).count()
-        pending_deliveries = db.query(DeliveryReport).filter(
-            DeliveryReport.pending_flag.is_(True)
-        ).count()
-        pending_pod = db.query(DeliveryReport).filter(
-            DeliveryReport.pod_status == "Pending"
-        ).count()
-        pending_pgi = db.query(DeliveryReport).filter(
-            DeliveryReport.pgi_status == "Pending"
-        ).count()
-        pending_amount = db.query(func.sum(DeliveryReport.dn_amount)).filter(
-            DeliveryReport.pending_flag.is_(True)
-        ).scalar() or 0
-        completed_deliveries = db.query(DeliveryReport).filter(
-            DeliveryReport.pod_status == "Received"
-        ).count()
+        from app.services.dashboard_service import (
+            get_dashboard_stats,
+            get_top_dealers,
+            get_top_cities,
+            get_warehouse_stats,
+            get_upload_statistics,
+            get_latest_uploads,
+            get_dashboard_conversations
+        )
         
-        cities = db.query(DeliveryReport.ship_to_city).distinct().count()
-        warehouses = db.query(DeliveryReport.warehouse).distinct().count()
-        total_amount = db.query(func.sum(DeliveryReport.dn_amount)).scalar() or 0
-        
+        # Get all dashboard data from service
+        stats = get_dashboard_stats(db)
         top_dealers = get_top_dealers(db, limit=5)
         top_cities = get_top_cities(db, limit=5)
         top_warehouses = get_warehouse_stats(db, limit=5)
         upload_stats = get_upload_statistics(db)
         latest_uploads = get_latest_uploads(db, limit=5)
         
+        # Conversation stats
         total_conversations = db.query(Conversation).count()
         total_customers = db.query(Customer).count()
         total_messages = db.query(Message).count()
         total_ai_responses = db.query(Message).filter(Message.sender == "assistant").count()
         
-        dashboard_conversations = get_dashboard_conversations_optimized(db, limit=5)
+        dashboard_conversations = get_dashboard_conversations(db, limit=5)
         
-        stats = db.query(
+        # Daily message stats
+        daily_stats = db.query(
             func.date(Message.created_at).label('date'),
             func.count(Message.id).label('count')
         ).group_by(func.date(Message.created_at)).order_by(
@@ -615,15 +725,15 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
             "dashboard.html",
             {
                 "request": request,
-                "total_records": total_records or 0,
-                "pending_deliveries": pending_deliveries or 0,
-                "pending_pod": pending_pod or 0,
-                "pending_pgi": pending_pgi or 0,
-                "pending_amount": round(pending_amount, 2) if pending_amount else 0,
-                "completed_deliveries": completed_deliveries or 0,
-                "total_amount": round(total_amount, 2) if total_amount else 0,
-                "cities": cities or 0,
-                "warehouses": warehouses or 0,
+                "total_records": stats.get("total_records", 0),
+                "pending_deliveries": stats.get("pending_deliveries", 0),
+                "pending_pod": stats.get("pending_pod", 0),
+                "pending_pgi": stats.get("pending_pgi", 0),
+                "pending_amount": stats.get("pending_amount", 0),
+                "completed_deliveries": stats.get("completed_deliveries", 0),
+                "total_amount": stats.get("total_amount", 0),
+                "cities": stats.get("cities", 0),
+                "warehouses": stats.get("warehouses", 0),
                 "top_dealers": top_dealers or [],
                 "top_cities": top_cities or [],
                 "top_warehouses": top_warehouses or [],
@@ -635,300 +745,25 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
                 "total_messages": total_messages or 0,
                 "total_ai_responses": total_ai_responses or 0,
                 "conversations": dashboard_conversations or [],
-                "stats": stats or [],
+                "stats": [{"date": str(s.date), "count": s.count} for s in daily_stats],
                 "status": "running",
                 "whatsapp_status": "Online" if whatsapp_token else "Offline",
                 "groq_status": "Online" if groq_key else "Offline",
                 "ai_available": AI_QUERY_AVAILABLE,
                 "ai_provider": "groq",
-                "schema_version": schema_info.get("app_version", "2.0"),
+                "schema_version": schema_info.get("app_version", "3.0"),
                 "last_upload_date": upload_stats.get("last_upload_date").strftime('%Y-%m-%d %H:%M') if upload_stats.get("last_upload_date") else "Never",
                 "last_refresh": last_refresh.strftime('%Y-%m-%d %H:%M:%S'),
                 "timestamp": datetime.utcnow().isoformat()
             }
         )
     except Exception as e:
-        print(f"Dashboard error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/dashboard", tags=["API"])
-async def dashboard_api(db: Session = Depends(get_db)):
-    """Return dashboard data as JSON"""
-    try:
-        total_records = db.query(DeliveryReport).count()
-        pending_deliveries = db.query(DeliveryReport).filter(
-            DeliveryReport.pending_flag.is_(True)
-        ).count()
-        pending_pod = db.query(DeliveryReport).filter(
-            DeliveryReport.pod_status == "Pending"
-        ).count()
-        pending_pgi = db.query(DeliveryReport).filter(
-            DeliveryReport.pgi_status == "Pending"
-        ).count()
-        pending_amount = db.query(func.sum(DeliveryReport.dn_amount)).filter(
-            DeliveryReport.pending_flag.is_(True)
-        ).scalar() or 0
-        
-        top_dealers = get_top_dealers(db, limit=5)
-        top_cities = get_top_cities(db, limit=5)
-        top_warehouses = get_warehouse_stats(db, limit=5)
-        
-        upload_stats = get_upload_statistics(db)
-        
-        total_conversations = db.query(Conversation).count()
-        total_customers = db.query(Customer).count()
-        total_messages = db.query(Message).count()
-        total_ai_responses = db.query(Message).filter(Message.sender == "assistant").count()
-        
-        dashboard_conversations = get_dashboard_conversations_optimized(db, limit=10)
-        latest_uploads = get_latest_uploads(db, limit=5)
-        
-        whatsapp_token = os.getenv("WHATSAPP_ACCESS_TOKEN")
-        groq_key = os.getenv("GROQ_API_KEY")
-        
-        return {
-            "delivery_stats": {
-                "total_records": total_records,
-                "pending_deliveries": pending_deliveries,
-                "pending_pod": pending_pod,
-                "pending_pgi": pending_pgi,
-                "pending_amount": float(pending_amount)
-            },
-            "top_dealers": top_dealers,
-            "top_cities": top_cities,
-            "top_warehouses": top_warehouses,
-            "upload_stats": upload_stats,
-            "conversation_stats": {
-                "total_conversations": total_conversations,
-                "total_customers": total_customers,
-                "total_messages": total_messages,
-                "total_ai_responses": total_ai_responses
-            },
-            "conversations": dashboard_conversations,
-            "latest_uploads": latest_uploads,
-            "status": "running",
-            "whatsapp_status": "Online" if whatsapp_token else "Offline",
-            "groq_status": "Online" if groq_key else "Offline",
-            "ai_available": AI_QUERY_AVAILABLE,
-            "ai_provider": "groq"
-        }
-    except Exception as e:
+        logger.error(f"Dashboard error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 # ==========================================================
-# LOGISTICS ENDPOINTS
-# ==========================================================
-
-@app.get("/logistics-status", tags=["Logistics"])
-async def logistics_status(db: Session = Depends(get_db)):
-    """Get logistics dashboard statistics"""
-    try:
-        total_dns = db.query(DeliveryReport).count()
-        pending_pod = db.query(DeliveryReport).filter(
-            DeliveryReport.pod_status == "Pending"
-        ).count()
-        pending_pgi = db.query(DeliveryReport).filter(
-            DeliveryReport.pgi_status == "Pending"
-        ).count()
-        total_delivered = db.query(DeliveryReport).filter(
-            DeliveryReport.pod_status == "Received"
-        ).count()
-        total_pending = db.query(DeliveryReport).filter(
-            DeliveryReport.pending_flag.is_(True)
-        ).count()
-        
-        total_amount = db.query(func.sum(DeliveryReport.dn_amount)).scalar() or 0
-        pending_amount = db.query(func.sum(DeliveryReport.dn_amount)).filter(
-            DeliveryReport.pending_flag.is_(True)
-        ).scalar() or 0
-        
-        cities = db.query(DeliveryReport.ship_to_city).distinct().count()
-        warehouses = db.query(DeliveryReport.warehouse).distinct().count()
-        
-        top_cities = get_top_cities(db, limit=5)
-        top_warehouses = get_warehouse_stats(db, limit=5)
-        
-        pending_by_division = db.query(
-            DeliveryReport.division,
-            func.count(DeliveryReport.id).label('count'),
-            func.sum(DeliveryReport.dn_amount).label('amount')
-        ).filter(
-            DeliveryReport.pending_flag.is_(True)
-        ).group_by(
-            DeliveryReport.division
-        ).all()
-        
-        return {
-            "summary": {
-                "total_delivery_notes": total_dns,
-                "pending_pod": pending_pod,
-                "pending_pgi": pending_pgi,
-                "total_delivered": total_delivered,
-                "total_pending": total_pending,
-                "total_delivery_amount": float(total_amount),
-                "pending_amount": float(pending_amount),
-                "unique_cities": cities,
-                "unique_warehouses": warehouses
-            },
-            "top_cities": top_cities,
-            "top_warehouses": top_warehouses,
-            "pending_by_division": [
-                {
-                    "division": div.division,
-                    "count": div.count,
-                    "amount": float(div.amount) if div.amount else 0.0
-                }
-                for div in pending_by_division if div.division
-            ]
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/dn/{dn_no}", tags=["Logistics"])
-async def get_delivery_note(dn_no: str, db: Session = Depends(get_db)):
-    """Search for delivery notes by DN number"""
-    try:
-        deliveries = db.query(DeliveryReport).filter(
-            DeliveryReport.dn_no == dn_no
-        ).all()
-        
-        if not deliveries:
-            raise HTTPException(status_code=404, detail=f"DN {dn_no} not found")
-        
-        return {
-            "dn_no": dn_no,
-            "total_lines": len(deliveries),
-            "deliveries": [
-                {
-                    "line_id": d.id,
-                    "dealer_code": d.dealer_code,
-                    "customer_name": d.customer_name,
-                    "material_no": d.material_no,
-                    "quantity": d.dn_qty,
-                    "amount": float(d.dn_amount) if d.dn_amount else 0,
-                    "city": d.ship_to_city,
-                    "warehouse": d.warehouse,
-                    "pod_status": d.pod_status,
-                    "pgi_status": d.pgi_status,
-                    "pending_flag": d.pending_flag,
-                    "pod_date": d.pod_date.isoformat() if d.pod_date else None,
-                    "good_issue_date": d.good_issue_date.isoformat() if d.good_issue_date else None
-                }
-                for d in deliveries
-            ]
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/search", tags=["Search"])
-async def search_deliveries(
-    q: str,
-    search_type: str = "all",
-    limit: int = 20,
-    db: Session = Depends(get_db)
-):
-    """Search deliveries by DN, dealer, city, warehouse, or division"""
-    try:
-        results = []
-        
-        if search_type in ["all", "dn"]:
-            dn_results = db.query(DeliveryReport).filter(
-                DeliveryReport.dn_no.ilike(f"%{q}%")
-            ).limit(limit).all()
-            for r in dn_results:
-                results.append({
-                    "type": "dn",
-                    "dn_no": r.dn_no,
-                    "customer_name": r.customer_name,
-                    "city": r.ship_to_city,
-                    "dealer_code": r.dealer_code,
-                    "warehouse": r.warehouse,
-                    "division": r.division,
-                    "status": r.delivery_status,
-                    "pending": r.pending_flag
-                })
-        
-        if search_type in ["all", "dealer"]:
-            dealer_results = db.query(DeliveryReport).filter(
-                DeliveryReport.dealer_code.ilike(f"%{q}%")
-            ).limit(limit).all()
-            for r in dealer_results:
-                results.append({
-                    "type": "dealer",
-                    "dealer_code": r.dealer_code,
-                    "customer_name": r.customer_name,
-                    "dn_no": r.dn_no,
-                    "city": r.ship_to_city,
-                    "status": r.delivery_status
-                })
-        
-        if search_type in ["all", "city"]:
-            city_results = db.query(DeliveryReport).filter(
-                DeliveryReport.ship_to_city.ilike(f"%{q}%")
-            ).limit(limit).all()
-            for r in city_results:
-                results.append({
-                    "type": "city",
-                    "city": r.ship_to_city,
-                    "dn_no": r.dn_no,
-                    "customer_name": r.customer_name,
-                    "status": r.delivery_status
-                })
-        
-        if search_type in ["all", "warehouse"]:
-            warehouse_results = db.query(DeliveryReport).filter(
-                DeliveryReport.warehouse.ilike(f"%{q}%")
-            ).limit(limit).all()
-            for r in warehouse_results:
-                results.append({
-                    "type": "warehouse",
-                    "warehouse": r.warehouse,
-                    "dn_no": r.dn_no,
-                    "customer_name": r.customer_name,
-                    "city": r.ship_to_city,
-                    "status": r.delivery_status
-                })
-        
-        if search_type in ["all", "division"]:
-            division_results = db.query(DeliveryReport).filter(
-                DeliveryReport.division.ilike(f"%{q}%")
-            ).limit(limit).all()
-            for r in division_results:
-                results.append({
-                    "type": "division",
-                    "division": r.division,
-                    "dn_no": r.dn_no,
-                    "customer_name": r.customer_name,
-                    "status": r.delivery_status
-                })
-        
-        seen = set()
-        unique_results = []
-        for r in results:
-            dn_key = r.get('dn_no')
-            if dn_key and dn_key not in seen:
-                seen.add(dn_key)
-                unique_results.append(r)
-        
-        return {
-            "query": q,
-            "search_type": search_type,
-            "total_results": len(unique_results),
-            "limit": limit,
-            "results": unique_results[:limit]
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ==========================================================
-# CHAT ENDPOINTS (Safe AI Initialization - Priority 6)
+# CHAT ENDPOINTS (Safe AI Initialization)
 # ==========================================================
 
 @app.post("/chat", response_model=ChatResponse, tags=["Chat"])
@@ -936,7 +771,7 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
     try:
         start_time = time.time()
         
-        # Priority 6: Safe AI initialization
+        # Safe AI initialization
         if not AI_QUERY_AVAILABLE:
             ai_reply = "⚠️ AI service temporarily unavailable. Please try again later."
         else:
@@ -949,11 +784,10 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
                 ai_reply = result.get("response", "Thank you for contacting support.")
                 
                 elapsed = time.time() - start_time
-                print(f"📊 CHAT AI USAGE:")
-                print(f"   Question: {request.message[:100]}...")
-                print(f"   Intent: {result.get('question_type', 'unknown')}")
-                print(f"   AI Used: {result.get('ai_used', False)}")
-                print(f"   Response Time: {elapsed:.2f}s")
+                logger.info(f"📊 CHAT AI USAGE:")
+                logger.info(f"   Question: {request.message[:100]}...")
+                logger.info(f"   Intent: {result.get('intent', 'unknown')}")
+                logger.info(f"   Response Time: {elapsed:.2f}s")
             except Exception as e:
                 logger.error(f"Chat AI error: {e}")
                 ai_reply = "⚠️ I'm having trouble processing your request. Please try again in a moment."
@@ -1035,212 +869,14 @@ async def chat(request: ChatRequest, db: Session = Depends(get_db)):
 
 
 # ==========================================================
-# CONVERSATION ENDPOINTS
-# ==========================================================
-
-@app.get("/conversations", tags=["Conversations"])
-async def get_conversations(
-    skip: int = 0, 
-    limit: int = 100, 
-    db: Session = Depends(get_db)
-):
-    """Get all conversations with pagination"""
-    try:
-        conversations = db.query(Conversation).options(
-            joinedload(Conversation.customer)
-        ).order_by(
-            Conversation.created_at.desc()
-        ).offset(skip).limit(limit).all()
-        
-        conversation_data = []
-        for conv in conversations:
-            messages = db.query(Message).filter(
-                Message.conversation_id == conv.id
-            ).order_by(Message.created_at).all()
-            
-            conversation_data.append({
-                "id": conv.id,
-                "customer_id": conv.customer_id,
-                "customer_name": conv.customer.name if conv.customer else "Unknown",
-                "status": conv.status,
-                "created_at": conv.created_at.isoformat() if conv.created_at else None,
-                "messages": [
-                    {
-                        "sender": msg.sender,
-                        "content": msg.content,
-                        "message_type": msg.message_type,
-                        "created_at": msg.created_at.isoformat() if msg.created_at else None
-                    }
-                    for msg in messages
-                ]
-            })
-        
-        return {
-            "count": len(conversation_data),
-            "skip": skip,
-            "limit": limit,
-            "data": conversation_data
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/conversations/{conversation_id}", tags=["Conversations"])
-async def get_conversation(conversation_id: int, db: Session = Depends(get_db)):
-    """Get a specific conversation by ID"""
-    try:
-        conversation = db.query(Conversation).options(
-            joinedload(Conversation.customer)
-        ).filter(
-            Conversation.id == conversation_id
-        ).first()
-        
-        if not conversation:
-            raise HTTPException(status_code=404, detail="Conversation not found")
-        
-        messages = db.query(Message).filter(
-            Message.conversation_id == conversation.id
-        ).order_by(Message.created_at).all()
-        
-        return {
-            "id": conversation.id,
-            "customer_id": conversation.customer_id,
-            "customer_name": conversation.customer.name if conversation.customer else "Unknown",
-            "status": conversation.status,
-            "created_at": conversation.created_at.isoformat() if conversation.created_at else None,
-            "messages": [
-                {
-                    "sender": msg.sender,
-                    "content": msg.content,
-                    "message_type": msg.message_type,
-                    "created_at": msg.created_at.isoformat() if msg.created_at else None
-                }
-                for msg in messages
-            ]
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ==========================================================
-# CUSTOMER ENDPOINTS
-# ==========================================================
-
-@app.get("/customers", tags=["Customers"])
-async def get_customers(
-    skip: int = 0, 
-    limit: int = 100, 
-    db: Session = Depends(get_db)
-):
-    """Get all customers with pagination"""
-    try:
-        customers = db.query(Customer).order_by(
-            Customer.created_at.desc()
-        ).offset(skip).limit(limit).all()
-        
-        customer_data = [
-            {
-                "id": c.id,
-                "name": c.name,
-                "phone_number": c.phone_number,
-                "email": c.email,
-                "created_at": c.created_at.isoformat() if c.created_at else None
-            }
-            for c in customers
-        ]
-        
-        return {
-            "count": len(customer_data),
-            "skip": skip,
-            "limit": limit,
-            "customers": customer_data
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/customers/{customer_id}", tags=["Customers"])
-async def get_customer(customer_id: int, db: Session = Depends(get_db)):
-    """Get a specific customer by ID"""
-    try:
-        customer = db.query(Customer).filter(Customer.id == customer_id).first()
-        
-        if not customer:
-            raise HTTPException(status_code=404, detail="Customer not found")
-        
-        conversations = db.query(Conversation).filter(
-            Conversation.customer_id == customer.id
-        ).all()
-        
-        return {
-            "id": customer.id,
-            "name": customer.name,
-            "phone_number": customer.phone_number,
-            "email": customer.email,
-            "created_at": customer.created_at.isoformat() if customer.created_at else None,
-            "conversation_count": len(conversations),
-            "conversations": [
-                {
-                    "id": conv.id,
-                    "status": conv.status,
-                    "created_at": conv.created_at.isoformat() if conv.created_at else None
-                }
-                for conv in conversations
-            ]
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ==========================================================
-# ANALYTICS ENDPOINTS
-# ==========================================================
-
-@app.get("/analytics", tags=["Analytics"])
-async def get_analytics(db: Session = Depends(get_db)):
-    """Get analytics data"""
-    try:
-        total_messages = db.query(Message).count()
-        total_conversations = db.query(Conversation).count()
-        total_customers = db.query(Customer).count()
-        total_ai_responses = db.query(Message).filter(Message.sender == "assistant").count()
-        total_delivery_records = db.query(DeliveryReport).count()
-        
-        daily_stats = db.query(
-            func.date(Message.created_at).label('date'),
-            func.count(Message.id).label('count')
-        ).group_by(func.date(Message.created_at)).order_by(
-            func.date(Message.created_at).desc()
-        ).limit(7).all()
-        
-        return {
-            "total_messages": total_messages,
-            "total_ai_responses": total_ai_responses,
-            "total_conversations": total_conversations,
-            "total_customers": total_customers,
-            "total_delivery_records": total_delivery_records,
-            "daily_stats": [
-                {"date": str(stat.date), "count": stat.count}
-                for stat in daily_stats
-            ]
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ==========================================================
-# INFO ENDPOINTS (Priority 8 - Clean, Groq-only)
+# INFO ENDPOINTS
 # ==========================================================
 
 @app.get("/version", tags=["Info"])
 async def version():
     return {
         "name": "AI WhatsApp Agent",
-        "version": "2.0.0",
+        "version": "3.0.0",
         "framework": "FastAPI",
         "database": "PostgreSQL",
         "schema_version": APP_SCHEMA_VERSION,
@@ -1257,7 +893,7 @@ async def schema_info(db: Session = Depends(get_db)):
 
 
 # ==========================================================
-# HELPER FUNCTIONS (Preserved)
+# HELPER FUNCTIONS
 # ==========================================================
 
 def sanitize_email_name(name: str) -> str:
@@ -1269,209 +905,10 @@ def sanitize_email_name(name: str) -> str:
     return safe_name
 
 
-def get_dashboard_conversations_optimized(db: Session, limit: int = 10):
-    """Get formatted conversations for dashboard template - OPTIMIZED version"""
-    conversations = db.query(
-        Conversation.id,
-        Conversation.customer_id,
-        Conversation.status,
-        Conversation.created_at,
-        Customer.name.label('customer_name'),
-        Customer.phone_number.label('customer_phone')
-    ).join(
-        Customer, Conversation.customer_id == Customer.id
-    ).order_by(
-        Conversation.created_at.desc()
-    ).limit(limit).all()
-    
-    conv_ids = [conv.id for conv in conversations]
-    
-    if conv_ids:
-        user_messages = db.query(
-            Message.conversation_id,
-            Message.content,
-            Message.created_at
-        ).filter(
-            Message.conversation_id.in_(conv_ids),
-            Message.sender == "user"
-        ).distinct(Message.conversation_id).order_by(
-            Message.conversation_id, Message.created_at.desc()
-        ).all()
-        
-        ai_responses = db.query(
-            Message.conversation_id,
-            Message.content,
-            Message.created_at
-        ).filter(
-            Message.conversation_id.in_(conv_ids),
-            Message.sender == "assistant"
-        ).distinct(Message.conversation_id).order_by(
-            Message.conversation_id, Message.created_at.desc()
-        ).all()
-        
-        user_msg_dict = {msg.conversation_id: msg for msg in user_messages}
-        ai_response_dict = {msg.conversation_id: msg for msg in ai_responses}
-    else:
-        user_msg_dict = {}
-        ai_response_dict = {}
-    
-    dashboard_conversations = []
-    for conv in conversations:
-        user_msg = user_msg_dict.get(conv.id)
-        ai_response = ai_response_dict.get(conv.id)
-        
-        dashboard_conversations.append({
-            "id": conv.id,
-            "customer": conv.customer_name,
-            "customer_phone": conv.customer_phone,
-            "message": user_msg.content if user_msg else "No messages",
-            "reply": ai_response.content if ai_response else "No response",
-            "timestamp": conv.created_at.isoformat() if conv.created_at else "",
-            "status": conv.status
-        })
-    
-    return dashboard_conversations
+# ==========================================================
+# FALLBACK TEMPLATES
+# ==========================================================
 
-
-def get_latest_uploads(db: Session, limit: int = 5):
-    """Get latest upload batches for dashboard"""
-    try:
-        batches = db.query(
-            DeliveryReport.upload_batch_id,
-            DeliveryReport.source_file,
-            DeliveryReport.imported_at,
-            func.count(DeliveryReport.id).label('record_count')
-        ).group_by(
-            DeliveryReport.upload_batch_id,
-            DeliveryReport.source_file,
-            DeliveryReport.imported_at
-        ).order_by(
-            DeliveryReport.imported_at.desc()
-        ).limit(limit).all()
-        
-        return [
-            {
-                "batch_id": batch.upload_batch_id,
-                "filename": batch.source_file,
-                "upload_date": batch.imported_at,
-                "record_count": batch.record_count
-            }
-            for batch in batches if batch.upload_batch_id
-        ]
-    except Exception as e:
-        print(f"Error getting latest uploads: {e}")
-        return []
-
-
-def get_top_dealers(db: Session, limit: int = 5):
-    """Get top dealers by delivery count - FIXED case() function"""
-    try:
-        dealers = db.query(
-            DeliveryReport.dealer_code,
-            DeliveryReport.customer_name,
-            func.count(DeliveryReport.id).label('delivery_count'),
-            func.sum(DeliveryReport.dn_amount).label('total_amount'),
-            func.sum(case((DeliveryReport.pending_flag.is_(True), 1), else_=0)).label('pending_count')
-        ).group_by(
-            DeliveryReport.dealer_code,
-            DeliveryReport.customer_name
-        ).order_by(
-            func.count(DeliveryReport.id).desc()
-        ).limit(limit).all()
-        
-        return [
-            {
-                "dealer_code": d.dealer_code or "N/A",
-                "customer_name": d.customer_name or "N/A",
-                "delivery_count": d.delivery_count,
-                "total_amount": float(d.total_amount or 0),
-                "pending_count": d.pending_count or 0
-            }
-            for d in dealers if d.dealer_code
-        ]
-    except Exception as e:
-        print(f"Error getting top dealers: {e}")
-        return []
-
-
-def get_top_cities(db: Session, limit: int = 5):
-    """Get top cities by delivery count - FIXED case() function"""
-    try:
-        cities = db.query(
-            DeliveryReport.ship_to_city.label('city'),
-            func.count(DeliveryReport.id).label('count'),
-            func.sum(case((DeliveryReport.pending_flag.is_(True), 1), else_=0)).label('pending_count')
-        ).group_by(
-            DeliveryReport.ship_to_city
-        ).order_by(
-            func.count(DeliveryReport.id).desc()
-        ).limit(limit).all()
-        
-        return [
-            {
-                "city": c.city or "N/A",
-                "count": c.count,
-                "pending_count": c.pending_count or 0
-            }
-            for c in cities if c.city
-        ]
-    except Exception as e:
-        print(f"Error getting top cities: {e}")
-        return []
-
-
-def get_warehouse_stats(db: Session, limit: int = 5):
-    """Get warehouse statistics - FIXED case() function"""
-    try:
-        warehouses = db.query(
-            DeliveryReport.warehouse,
-            func.count(DeliveryReport.id).label('total_count'),
-            func.sum(case((DeliveryReport.pending_flag.is_(True), 1), else_=0)).label('pending_count'),
-            func.sum(case((DeliveryReport.pending_flag.is_(True), DeliveryReport.dn_amount), else_=0)).label('pending_amount')
-        ).group_by(
-            DeliveryReport.warehouse
-        ).order_by(
-            func.count(DeliveryReport.id).desc()
-        ).limit(limit).all()
-        
-        return [
-            {
-                "warehouse": w.warehouse or "N/A",
-                "total_count": w.total_count,
-                "pending_count": w.pending_count or 0,
-                "pending_amount": float(w.pending_amount or 0)
-            }
-            for w in warehouses if w.warehouse
-        ]
-    except Exception as e:
-        print(f"Error getting warehouse stats: {e}")
-        return []
-
-
-def get_upload_statistics(db: Session):
-    """Get upload statistics for dashboard"""
-    try:
-        total_uploads = db.query(DeliveryReport.upload_batch_id).distinct().count()
-        total_imported_rows = db.query(DeliveryReport).count()
-        last_upload = db.query(DeliveryReport.imported_at).order_by(
-            DeliveryReport.imported_at.desc()
-        ).first()
-        
-        return {
-            "total_uploads": total_uploads,
-            "total_imported_rows": total_imported_rows,
-            "last_upload_date": last_upload[0] if last_upload else None
-        }
-    except Exception as e:
-        print(f"Error getting upload statistics: {e}")
-        return {
-            "total_uploads": 0,
-            "total_imported_rows": 0,
-            "last_upload_date": None
-        }
-
-
-# Create fallback templates if they don't exist
 def create_fallback_templates():
     """Create fallback HTML templates if they don't exist"""
     
@@ -1518,7 +955,7 @@ def create_fallback_templates():
     </div>
 </body>
 </html>""")
-        print(f"Created fallback dashboard template at {dashboard_path}")
+        logger.info(f"Created fallback dashboard template at {dashboard_path}")
     
     upload_center_path = os.path.join(TEMPLATES_DIR, "upload_center.html")
     if not os.path.exists(upload_center_path):
@@ -1532,7 +969,7 @@ def create_fallback_templates():
     <a href="/dashboard">Back to Dashboard</a>
 </body>
 </html>""")
-        print(f"Created fallback upload_center template at {upload_center_path}")
+        logger.info(f"Created fallback upload_center template at {upload_center_path}")
 
 
 create_fallback_templates()
