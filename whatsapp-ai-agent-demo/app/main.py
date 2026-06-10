@@ -1,26 +1,35 @@
 # ==========================================================
-# FILE: app/main.py (ENTERPRISE v8.0 - PRODUCTION READY)
+# FILE: app/main.py (ENTERPRISE v9.0 - PRODUCTION READY)
 # PROJECT: AI WhatsApp Customer Service Agent
 # ==========================================================
+# IMPROVEMENTS v9.0:
+# - Fixed Customer import crash (added __future__ + proper imports)
+# - Removed ChatService from main.py (moved to service layer)
+# - Removed DashboardService from main.py (moved to analytics_service.py)
+# - Fixed route loading to include all routers
+# - Removed AI warmup from startup (lazy loading only)
+# - Fixed metrics endpoint (bytes response)
+# - Simplified main.py to bootstrap responsibilities only
+# ==========================================================
+
+from __future__ import annotations
 
 import os
-import sys
 import time
 import uuid
-import importlib
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any, Optional, List
 from collections import defaultdict
 from threading import Lock
-from fastapi import FastAPI, Depends, HTTPException, Request, BackgroundTasks
+
+from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.responses import RedirectResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, Field
-from sqlalchemy import inspect, func, text
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
 from loguru import logger
 from cachetools import TTLCache
@@ -32,7 +41,7 @@ from slowapi.errors import RateLimitExceeded
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
 # ==========================================================
-# DATABASE IMPORTS (Lazy loaded)
+# DATABASE IMPORTS
 # ==========================================================
 
 from app.database import (
@@ -55,9 +64,21 @@ from app.services.whatsapp_service import get_whatsapp_service
 
 from app.config import config
 
+# ==========================================================
+# MODEL IMPORTS (Fixed - moved to top)
+# ==========================================================
+
+from app.models import (
+    Customer,
+    Conversation,
+    Message,
+    AIResponseLog,
+    DeliveryReport
+)
+
 
 # ==========================================================
-# PRIORITY 5: THREAD-SAFE METRICS
+# THREAD-SAFE METRICS
 # ==========================================================
 
 class ThreadSafeMetrics:
@@ -84,12 +105,10 @@ class ThreadSafeMetrics:
                 self._metrics["failed_requests"] += 1
                 self._metrics["error_count"] += 1
             
-            # Update average response time
             current_avg = self._metrics["avg_response_time_ms"]
             total = self._metrics["total_requests"]
             self._metrics["avg_response_time_ms"] = ((current_avg * (total - 1)) + duration_ms) / total
             
-            # Track per endpoint
             self._metrics["endpoints"][endpoint]["count"] += 1
             if status_code >= 400:
                 self._metrics["endpoints"][endpoint]["errors"] += 1
@@ -105,20 +124,15 @@ class ThreadSafeMetrics:
                 "uptime_seconds": round(time.time() - self._metrics["start_time"], 2),
                 "endpoints": dict(self._metrics["endpoints"])
             }
-    
-    @property
-    def start_time(self):
-        return self._metrics["start_time"]
 
 
 request_metrics = ThreadSafeMetrics()
 
 
 # ==========================================================
-# PRIORITY 12: PROMETHEUS METRICS
+# PROMETHEUS METRICS
 # ==========================================================
 
-# Counters
 whatsapp_messages_total = Counter('whatsapp_messages_total', 'Total WhatsApp messages', ['type'])
 ai_calls_total = Counter('ai_calls_total', 'Total AI calls', ['provider', 'status'])
 query_duration = Histogram('query_duration_seconds', 'Query duration in seconds', ['query_type'])
@@ -127,7 +141,7 @@ active_requests = Gauge('active_requests', 'Active requests')
 
 
 # ==========================================================
-# PRIORITY 14: SERVICE REGISTRY
+# SERVICE REGISTRY
 # ==========================================================
 
 class ServiceRegistry:
@@ -160,54 +174,38 @@ class ServiceRegistry:
 
 
 # ==========================================================
-# PRIORITY 3: AI SERVICE REGISTRY
-# ==========================================================
-
-_ai_service_class = None
-
-def get_ai_service_class():
-    """Lazy load AI service class"""
-    global _ai_service_class
-    if _ai_service_class is None:
-        try:
-            from app.services.ai_query_service import AIQueryService
-            _ai_service_class = AIQueryService
-            ServiceRegistry.register_service("ai_query_service", AIQueryService)
-            logger.info("✅ AI Service class registered")
-        except Exception as e:
-            logger.error(f"❌ AI Service initialization failed: {e}")
-            _ai_service_class = None
-    return _ai_service_class
-
-
-# ==========================================================
-# PRIORITY 1: LAZY ROUTER LOADING
+# LAZY ROUTER LOADING (All routers)
 # ==========================================================
 
 def load_routers(app: FastAPI):
     """Lazy load all routers - prevents crash if one fails"""
     
-    # Webhook router
-    try:
-        from app.routes.webhook import router as webhook_router
-        app.include_router(webhook_router)
-        ServiceRegistry.register_route("webhook", webhook_router, "/webhook")
-        logger.info("✅ Webhook router loaded")
-    except Exception as e:
-        logger.exception(f"❌ Webhook router failed to load: {e}")
+    routers_to_load = [
+        ("webhook", "app.routes.webhook"),
+        ("upload", "app.routes.upload"),
+        ("admin", "app.routes.admin"),
+        ("health", "app.routes.health"),
+        ("logistics", "app.routes.logistics"),
+    ]
     
-    # Upload router
-    try:
-        from app.routes.upload import router as upload_router
-        app.include_router(upload_router)
-        ServiceRegistry.register_route("upload", upload_router, "/upload")
-        logger.info("✅ Upload router loaded")
-    except Exception as e:
-        logger.exception(f"❌ Upload router failed to load: {e}")
+    for name, module_path in routers_to_load:
+        try:
+            module = __import__(module_path, fromlist=["router"])
+            router = getattr(module, "router", None)
+            if router:
+                app.include_router(router)
+                ServiceRegistry.register_route(name, router)
+                logger.info(f"✅ {name.capitalize()} router loaded")
+            else:
+                logger.warning(f"⚠️ No router found in {module_path}")
+        except ImportError as e:
+            logger.warning(f"⚠️ {name.capitalize()} router not available: {e}")
+        except Exception as e:
+            logger.exception(f"❌ {name.capitalize()} router failed to load: {e}")
 
 
 # ==========================================================
-# PRIORITY 6: MIDDLEWARE
+# MIDDLEWARE
 # ==========================================================
 
 async def add_request_id_middleware(request: Request, call_next):
@@ -244,13 +242,12 @@ async def add_security_headers_middleware(request: Request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["X-XSS-Protection"] = "1; mode=block"
-    # PRIORITY 10: Add Content-Security-Policy
     response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';"
     return response
 
 
 # ==========================================================
-# PRIORITY 11: HIDE DEBUG INFO IN PRODUCTION
+# SAFE ERROR RESPONSE
 # ==========================================================
 
 def safe_error_response(request_id: str, error_type: str = "internal_error") -> Dict[str, Any]:
@@ -262,7 +259,6 @@ def safe_error_response(request_id: str, error_type: str = "internal_error") -> 
         "timestamp": datetime.utcnow().isoformat()
     }
     
-    # Only add error_type in development
     if config.ENVIRONMENT != "production":
         response["error_type"] = error_type
     
@@ -270,7 +266,7 @@ def safe_error_response(request_id: str, error_type: str = "internal_error") -> 
 
 
 # ==========================================================
-# PRIORITY 15: STARTUP SERVICE
+# STARTUP SERVICE
 # ==========================================================
 
 class StartupService:
@@ -305,16 +301,7 @@ class StartupService:
         return bool(token and phone_id)
     
     @staticmethod
-    def validate_routes():
-        """Validate routes are properly registered"""
-        routes_loaded = len(ServiceRegistry.get_routes()) > 0
-        if not routes_loaded and config.ENVIRONMENT == "production":
-            logger.warning("⚠️ No routes loaded - check router imports")
-        return routes_loaded
-    
-    @staticmethod
     def validate_templates():
-        """Validate templates directory exists"""
         templates_dir = os.path.join(os.path.dirname(__file__), "templates")
         return os.path.exists(templates_dir)
 
@@ -328,10 +315,10 @@ async def lifespan(app: FastAPI):
     start_time = time.time()
     
     logger.info("=" * 80)
-    logger.info("🤖 AI WHATSAPP AGENT STARTING v8.0")
+    logger.info("🤖 AI WHATSAPP AGENT STARTING v9.0")
     logger.info("=" * 80)
     
-    # Validate environment
+    # Validate environment (no AI warmup)
     env_results = StartupService.validate_environment()
     db_ok = StartupService.validate_database()
     groq_ok = StartupService.validate_groq()
@@ -343,19 +330,8 @@ async def lifespan(app: FastAPI):
     logger.info(f"   WhatsApp: {'✓' if whatsapp_ok else '✗'}")
     logger.info(f"   Environment: {config.ENVIRONMENT}")
     
-    # Warmup AI service (detect issues early)
-    try:
-        ai_class = get_ai_service_class()
-        if ai_class:
-            logger.info("✅ AI Service warmup complete")
-    except Exception as e:
-        logger.warning(f"⚠️ AI Service warmup warning: {e}")
-    
     # Load routers
     load_routers(app)
-    
-    # Validate routes
-    StartupService.validate_routes()
     
     # Create upload directory
     os.makedirs("uploads", exist_ok=True)
@@ -381,7 +357,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AI WhatsApp Logistics Assistant",
     description="Enterprise Logistics AI Platform - WhatsApp Integration",
-    version="8.0.0",
+    version="9.0.0",
     docs_url="/api/docs" if config.ENVIRONMENT != "production" else None,
     redoc_url="/api/redoc" if config.ENVIRONMENT != "production" else None,
     openapi_url="/api/openapi.json" if config.ENVIRONMENT != "production" else None,
@@ -471,6 +447,8 @@ dashboard_cache = TTLCache(maxsize=100, ttl=60)
 # REQUEST MODELS
 # ==========================================================
 
+from pydantic import BaseModel, Field
+
 class ChatRequest(BaseModel):
     customer_name: str = Field(min_length=2, max_length=100)
     message: str = Field(min_length=1, max_length=2000)
@@ -483,64 +461,79 @@ class ChatResponse(BaseModel):
 
 
 # ==========================================================
-# CHAT SERVICE (Inline for now - can be moved to separate file)
+# SIMPLIFIED CHAT ENDPOINT (Uses service layer)
 # ==========================================================
 
-class ChatService:
-    def __init__(self, db: Session):
-        self.db = db
-        self.ai_service_class = get_ai_service_class()
-    
-    def process_chat(self, message: str, customer_name: str, phone_number: str = None) -> str:
-        ai_reply = self._get_ai_response(message, phone_number)
-        
-        try:
-            customer = self._get_or_create_customer(customer_name, phone_number)
-            self.db.flush()
-            
-            conversation = Conversation(customer_id=customer.id, status="active")
-            self.db.add(conversation)
-            self.db.flush()
-            
-            user_msg = Message(conversation_id=conversation.id, sender="user", content=message, message_type="text")
-            ai_msg = Message(conversation_id=conversation.id, sender="assistant", content=ai_reply, message_type="text")
-            ai_log = AIResponseLog(conversation_id=conversation.id, prompt=message, ai_response=ai_reply, model_name="groq", success=True)
-            
-            self.db.add_all([user_msg, ai_msg, ai_log])
-            self.db.commit()
-            
-            return ai_reply
-        except Exception as e:
-            self.db.rollback()
-            logger.exception(f"Chat error: {e}")
-            return "⚠️ Unable to process your request. Please try again."
-    
-    def _get_ai_response(self, message: str, phone_number: str = None) -> str:
-        if not self.ai_service_class:
-            return "⚠️ AI service is temporarily unavailable."
-        try:
-            ai_service = self.ai_service_class(self.db)
-            result = ai_service.process_query(question=message, user_phone=phone_number or "web_chat")
-            return result.get("response", "Thank you for contacting support.")
-        except Exception as e:
-            logger.exception(f"AI error: {e}")
-            return "⚠️ AI processing error. Please try again."
-    
-    def _get_or_create_customer(self, name: str, phone: str = None) -> Customer:
-        import re
-        from app.models import Customer
-        if phone:
-            customer = self.db.query(Customer).filter(Customer.phone_number == phone).first()
-            if customer:
-                return customer
-        safe_name = re.sub(r'[^a-z0-9]', '_', name.lower()).strip('_')
-        customer = Customer(
-            name=name,
-            phone_number=phone or f"temp_{uuid.uuid4().hex[:12]}",
-            email=f"{safe_name}@temp.com"
+def get_chat_service():
+    """Lazy load chat service - avoids circular imports"""
+    from app.services.chat_service import ChatService
+    return ChatService
+
+
+@app.post("/chat", response_model=ChatResponse, tags=["Chat"])
+@limiter.limit("5 per second")
+async def chat_endpoint(request: ChatRequest, req: Request, db: Session = Depends(get_db)):
+    """Chat endpoint - uses ChatService from service layer"""
+    try:
+        ChatServiceClass = get_chat_service()
+        chat_service = ChatServiceClass(db)
+        result = chat_service.process_chat(
+            message=request.message,
+            customer_name=request.customer_name,
+            phone_number=request.phone_number
         )
-        self.db.add(customer)
-        return customer
+        return {"success": True, "reply": result}
+    except Exception as e:
+        logger.exception("Chat endpoint error")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# ==========================================================
+# API VERSION 1 ENDPOINTS
+# ==========================================================
+
+@app.get("/api/v1/chat", response_model=ChatResponse, tags=["API v1"])
+@limiter.limit("5 per second")
+async def chat_v1(request: ChatRequest, req: Request, db: Session = Depends(get_db)):
+    """Versioned chat endpoint - API v1"""
+    try:
+        ChatServiceClass = get_chat_service()
+        chat_service = ChatServiceClass(db)
+        result = chat_service.process_chat(
+            message=request.message,
+            customer_name=request.customer_name,
+            phone_number=request.phone_number
+        )
+        return {"success": True, "reply": result}
+    except Exception as e:
+        logger.exception("Chat endpoint error")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/v1/health", tags=["API v1"])
+async def health_v1():
+    return {"status": "healthy", "version": "v1", "timestamp": datetime.utcnow().isoformat()}
+
+
+@app.get("/api/v1/status", tags=["API v1"])
+async def status_v1(db: Session = Depends(get_db)):
+    cache_key = "system_status_v1"
+    cached = dashboard_cache.get(cache_key)
+    if cached:
+        return cached
+    
+    total_records = db.query(func.count(DeliveryReport.id)).scalar() or 0
+    total_customers = db.query(func.count(Customer.id)).scalar() or 0
+    
+    result = {
+        "version": "v1",
+        "total_delivery_records": total_records,
+        "total_customers": total_customers,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    
+    dashboard_cache[cache_key] = result
+    return result
 
 
 # ==========================================================
@@ -582,7 +575,6 @@ async def health():
     }
 
 
-# PRIORITY 13: Dedicated health endpoints
 @app.get("/groq-health", tags=["Health"])
 async def groq_health():
     groq_key = os.getenv("GROQ_API_KEY") or getattr(config, 'GROQ_API_KEY', None)
@@ -613,12 +605,13 @@ async def ping():
 
 
 # ==========================================================
-# PROMETHEUS METRICS ENDPOINT
+# PROMETHEUS METRICS ENDPOINT (FIXED)
 # ==========================================================
 
 @app.get("/metrics", tags=["Metrics"])
 async def metrics():
-    return JSONResponse(
+    """Fixed metrics endpoint - returns bytes correctly"""
+    return Response(
         content=generate_latest(),
         media_type=CONTENT_TYPE_LATEST
     )
@@ -635,64 +628,23 @@ async def cache_status():
 
 
 # ==========================================================
-# API VERSION 1 ENDPOINTS
+# SIMPLIFIED DASHBOARD ENDPOINT (Uses analytics service)
 # ==========================================================
 
-@app.get("/api/v1/chat", response_model=ChatResponse, tags=["API v1"])
-@limiter.limit("5 per second")
-async def chat_v1(request: ChatRequest, req: Request, db: Session = Depends(get_db), background_tasks: BackgroundTasks = None):
-    """Versioned chat endpoint - API v1"""
-    try:
-        chat_service = ChatService(db)
-        result = chat_service.process_chat(
-            message=request.message,
-            customer_name=request.customer_name,
-            phone_number=request.phone_number
-        )
-        return {"success": True, "reply": result}
-    except Exception as e:
-        logger.exception("Chat endpoint error")
-        raise HTTPException(status_code=500, detail="Internal server error")
+def get_analytics_service():
+    """Lazy load analytics service"""
+    from app.services.analytics_service import AnalyticsService
+    return AnalyticsService
 
-
-@app.get("/api/v1/health", tags=["API v1"])
-async def health_v1():
-    return {"status": "healthy", "version": "v1", "timestamp": datetime.utcnow().isoformat()}
-
-
-@app.get("/api/v1/status", tags=["API v1"])
-async def status_v1(db: Session = Depends(get_db)):
-    cache_key = "system_status_v1"
-    cached = dashboard_cache.get(cache_key)
-    if cached:
-        return cached
-    
-    total_records = db.query(func.count(DeliveryReport.id)).scalar() or 0
-    total_customers = db.query(func.count(Customer.id)).scalar() or 0
-    
-    result = {
-        "version": "v1",
-        "total_delivery_records": total_records,
-        "total_customers": total_customers,
-        "timestamp": datetime.utcnow().isoformat()
-    }
-    
-    dashboard_cache[cache_key] = result
-    return result
-
-
-# ==========================================================
-# DASHBOARD ENDPOINT (Legacy - maintained for compatibility)
-# ==========================================================
 
 @app.get("/dashboard", tags=["Dashboard"])
 async def dashboard(request: Request, db: Session = Depends(get_db)):
+    """Dashboard endpoint - uses AnalyticsService for data"""
     try:
-        # Lazy import to avoid circular imports
-        from app.models import Customer, Conversation, Message, DeliveryReport, AIResponseLog
+        AnalyticsServiceClass = get_analytics_service()
+        analytics_service = AnalyticsServiceClass(db)
         
-        dashboard_service = DashboardService(db)
-        dashboard_data = dashboard_service.get_cached_dashboard_data()
+        dashboard_data = analytics_service.get_dashboard_data()
         
         whatsapp_token = os.getenv("WHATSAPP_ACCESS_TOKEN")
         groq_key = os.getenv("GROQ_API_KEY")
@@ -706,7 +658,7 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
                 **dashboard_data,
                 "whatsapp_status": "Online" if whatsapp_token else "Offline",
                 "groq_status": "Online" if groq_key else "Offline",
-                "schema_version": schema_info.get("app_version", "8.0"),
+                "schema_version": schema_info.get("app_version", "9.0"),
                 "last_refresh": last_refresh.strftime('%Y-%m-%d %H:%M:%S'),
                 "timestamp": datetime.utcnow().isoformat()
             }
@@ -717,109 +669,8 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
 
 
 # ==========================================================
-# DASHBOARD SERVICE (Inline for now)
+# LEGACY STATUS ENDPOINT
 # ==========================================================
-
-class DashboardService:
-    def __init__(self, db: Session):
-        self.db = db
-    
-    def get_cached_dashboard_data(self) -> Dict[str, Any]:
-        cache_key = "dashboard_data"
-        if cache_key in dashboard_cache:
-            return dashboard_cache[cache_key]
-        data = self._compute_dashboard_data()
-        dashboard_cache[cache_key] = data
-        return data
-    
-    def _compute_dashboard_data(self) -> Dict[str, Any]:
-        from app.models import Customer, Conversation, DeliveryReport
-        
-        total_records = self.db.query(func.count(DeliveryReport.id)).scalar() or 0
-        pending_deliveries = self.db.query(func.count(DeliveryReport.id)).filter(DeliveryReport.pending_flag.is_(True)).scalar() or 0
-        pending_pod = self.db.query(func.count(DeliveryReport.id)).filter(DeliveryReport.pod_status == "Pending").scalar() or 0
-        pending_pgi = self.db.query(func.count(DeliveryReport.id)).filter(DeliveryReport.pgi_status == "Pending").scalar() or 0
-        total_amount = self.db.query(func.sum(DeliveryReport.dn_amount)).scalar() or 0
-        cities = self.db.query(DeliveryReport.ship_to_city).distinct().count()
-        warehouses = self.db.query(DeliveryReport.warehouse).distinct().count()
-        total_customers = self.db.query(func.count(Customer.id)).scalar() or 0
-        total_conversations = self.db.query(func.count(Conversation.id)).scalar() or 0
-        
-        return {
-            "total_records": total_records,
-            "pending_deliveries": pending_deliveries,
-            "pending_pod": pending_pod,
-            "pending_pgi": pending_pgi,
-            "pending_amount": 0,
-            "completed_deliveries": total_records - pending_deliveries,
-            "total_amount": float(total_amount),
-            "cities": cities,
-            "warehouses": warehouses,
-            "total_customers": total_customers,
-            "total_conversations": total_conversations,
-            "top_dealers": self._get_top_dealers(5),
-            "top_cities": self._get_top_cities(5),
-            "top_warehouses": self._get_top_warehouses(5),
-            "latest_uploads": self._get_latest_uploads(5),
-            "total_uploads": self.db.query(DeliveryReport.upload_batch_id).distinct().count(),
-            "total_imported_rows": total_records,
-            "last_upload_date": self.db.query(DeliveryReport.imported_at).order_by(DeliveryReport.imported_at.desc()).first()
-        }
-    
-    def _get_top_dealers(self, limit=5):
-        from app.models import DeliveryReport
-        return self.db.query(
-            DeliveryReport.dealer_code,
-            DeliveryReport.customer_name,
-            func.count(DeliveryReport.id).label('count')
-        ).group_by(DeliveryReport.dealer_code, DeliveryReport.customer_name
-        ).order_by(func.count(DeliveryReport.id).desc()).limit(limit).all()
-    
-    def _get_top_cities(self, limit=5):
-        from app.models import DeliveryReport
-        return self.db.query(
-            DeliveryReport.ship_to_city.label('city'),
-            func.count(DeliveryReport.id).label('count')
-        ).group_by(DeliveryReport.ship_to_city).order_by(func.count(DeliveryReport.id).desc()).limit(limit).all()
-    
-    def _get_top_warehouses(self, limit=5):
-        from app.models import DeliveryReport
-        return self.db.query(
-            DeliveryReport.warehouse,
-            func.count(DeliveryReport.id).label('count')
-        ).group_by(DeliveryReport.warehouse).order_by(func.count(DeliveryReport.id).desc()).limit(limit).all()
-    
-    def _get_latest_uploads(self, limit=5):
-        from app.models import DeliveryReport
-        return self.db.query(
-            DeliveryReport.upload_batch_id,
-            DeliveryReport.source_file,
-            DeliveryReport.imported_at,
-            func.count(DeliveryReport.id).label('record_count')
-        ).group_by(DeliveryReport.upload_batch_id, DeliveryReport.source_file, DeliveryReport.imported_at
-        ).order_by(DeliveryReport.imported_at.desc()).limit(limit).all()
-
-
-# ==========================================================
-# LEGACY ENDPOINTS (Maintained for backward compatibility)
-# ==========================================================
-
-@app.post("/chat", response_model=ChatResponse, tags=["Chat"])
-@limiter.limit("5 per second")
-async def chat_legacy(request: ChatRequest, req: Request, db: Session = Depends(get_db)):
-    """Legacy chat endpoint - maintained for compatibility"""
-    try:
-        chat_service = ChatService(db)
-        result = chat_service.process_chat(
-            message=request.message,
-            customer_name=request.customer_name,
-            phone_number=request.phone_number
-        )
-        return {"success": True, "reply": result}
-    except Exception as e:
-        logger.exception("Chat endpoint error")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
 
 @app.get("/status", tags=["Status"])
 async def status_legacy(db: Session = Depends(get_db)):
@@ -829,11 +680,9 @@ async def status_legacy(db: Session = Depends(get_db)):
     if cached:
         return cached
     
-    from app.models import Customer, Conversation, DeliveryReport
-    
     result = {
         "application": "AI WhatsApp Agent",
-        "version": "8.0.0",
+        "version": "9.0.0",
         "database": "postgresql",
         "ai_provider": "groq",
         "whatsapp": "active",
@@ -849,6 +698,10 @@ async def status_legacy(db: Session = Depends(get_db)):
     return result
 
 
+# ==========================================================
+# ROOT AND INFO ENDPOINTS
+# ==========================================================
+
 @app.get("/", tags=["Root"])
 async def home():
     return RedirectResponse(url="/dashboard", status_code=303)
@@ -858,7 +711,7 @@ async def home():
 async def version():
     return {
         "name": "AI WhatsApp Logistics Assistant",
-        "version": "8.0.0",
+        "version": "9.0.0",
         "framework": "FastAPI",
         "database": "PostgreSQL",
         "schema_version": APP_SCHEMA_VERSION,
@@ -873,12 +726,13 @@ async def schema_info_endpoint(db: Session = Depends(get_db)):
 
 @app.get("/upload-center", tags=["Upload"])
 async def upload_center(request: Request, db: Session = Depends(get_db)):
-    from app.models import DeliveryReport
-    
+    """Upload center page - uses analytics service"""
     try:
-        dashboard_service = DashboardService(db)
-        latest_uploads = dashboard_service._get_latest_uploads(20)
-        total_batches = db.query(DeliveryReport.upload_batch_id).distinct().count()
+        AnalyticsServiceClass = get_analytics_service()
+        analytics_service = AnalyticsServiceClass(db)
+        
+        latest_uploads = analytics_service.get_latest_uploads(20)
+        total_batches = analytics_service.get_total_upload_batches()
         total_records = db.query(DeliveryReport).count()
         
         return templates.TemplateResponse(
@@ -934,25 +788,8 @@ async def upload_status():
 
 
 # ==========================================================
-# DEBUG ENDPOINTS (Hidden in production)
+# API INFO ENDPOINT
 # ==========================================================
-
-if config.ENVIRONMENT != "production":
-    @app.get("/db-test", tags=["Debug"])
-    async def db_test():
-        try:
-            connected = check_database_connection()
-            health = get_database_health()
-            return {
-                "connected": connected,
-                "database_url_exists": bool(DATABASE_URL),
-                "health": health,
-                "environment": config.ENVIRONMENT
-            }
-        except Exception as e:
-            logger.exception("DB test error")
-            raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/api-info", tags=["Info"])
 async def api_info():
@@ -974,13 +811,38 @@ async def api_info():
 
 
 # ==========================================================
+# DEBUG ENDPOINTS (Hidden in production)
+# ==========================================================
+
+if config.ENVIRONMENT != "production":
+    @app.get("/db-test", tags=["Debug"])
+    async def db_test():
+        try:
+            connected = check_database_connection()
+            health = get_database_health()
+            return {
+                "connected": connected,
+                "database_url_exists": bool(DATABASE_URL),
+                "health": health,
+                "environment": config.ENVIRONMENT
+            }
+        except Exception as e:
+            logger.exception("DB test error")
+            raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==========================================================
 # INITIALIZATION LOG
 # ==========================================================
 
 logger.info("=" * 60)
-logger.info("📡 MAIN APP v8.0 - Production Ready")
-logger.info("   Features: Lazy Router Loading | Prometheus Metrics | Thread-Safe")
-logger.info("   API Versioning: /api/v1")
-logger.info("   Monitoring: /metrics | /health | /readiness | /liveness")
-logger.info("   Security: CORS (Prod) | Trusted Host | Security Headers | CSP")
+logger.info("📡 MAIN APP v9.0 - Production Ready")
+logger.info("   Improvements:")
+logger.info("   ✅ Fixed Customer import crash")
+logger.info("   ✅ Removed ChatService from main.py")
+logger.info("   ✅ Removed DashboardService from main.py")
+logger.info("   ✅ Fixed route loading (all routers)")
+logger.info("   ✅ Removed AI warmup (lazy loading)")
+logger.info("   ✅ Fixed metrics endpoint")
+logger.info("   ✅ Simplified to bootstrap only")
 logger.info("=" * 60)
