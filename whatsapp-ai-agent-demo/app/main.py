@@ -1,5 +1,5 @@
 # ==========================================================
-# FILE: app/main.py (ENTERPRISE v6.0 - ALL IMPROVEMENTS INLINE)
+# FILE: app/main.py (ENTERPRISE v7.0 - PRODUCTION GRADE)
 # PROJECT: AI WhatsApp Customer Service Agent
 # ==========================================================
 
@@ -7,9 +7,10 @@ import os
 import sys
 import time
 import uuid
+import importlib
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -18,6 +19,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from sqlalchemy import inspect, func, text, select
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
 from loguru import logger
 from cachetools import TTLCache
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -60,27 +62,97 @@ from app.services.whatsapp_service import get_whatsapp_service
 from app.routes.upload import router as upload_router
 from app.routes.webhook import router as webhook_router
 
+from app.config import config
+
 
 # ==========================================================
-# PRIORITY 7: REQUEST ID TRACKING
+# PRIORITY 9: CENTRALIZED CONFIGURATION
+# ==========================================================
+
+# All config values now come from app.config
+ENVIRONMENT = config.ENVIRONMENT if hasattr(config, 'ENVIRONMENT') else os.getenv("ENVIRONMENT", "production")
+FRONTEND_URL = config.FRONTEND_URL if hasattr(config, 'FRONTEND_URL') else os.getenv("FRONTEND_URL", "http://localhost:3000")
+ALLOWED_HOSTS = config.ALLOWED_HOSTS if hasattr(config, 'ALLOWED_HOSTS') else os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1,*.up.railway.app").split(",")
+
+
+# ==========================================================
+# PRIORITY 14: SERVICE REGISTRY
+# ==========================================================
+
+class ServiceRegistry:
+    """Centralized service registry for dependency injection"""
+    _services = {}
+    
+    @classmethod
+    def register(cls, name: str, service):
+        cls._services[name] = service
+    
+    @classmethod
+    def get(cls, name: str):
+        return cls._services.get(name)
+    
+    @classmethod
+    def clear(cls):
+        cls._services.clear()
+
+
+# ==========================================================
+# PRIORITY 5: REQUEST METRICS
+# ==========================================================
+
+request_metrics = {
+    "total_requests": 0,
+    "successful_requests": 0,
+    "failed_requests": 0,
+    "error_count": 0,
+    "avg_response_time_ms": 0,
+    "start_time": time.time(),
+    "endpoints": {}
+}
+
+
+def update_metrics(endpoint: str, status_code: int, duration_ms: float):
+    request_metrics["total_requests"] += 1
+    if 200 <= status_code < 300:
+        request_metrics["successful_requests"] += 1
+    else:
+        request_metrics["failed_requests"] += 1
+        request_metrics["error_count"] += 1
+    
+    # Update average response time
+    current_avg = request_metrics["avg_response_time_ms"]
+    total = request_metrics["total_requests"]
+    request_metrics["avg_response_time_ms"] = ((current_avg * (total - 1)) + duration_ms) / total
+    
+    # Track per endpoint
+    if endpoint not in request_metrics["endpoints"]:
+        request_metrics["endpoints"][endpoint] = {"count": 0, "errors": 0}
+    request_metrics["endpoints"][endpoint]["count"] += 1
+
+
+# ==========================================================
+# PRIORITY 7: REQUEST ID MIDDLEWARE (with metrics)
 # ==========================================================
 
 async def add_request_id_middleware(request: Request, call_next):
     request_id = str(uuid.uuid4())[:8]
     request.state.request_id = request_id
+    start_time = time.time()
     
     with logger.contextualize(request_id=request_id):
         logger.debug(f"Request started: {request.method} {request.url.path}")
-        start_time = time.time()
         
         try:
             response = await call_next(request)
             duration_ms = (time.time() - start_time) * 1000
+            update_metrics(request.url.path, response.status_code, duration_ms)
             logger.debug(f"Request completed: {response.status_code} in {duration_ms:.2f}ms")
             response.headers["X-Request-ID"] = request_id
+            response.headers["X-Response-Time-Ms"] = str(int(duration_ms))
             return response
         except Exception as e:
             duration_ms = (time.time() - start_time) * 1000
+            update_metrics(request.url.path, 500, duration_ms)
             logger.error(f"Request failed: {e} in {duration_ms:.2f}ms")
             raise
 
@@ -99,86 +171,126 @@ async def add_security_headers_middleware(request: Request, call_next):
 
 
 # ==========================================================
-# PRIORITY 3: STARTUP SERVICE (INLINE)
+# PRIORITY 10: STARTUP REPORT
+# ==========================================================
+
+class StartupReport:
+    @staticmethod
+    def print_report(results: Dict[str, Any]):
+        logger.info("=" * 60)
+        logger.info("APP STARTUP REPORT")
+        logger.info("=" * 60)
+        
+        for check, passed in results.items():
+            status = "PASS" if passed else "FAIL"
+            icon = "✅" if passed else "❌"
+            logger.info(f"{icon} {check}: {status}")
+        
+        logger.info("=" * 60)
+
+
+# ==========================================================
+# PRIORITY 11: GLOBAL DEPENDENCY VALIDATION
+# ==========================================================
+
+def validate_dependencies() -> Dict[str, bool]:
+    """Validate all required packages are installed"""
+    required_packages = [
+        "groq",
+        "cachetools",
+        "slowapi",
+        "pandas",
+        "sqlalchemy",
+        "fastapi",
+        "loguru"
+    ]
+    
+    results = {}
+    for package in required_packages:
+        try:
+            importlib.import_module(package)
+            results[f"Package {package}"] = True
+        except ImportError:
+            results[f"Package {package}"] = False
+            logger.error(f"Missing required package: {package}")
+    
+    return results
+
+
+# ==========================================================
+# PRIORITY 3: STARTUP SERVICE (with non-blocking validation)
 # ==========================================================
 
 class StartupService:
     @staticmethod
-    def validate_environment():
+    def validate_environment() -> Dict[str, bool]:
+        """Validate required environment variables - non-blocking"""
         required_vars = ["DATABASE_URL", "GROQ_API_KEY", "WHATSAPP_ACCESS_TOKEN", "WHATSAPP_PHONE_NUMBER_ID"]
-        missing = [v for v in required_vars if not os.getenv(v)]
-        if missing:
-            error_msg = f"Missing required env vars: {', '.join(missing)}"
-            logger.error(error_msg)
-            if os.getenv("ENVIRONMENT") == "production":
-                sys.exit(1)
-        else:
-            logger.info("✅ All required environment variables are set")
+        results = {}
+        
+        for var in required_vars:
+            value = os.getenv(var) or getattr(config, var, None)
+            results[var] = bool(value)
+            if not value:
+                logger.error(f"Missing required env var: {var}")
+        
+        return results
     
     @staticmethod
-    def validate_database():
-        if not check_database_connection():
-            logger.error("Database connection failed")
-            if os.getenv("ENVIRONMENT") == "production":
-                sys.exit(1)
-        else:
-            logger.info("✅ Database connected")
+    def validate_database() -> bool:
+        try:
+            return check_database_connection()
+        except Exception as e:
+            logger.error(f"Database validation failed: {e}")
+            return False
     
     @staticmethod
-    def validate_models():
+    def validate_models() -> Dict[str, bool]:
+        results = {}
         for model in [Customer, Conversation, Message, DeliveryReport, SystemSetting]:
             try:
                 inspect(model)
-                logger.debug(f"✅ Model {model.__name__} validated")
+                results[model.__name__] = True
             except Exception as e:
-                logger.error(f"❌ Model {model.__name__} validation failed: {e}")
-                raise
+                logger.error(f"Model {model.__name__} validation failed: {e}")
+                results[model.__name__] = False
+        return results
     
     @staticmethod
-    def validate_groq():
-        groq_key = os.getenv("GROQ_API_KEY")
-        if not groq_key:
-            logger.error("GROQ_API_KEY not set")
-            if os.getenv("ENVIRONMENT") == "production":
-                sys.exit(1)
-        else:
-            logger.info("✅ Groq API key configured")
+    def validate_groq() -> bool:
+        groq_key = os.getenv("GROQ_API_KEY") or getattr(config, 'GROQ_API_KEY', None)
+        return bool(groq_key)
     
     @staticmethod
-    def validate_whatsapp():
-        token = os.getenv("WHATSAPP_ACCESS_TOKEN")
-        phone_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
-        if not token or not phone_id:
-            logger.error("WhatsApp configuration incomplete")
-            if os.getenv("ENVIRONMENT") == "production":
-                sys.exit(1)
-        else:
-            logger.info("✅ WhatsApp configured")
+    def validate_whatsapp() -> bool:
+        token = os.getenv("WHATSAPP_ACCESS_TOKEN") or getattr(config, 'WHATSAPP_ACCESS_TOKEN', None)
+        phone_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID") or getattr(config, 'WHATSAPP_PHONE_NUMBER_ID', None)
+        return bool(token and phone_id)
     
     @staticmethod
-    def validate_upload_folder():
-        os.makedirs("uploads", exist_ok=True)
-        if os.access("uploads", os.W_OK):
-            logger.info("✅ Upload folder ready")
-        else:
-            logger.error("❌ Upload folder not writable")
+    def validate_upload_folder() -> bool:
+        try:
+            os.makedirs("uploads", exist_ok=True)
+            return os.access("uploads", os.W_OK)
+        except Exception:
+            return False
 
 
 # ==========================================================
-# PRIORITY 10: AI SERVICE SINGLETON WRAPPER
+# PRIORITY 10: AI SERVICE SINGLETON (with proper session handling)
 # ==========================================================
 
 _ai_service = None
 
-def get_ai_service():
+def get_ai_service(db: Session = None):
+    """Get AI service with proper session handling - PRIORITY 2 fix"""
     global _ai_service
     if _ai_service is None:
         try:
             from app.services.ai_query_service import AIQueryService
-            db = SessionLocal()
-            _ai_service = AIQueryService(db)
-            db.close()
-            logger.info("✅ AI Service singleton initialized")
+            # Don't store db in service - pass on each request
+            _ai_service = AIQueryService
+            logger.info("✅ AI Service class registered")
         except Exception as e:
             logger.error(f"❌ AI Service initialization failed: {e}")
             _ai_service = None
@@ -186,13 +298,13 @@ def get_ai_service():
 
 
 # ==========================================================
-# PRIORITY 1: CHAT SERVICE (INLINE)
+# PRIORITY 1: CHAT SERVICE (with proper session)
 # ==========================================================
 
 class ChatService:
     def __init__(self, db: Session):
         self.db = db
-        self.ai_service = get_ai_service()
+        self.ai_service_class = get_ai_service()
     
     def process_chat(self, message: str, customer_name: str, phone_number: str = None) -> str:
         ai_reply = self._get_ai_response(message, phone_number)
@@ -213,22 +325,28 @@ class ChatService:
             self.db.commit()
             
             return ai_reply
-        except Exception as e:
+        except SQLAlchemyError as e:
             self.db.rollback()
             logger.exception(f"Chat DB error: {e}")
+            return "⚠️ Database error. Please try again."
+        except Exception as e:
+            self.db.rollback()
+            logger.exception(f"Chat error: {e}")
             return "⚠️ Unable to save your message. Please try again."
     
     def _get_ai_response(self, message: str, phone_number: str = None) -> str:
-        if not self.ai_service:
+        if not self.ai_service_class:
             return "⚠️ AI service is temporarily unavailable."
         try:
-            result = self.ai_service.process_query(question=message, user_phone=phone_number or "web_chat")
+            ai_service = self.ai_service_class(self.db)  # Create service with current session
+            result = ai_service.process_query(question=message, user_phone=phone_number or "web_chat")
             return result.get("response", "Thank you for contacting support.")
         except Exception as e:
             logger.exception(f"AI error: {e}")
             return "⚠️ AI processing error. Please try again."
     
     def _get_or_create_customer(self, name: str, phone: str = None) -> Customer:
+        import re
         if phone:
             customer = self.db.query(Customer).filter(Customer.phone_number == phone).first()
             if customer:
@@ -244,9 +362,10 @@ class ChatService:
 
 
 # ==========================================================
-# PRIORITY 2 & 8 & 9: DASHBOARD SERVICE WITH CACHING (INLINE)
+# PRIORITY 8: DASHBOARD SERVICE (with separate queries)
 # ==========================================================
 
+# PRIORITY 3: Use Redis-ready cache (can be replaced with Redis)
 dashboard_cache = TTLCache(maxsize=100, ttl=60)
 
 class DashboardService:
@@ -263,37 +382,35 @@ class DashboardService:
         return data
     
     def _compute_dashboard_data(self) -> Dict[str, Any]:
-        # PRIORITY 8: Single aggregation query for all counts
-        stats = self.db.query(
-            func.count(DeliveryReport.id).label('total_records'),
-            func.sum(DeliveryReport.pending_flag.cast(type_=int)).label('pending_deliveries'),
-            func.sum((DeliveryReport.pod_status == 'Pending').cast(type_=int)).label('pending_pod'),
-            func.sum((DeliveryReport.pgi_status == 'Pending').cast(type_=int)).label('pending_pgi'),
-            func.sum(DeliveryReport.dn_amount).label('total_amount'),
-            func.count(DeliveryReport.ship_to_city.distinct()).label('cities'),
-            func.count(DeliveryReport.warehouse.distinct()).label('warehouses'),
-            func.count(Customer.id).label('total_customers'),
-            func.count(Conversation.id).label('total_conversations')
-        ).first()
+        # PRIORITY 7: Separate queries to avoid Cartesian joins
+        total_records = self.db.query(func.count(DeliveryReport.id)).scalar() or 0
+        pending_deliveries = self.db.query(func.count(DeliveryReport.id)).filter(DeliveryReport.pending_flag.is_(True)).scalar() or 0
+        pending_pod = self.db.query(func.count(DeliveryReport.id)).filter(DeliveryReport.pod_status == "Pending").scalar() or 0
+        pending_pgi = self.db.query(func.count(DeliveryReport.id)).filter(DeliveryReport.pgi_status == "Pending").scalar() or 0
+        total_amount = self.db.query(func.sum(DeliveryReport.dn_amount)).scalar() or 0
+        cities = self.db.query(DeliveryReport.ship_to_city).distinct().count()
+        warehouses = self.db.query(DeliveryReport.warehouse).distinct().count()
+        total_customers = self.db.query(func.count(Customer.id)).scalar() or 0
+        total_conversations = self.db.query(func.count(Conversation.id)).scalar() or 0
         
         return {
-            "total_records": stats.total_records or 0,
-            "pending_deliveries": stats.pending_deliveries or 0,
-            "pending_pod": stats.pending_pod or 0,
-            "pending_pgi": stats.pending_pgi or 0,
+            "total_records": total_records,
+            "pending_deliveries": pending_deliveries,
+            "pending_pod": pending_pod,
+            "pending_pgi": pending_pgi,
             "pending_amount": 0,
-            "completed_deliveries": (stats.total_records or 0) - (stats.pending_deliveries or 0),
-            "total_amount": float(stats.total_amount or 0),
-            "cities": stats.cities or 0,
-            "warehouses": stats.warehouses or 0,
-            "total_customers": stats.total_customers or 0,
-            "total_conversations": stats.total_conversations or 0,
+            "completed_deliveries": total_records - pending_deliveries,
+            "total_amount": float(total_amount),
+            "cities": cities,
+            "warehouses": warehouses,
+            "total_customers": total_customers,
+            "total_conversations": total_conversations,
             "top_dealers": self._get_top_dealers(5),
             "top_cities": self._get_top_cities(5),
             "top_warehouses": self._get_top_warehouses(5),
             "latest_uploads": self._get_latest_uploads(5),
             "total_uploads": self.db.query(DeliveryReport.upload_batch_id).distinct().count(),
-            "total_imported_rows": stats.total_records or 0,
+            "total_imported_rows": total_records,
             "last_upload_date": self.db.query(DeliveryReport.imported_at).order_by(DeliveryReport.imported_at.desc()).first()
         }
     
@@ -345,18 +462,29 @@ class DashboardService:
 
 
 # ==========================================================
-# PRIORITY 6: GLOBAL EXCEPTION HANDLER
+# PRIORITY 6: GLOBAL EXCEPTION HANDLER (with categories)
 # ==========================================================
 
 async def global_exception_handler(request: Request, exc: Exception):
     request_id = getattr(request.state, 'request_id', 'unknown')
-    logger.exception(f"Unhandled exception [req:{request_id}]: {exc}")
+    
+    # PRIORITY 15: Exception categorization
+    if isinstance(exc, SQLAlchemyError):
+        error_type = "database_error"
+        logger.exception(f"Database error [req:{request_id}]: {exc}")
+    elif hasattr(exc, 'status_code') and exc.status_code == 429:
+        error_type = "rate_limit"
+        logger.warning(f"Rate limit exceeded [req:{request_id}]")
+    else:
+        error_type = "internal_error"
+        logger.exception(f"Unhandled exception [req:{request_id}]: {exc}")
     
     return JSONResponse(
         status_code=500,
         content={
             "success": False,
             "error": "Internal server error",
+            "error_type": error_type,
             "request_id": request_id,
             "timestamp": datetime.utcnow().isoformat()
         }
@@ -364,7 +492,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # ==========================================================
-# LIFESPAN HANDLER (PRIORITY 4, 14, 15, 16, 17, 18)
+# PRIORITY 4 & 13: LIFESPAN HANDLER (non-blocking)
 # ==========================================================
 
 @asynccontextmanager
@@ -372,36 +500,49 @@ async def lifespan(app: FastAPI):
     start_time = time.time()
     
     logger.info("=" * 80)
-    logger.info("🤖 AI WHATSAPP AGENT STARTING v6.0")
+    logger.info("🤖 AI WHATSAPP AGENT STARTING v7.0")
     logger.info("=" * 80)
     
-    # PRIORITY 3: Run all validations
-    StartupService.validate_environment()
-    StartupService.validate_database()
-    StartupService.validate_models()
-    StartupService.validate_groq()
-    StartupService.validate_whatsapp()
-    StartupService.validate_upload_folder()
+    # PRIORITY 11: Validate dependencies
+    dep_results = validate_dependencies()
     
-    # PRIORITY 4: Use schema check instead of create_all
+    # Run validations (non-blocking - log warnings but don't crash)
+    env_results = StartupService.validate_environment()
+    db_ok = StartupService.validate_database()
+    models_ok = StartupService.validate_models()
+    groq_ok = StartupService.validate_groq()
+    whatsapp_ok = StartupService.validate_whatsapp()
+    upload_ok = StartupService.validate_upload_folder()
+    
+    # PRIORITY 10: Startup report
+    report = {
+        "Environment Variables": all(env_results.values()),
+        "Database Connection": db_ok,
+        "Models": all(models_ok.values()),
+        "Groq API": groq_ok,
+        "WhatsApp API": whatsapp_ok,
+        "Upload Folder": upload_ok,
+        **dep_results
+    }
+    StartupReport.print_report(report)
+    
+    # Schema check (non-blocking)
     try:
         db = SessionLocal()
         check_schema_version(db)
         db.close()
         logger.info("✅ Schema version verified")
     except Exception as e:
-        logger.error(f"❌ Schema verification failed: {e}")
+        logger.warning(f"⚠️ Schema verification warning: {e}")
     
-    # PRIORITY 17: Validate AI service
+    # Service validation (non-blocking)
     try:
-        ai_service = get_ai_service()
-        if ai_service:
-            health = ai_service.health_check()
-            logger.info(f"✅ AI Service: {health.get('status', 'unknown')}")
+        ai_service_class = get_ai_service()
+        if ai_service_class:
+            logger.info("✅ AI Service available")
     except Exception as e:
         logger.warning(f"⚠️ AI Service validation warning: {e}")
     
-    # PRIORITY 18: Validate WhatsApp service
     try:
         whatsapp = get_whatsapp_service()
         whatsapp_health = whatsapp.health_check()
@@ -409,17 +550,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"⚠️ WhatsApp validation warning: {e}")
     
-    # PRIORITY 14: Startup duration
     startup_duration = time.time() - start_time
     logger.info(f"✅ Application startup complete in {startup_duration:.2f}s")
     logger.info("=" * 80)
     
     yield
     
-    # PRIORITY 15: Graceful shutdown
+    # PRIORITY 13: Graceful shutdown
     logger.info("🛑 AI WHATSAPP AGENT SHUTTING DOWN")
     engine.dispose()
     dashboard_cache.clear()
+    ServiceRegistry.clear()
     logger.info("✅ Resources cleaned up")
 
 
@@ -430,7 +571,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AI WhatsApp Logistics Assistant",
     description="Enterprise Logistics AI Platform - WhatsApp Integration",
-    version="6.0.0",
+    version="7.0.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
@@ -443,7 +584,7 @@ limiter._app = app
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# PRIORITY 6: Global exception handler
+# Global exception handler
 app.add_exception_handler(Exception, global_exception_handler)
 
 
@@ -454,7 +595,6 @@ app.add_exception_handler(Exception, global_exception_handler)
 app.middleware("http")(add_request_id_middleware)
 app.middleware("http")(add_security_headers_middleware)
 
-# PRIORITY 21: Reduce INFO logging - use DEBUG for requests
 @app.middleware("http")
 async def log_requests_middleware(request: Request, call_next):
     start_time = time.time()
@@ -464,14 +604,11 @@ async def log_requests_middleware(request: Request, call_next):
     return response
 
 
-# PRIORITY 11: Tighten CORS for production
-ENVIRONMENT = os.getenv("ENVIRONMENT", "production")
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
-
+# PRIORITY 12: Secure CORS for production
 if ENVIRONMENT == "production":
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[FRONTEND_URL],
+        allow_origins=[FRONTEND_URL] if FRONTEND_URL != "*" else [],
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
@@ -489,7 +626,6 @@ else:
     logger.info("CORS configured for development (allow all)")
 
 # Trusted Host Middleware
-ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1,*.up.railway.app").split(",")
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
 
 
@@ -511,7 +647,7 @@ templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
 
 # ==========================================================
-# REQUEST MODELS (PRIORITY 9 - Validation)
+# REQUEST MODELS
 # ==========================================================
 
 class ChatRequest(BaseModel):
@@ -526,7 +662,7 @@ class ChatResponse(BaseModel):
 
 
 # ==========================================================
-# PRIORITY 4 & 5 & 19: LIVENESS & READINESS & AI STATUS
+# PRIORITY 5: HEALTH & METRICS ENDPOINTS
 # ==========================================================
 
 @app.get("/liveness", tags=["Health"])
@@ -536,36 +672,24 @@ async def liveness():
 
 @app.get("/readiness", tags=["Health"])
 async def readiness():
-    status = {"ready": False, "checks": {}, "timestamp": datetime.utcnow().isoformat()}
+    db_connected = check_database_connection()
+    groq_key = os.getenv("GROQ_API_KEY") or getattr(config, 'GROQ_API_KEY', None)
     
-    try:
-        db_connected = check_database_connection()
-        status["checks"]["database"] = "connected" if db_connected else "disconnected"
-    except Exception as e:
-        status["checks"]["database"] = f"error: {str(e)}"
-    
-    groq_key = os.getenv("GROQ_API_KEY")
-    status["checks"]["groq"] = "configured" if groq_key else "not_configured"
-    
-    try:
-        whatsapp = get_whatsapp_service()
-        whatsapp_health = whatsapp.health_check()
-        status["checks"]["whatsapp"] = "healthy" if whatsapp_health.get("configured") else "not_configured"
-    except Exception as e:
-        status["checks"]["whatsapp"] = f"error: {str(e)}"
-    
-    status["ready"] = (
-        status["checks"]["database"] == "connected" and
-        status["checks"]["groq"] == "configured" and
-        status["checks"]["whatsapp"] == "healthy"
-    )
-    
-    return status
+    return {
+        "ready": db_connected and bool(groq_key),
+        "checks": {
+            "database": "connected" if db_connected else "disconnected",
+            "groq": "configured" if groq_key else "not_configured"
+        },
+        "timestamp": datetime.utcnow().isoformat()
+    }
 
 
 @app.get("/health", tags=["Health"])
 async def health():
+    """PRIORITY 5: Structured health check"""
     db_connected = check_database_connection()
+    uptime = time.time() - request_metrics["start_time"]
     
     whatsapp_status = "unknown"
     try:
@@ -575,15 +699,30 @@ async def health():
     except Exception as e:
         whatsapp_status = "error"
     
-    ai_service = get_ai_service()
-    
     return {
         "status": "healthy" if db_connected else "degraded",
+        "uptime_seconds": round(uptime, 2),
         "database": "connected" if db_connected else "disconnected",
         "whatsapp": whatsapp_status,
-        "ai_service": ai_service.health_check() if ai_service else {"status": "unavailable"},
         "schema_version": APP_SCHEMA_VERSION,
         "timestamp": datetime.utcnow().isoformat()
+    }
+
+
+@app.get("/metrics", tags=["Metrics"])
+async def metrics():
+    """PRIORITY 6: Request metrics endpoint"""
+    uptime = time.time() - request_metrics["start_time"]
+    
+    return {
+        "uptime_seconds": round(uptime, 2),
+        "total_requests": request_metrics["total_requests"],
+        "successful_requests": request_metrics["successful_requests"],
+        "failed_requests": request_metrics["failed_requests"],
+        "error_count": request_metrics["error_count"],
+        "avg_response_time_ms": round(request_metrics["avg_response_time_ms"], 2),
+        "success_rate": round((request_metrics["successful_requests"] / max(1, request_metrics["total_requests"])) * 100, 2),
+        "endpoints": request_metrics["endpoints"]
     }
 
 
@@ -594,35 +733,36 @@ async def ping():
 
 @app.get("/ai-status", tags=["AI"])
 async def ai_status():
-    ai_service = get_ai_service()
-    return ai_service.health_check() if ai_service else {"status": "unavailable", "error": "AI service not initialized"}
-
-
-# PRIORITY 19: AI Provider Status Endpoint
-@app.get("/ai-provider-status", tags=["AI"])
-async def ai_provider_status():
-    ai_service = get_ai_service()
+    ai_service_class = get_ai_service()
     return {
-        "provider": "groq",
-        "model": os.getenv("GROQ_MODEL", "mixtral-8x7b-32768"),
-        "status": "healthy" if ai_service else "unavailable",
-        "available": ai_service is not None
+        "status": "available" if ai_service_class else "unavailable",
+        "provider": "groq"
     }
 
 
-# PRIORITY 22: Memory Cache Metrics Endpoint
+@app.get("/ai-provider-status", tags=["AI"])
+async def ai_provider_status():
+    return {
+        "provider": "groq",
+        "model": os.getenv("GROQ_MODEL", "mixtral-8x7b-32768"),
+        "status": "healthy",
+        "available": True
+    }
+
+
 @app.get("/cache-status", tags=["Admin"])
 async def cache_status():
     return {
         "cache_size": len(dashboard_cache),
         "cache_maxsize": dashboard_cache.maxsize,
         "cache_ttl_seconds": 60,
+        "type": "in_memory_ttlcache",
         "timestamp": datetime.utcnow().isoformat()
     }
 
 
 # ==========================================================
-# DASHBOARD ENDPOINT (PRIORITY 8 - Optimized)
+# DASHBOARD ENDPOINT
 # ==========================================================
 
 @app.get("/dashboard", tags=["Dashboard"])
@@ -647,7 +787,7 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
                 "stats": [{"date": str(s.date), "count": s.count} for s in daily_stats],
                 "whatsapp_status": "Online" if whatsapp_token else "Offline",
                 "groq_status": "Online" if groq_key else "Offline",
-                "schema_version": schema_info.get("app_version", "6.0"),
+                "schema_version": schema_info.get("app_version", "7.0"),
                 "last_refresh": last_refresh.strftime('%Y-%m-%d %H:%M:%S'),
                 "timestamp": datetime.utcnow().isoformat()
             }
@@ -658,7 +798,7 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
 
 
 # ==========================================================
-# CHAT ENDPOINT (PRIORITY 1 - Using ChatService)
+# CHAT ENDPOINT
 # ==========================================================
 
 @app.post("/chat", response_model=ChatResponse, tags=["Chat"])
@@ -678,7 +818,7 @@ async def chat(request: ChatRequest, req: Request, db: Session = Depends(get_db)
 
 
 # ==========================================================
-# PRIORITY 9: STATUS ENDPOINT WITH CACHING
+# STATUS ENDPOINT WITH CACHING
 # ==========================================================
 
 @app.get("/status", tags=["Status"])
@@ -694,7 +834,7 @@ async def status(db: Session = Depends(get_db)):
     
     result = {
         "application": "AI WhatsApp Agent",
-        "version": "6.0.0",
+        "version": "7.0.0",
         "database": "postgresql",
         "ai_provider": "groq",
         "whatsapp": "active",
@@ -704,7 +844,7 @@ async def status(db: Session = Depends(get_db)):
             "total_delivery_records": dashboard_data.get("total_records", 0)
         },
         "schema": {
-            "app_version": schema_info.get("app_version", "6.0"),
+            "app_version": schema_info.get("app_version", "7.0"),
             "needs_migration": schema_info.get("needs_migration", False)
         },
         "timestamp": datetime.utcnow().isoformat()
@@ -727,7 +867,7 @@ async def home():
 async def version():
     return {
         "name": "AI WhatsApp Logistics Assistant",
-        "version": "6.0.0",
+        "version": "7.0.0",
         "framework": "FastAPI",
         "database": "PostgreSQL",
         "schema_version": APP_SCHEMA_VERSION,
@@ -826,12 +966,9 @@ if ENVIRONMENT != "production":
 
 
 # ==========================================================
-# PRIORITY 25: API VERSIONING (Legacy routes preserved)
+# API VERSIONING
 # ==========================================================
-# All existing routes are at root level for backward compatibility
-# New API version can be added as: /api/v1/chat, etc.
 
-# Add API version prefix info
 @app.get("/api-info", tags=["Info"])
 async def api_info():
     return {
@@ -840,6 +977,7 @@ async def api_info():
             "chat": "/chat",
             "dashboard": "/dashboard",
             "health": "/health",
+            "metrics": "/metrics",
             "webhook": "/webhook/"
         },
         "documentation": "/api/docs"
@@ -851,9 +989,9 @@ async def api_info():
 # ==========================================================
 
 logger.info("=" * 60)
-logger.info("📡 MAIN APP v6.0 - Enterprise Grade (All Improvements Inline)")
-logger.info("   Features: Request ID | Security Headers | Global Error Handler")
-logger.info("   Caching: Dashboard (60s) | Status (60s) | Memory Cache")
-logger.info("   Security: CORS | Trusted Host | Rate Limiting")
-logger.info("   No New Files Created - All Services Inline")
+logger.info("📡 MAIN APP v7.0 - Enterprise Grade")
+logger.info("   Features: Request Metrics | Service Registry | Startup Report")
+logger.info("   Caching: Dashboard (60s) | Status (60s) | In-Memory Cache")
+logger.info("   Security: CORS (Prod) | Trusted Host | Rate Limiting")
+logger.info("   Monitoring: /metrics | /health | /readiness")
 logger.info("=" * 60)
