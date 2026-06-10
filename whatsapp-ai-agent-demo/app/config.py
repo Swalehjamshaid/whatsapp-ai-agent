@@ -3,6 +3,8 @@
 # PROJECT: AI WhatsApp Customer Service Agent
 # ==========================================================
 
+
+
 import os
 from dotenv import load_dotenv
 
@@ -644,6 +646,9 @@ print("✅ GROQ CONFIGURATION LOADED SUCCESSFULLY")
 print("   WhatsApp responses will use GROQ for fast AI replies")
 print("===================================")
 
+
+APP_VERSION = "2.0.0"
+ENVIRONMENT = os.getenv("ENVIRONMENT", "production")  # ADD THIS
 # ==========================================================
 # END FILE
 # ==========================================================
