@@ -1,6 +1,6 @@
 # ==========================================================
 # FILE: app/services/ai_provider_service.py
-# VERSION: 3.0
+# VERSION: 4.0
 # PURPOSE: Groq AI Layer - Summaries, Insights, Root Cause Analysis, Recommendations
 # ARCHITECTURE: ai_query_service → ai_provider_service → (Groq API | DeepSeek | OpenAI)
 # ==========================================================
@@ -8,31 +8,48 @@
 import os
 import json
 import asyncio
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, Union
 from datetime import datetime, timedelta
 from loguru import logger
 
 # ==========================================================
-# AI PROVIDER IMPORTS (Conditional)
+# AI PROVIDER IMPORTS (Conditional with Better Error Handling)
 # ==========================================================
 
 GROQ_AVAILABLE = False
 DEEPSEEK_AVAILABLE = False
 OPENAI_AVAILABLE = False
+GROQ_CLIENT = None
 
+# Log initialization start
+logger.info("=" * 60)
+logger.info("AI PROVIDER SERVICE - INITIALIZATION STARTING")
+logger.info("=" * 60)
+
+# Check environment variables
+logger.info(f"GROQ_API_KEY set: {bool(os.getenv('GROQ_API_KEY'))}")
+logger.info(f"OPENAI_API_KEY set: {bool(os.getenv('OPENAI_API_KEY'))}")
+logger.info(f"DEEPSEEK_API_KEY set: {bool(os.getenv('DEEPSEEK_API_KEY'))}")
+
+# Try Groq import
 try:
     from groq import Groq
     GROQ_AVAILABLE = True
-    logger.info("✅ Groq SDK loaded")
-except ImportError:
-    logger.warning("⚠️ Groq SDK not installed")
+    logger.info("✅ Groq SDK loaded successfully")
+except ImportError as e:
+    logger.warning(f"⚠️ Groq SDK not installed: {e}")
+except Exception as e:
+    logger.warning(f"⚠️ Groq import error: {e}")
 
+# Try OpenAI import
 try:
     from openai import OpenAI
     OPENAI_AVAILABLE = True
-    logger.info("✅ OpenAI SDK loaded")
-except ImportError:
-    logger.warning("⚠️ OpenAI SDK not installed")
+    logger.info("✅ OpenAI SDK loaded successfully")
+except ImportError as e:
+    logger.warning(f"⚠️ OpenAI SDK not installed: {e}")
+except Exception as e:
+    logger.warning(f"⚠️ OpenAI import error: {e}")
 
 # ==========================================================
 # AI PROVIDER CONFIGURATION
@@ -85,13 +102,20 @@ class AIProviderConfig:
 
 
 # ==========================================================
-# MAIN AI PROVIDER SERVICE
+# MAIN AI PROVIDER SERVICE (Enhanced Version)
 # ==========================================================
 
 class AIProviderService:
     """
     Groq AI Layer - Summaries, Insights, Root Cause Analysis, Recommendations
     Supports multiple AI providers with automatic fallback
+    
+    ENHANCEMENTS v4.0:
+    - Better error handling (never crashes)
+    - Graceful degradation when AI unavailable
+    - Improved initialization logging
+    - Async support
+    - Rate limit handling
     """
     
     def __init__(self):
@@ -99,6 +123,7 @@ class AIProviderService:
         self.client = None
         self.provider = None
         self.model = None
+        self._initialization_error = None
         
         # Initialize available provider
         self._initialize_provider()
@@ -107,59 +132,86 @@ class AIProviderService:
         self.conversation_history = {}
         self.max_history = 10
         
-        logger.info(f"AI Provider Service initialized with {self.provider or 'no provider'}")
+        # Request tracking for rate limiting
+        self._request_count = 0
+        self._last_request_time = None
+        
+        # Log final status
+        if self.provider:
+            logger.info(f"✅ AI Provider Service initialized with {self.provider}")
+            logger.info(f"   Model: {self.model}")
+        else:
+            logger.warning("⚠️ AI Provider Service initialized with NO provider (fallback mode only)")
+            if self._initialization_error:
+                logger.warning(f"   Error: {self._initialization_error}")
     
     def _initialize_provider(self):
-        """Initialize the first available AI provider"""
+        """Initialize the first available AI provider with better error handling"""
         
         # Try Groq first (primary)
-        if GROQ_AVAILABLE and os.getenv("GROQ_API_KEY"):
-            try:
-                self.client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-                self.provider = "groq"
-                self.model = self.config.GROQ_MODELS.get(
-                    os.getenv("GROQ_MODEL", "mixtral"),
-                    self.config.GROQ_MODELS["mixtral"]
-                )
-                logger.info(f"✅ Groq AI initialized with model: {self.model}")
-                return
-            except Exception as e:
-                logger.error(f"Failed to initialize Groq: {e}")
+        if GROQ_AVAILABLE:
+            api_key = os.getenv("GROQ_API_KEY")
+            if api_key:
+                try:
+                    self.client = Groq(api_key=api_key)
+                    self.provider = "groq"
+                    self.model = self.config.GROQ_MODELS.get(
+                        os.getenv("GROQ_MODEL", "mixtral"),
+                        self.config.GROQ_MODELS["mixtral"]
+                    )
+                    logger.info(f"✅ Groq AI initialized with model: {self.model}")
+                    return
+                except Exception as e:
+                    logger.error(f"Failed to initialize Groq: {e}")
+                    self._initialization_error = f"Groq: {str(e)[:100]}"
+            else:
+                logger.debug("GROQ_API_KEY not set, skipping Groq")
         
         # Try OpenAI as fallback
-        if OPENAI_AVAILABLE and os.getenv("OPENAI_API_KEY"):
-            try:
-                self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-                self.provider = "openai"
-                self.model = self.config.OPENAI_MODELS.get(
-                    os.getenv("OPENAI_MODEL", "gpt35"),
-                    self.config.OPENAI_MODELS["gpt35"]
-                )
-                logger.info(f"✅ OpenAI initialized with model: {self.model}")
-                return
-            except Exception as e:
-                logger.error(f"Failed to initialize OpenAI: {e}")
+        if OPENAI_AVAILABLE:
+            api_key = os.getenv("OPENAI_API_KEY")
+            if api_key:
+                try:
+                    self.client = OpenAI(api_key=api_key)
+                    self.provider = "openai"
+                    self.model = self.config.OPENAI_MODELS.get(
+                        os.getenv("OPENAI_MODEL", "gpt35"),
+                        self.config.OPENAI_MODELS["gpt35"]
+                    )
+                    logger.info(f"✅ OpenAI initialized with model: {self.model}")
+                    return
+                except Exception as e:
+                    logger.error(f"Failed to initialize OpenAI: {e}")
+                    if not self._initialization_error:
+                        self._initialization_error = f"OpenAI: {str(e)[:100]}"
+            else:
+                logger.debug("OPENAI_API_KEY not set, skipping OpenAI")
         
         # Try DeepSeek as fallback
-        if DEEPSEEK_AVAILABLE and os.getenv("DEEPSEEK_API_KEY"):
-            try:
-                # DeepSeek uses OpenAI-compatible API
-                self.client = OpenAI(
-                    api_key=os.getenv("DEEPSEEK_API_KEY"),
-                    base_url="https://api.deepseek.com/v1"
-                )
-                self.provider = "deepseek"
-                self.model = self.config.DEEPSEEK_MODELS["deepseek"]
-                logger.info(f"✅ DeepSeek initialized with model: {self.model}")
-                return
-            except Exception as e:
-                logger.error(f"Failed to initialize DeepSeek: {e}")
+        if OPENAI_AVAILABLE:  # DeepSeek uses OpenAI-compatible API
+            api_key = os.getenv("DEEPSEEK_API_KEY")
+            if api_key:
+                try:
+                    self.client = OpenAI(
+                        api_key=api_key,
+                        base_url="https://api.deepseek.com/v1"
+                    )
+                    self.provider = "deepseek"
+                    self.model = self.config.DEEPSEEK_MODELS["deepseek"]
+                    logger.info(f"✅ DeepSeek initialized with model: {self.model}")
+                    return
+                except Exception as e:
+                    logger.error(f"Failed to initialize DeepSeek: {e}")
+                    if not self._initialization_error:
+                        self._initialization_error = f"DeepSeek: {str(e)[:100]}"
+            else:
+                logger.debug("DEEPSEEK_API_KEY not set, skipping DeepSeek")
         
-        # No provider available
+        # No provider available - service will use fallback responses
         self.client = None
         self.provider = None
         self.model = None
-        logger.error("❌ No AI provider available! Please set GROQ_API_KEY, OPENAI_API_KEY, or DEEPSEEK_API_KEY")
+        logger.warning("❌ No AI provider available! Service will use fallback responses.")
     
     def _get_conversation_context(self, user_id: str) -> List[Dict]:
         """Get conversation history for a user"""
@@ -176,6 +228,25 @@ class AIProviderService:
         if len(history) > self.max_history * 2:
             self.conversation_history[user_id] = history[-self.max_history * 2:]
     
+    def _check_rate_limit(self) -> bool:
+        """Simple rate limiting to avoid hitting API limits"""
+        import time
+        
+        current_time = time.time()
+        
+        # Reset counter if more than 60 seconds have passed
+        if self._last_request_time and (current_time - self._last_request_time) > 60:
+            self._request_count = 0
+        
+        # Check if over limit (30 requests per minute max)
+        if self._request_count >= 30:
+            logger.warning("Rate limit reached, using fallback response")
+            return False
+        
+        self._request_count += 1
+        self._last_request_time = current_time
+        return True
+    
     def _call_ai(self, messages: List[Dict], temperature: float = None, max_tokens: int = None) -> str:
         """
         Call AI provider with messages
@@ -188,8 +259,13 @@ class AIProviderService:
         Returns:
             AI response text
         """
-        if not self.client:
+        # Check if AI is available
+        if not self.client or not self.provider:
             return self._fallback_response("AI service is not configured")
+        
+        # Check rate limit
+        if not self._check_rate_limit():
+            return self._fallback_response("Rate limit reached")
         
         temp = temperature or self.config.DEFAULT_TEMPERATURE
         tokens = max_tokens or self.config.DEFAULT_MAX_TOKENS
@@ -200,7 +276,8 @@ class AIProviderService:
                     model=self.model,
                     messages=messages,
                     temperature=temp,
-                    max_tokens=tokens
+                    max_tokens=tokens,
+                    timeout=self.config.DEFAULT_TIMEOUT
                 )
                 return response.choices[0].message.content
             
@@ -209,7 +286,8 @@ class AIProviderService:
                     model=self.model,
                     messages=messages,
                     temperature=temp,
-                    max_tokens=tokens
+                    max_tokens=tokens,
+                    timeout=self.config.DEFAULT_TIMEOUT
                 )
                 return response.choices[0].message.content
             
@@ -218,12 +296,12 @@ class AIProviderService:
                 
         except Exception as e:
             logger.error(f"AI call failed: {e}")
-            return self._fallback_response(f"AI service error: {str(e)[:100]}")
+            return self._fallback_response(f"AI service error")
     
     def _fallback_response(self, error_msg: str = None) -> str:
         """Fallback response when AI is unavailable"""
         if error_msg:
-            logger.warning(f"Using fallback response due to: {error_msg}")
+            logger.debug(f"Using fallback response due to: {error_msg}")
         
         return """I'm here to help with logistics insights! Currently, I can help you with:
 
@@ -293,10 +371,14 @@ What would you like to know about your logistics operations?"""
         """
         logger.info("Generating executive summary")
         
+        # If no AI, provide smart fallback
+        if not self.client:
+            return self._generate_smart_executive_summary(data)
+        
         prompt = f"""Based on the following logistics performance data, create a concise executive summary (2-3 paragraphs):
 
 Performance Data:
-{json.dumps(data, indent=2, default=str)}
+{json.dumps(data, indent=2, default=str)[:2000]}
 
 Focus on:
 1. Overall performance score and trend
@@ -313,22 +395,41 @@ Format: Professional, business-focused, actionable."""
         
         return self._call_ai(messages, temperature=0.3, max_tokens=800)
     
+    def _generate_smart_executive_summary(self, data: Dict) -> str:
+        """Generate smart fallback executive summary without AI"""
+        summary_parts = []
+        
+        # Extract key metrics if available
+        if isinstance(data, dict):
+            overall_score = data.get('overall_score', data.get('executive_summary', {}).get('overall_score', 'N/A'))
+            pod_score = data.get('pod_score', data.get('pod_performance', {}).get('overall_score', 'N/A'))
+            
+            if overall_score != 'N/A':
+                summary_parts.append(f"📊 Overall Performance Score: {overall_score}%")
+            if pod_score != 'N/A':
+                summary_parts.append(f"📋 POD Performance: {pod_score}%")
+        
+        if summary_parts:
+            return "📈 *Executive Summary*\n━━━━━━━━━━━━━━━━━━━━━\n\n" + "\n".join(summary_parts) + "\n\nAnalysis available with AI service enabled."
+        
+        return "Executive summary data is being prepared. Please check back shortly or enable AI service for detailed insights."
+    
     def generate_dn_summary(self, dn_data: Dict[str, Any]) -> str:
-        """
-        Generate summary for a DN (Delivery Note)
-        
-        Args:
-            dn_data: DN intelligence data
-        
-        Returns:
-            DN summary text
-        """
+        """Generate summary for a DN (Delivery Note)"""
         logger.info(f"Generating DN summary for {dn_data.get('dn_number')}")
+        
+        if not self.client:
+            # Smart fallback
+            dn_number = dn_data.get('dn_number', 'Unknown')
+            status = dn_data.get('status', 'Unknown')
+            aging = dn_data.get('aging_days', 0)
+            
+            return f"📦 *DN {dn_number}*\n━━━━━━━━━━━━━━━━━━━━━\n\nStatus: {status}\nAging: {aging} days\n\nFor detailed analysis, AI service is being configured."
         
         prompt = f"""Create a clear summary for this Delivery Note:
 
 DN Details:
-{json.dumps(dn_data, indent=2, default=str)}
+{json.dumps(dn_data, indent=2, default=str)[:1500]}
 
 Provide:
 1. Current status (in simple terms)
@@ -346,21 +447,20 @@ Keep it concise (3-4 sentences)."""
         return self._call_ai(messages, temperature=0.4, max_tokens=300)
     
     def generate_dealer_summary(self, dealer_data: Dict[str, Any]) -> str:
-        """
-        Generate summary for dealer performance
-        
-        Args:
-            dealer_data: Dealer performance data
-        
-        Returns:
-            Dealer summary text
-        """
+        """Generate summary for dealer performance"""
         logger.info(f"Generating dealer summary for {dealer_data.get('dealer_name')}")
+        
+        if not self.client:
+            dealer_name = dealer_data.get('dealer_name', 'Unknown')
+            total_dns = dealer_data.get('total_dns', 0)
+            pending = dealer_data.get('pending_count', 0)
+            
+            return f"🏪 *Dealer: {dealer_name}*\n━━━━━━━━━━━━━━━━━━━━━\n\nTotal DNs: {total_dns}\nPending: {pending}\n\nDetailed analysis available with AI service."
         
         prompt = f"""Summarize this dealer's performance:
 
 Dealer Data:
-{json.dumps(dealer_data, indent=2, default=str)}
+{json.dumps(dealer_data, indent=2, default=str)[:1500]}
 
 Include:
 1. Overall performance rating (Excellent/Good/Needs Improvement/Critical)
@@ -378,21 +478,19 @@ Be specific and data-driven."""
         return self._call_ai(messages, temperature=0.4, max_tokens=400)
     
     def generate_warehouse_summary(self, warehouse_data: Dict[str, Any]) -> str:
-        """
-        Generate summary for warehouse status
-        
-        Args:
-            warehouse_data: Warehouse performance data
-        
-        Returns:
-            Warehouse summary text
-        """
+        """Generate summary for warehouse status"""
         logger.info(f"Generating warehouse summary for {warehouse_data.get('warehouse_name')}")
+        
+        if not self.client:
+            warehouse_name = warehouse_data.get('warehouse_name', 'Unknown')
+            capacity = warehouse_data.get('capacity_percentage', 0)
+            
+            return f"🏭 *Warehouse: {warehouse_name}*\n━━━━━━━━━━━━━━━━━━━━━\n\nCapacity Utilization: {capacity}%\n\nDetailed analysis available with AI service."
         
         prompt = f"""Summarize this warehouse's performance:
 
 Warehouse Data:
-{json.dumps(warehouse_data, indent=2, default=str)}
+{json.dumps(warehouse_data, indent=2, default=str)[:1500]}
 
 Include:
 1. Capacity status (Utilization percentage)
@@ -410,21 +508,13 @@ Keep it actionable."""
         return self._call_ai(messages, temperature=0.4, max_tokens=400)
     
     def generate_region_summary(self, region_data: Dict[str, Any]) -> str:
-        """
-        Generate summary for region performance
-        
-        Args:
-            region_data: Region performance data
-        
-        Returns:
-            Region summary text
-        """
+        """Generate summary for region performance"""
         logger.info(f"Generating region summary for {region_data.get('region_name')}")
         
         prompt = f"""Summarize this region's performance:
 
 Region Data:
-{json.dumps(region_data, indent=2, default=str)}
+{json.dumps(region_data, indent=2, default=str)[:1500]}
 
 Include:
 1. Overall ranking among regions
@@ -456,10 +546,13 @@ Include:
         """
         logger.info(f"Generating root cause analysis for {metric}")
         
+        if not self.client:
+            return f"📊 *Root Cause Analysis: {metric}*\n━━━━━━━━━━━━━━━━━━━━━\n\nAI service is being configured. For detailed root cause analysis, please check back shortly."
+        
         prompt = f"""Perform root cause analysis for {metric} issue:
 
 Data:
-{json.dumps(data, indent=2, default=str)}
+{json.dumps(data, indent=2, default=str)[:1500]}
 
 Identify:
 1. Primary root causes (2-3)
@@ -489,13 +582,16 @@ Be specific and data-driven. Format as bullet points."""
         """
         logger.info(f"Generating recommendations for {len(issues)} issues")
         
+        if not self.client:
+            return "💡 *Recommendations*\n━━━━━━━━━━━━━━━━━━━━━\n\n1. Review pending deliveries\n2. Follow up on aging PODs\n3. Optimize warehouse dispatch\n\nDetailed recommendations available with AI service."
+        
         prompt = f"""Based on these identified issues:
 
 Issues:
-{json.dumps(issues, indent=2)}
+{json.dumps(issues, indent=2)[:500]}
 
 Supporting Data:
-{json.dumps(data, indent=2, default=str)}
+{json.dumps(data, indent=2, default=str)[:1000]}
 
 Provide actionable recommendations:
 1. Immediate actions (next 24-48 hours)
@@ -513,25 +609,19 @@ Prioritize by impact and ease of implementation."""
         return self._call_ai(messages, temperature=0.5, max_tokens=800)
     
     def generate_risk_analysis(self, alerts: List[Dict[str, Any]], kpis: Dict[str, Any]) -> str:
-        """
-        Generate risk analysis based on alerts and KPIs
-        
-        Args:
-            alerts: List of risk alerts
-            kpis: Current KPI data
-        
-        Returns:
-            Risk analysis report
-        """
+        """Generate risk analysis based on alerts and KPIs"""
         logger.info(f"Generating risk analysis for {len(alerts)} alerts")
+        
+        if not self.client:
+            return "⚠️ *Risk Analysis*\n━━━━━━━━━━━━━━━━━━━━━\n\nActive alerts detected. AI service is being configured for detailed risk assessment."
         
         prompt = f"""Perform risk analysis based on:
 
 Active Alerts:
-{json.dumps(alerts, indent=2)}
+{json.dumps(alerts, indent=2)[:1000]}
 
 Current KPIs:
-{json.dumps(kpis, indent=2, default=str)}
+{json.dumps(kpis, indent=2, default=str)[:1000]}
 
 Provide:
 1. Overall risk assessment (Low/Medium/High/Critical)
@@ -550,21 +640,13 @@ Be specific and actionable."""
         return self._call_ai(messages, temperature=0.4, max_tokens=700)
     
     def generate_trend_explanation(self, trend_data: Dict[str, Any]) -> str:
-        """
-        Explain trends in performance data
-        
-        Args:
-            trend_data: Trend analysis data
-        
-        Returns:
-            Trend explanation
-        """
+        """Explain trends in performance data"""
         logger.info("Generating trend explanation")
         
         prompt = f"""Explain these performance trends:
 
 Trend Data:
-{json.dumps(trend_data, indent=2, default=str)}
+{json.dumps(trend_data, indent=2, default=str)[:1500]}
 
 Explain:
 1. What the trends indicate (improving, declining, stable)
@@ -581,21 +663,41 @@ Keep it insightful and actionable."""
         
         return self._call_ai(messages, temperature=0.4, max_tokens=500)
     
+    def generate_predictive_analysis(self, question: str, context: Dict[str, Any]) -> str:
+        """Generate predictive analysis for future outcomes"""
+        logger.info("Generating predictive analysis")
+        
+        if not self.client:
+            return "🔮 *Predictive Analysis*\n━━━━━━━━━━━━━━━━━━━━━\n\nAI service is being configured for predictive analytics. Please check back shortly."
+        
+        prompt = f"""Based on the following context, provide a predictive analysis:
+
+Question: {question}
+
+Context:
+{json.dumps(context, indent=2, default=str)[:1500]}
+
+Provide:
+1. Short-term forecast (next 7 days)
+2. Medium-term forecast (next 30 days)
+3. Key risk factors
+4. Recommended actions
+
+Be specific and data-driven."""
+        
+        messages = [
+            {"role": "system", "content": self.config.SYSTEM_PROMPTS["technical"]},
+            {"role": "user", "content": prompt}
+        ]
+        
+        return self._call_ai(messages, temperature=0.5, max_tokens=700)
+    
     # ==========================================================
     # QUESTION ANSWERING METHODS
     # ==========================================================
     
     def answer_question(self, question: str, context: Dict[str, Any]) -> str:
-        """
-        Answer specific questions with context
-        
-        Args:
-            question: User's question
-            context: Relevant data context
-        
-        Returns:
-            Answer to the question
-        """
+        """Answer specific questions with context"""
         logger.info(f"Answering question: {question[:100]}")
         
         prompt = f"""Answer the following question based on the provided data:
@@ -603,7 +705,7 @@ Keep it insightful and actionable."""
 Question: {question}
 
 Data Context:
-{json.dumps(context, indent=2, default=str)}
+{json.dumps(context, indent=2, default=str)[:1500]}
 
 Guidelines:
 1. Be specific and data-driven
@@ -619,18 +721,7 @@ Guidelines:
         return self._call_ai(messages, temperature=0.3, max_tokens=400)
     
     def explain_kpi(self, kpi_name: str, current_value: float, target: float, trend: str) -> str:
-        """
-        Explain a KPI and its significance
-        
-        Args:
-            kpi_name: Name of the KPI
-            current_value: Current value
-            target: Target value
-            trend: Trend direction
-        
-        Returns:
-            KPI explanation
-        """
+        """Explain a KPI and its significance"""
         logger.info(f"Explaining KPI: {kpi_name}")
         
         prompt = f"""Explain this KPI:
@@ -657,19 +748,7 @@ Keep it clear and educational."""
     
     def explain_performance(self, metric: str, actual: float, target: float, 
                            benchmark: float = None, region: str = None) -> str:
-        """
-        Explain performance of a specific metric
-        
-        Args:
-            metric: Metric name
-            actual: Actual value
-            target: Target value
-            benchmark: Benchmark value (optional)
-            region: Region name (optional)
-        
-        Returns:
-            Performance explanation
-        """
+        """Explain performance of a specific metric"""
         logger.info(f"Explaining performance for {metric}")
         
         benchmark_text = f"Benchmark: {benchmark}" if benchmark else "No benchmark available"
@@ -701,15 +780,7 @@ Provide:
     # ==========================================================
     
     def generate_comprehensive_insights(self, dashboard_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Generate comprehensive insights from dashboard data
-        
-        Args:
-            dashboard_data: Complete dashboard data
-        
-        Returns:
-            Dictionary with multiple insight types
-        """
+        """Generate comprehensive insights from dashboard data"""
         logger.info("Generating comprehensive insights")
         
         insights = {
@@ -720,14 +791,11 @@ Provide:
             "trend_analysis": ""
         }
         
-        # Extract key findings
-        pod_score = dashboard_data.get('executive_summary', {}).get('pod_score', 0)
-        if pod_score < 85:
-            insights["key_findings"].append(f"POD performance at {pod_score}% - below target")
-        
-        # Generate recommendations based on scores
-        if pod_score < 90:
-            insights["recommendations"].append("Focus on improving POD collection process")
+        # Extract key findings from data if available
+        if isinstance(dashboard_data, dict):
+            pod_score = dashboard_data.get('executive_summary', {}).get('pod_score', 100)
+            if pod_score < 85:
+                insights["key_findings"].append(f"POD performance at {pod_score}% - below target")
         
         # Add trend analysis
         insights["trend_analysis"] = self.generate_trend_explanation(
@@ -741,16 +809,7 @@ Provide:
     # ==========================================================
     
     async def stream_chat(self, message: str, user_id: str = "guest"):
-        """
-        Stream chat response token by token
-        
-        Args:
-            message: User message
-            user_id: User identifier
-        
-        Yields:
-            Response tokens
-        """
+        """Stream chat response token by token"""
         if not self.client or self.provider != "groq":
             yield self._fallback_response()
             return
@@ -772,7 +831,8 @@ Provide:
                 messages=messages,
                 temperature=self.config.DEFAULT_TEMPERATURE,
                 max_tokens=self.config.DEFAULT_MAX_TOKENS,
-                stream=True
+                stream=True,
+                timeout=self.config.DEFAULT_TIMEOUT
             )
             
             full_response = ""
@@ -798,7 +858,7 @@ Provide:
         """Check AI provider health and configuration"""
         return {
             "service": "ai_provider",
-            "version": "3.0",
+            "version": "4.0",
             "provider": self.provider,
             "model": self.model,
             "configured": self.client is not None,
@@ -809,7 +869,9 @@ Provide:
                 os.getenv("GROQ_API_KEY") or 
                 os.getenv("OPENAI_API_KEY") or 
                 os.getenv("DEEPSEEK_API_KEY")
-            )
+            ),
+            "initialization_error": self._initialization_error,
+            "rate_limit_remaining": 30 - self._request_count
         }
     
     def clear_history(self, user_id: str):
@@ -885,9 +947,21 @@ def answer_question(question: str, context: Dict[str, Any]) -> str:
 # INITIALIZATION LOG
 # ==========================================================
 
-logger.info("=" * 60)
-logger.info("🤖 AI Provider Service v3.0 Loaded - Groq AI Layer")
-logger.info(f"   Provider: {get_ai_provider().provider or 'None'}")
-logger.info(f"   Model: {get_ai_provider().model or 'N/A'}")
-logger.info("   Features: Summaries | Insights | Root Cause | Recommendations | Risk Analysis")
-logger.info("=" * 60)
+# Get provider instance for logging
+try:
+    _test_provider = get_ai_provider()
+    logger.info("=" * 60)
+    logger.info("🤖 AI Provider Service v4.0 Loaded")
+    logger.info(f"   Provider: {_test_provider.provider or 'None (Fallback Mode)'}")
+    logger.info(f"   Model: {_test_provider.model or 'N/A'}")
+    logger.info(f"   Configured: {_test_provider.client is not None}")
+    logger.info("   Features: Summaries | Insights | Root Cause | Recommendations | Risk Analysis")
+    logger.info("   Fallback: Smart responses when AI unavailable")
+    logger.info("=" * 60)
+except Exception as e:
+    logger.warning(f"AI Provider Service loaded with issues: {e}")
+    logger.info("=" * 60)
+    logger.info("🤖 AI Provider Service v4.0 Loaded (Fallback Mode Only)")
+    logger.info("   No AI provider configured - using smart fallback responses")
+    logger.info("   Set GROQ_API_KEY, OPENAI_API_KEY, or DEEPSEEK_API_KEY to enable AI")
+    logger.info("=" * 60)
