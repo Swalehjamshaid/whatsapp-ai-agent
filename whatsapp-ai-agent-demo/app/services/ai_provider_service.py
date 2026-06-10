@@ -1,5 +1,5 @@
 # ==========================================================
-# FILE: app/services/ai_provider_service.py (ENTERPRISE v5.0)
+# FILE: app/services/ai_provider_service.py (ENTERPRISE v5.1 - FIXED)
 # ==========================================================
 # PURPOSE: Groq AI Layer - Chat, Insights, Analysis
 # ARCHITECTURE: ai_query_service → ai_provider_service → Groq API
@@ -16,7 +16,6 @@ from cachetools import TTLCache
 # CRITICAL IMPROVEMENT 1: Remove OpenAI completely
 try:
     from groq import Groq
-    from groq import APIError, APIConnectionError, RateLimitError, APIStatusError
     GROQ_AVAILABLE = True
     logger.info("✅ Groq SDK loaded successfully")
 except ImportError as e:
@@ -120,7 +119,7 @@ class AIProviderService:
         # Initialize provider
         self._initialize_provider()
         
-        logger.info(f"AI Provider Service v5.0 initialized with {self.provider}")
+        logger.info(f"AI Provider Service v5.1 initialized with {self.provider}")
         if self.model:
             logger.info(f"   Model: {self.model}")
         logger.info(f"   Cache: {MAX_CACHE_SIZE} responses, {CACHE_TTL}s TTL")
@@ -130,7 +129,7 @@ class AIProviderService:
         """Initialize Groq AI provider with validation."""
         
         # CRITICAL IMPROVEMENT 2: Use config instead of os.getenv
-        api_key = config.GROQ_API_KEY
+        api_key = getattr(config, 'GROQ_API_KEY', None)
         
         if not GROQ_AVAILABLE:
             self._initialization_error = "Groq SDK not installed"
@@ -235,16 +234,17 @@ class AIProviderService:
             error_type = type(e).__name__
             
             # CRITICAL IMPROVEMENT 8: Better error categorization
-            if "timeout" in str(e).lower() or "timed out" in str(e).lower():
+            error_msg_lower = str(e).lower()
+            if "timeout" in error_msg_lower or "timed out" in error_msg_lower:
                 error_msg = "Groq API timeout"
                 logger.error(f"[{req_id}] {error_msg}: {e}")
-            elif "rate_limit" in str(e).lower() or "too many requests" in str(e).lower():
+            elif "rate_limit" in error_msg_lower or "too many requests" in error_msg_lower:
                 error_msg = "Groq rate limit exceeded"
                 logger.warning(f"[{req_id}] {error_msg}: {e}")
-            elif "authentication" in str(e).lower() or "api_key" in str(e).lower():
+            elif "authentication" in error_msg_lower or "api_key" in error_msg_lower:
                 error_msg = "Groq authentication failed"
                 logger.error(f"[{req_id}] {error_msg}: {e}")
-            elif "connection" in str(e).lower():
+            elif "connection" in error_msg_lower:
                 error_msg = "Groq connection error"
                 logger.error(f"[{req_id}] {error_msg}: {e}")
             else:
@@ -495,7 +495,7 @@ Provide:
         """
         result = {
             "service": "ai_provider",
-            "version": "5.0",
+            "version": "5.1",
             "provider": self.provider,
             "model": self.model,
             "configured": self.client is not None,
@@ -622,7 +622,7 @@ def clear_ai_cache() -> Dict[str, Any]:
 try:
     _test_provider = get_ai_provider()
     logger.info("=" * 60)
-    logger.info("🤖 AI Provider Service v5.0 - Groq Only")
+    logger.info("🤖 AI Provider Service v5.1 - Groq Only")
     logger.info(f"   Provider: {_test_provider.provider or 'None'}")
     logger.info(f"   Model: {_test_provider.model or 'N/A'}")
     logger.info(f"   Configured: {_test_provider.client is not None}")
@@ -632,6 +632,6 @@ try:
 except Exception as e:
     logger.warning(f"AI Provider Service loaded with issues: {e}")
     logger.info("=" * 60)
-    logger.info("🤖 AI Provider Service v5.0 - Fallback Mode Only")
+    logger.info("🤖 AI Provider Service v5.1 - Fallback Mode Only")
     logger.info("   Set GROQ_API_KEY in environment to enable AI")
     logger.info("=" * 60)
