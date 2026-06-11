@@ -1,15 +1,16 @@
 # ==========================================================
-# FILE: app/services/ai_query_service.py (IMPROVED v42.0 - AI-FIRST ARCHITECTURE)
+# FILE: app/services/ai_query_service.py (IMPROVED v43.0 - DEALER INTELLIGENCE)
 # ==========================================================
 # PURPOSE: INTELLIGENT ORCHESTRATOR - Never Fail, Always Answer
 #
-# CORE PRINCIPLES v42.0:
+# CORE PRINCIPLES v43.0:
 # - AI-FIRST FALLBACK: Always try AI before showing errors
 # - NO "FEATURE UNDER DEVELOPMENT": Never show this to users
 # - UNIVERSAL AI MODE: All intents can use AI understanding
 # - SERVICE ISOLATION: Service failures never break the bot
 # - CONVERSATION MEMORY: Context-aware responses
 # - SELF-HEALING: Graceful degradation
+# - DEALER INTELLIGENCE: Full dealer analytics support
 # ==========================================================
 
 from __future__ import annotations
@@ -115,11 +116,10 @@ class ConversationMemory:
         """Add a question-answer exchange to history"""
         self.conversation_history.append({
             "question": question,
-            "response": response[:200],  # Truncate for memory efficiency
+            "response": response[:200],
             "intent": intent,
             "timestamp": datetime.now().isoformat()
         })
-        # Keep only last 10 exchanges
         if len(self.conversation_history) > 10:
             self.conversation_history = self.conversation_history[-10:]
         self.last_question = question
@@ -134,7 +134,7 @@ class ConversationMemory:
             return ""
         
         summary = f"Previous interactions ({len(self.conversation_history)} exchanges):\n"
-        for i, exchange in enumerate(self.conversation_history[-3:], 1):  # Last 3 exchanges
+        for i, exchange in enumerate(self.conversation_history[-3:], 1):
             summary += f"{i}. User: {exchange['question'][:100]}\n"
         return summary
 
@@ -176,7 +176,6 @@ class LRUContextManager:
         memory = self.get_memory(user_id)
         memory.add_exchange(question, response, intent)
         
-        # Update entity memory
         if entities.dn_number:
             memory.last_dn = entities.dn_number
         if entities.city:
@@ -199,13 +198,14 @@ class LRUContextManager:
 
 
 # ==========================================================
-# INTENT TYPES
+# INTENT TYPES (Enhanced with Dealer Intents)
 # ==========================================================
 
 class Intent(str, Enum):
     # DN Operations
     DN_LOOKUP = "dn_lookup"
     DN_TIMELINE = "dn_timeline"
+    DN_DETAIL = "dn_detail"
     
     # POD Operations
     PENDING_POD = "pending_pod"
@@ -216,12 +216,27 @@ class Intent(str, Enum):
     # Delivery Operations
     PENDING_DELIVERIES = "pending_deliveries"
     
-    # Dealer Operations
+    # Dealer Operations (Enhanced)
     DEALER_PERFORMANCE = "dealer_performance"
     TOP_DEALERS = "top_dealers"
+    BOTTOM_DEALERS = "bottom_dealers"
+    DEALER_PROFILE = "dealer_profile"
+    DEALER_COMPLETE_PROFILE = "dealer_complete_profile"
+    DEALER_DN_ANALYSIS = "dealer_dn_analysis"
+    DEALER_PRODUCTS = "dealer_products"
+    DEALER_REVENUE = "dealer_revenue"
+    DEALER_WAREHOUSE = "dealer_warehouse"
+    DEALER_CITY = "dealer_city"
+    DEALER_MANAGER = "dealer_manager"
+    DEALER_COMPARE = "dealer_compare"
+    DEALER_HEALTH = "dealer_health"
+    DEALER_EXECUTIVE = "dealer_executive"
+    DEALER_RISK = "dealer_risk"
     
     # Warehouse Operations
     TOP_WAREHOUSES = "top_warehouses"
+    WAREHOUSE_PERFORMANCE = "warehouse_performance"
+    WAREHOUSE_DELAYS = "warehouse_delays"
     
     # KPI Operations
     EXECUTIVE_DASHBOARD = "executive_dashboard"
@@ -229,7 +244,20 @@ class Intent(str, Enum):
     CRITICAL_DELAYS = "critical_delays"
     CONTROL_TOWER = "control_tower"
     
-    # AI/General (All routed to AI)
+    # City Intelligence
+    CITY_PERFORMANCE = "city_performance"
+    CITY_COMPARISON = "city_comparison"
+    
+    # Region Intelligence
+    REGION_PERFORMANCE = "region_performance"
+    REGION_RANKING = "region_ranking"
+    
+    # Aging Analysis
+    DELIVERY_AGING = "delivery_aging"
+    POD_AGING = "pod_aging"
+    PENDING_AGING = "pending_aging"
+    
+    # AI/General
     HELP = "help"
     GREETING = "greeting"
     GENERAL = "general"
@@ -242,11 +270,12 @@ class QueryClass(str, Enum):
     OPERATIONAL = "operational"
     ANALYTICAL = "analytical"
     EXECUTIVE = "executive"
+    DEALER = "dealer"
     AI = "ai"
 
 
 # ==========================================================
-# ENTITY EXTRACTION (Enhanced)
+# ENTITY EXTRACTION (Enhanced with Dealer Patterns)
 # ==========================================================
 
 @dataclass
@@ -254,6 +283,7 @@ class ExtractedEntities:
     dn_number: Optional[str] = None
     dealer: Optional[str] = None
     dealer_code: Optional[str] = None
+    dealer2: Optional[str] = None  # For comparison
     customer: Optional[str] = None
     customer_code: Optional[str] = None
     warehouse: Optional[str] = None
@@ -272,6 +302,7 @@ class ExtractedEntities:
     last_dn: Optional[str] = None
     last_dealer: Optional[str] = None
     last_city: Optional[str] = None
+    compare_mode: bool = False
     
     def to_dict(self) -> Dict:
         return {k: v for k, v in self.__dict__.items() if v is not None}
@@ -291,6 +322,9 @@ class EntityExtractor:
     WAREHOUSE_CODE_PATTERN = re.compile(r'warehouse[-_]?code[:\s]*([A-Z0-9]+)', re.IGNORECASE)
     MATERIAL_PATTERN = re.compile(r'material[-_]?no[:\s]*([A-Z0-9-]+)', re.IGNORECASE)
     
+    # Dealer comparison pattern
+    COMPARE_PATTERN = re.compile(r'compare\s+([\w\s]+?)\s+(?:vs|and|with)\s+([\w\s]+)', re.IGNORECASE)
+    
     CITIES = [
         'karachi', 'lahore', 'islamabad', 'rawalpindi', 'faisalabad', 
         'multan', 'peshawar', 'quetta', 'gujranwala', 'sialkot',
@@ -308,7 +342,6 @@ class EntityExtractor:
             entities.last_dealer = context.get("last_dealer")
             entities.last_city = context.get("last_city")
         
-        # Use memory for fallback entities
         if memory:
             if not entities.last_dn and memory.last_dn:
                 entities.last_dn = memory.last_dn
@@ -316,6 +349,13 @@ class EntityExtractor:
                 entities.last_dealer = memory.last_dealer
             if not entities.last_city and memory.last_city:
                 entities.last_city = memory.last_city
+        
+        # Check for dealer comparison
+        compare_match = cls.COMPARE_PATTERN.search(question)
+        if compare_match:
+            entities.dealer = compare_match.group(1).strip()
+            entities.dealer2 = compare_match.group(2).strip()
+            entities.compare_mode = True
         
         dn_match = cls.DN_PATTERN.search(question)
         if dn_match:
@@ -361,19 +401,22 @@ class EntityExtractor:
             entities.warehouse = warehouse_match.group(1).strip()
         
         dealer_patterns = [
-            r'dealer\s+([A-Za-z0-9\s]+?)(?:\s+$|\.|\,|performance|dashboard|details|risk)',
+            r'dealer\s+([A-Za-z0-9\s]+?)(?:\s+$|\.|\,|performance|dashboard|details|risk|profile|analysis)',
             r'show\s+dealer\s+([A-Za-z0-9\s]+?)(?:\s+$|\.|\,)',
-            r'for\s+dealer\s+([A-Za-z0-9\s]+?)(?:\s+$|\.|\,)'
+            r'for\s+dealer\s+([A-Za-z0-9\s]+?)(?:\s+$|\.|\,)',
+            r'about\s+dealer\s+([A-Za-z0-9\s]+?)(?:\s+$|\.|\,)',
+            r'analyze\s+dealer\s+([A-Za-z0-9\s]+?)(?:\s+$|\.|\,)'
         ]
         
-        for pattern in dealer_patterns:
-            match = re.search(pattern, question_lower)
-            if match:
-                entities.dealer = match.group(1).strip()
-                break
-        else:
-            if entities.last_dealer and not entities.dealer:
-                entities.dealer = entities.last_dealer
+        if not entities.dealer:
+            for pattern in dealer_patterns:
+                match = re.search(pattern, question_lower)
+                if match:
+                    entities.dealer = match.group(1).strip()
+                    break
+            else:
+                if entities.last_dealer and not entities.dealer:
+                    entities.dealer = entities.last_dealer
         
         division_match = re.search(r'division\s+([A-Za-z0-9\s]+?)(?:\s+$|\.|\,)', question_lower)
         if division_match:
@@ -391,29 +434,56 @@ class EntityExtractor:
 
 
 # ==========================================================
-# INTENT DETECTION (With Confidence Scoring)
+# INTENT DETECTION (Enhanced with Dealer Intents)
 # ==========================================================
 
 class IntentDetector:
     KEYWORD_GROUPS = {
         Intent.DN_TIMELINE: ['timeline', 'journey', 'history', 'track', 'progress', 'status history'],
+        Intent.DN_DETAIL: ['detail', 'details', 'information', 'show dn', 'dn detail'],
         Intent.PENDING_POD: ['pending pod', 'pod pending', 'missing pod', 'pod not received', 'pending proof'],
         Intent.PENDING_PGI: ['pending pgi', 'pgi pending', 'pending dispatch', 'not dispatched'],
         Intent.PENDING_DELIVERIES: ['pending delivery', 'delivery pending', 'undelivered'],
-        Intent.DEALER_PERFORMANCE: ['dealer performance', 'dealer metrics', 'dealer score', 'how is dealer'],
+        Intent.DEALER_PERFORMANCE: ['dealer performance', 'dealer metrics', 'dealer score', 'how is dealer', 'dealer analysis'],
         Intent.TOP_DEALERS: ['top dealer', 'best dealer', 'dealer ranking', 'top performing', 'leading dealer'],
+        Intent.BOTTOM_DEALERS: ['bottom dealer', 'worst dealer', 'problem dealer', 'underperforming dealer'],
+        Intent.DEALER_PROFILE: ['dealer profile', 'who is', 'tell me about', 'dealer details', 'dealer information'],
+        Intent.DEALER_COMPLETE_PROFILE: ['complete profile', 'full analysis', '360 analysis', 'dealer overview'],
+        Intent.DEALER_DN_ANALYSIS: ['dealer dn', 'all dns', 'dn list', 'dealer deliveries', 'dn summary'],
+        Intent.DEALER_PRODUCTS: ['products', 'what products', 'sold products', 'dealer products'],
+        Intent.DEALER_REVENUE: ['revenue', 'total sales', 'dealer revenue', 'how much', 'sales value'],
+        Intent.DEALER_WAREHOUSE: ['warehouse', 'which warehouse', 'served by', 'warehouse distribution'],
+        Intent.DEALER_CITY: ['city ranking', 'rank in', 'market share', 'dealer rank'],
+        Intent.DEALER_MANAGER: ['sales manager', 'manager', 'who handles', 'under manager'],
+        Intent.DEALER_COMPARE: ['compare', 'vs', 'versus', 'better', 'who sells more'],
+        Intent.DEALER_HEALTH: ['health', 'healthy', 'performance score', 'dealer score', 'rating'],
+        Intent.DEALER_EXECUTIVE: ['executive summary', 'ceo', 'management summary', 'analyze dealer', 'dealer analysis'],
+        Intent.DEALER_RISK: ['risk', 'risky', 'problem', 'issue with dealer', 'dealer risk'],
         Intent.TOP_WAREHOUSES: ['top warehouse', 'best warehouse', 'warehouse ranking'],
+        Intent.WAREHOUSE_PERFORMANCE: ['warehouse performance', 'warehouse efficiency', 'how is warehouse'],
+        Intent.WAREHOUSE_DELAYS: ['warehouse delay', 'warehouse issue', 'warehouse problem'],
         Intent.EXECUTIVE_DASHBOARD: ['executive dashboard', 'ceo dashboard', 'leadership', 'board view'],
         Intent.NETWORK_HEALTH: ['network health', 'system health', 'service status', 'health check'],
         Intent.CRITICAL_DELAYS: ['critical delay', 'urgent delay', 'high risk delay', 'critical dn'],
         Intent.CONTROL_TOWER: ['control tower', 'command center', 'all alerts', 'mission control'],
+        Intent.CITY_PERFORMANCE: ['city performance', 'how is city', 'city analysis'],
+        Intent.CITY_COMPARISON: ['compare cities', 'city comparison', 'best city'],
+        Intent.REGION_PERFORMANCE: ['region performance', 'region analysis', 'how is region'],
+        Intent.REGION_RANKING: ['region ranking', 'best region', 'top region'],
+        Intent.DELIVERY_AGING: ['delivery aging', 'delivery time', 'how long delivery'],
+        Intent.POD_AGING: ['pod aging', 'pod time', 'how long pod'],
+        Intent.PENDING_AGING: ['pending aging', 'how long pending', 'delayed'],
     }
     
     @classmethod
     def classify_query(cls, question: str) -> QueryClass:
         question_lower = question.lower()
         
-        executive_keywords = ['kpi', 'dashboard', 'executive', 'ceo', 'board', 'health', 'control tower']
+        dealer_keywords = ['dealer', 'dealer\'s', 'dealers', 'bismillah', 'traders', 'enterprises', 'electronics']
+        if any(kw in question_lower for kw in dealer_keywords) and 'top' not in question_lower:
+            return QueryClass.DEALER
+        
+        executive_keywords = ['kpi', 'dashboard', 'executive', 'ceo', 'board', 'health', 'control tower', 'management']
         if any(kw in question_lower for kw in executive_keywords):
             return QueryClass.EXECUTIVE
         
@@ -427,14 +497,22 @@ class IntentDetector:
     def detect(cls, question: str, entities: ExtractedEntities) -> Tuple[Intent, QueryClass, float]:
         question_lower = question.lower().strip()
         
-        # Direct matches (100% confidence)
+        # Direct matches
         if question_lower in ['help', 'menu', 'commands']:
             return Intent.HELP, QueryClass.OPERATIONAL, 1.0
         
         if question_lower in ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening']:
             return Intent.GREETING, QueryClass.OPERATIONAL, 1.0
         
-        # Root cause / analysis questions (high confidence for AI)
+        # Dealer comparison detection
+        if entities.compare_mode or ('compare' in question_lower and 'dealer' in question_lower):
+            return Intent.DEALER_COMPARE, QueryClass.DEALER, 0.95
+        
+        # DN detail detection
+        if entities.dn_number and ('detail' in question_lower or 'details' in question_lower or 'information' in question_lower):
+            return Intent.DN_DETAIL, QueryClass.OPERATIONAL, 0.95
+        
+        # Root cause / analysis questions
         analysis_keywords = ['why', 'root cause', 'reason', 'what caused', 'how to fix', 
                             'what should we do', 'can you help', 'what issue', 'any risk',
                             'help me', 'suggest', 'recommend', 'analysis', 'insight']
@@ -448,14 +526,59 @@ class IntentDetector:
             else:
                 return Intent.DN_LOOKUP, QueryClass.OPERATIONAL, 0.95
         
-        # Dealer present
+        # Dealer present - enhanced dealer intent detection
         if entities.dealer or entities.dealer_code:
+            # Executive summary (most comprehensive)
+            if any(kw in question_lower for kw in ['analyze', 'executive', 'summary', 'full analysis', 'complete', '360']):
+                return Intent.DEALER_EXECUTIVE, QueryClass.DEALER, 0.95
+            
+            # Health score
+            if any(kw in question_lower for kw in ['health', 'healthy', 'score', 'rating', 'performance score']):
+                return Intent.DEALER_HEALTH, QueryClass.DEALER, 0.95
+            
+            # Risk analysis
+            if any(kw in question_lower for kw in ['risk', 'risky', 'problem', 'issue', 'trouble']):
+                return Intent.DEALER_RISK, QueryClass.DEALER, 0.95
+            
+            # Products
+            if any(kw in question_lower for kw in ['product', 'sell', 'sold', 'items', 'merchandise']):
+                return Intent.DEALER_PRODUCTS, QueryClass.DEALER, 0.95
+            
+            # Revenue
+            if any(kw in question_lower for kw in ['revenue', 'sales', 'value', 'amount', 'worth']):
+                return Intent.DEALER_REVENUE, QueryClass.DEALER, 0.95
+            
+            # Warehouse
+            if any(kw in question_lower for kw in ['warehouse', 'served', 'distribution', 'supplied']):
+                return Intent.DEALER_WAREHOUSE, QueryClass.DEALER, 0.95
+            
+            # City analysis
+            if any(kw in question_lower for kw in ['city', 'rank in city', 'market share', 'compare in city']):
+                return Intent.DEALER_CITY, QueryClass.DEALER, 0.95
+            
+            # Manager
+            if any(kw in question_lower for kw in ['manager', 'sales person', 'who handles', 'responsible']):
+                return Intent.DEALER_MANAGER, QueryClass.DEALER, 0.95
+            
+            # DN analysis
+            if any(kw in question_lower for kw in ['dn', 'delivery note', 'deliveries', 'orders']):
+                return Intent.DEALER_DN_ANALYSIS, QueryClass.DEALER, 0.95
+            
+            # Profile (default)
+            if any(kw in question_lower for kw in ['profile', 'details', 'information', 'who is', 'tell me about']):
+                return Intent.DEALER_PROFILE, QueryClass.DEALER, 0.90
+            
+            # Performance (default fallback)
             if 'performance' in question_lower or 'metrics' in question_lower:
-                return Intent.DEALER_PERFORMANCE, QueryClass.ANALYTICAL, 0.85
+                return Intent.DEALER_PERFORMANCE, QueryClass.DEALER, 0.85
             else:
-                return Intent.TOP_DEALERS, QueryClass.ANALYTICAL, 0.70
+                return Intent.DEALER_PROFILE, QueryClass.DEALER, 0.80
         
-        # Calculate confidence score for keyword matches
+        # Bottom dealers
+        if 'bottom' in question_lower or 'worst' in question_lower or 'problem' in question_lower:
+            return Intent.BOTTOM_DEALERS, QueryClass.ANALYTICAL, 0.85
+        
+        # Weighted scoring for keyword matches
         best_intent = None
         best_score = 0.0
         
@@ -468,13 +591,11 @@ class IntentDetector:
                 best_score = score
                 best_intent = intent
         
-        # If high confidence, return matched intent
         if best_intent and best_score >= 1.0:
             confidence = min(0.70 + (best_score / 20), 0.95)
             query_class = cls.classify_query(question)
             return best_intent, query_class, confidence
         
-        # Low confidence - route to AI for understanding
         confidence = max(0.4, best_score / 10) if best_score > 0 else 0.4
         return Intent.AI_QUERY, QueryClass.AI, confidence
 
@@ -493,7 +614,8 @@ class BusinessContextBuilder:
         memory=None,
         logistics_data: Dict = None,
         analytics_data: Dict = None,
-        kpi_data: Dict = None
+        kpi_data: Dict = None,
+        dealer_data: Dict = None
     ) -> Dict:
         """Build comprehensive context for AI"""
         
@@ -504,7 +626,6 @@ class BusinessContextBuilder:
             "user_context": {}
         }
         
-        # Add conversation memory
         if memory:
             context["user_context"]["conversation_summary"] = memory.get_context_summary()
             context["user_context"]["interaction_count"] = memory.interaction_count
@@ -515,19 +636,19 @@ class BusinessContextBuilder:
             if memory.last_dn:
                 context["user_context"]["last_tracked_dn"] = memory.last_dn
         
-        # Add any available business data (gracefully handle missing)
         if logistics_data:
             context["business_data"]["logistics"] = logistics_data
         if analytics_data:
             context["business_data"]["analytics"] = analytics_data
         if kpi_data:
             context["business_data"]["kpi"] = kpi_data
+        if dealer_data:
+            context["business_data"]["dealer"] = dealer_data
         
         return context
     
     @staticmethod
     def build_enhanced_prompt(context: Dict) -> str:
-        """Build enhanced prompt for AI with context"""
         question = context.get("question", "")
         business_data = context.get("business_data", {})
         user_context = context.get("user_context", {})
@@ -547,10 +668,10 @@ USER QUESTION: {question}
                 if data:
                     prompt += f"\n{category.upper()}:\n"
                     if isinstance(data, dict):
-                        for key, value in list(data.items())[:5]:  # Limit to 5 items
+                        for key, value in list(data.items())[:5]:
                             prompt += f"  - {key}: {value}\n"
                     elif isinstance(data, list):
-                        for item in data[:3]:  # Limit to 3 items
+                        for item in data[:3]:
                             prompt += f"  - {item}\n"
         else:
             prompt += "\nNote: Specific business data is currently limited. Provide general logistics guidance based on best practices.\n"
@@ -560,7 +681,7 @@ RESPONSE GUIDELINES:
 1. If specific data is available, use it directly
 2. If data is limited, provide general logistics best practices
 3. Always be helpful - never say "I don't know" without offering alternatives
-4. Suggest specific commands the user can try (e.g., "Pending POD", "Top dealers")
+4. Suggest specific commands the user can try (e.g., "Pending POD", "Top dealers", "Dealer profile")
 5. Keep responses concise and actionable
 
 Your response:"""
@@ -595,15 +716,12 @@ class ResponseFormatter:
     
     @staticmethod
     def format_ai_response(response_text: str, context_used: Dict = None) -> str:
-        """Format AI response for WhatsApp with proper structure"""
         if not response_text:
             return "✅ Request processed successfully."
         
-        # If response already has markdown formatting, return as-is
         if "📊" in response_text or "*" in response_text:
             return response_text
         
-        # Format structured response
         lines = response_text.strip().split('\n')
         formatted_lines = []
         
@@ -612,7 +730,6 @@ class ResponseFormatter:
             if not line:
                 continue
             
-            # Add emojis for different sections
             if line.lower().startswith('issue'):
                 formatted_lines.append(f"📋 *{line}*")
             elif line.lower().startswith('root cause'):
@@ -631,7 +748,7 @@ class ResponseFormatter:
     @staticmethod
     def format_help() -> str:
         return """
-🤖 *AI LOGISTICS ASSISTANT - HELP* v42.0
+🤖 *AI LOGISTICS ASSISTANT - HELP* v43.0
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 🔢 *Track a DN*
@@ -642,20 +759,36 @@ class ResponseFormatter:
 • `Pending PGI` - Pending dispatches
 • `Pending deliveries` - Undelivered
 
-🏪 *Analytics*
+🏪 *Dealer Analytics*
 • `Top dealers` - Rankings
+• `Bottom dealers` - Problem dealers
 • `Dealer ABC performance` - Specific dealer
+• `Dealer profile ABC` - Complete dealer info
+• `Analyze dealer ABC` - Executive summary
+• `Compare dealer A vs dealer B` - Comparison
+• `Is dealer ABC healthy?` - Health score
+
+🏭 *Warehouse Analytics*
+• `Top warehouses` - Rankings
+• `Warehouse performance` - Efficiency
 
 📊 *Executive Dashboard*
 • `Executive dashboard` - KPI overview
 • `Network health` - System status
 • `Control tower` - All alerts
 
+📍 *City & Region*
+• `City performance Lahore` - City analysis
+• `Region performance` - Regional insights
+
+⏰ *Aging Analysis*
+• `Delivery aging` - Delivery times
+• `Pending aging` - Delayed items
+
 💬 *AI Assistant*
 • Just ask anything - I'll help!
 • "Why is Lahore delayed?"
 • "What issues should I know about?"
-• "How can I improve delivery times?"
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
@@ -673,12 +806,14 @@ class ResponseFormatter:
         return f"""
 {greeting}! 👋
 
-I'm your *AI Logistics Assistant v42.0*. 
+I'm your *AI Logistics Assistant v43.0*. 
 
 I can help you:
 • Track DNs with any 10+ digit number
 • Check pending PODs, PGIs, and deliveries
-• Show dealer and warehouse rankings
+• Show dealer profiles, performance, and rankings
+• Analyze dealer health and risks
+• Compare dealers side by side
 • Analyze issues and provide recommendations
 
 Type `Help` to see all commands, or just ask me anything!
@@ -686,7 +821,7 @@ Type `Help` to see all commands, or just ask me anything!
 
 
 # ==========================================================
-# CENTRAL ROUTE MAP (With Validation)
+# CENTRAL ROUTE MAP (Enhanced with Dealer Routes)
 # ==========================================================
 
 class RouteMap:
@@ -700,8 +835,30 @@ class RouteMap:
     
     ANALYTICS_ROUTES = {
         Intent.TOP_DEALERS: ("get_top_dealers", True),
+        Intent.BOTTOM_DEALERS: ("get_bottom_dealers", True),
         Intent.TOP_WAREHOUSES: ("get_top_warehouses", True),
         Intent.DEALER_PERFORMANCE: ("get_dealer_performance", True),
+        Intent.DEALER_PROFILE: ("get_dealer_profile", True),
+        Intent.DEALER_COMPLETE_PROFILE: ("get_dealer_complete_profile", True),
+        Intent.DEALER_DN_ANALYSIS: ("get_dealer_dn_analysis", True),
+        Intent.DEALER_PRODUCTS: ("get_dealer_products", True),
+        Intent.DEALER_REVENUE: ("get_dealer_revenue_analysis", True),
+        Intent.DEALER_WAREHOUSE: ("get_dealer_warehouse_analysis", True),
+        Intent.DEALER_CITY: ("get_dealer_city_analysis", True),
+        Intent.DEALER_MANAGER: ("get_sales_manager_analysis", True),
+        Intent.DEALER_COMPARE: ("compare_dealers", True),
+        Intent.DEALER_HEALTH: ("calculate_dealer_health_score", True),
+        Intent.DEALER_EXECUTIVE: ("get_dealer_executive_summary", True),
+        Intent.DEALER_RISK: ("get_dealer_risk_analysis", True),
+        Intent.CITY_PERFORMANCE: ("get_city_performance", True),
+        Intent.CITY_COMPARISON: ("get_city_comparison", False),
+        Intent.REGION_PERFORMANCE: ("get_region_comparison", False),
+        Intent.REGION_RANKING: ("get_region_ranking", False),
+        Intent.DELIVERY_AGING: ("get_delivery_aging_analysis", False),
+        Intent.POD_AGING: ("get_pod_aging_analysis", False),
+        Intent.PENDING_AGING: ("get_pending_delivery_analysis", False),
+        Intent.WAREHOUSE_PERFORMANCE: ("get_warehouse_performance", True),
+        Intent.WAREHOUSE_DELAYS: ("get_warehouse_delay_analysis", False),
     }
     
     KPI_ROUTES = {
@@ -711,21 +868,17 @@ class RouteMap:
         Intent.CONTROL_TOWER: ("get_control_tower_report", False),
     }
     
-    # Route availability cache (populated at startup)
     _available_routes: Dict[str, bool] = {}
     _missing_routes: Dict[str, str] = {}
     
     @classmethod
     def is_route_available(cls, intent: Intent) -> bool:
-        """Check if route is available"""
         return intent in cls.LOGISTICS_ROUTES or \
                intent in cls.ANALYTICS_ROUTES or \
                intent in cls.KPI_ROUTES
     
     @classmethod
     def get_route(cls, intent: Intent) -> Tuple[Optional[str], Optional[str], bool]:
-        """Get route for intent: (service, method, has_param)"""
-        
         if intent in cls.LOGISTICS_ROUTES:
             method, has_param = cls.LOGISTICS_ROUTES[intent]
             return "logistics", method, has_param
@@ -742,11 +895,9 @@ class RouteMap:
     
     @classmethod
     def validate_routes(cls, logistics_service, analytics_service, kpi_service):
-        """Validate all routes at startup"""
         cls._available_routes = {}
         cls._missing_routes = {}
         
-        # Validate logistics routes
         if logistics_service:
             for intent, (method, _) in cls.LOGISTICS_ROUTES.items():
                 if hasattr(logistics_service, method) and callable(getattr(logistics_service, method)):
@@ -755,16 +906,14 @@ class RouteMap:
                     cls._available_routes[f"logistics.{method}"] = False
                     cls._missing_routes[f"logistics.{method}"] = "Method not found"
         
-        # Validate analytics routes
         if analytics_service:
             for intent, (method, _) in cls.ANALYTICS_ROUTES.items():
                 if hasattr(analytics_service, method) and callable(getattr(analytics_service, method)):
                     cls._available_routes[f"analytics.{method}"] = True
                 else:
                     cls._available_routes[f"analytics.{method}"] = False
-                    cls._missing_routes[f"analytics.{method}"] = "Method not found"
+                    cls._missing_routes[f"analytics.{method}"] = "Method not found - will use AI fallback"
         
-        # Validate KPI routes
         if kpi_service:
             for intent, (method, _) in cls.KPI_ROUTES.items():
                 if hasattr(kpi_service, method) and callable(getattr(kpi_service, method)):
@@ -789,7 +938,7 @@ class QueryMetrics:
             "avg_response_time_ms": 0,
             "success_rate": 100.0,
             "failures": 0,
-            "ai_fallbacks": 0,  # Track AI fallback usage
+            "ai_fallbacks": 0,
             "by_confidence": {"high": 0, "medium": 0, "low": 0},
             "cache_hits": 0,
             "cache_misses": 0,
@@ -889,7 +1038,7 @@ class RedisContextManager:
 
 
 # ==========================================================
-# MAIN AI QUERY SERVICE (v42.0 - AI-FIRST ARCHITECTURE)
+# MAIN AI QUERY SERVICE (v43.0 - Dealer Intelligence)
 # ==========================================================
 
 class AIQueryService:
@@ -925,13 +1074,13 @@ class AIQueryService:
         self._initialized = True
         
         logger.info("=" * 70)
-        logger.info("🧠 AI QUERY SERVICE v42.0 - AI-FIRST ARCHITECTURE")
+        logger.info("🧠 AI QUERY SERVICE v43.0 - DEALER INTELLIGENCE ENGINE")
         logger.info("   Principles: Never Fail | Always Answer | AI-First Fallback")
+        logger.info("   Features: Dealer Profiles | DN Details | Health Scores | Comparisons")
         logger.info("=" * 70)
         self._validate_available_routes()
     
     def _validate_available_routes(self):
-        """Validate all routes at startup - non-blocking"""
         session = self._get_session()
         try:
             logistics = self._get_logistics_service(session)
@@ -1012,28 +1161,31 @@ class AIQueryService:
                 self.service_health["ai"] = False
         return self._ai_provider
     
-    # ==========================================================
-    # UNIVERSAL AI HANDLER (Core of v42.0)
-    # ==========================================================
-    
     def _handle_ai_query(self, question: str, entities: ExtractedEntities, 
                          session: Session, request_id: str, context_data: Dict = None) -> Dict:
-        """
-        Universal AI handler for all intents.
-        This is the primary fallback for ANY query that can't be handled by specific routes.
-        """
+        """Universal AI handler for all intents"""
         logger.bind(request_id=request_id).info(f"🤖 Universal AI handler invoked: {question[:50]}")
         self.metrics.record("ai_universal", "ai", 0, True, 0.7, False, False, True)
         
-        # Try to collect business data (gracefully handle failures)
         logistics_data = None
         analytics_data = None
         kpi_data = None
+        dealer_data = None
+        
+        # Try to collect dealer-specific data if dealer is mentioned
+        if entities.dealer:
+            try:
+                analytics = self._get_analytics_service(session)
+                if analytics and hasattr(analytics, 'get_dealer_profile'):
+                    dealer_profile = analytics.get_dealer_profile(entities.dealer)
+                    if dealer_profile and "error" not in dealer_profile:
+                        dealer_data = dealer_profile
+            except:
+                pass
         
         try:
             logistics = self._get_logistics_service(session)
             if logistics:
-                # Try to get summary data (non-critical)
                 try:
                     pod_status = logistics.get_pod_status() if hasattr(logistics, 'get_pod_status') else None
                     if pod_status:
@@ -1055,7 +1207,6 @@ class AIQueryService:
         except:
             pass
         
-        # Build context with memory
         memory = self.lru_context.get_memory(request_id or "guest")
         context = BusinessContextBuilder.build_context(
             question=question,
@@ -1063,20 +1214,16 @@ class AIQueryService:
             memory=memory,
             logistics_data=logistics_data,
             analytics_data=analytics_data,
-            kpi_data=kpi_data
+            kpi_data=kpi_data,
+            dealer_data=dealer_data
         )
         
-        # If context_data provided, merge it
         if context_data:
             context["business_data"].update(context_data)
         
-        # Generate AI response
         ai_response = self._generate_ai_response(context, request_id)
-        
-        # Format for WhatsApp
         formatted_response = ResponseFormatter.format_ai_response(ai_response, context.get("business_data"))
         
-        # Update memory
         self.lru_context.update_memory(request_id or "guest", question, formatted_response, "ai_universal", entities)
         
         return self.formatter.format_success(
@@ -1085,7 +1232,6 @@ class AIQueryService:
         )
     
     def _generate_ai_response(self, context: Dict, request_id: str) -> str:
-        """Generate AI response using the provider"""
         if not self.ai_provider:
             logger.bind(request_id=request_id).warning("AI provider unavailable, using fallback")
             return self._get_fallback_response(context.get("question", ""))
@@ -1107,7 +1253,6 @@ class AIQueryService:
             return self._get_fallback_response(context.get("question", ""))
     
     def _get_fallback_response(self, question: str) -> str:
-        """Intelligent fallback when AI is unavailable"""
         question_lower = question.lower()
         
         if 'help' in question_lower or 'command' in question_lower:
@@ -1116,71 +1261,71 @@ class AIQueryService:
         if any(word in question_lower for word in ['hi', 'hello', 'hey', 'good']):
             return ResponseFormatter.format_greeting()
         
-        return f"""I understand you're asking about: "{question[:80]}"
+        if 'dealer' in question_lower:
+            return """🏪 *Dealer Intelligence*
 
-Here's how I can help:
+To get dealer information, try these commands:
+
+• `Dealer profile [name]` - Complete dealer profile
+• `Analyze dealer [name]` - Executive summary
+• `Compare dealer A vs dealer B` - Side by side
+• `Is dealer [name] healthy?` - Health score
+• `Show all DNs of [name]` - DN history
+• `Dealer [name] products` - Product list
+• `Dealer [name] revenue` - Sales analysis
+• `Top dealers` - Rankings
+• `Bottom dealers` - Problem dealers
+
+Type `Help` for all commands!"""
+        
+        return f"""I understand you're asking about: "{question[:80]}"
 
 📋 *Try these commands:*
 • Send any 10+ digit number to track a DN
 • `Pending POD` - Missing proofs
 • `Top dealers` - Dealer rankings
+• `Dealer profile [name]` - Dealer details
 • `Executive dashboard` - KPI overview
 • `Control tower` - All alerts
 
 💡 *Or ask me:*
 • "Why is Lahore delayed?"
-• "What issues should I know about?"
-• "Help" for complete list
+• "Analyze dealer ABC"
+• "Compare dealer X vs Y"
 
-Type `Help` anytime to see all commands!"""
-    
-    # ==========================================================
-    # ROUTE EXECUTION WITH SMART FALLBACK CHAIN
-    # ==========================================================
+Type `Help` for complete list!"""
     
     def _execute_route_with_fallback(self, intent: Intent, entities: ExtractedEntities,
                                       question: str, session: Session, request_id: str) -> Dict:
-        """
-        Execute route with smart fallback chain:
-        1. Try specific route
-        2. If fails, try AI
-        3. If AI fails, show help menu
-        """
+        """Execute route with smart fallback chain"""
         service_name, method, has_param = RouteMap.get_route(intent)
         
-        # Special intents that should always go to AI
         if intent in [Intent.AI_QUERY, Intent.ROOT_CAUSE, Intent.GENERAL]:
             logger.bind(request_id=request_id).info(f"Routing {intent.value} to AI")
             return self._handle_ai_query(question, entities, session, request_id)
         
-        # Try specific route if available
         if service_name:
             route_result = self._try_specific_route(
                 service_name, method, has_param, intent, 
                 entities, question, session, request_id
             )
             
-            # If route succeeded, return result
             if route_result and route_result.get("success"):
                 return route_result
             
-            # Route failed, fallback to AI
             logger.bind(request_id=request_id).info(f"Route {intent.value} failed, falling back to AI")
             ai_result = self._handle_ai_query(question, entities, session, request_id, 
                                               context_data={"failed_route": intent.value})
             
-            # If AI succeeded, return AI result
             if ai_result and ai_result.get("success"):
                 self.metrics.record(intent.value, "ai", 0, True, 0.6, False, False, True)
                 return ai_result
         
-        # Final fallback: AI handler
         return self._handle_ai_query(question, entities, session, request_id)
     
     def _try_specific_route(self, service_name: str, method: str, has_param: bool,
                             intent: Intent, entities: ExtractedEntities, question: str,
                             session: Session, request_id: str) -> Optional[Dict]:
-        """Try to execute a specific route, return None if fails"""
         route_start = time.time()
         
         try:
@@ -1194,10 +1339,14 @@ Type `Help` anytime to see all commands!"""
                     return None
                 
                 if has_param:
-                    param = entities.dn_number
-                    if not param:
+                    if intent == Intent.DN_LOOKUP or intent == Intent.DN_TIMELINE or intent == Intent.DN_DETAIL:
+                        param = entities.dn_number
+                    else:
+                        param = entities.dn_number or entities.dealer or entities.limit
+                    
+                    if not param and intent != Intent.PENDING_POD and intent != Intent.PENDING_PGI:
                         return None
-                    result = handler(param)
+                    result = handler(param) if param else handler()
                 else:
                     result = handler()
                 
@@ -1221,13 +1370,25 @@ Type `Help` anytime to see all commands!"""
                     return None
                 
                 if has_param:
-                    param = entities.dealer or entities.dealer_code
-                    if param:
-                        result = handler(param)
+                    if intent == Intent.DEALER_COMPARE and entities.dealer2:
+                        param = (entities.dealer, entities.dealer2)
+                    elif intent == Intent.DEALER_CITY and entities.city:
+                        param = (entities.dealer, entities.city) if hasattr(handler, '__code__') and handler.__code__.co_argcount > 1 else entities.dealer
+                    elif intent in [Intent.DEALER_PROFILE, Intent.DEALER_EXECUTIVE, Intent.DEALER_HEALTH,
+                                   Intent.DEALER_RISK, Intent.DEALER_REVENUE, Intent.DEALER_PRODUCTS,
+                                   Intent.DEALER_DN_ANALYSIS, Intent.DEALER_WAREHOUSE, Intent.DEALER_MANAGER,
+                                   Intent.DEALER_PERFORMANCE]:
+                        param = entities.dealer
+                    elif intent == Intent.CITY_PERFORMANCE and entities.city:
+                        param = entities.city
+                    elif intent == Intent.WAREHOUSE_PERFORMANCE and entities.warehouse:
+                        param = entities.warehouse
                     else:
-                        result = handler(entities.limit)
+                        param = entities.dealer or entities.limit or 10
+                    
+                    result = handler(param) if param else handler(entities.limit or 10)
                 else:
-                    result = handler(entities.limit)
+                    result = handler()
                 
                 route_time = round((time.time() - route_start) * 1000, 2)
                 logger.bind(request_id=request_id, intent=intent.value).info(f"Route executed in {route_time}ms")
@@ -1262,10 +1423,6 @@ Type `Help` anytime to see all commands!"""
             return None
         
         return None
-    
-    # ==========================================================
-    # MAIN PROCESSING PIPELINE
-    # ==========================================================
     
     def _get_context(self, user_id: str) -> Dict:
         if self.redis_context.available:
@@ -1320,13 +1477,11 @@ Type `Help` anytime to see all commands!"""
                 confidence=confidence
             ).info("Intent detected")
             
-            # SPECIAL: Always route HELP and GREETING directly
             if intent == Intent.HELP:
                 result = self.formatter.format_success({}, self.formatter.format_help())
             elif intent == Intent.GREETING:
                 result = self.formatter.format_success({}, self.formatter.format_greeting())
             else:
-                # Use smart fallback chain for all other intents
                 result = self._execute_route_with_fallback(intent, entities, question, session, request_id)
             
             whatsapp_message = result.get("summary", "") if result.get("success") else result.get("summary", "Unable to process")
@@ -1342,7 +1497,6 @@ Type `Help` anytime to see all commands!"""
                                result.get("success", True), confidence, False, 
                                None, intent in [Intent.AI_QUERY, Intent.ROOT_CAUSE, Intent.GENERAL])
             
-            # Auto cache cleanup every 500 queries
             if self.metrics.metrics["total_queries"] % 500 == 0:
                 logger.bind(request_id=request_id).info("Auto cache cleanup triggered")
                 self.cache.clear()
@@ -1370,7 +1524,6 @@ Type `Help` anytime to see all commands!"""
                 error=str(e)
             ).exception(f"Query processing error")
             
-            # Final fallback: return helpful message
             return {
                 "success": False,
                 "response": self._get_fallback_response(question),
@@ -1401,8 +1554,8 @@ Type `Help` anytime to see all commands!"""
     def health_check(self) -> Dict:
         return {
             "service": "ai_query_service",
-            "version": "42.0",
-            "architecture": "ai_first_fallback",
+            "version": "43.0",
+            "architecture": "dealer_intelligence_engine",
             "status": "healthy",
             "metrics": self.metrics.get_metrics(),
             "cache": self.cache.get_stats(),
@@ -1413,6 +1566,7 @@ Type `Help` anytime to see all commands!"""
                 "Never Fail",
                 "Always Answer", 
                 "AI-First Fallback",
+                "Dealer Intelligence",
                 "No Feature Under Development"
             ]
         }
@@ -1456,7 +1610,7 @@ def health_check(session_factory=None) -> Dict:
         service = get_ai_query_service(session_factory)
         return service.health_check()
     except Exception as e:
-        return {"service": "ai_query_service", "status": "unhealthy", "error": str(e), "version": "42.0"}
+        return {"service": "ai_query_service", "status": "unhealthy", "error": str(e), "version": "43.0"}
 
 
 # ==========================================================
@@ -1464,22 +1618,32 @@ def health_check(session_factory=None) -> Dict:
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("🧠 AI QUERY SERVICE v42.0 - AI-FIRST ARCHITECTURE")
+logger.info("🧠 AI QUERY SERVICE v43.0 - DEALER INTELLIGENCE ENGINE")
 logger.info("")
 logger.info("   CORE PRINCIPLES:")
 logger.info("   ✅ AI-FIRST FALLBACK - Always try AI before showing errors")
 logger.info("   ✅ NO 'FEATURE UNDER DEVELOPMENT' - Never shown to users")
+logger.info("   ✅ DEALER INTELLIGENCE - Full dealer analytics support")
 logger.info("   ✅ UNIVERSAL AI MODE - All intents can use AI understanding")
 logger.info("   ✅ SMART FALLBACK CHAIN - Route → AI → Help Menu")
 logger.info("   ✅ SERVICE ISOLATION - Service failures never break the bot")
 logger.info("   ✅ CONVERSATION MEMORY - Context-aware responses")
-logger.info("   ✅ SELF-HEALING - Graceful degradation")
+logger.info("")
+logger.info("   DEALER QUERIES NOW SUPPORTED:")
+logger.info("   • 'Dealer profile ABC' - Complete profile")
+logger.info("   • 'Analyze dealer ABC' - Executive summary")
+logger.info("   • 'Compare dealer A vs B' - Side by side")
+logger.info("   • 'Is dealer ABC healthy?' - Health score")
+logger.info("   • 'Show all DNs of ABC' - DN history")
+logger.info("   • 'Dealer ABC products' - Product list")
+logger.info("   • 'Dealer ABC revenue' - Sales analysis")
+logger.info("   • 'Top dealers' - Rankings")
+logger.info("   • 'Bottom dealers' - Problem dealers")
 logger.info("")
 logger.info("   WHATSAPP RESPONSES NOW WORK FOR:")
-logger.info("   • 'How to fix the issue?'")
-logger.info("   • 'Can you help me?'")
-logger.info("   • 'What should we do?'")
 logger.info("   • 'Why is Lahore delayed?'")
 logger.info("   • 'What issue is coming?'")
 logger.info("   • 'Any risks today?'")
+logger.info("   • 'How to fix the issue?'")
+logger.info("   • 'Can you help me?'")
 logger.info("=" * 70)
