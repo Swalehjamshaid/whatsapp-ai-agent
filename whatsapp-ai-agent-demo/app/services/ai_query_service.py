@@ -1,22 +1,14 @@
 # ==========================================================
-# FILE: app/services/ai_query_service.py (IMPROVED v40.0)
+# FILE: app/services/ai_query_service.py (IMPROVED v41.0)
 # ==========================================================
 # PURPOSE: PURE ROUTER ONLY - Single Brain for Query Routing
 #
-# IMPROVEMENTS v40.0:
-# - FIX AI USER CONTEXT (separate memory per user)
-# - ADD AI AVAILABILITY CHECK before calls
-# - IMPROVE ROOT CAUSE AI logging for debugging
-# - CACHE DN LOOKUPS and more intents
-# - ADD ROUTE EXECUTION TIMER for performance monitoring
-# - ADD SERVICE FAILURE COUNTERS for health tracking
-# - IMPROVE ROUTE VALIDATION at runtime
-# - ADD REQUEST TRACE across all operations
-# - ADD CACHE CLEANUP every 500 queries
-# - IMPROVE FALLBACK RESPONSE with commands
-# - ADD AI RESPONSE VALIDATION to avoid empty replies
-# - IMPROVE ENTITY EXTRACTION with more cities
-# - REMOVE unused imports and comments
+# IMPROVEMENTS v41.0:
+# - ✅ FIXED: Route GENERAL intent to AI for natural language understanding
+# - ✅ ADDED: format_unknown_query() for helpful fallback responses
+# - ✅ ENHANCED: ResponseFormatter with user question context
+# - ✅ IMPROVED: Better handling of ambiguous queries
+# - ✅ All v40.0 features preserved
 # ==========================================================
 
 from __future__ import annotations
@@ -489,9 +481,41 @@ class ResponseFormatter:
         }
     
     @staticmethod
-    def format_route_unavailable(intent: Intent) -> Dict:
+    def format_unknown_query(question: str) -> Dict:
+        """Helpful message for unknown/general queries that don't match any intent"""
+        error_id = str(uuid.uuid4())[:8]
+        message = f"""🤔 *I didn't understand: "{question[:50]}"*
+
+Try one of these commands instead:
+
+📋 `Pending POD` - Missing proofs
+📋 `Pending PGI` - Pending dispatches
+🚚 Send a DN number (starts with 80)
+🏪 `Top dealers` - Dealer rankings
+🏪 `Dealer ABC performance` - Specific dealer
+📊 `Executive dashboard` - KPI overview
+🚨 `Control tower` - All alerts
+🔍 `Why is Lahore delayed?` - AI analysis
+
+💡 *Tip:* Type `Help` for complete list of commands!"""
+
+        return {
+            "success": False,
+            "data": {},
+            "summary": message,
+            "error_code": "unknown_query",
+            "error_id": error_id
+        }
+    
+    @staticmethod
+    def format_route_unavailable(intent: Intent, user_question: str = None) -> Dict:
         """User-friendly message for unavailable routes"""
         error_id = str(uuid.uuid4())[:8]
+        
+        # Special handling for GENERAL intent
+        if intent == Intent.GENERAL and user_question:
+            return ResponseFormatter.format_unknown_query(user_question)
+        
         message = f"""🚧 *Feature Under Development*
 
 The '{intent.value}' feature is coming soon.
@@ -520,7 +544,7 @@ Type `Help` for complete list."""
     @staticmethod
     def format_help() -> str:
         return """
-🤖 *AI LOGISTICS ASSISTANT - HELP* v40.0
+🤖 *AI LOGISTICS ASSISTANT - HELP* v41.0
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 🔢 *Track a DN*
@@ -548,6 +572,9 @@ Type `Help` for complete list."""
 🔍 *Root Cause Analysis*
 • `Why is Lahore delayed?` - AI-powered analysis
 
+💬 *General Questions*
+• Just ask anything - I'll do my best to help!
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
     
@@ -564,7 +591,7 @@ Type `Help` for complete list."""
         return f"""
 {greeting}! 👋
 
-I'm your *AI Logistics Assistant v40.0*. I can help you track DNs, check performance, and monitor operations.
+I'm your *AI Logistics Assistant v41.0*. I can help you track DNs, check performance, and monitor operations.
 
 Type `Help` to see all commands.
 """
@@ -648,6 +675,7 @@ class QueryMetrics:
             "cache_hits": 0,
             "cache_misses": 0,
             "route_unavailable": 0,
+            "unknown_queries": 0,  # NEW: Track unknown queries
             "service_failures": {
                 "logistics": 0,
                 "analytics": 0,
@@ -671,6 +699,8 @@ class QueryMetrics:
         
         if route_unavailable:
             self.metrics["route_unavailable"] += 1
+            if intent == "general":
+                self.metrics["unknown_queries"] += 1
         
         if service_failure and service_failure in self.metrics["service_failures"]:
             self.metrics["service_failures"][service_failure] += 1
@@ -911,7 +941,7 @@ Keep response concise and actionable.
 
 
 # ==========================================================
-# MAIN AI QUERY SERVICE (v40 - Production Ready)
+# MAIN AI QUERY SERVICE (v41 - Production Ready)
 # ==========================================================
 
 class AIQueryService:
@@ -952,7 +982,7 @@ class AIQueryService:
         
         self._initialized = True
         
-        logger.info("✅ AI Query Service v40.0 - Production Ready (Route Validation Enabled)")
+        logger.info("✅ AI Query Service v41.0 - Production Ready (Route Validation Enabled)")
         self._validate_available_routes()
     
     def _validate_available_routes(self):
@@ -1122,7 +1152,8 @@ class AIQueryService:
             # Check if route is available
             if not RouteMap.is_route_available(intent):
                 logger.bind(request_id=request_id).warning(f"Route unavailable: {intent.value}")
-                result = self.formatter.format_route_unavailable(intent)
+                # NEW: Pass user question for better error messages
+                result = self.formatter.format_route_unavailable(intent, user_question=question)
                 elapsed_ms = (time.time() - start_time) * 1000
                 self.metrics.record(intent.value, query_class.value, elapsed_ms, False, confidence, False, True)
                 return {
@@ -1250,6 +1281,11 @@ class AIQueryService:
                query_class: QueryClass, session: Session, request_id: str = None) -> Dict:
         
         service_name, method, has_param = RouteMap.get_route(intent)
+        
+        # NEW: Route GENERAL intent to AI for natural language understanding
+        if intent == Intent.GENERAL:
+            logger.bind(request_id=request_id).info(f"🤖 Routing GENERAL query to AI for understanding: {question[:50]}")
+            return self._call_root_cause_ai(question, entities, session, request_id)
         
         # Runtime health validation
         if service_name and not self.service_health.get(service_name, False):
@@ -1444,7 +1480,7 @@ Type `HELP` for complete list."""
     def health_check(self) -> Dict:
         return {
             "service": "ai_query_service",
-            "version": "40.0",
+            "version": "41.0",
             "mode": "pure_router_route_validation",
             "status": "healthy",
             "metrics": self.metrics.get_metrics(),
@@ -1497,7 +1533,7 @@ def health_check(session_factory=None) -> Dict:
         service = get_ai_query_service(session_factory)
         return service.health_check()
     except Exception as e:
-        return {"service": "ai_query_service", "status": "unhealthy", "error": str(e), "version": "40.0"}
+        return {"service": "ai_query_service", "status": "unhealthy", "error": str(e), "version": "41.0"}
 
 
 # ==========================================================
@@ -1505,9 +1541,12 @@ def health_check(session_factory=None) -> Dict:
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("🧠 AI QUERY SERVICE v40.0 - PRODUCTION READY")
+logger.info("🧠 AI QUERY SERVICE v41.0 - PRODUCTION READY")
 logger.info("")
 logger.info("   Critical Fixes:")
+logger.info("   ✅ ROUTE GENERAL INTENT TO AI - Natural language understanding")
+logger.info("   ✅ ADDED format_unknown_query() - Helpful fallback responses")
+logger.info("   ✅ ENHANCED ResponseFormatter - User question context")
 logger.info("   ✅ FIX AI USER CONTEXT - separate memory per user")
 logger.info("   ✅ ADD AI AVAILABILITY CHECK before calls")
 logger.info("   ✅ IMPROVE ROOT CAUSE AI logging for debugging")
@@ -1517,7 +1556,6 @@ logger.info("   ✅ ADD SERVICE FAILURE COUNTERS for health")
 logger.info("   ✅ IMPROVE ROUTE VALIDATION at runtime")
 logger.info("   ✅ ADD REQUEST TRACE across all operations")
 logger.info("   ✅ ADD CACHE CLEANUP every 500 queries")
-logger.info("   ✅ IMPROVE FALLBACK RESPONSE with commands")
 logger.info("   ✅ ADD AI RESPONSE VALIDATION")
 logger.info("   ✅ IMPROVE ENTITY EXTRACTION with more cities")
 logger.info("")
@@ -1531,4 +1569,5 @@ logger.info("   ✅ NETWORK_HEALTH (CACHED)")
 logger.info("   ✅ CRITICAL_DELAYS (CACHED)")
 logger.info("   ✅ CONTROL_TOWER (CACHED)")
 logger.info("   ✅ HELP, GREETING, AI_QUERY, ROOT_CAUSE")
+logger.info("   ✅ GENERAL (NEW - Routed to AI for understanding)")
 logger.info("=" * 70)
