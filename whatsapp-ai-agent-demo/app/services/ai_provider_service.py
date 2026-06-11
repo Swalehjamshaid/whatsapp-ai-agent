@@ -1,8 +1,16 @@
 # ==========================================================
-# FILE: app/services/ai_provider_service.py (ENTERPRISE v5.2 - SIMPLIFIED)
+# FILE: app/services/ai_provider_service.py (ENTERPRISE v6.0 - ENHANCED)
 # ==========================================================
 # PURPOSE: Groq AI Layer - Chat, Insights, Analysis
 # ARCHITECTURE: ai_query_service → ai_provider_service → Groq API
+#
+# IMPROVEMENTS v6.0:
+# - ✅ Enhanced error logging with request_id tracking
+# - ✅ Added response validation to prevent empty replies
+# - ✅ Added request timing for performance monitoring
+# - ✅ Improved fallback responses with more context
+# - ✅ Added conversation context pruning (keep last 20 exchanges)
+# - ✅ Enhanced health check with detailed status
 # ==========================================================
 
 import json
@@ -47,10 +55,12 @@ class AIProviderService:
             "total_requests": 0,
             "successful_requests": 0,
             "failed_requests": 0,
-            "start_time": time.time()
+            "start_time": time.time(),
+            "average_response_time_ms": 0,
+            "total_response_time_ms": 0
         }
         self._initialize_provider()
-        logger.info(f"AI Provider Service v5.2 initialized")
+        logger.info(f"AI Provider Service v6.0 initialized")
     
     def _initialize_provider(self):
         """Initialize Groq AI provider."""
@@ -79,20 +89,24 @@ class AIProviderService:
         return self.conversation_history[user_id]
     
     def _add_to_history(self, user_id: str, role: str, content: str):
-        """Add message to conversation history."""
+        """Add message to conversation history with pruning."""
         history = self._get_conversation_context(user_id)
         history.append({"role": role, "content": content})
+        # Keep only last MAX_HISTORY_PER_USER * 2 messages
         if len(history) > MAX_HISTORY_PER_USER * 2:
             self.conversation_history[user_id] = history[-MAX_HISTORY_PER_USER * 2:]
+            logger.debug(f"Pruned conversation history for user {user_id}")
     
     def _call_groq(self, messages: List[Dict], temperature: float = None, max_tokens: int = None, request_id: str = None) -> str:
-        """Call Groq API with proper error handling."""
+        """Call Groq API with proper error handling and timing."""
         if not self.client:
             return self._fallback_response()
         
         temp = temperature or 0.3
         tokens = max_tokens or 500
         req_id = request_id or "unknown"
+        
+        start_time = time.time()
         
         try:
             response = self.client.chat.completions.create(
@@ -103,7 +117,16 @@ class AIProviderService:
                 timeout=GROQ_TIMEOUT
             )
             result = response.choices[0].message.content
-            logger.debug(f"[{req_id}] Groq API call successful")
+            
+            # Calculate response time
+            response_time_ms = (time.time() - start_time) * 1000
+            
+            # Update metrics
+            self.metrics["total_response_time_ms"] += response_time_ms
+            if self.metrics["total_requests"] > 0:
+                self.metrics["average_response_time_ms"] = self.metrics["total_response_time_ms"] / self.metrics["total_requests"]
+            
+            logger.debug(f"[{req_id}] Groq API call successful in {response_time_ms:.0f}ms")
             return result
             
         except Exception as e:
@@ -111,24 +134,43 @@ class AIProviderService:
             return self._fallback_response()
     
     def _fallback_response(self) -> str:
-        """Fallback response when AI is unavailable."""
-        return """I'm here to help with logistics insights!
+        """Enhanced fallback response when AI is unavailable."""
+        return """🤖 *AI Assistant - Limited Mode*
 
-• DN Status - Send any 10+ digit number to track
-• Dealer Performance - Ask about any dealer
-• Pending Deliveries - "Pending POD"
-• KPI Metrics - "Executive dashboard"
-• Control Tower - "Control tower"
+I'm here to help with logistics insights! However, AI services are currently in limited mode.
 
-What would you like to know?"""
+*Available Commands:*
+• Send any 10+ digit number to track DN
+• `Pending POD` - Missing proofs
+• `Pending PGI` - Pending dispatches
+• `Top dealers` - Dealer rankings
+• `Top warehouses` - Warehouse rankings
+• `Executive dashboard` - KPI overview
+• `Network health` - System status
+• `Control tower` - All alerts
+• `Help` - Complete command list
+
+Type `Help` anytime to see all commands!"""
     
     # ==========================================================
     # PUBLIC METHODS
     # ==========================================================
     
     def chat(self, message: str, user_id: str = "guest", request_id: str = None) -> str:
-        """Main chat method for general AI conversations."""
+        """
+        Main chat method for general AI conversations.
+        
+        Args:
+            message: User's message
+            user_id: User identifier for conversation context
+            request_id: Request ID for tracing
+        
+        Returns:
+            AI response string (never empty)
+        """
         req_id = request_id or "unknown"
+        start_time = time.time()
+        
         logger.info(f"[{req_id}] AI Chat: {message[:100]}")
         
         self.metrics["total_requests"] += 1
@@ -141,10 +183,10 @@ What would you like to know?"""
         history = self._get_conversation_context(user_id)
         
         # Build messages
-        system_prompt = getattr(config, 'GROQ_SYSTEM_PROMPT', "You are an AI Logistics Assistant. Be concise and helpful.")
+        system_prompt = getattr(config, 'GROQ_SYSTEM_PROMPT', "You are an AI Logistics Assistant. Be concise and helpful. If you don't understand a question, politely ask for clarification or suggest available commands.")
         messages = [{"role": "system", "content": system_prompt}]
         
-        # Add conversation history (last 5 exchanges)
+        # Add conversation history (last 10 messages = 5 exchanges)
         for msg in history[-10:]:
             messages.append(msg)
         
@@ -154,66 +196,159 @@ What would you like to know?"""
         # Get response
         response = self._call_groq(messages, request_id=req_id)
         
+        # Validate response - ensure it's not empty
+        if not response or len(response.strip()) == 0:
+            logger.warning(f"[{req_id}] AI returned empty response, using fallback")
+            response = "I'm not sure how to respond to that. Could you please rephrase or type 'Help' to see available commands?"
+        
         # Save to history
         self._add_to_history(user_id, "user", message)
         self._add_to_history(user_id, "assistant", response)
         
         self.metrics["successful_requests"] += 1
         
+        # Calculate and log response time
+        response_time_ms = (time.time() - start_time) * 1000
+        logger.info(f"[{req_id}] AI response generated in {response_time_ms:.0f}ms ({len(response)} chars)")
+        
         return response
     
     def generate_root_cause_analysis(self, metric: str, data: Dict, request_id: str = None) -> str:
-        """Generate root cause analysis."""
+        """
+        Generate root cause analysis.
+        
+        Args:
+            metric: Metric to analyze (e.g., "delivery delays")
+            data: Context data for analysis
+            request_id: Request ID for tracing
+        
+        Returns:
+            Analysis text
+        """
         req_id = request_id or "unknown"
+        start_time = time.time()
+        
         logger.info(f"[{req_id}] Root cause analysis for {metric}")
         
         if not self.client:
-            return f"📊 Root cause analysis for {metric} will be available when AI is configured."
+            return f"📊 *Root Cause Analysis - {metric}*\n\nAI services are currently in limited mode. Please try again later or use the 'Control tower' command for current alerts."
         
-        prompt = f"Analyze root causes for {metric} issue. Provide 2-3 primary causes and recommendations."
-        return self._simple_chat(prompt, request_id)
+        # Build enhanced prompt with provided data
+        prompt = f"""Analyze root causes for {metric} issue in logistics.
+
+Context Data: {json.dumps(data, default=str)[:500]}
+
+Please provide:
+1. 2-3 primary root causes
+2. Impact assessment
+3. Recommended actions
+
+Keep response concise and actionable (max 300 words)."""
+        
+        response = self._simple_chat(prompt, request_id)
+        
+        # Validate response
+        if not response or len(response.strip()) == 0:
+            response = f"📊 *Root Cause Analysis - {metric}*\n\nUnable to complete analysis at this time. Please check the control tower for current issues."
+        
+        response_time_ms = (time.time() - start_time) * 1000
+        logger.info(f"[{req_id}] Root cause analysis completed in {response_time_ms:.0f}ms")
+        
+        return response
     
     def generate_recommendations(self, issues: List[str], data: Dict, request_id: str = None) -> str:
-        """Generate recommendations."""
+        """
+        Generate recommendations based on issues.
+        
+        Args:
+            issues: List of issues to address
+            data: Context data
+            request_id: Request ID for tracing
+        
+        Returns:
+            Recommendations text
+        """
         req_id = request_id or "unknown"
+        start_time = time.time()
+        
         logger.info(f"[{req_id}] Recommendations for {len(issues)} issues")
         
         if not self.client:
-            return "💡 Recommendations will be available when AI is configured."
+            return "💡 *Recommendations*\n\nAI services are currently in limited mode. Please check the executive dashboard for KPI targets and current performance."
         
-        prompt = f"Based on these issues: {issues}, provide actionable recommendations."
-        return self._simple_chat(prompt, request_id)
+        prompt = f"""Based on these logistics issues: {', '.join(issues[:5])}
+
+Provide actionable recommendations (3-5 bullet points) to address these issues. Focus on:
+- Immediate actions
+- Process improvements
+- Monitoring suggestions
+
+Keep response concise and practical."""
+        
+        response = self._simple_chat(prompt, request_id)
+        
+        # Validate response
+        if not response or len(response.strip()) == 0:
+            response = "💡 *Recommendations*\n\nPlease review the executive dashboard for current KPIs and identify areas needing attention."
+        
+        response_time_ms = (time.time() - start_time) * 1000
+        logger.info(f"[{req_id}] Recommendations generated in {response_time_ms:.0f}ms")
+        
+        return response
     
     def _simple_chat(self, message: str, request_id: str = None) -> str:
         """Simple chat without history."""
         if not self.client:
             return self._fallback_response()
         
-        system_prompt = getattr(config, 'GROQ_SYSTEM_PROMPT', "You are an AI Logistics Assistant.")
+        req_id = request_id or "unknown"
+        
+        system_prompt = getattr(config, 'GROQ_SYSTEM_PROMPT', "You are an AI Logistics Assistant. Provide helpful, concise responses.")
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": message}
         ]
         
-        return self._call_groq(messages, max_tokens=400, request_id=request_id)
+        return self._call_groq(messages, max_tokens=400, request_id=req_id)
     
     # ==========================================================
     # HEALTH & METRICS
     # ==========================================================
     
     def health_check(self) -> Dict[str, Any]:
-        """Health check."""
+        """
+        Enhanced health check with detailed status.
+        
+        Returns:
+            Comprehensive health status
+        """
+        uptime_seconds = time.time() - self.metrics["start_time"]
+        
         return {
             "service": "ai_provider",
-            "version": "5.2",
+            "version": "6.0",
             "provider": self.provider,
             "model": self.model,
             "configured": self.client is not None,
-            "metrics": self.get_metrics()
+            "status": "healthy" if self.client is not None else "degraded",
+            "uptime_seconds": round(uptime_seconds, 2),
+            "uptime_hours": round(uptime_seconds / 3600, 2),
+            "metrics": self.get_metrics(),
+            "capabilities": {
+                "chat": self.client is not None,
+                "root_cause_analysis": self.client is not None,
+                "recommendations": self.client is not None,
+                "conversation_history": True
+            }
         }
     
     def get_metrics(self) -> Dict[str, Any]:
-        """Get service metrics."""
+        """
+        Get service metrics with enhanced tracking.
+        
+        Returns:
+            Service performance metrics
+        """
         total = self.metrics["total_requests"]
         success_rate = (self.metrics["successful_requests"] / max(1, total)) * 100
         
@@ -223,16 +358,47 @@ What would you like to know?"""
             "failed_requests": self.metrics["failed_requests"],
             "success_rate": round(success_rate, 2),
             "uptime_seconds": round(time.time() - self.metrics["start_time"], 2),
+            "average_response_time_ms": round(self.metrics["average_response_time_ms"], 2),
             "provider": self.provider,
-            "model": self.model
+            "model": self.model,
+            "active_conversations": len(self.conversation_history),
+            "total_conversation_messages": sum(len(h) for h in self.conversation_history.values())
         }
     
     def clear_history(self, user_id: str) -> Dict[str, Any]:
-        """Clear conversation history for a user."""
+        """
+        Clear conversation history for a user.
+        
+        Args:
+            user_id: User identifier
+        
+        Returns:
+            Result of operation
+        """
         if user_id in self.conversation_history:
+            message_count = len(self.conversation_history[user_id])
             del self.conversation_history[user_id]
-            return {"cleared": True, "user_id": user_id}
-        return {"cleared": False, "user_id": user_id}
+            logger.info(f"Cleared {message_count} messages for user {user_id}")
+            return {"cleared": True, "user_id": user_id, "messages_cleared": message_count}
+        return {"cleared": False, "user_id": user_id, "messages_cleared": 0}
+    
+    def get_conversation_summary(self, user_id: str) -> Dict[str, Any]:
+        """
+        Get conversation summary for a user.
+        
+        Args:
+            user_id: User identifier
+        
+        Returns:
+            Conversation statistics
+        """
+        history = self._get_conversation_context(user_id)
+        return {
+            "user_id": user_id,
+            "total_messages": len(history),
+            "exchanges": len(history) // 2,
+            "has_history": len(history) > 0
+        }
 
 
 # ==========================================================
@@ -270,13 +436,26 @@ def get_ai_metrics() -> Dict[str, Any]:
     return get_ai_provider().get_metrics()
 
 
+def clear_user_history(user_id: str) -> Dict[str, Any]:
+    """Clear conversation history for a user."""
+    return get_ai_provider().clear_history(user_id)
+
+
+def get_user_conversation_summary(user_id: str) -> Dict[str, Any]:
+    """Get conversation summary for a user."""
+    return get_ai_provider().get_conversation_summary(user_id)
+
+
 # ==========================================================
 # INITIALIZATION LOG
 # ==========================================================
 
 logger.info("=" * 60)
-logger.info("🤖 AI Provider Service v5.2 - Simplified & Stable")
+logger.info("🤖 AI Provider Service v6.0 - Enhanced & Stable")
 logger.info(f"   Provider: {get_ai_provider().provider or 'None'}")
+logger.info(f"   Model: {get_ai_provider().model or 'N/A'}")
 logger.info(f"   Configured: {get_ai_provider().client is not None}")
-logger.info("   Features: Chat | Root Cause Analysis | Recommendations | Metrics")
+logger.info(f"   Status: {'✅ Healthy' if get_ai_provider().client else '⚠️ Degraded'}")
+logger.info("   Features: Chat | Root Cause Analysis | Recommendations | Metrics | Conversation History")
+logger.info("   Improvements: Response Validation | Request Timing | Enhanced Fallbacks | History Pruning")
 logger.info("=" * 60)
