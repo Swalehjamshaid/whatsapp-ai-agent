@@ -1,16 +1,13 @@
 # ==========================================================
-# FILE: app/services/ai_query_service.py (IMPROVED v43.0 - DEALER INTELLIGENCE)
+# FILE: app/services/ai_query_service.py (IMPROVED v44.0 - PURE ROUTER)
 # ==========================================================
-# PURPOSE: INTELLIGENT ORCHESTRATOR - Never Fail, Always Answer
+# PURPOSE: PURE ORCHESTRATOR - Route Only, No Business Logic
 #
-# CORE PRINCIPLES v43.0:
-# - AI-FIRST FALLBACK: Always try AI before showing errors
-# - NO "FEATURE UNDER DEVELOPMENT": Never show this to users
-# - UNIVERSAL AI MODE: All intents can use AI understanding
-# - SERVICE ISOLATION: Service failures never break the bot
-# - CONVERSATION MEMORY: Context-aware responses
-# - SELF-HEALING: Graceful degradation
-# - DEALER INTELLIGENCE: Full dealer analytics support
+# CORE PRINCIPLES v44.0:
+# - ONLY Intent Detection, Entity Extraction, Routing
+# - NO Business Logic (delegates to AnalyticsService)
+# - NO Hardcoded Responses (uses service responses)
+# - AI Fallback ONLY when services unavailable
 # ==========================================================
 
 from __future__ import annotations
@@ -37,6 +34,16 @@ except ImportError:
 
 # Feature flags
 ENABLE_AUDIT_LOGGING = False
+
+
+# ==========================================================
+# CRITICAL FIX #1: UPDATED DN PATTERN (Fixes 6243611870 detection)
+# ==========================================================
+
+# OLD pattern (wrong): r'\b80\d{8}\b' - Only detects 80xxxxxxx
+# NEW pattern (correct): r'\b\d{10,12}\b' - Detects any 10-12 digit number
+
+DN_PATTERN = re.compile(r'\b\d{10,12}\b')
 
 
 # ==========================================================
@@ -95,7 +102,7 @@ class TTLCache:
 
 
 # ==========================================================
-# LRU CONTEXT MANAGER (Enhanced with Conversation Memory)
+# LRU CONTEXT MANAGER
 # ==========================================================
 
 @dataclass
@@ -113,7 +120,6 @@ class ConversationMemory:
     interaction_count: int = 0
     
     def add_exchange(self, question: str, response: str, intent: str):
-        """Add a question-answer exchange to history"""
         self.conversation_history.append({
             "question": question,
             "response": response[:200],
@@ -127,21 +133,9 @@ class ConversationMemory:
         self.last_intent = intent
         self.last_interaction_time = datetime.now()
         self.interaction_count += 1
-    
-    def get_context_summary(self) -> str:
-        """Get a summary of conversation context for AI"""
-        if not self.conversation_history:
-            return ""
-        
-        summary = f"Previous interactions ({len(self.conversation_history)} exchanges):\n"
-        for i, exchange in enumerate(self.conversation_history[-3:], 1):
-            summary += f"{i}. User: {exchange['question'][:100]}\n"
-        return summary
 
 
 class LRUContextManager:
-    """LRU-based context manager with conversation memory"""
-    
     def __init__(self, max_users: int = 500):
         self.max_users = max_users
         self.contexts = OrderedDict()
@@ -166,13 +160,11 @@ class LRUContextManager:
         self.contexts[user_id] = context
     
     def get_memory(self, user_id: str) -> ConversationMemory:
-        """Get or create conversation memory for user"""
         if user_id not in self.conversation_memory:
             self.conversation_memory[user_id] = ConversationMemory()
         return self.conversation_memory[user_id]
     
     def update_memory(self, user_id: str, question: str, response: str, intent: str, entities: 'ExtractedEntities'):
-        """Update conversation memory with new exchange"""
         memory = self.get_memory(user_id)
         memory.add_exchange(question, response, intent)
         
@@ -198,45 +190,38 @@ class LRUContextManager:
 
 
 # ==========================================================
-# INTENT TYPES (Enhanced with Dealer Intents)
+# INTENT TYPES
 # ==========================================================
 
 class Intent(str, Enum):
     # DN Operations
     DN_LOOKUP = "dn_lookup"
     DN_TIMELINE = "dn_timeline"
-    DN_DETAIL = "dn_detail"
     
-    # POD Operations
+    # Pending Items
     PENDING_POD = "pending_pod"
-    
-    # PGI Operations
     PENDING_PGI = "pending_pgi"
-    
-    # Delivery Operations
     PENDING_DELIVERIES = "pending_deliveries"
     
-    # Dealer Operations (Enhanced)
-    DEALER_PERFORMANCE = "dealer_performance"
-    TOP_DEALERS = "top_dealers"
-    BOTTOM_DEALERS = "bottom_dealers"
+    # Dealer Operations
     DEALER_PROFILE = "dealer_profile"
-    DEALER_COMPLETE_PROFILE = "dealer_complete_profile"
-    DEALER_DN_ANALYSIS = "dealer_dn_analysis"
+    DEALER_EXECUTIVE = "dealer_executive"
+    DEALER_PERFORMANCE = "dealer_performance"
     DEALER_PRODUCTS = "dealer_products"
+    DEALER_DN_ANALYSIS = "dealer_dn_analysis"
     DEALER_REVENUE = "dealer_revenue"
+    DEALER_HEALTH = "dealer_health"
+    DEALER_RISK = "dealer_risk"
+    DEALER_COMPARE = "dealer_compare"
     DEALER_WAREHOUSE = "dealer_warehouse"
     DEALER_CITY = "dealer_city"
     DEALER_MANAGER = "dealer_manager"
-    DEALER_COMPARE = "dealer_compare"
-    DEALER_HEALTH = "dealer_health"
-    DEALER_EXECUTIVE = "dealer_executive"
-    DEALER_RISK = "dealer_risk"
+    TOP_DEALERS = "top_dealers"
+    BOTTOM_DEALERS = "bottom_dealers"
     
     # Warehouse Operations
     TOP_WAREHOUSES = "top_warehouses"
     WAREHOUSE_PERFORMANCE = "warehouse_performance"
-    WAREHOUSE_DELAYS = "warehouse_delays"
     
     # KPI Operations
     EXECUTIVE_DASHBOARD = "executive_dashboard"
@@ -244,60 +229,38 @@ class Intent(str, Enum):
     CRITICAL_DELAYS = "critical_delays"
     CONTROL_TOWER = "control_tower"
     
-    # City Intelligence
-    CITY_PERFORMANCE = "city_performance"
-    CITY_COMPARISON = "city_comparison"
-    
-    # Region Intelligence
-    REGION_PERFORMANCE = "region_performance"
-    REGION_RANKING = "region_ranking"
-    
-    # Aging Analysis
-    DELIVERY_AGING = "delivery_aging"
-    POD_AGING = "pod_aging"
-    PENDING_AGING = "pending_aging"
-    
-    # AI/General
+    # Analysis
+    ROOT_CAUSE = "root_cause"
+    AI_QUERY = "ai_query"
     HELP = "help"
     GREETING = "greeting"
     GENERAL = "general"
-    AI_QUERY = "ai_query"
-    ROOT_CAUSE = "root_cause"
-    UNKNOWN = "unknown"
 
 
 class QueryClass(str, Enum):
     OPERATIONAL = "operational"
     ANALYTICAL = "analytical"
-    EXECUTIVE = "executive"
     DEALER = "dealer"
     AI = "ai"
 
 
 # ==========================================================
-# ENTITY EXTRACTION (Enhanced with Dealer Patterns)
+# CRITICAL FIX #2: ENHANCED ENTITY EXTRACTION
 # ==========================================================
 
 @dataclass
 class ExtractedEntities:
     dn_number: Optional[str] = None
     dealer: Optional[str] = None
+    dealer2: Optional[str] = None
     dealer_code: Optional[str] = None
-    dealer2: Optional[str] = None  # For comparison
-    customer: Optional[str] = None
-    customer_code: Optional[str] = None
     warehouse: Optional[str] = None
-    warehouse_code: Optional[str] = None
     city: Optional[str] = None
     region: Optional[str] = None
-    division: Optional[str] = None
     sales_manager: Optional[str] = None
-    material_no: Optional[str] = None
     product: Optional[str] = None
     days: Optional[int] = None
     limit: Optional[int] = 10
-    from_date: Optional[str] = None
-    to_date: Optional[str] = None
     last_intent: Optional[str] = None
     last_dn: Optional[str] = None
     last_dealer: Optional[str] = None
@@ -308,34 +271,35 @@ class ExtractedEntities:
         return {k: v for k, v in self.__dict__.items() if v is not None}
     
     def has_any(self) -> bool:
-        return any([self.dn_number, self.dealer, self.warehouse, 
-                   self.city, self.region, self.product])
+        return any([self.dn_number, self.dealer, self.warehouse, self.city])
 
 
 class EntityExtractor:
-    DN_PATTERN = re.compile(r'\b80\d{8}\b')
-    PHONE_PATTERN = re.compile(r'\b(?:92|03)\d{9,12}\b')
+    # FIXED: Detects any 10-12 digit number (including 6243611870)
+    DN_PATTERN = re.compile(r'\b\d{10,12}\b')
+    
     DAYS_PATTERN = re.compile(r'(\d+)\s+days?', re.IGNORECASE)
     LIMIT_PATTERN = re.compile(r'(?:top|limit)\s+(\d+)', re.IGNORECASE)
-    DEALER_CODE_PATTERN = re.compile(r'dealer[-_]?code[:\s]*([A-Z0-9]+)', re.IGNORECASE)
-    CUSTOMER_CODE_PATTERN = re.compile(r'customer[-_]?code[:\s]*([A-Z0-9]+)', re.IGNORECASE)
-    WAREHOUSE_CODE_PATTERN = re.compile(r'warehouse[-_]?code[:\s]*([A-Z0-9]+)', re.IGNORECASE)
-    MATERIAL_PATTERN = re.compile(r'material[-_]?no[:\s]*([A-Z0-9-]+)', re.IGNORECASE)
-    
-    # Dealer comparison pattern
     COMPARE_PATTERN = re.compile(r'compare\s+([\w\s]+?)\s+(?:vs|and|with)\s+([\w\s]+)', re.IGNORECASE)
     
-    CITIES = [
-        'karachi', 'lahore', 'islamabad', 'rawalpindi', 'faisalabad', 
-        'multan', 'peshawar', 'quetta', 'gujranwala', 'sialkot',
-        'hyderabad', 'sukkur', 'bahawalpur', 'sahiwal', 'jhelum', 'sargodha'
+    # Keywords that indicate the question is NOT a dealer query
+    NON_DEALER_KEYWORDS = [
+        'pending', 'pod', 'pgi', 'delivery', 'dn', 'track', 'status',
+        'top', 'best', 'ranking', 'warehouse', 'kpi', 'dashboard',
+        'network', 'health', 'control', 'tower', 'critical', 'delay',
+        'help', 'hi', 'hello', 'hey', 'good morning', 'good afternoon'
     ]
+    
+    CITIES = ['karachi', 'lahore', 'islamabad', 'rawalpindi', 'faisalabad', 
+              'multan', 'peshawar', 'quetta', 'gujranwala', 'sialkot',
+              'hyderabad', 'sukkur', 'bahawalpur', 'sahiwal', 'jhelum', 'sargodha']
     
     @classmethod
     def extract(cls, question: str, context: Dict = None, memory=None) -> ExtractedEntities:
         question_lower = question.lower().strip()
         entities = ExtractedEntities()
         
+        # Load context memory
         if context:
             entities.last_intent = context.get("last_intent")
             entities.last_dn = context.get("last_dn")
@@ -357,6 +321,7 @@ class EntityExtractor:
             entities.dealer2 = compare_match.group(2).strip()
             entities.compare_mode = True
         
+        # Extract DN number (FIXED pattern)
         dn_match = cls.DN_PATTERN.search(question)
         if dn_match:
             entities.dn_number = dn_match.group(0)
@@ -364,6 +329,7 @@ class EntityExtractor:
         if not entities.dn_number and entities.last_dn:
             entities.dn_number = entities.last_dn
         
+        # Extract days and limit
         days_match = cls.DAYS_PATTERN.search(question_lower)
         if days_match:
             entities.days = int(days_match.group(1))
@@ -372,22 +338,7 @@ class EntityExtractor:
         if limit_match:
             entities.limit = min(int(limit_match.group(1)), 50)
         
-        code_match = cls.DEALER_CODE_PATTERN.search(question)
-        if code_match:
-            entities.dealer_code = code_match.group(1)
-        
-        code_match = cls.CUSTOMER_CODE_PATTERN.search(question)
-        if code_match:
-            entities.customer_code = code_match.group(1)
-        
-        code_match = cls.WAREHOUSE_CODE_PATTERN.search(question)
-        if code_match:
-            entities.warehouse_code = code_match.group(1)
-        
-        code_match = cls.MATERIAL_PATTERN.search(question)
-        if code_match:
-            entities.material_no = code_match.group(1)
-        
+        # Extract city
         for city in cls.CITIES:
             if city in question_lower:
                 entities.city = city.capitalize()
@@ -396,19 +347,29 @@ class EntityExtractor:
             if entities.last_city:
                 entities.city = entities.last_city
         
-        warehouse_match = re.search(r'warehouse\s+([A-Za-z0-9\s]+?)(?:\s+$|\.|\,|performance|status)', question_lower)
-        if warehouse_match:
-            entities.warehouse = warehouse_match.group(1).strip()
+        # CRITICAL FIX #3: STANDALONE DEALER DETECTION
+        # If question is short, has no DN, no keywords, treat as dealer name
+        words = question_lower.split()
+        is_standalone_dealer = (
+            len(words) <= 6 and
+            not entities.dn_number and
+            not any(kw in question_lower for kw in cls.NON_DEALER_KEYWORDS)
+        )
         
-        dealer_patterns = [
-            r'dealer\s+([A-Za-z0-9\s]+?)(?:\s+$|\.|\,|performance|dashboard|details|risk|profile|analysis)',
-            r'show\s+dealer\s+([A-Za-z0-9\s]+?)(?:\s+$|\.|\,)',
-            r'for\s+dealer\s+([A-Za-z0-9\s]+?)(?:\s+$|\.|\,)',
-            r'about\s+dealer\s+([A-Za-z0-9\s]+?)(?:\s+$|\.|\,)',
-            r'analyze\s+dealer\s+([A-Za-z0-9\s]+?)(?:\s+$|\.|\,)'
-        ]
+        if is_standalone_dealer and not entities.dealer:
+            entities.dealer = question.strip()
+            logger.debug(f"Detected standalone dealer: {entities.dealer}")
         
-        if not entities.dealer:
+        # Extract dealer from patterns (if not already found)
+        if not entities.dealer and not is_standalone_dealer:
+            dealer_patterns = [
+                r'dealer\s+([A-Za-z0-9\s]+?)(?:\s+$|\.|\,|performance|dashboard|details|risk|profile|analysis|executive|health|products|dns?|revenue|warehouse|city|manager)',
+                r'analyze\s+dealer\s+([A-Za-z0-9\s]+?)(?:\s+$|\.|\,)',
+                r'about\s+dealer\s+([A-Za-z0-9\s]+?)(?:\s+$|\.|\,)',
+                r'profile\s+of\s+([A-Za-z0-9\s]+?)(?:\s+$|\.|\,)',
+                r'executive\s+summary\s+for\s+([A-Za-z0-9\s]+?)(?:\s+$|\.|\,)'
+            ]
+            
             for pattern in dealer_patterns:
                 match = re.search(pattern, question_lower)
                 if match:
@@ -418,81 +379,19 @@ class EntityExtractor:
                 if entities.last_dealer and not entities.dealer:
                     entities.dealer = entities.last_dealer
         
-        division_match = re.search(r'division\s+([A-Za-z0-9\s]+?)(?:\s+$|\.|\,)', question_lower)
-        if division_match:
-            entities.division = division_match.group(1).strip()
-        
-        manager_match = re.search(r'(?:sales manager|manager)\s+([A-Za-z\s]+?)(?:\s+$|\.|\,)', question_lower)
-        if manager_match:
-            entities.sales_manager = manager_match.group(1).strip()
-        
-        product_match = re.search(r'product\s+([A-Za-z0-9\s]+?)(?:\s+$|\.|\,|performance)', question_lower)
-        if product_match:
-            entities.product = product_match.group(1).strip()
+        # Extract warehouse
+        warehouse_match = re.search(r'warehouse\s+([A-Za-z0-9\s]+?)(?:\s+$|\.|\,|performance|status)', question_lower)
+        if warehouse_match:
+            entities.warehouse = warehouse_match.group(1).strip()
         
         return entities
 
 
 # ==========================================================
-# INTENT DETECTION (Enhanced with Dealer Intents)
+# INTENT DETECTION (Enhanced for Dealer Queries)
 # ==========================================================
 
 class IntentDetector:
-    KEYWORD_GROUPS = {
-        Intent.DN_TIMELINE: ['timeline', 'journey', 'history', 'track', 'progress', 'status history'],
-        Intent.DN_DETAIL: ['detail', 'details', 'information', 'show dn', 'dn detail'],
-        Intent.PENDING_POD: ['pending pod', 'pod pending', 'missing pod', 'pod not received', 'pending proof'],
-        Intent.PENDING_PGI: ['pending pgi', 'pgi pending', 'pending dispatch', 'not dispatched'],
-        Intent.PENDING_DELIVERIES: ['pending delivery', 'delivery pending', 'undelivered'],
-        Intent.DEALER_PERFORMANCE: ['dealer performance', 'dealer metrics', 'dealer score', 'how is dealer', 'dealer analysis'],
-        Intent.TOP_DEALERS: ['top dealer', 'best dealer', 'dealer ranking', 'top performing', 'leading dealer'],
-        Intent.BOTTOM_DEALERS: ['bottom dealer', 'worst dealer', 'problem dealer', 'underperforming dealer'],
-        Intent.DEALER_PROFILE: ['dealer profile', 'who is', 'tell me about', 'dealer details', 'dealer information'],
-        Intent.DEALER_COMPLETE_PROFILE: ['complete profile', 'full analysis', '360 analysis', 'dealer overview'],
-        Intent.DEALER_DN_ANALYSIS: ['dealer dn', 'all dns', 'dn list', 'dealer deliveries', 'dn summary'],
-        Intent.DEALER_PRODUCTS: ['products', 'what products', 'sold products', 'dealer products'],
-        Intent.DEALER_REVENUE: ['revenue', 'total sales', 'dealer revenue', 'how much', 'sales value'],
-        Intent.DEALER_WAREHOUSE: ['warehouse', 'which warehouse', 'served by', 'warehouse distribution'],
-        Intent.DEALER_CITY: ['city ranking', 'rank in', 'market share', 'dealer rank'],
-        Intent.DEALER_MANAGER: ['sales manager', 'manager', 'who handles', 'under manager'],
-        Intent.DEALER_COMPARE: ['compare', 'vs', 'versus', 'better', 'who sells more'],
-        Intent.DEALER_HEALTH: ['health', 'healthy', 'performance score', 'dealer score', 'rating'],
-        Intent.DEALER_EXECUTIVE: ['executive summary', 'ceo', 'management summary', 'analyze dealer', 'dealer analysis'],
-        Intent.DEALER_RISK: ['risk', 'risky', 'problem', 'issue with dealer', 'dealer risk'],
-        Intent.TOP_WAREHOUSES: ['top warehouse', 'best warehouse', 'warehouse ranking'],
-        Intent.WAREHOUSE_PERFORMANCE: ['warehouse performance', 'warehouse efficiency', 'how is warehouse'],
-        Intent.WAREHOUSE_DELAYS: ['warehouse delay', 'warehouse issue', 'warehouse problem'],
-        Intent.EXECUTIVE_DASHBOARD: ['executive dashboard', 'ceo dashboard', 'leadership', 'board view'],
-        Intent.NETWORK_HEALTH: ['network health', 'system health', 'service status', 'health check'],
-        Intent.CRITICAL_DELAYS: ['critical delay', 'urgent delay', 'high risk delay', 'critical dn'],
-        Intent.CONTROL_TOWER: ['control tower', 'command center', 'all alerts', 'mission control'],
-        Intent.CITY_PERFORMANCE: ['city performance', 'how is city', 'city analysis'],
-        Intent.CITY_COMPARISON: ['compare cities', 'city comparison', 'best city'],
-        Intent.REGION_PERFORMANCE: ['region performance', 'region analysis', 'how is region'],
-        Intent.REGION_RANKING: ['region ranking', 'best region', 'top region'],
-        Intent.DELIVERY_AGING: ['delivery aging', 'delivery time', 'how long delivery'],
-        Intent.POD_AGING: ['pod aging', 'pod time', 'how long pod'],
-        Intent.PENDING_AGING: ['pending aging', 'how long pending', 'delayed'],
-    }
-    
-    @classmethod
-    def classify_query(cls, question: str) -> QueryClass:
-        question_lower = question.lower()
-        
-        dealer_keywords = ['dealer', 'dealer\'s', 'dealers', 'bismillah', 'traders', 'enterprises', 'electronics']
-        if any(kw in question_lower for kw in dealer_keywords) and 'top' not in question_lower:
-            return QueryClass.DEALER
-        
-        executive_keywords = ['kpi', 'dashboard', 'executive', 'ceo', 'board', 'health', 'control tower', 'management']
-        if any(kw in question_lower for kw in executive_keywords):
-            return QueryClass.EXECUTIVE
-        
-        analytical_keywords = ['trend', 'ranking', 'top', 'best', 'comparison', 'analysis', 'performance']
-        if any(kw in question_lower for kw in analytical_keywords):
-            return QueryClass.ANALYTICAL
-        
-        return QueryClass.OPERATIONAL
-    
     @classmethod
     def detect(cls, question: str, entities: ExtractedEntities) -> Tuple[Intent, QueryClass, float]:
         question_lower = question.lower().strip()
@@ -504,18 +403,9 @@ class IntentDetector:
         if question_lower in ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening']:
             return Intent.GREETING, QueryClass.OPERATIONAL, 1.0
         
-        # Dealer comparison detection
-        if entities.compare_mode or ('compare' in question_lower and 'dealer' in question_lower):
-            return Intent.DEALER_COMPARE, QueryClass.DEALER, 0.95
-        
-        # DN detail detection
-        if entities.dn_number and ('detail' in question_lower or 'details' in question_lower or 'information' in question_lower):
-            return Intent.DN_DETAIL, QueryClass.OPERATIONAL, 0.95
-        
-        # Root cause / analysis questions
+        # Root cause analysis
         analysis_keywords = ['why', 'root cause', 'reason', 'what caused', 'how to fix', 
-                            'what should we do', 'can you help', 'what issue', 'any risk',
-                            'help me', 'suggest', 'recommend', 'analysis', 'insight']
+                            'what should we do', 'can you help', 'what issue', 'any risk']
         if any(kw in question_lower for kw in analysis_keywords):
             return Intent.ROOT_CAUSE, QueryClass.AI, 0.85
         
@@ -523,174 +413,95 @@ class IntentDetector:
         if entities.dn_number:
             if 'timeline' in question_lower or 'history' in question_lower:
                 return Intent.DN_TIMELINE, QueryClass.OPERATIONAL, 0.95
-            else:
-                return Intent.DN_LOOKUP, QueryClass.OPERATIONAL, 0.95
+            return Intent.DN_LOOKUP, QueryClass.OPERATIONAL, 0.95
         
-        # Dealer present - enhanced dealer intent detection
-        if entities.dealer or entities.dealer_code:
+        # Pending items
+        if 'pending pod' in question_lower or 'pod pending' in question_lower:
+            return Intent.PENDING_POD, QueryClass.OPERATIONAL, 0.95
+        if 'pending pgi' in question_lower or 'pgi pending' in question_lower:
+            return Intent.PENDING_PGI, QueryClass.OPERATIONAL, 0.95
+        if 'pending delivery' in question_lower or 'delivery pending' in question_lower:
+            return Intent.PENDING_DELIVERIES, QueryClass.OPERATIONAL, 0.95
+        
+        # KPI and Dashboard
+        if 'executive dashboard' in question_lower or 'ceo dashboard' in question_lower:
+            return Intent.EXECUTIVE_DASHBOARD, QueryClass.OPERATIONAL, 0.95
+        if 'network health' in question_lower:
+            return Intent.NETWORK_HEALTH, QueryClass.OPERATIONAL, 0.95
+        if 'critical delay' in question_lower:
+            return Intent.CRITICAL_DELAYS, QueryClass.OPERATIONAL, 0.95
+        if 'control tower' in question_lower:
+            return Intent.CONTROL_TOWER, QueryClass.OPERATIONAL, 0.95
+        
+        # Top/Bottom dealers
+        if 'top dealer' in question_lower or 'best dealer' in question_lower:
+            return Intent.TOP_DEALERS, QueryClass.ANALYTICAL, 0.95
+        if 'bottom dealer' in question_lower or 'worst dealer' in question_lower:
+            return Intent.BOTTOM_DEALERS, QueryClass.ANALYTICAL, 0.95
+        
+        # Top warehouses
+        if 'top warehouse' in question_lower or 'best warehouse' in question_lower:
+            return Intent.TOP_WAREHOUSES, QueryClass.ANALYTICAL, 0.95
+        
+        # DEALER INTENTS (when dealer is present)
+        if entities.dealer:
+            # Comparison
+            if entities.compare_mode or ('compare' in question_lower and 'vs' in question_lower):
+                return Intent.DEALER_COMPARE, QueryClass.DEALER, 0.95
+            
             # Executive summary (most comprehensive)
-            if any(kw in question_lower for kw in ['analyze', 'executive', 'summary', 'full analysis', 'complete', '360']):
+            if any(kw in question_lower for kw in ['executive', 'summary', 'analyze', 'full analysis', 'complete']):
                 return Intent.DEALER_EXECUTIVE, QueryClass.DEALER, 0.95
             
             # Health score
-            if any(kw in question_lower for kw in ['health', 'healthy', 'score', 'rating', 'performance score']):
+            if any(kw in question_lower for kw in ['health', 'healthy', 'score', 'rating']):
                 return Intent.DEALER_HEALTH, QueryClass.DEALER, 0.95
             
-            # Risk analysis
-            if any(kw in question_lower for kw in ['risk', 'risky', 'problem', 'issue', 'trouble']):
+            # Risk
+            if any(kw in question_lower for kw in ['risk', 'risky', 'problem', 'issue']):
                 return Intent.DEALER_RISK, QueryClass.DEALER, 0.95
             
             # Products
-            if any(kw in question_lower for kw in ['product', 'sell', 'sold', 'items', 'merchandise']):
+            if any(kw in question_lower for kw in ['product', 'sell', 'sold', 'items']):
                 return Intent.DEALER_PRODUCTS, QueryClass.DEALER, 0.95
             
             # Revenue
-            if any(kw in question_lower for kw in ['revenue', 'sales', 'value', 'amount', 'worth']):
+            if any(kw in question_lower for kw in ['revenue', 'sales', 'value', 'amount']):
                 return Intent.DEALER_REVENUE, QueryClass.DEALER, 0.95
-            
-            # Warehouse
-            if any(kw in question_lower for kw in ['warehouse', 'served', 'distribution', 'supplied']):
-                return Intent.DEALER_WAREHOUSE, QueryClass.DEALER, 0.95
-            
-            # City analysis
-            if any(kw in question_lower for kw in ['city', 'rank in city', 'market share', 'compare in city']):
-                return Intent.DEALER_CITY, QueryClass.DEALER, 0.95
-            
-            # Manager
-            if any(kw in question_lower for kw in ['manager', 'sales person', 'who handles', 'responsible']):
-                return Intent.DEALER_MANAGER, QueryClass.DEALER, 0.95
             
             # DN analysis
             if any(kw in question_lower for kw in ['dn', 'delivery note', 'deliveries', 'orders']):
                 return Intent.DEALER_DN_ANALYSIS, QueryClass.DEALER, 0.95
             
-            # Profile (default)
-            if any(kw in question_lower for kw in ['profile', 'details', 'information', 'who is', 'tell me about']):
-                return Intent.DEALER_PROFILE, QueryClass.DEALER, 0.90
+            # Warehouse
+            if any(kw in question_lower for kw in ['warehouse', 'served', 'distribution']):
+                return Intent.DEALER_WAREHOUSE, QueryClass.DEALER, 0.95
             
-            # Performance (default fallback)
+            # City
+            if any(kw in question_lower for kw in ['city', 'rank', 'market share']):
+                return Intent.DEALER_CITY, QueryClass.DEALER, 0.95
+            
+            # Manager
+            if any(kw in question_lower for kw in ['manager', 'sales person', 'who handles']):
+                return Intent.DEALER_MANAGER, QueryClass.DEALER, 0.95
+            
+            # Performance (fallback)
             if 'performance' in question_lower or 'metrics' in question_lower:
                 return Intent.DEALER_PERFORMANCE, QueryClass.DEALER, 0.85
-            else:
-                return Intent.DEALER_PROFILE, QueryClass.DEALER, 0.80
+            
+            # Profile (default dealer intent)
+            return Intent.DEALER_PROFILE, QueryClass.DEALER, 0.80
         
-        # Bottom dealers
-        if 'bottom' in question_lower or 'worst' in question_lower or 'problem' in question_lower:
-            return Intent.BOTTOM_DEALERS, QueryClass.ANALYTICAL, 0.85
+        # Warehouse performance
+        if entities.warehouse and 'performance' in question_lower:
+            return Intent.WAREHOUSE_PERFORMANCE, QueryClass.ANALYTICAL, 0.85
         
-        # Weighted scoring for keyword matches
-        best_intent = None
-        best_score = 0.0
-        
-        for intent, keywords in cls.KEYWORD_GROUPS.items():
-            score = 0.0
-            for keyword in keywords:
-                if keyword in question_lower:
-                    score += 1.0
-            if score > best_score:
-                best_score = score
-                best_intent = intent
-        
-        if best_intent and best_score >= 1.0:
-            confidence = min(0.70 + (best_score / 20), 0.95)
-            query_class = cls.classify_query(question)
-            return best_intent, query_class, confidence
-        
-        confidence = max(0.4, best_score / 10) if best_score > 0 else 0.4
-        return Intent.AI_QUERY, QueryClass.AI, confidence
+        # Default: AI query
+        return Intent.AI_QUERY, QueryClass.AI, 0.50
 
 
 # ==========================================================
-# BUSINESS CONTEXT BUILDER
-# ==========================================================
-
-class BusinessContextBuilder:
-    """Builds rich context for AI queries from available data"""
-    
-    @staticmethod
-    def build_context(
-        question: str, 
-        entities: ExtractedEntities, 
-        memory=None,
-        logistics_data: Dict = None,
-        analytics_data: Dict = None,
-        kpi_data: Dict = None,
-        dealer_data: Dict = None
-    ) -> Dict:
-        """Build comprehensive context for AI"""
-        
-        context = {
-            "question": question,
-            "entities": entities.to_dict(),
-            "business_data": {},
-            "user_context": {}
-        }
-        
-        if memory:
-            context["user_context"]["conversation_summary"] = memory.get_context_summary()
-            context["user_context"]["interaction_count"] = memory.interaction_count
-            if memory.last_city:
-                context["user_context"]["last_mentioned_city"] = memory.last_city
-            if memory.last_dealer:
-                context["user_context"]["last_mentioned_dealer"] = memory.last_dealer
-            if memory.last_dn:
-                context["user_context"]["last_tracked_dn"] = memory.last_dn
-        
-        if logistics_data:
-            context["business_data"]["logistics"] = logistics_data
-        if analytics_data:
-            context["business_data"]["analytics"] = analytics_data
-        if kpi_data:
-            context["business_data"]["kpi"] = kpi_data
-        if dealer_data:
-            context["business_data"]["dealer"] = dealer_data
-        
-        return context
-    
-    @staticmethod
-    def build_enhanced_prompt(context: Dict) -> str:
-        question = context.get("question", "")
-        business_data = context.get("business_data", {})
-        user_context = context.get("user_context", {})
-        
-        prompt = f"""You are a logistics intelligence analyst for a supply chain operations team. 
-Answer the user's question based on available data. Be concise, actionable, and professional.
-
-USER QUESTION: {question}
-
-"""
-        if user_context.get("conversation_summary"):
-            prompt += f"\nCONVERSATION CONTEXT:\n{user_context['conversation_summary']}\n"
-        
-        if business_data:
-            prompt += "\nAVAILABLE DATA:\n"
-            for category, data in business_data.items():
-                if data:
-                    prompt += f"\n{category.upper()}:\n"
-                    if isinstance(data, dict):
-                        for key, value in list(data.items())[:5]:
-                            prompt += f"  - {key}: {value}\n"
-                    elif isinstance(data, list):
-                        for item in data[:3]:
-                            prompt += f"  - {item}\n"
-        else:
-            prompt += "\nNote: Specific business data is currently limited. Provide general logistics guidance based on best practices.\n"
-        
-        prompt += """
-RESPONSE GUIDELINES:
-1. If specific data is available, use it directly
-2. If data is limited, provide general logistics best practices
-3. Always be helpful - never say "I don't know" without offering alternatives
-4. Suggest specific commands the user can try (e.g., "Pending POD", "Top dealers", "Dealer profile")
-5. Keep responses concise and actionable
-
-Your response:"""
-        
-        return prompt
-
-
-# ==========================================================
-# RESPONSE FORMATTER (WhatsApp Optimized)
+# RESPONSE FORMATTER
 # ==========================================================
 
 class ResponseFormatter:
@@ -715,44 +526,13 @@ class ResponseFormatter:
         }
     
     @staticmethod
-    def format_ai_response(response_text: str, context_used: Dict = None) -> str:
-        if not response_text:
-            return "✅ Request processed successfully."
-        
-        if "📊" in response_text or "*" in response_text:
-            return response_text
-        
-        lines = response_text.strip().split('\n')
-        formatted_lines = []
-        
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            
-            if line.lower().startswith('issue'):
-                formatted_lines.append(f"📋 *{line}*")
-            elif line.lower().startswith('root cause'):
-                formatted_lines.append(f"🔍 *{line}*")
-            elif line.lower().startswith('recommend'):
-                formatted_lines.append(f"💡 *{line}*")
-            elif line.lower().startswith('action'):
-                formatted_lines.append(f"✅ *{line}*")
-            elif line.startswith('-') or line.startswith('•'):
-                formatted_lines.append(f"  {line}")
-            else:
-                formatted_lines.append(line)
-        
-        return '\n'.join(formatted_lines)
-    
-    @staticmethod
     def format_help() -> str:
         return """
-🤖 *AI LOGISTICS ASSISTANT - HELP* v43.0
+🤖 *AI LOGISTICS ASSISTANT - HELP* v44.0
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 🔢 *Track a DN*
-• Send DN number (starts with 80)
+• Send any 10-12 digit number
 
 📋 *Pending Items*
 • `Pending POD` - Missing proofs
@@ -761,32 +541,22 @@ class ResponseFormatter:
 
 🏪 *Dealer Analytics*
 • `Top dealers` - Rankings
-• `Bottom dealers` - Problem dealers
-• `Dealer ABC performance` - Specific dealer
-• `Dealer profile ABC` - Complete dealer info
+• `Dealer ABC profile` - Dealer details
 • `Analyze dealer ABC` - Executive summary
-• `Compare dealer A vs dealer B` - Comparison
+• `Dealer ABC products` - Product list
+• `Dealer ABC revenue` - Sales analysis
 • `Is dealer ABC healthy?` - Health score
+• `Compare dealer A vs B` - Comparison
 
 🏭 *Warehouse Analytics*
 • `Top warehouses` - Rankings
-• `Warehouse performance` - Efficiency
 
 📊 *Executive Dashboard*
 • `Executive dashboard` - KPI overview
 • `Network health` - System status
 • `Control tower` - All alerts
 
-📍 *City & Region*
-• `City performance Lahore` - City analysis
-• `Region performance` - Regional insights
-
-⏰ *Aging Analysis*
-• `Delivery aging` - Delivery times
-• `Pending aging` - Delayed items
-
-💬 *AI Assistant*
-• Just ask anything - I'll help!
+💬 *Ask me anything!*
 • "Why is Lahore delayed?"
 • "What issues should I know about?"
 
@@ -806,127 +576,69 @@ class ResponseFormatter:
         return f"""
 {greeting}! 👋
 
-I'm your *AI Logistics Assistant v43.0*. 
+I'm your *AI Logistics Assistant v44.0*. 
 
 I can help you:
-• Track DNs with any 10+ digit number
+• Track any DN with 10-12 digit numbers
 • Check pending PODs, PGIs, and deliveries
-• Show dealer profiles, performance, and rankings
+• Show dealer profiles, products, and revenue
 • Analyze dealer health and risks
 • Compare dealers side by side
-• Analyze issues and provide recommendations
 
-Type `Help` to see all commands, or just ask me anything!
+Type `Help` to see all commands!
 """
 
 
 # ==========================================================
-# CENTRAL ROUTE MAP (Enhanced with Dealer Routes)
+# ROUTE MAP (Pure Router - No Business Logic)
 # ==========================================================
 
 class RouteMap:
-    LOGISTICS_ROUTES = {
-        Intent.DN_LOOKUP: ("get_complete_dn_intelligence", True),
-        Intent.DN_TIMELINE: ("get_dn_timeline", True),
-        Intent.PENDING_POD: ("get_pod_status", False),
-        Intent.PENDING_PGI: ("get_pending_pgi", False),
-        Intent.PENDING_DELIVERIES: ("get_pending_deliveries", False),
+    # All routes delegate to services - NO business logic here
+    ROUTES = {
+        # Logistics routes
+        Intent.DN_LOOKUP: ("logistics", "get_complete_dn_intelligence", True),
+        Intent.DN_TIMELINE: ("logistics", "get_dn_timeline", True),
+        Intent.PENDING_POD: ("logistics", "get_pod_status", False),
+        Intent.PENDING_PGI: ("logistics", "get_pending_pgi", False),
+        Intent.PENDING_DELIVERIES: ("logistics", "get_pending_deliveries", False),
+        
+        # Dealer routes (delegates to AnalyticsService)
+        Intent.TOP_DEALERS: ("analytics", "get_top_dealers", True),
+        Intent.BOTTOM_DEALERS: ("analytics", "get_bottom_dealers", True),
+        Intent.DEALER_PROFILE: ("analytics", "get_dealer_profile", True),
+        Intent.DEALER_EXECUTIVE: ("analytics", "get_dealer_executive_summary", True),
+        Intent.DEALER_PERFORMANCE: ("analytics", "get_dealer_performance", True),
+        Intent.DEALER_PRODUCTS: ("analytics", "get_dealer_products", True),
+        Intent.DEALER_DN_ANALYSIS: ("analytics", "get_dealer_dn_analysis", True),
+        Intent.DEALER_REVENUE: ("analytics", "get_dealer_revenue_analysis", True),
+        Intent.DEALER_HEALTH: ("analytics", "calculate_dealer_health_score", True),
+        Intent.DEALER_RISK: ("analytics", "get_dealer_risk_analysis", True),
+        Intent.DEALER_COMPARE: ("analytics", "compare_dealers", True),
+        Intent.DEALER_WAREHOUSE: ("analytics", "get_dealer_warehouse_analysis", True),
+        Intent.DEALER_CITY: ("analytics", "get_dealer_city_analysis", True),
+        Intent.DEALER_MANAGER: ("analytics", "get_sales_manager_analysis", True),
+        
+        # Warehouse routes
+        Intent.TOP_WAREHOUSES: ("analytics", "get_top_warehouses", True),
+        Intent.WAREHOUSE_PERFORMANCE: ("analytics", "get_warehouse_performance", True),
+        
+        # KPI routes
+        Intent.EXECUTIVE_DASHBOARD: ("kpi", "get_executive_dashboard", False),
+        Intent.NETWORK_HEALTH: ("kpi", "get_network_health", False),
+        Intent.CRITICAL_DELAYS: ("kpi", "get_critical_delays", False),
+        Intent.CONTROL_TOWER: ("kpi", "get_control_tower_report", False),
     }
-    
-    ANALYTICS_ROUTES = {
-        Intent.TOP_DEALERS: ("get_top_dealers", True),
-        Intent.BOTTOM_DEALERS: ("get_bottom_dealers", True),
-        Intent.TOP_WAREHOUSES: ("get_top_warehouses", True),
-        Intent.DEALER_PERFORMANCE: ("get_dealer_performance", True),
-        Intent.DEALER_PROFILE: ("get_dealer_profile", True),
-        Intent.DEALER_COMPLETE_PROFILE: ("get_dealer_complete_profile", True),
-        Intent.DEALER_DN_ANALYSIS: ("get_dealer_dn_analysis", True),
-        Intent.DEALER_PRODUCTS: ("get_dealer_products", True),
-        Intent.DEALER_REVENUE: ("get_dealer_revenue_analysis", True),
-        Intent.DEALER_WAREHOUSE: ("get_dealer_warehouse_analysis", True),
-        Intent.DEALER_CITY: ("get_dealer_city_analysis", True),
-        Intent.DEALER_MANAGER: ("get_sales_manager_analysis", True),
-        Intent.DEALER_COMPARE: ("compare_dealers", True),
-        Intent.DEALER_HEALTH: ("calculate_dealer_health_score", True),
-        Intent.DEALER_EXECUTIVE: ("get_dealer_executive_summary", True),
-        Intent.DEALER_RISK: ("get_dealer_risk_analysis", True),
-        Intent.CITY_PERFORMANCE: ("get_city_performance", True),
-        Intent.CITY_COMPARISON: ("get_city_comparison", False),
-        Intent.REGION_PERFORMANCE: ("get_region_comparison", False),
-        Intent.REGION_RANKING: ("get_region_ranking", False),
-        Intent.DELIVERY_AGING: ("get_delivery_aging_analysis", False),
-        Intent.POD_AGING: ("get_pod_aging_analysis", False),
-        Intent.PENDING_AGING: ("get_pending_delivery_analysis", False),
-        Intent.WAREHOUSE_PERFORMANCE: ("get_warehouse_performance", True),
-        Intent.WAREHOUSE_DELAYS: ("get_warehouse_delay_analysis", False),
-    }
-    
-    KPI_ROUTES = {
-        Intent.EXECUTIVE_DASHBOARD: ("get_executive_dashboard", False),
-        Intent.NETWORK_HEALTH: ("get_network_health", False),
-        Intent.CRITICAL_DELAYS: ("get_critical_delays", False),
-        Intent.CONTROL_TOWER: ("get_control_tower_report", False),
-    }
-    
-    _available_routes: Dict[str, bool] = {}
-    _missing_routes: Dict[str, str] = {}
-    
-    @classmethod
-    def is_route_available(cls, intent: Intent) -> bool:
-        return intent in cls.LOGISTICS_ROUTES or \
-               intent in cls.ANALYTICS_ROUTES or \
-               intent in cls.KPI_ROUTES
     
     @classmethod
     def get_route(cls, intent: Intent) -> Tuple[Optional[str], Optional[str], bool]:
-        if intent in cls.LOGISTICS_ROUTES:
-            method, has_param = cls.LOGISTICS_ROUTES[intent]
-            return "logistics", method, has_param
-        
-        if intent in cls.ANALYTICS_ROUTES:
-            method, has_param = cls.ANALYTICS_ROUTES[intent]
-            return "analytics", method, has_param
-        
-        if intent in cls.KPI_ROUTES:
-            method, has_param = cls.KPI_ROUTES[intent]
-            return "kpi", method, has_param
-        
+        if intent in cls.ROUTES:
+            return cls.ROUTES[intent]
         return None, None, False
-    
-    @classmethod
-    def validate_routes(cls, logistics_service, analytics_service, kpi_service):
-        cls._available_routes = {}
-        cls._missing_routes = {}
-        
-        if logistics_service:
-            for intent, (method, _) in cls.LOGISTICS_ROUTES.items():
-                if hasattr(logistics_service, method) and callable(getattr(logistics_service, method)):
-                    cls._available_routes[f"logistics.{method}"] = True
-                else:
-                    cls._available_routes[f"logistics.{method}"] = False
-                    cls._missing_routes[f"logistics.{method}"] = "Method not found"
-        
-        if analytics_service:
-            for intent, (method, _) in cls.ANALYTICS_ROUTES.items():
-                if hasattr(analytics_service, method) and callable(getattr(analytics_service, method)):
-                    cls._available_routes[f"analytics.{method}"] = True
-                else:
-                    cls._available_routes[f"analytics.{method}"] = False
-                    cls._missing_routes[f"analytics.{method}"] = "Method not found - will use AI fallback"
-        
-        if kpi_service:
-            for intent, (method, _) in cls.KPI_ROUTES.items():
-                if hasattr(kpi_service, method) and callable(getattr(kpi_service, method)):
-                    cls._available_routes[f"kpi.{method}"] = True
-                else:
-                    cls._available_routes[f"kpi.{method}"] = False
-                    cls._missing_routes[f"kpi.{method}"] = "Method not found"
-        
-        return cls._available_routes, cls._missing_routes
 
 
 # ==========================================================
-# QUERY METRICS TRACKING
+# QUERY METRICS
 # ==========================================================
 
 class QueryMetrics:
@@ -939,42 +651,21 @@ class QueryMetrics:
             "success_rate": 100.0,
             "failures": 0,
             "ai_fallbacks": 0,
-            "by_confidence": {"high": 0, "medium": 0, "low": 0},
             "cache_hits": 0,
             "cache_misses": 0,
-            "service_failures": {
-                "logistics": 0,
-                "analytics": 0,
-                "kpi": 0,
-                "ai": 0
-            }
         }
     
     def record(self, intent: str, query_class: str, processing_time_ms: float, 
                success: bool, confidence: float = 0.5, cache_hit: bool = False, 
-               service_failure: str = None, ai_fallback: bool = False):
+               ai_fallback: bool = False):
         self.metrics["total_queries"] += 1
         
         if intent not in self.metrics["by_intent"]:
             self.metrics["by_intent"][intent] = 0
         self.metrics["by_intent"][intent] += 1
         
-        if query_class not in self.metrics["by_class"]:
-            self.metrics["by_class"][query_class] = 0
-        self.metrics["by_class"][query_class] += 1
-        
         if ai_fallback:
             self.metrics["ai_fallbacks"] += 1
-        
-        if service_failure and service_failure in self.metrics["service_failures"]:
-            self.metrics["service_failures"][service_failure] += 1
-        
-        if confidence >= 0.8:
-            self.metrics["by_confidence"]["high"] += 1
-        elif confidence >= 0.6:
-            self.metrics["by_confidence"]["medium"] += 1
-        else:
-            self.metrics["by_confidence"]["low"] += 1
         
         if cache_hit:
             self.metrics["cache_hits"] += 1
@@ -994,7 +685,6 @@ class QueryMetrics:
         return {
             **self.metrics,
             "cache_hit_rate": round(self.metrics["cache_hits"] / cache_total * 100, 1) if cache_total > 0 else 0,
-            "by_intent": dict(sorted(self.metrics["by_intent"].items(), key=lambda x: x[1], reverse=True)[:10])
         }
 
 
@@ -1038,7 +728,7 @@ class RedisContextManager:
 
 
 # ==========================================================
-# MAIN AI QUERY SERVICE (v43.0 - Dealer Intelligence)
+# MAIN AI QUERY SERVICE (v44.0 - PURE ROUTER)
 # ==========================================================
 
 class AIQueryService:
@@ -1074,34 +764,10 @@ class AIQueryService:
         self._initialized = True
         
         logger.info("=" * 70)
-        logger.info("🧠 AI QUERY SERVICE v43.0 - DEALER INTELLIGENCE ENGINE")
-        logger.info("   Principles: Never Fail | Always Answer | AI-First Fallback")
-        logger.info("   Features: Dealer Profiles | DN Details | Health Scores | Comparisons")
+        logger.info("🧠 AI QUERY SERVICE v44.0 - PURE ROUTER")
+        logger.info("   Principles: Detect Intent | Extract Entities | Route | Format")
+        logger.info("   NO Business Logic - Delegates to Services")
         logger.info("=" * 70)
-        self._validate_available_routes()
-    
-    def _validate_available_routes(self):
-        session = self._get_session()
-        try:
-            logistics = self._get_logistics_service(session)
-            analytics = self._get_analytics_service(session)
-            kpi = self._get_kpi_service(session)
-            
-            available, missing = RouteMap.validate_routes(logistics, analytics, kpi)
-            
-            available_count = sum(1 for v in available.values() if v)
-            total_count = len(available)
-            
-            logger.info(f"Route validation: {available_count}/{total_count} routes available")
-            if missing:
-                for route, reason in list(missing.items())[:5]:
-                    logger.warning(f"  ⚠️ {route}: {reason}")
-                    
-        except Exception as e:
-            logger.exception(f"Route validation failed: {e}")
-        finally:
-            if session:
-                self._close_session(session)
     
     def _get_session(self) -> Session:
         if self._session_factory:
@@ -1161,171 +827,47 @@ class AIQueryService:
                 self.service_health["ai"] = False
         return self._ai_provider
     
-    def _handle_ai_query(self, question: str, entities: ExtractedEntities, 
-                         session: Session, request_id: str, context_data: Dict = None) -> Dict:
-        """Universal AI handler for all intents"""
-        logger.bind(request_id=request_id).info(f"🤖 Universal AI handler invoked: {question[:50]}")
-        self.metrics.record("ai_universal", "ai", 0, True, 0.7, False, False, True)
-        
-        logistics_data = None
-        analytics_data = None
-        kpi_data = None
-        dealer_data = None
-        
-        # Try to collect dealer-specific data if dealer is mentioned
-        if entities.dealer:
-            try:
-                analytics = self._get_analytics_service(session)
-                if analytics and hasattr(analytics, 'get_dealer_profile'):
-                    dealer_profile = analytics.get_dealer_profile(entities.dealer)
-                    if dealer_profile and "error" not in dealer_profile:
-                        dealer_data = dealer_profile
-            except:
-                pass
-        
-        try:
-            logistics = self._get_logistics_service(session)
-            if logistics:
-                try:
-                    pod_status = logistics.get_pod_status() if hasattr(logistics, 'get_pod_status') else None
-                    if pod_status:
-                        logistics_data = {"pending_pods": pod_status.get("pending_count", "Unknown")}
-                except:
-                    pass
-        except:
-            pass
-        
-        try:
-            analytics = self._get_analytics_service(session)
-            if analytics:
-                try:
-                    top_dealers = analytics.get_top_dealers(3) if hasattr(analytics, 'get_top_dealers') else None
-                    if top_dealers:
-                        analytics_data = {"top_dealers": top_dealers[:3] if isinstance(top_dealers, list) else []}
-                except:
-                    pass
-        except:
-            pass
-        
-        memory = self.lru_context.get_memory(request_id or "guest")
-        context = BusinessContextBuilder.build_context(
-            question=question,
-            entities=entities,
-            memory=memory,
-            logistics_data=logistics_data,
-            analytics_data=analytics_data,
-            kpi_data=kpi_data,
-            dealer_data=dealer_data
-        )
-        
-        if context_data:
-            context["business_data"].update(context_data)
-        
-        ai_response = self._generate_ai_response(context, request_id)
-        formatted_response = ResponseFormatter.format_ai_response(ai_response, context.get("business_data"))
-        
-        self.lru_context.update_memory(request_id or "guest", question, formatted_response, "ai_universal", entities)
-        
-        return self.formatter.format_success(
-            {"insight": ai_response, "context_used": context.get("business_data", {})},
-            formatted_response
-        )
-    
-    def _generate_ai_response(self, context: Dict, request_id: str) -> str:
+    def _handle_ai_fallback(self, question: str, request_id: str) -> str:
+        """AI fallback when no specific route matches"""
         if not self.ai_provider:
-            logger.bind(request_id=request_id).warning("AI provider unavailable, using fallback")
-            return self._get_fallback_response(context.get("question", ""))
+            return self._get_fallback_response(question)
         
         try:
-            enhanced_prompt = BusinessContextBuilder.build_enhanced_prompt(context)
-            user_context = context.get("entities", {}).get("customer_code") or "guest"
-            
-            result = self.ai_provider.chat(enhanced_prompt, user_context, request_id=request_id)
-            
+            result = self.ai_provider.chat(question, "guest", request_id=request_id)
             if not result or len(result.strip()) == 0:
-                return self._get_fallback_response(context.get("question", ""))
-            
+                return self._get_fallback_response(question)
             return result
-            
         except Exception as e:
-            logger.bind(request_id=request_id).exception(f"AI generation failed: {e}")
-            self.metrics.record("ai_error", "ai", 0, False, 0.5, False, "ai")
-            return self._get_fallback_response(context.get("question", ""))
+            logger.bind(request_id=request_id).exception(f"AI fallback failed: {e}")
+            return self._get_fallback_response(question)
     
     def _get_fallback_response(self, question: str) -> str:
-        question_lower = question.lower()
-        
-        if 'help' in question_lower or 'command' in question_lower:
+        """Fallback when everything fails"""
+        if 'help' in question.lower():
             return ResponseFormatter.format_help()
         
-        if any(word in question_lower for word in ['hi', 'hello', 'hey', 'good']):
+        if any(word in question.lower() for word in ['hi', 'hello', 'hey', 'good']):
             return ResponseFormatter.format_greeting()
-        
-        if 'dealer' in question_lower:
-            return """🏪 *Dealer Intelligence*
-
-To get dealer information, try these commands:
-
-• `Dealer profile [name]` - Complete dealer profile
-• `Analyze dealer [name]` - Executive summary
-• `Compare dealer A vs dealer B` - Side by side
-• `Is dealer [name] healthy?` - Health score
-• `Show all DNs of [name]` - DN history
-• `Dealer [name] products` - Product list
-• `Dealer [name] revenue` - Sales analysis
-• `Top dealers` - Rankings
-• `Bottom dealers` - Problem dealers
-
-Type `Help` for all commands!"""
         
         return f"""I understand you're asking about: "{question[:80]}"
 
 📋 *Try these commands:*
-• Send any 10+ digit number to track a DN
+• Send any 10-12 digit number to track a DN
 • `Pending POD` - Missing proofs
 • `Top dealers` - Dealer rankings
-• `Dealer profile [name]` - Dealer details
-• `Executive dashboard` - KPI overview
-• `Control tower` - All alerts
-
-💡 *Or ask me:*
-• "Why is Lahore delayed?"
-• "Analyze dealer ABC"
-• "Compare dealer X vs Y"
+• `Dealer [name] profile` - Dealer details
+• `Analyze dealer [name]` - Executive summary
 
 Type `Help` for complete list!"""
     
-    def _execute_route_with_fallback(self, intent: Intent, entities: ExtractedEntities,
-                                      question: str, session: Session, request_id: str) -> Dict:
-        """Execute route with smart fallback chain"""
+    def _execute_route(self, intent: Intent, entities: ExtractedEntities, 
+                       session: Session, request_id: str) -> Optional[Dict]:
+        """Execute route - PURE routing, no business logic"""
         service_name, method, has_param = RouteMap.get_route(intent)
         
-        if intent in [Intent.AI_QUERY, Intent.ROOT_CAUSE, Intent.GENERAL]:
-            logger.bind(request_id=request_id).info(f"Routing {intent.value} to AI")
-            return self._handle_ai_query(question, entities, session, request_id)
+        if not service_name:
+            return None
         
-        if service_name:
-            route_result = self._try_specific_route(
-                service_name, method, has_param, intent, 
-                entities, question, session, request_id
-            )
-            
-            if route_result and route_result.get("success"):
-                return route_result
-            
-            logger.bind(request_id=request_id).info(f"Route {intent.value} failed, falling back to AI")
-            ai_result = self._handle_ai_query(question, entities, session, request_id, 
-                                              context_data={"failed_route": intent.value})
-            
-            if ai_result and ai_result.get("success"):
-                self.metrics.record(intent.value, "ai", 0, True, 0.6, False, False, True)
-                return ai_result
-        
-        return self._handle_ai_query(question, entities, session, request_id)
-    
-    def _try_specific_route(self, service_name: str, method: str, has_param: bool,
-                            intent: Intent, entities: ExtractedEntities, question: str,
-                            session: Session, request_id: str) -> Optional[Dict]:
         route_start = time.time()
         
         try:
@@ -1339,26 +881,10 @@ Type `Help` for complete list!"""
                     return None
                 
                 if has_param:
-                    if intent == Intent.DN_LOOKUP or intent == Intent.DN_TIMELINE or intent == Intent.DN_DETAIL:
-                        param = entities.dn_number
-                    else:
-                        param = entities.dn_number or entities.dealer or entities.limit
-                    
-                    if not param and intent != Intent.PENDING_POD and intent != Intent.PENDING_PGI:
-                        return None
+                    param = entities.dn_number
                     result = handler(param) if param else handler()
                 else:
                     result = handler()
-                
-                route_time = round((time.time() - route_start) * 1000, 2)
-                logger.bind(request_id=request_id, intent=intent.value).info(f"Route executed in {route_time}ms")
-                
-                if isinstance(result, dict):
-                    if result.get("error"):
-                        return None
-                    summary = result.get("_summary", "")
-                    return self.formatter.format_success(result, summary)
-                return None
                 
             elif service_name == "analytics":
                 service = self._get_analytics_service(session)
@@ -1369,35 +895,27 @@ Type `Help` for complete list!"""
                 if not handler or not callable(handler):
                     return None
                 
+                # Build parameters based on intent
                 if has_param:
                     if intent == Intent.DEALER_COMPARE and entities.dealer2:
-                        param = (entities.dealer, entities.dealer2)
-                    elif intent == Intent.DEALER_CITY and entities.city:
-                        param = (entities.dealer, entities.city) if hasattr(handler, '__code__') and handler.__code__.co_argcount > 1 else entities.dealer
-                    elif intent in [Intent.DEALER_PROFILE, Intent.DEALER_EXECUTIVE, Intent.DEALER_HEALTH,
-                                   Intent.DEALER_RISK, Intent.DEALER_REVENUE, Intent.DEALER_PRODUCTS,
-                                   Intent.DEALER_DN_ANALYSIS, Intent.DEALER_WAREHOUSE, Intent.DEALER_MANAGER,
-                                   Intent.DEALER_PERFORMANCE]:
-                        param = entities.dealer
-                    elif intent == Intent.CITY_PERFORMANCE and entities.city:
-                        param = entities.city
+                        result = handler(entities.dealer, entities.dealer2)
+                    elif intent == Intent.TOP_DEALERS or intent == Intent.BOTTOM_DEALERS:
+                        result = handler(entities.limit or 10)
+                    elif intent in [Intent.DEALER_PROFILE, Intent.DEALER_EXECUTIVE, Intent.DEALER_PERFORMANCE,
+                                   Intent.DEALER_PRODUCTS, Intent.DEALER_DN_ANALYSIS, Intent.DEALER_REVENUE,
+                                   Intent.DEALER_HEALTH, Intent.DEALER_RISK, Intent.DEALER_WAREHOUSE,
+                                   Intent.DEALER_CITY, Intent.DEALER_MANAGER]:
+                        result = handler(entities.dealer) if entities.dealer else None
                     elif intent == Intent.WAREHOUSE_PERFORMANCE and entities.warehouse:
-                        param = entities.warehouse
+                        result = handler(entities.warehouse)
                     else:
-                        param = entities.dealer or entities.limit or 10
-                    
-                    result = handler(param) if param else handler(entities.limit or 10)
+                        result = handler(entities.limit or 10)
                 else:
                     result = handler()
                 
-                route_time = round((time.time() - route_start) * 1000, 2)
-                logger.bind(request_id=request_id, intent=intent.value).info(f"Route executed in {route_time}ms")
-                
-                if isinstance(result, dict) and result.get("error"):
+                if not result:
                     return None
-                summary = result.get("_summary", "") if isinstance(result, dict) else ""
-                return self.formatter.format_success(result, summary)
-                
+                    
             elif service_name == "kpi":
                 service = self._get_kpi_service(session)
                 if not service:
@@ -1409,20 +927,23 @@ Type `Help` for complete list!"""
                 
                 result = handler()
                 
-                route_time = round((time.time() - route_start) * 1000, 2)
-                logger.bind(request_id=request_id, intent=intent.value).info(f"Route executed in {route_time}ms")
-                
-                if isinstance(result, dict) and result.get("error"):
+            else:
+                return None
+            
+            route_time = round((time.time() - route_start) * 1000, 2)
+            logger.bind(request_id=request_id, intent=intent.value).info(f"Route executed in {route_time}ms")
+            
+            if isinstance(result, dict):
+                if result.get("error"):
                     return None
-                summary = result.get("_summary", "") if isinstance(result, dict) else ""
+                summary = result.get("_summary", "")
                 return self.formatter.format_success(result, summary)
-                
+            
+            return self.formatter.format_success(result, "")
+            
         except Exception as e:
             logger.bind(request_id=request_id).debug(f"Route {method} failed: {e}")
-            self.metrics.record(intent.value, "error", 0, False, 0.5, False, service_name)
             return None
-        
-        return None
     
     def _get_context(self, user_id: str) -> Dict:
         if self.redis_context.available:
@@ -1477,12 +998,23 @@ Type `Help` for complete list!"""
                 confidence=confidence
             ).info("Intent detected")
             
+            # Handle HELP and GREETING directly
             if intent == Intent.HELP:
                 result = self.formatter.format_success({}, self.formatter.format_help())
             elif intent == Intent.GREETING:
                 result = self.formatter.format_success({}, self.formatter.format_greeting())
             else:
-                result = self._execute_route_with_fallback(intent, entities, question, session, request_id)
+                # Try specific route
+                result = self._execute_route(intent, entities, session, request_id)
+                
+                # If route failed, try AI fallback
+                if not result or not result.get("success"):
+                    logger.bind(request_id=request_id).info(f"Route failed, using AI fallback")
+                    ai_response = self._handle_ai_fallback(question, request_id)
+                    result = self.formatter.format_success({}, ai_response)
+                    self.metrics.record(intent.value, query_class.value, 
+                                       (time.time() - start_time) * 1000, 
+                                       True, confidence, False, True)
             
             whatsapp_message = result.get("summary", "") if result.get("success") else result.get("summary", "Unable to process")
             error_id = result.get("error_id")
@@ -1494,9 +1026,10 @@ Type `Help` for complete list!"""
             elapsed_ms = (time.time() - start_time) * 1000
             
             self.metrics.record(intent.value, query_class.value, elapsed_ms, 
-                               result.get("success", True), confidence, False, 
-                               None, intent in [Intent.AI_QUERY, Intent.ROOT_CAUSE, Intent.GENERAL])
+                               result.get("success", True), confidence, False,
+                               intent in [Intent.AI_QUERY, Intent.ROOT_CAUSE, Intent.GENERAL])
             
+            # Auto cache cleanup every 500 queries
             if self.metrics.metrics["total_queries"] % 500 == 0:
                 logger.bind(request_id=request_id).info("Auto cache cleanup triggered")
                 self.cache.clear()
@@ -1540,35 +1073,17 @@ Type `Help` for complete list!"""
             if session:
                 self._close_session(session)
     
-    def _to_whatsapp(self, response: Dict) -> str:
-        if not response.get("success"):
-            error_id = response.get("error_id", "")
-            if error_id:
-                return f"❌ {response.get('summary', 'Unable to process request')}"
-            return f"❌ {response.get('summary', 'Unable to process request')}"
-        summary = response.get("summary", "")
-        if summary:
-            return summary
-        return "✅ Request processed successfully"
-    
     def health_check(self) -> Dict:
         return {
             "service": "ai_query_service",
-            "version": "43.0",
-            "architecture": "dealer_intelligence_engine",
+            "version": "44.0",
+            "architecture": "pure_router",
             "status": "healthy",
             "metrics": self.metrics.get_metrics(),
             "cache": self.cache.get_stats(),
             "context_stats": self.lru_context.get_stats(),
             "redis_available": self.redis_context.available,
             "service_health": self.service_health,
-            "principles": [
-                "Never Fail",
-                "Always Answer", 
-                "AI-First Fallback",
-                "Dealer Intelligence",
-                "No Feature Under Development"
-            ]
         }
     
     def get_metrics(self) -> Dict:
@@ -1610,7 +1125,7 @@ def health_check(session_factory=None) -> Dict:
         service = get_ai_query_service(session_factory)
         return service.health_check()
     except Exception as e:
-        return {"service": "ai_query_service", "status": "unhealthy", "error": str(e), "version": "43.0"}
+        return {"service": "ai_query_service", "status": "unhealthy", "error": str(e), "version": "44.0"}
 
 
 # ==========================================================
@@ -1618,32 +1133,21 @@ def health_check(session_factory=None) -> Dict:
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("🧠 AI QUERY SERVICE v43.0 - DEALER INTELLIGENCE ENGINE")
+logger.info("🧠 AI QUERY SERVICE v44.0 - PURE ROUTER")
 logger.info("")
-logger.info("   CORE PRINCIPLES:")
-logger.info("   ✅ AI-FIRST FALLBACK - Always try AI before showing errors")
-logger.info("   ✅ NO 'FEATURE UNDER DEVELOPMENT' - Never shown to users")
-logger.info("   ✅ DEALER INTELLIGENCE - Full dealer analytics support")
-logger.info("   ✅ UNIVERSAL AI MODE - All intents can use AI understanding")
-logger.info("   ✅ SMART FALLBACK CHAIN - Route → AI → Help Menu")
-logger.info("   ✅ SERVICE ISOLATION - Service failures never break the bot")
-logger.info("   ✅ CONVERSATION MEMORY - Context-aware responses")
+logger.info("   WHAT THIS FILE DOES:")
+logger.info("   ✅ Intent Detection - Classifies user questions")
+logger.info("   ✅ Entity Extraction - Finds DNs, dealers, cities")
+logger.info("   ✅ Route Mapping - Directs to appropriate service")
+logger.info("   ✅ Response Formatting - Prepares WhatsApp response")
 logger.info("")
-logger.info("   DEALER QUERIES NOW SUPPORTED:")
-logger.info("   • 'Dealer profile ABC' - Complete profile")
-logger.info("   • 'Analyze dealer ABC' - Executive summary")
-logger.info("   • 'Compare dealer A vs B' - Side by side")
-logger.info("   • 'Is dealer ABC healthy?' - Health score")
-logger.info("   • 'Show all DNs of ABC' - DN history")
-logger.info("   • 'Dealer ABC products' - Product list")
-logger.info("   • 'Dealer ABC revenue' - Sales analysis")
-logger.info("   • 'Top dealers' - Rankings")
-logger.info("   • 'Bottom dealers' - Problem dealers")
+logger.info("   WHAT THIS FILE DOES NOT DO:")
+logger.info("   ❌ NO Dealer Profile Logic - Delegates to AnalyticsService")
+logger.info("   ❌ NO DN Intelligence - Delegates to LogisticsService")
+logger.info("   ❌ NO KPI Calculations - Delegates to KPIService")
 logger.info("")
-logger.info("   WHATSAPP RESPONSES NOW WORK FOR:")
-logger.info("   • 'Why is Lahore delayed?'")
-logger.info("   • 'What issue is coming?'")
-logger.info("   • 'Any risks today?'")
-logger.info("   • 'How to fix the issue?'")
-logger.info("   • 'Can you help me?'")
+logger.info("   FIXES IN v44.0:")
+logger.info("   ✅ DN Pattern: r'\\b\\d{{10,12}}\\b' (Fixes 6243611870)")
+logger.info("   ✅ Standalone Dealer Detection (Short questions)")
+logger.info("   ✅ Pure Routing - No business logic in this file")
 logger.info("=" * 70)
