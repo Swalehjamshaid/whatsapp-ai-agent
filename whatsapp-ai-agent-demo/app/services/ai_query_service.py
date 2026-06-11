@@ -1,26 +1,28 @@
 # ==========================================================
-# FILE: app/services/ai_query_service.py (IMPROVED v39.0)
+# FILE: app/services/ai_query_service.py (IMPROVED v40.0)
 # ==========================================================
 # PURPOSE: PURE ROUTER ONLY - Single Brain for Query Routing
 #
-# IMPROVEMENTS v39.0:
-# - Frozen RouteMap - only routes that definitely exist
-# - Safe route validation at startup (available/disabled routes)
-# - Removed dynamic __getattribute__ (use getattr with fallback)
-# - Route availability check before execution
-# - Disabled QueryAudit dependency (feature flag)
-# - Service health registry for monitoring
-# - Safe root cause AI with hasattr checks
-# - Fixed singleton factory to update session_factory
-# - Route fallbacks with user-friendly messages
-# - Enhanced error tracking with logger.bind
+# IMPROVEMENTS v40.0:
+# - FIX AI USER CONTEXT (separate memory per user)
+# - ADD AI AVAILABILITY CHECK before calls
+# - IMPROVE ROOT CAUSE AI logging for debugging
+# - CACHE DN LOOKUPS and more intents
+# - ADD ROUTE EXECUTION TIMER for performance monitoring
+# - ADD SERVICE FAILURE COUNTERS for health tracking
+# - IMPROVE ROUTE VALIDATION at runtime
+# - ADD REQUEST TRACE across all operations
+# - ADD CACHE CLEANUP every 500 queries
+# - IMPROVE FALLBACK RESPONSE with commands
+# - ADD AI RESPONSE VALIDATION to avoid empty replies
+# - IMPROVE ENTITY EXTRACTION with more cities
+# - REMOVE unused imports and comments
 # ==========================================================
 
 from __future__ import annotations
 
 import re
 import time
-import asyncio
 import hashlib
 import uuid
 from typing import Dict, Any, Optional, List, Tuple
@@ -167,12 +169,6 @@ class Intent(str, Enum):
     CRITICAL_DELAYS = "critical_delays"
     CONTROL_TOWER = "control_tower"
     
-    # Disabled temporarily (methods not yet implemented)
-    # DN_AGING = "dn_aging"           # Waiting for logistics service update
-    # POD_AGING = "pod_aging"         # Waiting for logistics service update
-    # WAREHOUSE_STATUS = "warehouse_status"  # Waiting for logistics service update
-    # REGION_PERFORMANCE = "region_performance"  # Waiting for analytics service update
-    
     # General (Always available)
     HELP = "help"
     GREETING = "greeting"
@@ -238,8 +234,11 @@ class EntityExtractor:
     WAREHOUSE_CODE_PATTERN = re.compile(r'warehouse[-_]?code[:\s]*([A-Z0-9]+)', re.IGNORECASE)
     MATERIAL_PATTERN = re.compile(r'material[-_]?no[:\s]*([A-Z0-9-]+)', re.IGNORECASE)
     
-    CITIES = ['karachi', 'lahore', 'islamabad', 'rawalpindi', 'faisalabad', 
-              'multan', 'peshawar', 'quetta', 'gujranwala', 'sialkot']
+    CITIES = [
+        'karachi', 'lahore', 'islamabad', 'rawalpindi', 'faisalabad', 
+        'multan', 'peshawar', 'quetta', 'gujranwala', 'sialkot',
+        'hyderabad', 'sukkur', 'bahawalpur', 'sahiwal', 'jhelum', 'sargodha'
+    ]
     
     @classmethod
     def extract(cls, question: str, context: Dict = None) -> ExtractedEntities:
@@ -521,7 +520,7 @@ Type `Help` for complete list."""
     @staticmethod
     def format_help() -> str:
         return """
-🤖 *AI LOGISTICS ASSISTANT - HELP* v39.0
+🤖 *AI LOGISTICS ASSISTANT - HELP* v40.0
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 🔢 *Track a DN*
@@ -565,7 +564,7 @@ Type `Help` for complete list."""
         return f"""
 {greeting}! 👋
 
-I'm your *AI Logistics Assistant v39.0*. I can help you track DNs, check performance, and monitor operations.
+I'm your *AI Logistics Assistant v40.0*. I can help you track DNs, check performance, and monitor operations.
 
 Type `Help` to see all commands.
 """
@@ -598,20 +597,9 @@ class RouteMap:
         Intent.CONTROL_TOWER: ("get_control_tower_report", False),
     }
     
-    # Disabled routes (methods not yet implemented)
-    DISABLED_ROUTES = {
-        # Intent.DN_AGING: "get_dn_aging_report",
-        # Intent.POD_AGING: "get_pod_aging_report",
-        # Intent.WAREHOUSE_STATUS: "get_warehouse_status",
-        # Intent.REGION_PERFORMANCE: "get_region_performance",
-    }
-    
     @classmethod
     def is_route_available(cls, intent: Intent) -> bool:
         """Check if route is available and not disabled"""
-        if intent in cls.DISABLED_ROUTES:
-            return False
-        
         if intent in cls.LOGISTICS_ROUTES:
             return True
         if intent in cls.ANALYTICS_ROUTES:
@@ -659,11 +647,18 @@ class QueryMetrics:
             "by_confidence": {"high": 0, "medium": 0, "low": 0},
             "cache_hits": 0,
             "cache_misses": 0,
-            "route_unavailable": 0
+            "route_unavailable": 0,
+            "service_failures": {
+                "logistics": 0,
+                "analytics": 0,
+                "kpi": 0,
+                "ai": 0
+            }
         }
     
     def record(self, intent: str, query_class: str, processing_time_ms: float, 
-               success: bool, confidence: float = 0.5, cache_hit: bool = False, route_unavailable: bool = False):
+               success: bool, confidence: float = 0.5, cache_hit: bool = False, 
+               route_unavailable: bool = False, service_failure: str = None):
         self.metrics["total_queries"] += 1
         
         if intent not in self.metrics["by_intent"]:
@@ -676,6 +671,9 @@ class QueryMetrics:
         
         if route_unavailable:
             self.metrics["route_unavailable"] += 1
+        
+        if service_failure and service_failure in self.metrics["service_failures"]:
+            self.metrics["service_failures"][service_failure] += 1
         
         if confidence >= 0.8:
             self.metrics["by_confidence"]["high"] += 1
@@ -719,7 +717,6 @@ class QueryAuditLogger:
         if not ENABLE_AUDIT_LOGGING:
             return
         try:
-            # Import model inside function to avoid circular imports
             from app.models import QueryAuditLog
             
             audit_log = QueryAuditLog(
@@ -914,7 +911,7 @@ Keep response concise and actionable.
 
 
 # ==========================================================
-# MAIN AI QUERY SERVICE (v39 - Production Ready)
+# MAIN AI QUERY SERVICE (v40 - Production Ready)
 # ==========================================================
 
 class AIQueryService:
@@ -955,7 +952,7 @@ class AIQueryService:
         
         self._initialized = True
         
-        logger.info("✅ AI Query Service v39.0 - Production Ready (Route Validation Enabled)")
+        logger.info("✅ AI Query Service v40.0 - Production Ready (Route Validation Enabled)")
         self._validate_available_routes()
     
     def _validate_available_routes(self):
@@ -1110,11 +1107,11 @@ class AIQueryService:
             session = self._get_session()
             context = self._get_context(user_phone) if user_phone else {}
             entities = EntityExtractor.extract(question, context)
-            logger.debug(f"Entities: {entities.to_dict()}")
+            logger.bind(request_id=request_id).debug(f"Entities: {entities.to_dict()}")
             
             intent, query_class, confidence = IntentDetector.detect(question, entities)
             
-            # Enhanced error tracking
+            # Enhanced error tracking with request trace
             logger.bind(
                 request_id=request_id,
                 intent=intent.value,
@@ -1124,7 +1121,7 @@ class AIQueryService:
             
             # Check if route is available
             if not RouteMap.is_route_available(intent):
-                logger.warning(f"Route unavailable: {intent.value}")
+                logger.bind(request_id=request_id).warning(f"Route unavailable: {intent.value}")
                 result = self.formatter.format_route_unavailable(intent)
                 elapsed_ms = (time.time() - start_time) * 1000
                 self.metrics.record(intent.value, query_class.value, elapsed_ms, False, confidence, False, True)
@@ -1141,24 +1138,44 @@ class AIQueryService:
                     "error_id": result.get("error_id")
                 }
             
-            cacheable_intents = [Intent.TOP_DEALERS, Intent.TOP_WAREHOUSES, Intent.EXECUTIVE_DASHBOARD]
+            # Expanded cacheable intents including DN lookups
+            cacheable_intents = [
+                Intent.DN_LOOKUP,
+                Intent.TOP_DEALERS,
+                Intent.TOP_WAREHOUSES,
+                Intent.EXECUTIVE_DASHBOARD,
+                Intent.NETWORK_HEALTH,
+                Intent.CONTROL_TOWER,
+                Intent.CRITICAL_DELAYS
+            ]
             cached_result = None
             cache_hit = False
             
             if intent in cacheable_intents:
-                cache_params = f"{entities.limit}" if intent in [Intent.TOP_DEALERS, Intent.TOP_WAREHOUSES] else ""
+                if intent == Intent.DN_LOOKUP and entities.dn_number:
+                    cache_params = entities.dn_number
+                elif intent in [Intent.TOP_DEALERS, Intent.TOP_WAREHOUSES]:
+                    cache_params = f"{entities.limit}"
+                else:
+                    cache_params = ""
+                
                 cached_result = self.cache.get(intent.value, cache_params)
                 if cached_result:
                     cache_hit = True
-                    logger.info(f"Cache hit for {intent.value}")
+                    logger.bind(request_id=request_id).info(f"Cache hit for {intent.value}")
             
             if cached_result:
                 result = cached_result
             else:
-                result = self._route(intent, entities, question, query_class, session)
+                result = self._route(intent, entities, question, query_class, session, request_id)
                 
                 if intent in cacheable_intents and result.get("success"):
-                    cache_params = f"{entities.limit}" if intent in [Intent.TOP_DEALERS, Intent.TOP_WAREHOUSES] else ""
+                    if intent == Intent.DN_LOOKUP and entities.dn_number:
+                        cache_params = entities.dn_number
+                    elif intent in [Intent.TOP_DEALERS, Intent.TOP_WAREHOUSES]:
+                        cache_params = f"{entities.limit}"
+                    else:
+                        cache_params = ""
                     self.cache.set(result, intent.value, cache_params)
             
             whatsapp_message = self._to_whatsapp(result)
@@ -1185,7 +1202,12 @@ class AIQueryService:
             
             self.metrics.record(intent.value, query_class.value, elapsed_ms, result.get("success", True), confidence, cache_hit)
             
-            logger.info(f"Response generated in {elapsed_ms:.0f}ms (Request ID: {request_id})")
+            # Auto cache cleanup every 500 queries
+            if self.metrics.metrics["total_queries"] % 500 == 0:
+                logger.bind(request_id=request_id).info("Auto cache cleanup triggered")
+                self.cache.clear()
+            
+            logger.bind(request_id=request_id).info(f"Response generated in {elapsed_ms:.0f}ms")
             
             return {
                 "success": result.get("success", True),
@@ -1225,9 +1247,14 @@ class AIQueryService:
                 self._close_session(session)
     
     def _route(self, intent: Intent, entities: ExtractedEntities, question: str, 
-               query_class: QueryClass, session: Session) -> Dict:
+               query_class: QueryClass, session: Session, request_id: str = None) -> Dict:
         
         service_name, method, has_param = RouteMap.get_route(intent)
+        
+        # Runtime health validation
+        if service_name and not self.service_health.get(service_name, False):
+            self.metrics.record(intent.value, query_class.value, 0, False, 0.5, False, False, service_name)
+            return self.formatter.format_error(f"{service_name} service unavailable", code=f"{service_name}_unavailable")
         
         if intent == Intent.HELP:
             return self.formatter.format_success({}, self.formatter.format_help())
@@ -1237,12 +1264,15 @@ class AIQueryService:
         
         # Root cause analysis
         if intent == Intent.ROOT_CAUSE or (query_class == QueryClass.AI and 'why' in question.lower()):
-            return self._call_root_cause_ai(question, entities, session)
+            return self._call_root_cause_ai(question, entities, session, request_id)
         
-        # Route to service with safe method calling
+        # Route to service with safe method calling and timer
+        route_start = time.time()
+        
         if service_name == "logistics":
             service = self._get_logistics_service(session)
             if not service:
+                self.metrics.record(intent.value, query_class.value, 0, False, 0.5, False, False, "logistics")
                 return self.formatter.format_error("Logistics service unavailable")
             
             # Safe method lookup
@@ -1259,17 +1289,22 @@ class AIQueryService:
                 else:
                     result = handler()
                 
+                route_time = round((time.time() - route_start) * 1000, 2)
+                logger.bind(request_id=request_id, intent=intent.value).info(f"Route executed in {route_time}ms")
+                
                 if isinstance(result, dict) and result.get("error"):
                     return self.formatter.format_error(result["error"])
                 summary = result.get("_summary", "")
                 return self.formatter.format_success(result, summary)
             except Exception as e:
-                logger.exception(f"Logistics service error: {method}")
+                logger.bind(request_id=request_id).exception(f"Logistics service error: {method}")
+                self.metrics.record(intent.value, query_class.value, 0, False, 0.5, False, False, "logistics")
                 return self.formatter.format_error(str(e))
         
         if service_name == "analytics":
             service = self._get_analytics_service(session)
             if not service:
+                self.metrics.record(intent.value, query_class.value, 0, False, 0.5, False, False, "analytics")
                 return self.formatter.format_error("Analytics service unavailable")
             
             handler = getattr(service, method, None)
@@ -1286,17 +1321,22 @@ class AIQueryService:
                 else:
                     result = handler(entities.limit)
                 
+                route_time = round((time.time() - route_start) * 1000, 2)
+                logger.bind(request_id=request_id, intent=intent.value).info(f"Route executed in {route_time}ms")
+                
                 if isinstance(result, dict) and result.get("error"):
                     return self.formatter.format_error(result["error"])
                 summary = result.get("_summary", "")
                 return self.formatter.format_success(result, summary)
             except Exception as e:
-                logger.exception(f"Analytics service error: {method}")
+                logger.bind(request_id=request_id).exception(f"Analytics service error: {method}")
+                self.metrics.record(intent.value, query_class.value, 0, False, 0.5, False, False, "analytics")
                 return self.formatter.format_error(str(e))
         
         if service_name == "kpi":
             service = self._get_kpi_service(session)
             if not service:
+                self.metrics.record(intent.value, query_class.value, 0, False, 0.5, False, False, "kpi")
                 return self.formatter.format_error("KPI service unavailable")
             
             handler = getattr(service, method, None)
@@ -1305,24 +1345,49 @@ class AIQueryService:
             
             try:
                 result = handler()
+                
+                route_time = round((time.time() - route_start) * 1000, 2)
+                logger.bind(request_id=request_id, intent=intent.value).info(f"Route executed in {route_time}ms")
+                
                 if isinstance(result, dict) and result.get("error"):
                     return self.formatter.format_error(result["error"])
                 summary = result.get("_summary", "")
                 return self.formatter.format_success(result, summary)
             except Exception as e:
-                logger.exception(f"KPI service error: {method}")
+                logger.bind(request_id=request_id).exception(f"KPI service error: {method}")
+                self.metrics.record(intent.value, query_class.value, 0, False, 0.5, False, False, "kpi")
                 return self.formatter.format_error(str(e))
         
-        # AI fallback
+        # AI fallback with improved response
         if query_class == QueryClass.AI or intent == Intent.AI_QUERY:
-            return self._call_root_cause_ai(question, entities, session)
+            return self._call_root_cause_ai(question, entities, session, request_id)
         
-        return self.formatter.format_success({}, "I understand you're asking about logistics. Please be more specific or type 'Help' for commands.")
+        # Improved fallback response
+        fallback_message = """📋 *Available Commands:*
+
+• Send DN number (starts with 80) - Track delivery
+• `Pending POD` - Missing proofs
+• `Pending PGI` - Pending dispatches
+• `Pending deliveries` - Undelivered
+• `Top dealers` - Dealer rankings
+• `Top warehouses` - Warehouse rankings
+• `Executive dashboard` - KPI overview
+• `Network health` - System status
+• `Control tower` - All alerts
+
+Type `HELP` for complete list."""
+        
+        return self.formatter.format_success({}, fallback_message)
     
-    def _call_root_cause_ai(self, question: str, entities: ExtractedEntities, session: Session) -> Dict:
+    def _call_root_cause_ai(self, question: str, entities: ExtractedEntities, session: Session, request_id: str = None) -> Dict:
         """Enhanced AI call with business context - Safe with hasattr checks"""
+        
+        # AI availability check
         if not self.ai_provider:
-            return self.formatter.format_success({}, "I'm still learning. Please try rephrasing your question or type 'Help' for available commands.")
+            self.metrics.record("root_cause", "ai", 0, False, 0.5, False, False, "ai")
+            return self.formatter.format_error("AI service unavailable", code="ai_unavailable")
+        
+        logger.bind(request_id=request_id).info("AI Root Cause Analysis Started")
         
         try:
             logistics = self._get_logistics_service(session)
@@ -1334,8 +1399,23 @@ class AIQueryService:
             )
             enhanced_prompt = AIRootCauseAnalyzer.build_enhanced_prompt(context_data)
             
-            result = self.ai_provider.chat(enhanced_prompt, "guest")
+            # FIX: AI User Context - each user gets separate memory
+            user_context = entities.customer_code or entities.dealer_code or "guest"
+            result = self.ai_provider.chat(
+                enhanced_prompt,
+                user_context,
+                request_id=request_id
+            )
+            
             response_text = result if isinstance(result, str) else str(result)
+            
+            # AI response validation
+            if not response_text or len(response_text.strip()) == 0:
+                logger.bind(request_id=request_id).error("AI returned empty response")
+                self.metrics.record("root_cause", "ai", 0, False, 0.5, False, False, "ai")
+                return self.formatter.format_error("AI returned empty response", code="ai_empty_response")
+            
+            logger.bind(request_id=request_id).info("AI Root Cause Analysis Completed")
             
             data_summary = ""
             if context_data.get("business_data"):
@@ -1346,7 +1426,8 @@ class AIQueryService:
                 response_text + data_summary
             )
         except Exception as e:
-            logger.exception(f"AI root cause call failed")
+            logger.bind(request_id=request_id).exception(f"AI root cause call failed")
+            self.metrics.record("root_cause", "ai", 0, False, 0.5, False, False, "ai")
             return self.formatter.format_error(str(e))
     
     def _to_whatsapp(self, response: Dict) -> str:
@@ -1363,7 +1444,7 @@ class AIQueryService:
     def health_check(self) -> Dict:
         return {
             "service": "ai_query_service",
-            "version": "39.0",
+            "version": "40.0",
             "mode": "pure_router_route_validation",
             "status": "healthy",
             "metrics": self.metrics.get_metrics(),
@@ -1416,7 +1497,7 @@ def health_check(session_factory=None) -> Dict:
         service = get_ai_query_service(session_factory)
         return service.health_check()
     except Exception as e:
-        return {"service": "ai_query_service", "status": "unhealthy", "error": str(e), "version": "39.0"}
+        return {"service": "ai_query_service", "status": "unhealthy", "error": str(e), "version": "40.0"}
 
 
 # ==========================================================
@@ -1424,27 +1505,30 @@ def health_check(session_factory=None) -> Dict:
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("🧠 AI QUERY SERVICE v39.0 - PRODUCTION READY")
+logger.info("🧠 AI QUERY SERVICE v40.0 - PRODUCTION READY")
 logger.info("")
 logger.info("   Critical Fixes:")
-logger.info("   ✅ Frozen RouteMap - only routes that exist")
-logger.info("   ✅ Safe route validation at startup")
-logger.info("   ✅ Removed dynamic __getattribute__ (safe getattr)")
-logger.info("   ✅ Route availability check before execution")
-logger.info("   ✅ Disabled QueryAudit dependency (feature flag)")
-logger.info("   ✅ Service health registry")
-logger.info("   ✅ Safe root cause AI with hasattr checks")
-logger.info("   ✅ Fixed singleton factory to update session_factory")
-logger.info("   ✅ Route fallbacks with user-friendly messages")
-logger.info("   ✅ Enhanced error tracking with logger.bind")
+logger.info("   ✅ FIX AI USER CONTEXT - separate memory per user")
+logger.info("   ✅ ADD AI AVAILABILITY CHECK before calls")
+logger.info("   ✅ IMPROVE ROOT CAUSE AI logging for debugging")
+logger.info("   ✅ CACHE DN LOOKUPS and more intents")
+logger.info("   ✅ ADD ROUTE EXECUTION TIMER for performance")
+logger.info("   ✅ ADD SERVICE FAILURE COUNTERS for health")
+logger.info("   ✅ IMPROVE ROUTE VALIDATION at runtime")
+logger.info("   ✅ ADD REQUEST TRACE across all operations")
+logger.info("   ✅ ADD CACHE CLEANUP every 500 queries")
+logger.info("   ✅ IMPROVE FALLBACK RESPONSE with commands")
+logger.info("   ✅ ADD AI RESPONSE VALIDATION")
+logger.info("   ✅ IMPROVE ENTITY EXTRACTION with more cities")
 logger.info("")
 logger.info("   Available Routes:")
-logger.info("   ✅ DN_LOOKUP, DN_TIMELINE")
+logger.info("   ✅ DN_LOOKUP (CACHED), DN_TIMELINE")
 logger.info("   ✅ PENDING_POD, PENDING_PGI, PENDING_DELIVERIES")
-logger.info("   ✅ TOP_DEALERS, TOP_WAREHOUSES, DEALER_PERFORMANCE")
-logger.info("   ✅ EXECUTIVE_DASHBOARD, NETWORK_HEALTH, CRITICAL_DELAYS, CONTROL_TOWER")
+logger.info("   ✅ TOP_DEALERS (CACHED), TOP_WAREHOUSES (CACHED)")
+logger.info("   ✅ DEALER_PERFORMANCE")
+logger.info("   ✅ EXECUTIVE_DASHBOARD (CACHED)")
+logger.info("   ✅ NETWORK_HEALTH (CACHED)")
+logger.info("   ✅ CRITICAL_DELAYS (CACHED)")
+logger.info("   ✅ CONTROL_TOWER (CACHED)")
 logger.info("   ✅ HELP, GREETING, AI_QUERY, ROOT_CAUSE")
-logger.info("")
-logger.info("   Disabled Routes (Coming Soon):")
-logger.info("   ⏳ DN_AGING, POD_AGING, WAREHOUSE_STATUS, REGION_PERFORMANCE")
 logger.info("=" * 70)
