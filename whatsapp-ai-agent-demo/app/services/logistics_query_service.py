@@ -1,21 +1,20 @@
 # ==========================================================
-# FILE: app/services/logistics_query_service.py (v9.0 - PRODUCTION READY)
+# FILE: app/services/logistics_query_service.py (v9.1 - ENHANCED PRODUCTION)
 # ==========================================================
 # PURPOSE: Single source of truth for operational logistics tracking
 #
-# IMPROVEMENTS v9.0:
-# - ✅ Removed hardcoded table names (uses ORM exclusively)
-# - ✅ Added database startup validation
-# - ✅ Added comprehensive health check
-# - ✅ Standardized business rules for aging calculations
-# - ✅ Multi-stage DN search with normalization
-# - ✅ DN aggregation engine (1 DN = multiple products, count once)
-# - ✅ Mandatory DN response structure
-# - ✅ Dealer operational intelligence
-# - ✅ Warehouse intelligence with priority buckets
-# - ✅ Region intelligence with performance metrics
-# - ✅ Proper error handling (UserError vs SystemError)
-# - ✅ Performance caching for dealers/warehouses/regions
+# IMPROVEMENTS v9.1:
+# - ✅ Model-Database alignment validation (Priority 1)
+# - ✅ DN search diagnostics with detailed logging (Priority 2)
+# - ✅ Schema adaptive fields using getattr() (Priority 3)
+# - ✅ Debug DN verification tool (Priority 4)
+# - ✅ Multi-field dealer search (Priority 5)
+# - ✅ DN count business rule compliance (Priority 6)
+# - ✅ Record validation before aggregation (Priority 7)
+# - ✅ Smart "DN Not Found" with closest matches (Priority 8)
+# - ✅ Expanded health check (Priority 9)
+# - ✅ WhatsApp production logging with timing (Priority 10)
+# - ✅ All original v9.0 features preserved
 # ==========================================================
 
 from typing import Dict, Any, Optional, List, Tuple, Set
@@ -24,6 +23,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, and_, or_, cast, String, Integer, Float, text, inspect
 from cachetools import TTLCache
 from loguru import logger
+import time
+import difflib
 
 from app.models import DeliveryReport
 
@@ -44,12 +45,34 @@ class DatabaseError(Exception):
     """Database connection/query error"""
     pass
 
+class ModelAlignmentError(Exception):
+    """Model doesn't align with database schema"""
+    pass
+
 
 # ==========================================================
 # LOGISTICS QUERY SERVICE
 # ==========================================================
 
 class LogisticsQueryService:
+    # Required columns for model-database alignment
+    REQUIRED_COLUMNS = [
+        "dn_no",
+        "customer_name",
+        "customer_code",
+        "warehouse",
+        "warehouse_code",
+        "good_issue_date",
+        "pod_date",
+        "dn_create_date",
+        "dn_qty",
+        "dn_amount",
+        "material_no",
+        "customer_model",
+        "division",
+        "ship_to_city"
+    ]
+    
     def __init__(self, db: Session):
         self.db = db
         self.table_name = DeliveryReport.__tablename__
@@ -62,14 +85,17 @@ class LogisticsQueryService:
         # PHASE 2: Startup validation
         self._validate_startup()
         
+        # NEW: Model-database alignment validation (Priority 1)
+        self._validate_model_alignment()
+        
         logger.info("=" * 70)
-        logger.info("📦 LOGISTICS QUERY SERVICE v9.0 - PRODUCTION READY")
+        logger.info("📦 LOGISTICS QUERY SERVICE v9.1 - ENHANCED PRODUCTION")
         logger.info(f"   Table: {self.table_name}")
         logger.info(f"   Cache: Dealer={self.dealer_cache.maxsize}, Warehouse={self.warehouse_cache.maxsize}")
         logger.info("=" * 70)
     
     # ==========================================================
-    # PHASE 2: DATABASE STARTUP VALIDATION
+    # PHASE 2: DATABASE STARTUP VALIDATION (Enhanced)
     # ==========================================================
     
     def _validate_startup(self):
@@ -86,6 +112,65 @@ class LogisticsQueryService:
         except Exception as e:
             logger.error(f"   ❌ Database validation failed: {e}")
             raise DatabaseError(f"Database validation failed: {e}")
+    
+    # ==========================================================
+    # PRIORITY 1: MODEL-DATABASE ALIGNMENT VALIDATION
+    # ==========================================================
+    
+    def _validate_model_alignment(self):
+        """Validate that all required columns exist in the database table"""
+        try:
+            inspector = inspect(self.db.bind)
+            actual_columns = {col['name'] for col in inspector.get_columns(self.table_name)}
+            
+            missing_columns = []
+            for required_col in self.REQUIRED_COLUMNS:
+                if required_col not in actual_columns:
+                    missing_columns.append(required_col)
+            
+            if missing_columns:
+                logger.error(f"   ❌ MODEL-DATABASE MISMATCH: Missing columns: {missing_columns}")
+                logger.info(f"   Available columns in DB: {sorted(actual_columns)}")
+                raise ModelAlignmentError(
+                    f"Database table '{self.table_name}' missing required columns: {missing_columns}"
+                )
+            
+            logger.info(f"   ✅ Model-database alignment verified: {len(self.REQUIRED_COLUMNS)} columns match")
+            
+            # Log sample data for verification
+            sample = self.db.query(DeliveryReport).first()
+            if sample:
+                logger.info(f"   📝 Sample DN: {getattr(sample, 'dn_no', 'N/A')}")
+                logger.info(f"   📝 Sample Dealer: {getattr(sample, 'customer_name', 'N/A')}")
+                logger.info(f"   📝 Sample Warehouse: {getattr(sample, 'warehouse', 'N/A')}")
+            
+        except ModelAlignmentError:
+            raise
+        except Exception as e:
+            logger.error(f"   ⚠️ Model alignment check warning: {e}")
+    
+    # ==========================================================
+    # PRIORITY 7: RECORD VALIDATION
+    # ==========================================================
+    
+    def _validate_record(self, record: DeliveryReport) -> Tuple[bool, str]:
+        """Validate record has minimum required data"""
+        if not record:
+            return False, "Empty record"
+        
+        dn_no = getattr(record, 'dn_no', None)
+        if not dn_no:
+            return False, "Missing DN number"
+        
+        customer_name = getattr(record, 'customer_name', None)
+        if not customer_name:
+            return False, f"DN {dn_no} missing customer name"
+        
+        dn_date = getattr(record, 'dn_create_date', None)
+        if not dn_date:
+            return False, f"DN {dn_no} missing creation date"
+        
+        return True, "Valid"
     
     # ==========================================================
     # PHASE 1: HELPER METHODS (No hardcoded table names)
@@ -111,6 +196,26 @@ class LogisticsQueryService:
         import re
         dn_str = re.sub(r'[^0-9]', '', dn_str)
         return dn_str
+    
+    # ==========================================================
+    # PRIORITY 8: SMART DN NOT FOUND
+    # ==========================================================
+    
+    def _find_closest_dns(self, searched_dn: str, limit: int = 5) -> List[str]:
+        """Find closest matching DNs for user feedback"""
+        try:
+            all_dns = self.db.query(DeliveryReport.dn_no).filter(
+                DeliveryReport.dn_no.isnot(None)
+            ).distinct().limit(100).all()
+            
+            dn_strings = [str(dn[0]) for dn in all_dns if dn[0]]
+            
+            # Use difflib for fuzzy matching
+            closest = difflib.get_close_matches(searched_dn, dn_strings, n=limit, cutoff=0.6)
+            return closest
+        except Exception as e:
+            logger.warning(f"Could not find closest DNs: {e}")
+            return []
     
     # ==========================================================
     # PHASE 3: BUSINESS RULE ENGINE (Standardized Aging)
@@ -159,7 +264,7 @@ class LogisticsQueryService:
             return {"status": "Delivery Pending", "emoji": "🟡", "description": "Not yet dispatched"}
     
     # ==========================================================
-    # PHASE 6: DN AGGREGATION ENGINE
+    # PHASE 6: DN AGGREGATION ENGINE (Enhanced with validation)
     # ==========================================================
     
     def aggregate_dn_records(self, records: List[DeliveryReport]) -> Dict[str, Any]:
@@ -170,8 +275,32 @@ class LogisticsQueryService:
         if not records:
             return {}
         
-        first = records[0]
-        dn_number = self.normalize_dn(first.dn_no)
+        # Filter valid records (Priority 7)
+        valid_records = []
+        for r in records:
+            is_valid, msg = self._validate_record(r)
+            if is_valid:
+                valid_records.append(r)
+            else:
+                logger.warning(f"Skipping invalid record: {msg}")
+        
+        if not valid_records:
+            logger.error("No valid records found in aggregation")
+            return {}
+        
+        first = valid_records[0]
+        
+        # Schema adaptive field access (Priority 3)
+        dn_number = self.normalize_dn(getattr(first, 'dn_no', None))
+        customer_name = getattr(first, 'customer_name', 'N/A')
+        customer_code = getattr(first, 'customer_code', 'N/A')
+        division = getattr(first, 'division', 'N/A')
+        warehouse = getattr(first, 'warehouse', 'N/A')
+        warehouse_code = getattr(first, 'warehouse_code', 'N/A')
+        city = getattr(first, 'ship_to_city', 'N/A')
+        dn_create_date = getattr(first, 'dn_create_date', None)
+        good_issue_date = getattr(first, 'good_issue_date', None)
+        pod_date = getattr(first, 'pod_date', None)
         
         unique_models = set()
         products = []
@@ -179,47 +308,52 @@ class LogisticsQueryService:
         total_quantity = 0
         total_amount = 0.0
         
-        for r in records:
-            total_quantity += int(r.dn_qty or 0)
-            total_amount += float(r.dn_amount or 0)
+        for r in valid_records:
+            dn_qty = getattr(r, 'dn_qty', 0)
+            dn_amount = getattr(r, 'dn_amount', 0.0)
+            material_no = getattr(r, 'material_no', None)
+            customer_model = getattr(r, 'customer_model', None)
             
-            if r.material_no:
-                model_name = r.customer_model or r.material_no
+            total_quantity += int(dn_qty or 0)
+            total_amount += float(dn_amount or 0)
+            
+            if material_no:
+                model_name = customer_model or material_no
                 unique_models.add(model_name)
                 
-                if r.material_no not in product_codes:
-                    product_codes.add(r.material_no)
+                if material_no not in product_codes:
+                    product_codes.add(material_no)
                     products.append({
-                        "material_no": r.material_no,
+                        "material_no": material_no,
                         "customer_model": model_name,
-                        "quantity": int(r.dn_qty or 0),
-                        "amount": float(r.dn_amount or 0)
+                        "quantity": int(dn_qty or 0),
+                        "amount": float(dn_amount or 0)
                     })
                 else:
                     for p in products:
-                        if p["material_no"] == r.material_no:
-                            p["quantity"] += int(r.dn_qty or 0)
-                            p["amount"] += float(r.dn_amount or 0)
+                        if p["material_no"] == material_no:
+                            p["quantity"] += int(dn_qty or 0)
+                            p["amount"] += float(dn_amount or 0)
                             break
         
-        delivery_days = self.calculate_delivery_days(first.good_issue_date, first.dn_create_date)
-        pod_days = self.calculate_pod_days(first.pod_date, first.good_issue_date)
-        status_info = self.calculate_dn_status(first.good_issue_date, first.pod_date)
+        delivery_days = self.calculate_delivery_days(good_issue_date, dn_create_date)
+        pod_days = self.calculate_pod_days(pod_date, good_issue_date)
+        status_info = self.calculate_dn_status(good_issue_date, pod_date)
         
         return {
             "dn_no": dn_number,
-            "customer_name": first.customer_name,
-            "customer_code": first.customer_code,
-            "division": first.division,
-            "warehouse": first.warehouse,
-            "warehouse_code": first.warehouse_code,
-            "city": first.ship_to_city,
-            "dn_date": first.dn_create_date,
-            "dn_date_str": first.dn_create_date.strftime("%Y-%m-%d") if first.dn_create_date else "N/A",
-            "pgi_date": first.good_issue_date,
-            "pgi_date_str": first.good_issue_date.strftime("%Y-%m-%d") if first.good_issue_date else "Not Dispatched",
-            "pod_date": first.pod_date,
-            "pod_date_str": first.pod_date.strftime("%Y-%m-%d") if first.pod_date else "Not Received",
+            "customer_name": customer_name,
+            "customer_code": customer_code,
+            "division": division,
+            "warehouse": warehouse,
+            "warehouse_code": warehouse_code,
+            "city": city,
+            "dn_date": dn_create_date,
+            "dn_date_str": dn_create_date.strftime("%Y-%m-%d") if dn_create_date else "N/A",
+            "pgi_date": good_issue_date,
+            "pgi_date_str": good_issue_date.strftime("%Y-%m-%d") if good_issue_date else "Not Dispatched",
+            "pod_date": pod_date,
+            "pod_date_str": pod_date.strftime("%Y-%m-%d") if pod_date else "Not Received",
             "delivery_days": delivery_days,
             "pod_days": pod_days,
             "status": status_info["status"],
@@ -233,19 +367,26 @@ class LogisticsQueryService:
         }
     
     # ==========================================================
-    # PHASE 5: MULTI-STAGE DN SEARCH
+    # PHASE 5: MULTI-STAGE DN SEARCH (Enhanced with logging)
     # ==========================================================
     
     def _search_dn(self, dn_number: str) -> List[DeliveryReport]:
-        """Multi-stage DN search with multiple fallbacks"""
+        """Multi-stage DN search with multiple fallbacks and diagnostics"""
+        start_time = time.time()
         normalized = self.normalize_dn(dn_number)
+        
+        # Priority 2: Search diagnostics
+        total_records = self.db.query(DeliveryReport).count()
+        logger.info(f"🔍 DN Search: '{dn_number}' -> normalized: '{normalized}'")
+        logger.info(f"   Table: {self.table_name}, Total records: {total_records}")
         
         # Stage 1: Exact match
         exact = self.db.query(DeliveryReport).filter(
             cast(DeliveryReport.dn_no, String) == normalized
         ).all()
         if exact:
-            logger.info(f"✅ DN found via exact match: {normalized}")
+            elapsed = time.time() - start_time
+            logger.info(f"✅ DN found via exact match: {normalized} ({len(exact)} records, {elapsed:.3f}s)")
             return exact
         
         # Stage 2: With .0
@@ -253,7 +394,8 @@ class LogisticsQueryService:
             cast(DeliveryReport.dn_no, String) == f"{normalized}.0"
         ).all()
         if with_dot:
-            logger.info(f"✅ DN found via .0 match: {normalized}.0")
+            elapsed = time.time() - start_time
+            logger.info(f"✅ DN found via .0 match: {normalized}.0 ({len(with_dot)} records, {elapsed:.3f}s)")
             return with_dot
         
         # Stage 3: Contains
@@ -261,7 +403,8 @@ class LogisticsQueryService:
             cast(DeliveryReport.dn_no, String).like(f"%{normalized}%")
         ).all()
         if contains:
-            logger.info(f"✅ DN found via contains match: %{normalized}%")
+            elapsed = time.time() - start_time
+            logger.info(f"✅ DN found via contains match: %{normalized}% ({len(contains)} records, {elapsed:.3f}s)")
             return contains
         
         # Stage 4: Direct cast (for integer stored as number)
@@ -271,16 +414,59 @@ class LogisticsQueryService:
                 DeliveryReport.dn_no == int_val
             ).all()
             if integer_match:
-                logger.info(f"✅ DN found via integer match: {int_val}")
+                elapsed = time.time() - start_time
+                logger.info(f"✅ DN found via integer match: {int_val} ({len(integer_match)} records, {elapsed:.3f}s)")
                 return integer_match
         except:
             pass
         
-        logger.info(f"❌ DN {dn_number} not found after all search stages")
+        elapsed = time.time() - start_time
+        logger.info(f"❌ DN {dn_number} not found after all search stages ({elapsed:.3f}s)")
         return []
     
     # ==========================================================
-    # PHASE 7: MANDATORY DN RESPONSE STRUCTURE
+    # PRIORITY 4: DEBUG DN VERIFICATION TOOL
+    # ==========================================================
+    
+    def debug_dn_search(self, dn_number: str) -> Dict[str, Any]:
+        """Comprehensive DN search debug tool"""
+        start_time = time.time()
+        
+        normalized = self.normalize_dn(dn_number)
+        total_records = self.db.query(DeliveryReport).count()
+        
+        # Get sample DNs for comparison
+        sample_dns = self.db.query(DeliveryReport.dn_no).filter(
+            DeliveryReport.dn_no.isnot(None)
+        ).distinct().limit(20).all()
+        sample_dn_list = [str(dn[0]) for dn in sample_dns if dn[0]]
+        
+        # Try to find matches
+        matches = self._search_dn(dn_number)
+        
+        # Find closest matches
+        closest_matches = self._find_closest_dns(normalized)
+        
+        elapsed = time.time() - start_time
+        
+        return {
+            "success": True,
+            "data": {
+                "searched_dn": dn_number,
+                "normalized_dn": normalized,
+                "total_records_in_table": total_records,
+                "table_name": self.table_name,
+                "matches_found": len(matches) > 0,
+                "match_count": len(matches),
+                "sample_dns": sample_dn_list[:10],
+                "closest_matches": closest_matches,
+                "search_time_ms": round(elapsed * 1000, 2)
+            },
+            "_summary": f"DN {dn_number}: {'FOUND' if matches else 'NOT FOUND'} ({len(matches)} records, {len(sample_dn_list)} sample DNs)"
+        }
+    
+    # ==========================================================
+    # PHASE 7: MANDATORY DN RESPONSE STRUCTURE (Enhanced)
     # ==========================================================
     
     def build_standard_dn_response(self, aggregated: Dict[str, Any]) -> Dict[str, Any]:
@@ -309,11 +495,12 @@ class LogisticsQueryService:
         }
     
     # ==========================================================
-    # MAIN DN QUERY ENTRY POINT
+    # MAIN DN QUERY ENTRY POINT (Enhanced with logging)
     # ==========================================================
     
     def get_complete_dn_intelligence(self, dn_number: str) -> Dict[str, Any]:
         """Get complete DN intelligence - MAIN ENTRY POINT"""
+        start_time = time.time()
         logger.info(f"🔍 DN Query: {dn_number}")
         
         if not self._validate_session():
@@ -323,68 +510,120 @@ class LogisticsQueryService:
             records = self._search_dn(dn_number)
             
             if not records:
-                sample_dns = self._get_sample_dns()
+                # Priority 8: Smart DN Not Found
+                closest = self._find_closest_dns(self.normalize_dn(dn_number))
                 error_msg = f"DN {dn_number} not found in database."
-                if sample_dns:
-                    error_msg += f" Available DNs: {', '.join(sample_dns[:5])}"
+                if closest:
+                    error_msg += f" Did you mean: {', '.join(closest[:3])}?"
+                else:
+                    sample_dns = self._get_sample_dns(5)
+                    if sample_dns:
+                        error_msg += f" Available DNs: {', '.join(sample_dns)}"
+                
+                elapsed = time.time() - start_time
+                logger.info(f"❌ DN Query failed: {dn_number} (Not found, {elapsed:.3f}s)")
                 return self._format_error(error_msg, is_user_error=True)
             
             aggregated = self.aggregate_dn_records(records)
-            response = self.build_standard_dn_response(aggregated)
+            if not aggregated:
+                error_msg = f"DN {dn_number} found but has invalid data structure"
+                logger.error(error_msg)
+                return self._format_error(error_msg, is_user_error=True)
             
+            response = self.build_standard_dn_response(aggregated)
             priority = self.calculate_priority(response.get("delivery_days", 0))
             response["priority"] = priority
             
             summary = f"DN {response['dn_no']} is {response['status']}. {response['total_models']} models, {response['total_quantity']} units."
             
+            elapsed = time.time() - start_time
+            logger.info(f"✅ DN Query success: {dn_number} ({len(records)} records, {elapsed:.3f}s)")
+            
             return self._format_success(response, summary)
             
         except Exception as e:
-            logger.error(f"❌ DN query error: {e}")
+            elapsed = time.time() - start_time
+            logger.error(f"❌ DN query error: {e} ({elapsed:.3f}s)")
             return self._format_error("Unable to process DN query", is_user_error=False)
     
     # ==========================================================
-    # PHASE 8: DEALER OPERATIONAL INTELLIGENCE
+    # PRIORITY 5: MULTI-FIELD DEALER SEARCH
+    # ==========================================================
+    
+    def _search_dealer(self, search_term: str) -> List[DeliveryReport]:
+        """Search dealer by name, dealer code, or customer code"""
+        search_pattern = f"%{search_term}%"
+        
+        # Try multiple fields
+        results = self.db.query(DeliveryReport).filter(
+            or_(
+                DeliveryReport.customer_name.ilike(search_pattern),
+                DeliveryReport.customer_code.ilike(search_pattern),
+                DeliveryReport.dealer_code.ilike(search_pattern) if hasattr(DeliveryReport, 'dealer_code') else False,
+                DeliveryReport.sold_to_party.ilike(search_pattern) if hasattr(DeliveryReport, 'sold_to_party') else False
+            )
+        ).all()
+        
+        if results:
+            logger.info(f"✅ Dealer found: '{search_term}' -> {len(results)} records")
+        else:
+            logger.info(f"❌ Dealer not found: '{search_term}'")
+        
+        return results
+    
+    # ==========================================================
+    # PHASE 8: DEALER OPERATIONAL INTELLIGENCE (Enhanced)
     # ==========================================================
     
     def get_dealer_all_dns(self, dealer_name: str) -> Dict[str, Any]:
         """Get all DNs for a dealer with complete details"""
+        start_time = time.time()
         cache_key = f"dealer_dns_{dealer_name.lower()}"
         
-        if cache_key in self.dealer_cache:
+        cache_hit = cache_key in self.dealer_cache
+        if cache_hit:
+            logger.info(f"📦 Cache HIT for dealer: {dealer_name}")
             return self.dealer_cache[cache_key]
         
+        logger.info(f"📦 Cache MISS for dealer: {dealer_name}")
+        
         try:
-            records = self.db.query(DeliveryReport).filter(
-                DeliveryReport.customer_name.ilike(f"%{dealer_name}%")
-            ).all()
+            # Use enhanced multi-field search (Priority 5)
+            records = self._search_dealer(dealer_name)
             
             if not records:
+                elapsed = time.time() - start_time
+                logger.info(f"❌ Dealer query failed: {dealer_name} (Not found, {elapsed:.3f}s)")
                 return self._format_error(f"Dealer '{dealer_name}' not found", is_user_error=True)
             
-            # Group by DN
+            # Group by DN (Priority 6: DN count business rule)
             dn_groups = {}
             for r in records:
-                dn_no = self.normalize_dn(r.dn_no)
-                if dn_no not in dn_groups:
-                    dn_groups[dn_no] = []
-                dn_groups[dn_no].append(r)
+                dn_no = self.normalize_dn(getattr(r, 'dn_no', None))
+                if dn_no:
+                    if dn_no not in dn_groups:
+                        dn_groups[dn_no] = []
+                    dn_groups[dn_no].append(r)
             
             dns = []
             for dn_no, group in dn_groups.items():
                 aggregated = self.aggregate_dn_records(group)
-                dns.append({
-                    "dn_no": dn_no,
-                    "date": aggregated.get("dn_date_str", "N/A"),
-                    "pgi_date": aggregated.get("pgi_date_str", "N/A"),
-                    "pod_date": aggregated.get("pod_date_str", "N/A"),
-                    "warehouse": aggregated.get("warehouse", "N/A"),
-                    "status": aggregated.get("status", "Unknown"),
-                    "total_models": aggregated.get("total_models", 0),
-                    "total_quantity": aggregated.get("total_quantity", 0)
-                })
+                if aggregated:
+                    dns.append({
+                        "dn_no": dn_no,
+                        "date": aggregated.get("dn_date_str", "N/A"),
+                        "pgi_date": aggregated.get("pgi_date_str", "N/A"),
+                        "pod_date": aggregated.get("pod_date_str", "N/A"),
+                        "warehouse": aggregated.get("warehouse", "N/A"),
+                        "status": aggregated.get("status", "Unknown"),
+                        "total_models": aggregated.get("total_models", 0),
+                        "total_quantity": aggregated.get("total_quantity", 0)
+                    })
             
             dns.sort(key=lambda x: x.get("date", ""), reverse=True)
+            
+            elapsed = time.time() - start_time
+            logger.info(f"✅ Dealer query success: {dealer_name} -> {len(dn_groups)} DNs, {len(records)} records ({elapsed:.3f}s)")
             
             result = self._format_success(
                 {"dealer_name": dealer_name, "total_dns": len(dns), "dns": dns},
@@ -395,35 +634,60 @@ class LogisticsQueryService:
             return result
             
         except Exception as e:
-            logger.error(f"Dealer DNs error: {e}")
+            elapsed = time.time() - start_time
+            logger.error(f"❌ Dealer DNs error: {e} ({elapsed:.3f}s)")
             return self._format_error("Unable to retrieve dealer DNs", is_user_error=False)
     
     def get_dealer_operational_summary(self, dealer_name: str) -> Dict[str, Any]:
         """Get operational summary for a dealer (pending deliveries, pending POD, delays)"""
+        start_time = time.time()
+        logger.info(f"📊 Dealer Operational Summary: {dealer_name}")
+        
         try:
-            records = self.db.query(DeliveryReport).filter(
-                DeliveryReport.customer_name.ilike(f"%{dealer_name}%")
-            ).all()
+            records = self._search_dealer(dealer_name)
             
             if not records:
+                elapsed = time.time() - start_time
+                logger.info(f"❌ Dealer summary failed: {dealer_name} (Not found, {elapsed:.3f}s)")
                 return self._format_error(f"Dealer '{dealer_name}' not found", is_user_error=True)
             
             pending_delivery = []
             pending_pod = []
             delayed = []
             
+            # Track unique DNs for counts (Priority 6)
+            unique_dn_pending_delivery = set()
+            unique_dn_pending_pod = set()
+            unique_dn_delayed = set()
+            
             for r in records:
-                dn_no = self.normalize_dn(r.dn_no)
-                if not r.good_issue_date:
-                    days = self.calculate_pending_delivery_days(r.dn_create_date)
-                    pending_delivery.append({"dn_no": dn_no, "days": days})
-                elif r.good_issue_date and not r.pod_date:
-                    days = self.calculate_pending_pod_days(r.good_issue_date)
-                    pending_pod.append({"dn_no": dn_no, "days": days})
+                dn_no = self.normalize_dn(getattr(r, 'dn_no', None))
+                if not dn_no:
+                    continue
+                    
+                good_issue_date = getattr(r, 'good_issue_date', None)
+                pod_date = getattr(r, 'pod_date', None)
+                dn_create_date = getattr(r, 'dn_create_date', None)
                 
-                delivery_days = self.calculate_delivery_days(r.good_issue_date, r.dn_create_date)
+                if not good_issue_date:
+                    if dn_no not in unique_dn_pending_delivery:
+                        days = self.calculate_pending_delivery_days(dn_create_date)
+                        pending_delivery.append({"dn_no": dn_no, "days": days})
+                        unique_dn_pending_delivery.add(dn_no)
+                elif good_issue_date and not pod_date:
+                    if dn_no not in unique_dn_pending_pod:
+                        days = self.calculate_pending_pod_days(good_issue_date)
+                        pending_pod.append({"dn_no": dn_no, "days": days})
+                        unique_dn_pending_pod.add(dn_no)
+                
+                delivery_days = self.calculate_delivery_days(good_issue_date, dn_create_date)
                 if delivery_days > 7:
-                    delayed.append({"dn_no": dn_no, "days": delivery_days})
+                    if dn_no not in unique_dn_delayed:
+                        delayed.append({"dn_no": dn_no, "days": delivery_days})
+                        unique_dn_delayed.add(dn_no)
+            
+            elapsed = time.time() - start_time
+            logger.info(f"✅ Dealer summary success: {dealer_name} -> Pending Delivery: {len(pending_delivery)}, Pending POD: {len(pending_pod)}, Delayed: {len(delayed)} ({elapsed:.3f}s)")
             
             return self._format_success(
                 {
@@ -438,19 +702,25 @@ class LogisticsQueryService:
                 f"Dealer {dealer_name}: {len(pending_delivery)} pending deliveries, {len(pending_pod)} pending POD"
             )
         except Exception as e:
-            logger.error(f"Dealer operational summary error: {e}")
+            elapsed = time.time() - start_time
+            logger.error(f"❌ Dealer operational summary error: {e} ({elapsed:.3f}s)")
             return self._format_error("Unable to retrieve dealer operations", is_user_error=False)
     
     # ==========================================================
-    # PHASE 9: WAREHOUSE INTELLIGENCE
+    # PHASE 9: WAREHOUSE INTELLIGENCE (Enhanced with DN counts)
     # ==========================================================
     
     def get_warehouse_status(self, warehouse_name: str = None) -> Dict[str, Any]:
-        """Get warehouse status with priority buckets"""
+        """Get warehouse status with priority buckets using DN counts"""
+        start_time = time.time()
         cache_key = f"warehouse_{warehouse_name or 'all'}"
         
-        if cache_key in self.warehouse_cache:
+        cache_hit = cache_key in self.warehouse_cache
+        if cache_hit:
+            logger.info(f"📦 Cache HIT for warehouse: {warehouse_name or 'all'}")
             return self.warehouse_cache[cache_key]
+        
+        logger.info(f"📦 Cache MISS for warehouse: {warehouse_name or 'all'}")
         
         try:
             query = self.db.query(DeliveryReport)
@@ -460,49 +730,61 @@ class LogisticsQueryService:
             records = query.all()
             
             if not records:
+                elapsed = time.time() - start_time
+                logger.info(f"❌ Warehouse query failed: {warehouse_name} (Not found, {elapsed:.3f}s)")
                 return self._format_error(f"Warehouse '{warehouse_name}' not found" if warehouse_name else "No warehouse data", is_user_error=True)
             
-            # Aggregate by warehouse
+            # Aggregate by warehouse with unique DN counts (Priority 6)
             warehouses = {}
             for r in records:
-                wh = r.warehouse or "Unknown"
+                wh = getattr(r, 'warehouse', 'Unknown') or 'Unknown'
+                dn_no = self.normalize_dn(getattr(r, 'dn_no', None))
+                
                 if wh not in warehouses:
                     warehouses[wh] = {
-                        "dn_count": 0,
+                        "dn_set": set(),
                         "total_quantity": 0,
-                        "pending_dispatch": 0,
-                        "pending_pod": 0,
-                        "critical_delays": 0,
-                        "high_priority": 0
+                        "pending_dispatch_set": set(),
+                        "pending_pod_set": set(),
+                        "critical_delays_set": set(),
+                        "high_priority_set": set()
                     }
                 
-                warehouses[wh]["dn_count"] += 1
-                warehouses[wh]["total_quantity"] += int(r.dn_qty or 0)
+                if dn_no:
+                    warehouses[wh]["dn_set"].add(dn_no)
+                warehouses[wh]["total_quantity"] += int(getattr(r, 'dn_qty', 0) or 0)
                 
-                if not r.good_issue_date:
-                    warehouses[wh]["pending_dispatch"] += 1
-                elif r.good_issue_date and not r.pod_date:
-                    warehouses[wh]["pending_pod"] += 1
+                good_issue_date = getattr(r, 'good_issue_date', None)
+                pod_date = getattr(r, 'pod_date', None)
+                dn_create_date = getattr(r, 'dn_create_date', None)
                 
-                days = self.calculate_delivery_days(r.good_issue_date, r.dn_create_date)
-                if days > 14:
-                    warehouses[wh]["critical_delays"] += 1
-                elif days > 7:
-                    warehouses[wh]["high_priority"] += 1
+                if not good_issue_date and dn_no:
+                    warehouses[wh]["pending_dispatch_set"].add(dn_no)
+                elif good_issue_date and not pod_date and dn_no:
+                    warehouses[wh]["pending_pod_set"].add(dn_no)
+                
+                days = self.calculate_delivery_days(good_issue_date, dn_create_date)
+                if days > 14 and dn_no:
+                    warehouses[wh]["critical_delays_set"].add(dn_no)
+                elif days > 7 and dn_no:
+                    warehouses[wh]["high_priority_set"].add(dn_no)
             
             result_list = []
             for wh, data in warehouses.items():
                 result_list.append({
                     "warehouse": wh,
-                    "dn_count": data["dn_count"],
+                    "dn_count": len(data["dn_set"]),
                     "total_quantity": data["total_quantity"],
-                    "pending_dispatch": data["pending_dispatch"],
-                    "pending_pod": data["pending_pod"],
-                    "critical_delays": data["critical_delays"],
-                    "high_priority": data["high_priority"]
+                    "pending_dispatch": len(data["pending_dispatch_set"]),
+                    "pending_pod": len(data["pending_pod_set"]),
+                    "critical_delays": len(data["critical_delays_set"]),
+                    "high_priority": len(data["high_priority_set"])
                 })
             
             result_list.sort(key=lambda x: x["dn_count"], reverse=True)
+            
+            elapsed = time.time() - start_time
+            logger.info(f"✅ Warehouse query success: {warehouse_name or 'all'} -> {len(result_list)} warehouses ({elapsed:.3f}s)")
             
             result = self._format_success(
                 {"warehouses": result_list, "total_warehouses": len(result_list)},
@@ -513,19 +795,25 @@ class LogisticsQueryService:
             return result
             
         except Exception as e:
-            logger.error(f"Warehouse status error: {e}")
+            elapsed = time.time() - start_time
+            logger.error(f"❌ Warehouse status error: {e} ({elapsed:.3f}s)")
             return self._format_error("Unable to retrieve warehouse status", is_user_error=False)
     
     # ==========================================================
-    # PHASE 10: REGION INTELLIGENCE
+    # PHASE 10: REGION INTELLIGENCE (Enhanced with DN counts)
     # ==========================================================
     
     def get_region_performance(self, region: str = None) -> Dict[str, Any]:
-        """Get region performance metrics"""
+        """Get region performance metrics using unique DN counts"""
+        start_time = time.time()
         cache_key = f"region_{region or 'all'}"
         
-        if cache_key in self.region_cache:
+        cache_hit = cache_key in self.region_cache
+        if cache_hit:
+            logger.info(f"📦 Cache HIT for region: {region or 'all'}")
             return self.region_cache[cache_key]
+        
+        logger.info(f"📦 Cache MISS for region: {region or 'all'}")
         
         try:
             query = self.db.query(DeliveryReport)
@@ -535,30 +823,47 @@ class LogisticsQueryService:
             records = query.all()
             
             if not records:
+                elapsed = time.time() - start_time
+                logger.info(f"⚠️ Region query: {region or 'all'} -> No data ({elapsed:.3f}s)")
                 return self._format_success(
                     {"region": region or "All", "total_dns": 0},
                     f"No data for region {region}" if region else "No data available"
                 )
             
+            # Use sets for unique counting (Priority 6)
             unique_dns = set()
             unique_dealers = set()
             unique_warehouses = set()
             total_quantity = 0
-            pending_pod = 0
-            delivered = 0
+            pending_pod_dns = set()
+            delivered_dns = set()
             
             for r in records:
-                unique_dns.add(self.normalize_dn(r.dn_no))
-                if r.customer_name:
-                    unique_dealers.add(r.customer_name)
-                if r.warehouse:
-                    unique_warehouses.add(r.warehouse)
-                total_quantity += int(r.dn_qty or 0)
+                dn_no = self.normalize_dn(getattr(r, 'dn_no', None))
+                if dn_no:
+                    unique_dns.add(dn_no)
                 
-                if r.good_issue_date and not r.pod_date:
-                    pending_pod += 1
-                if r.pod_date:
-                    delivered += 1
+                customer_name = getattr(r, 'customer_name', None)
+                if customer_name:
+                    unique_dealers.add(customer_name)
+                
+                warehouse = getattr(r, 'warehouse', None)
+                if warehouse:
+                    unique_warehouses.add(warehouse)
+                
+                total_quantity += int(getattr(r, 'dn_qty', 0) or 0)
+                
+                good_issue_date = getattr(r, 'good_issue_date', None)
+                pod_date = getattr(r, 'pod_date', None)
+                
+                if dn_no:
+                    if good_issue_date and not pod_date:
+                        pending_pod_dns.add(dn_no)
+                    if pod_date:
+                        delivered_dns.add(dn_no)
+            
+            elapsed = time.time() - start_time
+            logger.info(f"✅ Region query success: {region or 'all'} -> {len(unique_dns)} DNs, {len(unique_dealers)} dealers ({elapsed:.3f}s)")
             
             result = self._format_success(
                 {
@@ -567,9 +872,9 @@ class LogisticsQueryService:
                     "total_quantity": total_quantity,
                     "unique_dealers": len(unique_dealers),
                     "unique_warehouses": len(unique_warehouses),
-                    "pending_pod": pending_pod,
-                    "delivered": delivered,
-                    "completion_rate": round((delivered / max(1, len(unique_dns))) * 100, 1)
+                    "pending_pod": len(pending_pod_dns),
+                    "delivered": len(delivered_dns),
+                    "completion_rate": round((len(delivered_dns) / max(1, len(unique_dns))) * 100, 1)
                 },
                 f"Region {region or 'All'}: {len(unique_dns)} DNs, {len(unique_dealers)} dealers"
             )
@@ -578,15 +883,19 @@ class LogisticsQueryService:
             return result
             
         except Exception as e:
-            logger.error(f"Region performance error: {e}")
+            elapsed = time.time() - start_time
+            logger.error(f"❌ Region performance error: {e} ({elapsed:.3f}s)")
             return self._format_error("Unable to retrieve region performance", is_user_error=False)
     
     # ==========================================================
-    # PHASE 11: POD & DELIVERY DASHBOARDS
+    # PHASE 11: POD & DELIVERY DASHBOARDS (Enhanced with DN counts)
     # ==========================================================
     
     def get_pod_status(self, region: str = None) -> Dict[str, Any]:
-        """Get POD status with priority buckets"""
+        """Get POD status with priority buckets using unique DN counts"""
+        start_time = time.time()
+        logger.info(f"📋 POD Status Query: region={region or 'all'}")
+        
         try:
             query = self.db.query(DeliveryReport).filter(
                 DeliveryReport.pod_status.in_(['PENDING', 'NOT_RECEIVED'])
@@ -596,51 +905,65 @@ class LogisticsQueryService:
             
             records = query.all()
             
-            critical = 0
-            high = 0
-            medium = 0
-            low = 0
-            pending_list = []
+            # Use sets for unique DN counting (Priority 6)
+            critical_dns = set()
+            high_dns = set()
+            medium_dns = set()
+            low_dns = set()
+            pending_list_dict = {}
             
             for r in records:
-                days = self.calculate_pending_pod_days(r.good_issue_date)
+                dn_no = self.normalize_dn(getattr(r, 'dn_no', None))
+                if not dn_no:
+                    continue
+                
+                good_issue_date = getattr(r, 'good_issue_date', None)
+                days = self.calculate_pending_pod_days(good_issue_date)
                 priority = self.calculate_priority(days)
                 
                 if priority == "CRITICAL":
-                    critical += 1
+                    critical_dns.add(dn_no)
                 elif priority == "HIGH":
-                    high += 1
+                    high_dns.add(dn_no)
                 elif priority == "MEDIUM":
-                    medium += 1
+                    medium_dns.add(dn_no)
                 else:
-                    low += 1
+                    low_dns.add(dn_no)
                 
-                pending_list.append({
-                    "dn_no": r.dn_no,
-                    "dealer": r.customer_name,
-                    "pending_days": days,
-                    "priority": priority
-                })
+                if dn_no not in pending_list_dict:
+                    pending_list_dict[dn_no] = {
+                        "dn_no": dn_no,
+                        "dealer": getattr(r, 'customer_name', 'N/A'),
+                        "pending_days": days,
+                        "priority": priority
+                    }
             
-            pending_list.sort(key=lambda x: x["pending_days"], reverse=True)
+            pending_list = sorted(pending_list_dict.values(), key=lambda x: x["pending_days"], reverse=True)
+            
+            elapsed = time.time() - start_time
+            logger.info(f"✅ POD Status success: {len(pending_list)} pending DNs ({len(critical_dns)} critical, {elapsed:.3f}s)")
             
             return self._format_success(
                 {
-                    "total_pending": len(records),
-                    "critical": critical,
-                    "high": high,
-                    "medium": medium,
-                    "low": low,
+                    "total_pending": len(pending_list),
+                    "critical": len(critical_dns),
+                    "high": len(high_dns),
+                    "medium": len(medium_dns),
+                    "low": len(low_dns),
                     "pending_list": pending_list[:20]
                 },
-                f"{len(records)} PODs pending ({critical} critical)"
+                f"{len(pending_list)} PODs pending ({len(critical_dns)} critical)"
             )
         except Exception as e:
-            logger.error(f"POD status error: {e}")
+            elapsed = time.time() - start_time
+            logger.error(f"❌ POD status error: {e} ({elapsed:.3f}s)")
             return self._format_error("Unable to retrieve POD status", is_user_error=False)
     
     def get_pending_deliveries(self, days: int = None) -> Dict[str, Any]:
-        """Get pending deliveries with priority buckets"""
+        """Get pending deliveries with priority buckets using unique DN counts"""
+        start_time = time.time()
+        logger.info(f"🚚 Pending Deliveries Query: days={days or 'all'}")
+        
         try:
             query = self.db.query(DeliveryReport).filter(
                 DeliveryReport.good_issue_date.is_(None)
@@ -652,51 +975,62 @@ class LogisticsQueryService:
             
             records = query.all()
             
-            critical = 0
-            high = 0
-            medium = 0
-            low = 0
-            pending_list = []
+            # Use sets for unique DN counting (Priority 6)
+            critical_dns = set()
+            high_dns = set()
+            medium_dns = set()
+            low_dns = set()
+            pending_list_dict = {}
             
             for r in records:
-                days_pending = self.calculate_pending_delivery_days(r.dn_create_date)
+                dn_no = self.normalize_dn(getattr(r, 'dn_no', None))
+                if not dn_no:
+                    continue
+                
+                dn_create_date = getattr(r, 'dn_create_date', None)
+                days_pending = self.calculate_pending_delivery_days(dn_create_date)
                 priority = self.calculate_priority(days_pending)
                 
                 if priority == "CRITICAL":
-                    critical += 1
+                    critical_dns.add(dn_no)
                 elif priority == "HIGH":
-                    high += 1
+                    high_dns.add(dn_no)
                 elif priority == "MEDIUM":
-                    medium += 1
+                    medium_dns.add(dn_no)
                 else:
-                    low += 1
+                    low_dns.add(dn_no)
                 
-                pending_list.append({
-                    "dn_no": r.dn_no,
-                    "dealer": r.customer_name,
-                    "pending_days": days_pending,
-                    "priority": priority
-                })
+                if dn_no not in pending_list_dict:
+                    pending_list_dict[dn_no] = {
+                        "dn_no": dn_no,
+                        "dealer": getattr(r, 'customer_name', 'N/A'),
+                        "pending_days": days_pending,
+                        "priority": priority
+                    }
             
-            pending_list.sort(key=lambda x: x["pending_days"], reverse=True)
+            pending_list = sorted(pending_list_dict.values(), key=lambda x: x["pending_days"], reverse=True)
+            
+            elapsed = time.time() - start_time
+            logger.info(f"✅ Pending Deliveries success: {len(pending_list)} pending DNs ({len(critical_dns)} critical, {elapsed:.3f}s)")
             
             return self._format_success(
                 {
-                    "total_pending": len(records),
-                    "critical": critical,
-                    "high": high,
-                    "medium": medium,
-                    "low": low,
+                    "total_pending": len(pending_list),
+                    "critical": len(critical_dns),
+                    "high": len(high_dns),
+                    "medium": len(medium_dns),
+                    "low": len(low_dns),
                     "pending_list": pending_list[:20]
                 },
-                f"{len(records)} deliveries pending ({critical} critical)"
+                f"{len(pending_list)} deliveries pending ({len(critical_dns)} critical)"
             )
         except Exception as e:
-            logger.error(f"Pending deliveries error: {e}")
+            elapsed = time.time() - start_time
+            logger.error(f"❌ Pending deliveries error: {e} ({elapsed:.3f}s)")
             return self._format_error("Unable to retrieve pending deliveries", is_user_error=False)
     
     # ==========================================================
-    # PHASE 1: SAMPLE DNS HELPER
+    # PHASE 1: SAMPLE DNS HELPER (Enhanced)
     # ==========================================================
     
     def _get_sample_dns(self, limit: int = 5) -> List[str]:
@@ -740,7 +1074,70 @@ class LogisticsQueryService:
             }
     
     # ==========================================================
-    # COMPATIBILITY METHODS (Aliases)
+    # PRIORITY 9: EXPANDED HEALTH CHECK
+    # ==========================================================
+    
+    def health_check(self) -> Dict[str, Any]:
+        """Comprehensive health check for monitoring with KPIs"""
+        start_time = time.time()
+        
+        db_connected = False
+        table_exists = False
+        row_count = 0
+        distinct_dns = 0
+        distinct_dealers = 0
+        distinct_warehouses = 0
+        
+        try:
+            self.db.execute(text("SELECT 1"))
+            db_connected = True
+            
+            inspector = inspect(self.db.bind)
+            table_exists = inspector.has_table(self.table_name)
+            
+            if table_exists:
+                row_count = self.db.query(DeliveryReport).count()
+                
+                # Priority 9: Additional KPIs
+                distinct_dns = self.db.query(func.count(func.distinct(DeliveryReport.dn_no))).scalar() or 0
+                distinct_dealers = self.db.query(func.count(func.distinct(DeliveryReport.customer_name))).scalar() or 0
+                distinct_warehouses = self.db.query(func.count(func.distinct(DeliveryReport.warehouse))).scalar() or 0
+                
+        except Exception as e:
+            logger.error(f"Health check failed: {e}")
+        
+        elapsed = time.time() - start_time
+        
+        return {
+            "service": "logistics",
+            "version": "9.1",
+            "status": "healthy" if db_connected and table_exists else "unhealthy",
+            "database_connected": db_connected,
+            "table_exists": table_exists,
+            "table_name": self.table_name,
+            "row_count": row_count,
+            "distinct_dns": distinct_dns,
+            "distinct_dealers": distinct_dealers,
+            "distinct_warehouses": distinct_warehouses,
+            "cache_sizes": {
+                "dealer_cache": len(self.dealer_cache),
+                "warehouse_cache": len(self.warehouse_cache),
+                "region_cache": len(self.region_cache)
+            },
+            "health_check_time_ms": round(elapsed * 1000, 2),
+            "features": {
+                "dn_aggregation": True,
+                "business_rules_applied": True,
+                "priority_buckets": True,
+                "multi_stage_search": True,
+                "model_alignment_validation": True,
+                "schema_adaptive_fields": True,
+                "smart_dn_not_found": True
+            }
+        }
+    
+    # ==========================================================
+    # COMPATIBILITY METHODS (Aliases) - All preserved
     # ==========================================================
     
     def get_dn_timeline(self, dn_number: str) -> Dict[str, Any]:
@@ -914,49 +1311,6 @@ class LogisticsQueryService:
     
     def show_all_dns(self, limit: int = 20) -> Dict[str, Any]:
         return self.get_all_dns_list(limit)
-    
-    # ==========================================================
-    # PHASE 3: DATABASE HEALTH CHECK
-    # ==========================================================
-    
-    def health_check(self) -> Dict[str, Any]:
-        """Comprehensive health check for monitoring"""
-        db_connected = False
-        table_exists = False
-        row_count = 0
-        
-        try:
-            self.db.execute(text("SELECT 1"))
-            db_connected = True
-            
-            inspector = inspect(self.db.bind)
-            table_exists = inspector.has_table(self.table_name)
-            
-            if table_exists:
-                row_count = self.db.query(DeliveryReport).count()
-        except Exception as e:
-            logger.error(f"Health check failed: {e}")
-        
-        return {
-            "service": "logistics",
-            "version": "9.0",
-            "status": "healthy" if db_connected and table_exists else "unhealthy",
-            "database_connected": db_connected,
-            "table_exists": table_exists,
-            "table_name": self.table_name,
-            "row_count": row_count,
-            "cache_sizes": {
-                "dealer_cache": len(self.dealer_cache),
-                "warehouse_cache": len(self.warehouse_cache),
-                "region_cache": len(self.region_cache)
-            },
-            "features": {
-                "dn_aggregation": True,
-                "business_rules_applied": True,
-                "priority_buckets": True,
-                "multi_stage_search": True
-            }
-        }
 
 
 # ==========================================================
@@ -972,20 +1326,26 @@ def get_logistics_query_service(db: Session) -> LogisticsQueryService:
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("📦 LOGISTICS QUERY SERVICE v9.0 - PRODUCTION READY")
+logger.info("📦 LOGISTICS QUERY SERVICE v9.1 - ENHANCED PRODUCTION")
 logger.info("")
 logger.info("   ✅ No hardcoded table names (uses ORM)")
 logger.info("   ✅ Database startup validation")
-logger.info("   ✅ Comprehensive health check")
+logger.info("   ✅ MODEL-DATABASE ALIGNMENT VALIDATION (NEW)")
+logger.info("   ✅ Comprehensive health check with KPIs")
 logger.info("   ✅ Standardized business rules for aging")
-logger.info("   ✅ Multi-stage DN search")
+logger.info("   ✅ Multi-stage DN search with diagnostics")
 logger.info("   ✅ DN aggregation engine (1 DN = multiple products)")
 logger.info("   ✅ Mandatory DN response structure")
+logger.info("   ✅ Schema adaptive fields (getattr fallbacks)")
+logger.info("   ✅ Multi-field dealer search (name/code)")
 logger.info("   ✅ Dealer operational intelligence")
-logger.info("   ✅ Warehouse intelligence with priority buckets")
+logger.info("   ✅ Warehouse intelligence with DN counts")
 logger.info("   ✅ Region intelligence with performance metrics")
+logger.info("   ✅ Smart DN Not Found with closest matches")
+logger.info("   ✅ Record validation before aggregation")
 logger.info("   ✅ Proper error handling (UserError vs SystemError)")
-logger.info("   ✅ Performance caching")
+logger.info("   ✅ Performance caching with hit/miss logging")
+logger.info("   ✅ WhatsApp production logging with timing")
 logger.info("")
 logger.info("   SUPPORTS:")
 logger.info("   • DN Queries (status, products, quantity, warehouse, POD)")
