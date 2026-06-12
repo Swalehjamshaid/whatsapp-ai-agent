@@ -1,15 +1,13 @@
 # ==========================================================
-# FILE: app/main.py (ENTERPRISE v9.0 - PRODUCTION READY)
+# FILE: app/main.py (ENTERPRISE v9.1 - AI QUERY SERVICE INTEGRATION)
 # PROJECT: AI WhatsApp Customer Service Agent
 # ==========================================================
-# IMPROVEMENTS v9.0:
-# - Fixed Customer import crash (added __future__ + proper imports)
-# - Removed ChatService from main.py (moved to service layer)
-# - Removed DashboardService from main.py (moved to analytics_service.py)
-# - Fixed route loading to include all routers
-# - Removed AI warmup from startup (lazy loading only)
-# - Fixed metrics endpoint (bytes response)
-# - Simplified main.py to bootstrap responsibilities only
+# IMPROVEMENTS v9.1:
+# - ✅ Added AI Query Service initialization during startup
+# - ✅ Added service creation for analytics, logistics, kpi, ai_provider
+# - ✅ Added startup health validation with fail-fast
+# - ✅ Fixed missing service initialization (root cause of errors)
+# - ✅ Added proper dependency injection for all services
 # ==========================================================
 
 from __future__ import annotations
@@ -65,7 +63,7 @@ from app.services.whatsapp_service import get_whatsapp_service
 from app.config import config
 
 # ==========================================================
-# MODEL IMPORTS (Fixed - moved to top)
+# MODEL IMPORTS
 # ==========================================================
 
 from app.models import (
@@ -74,6 +72,15 @@ from app.models import (
     Message,
     AIResponseLog,
     DeliveryReport
+)
+
+# ==========================================================
+# AI QUERY SERVICE IMPORTS (CRITICAL FIX)
+# ==========================================================
+
+from app.services.ai_query_service import (
+    initialize_query_service,
+    get_query_service
 )
 
 
@@ -174,7 +181,7 @@ class ServiceRegistry:
 
 
 # ==========================================================
-# LAZY ROUTER LOADING (All routers)
+# LAZY ROUTER LOADING
 # ==========================================================
 
 def load_routers(app: FastAPI):
@@ -202,6 +209,40 @@ def load_routers(app: FastAPI):
             logger.warning(f"⚠️ {name.capitalize()} router not available: {e}")
         except Exception as e:
             logger.exception(f"❌ {name.capitalize()} router failed to load: {e}")
+
+
+# ==========================================================
+# SERVICE CREATORS (Lazy loading)
+# ==========================================================
+
+def create_analytics_service(db: Session = None):
+    """Create analytics service instance"""
+    from app.services.analytics_service import AnalyticsService
+    if db:
+        return AnalyticsService(db)
+    return AnalyticsService
+
+
+def create_logistics_service(db: Session = None):
+    """Create logistics service instance"""
+    from app.services.logistics_query_service import LogisticsQueryService
+    if db:
+        return LogisticsQueryService(db)
+    return LogisticsQueryService
+
+
+def create_kpi_service(db: Session = None):
+    """Create KPI service instance"""
+    from app.services.kpi_service import KPIService
+    if db:
+        return KPIService(db)
+    return KPIService
+
+
+def create_ai_provider_service():
+    """Create AI provider service instance"""
+    from app.services.ai_provider_service import AIProviderService
+    return AIProviderService()
 
 
 # ==========================================================
@@ -307,6 +348,92 @@ class StartupService:
 
 
 # ==========================================================
+# AI QUERY SERVICE INITIALIZATION (CRITICAL FIX)
+# ==========================================================
+
+def initialize_ai_query_services():
+    """
+    Initialize AI Query Service with all dependencies.
+    This is the CRITICAL FIX that was missing.
+    """
+    logger.info("🔧 Initializing AI Query Service...")
+    
+    try:
+        # Create database session for service initialization
+        db = SessionLocal()
+        
+        # Create all required services
+        logger.info("   Creating analytics service...")
+        analytics_service = create_analytics_service(db)
+        
+        logger.info("   Creating logistics service...")
+        logistics_service = create_logistics_service(db)
+        
+        logger.info("   Creating KPI service...")
+        kpi_service = create_kpi_service(db)
+        
+        logger.info("   Creating AI provider service...")
+        ai_provider_service = create_ai_provider_service()
+        
+        # Initialize AI Query Service with all dependencies
+        logger.info("   Initializing AI Query Service...")
+        initialize_query_service(
+            analytics_service=analytics_service,
+            logistics_service=logistics_service,
+            kpi_service=kpi_service,
+            ai_provider=ai_provider_service
+        )
+        
+        # Get health check
+        query_service = get_query_service()
+        health = query_service.health_check()
+        
+        logger.info("   ✅ AI Query Service initialized successfully")
+        logger.info(f"   Health: {health.get('status', 'unknown')}")
+        logger.info(f"   Services available: {health.get('services', {})}")
+        logger.info(f"   Handlers available: {health.get('handlers', {})}")
+        
+        # FAIL FAST: Check if core services are available
+        services_available = health.get('services', {})
+        
+        if not services_available.get('analytics', False):
+            error_msg = "❌ CRITICAL: Analytics service not available. Cannot start application."
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+        
+        if not services_available.get('logistics', False):
+            error_msg = "❌ CRITICAL: Logistics service not available. Cannot start application."
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
+        
+        # Check handlers
+        handlers_available = health.get('handlers', {})
+        if not handlers_available.get('dealer', False):
+            logger.warning("⚠️ Dealer handler not available - dealer queries may fail")
+        
+        if not handlers_available.get('dn', False):
+            logger.warning("⚠️ DN handler not available - DN queries may fail")
+        
+        logger.info("   ✅ AI Query Service health check passed")
+        
+        # Store services in registry for later use
+        ServiceRegistry.register_service("analytics", analytics_service)
+        ServiceRegistry.register_service("logistics", logistics_service)
+        ServiceRegistry.register_service("kpi", kpi_service)
+        ServiceRegistry.register_service("ai_provider", ai_provider_service)
+        ServiceRegistry.register_service("ai_query", query_service)
+        
+        # Close the temporary session
+        db.close()
+        
+        return query_service
+        
+    except Exception as e:
+        logger.error(f"❌ AI Query Service initialization failed: {e}")
+        raise
+
+
+# ==========================================================
 # LIFESPAN HANDLER
 # ==========================================================
 
@@ -315,10 +442,10 @@ async def lifespan(app: FastAPI):
     start_time = time.time()
     
     logger.info("=" * 80)
-    logger.info("🤖 AI WHATSAPP AGENT STARTING v9.0")
+    logger.info("🤖 AI WHATSAPP AGENT STARTING v9.1")
     logger.info("=" * 80)
     
-    # Validate environment (no AI warmup)
+    # Validate environment
     env_results = StartupService.validate_environment()
     db_ok = StartupService.validate_database()
     groq_ok = StartupService.validate_groq()
@@ -329,6 +456,15 @@ async def lifespan(app: FastAPI):
     logger.info(f"   GROQ API: {'✓' if groq_ok else '✗'}")
     logger.info(f"   WhatsApp: {'✓' if whatsapp_ok else '✗'}")
     logger.info(f"   Environment: {config.ENVIRONMENT}")
+    
+    # CRITICAL FIX: Initialize AI Query Service
+    try:
+        ai_query_service = initialize_ai_query_services()
+        logger.info("✅ AI Query Service ready")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize AI Query Service: {e}")
+        if config.ENVIRONMENT == "production":
+            raise RuntimeError(f"Application cannot start: {e}")
     
     # Load routers
     load_routers(app)
@@ -357,7 +493,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AI WhatsApp Logistics Assistant",
     description="Enterprise Logistics AI Platform - WhatsApp Integration",
-    version="9.0.0",
+    version="9.1.0",
     docs_url="/api/docs" if config.ENVIRONMENT != "production" else None,
     redoc_url="/api/redoc" if config.ENVIRONMENT != "production" else None,
     openapi_url="/api/openapi.json" if config.ENVIRONMENT != "production" else None,
@@ -565,12 +701,21 @@ async def health():
     db_connected = check_database_connection()
     uptime = request_metrics.get()["uptime_seconds"]
     
+    # Get AI Query Service health if available
+    ai_query_health = None
+    try:
+        query_service = get_query_service()
+        ai_query_health = query_service.health_check()
+    except Exception as e:
+        ai_query_health = {"error": str(e)}
+    
     return {
         "status": "healthy" if db_connected else "degraded",
         "uptime_seconds": round(uptime, 2),
         "database": "connected" if db_connected else "disconnected",
         "schema_version": APP_SCHEMA_VERSION,
         "environment": config.ENVIRONMENT,
+        "ai_query_service": ai_query_health,
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -605,7 +750,25 @@ async def ping():
 
 
 # ==========================================================
-# PROMETHEUS METRICS ENDPOINT (FIXED)
+# AI QUERY SERVICE HEALTH ENDPOINT (NEW)
+# ==========================================================
+
+@app.get("/ai-query-health", tags=["Health"])
+async def ai_query_health():
+    """Get AI Query Service health status"""
+    try:
+        query_service = get_query_service()
+        return query_service.health_check()
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "message": "AI Query Service not initialized"
+        }
+
+
+# ==========================================================
+# PROMETHEUS METRICS ENDPOINT
 # ==========================================================
 
 @app.get("/metrics", tags=["Metrics"])
@@ -658,7 +821,7 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
                 **dashboard_data,
                 "whatsapp_status": "Online" if whatsapp_token else "Offline",
                 "groq_status": "Online" if groq_key else "Offline",
-                "schema_version": schema_info.get("app_version", "9.0"),
+                "schema_version": schema_info.get("app_version", "9.1"),
                 "last_refresh": last_refresh.strftime('%Y-%m-%d %H:%M:%S'),
                 "timestamp": datetime.utcnow().isoformat()
             }
@@ -682,7 +845,7 @@ async def status_legacy(db: Session = Depends(get_db)):
     
     result = {
         "application": "AI WhatsApp Agent",
-        "version": "9.0.0",
+        "version": "9.1.0",
         "database": "postgresql",
         "ai_provider": "groq",
         "whatsapp": "active",
@@ -711,11 +874,12 @@ async def home():
 async def version():
     return {
         "name": "AI WhatsApp Logistics Assistant",
-        "version": "9.0.0",
+        "version": "9.1.0",
         "framework": "FastAPI",
         "database": "PostgreSQL",
         "schema_version": APP_SCHEMA_VERSION,
-        "ai_provider": "groq"
+        "ai_provider": "groq",
+        "ai_query_service": "initialized"
     }
 
 
@@ -829,6 +993,22 @@ if config.ENVIRONMENT != "production":
         except Exception as e:
             logger.exception("DB test error")
             raise HTTPException(status_code=500, detail=str(e))
+    
+    @app.get("/ai-query-debug", tags=["Debug"])
+    async def ai_query_debug():
+        """Debug endpoint for AI Query Service"""
+        try:
+            query_service = get_query_service()
+            return {
+                "initialized": True,
+                "health": query_service.health_check(),
+                "metrics": query_service.get_metrics()
+            }
+        except Exception as e:
+            return {
+                "initialized": False,
+                "error": str(e)
+            }
 
 
 # ==========================================================
@@ -836,7 +1016,7 @@ if config.ENVIRONMENT != "production":
 # ==========================================================
 
 logger.info("=" * 60)
-logger.info("📡 MAIN APP v9.0 - Production Ready")
+logger.info("📡 MAIN APP v9.1 - AI Query Service Integrated")
 logger.info("   Improvements:")
 logger.info("   ✅ Fixed Customer import crash")
 logger.info("   ✅ Removed ChatService from main.py")
@@ -844,5 +1024,8 @@ logger.info("   ✅ Removed DashboardService from main.py")
 logger.info("   ✅ Fixed route loading (all routers)")
 logger.info("   ✅ Removed AI warmup (lazy loading)")
 logger.info("   ✅ Fixed metrics endpoint")
-logger.info("   ✅ Simplified to bootstrap only")
+logger.info("   ✅ Added AI Query Service initialization")
+logger.info("   ✅ Added startup health validation")
+logger.info("   ✅ Added fail-fast on missing services")
+logger.info("   ✅ Added /ai-query-health endpoint")
 logger.info("=" * 60)
