@@ -1,8 +1,16 @@
 # ==========================================================
-# FILE: app/services/whatsapp_service.py (ENTERPRISE v5.0)
+# FILE: app/services/whatsapp_service.py (ENTERPRISE v5.1 - FIXED)
 # ==========================================================
 # PURPOSE: WhatsApp Cloud API Communication Layer
 # ARCHITECTURE: webhook.py → ai_query_service.py → ... → whatsapp_service.py → Meta API
+#
+# FIXES v5.1:
+# - ✅ Increased timeout from 15s to 30s for Facebook API stability
+# - ✅ Increased max retries from 3 to 5
+# - ✅ Increased backoff factor from 1 to 2 (exponential backoff)
+# - ✅ Added more retry status codes (520, 524 for Cloudflare)
+# - ✅ Increased connection pool sizes for better concurrency
+# - ✅ All original attributes preserved
 # ==========================================================
 
 import re
@@ -18,13 +26,13 @@ from app.config import config
 
 
 # ==========================================================
-# CONSTANTS
+# CONSTANTS - FIXED v5.1
 # ==========================================================
 
 MAX_MESSAGE_LENGTH = 4000
-DEFAULT_TIMEOUT = 15  # Reduced from 30 to match webhook timeout
-MAX_RETRIES = 3
-RETRY_BACKOFF_FACTOR = 1
+DEFAULT_TIMEOUT = 30  # FIXED: Increased from 15s to 30s for Facebook API stability
+MAX_RETRIES = 5       # FIXED: Increased from 3 to 5 for better resilience
+RETRY_BACKOFF_FACTOR = 2  # FIXED: Increased from 1 to 2 (exponential backoff: 2,4,8,16,32s)
 DEFAULT_API_VERSION = "v20.0"  # Updated from v18.0
 
 
@@ -70,21 +78,22 @@ class WhatsAppService:
         self._last_health_check = None
         self._health_check_result = None
         
-        logger.info(f"WhatsApp Service v5.0 initialized (API: {self.api_version})")
+        logger.info(f"WhatsApp Service v5.1 initialized (API: {self.api_version}, Timeout: {DEFAULT_TIMEOUT}s, Retries: {MAX_RETRIES})")
     
     def _create_session(self) -> requests.Session:
-        """Create requests session with retry strategy."""
+        """Create requests session with retry strategy - FIXED v5.1."""
         session = requests.Session()
         retry_strategy = Retry(
             total=MAX_RETRIES,
             backoff_factor=RETRY_BACKOFF_FACTOR,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["GET", "POST"]
+            status_forcelist=[429, 500, 502, 503, 504, 520, 524],  # Added Cloudflare errors
+            allowed_methods=["GET", "POST"],
+            raise_on_status=False  # Don't raise on retryable statuses
         )
         adapter = HTTPAdapter(
             max_retries=retry_strategy,
-            pool_connections=10,
-            pool_maxsize=20
+            pool_connections=20,  # Increased from 10 for better concurrency
+            pool_maxsize=40       # Increased from 20 for better concurrency
         )
         session.mount("https://", adapter)
         session.mount("http://", adapter)
@@ -234,6 +243,10 @@ class WhatsAppService:
             error_msg = result.get("error", {}).get("message", f"HTTP {response.status_code}")
             logger.error(f"[{req_id}] ❌ API Error: {response.status_code} - {error_msg}")
             
+            # Special handling for token errors
+            if response.status_code == 401:
+                logger.error(f"[{req_id}] 🔴 WhatsApp token may be expired! Please regenerate token.")
+            
             return {
                 "success": False, 
                 "status_code": response.status_code, 
@@ -242,7 +255,7 @@ class WhatsAppService:
             
         except requests.Timeout:
             logger.error(f"[{req_id}] Request timeout after {DEFAULT_TIMEOUT}s for {cleaned_number}")
-            return {"success": False, "error": "Request timeout"}
+            return {"success": False, "error": f"Request timeout after {DEFAULT_TIMEOUT}s"}
         
         except requests.ConnectionError as e:
             logger.error(f"[{req_id}] Connection error: {e}")
@@ -280,13 +293,16 @@ class WhatsAppService:
         
         result = {
             "service": "whatsapp",
-            "version": "5.0",
+            "version": "5.1",
             "configured": bool(self.access_token and self.phone_number_id),
             "api_version": self.api_version,
             "api_key_valid_format": bool(self.access_token and len(self.access_token) > 20),
             "phone_id_valid": bool(self.phone_number_id),
             "cache_size": len(self._message_tracking),
             "request_tracking_size": len(self._request_tracking),
+            "timeout_seconds": DEFAULT_TIMEOUT,
+            "max_retries": MAX_RETRIES,
+            "retry_backoff_factor": RETRY_BACKOFF_FACTOR,
             "timestamp": datetime.utcnow().isoformat()
         }
         
@@ -304,6 +320,10 @@ class WhatsAppService:
                 if response.status_code == 200:
                     result["meta_api_status"] = "healthy"
                     result["meta_api_verified"] = True
+                elif response.status_code == 401:
+                    result["meta_api_status"] = "token_expired"
+                    result["meta_api_error"] = "Token expired or invalid"
+                    result["meta_api_verified"] = False
                 else:
                     result["meta_api_status"] = "unhealthy"
                     result["meta_api_error"] = f"HTTP {response.status_code}"
@@ -328,9 +348,11 @@ class WhatsAppService:
             "request_tracking_size": len(self._request_tracking),
             "message_tracking_maxsize": self._message_tracking.maxsize,
             "request_tracking_maxsize": self._request_tracking.maxsize,
-            "session_pool_connections": 10,
-            "session_pool_maxsize": 20,
+            "session_pool_connections": 20,
+            "session_pool_maxsize": 40,
             "timeout_seconds": DEFAULT_TIMEOUT,
+            "max_retries": MAX_RETRIES,
+            "retry_backoff_factor": RETRY_BACKOFF_FACTOR,
             "api_version": self.api_version
         }
     
@@ -418,10 +440,13 @@ def clear_whatsapp_cache() -> Dict[str, Any]:
 # ==========================================================
 
 logger.info("=" * 60)
-logger.info("📱 WhatsApp Service v5.0 - Enterprise Grade")
+logger.info("📱 WhatsApp Service v5.1 - Enterprise Grade (FIXED)")
 logger.info(f"   API Version: {get_whatsapp_service().api_version}")
 logger.info(f"   Configured: {bool(get_whatsapp_service().access_token and get_whatsapp_service().phone_number_id)}")
 logger.info(f"   Cache Size: 10,000 messages (24h TTL)")
-logger.info(f"   Timeout: {DEFAULT_TIMEOUT}s")
+logger.info(f"   Timeout: {DEFAULT_TIMEOUT}s (Increased from 15s)")
+logger.info(f"   Max Retries: {MAX_RETRIES} (Increased from 3)")
+logger.info(f"   Retry Backoff: {RETRY_BACKOFF_FACTOR} (Exponential)")
+logger.info(f"   Pool Size: 20 connections, 40 max")
 logger.info("   Features: Pakistan Phone Support | TTLCache | Request Tracing | Meta Health Check")
 logger.info("=" * 60)
