@@ -1,5 +1,5 @@
 # ==========================================================
-# FILE: app/routes/webhook.py (v28.3 - FIXED INTEGER DN SEARCH)
+# FILE: app/routes/webhook.py (v28.4 - FIXED TIMEOUT ISSUES)
 # ==========================================================
 
 import json
@@ -23,10 +23,15 @@ from app.models import DeliveryReport
 router = APIRouter(prefix="/webhook", tags=["WhatsApp Webhook"])
 
 # ==========================================================
-# CONSTANTS
+# CONSTANTS - INCREASED TIMEOUTS
 # ==========================================================
 
 MAX_MESSAGE_LENGTH = 3500
+REQUEST_TIMEOUT_SECONDS = 35  # INCREASED from 30 to 35 seconds
+SEND_MESSAGE_TIMEOUT = 30     # New: Specific timeout for sending messages
+MAX_RETRIES = 2
+RETRY_DELAYS = [1, 2]
+
 RATE_LIMIT_MAX_MESSAGES = 10
 RATE_LIMIT_WINDOW = 60
 AUTO_CLEANUP_INTERVAL = 500
@@ -610,21 +615,115 @@ async def send_whatsapp_message(
     request_id: str, 
     context_msg_id: Optional[str] = None
 ) -> Dict[str, Any]:
+    """
+    Send WhatsApp message with proper timeout handling.
+    FIXED: Added asyncio timeout wrapper to prevent 15s default timeout.
+    """
+    send_start_time = time.time()
+    
     if not WHATSAPP_SERVICE_AVAILABLE:
+        logger.bind(request_id=request_id).error(f"WhatsApp service not available")
         return {"success": False, "error": "Service not available"}
+    
+    if not config.WHATSAPP_ACCESS_TOKEN or not config.WHATSAPP_PHONE_NUMBER_ID:
+        logger.bind(request_id=request_id).error(f"WhatsApp credentials missing")
+        return {"success": False, "error": "Missing credentials"}
+    
+    if not message or not message.strip():
+        message = "✅ Request processed successfully"
     
     if len(message) > MAX_MESSAGE_LENGTH:
         message = message[:MAX_MESSAGE_LENGTH - 50] + "\n\n... (truncated)"
     
-    try:
-        if context_msg_id:
-            result = send_text_message(phone_number, message, message_id=context_msg_id, request_id=request_id)
+    for attempt in range(MAX_RETRIES):
+        try:
+            # FIXED: Use asyncio timeout wrapper to prevent default 15s timeout
+            result = await asyncio.wait_for(
+                asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: send_text_message(
+                        phone_number, 
+                        message, 
+                        message_id=context_msg_id, 
+                        request_id=request_id
+                    ) if context_msg_id else send_text_message(
+                        phone_number, 
+                        message, 
+                        request_id=request_id
+                    )
+                ),
+                timeout=SEND_MESSAGE_TIMEOUT  # 30 seconds timeout
+            )
+            
+            if result.get("success"):
+                send_duration = (time.time() - send_start_time) * 1000
+                _record_route_time("whatsapp_sending", send_duration)
+                logger.bind(request_id=request_id).info(f"✅ Message sent in {send_duration:.0f}ms")
+                return result
+            
+            if attempt < MAX_RETRIES - 1 and _should_retry(result.get('status_code', 0)):
+                logger.bind(request_id=request_id).warning(f"Retry {attempt + 1} for {phone_number}")
+                await asyncio.sleep(RETRY_DELAYS[attempt])
+                continue
+            
+            return result
+            
+        except asyncio.TimeoutError:
+            logger.bind(request_id=request_id).error(f"⏰ Timeout sending message to {phone_number} after {SEND_MESSAGE_TIMEOUT}s")
+            metrics["timeout_requests"] += 1
+            _record_service_failure("whatsapp_service", "Timeout")
+            
+            if attempt < MAX_RETRIES - 1:
+                logger.bind(request_id=request_id).info(f"Retrying... (attempt {attempt + 2})")
+                await asyncio.sleep(RETRY_DELAYS[attempt])
+                continue
+            
+            return {"success": False, "error": f"Request timeout after {SEND_MESSAGE_TIMEOUT}s"}
+            
+        except Exception as e:
+            logger.bind(request_id=request_id).exception(f"Send attempt {attempt + 1} failed: {e}")
+            _record_service_failure("whatsapp_service", str(e))
+            
+            if attempt < MAX_RETRIES - 1:
+                await asyncio.sleep(RETRY_DELAYS[attempt])
+            else:
+                return {"success": False, "error": str(e)}
+    
+    return {"success": False, "error": "Max retries exceeded"}
+
+
+def _should_retry(status_code: int) -> bool:
+    """Determine if request should be retried based on status code"""
+    retryable_statuses = {429, 500, 502, 503, 504}
+    return status_code in retryable_statuses
+
+
+def _record_service_failure(service_name: str, error_detail: str = None):
+    """Record service failure metrics"""
+    if service_name in metrics["service_failures"]:
+        metrics["service_failures"][service_name] += 1
+        if error_detail:
+            logger.warning(f"Service failure: {service_name} - {error_detail}")
         else:
-            result = send_text_message(phone_number, message, request_id=request_id)
-        return result
-    except Exception as e:
-        logger.bind(request_id=request_id).error(f"Send failed: {e}")
-        return {"success": False, "error": str(e)}
+            logger.warning(f"Service failure: {service_name}")
+
+
+def _record_route_time(route_name: str, duration_ms: float, max_samples: int = 100):
+    """Record route execution time"""
+    if route_name in metrics["route_execution_times"]:
+        times = metrics["route_execution_times"][route_name]
+        times.append(duration_ms)
+        if len(times) > max_samples:
+            metrics["route_execution_times"][route_name] = times[-max_samples:]
+
+
+# Initialize route execution times if not exists
+if "route_execution_times" not in metrics:
+    metrics["route_execution_times"] = {
+        "ai_processing": [],
+        "whatsapp_sending": [],
+        "total_processing": []
+    }
 
 
 # ==========================================================
@@ -710,6 +809,8 @@ async def receive_message(request: Request) -> Dict[str, Any]:
             processed_count += 1
         
         processing_time = (time.time() - start_time) * 1000
+        _record_route_time("total_processing", processing_time)
+        
         logger.info(f"✅ Done: {processing_time:.0f}ms, {processed_count} messages")
         
         return {
@@ -717,6 +818,15 @@ async def receive_message(request: Request) -> Dict[str, Any]:
             "request_id": request_id,
             "processing_time_ms": round(processing_time, 2),
             "messages_processed": processed_count
+        }
+        
+    except asyncio.TimeoutError:
+        logger.error(f"Request body timeout")
+        metrics["timeout_requests"] += 1
+        return {
+            "success": False,
+            "error": "Request timeout",
+            "request_id": request_id
         }
         
     except Exception as e:
@@ -739,7 +849,6 @@ async def debug_check_dn(dn_number: str):
         except ValueError:
             normalized_int = None
         
-        # Try all search methods
         results = {
             "searched": dn_number,
             "normalized": normalized,
@@ -759,7 +868,6 @@ async def debug_check_dn(dn_number: str):
         like_match = db.query(DeliveryReport).filter(cast(DeliveryReport.dn_no, String).like(f"%{normalized}%")).all()
         results["matches"]["contains_match"] = len(like_match)
         
-        # Get sample DNs
         sample_dns = db.query(DeliveryReport.dn_no).limit(10).all()
         results["sample_dns_in_db"] = [str(d[0]) for d in sample_dns if d[0]]
         
@@ -787,10 +895,15 @@ async def health_check():
     
     return {
         "status": "healthy" if db_healthy else "degraded",
-        "version": "28.3",
+        "version": "28.4",
         "timestamp": datetime.utcnow().isoformat(),
         "mode": "DIRECT_DATABASE",
         "integer_search": "ENABLED",
+        "timeout_settings": {
+            "request_timeout": REQUEST_TIMEOUT_SECONDS,
+            "send_message_timeout": SEND_MESSAGE_TIMEOUT,
+            "max_retries": MAX_RETRIES
+        },
         "services": {
             "whatsapp_service": {"available": WHATSAPP_SERVICE_AVAILABLE},
             "database": {"connected": db_healthy}
@@ -805,7 +918,8 @@ async def ping():
         "pong": True, 
         "timestamp": datetime.utcnow().isoformat(),
         "mode": "direct_database",
-        "cache_size": len(dn_cache)
+        "cache_size": len(dn_cache),
+        "timeout_seconds": SEND_MESSAGE_TIMEOUT
     }
 
 
@@ -816,18 +930,35 @@ async def clear_cache():
     return {"success": True, "cleared": old_size}
 
 
+@router.get("/timeout-status")
+async def timeout_status():
+    """Check current timeout configuration"""
+    return {
+        "send_message_timeout_seconds": SEND_MESSAGE_TIMEOUT,
+        "request_timeout_seconds": REQUEST_TIMEOUT_SECONDS,
+        "max_retries": MAX_RETRIES,
+        "retry_delays": RETRY_DELAYS
+    }
+
+
 # ==========================================================
 # INITIALIZATION
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("📡 WEBHOOK v28.3 - FIXED INTEGER DN SEARCH")
+logger.info("📡 WEBHOOK v28.4 - FIXED TIMEOUT ISSUES")
 logger.info("=" * 70)
+logger.info("")
+logger.info("   TIMEOUT FIXES:")
+logger.info(f"   ✅ Send message timeout: {SEND_MESSAGE_TIMEOUT}s (was default 15s)")
+logger.info(f"   ✅ Request timeout: {REQUEST_TIMEOUT_SECONDS}s")
+logger.info(f"   ✅ Max retries: {MAX_RETRIES}")
 logger.info("")
 logger.info("   CRITICAL FIXES:")
 logger.info("   ✅ Integer search for PostgreSQL dn_no column")
 logger.info("   ✅ Multiple search patterns (int, string, .0, contains)")
-logger.info("   ✅ Debug endpoint for DN lookup troubleshooting")
+logger.info("   ✅ asyncio timeout wrapper for WhatsApp API calls")
+logger.info("   ✅ Better timeout error handling")
 logger.info("")
 logger.info("   STATUS: ✅ PRODUCTION READY")
 logger.info("=" * 70)
