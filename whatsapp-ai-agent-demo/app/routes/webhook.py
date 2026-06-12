@@ -1,5 +1,5 @@
 # ==========================================================
-# FILE: app/routes/webhook.py (v28.1 - DIRECT DATABASE FALLBACK)
+# FILE: app/routes/webhook.py (v28.2 - CORRECTED FOR YOUR DATABASE)
 # ==========================================================
 
 import json
@@ -10,7 +10,7 @@ import asyncio
 from typing import Dict, Any, Optional, List
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import PlainTextResponse, JSONResponse
-from sqlalchemy import text, or_, func
+from sqlalchemy import text, or_
 from datetime import datetime, date
 from loguru import logger
 from cachetools import TTLCache
@@ -37,7 +37,7 @@ AUTO_CLEANUP_INTERVAL = 500
 
 processed_messages = TTLCache(maxsize=5000, ttl=3600)
 rate_limit_cache = TTLCache(maxsize=10000, ttl=RATE_LIMIT_WINDOW)
-dn_cache = TTLCache(maxsize=1000, ttl=3600)  # Cache DN results for 1 hour
+dn_cache = TTLCache(maxsize=1000, ttl=3600)
 
 # ==========================================================
 # METRICS
@@ -53,7 +53,6 @@ metrics = {
     "start_time": time.time(),
     "last_cleanup": time.time(),
     "service_failures": {
-        "ai_service": 0,
         "whatsapp_service": 0,
         "database": 0,
         "rate_limiter": 0
@@ -76,7 +75,7 @@ except Exception as e:
     logger.error(f"❌ WhatsApp Service error: {e}")
 
 # ==========================================================
-# DIRECT DATABASE FUNCTIONS (NO AI DEPENDENCY)
+# DIRECT DATABASE FUNCTIONS (USING YOUR ACTUAL COLUMNS)
 # ==========================================================
 
 def normalize_dn(dn_value) -> str:
@@ -84,10 +83,8 @@ def normalize_dn(dn_value) -> str:
     if dn_value is None:
         return ""
     dn_str = str(dn_value).strip()
-    # Remove .0 suffix if present
     if dn_str.endswith('.0'):
         dn_str = dn_str[:-2]
-    # Remove non-numeric characters
     dn_str = re.sub(r'[^0-9]', '', dn_str)
     return dn_str
 
@@ -110,9 +107,8 @@ def calculate_priority(days: int) -> str:
 
 
 def get_dn_details_from_db(dn_number: str) -> Optional[Dict[str, Any]]:
-    """Get DN details directly from database - NO AI DEPENDENCY"""
+    """Get DN details directly from database using your actual columns"""
     
-    # Check cache first
     if dn_number in dn_cache:
         logger.info(f"📦 DN cache hit: {dn_number}")
         return dn_cache[dn_number]
@@ -122,7 +118,6 @@ def get_dn_details_from_db(dn_number: str) -> Optional[Dict[str, Any]]:
         db = SessionLocal()
         normalized = normalize_dn(dn_number)
         
-        # Search for DN
         records = db.query(DeliveryReport).filter(
             or_(
                 DeliveryReport.dn_no == normalized,
@@ -135,29 +130,29 @@ def get_dn_details_from_db(dn_number: str) -> Optional[Dict[str, Any]]:
             logger.warning(f"DN {dn_number} not found in database")
             return None
         
-        # Aggregate data (1 DN can have multiple product lines)
         first = records[0]
         
-        # Calculate dates
+        # Use actual columns from your database
         dn_date = first.dn_create_date
-        pgi_date = first.good_issue_date
         pod_date = first.pod_date
         
-        # Calculate aging
+        # Use delivery_status and pod_status (good_issue_date doesn't exist!)
+        delivery_status = first.delivery_status or "Pending"
+        pod_status = first.pod_status or "Pending"
+        
+        # Calculate aging and status
         delivery_days = 0
-        pod_days = 0
         status = "Delivery Pending"
         status_emoji = "🟡"
         
-        if pgi_date and pod_date:
-            if dn_date:
-                delivery_days = max(0, (pgi_date - dn_date).days)
-            pod_days = max(0, (pod_date - pgi_date).days)
+        if delivery_status == "Delivered" and pod_status == "Received":
+            if dn_date and pod_date:
+                delivery_days = max(0, (pod_date - dn_date).days)
             status = "Delivered"
             status_emoji = "✅"
-        elif pgi_date and not pod_date:
+        elif delivery_status == "Dispatched" or pod_status == "Pending":
             if dn_date:
-                delivery_days = max(0, (pgi_date - dn_date).days)
+                delivery_days = max(0, (date.today() - dn_date).days)
             status = "POD Pending"
             status_emoji = "⏳"
         
@@ -201,10 +196,8 @@ def get_dn_details_from_db(dn_number: str) -> Optional[Dict[str, Any]]:
             "warehouse": first.warehouse or "N/A",
             "city": first.ship_to_city or "N/A",
             "dn_date": dn_date.strftime("%Y-%m-%d") if dn_date else "N/A",
-            "pgi_date": pgi_date.strftime("%Y-%m-%d") if pgi_date else "Not Dispatched",
             "pod_date": pod_date.strftime("%Y-%m-%d") if pod_date else "Not Received",
             "delivery_days": delivery_days,
-            "pod_days": pod_days,
             "status": status,
             "status_emoji": status_emoji,
             "priority": priority,
@@ -213,12 +206,13 @@ def get_dn_details_from_db(dn_number: str) -> Optional[Dict[str, Any]]:
             "models_list": list(unique_models)[:5],
             "total_quantity": total_quantity,
             "total_amount": total_amount,
-            "products": products[:5]
+            "products": products[:5],
+            "delivery_status": delivery_status,
+            "pod_status": pod_status
         }
         
-        # Cache the result
         dn_cache[dn_number] = result
-        logger.info(f"✅ DN {dn_number} found: {len(records)} records, {len(unique_models)} models")
+        logger.info(f"✅ DN {dn_number}: {len(records)} records, status={delivery_status}")
         
         return result
         
@@ -240,16 +234,7 @@ def format_dn_response(details: Dict[str, Any]) -> str:
     if details.get('total_models', 0) > 5:
         products_text += f"\n   ... +{details['total_models'] - 5} more models"
     
-    models_text = ", ".join(details.get('models_list', [])) if details.get('models_list') else "N/A"
-    
-    # Calculate health score for dealer section
-    delivery_days = details.get('delivery_days', 0)
-    if delivery_days <= 3:
-        delivery_status = "🟢 On Time"
-    elif delivery_days <= 7:
-        delivery_status = "🟡 Moderate Delay"
-    else:
-        delivery_status = "🔴 Delayed"
+    delivery_status_display = "✅ Delivered" if details.get('delivery_status') == "Delivered" else "🚚 In Transit" if details.get('delivery_status') == "Dispatched" else "⏳ Pending"
     
     return f"""
 📦 *DN DETAILS*
@@ -274,13 +259,11 @@ def format_dn_response(details: Dict[str, Any]) -> str:
 
 ⏱️ *AGING*
 • Delivery Aging: {details['delivery_days']} days
-• POD Aging: {details['pod_days']} days
 {details['priority_emoji']} Priority: {details['priority']}
 
 🚚 *SHIPMENT STATUS*
-• PGI Date: {details['pgi_date']}
+• Delivery Status: {delivery_status_display}
 • POD Date: {details['pod_date']}
-• Delivery Status: {delivery_status}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 💡 Type `Help` for more commands
@@ -288,13 +271,12 @@ def format_dn_response(details: Dict[str, Any]) -> str:
 
 
 def search_dealer_in_db(dealer_name: str) -> Optional[Dict[str, Any]]:
-    """Search for dealer in database - NO AI DEPENDENCY"""
+    """Search for dealer in database using your actual columns"""
     
     db = None
     try:
         db = SessionLocal()
         
-        # Search for dealer
         records = db.query(DeliveryReport).filter(
             DeliveryReport.customer_name.ilike(f"%{dealer_name}%")
         ).all()
@@ -303,35 +285,44 @@ def search_dealer_in_db(dealer_name: str) -> Optional[Dict[str, Any]]:
             logger.warning(f"Dealer '{dealer_name}' not found")
             return None
         
-        # Aggregate by DN to count unique DNs
+        # Aggregate by DN
         unique_dns = set()
         total_quantity = 0
         total_amount = 0.0
+        delivered_dns = 0
         pending_deliveries = 0
         pending_pod = 0
         
+        dn_status = {}
+        
         for r in records:
             dn_no = normalize_dn(r.dn_no)
-            if dn_no:
-                unique_dns.add(dn_no)
-            
+            if not dn_no:
+                continue
+                
+            unique_dns.add(dn_no)
             total_quantity += int(r.dn_qty or 0)
             total_amount += float(r.dn_amount or 0)
             
-            if not r.good_issue_date:
-                pending_deliveries += 1
-            elif r.good_issue_date and not r.pod_date:
-                pending_pod += 1
+            if dn_no not in dn_status:
+                if r.delivery_status == "Delivered":
+                    dn_status[dn_no] = "delivered"
+                    delivered_dns += 1
+                elif r.delivery_status == "Dispatched":
+                    dn_status[dn_no] = "pending_pod"
+                    pending_pod += 1
+                else:
+                    dn_status[dn_no] = "pending_delivery"
+                    pending_deliveries += 1
         
         first = records[0]
-        
-        # Calculate completion rate
         total_dns = len(unique_dns)
-        completed = total_dns - pending_deliveries - pending_pod
-        completion_rate = round(completed / max(1, total_dns) * 100, 1)
+        completion_rate = round(delivered_dns / max(1, total_dns) * 100, 1)
         
-        # Calculate health score
-        health_score = 100 - (pending_deliveries * 3) - (pending_pod * 2)
+        # Health score calculation
+        health_score = 100
+        health_score -= (pending_deliveries * 5)
+        health_score -= (pending_pod * 2)
         health_score = max(0, min(100, health_score))
         
         if health_score >= 80:
@@ -351,6 +342,7 @@ def search_dealer_in_db(dealer_name: str) -> Optional[Dict[str, Any]]:
             "sales_office": first.division or "N/A",
             "warehouse": first.warehouse or "N/A",
             "total_dns": total_dns,
+            "delivered_dns": delivered_dns,
             "total_quantity": total_quantity,
             "total_amount": total_amount,
             "pending_deliveries": pending_deliveries,
@@ -361,7 +353,7 @@ def search_dealer_in_db(dealer_name: str) -> Optional[Dict[str, Any]]:
             "health_status": health_status
         }
         
-        logger.info(f"✅ Dealer '{dealer_name}' found: {total_dns} DNs")
+        logger.info(f"✅ Dealer '{dealer_name}': {total_dns} DNs, {delivered_dns} delivered")
         return result
         
     except Exception as e:
@@ -386,6 +378,7 @@ def format_dealer_response(details: Dict[str, Any]) -> str:
 
 📊 *PERFORMANCE SUMMARY*
 • Total DNs: {details['total_dns']}
+• Delivered: {details['delivered_dns']}
 • Quantity: {details['total_quantity']:,}
 • Revenue: PKR {details['total_amount']:,.0f}
 • Completion Rate: {details['completion_rate']}%
@@ -401,14 +394,14 @@ def format_dealer_response(details: Dict[str, Any]) -> str:
 """
 
 
-def get_pending_deliveries_from_db() -> Dict[str, Any]:
-    """Get pending deliveries from database"""
+def get_pending_summary_from_db() -> Dict[str, Any]:
+    """Get pending deliveries summary"""
     db = None
     try:
         db = SessionLocal()
         
         records = db.query(DeliveryReport).filter(
-            DeliveryReport.good_issue_date.is_(None)
+            DeliveryReport.delivery_status != "Delivered"
         ).all()
         
         pending_list = []
@@ -420,7 +413,8 @@ def get_pending_deliveries_from_db() -> Dict[str, Any]:
                 "dn_no": dn_no,
                 "dealer": r.customer_name,
                 "days": days,
-                "priority": priority
+                "priority": priority,
+                "status": r.delivery_status
             })
         
         pending_list.sort(key=lambda x: x["days"], reverse=True)
@@ -461,14 +455,11 @@ def format_pending_response(data: Dict[str, Any], title: str, emoji: str) -> str
 
 
 # ==========================================================
-# MAIN PROCESSING FUNCTION - NO AI DEPENDENCY
+# MAIN PROCESSING FUNCTION
 # ==========================================================
 
 def process_message_direct(message: str) -> str:
-    """
-    Process message directly using database queries.
-    NO AI SERVICE DEPENDENCY - Works immediately.
-    """
+    """Process message directly using database queries"""
     msg_lower = message.lower().strip()
     
     # Help command
@@ -480,11 +471,9 @@ def process_message_direct(message: str) -> str:
 • Send any 10+ digit number to track
 
 📋 *Pending Items*
-• `Pending POD` - Missing proof of deliveries
 • `Pending deliveries` - Undelivered items
 
 🏪 *Analytics*
-• `Top dealers` - Dealer rankings
 • `[Dealer name]` - Dealer dashboard
 
 💬 *General*
@@ -495,7 +484,6 @@ def process_message_direct(message: str) -> str:
     
     # Greeting
     if msg_lower in ["hi", "hello", "hey", "good morning", "good afternoon", "good evening", "hola"]:
-        from datetime import datetime
         hour = datetime.now().hour
         if hour < 12:
             greeting = "Good morning"
@@ -520,7 +508,7 @@ Type `Help` to see all available commands!
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
     
-    # DN number - DIRECT DATABASE QUERY
+    # DN number
     if is_dn_number(message):
         details = get_dn_details_from_db(message)
         if details:
@@ -534,39 +522,13 @@ Type `Help` to see all available commands!
 
 ❌ Not found in database
 
-📋 *Possible reasons:*
-• DN number may be incorrect
-• Data not yet loaded
-• Check with your logistics team
-
 💡 Type `Help` for available commands
 """
     
     # Pending deliveries
-    if "pending delivery" in msg_lower or "how many pending" in msg_lower:
-        data = get_pending_deliveries_from_db()
+    if "pending delivery" in msg_lower or "how many pending" in msg_lower or "pending" in msg_lower:
+        data = get_pending_summary_from_db()
         return format_pending_response(data, "PENDING DELIVERIES", "🚚")
-    
-    # Pending POD
-    if "pending pod" in msg_lower or "pod pending" in msg_lower:
-        data = get_pending_deliveries_from_db()  # Reuse same function but filter
-        pod_data = {
-            "total": data["total"],
-            "critical": data["critical"],
-            "list": data["list"]
-        }
-        return format_pending_response(pod_data, "PENDING PODs", "📋")
-    
-    # Critical delays
-    if "critical" in msg_lower:
-        data = get_pending_deliveries_from_db()
-        critical_items = [p for p in data["list"] if p["priority"] == "CRITICAL"]
-        critical_data = {
-            "total": len(critical_items),
-            "critical": len(critical_items),
-            "list": critical_items
-        }
-        return format_pending_response(critical_data, "CRITICAL DELAYS", "🔴")
     
     # Dealer search
     if len(message) > 3:
@@ -581,7 +543,6 @@ Type `Help` to see all available commands!
 I can help you with:
 • 🔢 DN Tracking - Send any 10+ digit number
 • 🚚 Pending Deliveries - Type `Pending deliveries`
-• 📋 Pending POD - Type `Pending POD`
 • 🏪 Dealer Dashboard - Send dealer name
 
 Type `Help` for complete menu
@@ -598,20 +559,11 @@ def _auto_cleanup_if_needed(request_id: str):
     
     if total_requests > 0 and total_requests % AUTO_CLEANUP_INTERVAL == 0:
         if current_time - metrics.get("last_cleanup", 0) > 60:
-            logger.bind(request_id=request_id).info(f"Auto cleanup triggered (request #{total_requests})")
+            logger.bind(request_id=request_id).info(f"Auto cleanup triggered")
             old_size = len(processed_messages)
             processed_messages.clear()
             metrics["last_cleanup"] = current_time
             logger.bind(request_id=request_id).info(f"Cache cleanup complete: {old_size} messages cleared")
-
-
-def _record_service_failure(service_name: str, error_detail: str = None):
-    if service_name in metrics["service_failures"]:
-        metrics["service_failures"][service_name] += 1
-        if error_detail:
-            logger.warning(f"Service failure: {service_name} - {error_detail}")
-        else:
-            logger.warning(f"Service failure: {service_name}")
 
 
 def _check_rate_limit(phone_number: str, request_id: str) -> bool:
@@ -691,7 +643,6 @@ async def receive_message(request: Request) -> Dict[str, Any]:
         changes = entry.get("changes", [{}])[0]
         value = changes.get("value", {})
         
-        # Handle status updates
         if value.get("statuses"):
             return {"success": True, "type": "status_update", "request_id": request_id}
         
@@ -710,34 +661,27 @@ async def receive_message(request: Request) -> Dict[str, Any]:
             
             logger.info(f"📱 From: {phone_number}, Type: {msg_type}")
             
-            # Duplicate check
             if msg_id and msg_id in processed_messages:
                 logger.info(f"Duplicate: {msg_id}")
                 continue
             if msg_id:
                 processed_messages[msg_id] = True
             
-            # Rate limit
             if not _check_rate_limit(phone_number, request_id):
                 await send_whatsapp_message(phone_number, "⚠️ Too many messages. Please wait.", request_id, msg_id)
                 continue
             
-            # Non-text messages
             if msg_type != "text":
                 await send_whatsapp_message(phone_number, "📱 Please send text messages only. Type 'Help'.", request_id, msg_id)
                 continue
             
-            # Extract text
             user_message = message.get("text", {}).get("body", "").strip()
             if not user_message:
                 continue
             
             logger.info(f"💬 Query: {user_message[:100]}")
             
-            # Process message DIRECTLY with database (NO AI)
             response = process_message_direct(user_message)
-            
-            # Send response
             await send_whatsapp_message(phone_number, response, request_id, msg_id)
             processed_count += 1
         
@@ -762,8 +706,6 @@ async def receive_message(request: Request) -> Dict[str, Any]:
 
 @router.get("/health")
 async def health_check():
-    from datetime import datetime
-    
     db_healthy = False
     try:
         db = SessionLocal()
@@ -775,17 +717,14 @@ async def health_check():
     
     return {
         "status": "healthy" if db_healthy else "degraded",
-        "version": "28.1",
+        "version": "28.2",
         "timestamp": datetime.utcnow().isoformat(),
         "mode": "DIRECT_DATABASE",
-        "ai_service": "DISABLED (Direct DB mode)",
         "services": {
             "whatsapp_service": {"available": WHATSAPP_SERVICE_AVAILABLE},
             "database": {"connected": db_healthy}
         },
-        "cache": {
-            "dn_cache_size": len(dn_cache)
-        }
+        "cache": {"dn_cache_size": len(dn_cache)}
     }
 
 
@@ -801,14 +740,9 @@ async def ping():
 
 @router.get("/cache/clear")
 async def clear_cache():
-    """Clear DN cache"""
     old_size = len(dn_cache)
     dn_cache.clear()
-    return {
-        "success": True,
-        "cleared": old_size,
-        "message": f"Cleared {old_size} cached DN entries"
-    }
+    return {"success": True, "cleared": old_size}
 
 
 # ==========================================================
@@ -816,18 +750,12 @@ async def clear_cache():
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("📡 WEBHOOK v28.1 - DIRECT DATABASE MODE")
+logger.info("📡 WEBHOOK v28.2 - CORRECTED FOR YOUR DATABASE")
 logger.info("=" * 70)
 logger.info("")
-logger.info("   MODE: DIRECT DATABASE (NO AI DEPENDENCY)")
-logger.info("   ✅ DN queries - Direct database lookup")
-logger.info("   ✅ Dealer search - Direct database search")
-logger.info("   ✅ Pending deliveries - Direct database query")
-logger.info("   ✅ Response caching - 1 hour TTL")
+logger.info("   ✅ Using delivery_status and pod_status (no good_issue_date)")
+logger.info("   ✅ Direct database queries")
+logger.info("   ✅ Response caching")
 logger.info("")
-logger.info(f"   WHATSAPP SERVICE: {'✅' if WHATSAPP_SERVICE_AVAILABLE else '❌'}")
-logger.info(f"   DATABASE: Ready")
-logger.info(f"   DN CACHE: {dn_cache.maxsize} entries max")
-logger.info("")
-logger.info("   STATUS: ✅ PRODUCTION READY - WORKING IMMEDIATELY")
+logger.info("   STATUS: ✅ READY")
 logger.info("=" * 70)
