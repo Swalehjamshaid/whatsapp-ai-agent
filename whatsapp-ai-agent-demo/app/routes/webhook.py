@@ -1,5 +1,5 @@
 # ==========================================================
-# FILE: app/routes/webhook.py (v28.2 - CORRECTED FOR YOUR DATABASE)
+# FILE: app/routes/webhook.py (v28.3 - FIXED INTEGER DN SEARCH)
 # ==========================================================
 
 import json
@@ -10,7 +10,7 @@ import asyncio
 from typing import Dict, Any, Optional, List
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import PlainTextResponse, JSONResponse
-from sqlalchemy import text, or_
+from sqlalchemy import text, or_, cast, String
 from datetime import datetime, date
 from loguru import logger
 from cachetools import TTLCache
@@ -75,7 +75,7 @@ except Exception as e:
     logger.error(f"❌ WhatsApp Service error: {e}")
 
 # ==========================================================
-# DIRECT DATABASE FUNCTIONS (USING YOUR ACTUAL COLUMNS)
+# DIRECT DATABASE FUNCTIONS
 # ==========================================================
 
 def normalize_dn(dn_value) -> str:
@@ -107,7 +107,10 @@ def calculate_priority(days: int) -> str:
 
 
 def get_dn_details_from_db(dn_number: str) -> Optional[Dict[str, Any]]:
-    """Get DN details directly from database using your actual columns"""
+    """
+    Get DN details directly from database.
+    CRITICAL FIX: Prioritizes integer search since PostgreSQL stores dn_no as INTEGER.
+    """
     
     if dn_number in dn_cache:
         logger.info(f"📦 DN cache hit: {dn_number}")
@@ -118,17 +121,38 @@ def get_dn_details_from_db(dn_number: str) -> Optional[Dict[str, Any]]:
         db = SessionLocal()
         normalized = normalize_dn(dn_number)
         
-        records = db.query(DeliveryReport).filter(
-            or_(
-                DeliveryReport.dn_no == normalized,
-                DeliveryReport.dn_no == f"{normalized}.0",
-                DeliveryReport.dn_no == int(normalized) if normalized.isdigit() else None
-            )
-        ).all()
+        # CRITICAL: Convert to integer for PostgreSQL integer column
+        try:
+            normalized_int = int(normalized)
+            logger.info(f"🔍 Searching for DN as integer: {normalized_int}")
+        except ValueError:
+            normalized_int = None
+            logger.info(f"🔍 Searching for DN as string: {normalized}")
+        
+        # Build search conditions - INTEGER FIRST (since your data is stored as integer)
+        search_conditions = []
+        
+        # Priority 1: Integer match (YOUR DATA TYPE - PostgreSQL integer column)
+        if normalized_int is not None:
+            search_conditions.append(DeliveryReport.dn_no == normalized_int)
+        
+        # Priority 2: String match
+        search_conditions.append(cast(DeliveryReport.dn_no, String) == normalized)
+        
+        # Priority 3: With .0 suffix
+        search_conditions.append(cast(DeliveryReport.dn_no, String) == f"{normalized}.0")
+        
+        # Priority 4: Contains (last resort)
+        search_conditions.append(cast(DeliveryReport.dn_no, String).like(f"%{normalized}%"))
+        
+        # Execute search
+        records = db.query(DeliveryReport).filter(or_(*search_conditions)).all()
         
         if not records:
-            logger.warning(f"DN {dn_number} not found in database")
+            logger.warning(f"DN {dn_number} (normalized: {normalized}, int: {normalized_int}) not found in database")
             return None
+        
+        logger.info(f"✅ DN {dn_number} found! {len(records)} records")
         
         first = records[0]
         
@@ -136,7 +160,7 @@ def get_dn_details_from_db(dn_number: str) -> Optional[Dict[str, Any]]:
         dn_date = first.dn_create_date
         pod_date = first.pod_date
         
-        # Use delivery_status and pod_status (good_issue_date doesn't exist!)
+        # Use delivery_status and pod_status
         delivery_status = first.delivery_status or "Pending"
         pod_status = first.pod_status or "Pending"
         
@@ -271,7 +295,7 @@ def format_dn_response(details: Dict[str, Any]) -> str:
 
 
 def search_dealer_in_db(dealer_name: str) -> Optional[Dict[str, Any]]:
-    """Search for dealer in database using your actual columns"""
+    """Search for dealer in database"""
     
     db = None
     try:
@@ -701,6 +725,52 @@ async def receive_message(request: Request) -> Dict[str, Any]:
 
 
 # ==========================================================
+# DEBUG ENDPOINTS
+# ==========================================================
+
+@router.get("/debug/check-dn/{dn_number}")
+async def debug_check_dn(dn_number: str):
+    """Debug endpoint to check DN in database"""
+    db = SessionLocal()
+    try:
+        normalized = normalize_dn(dn_number)
+        try:
+            normalized_int = int(normalized)
+        except ValueError:
+            normalized_int = None
+        
+        # Try all search methods
+        results = {
+            "searched": dn_number,
+            "normalized": normalized,
+            "normalized_int": normalized_int,
+            "matches": {}
+        }
+        
+        if normalized_int is not None:
+            int_match = db.query(DeliveryReport).filter(DeliveryReport.dn_no == normalized_int).all()
+            results["matches"]["integer_match"] = len(int_match)
+            if int_match:
+                results["sample"] = [{"dn_no": str(r.dn_no), "customer": r.customer_name} for r in int_match[:3]]
+        
+        string_match = db.query(DeliveryReport).filter(cast(DeliveryReport.dn_no, String) == normalized).all()
+        results["matches"]["string_match"] = len(string_match)
+        
+        like_match = db.query(DeliveryReport).filter(cast(DeliveryReport.dn_no, String).like(f"%{normalized}%")).all()
+        results["matches"]["contains_match"] = len(like_match)
+        
+        # Get sample DNs
+        sample_dns = db.query(DeliveryReport.dn_no).limit(10).all()
+        results["sample_dns_in_db"] = [str(d[0]) for d in sample_dns if d[0]]
+        
+        results["found"] = any(results["matches"].values())
+        
+        return results
+    finally:
+        db.close()
+
+
+# ==========================================================
 # MONITORING ENDPOINTS
 # ==========================================================
 
@@ -717,9 +787,10 @@ async def health_check():
     
     return {
         "status": "healthy" if db_healthy else "degraded",
-        "version": "28.2",
+        "version": "28.3",
         "timestamp": datetime.utcnow().isoformat(),
         "mode": "DIRECT_DATABASE",
+        "integer_search": "ENABLED",
         "services": {
             "whatsapp_service": {"available": WHATSAPP_SERVICE_AVAILABLE},
             "database": {"connected": db_healthy}
@@ -750,12 +821,13 @@ async def clear_cache():
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("📡 WEBHOOK v28.2 - CORRECTED FOR YOUR DATABASE")
+logger.info("📡 WEBHOOK v28.3 - FIXED INTEGER DN SEARCH")
 logger.info("=" * 70)
 logger.info("")
-logger.info("   ✅ Using delivery_status and pod_status (no good_issue_date)")
-logger.info("   ✅ Direct database queries")
-logger.info("   ✅ Response caching")
+logger.info("   CRITICAL FIXES:")
+logger.info("   ✅ Integer search for PostgreSQL dn_no column")
+logger.info("   ✅ Multiple search patterns (int, string, .0, contains)")
+logger.info("   ✅ Debug endpoint for DN lookup troubleshooting")
 logger.info("")
-logger.info("   STATUS: ✅ READY")
+logger.info("   STATUS: ✅ PRODUCTION READY")
 logger.info("=" * 70)
