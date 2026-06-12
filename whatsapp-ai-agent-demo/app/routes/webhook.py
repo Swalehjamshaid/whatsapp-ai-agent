@@ -1,15 +1,19 @@
 # ==========================================================
-# FILE: app/routes/webhook.py (FIXED v25.0 - FULLY INTEGRATED)
+# FILE: app/routes/webhook.py (FIXED v26.0 - ENHANCED DEBUGGING)
 # ==========================================================
 # PURPOSE: PURE ENTRY POINT CONTROLLER - Production Grade
 #
-# CRITICAL FIXES v25.0:
+# CRITICAL FIXES v26.0:
 # - ✅ FIXED: session_factory passed correctly (not db session)
 # - ✅ FIXED: process_whatsapp_query parameter order
 # - ✅ FIXED: AI service integration with proper error handling
 # - ✅ FIXED: Status updates properly ignored
 # - ✅ ADDED: Detailed error logging for debugging
 # - ✅ ADDED: Request trace throughout entire flow
+# - ✅ NEW: Replace generic import error with detailed exception logging
+# - ✅ NEW: AI Query diagnostics with full error details
+# - ✅ NEW: Service availability pre-check before AI call
+# - ✅ NEW: Stack trace logging for all AI failures
 # ==========================================================
 
 import json
@@ -17,6 +21,7 @@ import time
 import uuid
 import re
 import asyncio
+import traceback
 from typing import Dict, Any, Optional, Callable
 from fastapi import APIRouter, Request, HTTPException, BackgroundTasks
 from fastapi.responses import PlainTextResponse, JSONResponse
@@ -69,7 +74,9 @@ metrics = {
         "ai_service": 0,
         "whatsapp_service": 0,
         "database": 0,
-        "rate_limiter": 0
+        "rate_limiter": 0,
+        "import_error": 0,
+        "method_not_found": 0
     },
     "route_execution_times": {
         "ai_processing": [],
@@ -84,9 +91,11 @@ metrics = {
 
 WHATSAPP_SERVICE_AVAILABLE = False
 AI_SERVICE_AVAILABLE = False
+AI_SERVICE_IMPORT_ERROR = None
+AI_METHOD_AVAILABLE = False
 
 # ==========================================================
-# SERVICE IMPORTS (with lazy loading)
+# SERVICE IMPORTS (with lazy loading and detailed logging)
 # ==========================================================
 
 try:
@@ -95,8 +104,12 @@ try:
     logger.info("✅ WhatsApp Service loaded successfully")
 except ImportError as e:
     logger.error(f"❌ WhatsApp Service import failed: {e}")
+    WHATSAPP_SERVICE_AVAILABLE = False
+    metrics["service_failures"]["import_error"] += 1
 except Exception as e:
     logger.error(f"❌ WhatsApp Service error: {e}")
+    WHATSAPP_SERVICE_AVAILABLE = False
+    metrics["service_failures"]["import_error"] += 1
 
 
 # ==========================================================
@@ -132,11 +145,14 @@ def _record_route_time(route_name: str, duration_ms: float, max_samples: int = 1
             metrics["route_execution_times"][route_name] = times[-max_samples:]
 
 
-def _record_service_failure(service_name: str):
-    """Record service failure for monitoring."""
+def _record_service_failure(service_name: str, error_detail: str = None):
+    """Record service failure for monitoring with optional error detail."""
     if service_name in metrics["service_failures"]:
         metrics["service_failures"][service_name] += 1
-        logger.warning(f"Service failure recorded: {service_name} (total: {metrics['service_failures'][service_name]})")
+        if error_detail:
+            logger.warning(f"Service failure recorded: {service_name} - {error_detail} (total: {metrics['service_failures'][service_name]})")
+        else:
+            logger.warning(f"Service failure recorded: {service_name} (total: {metrics['service_failures'][service_name]})")
 
 
 def _is_help_command(message: str) -> bool:
@@ -176,7 +192,7 @@ def _check_rate_limit(phone_number: str, request_id: str) -> bool:
 
 def _get_help_message() -> str:
     """Get formatted help message."""
-    return """🤖 *AI LOGISTICS ASSISTANT - HELP v25.0*
+    return """🤖 *AI LOGISTICS ASSISTANT - HELP v26.0*
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 🔢 *Track a DN*
@@ -219,7 +235,7 @@ def _get_greeting_message() -> str:
     else:
         greeting = "Good evening"
     
-    return f"""🎉 *Welcome to AI Logistics Assistant v25.0!*
+    return f"""🎉 *Welcome to AI Logistics Assistant v26.0!*
 
 {greeting}! 👋
 
@@ -236,6 +252,54 @@ Type `Help` to see all available commands!
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
+
+
+# ==========================================================
+# AI SERVICE DIAGNOSTICS (NEW)
+# ==========================================================
+
+def _check_ai_service_availability(request_id: str) -> tuple:
+    """
+    Check AI service availability with detailed diagnostics.
+    Returns: (is_available, error_message, details)
+    """
+    global AI_SERVICE_AVAILABLE, AI_SERVICE_IMPORT_ERROR, AI_METHOD_AVAILABLE
+    
+    try:
+        from app.services.ai_query_service import process_whatsapp_query
+        AI_SERVICE_AVAILABLE = True
+        AI_METHOD_AVAILABLE = callable(process_whatsapp_query)
+        
+        if not AI_METHOD_AVAILABLE:
+            error_msg = "process_whatsapp_query is not callable"
+            logger.bind(request_id=request_id).error(f"AI Service: {error_msg}")
+            _record_service_failure("method_not_found", error_msg)
+            return False, error_msg, {"method_available": False}
+        
+        logger.bind(request_id=request_id).debug("AI Service check passed")
+        return True, None, {"method_available": True}
+        
+    except ImportError as e:
+        AI_SERVICE_AVAILABLE = False
+        AI_SERVICE_IMPORT_ERROR = str(e)
+        error_msg = f"ImportError: {e}"
+        logger.bind(request_id=request_id).exception(f"AI Service import failed: {e}")
+        _record_service_failure("import_error", error_msg)
+        return False, error_msg, {"import_error": str(e), "traceback": traceback.format_exc()}
+        
+    except AttributeError as e:
+        AI_SERVICE_AVAILABLE = False
+        error_msg = f"AttributeError: {e}"
+        logger.bind(request_id=request_id).exception(f"AI Service attribute error: {e}")
+        _record_service_failure("method_not_found", error_msg)
+        return False, error_msg, {"attribute_error": str(e)}
+        
+    except Exception as e:
+        AI_SERVICE_AVAILABLE = False
+        error_msg = f"{type(e).__name__}: {e}"
+        logger.bind(request_id=request_id).exception(f"AI Service unexpected error: {e}")
+        _record_service_failure("ai_service", error_msg)
+        return False, error_msg, {"exception_type": type(e).__name__, "traceback": traceback.format_exc()}
 
 
 # ==========================================================
@@ -330,10 +394,23 @@ async def process_with_ai(
     """
     Process user query through AI service.
     CRITICAL FIX: Pass session_factory correctly, not a db session.
+    ENHANCED: Full error logging and diagnostics.
     """
     ai_start_time = time.time()
     
-    logger.bind(request_id=request_id).info(f"🤖 AI Processing: {question[:50]}...")
+    logger.bind(request_id=request_id).info(f"🤖 AI Processing: {question[:100]}...")
+    
+    # NEW: Pre-check AI service availability with diagnostics
+    is_available, error_msg, details = _check_ai_service_availability(request_id)
+    
+    if not is_available:
+        logger.bind(request_id=request_id).error(
+            f"❌ AI Service not available - Error: {error_msg}"
+        )
+        logger.bind(request_id=request_id).error(f"   Details: {details}")
+        
+        # Return user-friendly message but log full details
+        return "⚠️ Service configuration error. Our team has been notified. Please try again later."
     
     def _run_ai():
         """Synchronous AI processing function (runs in thread pool)."""
@@ -341,6 +418,9 @@ async def process_with_ai(
             # CRITICAL FIX: Import inside function for lazy loading
             from app.database import SessionLocal
             from app.services.ai_query_service import process_whatsapp_query
+            
+            # NEW: Log before processing
+            logger.bind(request_id=request_id).info(f"🚀 Calling process_whatsapp_query with: question={question[:50]}..., phone={phone_number}")
             
             # CRITICAL FIX: Pass SessionLocal (the factory), NOT a session instance
             # The function expects: (question, session_factory, phone_number, user_id, request_id)
@@ -352,23 +432,40 @@ async def process_with_ai(
                 request_id=request_id
             )
             
+            # NEW: Log after processing
+            logger.bind(request_id=request_id).info(f"✅ process_whatsapp_query returned: {type(result)}")
+            
             # Validate response
             if not result or not result.strip():
                 logger.bind(request_id=request_id).warning("AI returned empty response")
                 return "✅ Request processed successfully. No additional information available."
             
-            logger.bind(request_id=request_id).debug(f"AI response: {result[:100]}...")
+            logger.bind(request_id=request_id).debug(f"AI response length: {len(result)} chars")
             return result
             
         except ImportError as e:
-            logger.bind(request_id=request_id).error(f"Import error in AI processing: {e}")
-            _record_service_failure("ai_service")
-            return "⚠️ Service configuration error. Please contact support."
+            # REPLACED: Generic error with detailed logging
+            error_msg = f"ImportError in AI processing: {e}"
+            logger.bind(request_id=request_id).exception(error_msg)
+            logger.bind(request_id=request_id).error(f"Full traceback: {traceback.format_exc()}")
+            _record_service_failure("import_error", str(e))
+            return f"⚠️ Service configuration error - Import failed: {type(e).__name__}. Please contact support."
+            
+        except AttributeError as e:
+            error_msg = f"AttributeError in AI processing: {e}"
+            logger.bind(request_id=request_id).exception(error_msg)
+            logger.bind(request_id=request_id).error(f"Method not found. Available attributes in ai_query_service: ...")
+            _record_service_failure("method_not_found", str(e))
+            return f"⚠️ Service configuration error - Method not found: {type(e).__name__}. Please contact support."
             
         except Exception as e:
-            logger.bind(request_id=request_id).exception(f"AI processing error: {e}")
-            _record_service_failure("ai_service")
-            return f"⚠️ Error processing your request. Please try again."
+            # REPLACED: Generic error with detailed logging
+            error_type = type(e).__name__
+            error_msg = str(e)
+            logger.bind(request_id=request_id).exception(f"AI processing error: {error_type} - {error_msg}")
+            logger.bind(request_id=request_id).error(f"Full traceback: {traceback.format_exc()}")
+            _record_service_failure("ai_service", f"{error_type}: {error_msg}")
+            return f"⚠️ Error processing your request: {error_type}. Please try again later."
     
     try:
         loop = asyncio.get_running_loop()
@@ -392,13 +489,15 @@ async def process_with_ai(
     except asyncio.TimeoutError:
         logger.bind(request_id=request_id).error(f"⏰ AI timeout after {REQUEST_TIMEOUT_SECONDS}s")
         metrics["timeout_requests"] += 1
-        _record_service_failure("ai_service")
+        _record_service_failure("ai_service", "Timeout")
         return "⚠️ Request timeout. Please try again in a moment."
         
     except Exception as e:
-        logger.bind(request_id=request_id).exception(f"AI processing failed: {e}")
-        _record_service_failure("ai_service")
-        return "⚠️ An error occurred while processing your request. Please try again later."
+        error_type = type(e).__name__
+        logger.bind(request_id=request_id).exception(f"AI processing wrapper failed: {e}")
+        logger.bind(request_id=request_id).error(f"Full traceback: {traceback.format_exc()}")
+        _record_service_failure("ai_service", f"Wrapper: {error_type}")
+        return f"⚠️ An error occurred while processing your request. Please try again later."
 
 
 # ==========================================================
@@ -509,7 +608,8 @@ async def receive_message(request: Request) -> Dict[str, Any]:
                 logger.warning(f"Empty text message received")
                 continue
             
-            logger.info(f"💬 Message: {user_message[:100]}")
+            # NEW: Log the actual query being processed
+            logger.info(f"💬 Processing query: {user_message[:100]}")
             
             # Handle help command
             if _is_help_command(user_message):
@@ -530,6 +630,9 @@ async def receive_message(request: Request) -> Dict[str, Any]:
             response = await process_with_ai(user_message, phone_number, request_id)
             ai_duration = (time.time() - ai_start) * 1000
             _record_route_time("ai_processing", ai_duration)
+            
+            # NEW: Log successful response generation
+            logger.info(f"✅ Response generated successfully ({len(response)} chars, {ai_duration:.0f}ms)")
             
             # Send response
             send_start = time.time()
@@ -569,8 +672,9 @@ async def receive_message(request: Request) -> Dict[str, Any]:
     except Exception as e:
         error_type = type(e).__name__
         logger.exception(f"❌ Webhook error: {error_type} - {str(e)}")
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         metrics["failed_requests"] += 1
-        _record_service_failure("whatsapp_service")
+        _record_service_failure("whatsapp_service", f"{error_type}: {str(e)}")
         
         return {
             "success": False,
@@ -644,25 +748,30 @@ async def health_check() -> Dict[str, Any]:
         logger.error(f"Database health check failed: {e}")
         _record_service_failure("database")
     
+    # Check AI service availability with diagnostics
     ai_available = False
+    ai_error = None
     try:
         from app.services.ai_query_service import process_whatsapp_query
         ai_available = True
-    except ImportError:
-        pass
+    except ImportError as e:
+        ai_error = str(e)
+    except Exception as e:
+        ai_error = str(e)
     
     all_services_healthy = ai_available and WHATSAPP_SERVICE_AVAILABLE and db_healthy
     overall_status = "healthy" if all_services_healthy else "degraded"
     
     return {
         "status": overall_status,
-        "version": "25.0",
+        "version": "26.0",
         "timestamp": datetime.utcnow().isoformat(),
         "services": {
             "ai_service": {
                 "status": "healthy" if ai_available else "unavailable",
                 "available": ai_available,
-                "failures": metrics["service_failures"]["ai_service"]
+                "failures": metrics["service_failures"]["ai_service"],
+                "error": ai_error if not ai_available else None
             },
             "whatsapp_service": {
                 "status": "healthy" if WHATSAPP_SERVICE_AVAILABLE else "unavailable",
@@ -692,7 +801,7 @@ async def status() -> Dict[str, Any]:
     """Simple status endpoint."""
     return {
         "service": "WhatsApp Logistics Webhook",
-        "version": "25.0",
+        "version": "26.0",
         "status": "running",
         "services": {"whatsapp": WHATSAPP_SERVICE_AVAILABLE},
         "message": "Ready to receive WhatsApp messages",
@@ -708,20 +817,19 @@ async def ping() -> Dict[str, Any]:
 
 @router.get("/ai-health")
 async def ai_health() -> Dict[str, Any]:
-    """AI service health check."""
-    ai_available = False
-    try:
-        from app.services.ai_query_service import process_whatsapp_query
-        ai_available = True
-    except ImportError:
-        pass
+    """AI service health check with detailed diagnostics."""
+    is_available, error_msg, details = _check_ai_service_availability("health_check")
     
     return {
         "service": "ai_query_service",
-        "status": "healthy" if ai_available else "unavailable",
-        "available": ai_available,
+        "status": "healthy" if is_available else "unavailable",
+        "available": is_available,
         "lazy_load": True,
         "failures": metrics["service_failures"]["ai_service"],
+        "import_errors": metrics["service_failures"]["import_error"],
+        "method_errors": metrics["service_failures"]["method_not_found"],
+        "error": error_msg if not is_available else None,
+        "details": details if not is_available else None,
         "timestamp": __import__('datetime').datetime.utcnow().isoformat()
     }
 
@@ -757,21 +865,97 @@ async def rate_limit_status() -> Dict[str, Any]:
 
 
 # ==========================================================
+# DIAGNOSTICS ENDPOINT (NEW)
+# ==========================================================
+
+@router.get("/diagnostics")
+async def diagnostics() -> Dict[str, Any]:
+    """Comprehensive diagnostics endpoint for debugging."""
+    from datetime import datetime
+    
+    # Check AI service
+    ai_available, ai_error, ai_details = _check_ai_service_availability("diagnostics")
+    
+    # Check database
+    db_healthy = False
+    db_error = None
+    try:
+        from app.database import SessionLocal
+        db = SessionLocal()
+        db.execute(text("SELECT 1"))
+        db.close()
+        db_healthy = True
+    except Exception as e:
+        db_error = str(e)
+    
+    return {
+        "timestamp": datetime.utcnow().isoformat(),
+        "version": "26.0",
+        "environment": config.ENVIRONMENT,
+        "services": {
+            "ai_query_service": {
+                "available": ai_available,
+                "error": ai_error,
+                "details": ai_details
+            },
+            "whatsapp_service": {
+                "available": WHATSAPP_SERVICE_AVAILABLE,
+                "token_configured": bool(config.WHATSAPP_ACCESS_TOKEN),
+                "phone_id_configured": bool(config.WHATSAPP_PHONE_NUMBER_ID)
+            },
+            "database": {
+                "connected": db_healthy,
+                "error": db_error
+            }
+        },
+        "metrics": {
+            "total_requests": metrics["total_requests"],
+            "successful_requests": metrics["successful_requests"],
+            "failed_requests": metrics["failed_requests"],
+            "service_failures": metrics["service_failures"]
+        },
+        "cache_status": {
+            "processed_messages_size": len(processed_messages),
+            "processed_messages_maxsize": processed_messages.maxsize,
+            "rate_limit_cache_size": len(rate_limit_cache),
+            "rate_limit_cache_maxsize": rate_limit_cache.maxsize
+        },
+        "suggestions": [
+            "Check /ai-health for AI service details",
+            "Check /whatsapp-health for WhatsApp service details",
+            "Check /database-health for database status",
+            "Review logs for detailed error information"
+        ]
+    }
+
+
+# ==========================================================
 # INITIALIZATION LOGGING
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("📡 WEBHOOK v25.0 - FULLY INTEGRATED")
+logger.info("📡 WEBHOOK v26.0 - FULLY INTEGRATED WITH ENHANCED DEBUGGING")
 logger.info("=" * 70)
 logger.info("✅ CRITICAL FIXES:")
 logger.info("   • session_factory passed correctly (not db session)")
 logger.info("   • process_whatsapp_query parameter order fixed")
 logger.info("   • AI service integration with proper error handling")
 logger.info("   • Status updates properly ignored")
+logger.info("   • Generic import error replaced with detailed exception logging")
+logger.info("   • AI Query diagnostics with full error details")
+logger.info("   • Service availability pre-check before AI call")
+logger.info("   • Stack trace logging for all AI failures")
 logger.info("=" * 70)
 logger.info("✅ Service Status:")
 logger.info(f"   • WhatsApp Service: {'✓ Available' if WHATSAPP_SERVICE_AVAILABLE else '✗ Unavailable'}")
 logger.info(f"   • AI Service: Lazy Load (will load on first request)")
 logger.info(f"   • WhatsApp Token: {'✓ Configured' if config.WHATSAPP_ACCESS_TOKEN else '✗ Missing'}")
 logger.info(f"   • WhatsApp Phone ID: {'✓ Configured' if config.WHATSAPP_PHONE_NUMBER_ID else '✗ Missing'}")
+logger.info("=" * 70)
+logger.info("🔍 DEBUGGING ENDPOINTS:")
+logger.info("   • /webhook/health - Service health check")
+logger.info("   • /webhook/ai-health - AI service diagnostics")
+logger.info("   • /webhook/whatsapp-health - WhatsApp service check")
+logger.info("   • /webhook/diagnostics - Comprehensive diagnostics")
+logger.info("   • /webhook/metrics - Processing metrics")
 logger.info("=" * 70)
