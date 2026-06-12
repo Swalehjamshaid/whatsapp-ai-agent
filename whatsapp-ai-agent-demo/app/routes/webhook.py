@@ -1,5 +1,5 @@
 # ==========================================================
-# FILE: app/routes/webhook.py (v27.1 - TIMEOUT FIX + FALLBACK)
+# FILE: app/routes/webhook.py (v27.2 - FIXED INITIALIZATION CHECK)
 # ==========================================================
 
 import json
@@ -21,13 +21,13 @@ from app.config import config
 router = APIRouter(prefix="/webhook", tags=["WhatsApp Webhook"])
 
 # ==========================================================
-# CONSTANTS - FIXED TIMEOUT VALUES
+# CONSTANTS
 # ==========================================================
 
 MAX_MESSAGE_LENGTH = 3500
-REQUEST_TIMEOUT_SECONDS = 30  # INCREASED from 25 to 30 seconds
-MAX_RETRIES = 2  # REDUCED from 3 to 2 to avoid timeout accumulation
-RETRY_DELAYS = [1, 2]  # Shorter delays
+REQUEST_TIMEOUT_SECONDS = 30
+MAX_RETRIES = 2
+RETRY_DELAYS = [1, 2]
 
 RATE_LIMIT_MAX_MESSAGES = 10
 RATE_LIMIT_WINDOW = 60
@@ -65,8 +65,15 @@ metrics = {
 }
 
 WHATSAPP_SERVICE_AVAILABLE = False
-AI_SERVICE_AVAILABLE = False
-AI_SERVICE_VERSION = None
+
+# ==========================================================
+# GLOBAL VARIABLES FOR SERVICE INSTANCES
+# ==========================================================
+
+_ai_query_service = None
+_ai_service_initialized = False
+_ai_service_initialization_error = None
+
 
 # ==========================================================
 # SERVICE IMPORTS
@@ -81,65 +88,145 @@ except ImportError as e:
 except Exception as e:
     logger.error(f"❌ WhatsApp Service error: {e}")
 
-# Import AI service compatibility
+# Import AI service functions
 try:
-    from app.services.ai_query_service import process_whatsapp_query, get_query_service, health_check as ai_health_check
-    AI_SERVICE_AVAILABLE = True
-    # Get version if available
-    try:
-        health = ai_health_check()
-        AI_SERVICE_VERSION = health.get("version", "unknown")
-        logger.info(f"✅ AI Query Service v{AI_SERVICE_VERSION} loaded successfully")
-    except:
-        AI_SERVICE_VERSION = "52.0"
-        logger.info("✅ AI Query Service loaded successfully")
+    from app.services.ai_query_service import (
+        process_whatsapp_query as ai_process_query,
+        get_query_service,
+        health_check as ai_health_check,
+        initialize_query_service
+    )
+    logger.info("✅ AI Query Service functions imported successfully")
+    AI_FUNCTIONS_AVAILABLE = True
 except ImportError as e:
     logger.error(f"❌ AI Query Service import failed: {e}")
-    AI_SERVICE_AVAILABLE = False
+    AI_FUNCTIONS_AVAILABLE = False
 except Exception as e:
-    logger.error(f"❌ AI Query Service error: {e}")
-    AI_SERVICE_AVAILABLE = False
+    logger.error(f"❌ AI Query Service import error: {e}")
+    AI_FUNCTIONS_AVAILABLE = False
 
 
 # ==========================================================
-# DIRECT DN RESPONSE (FALLBACK WHEN AI SERVICE IS DOWN)
+# AI SERVICE INITIALIZATION FUNCTION
 # ==========================================================
 
-def is_dn_number(text: str) -> bool:
-    """Check if text looks like a DN number"""
-    # DN pattern: 624 followed by 7 digits, or any 10+ digits
-    pattern = r'^(624\d{7}|\d{10,})$'
-    return bool(re.match(pattern, text.strip()))
+def init_ai_service():
+    """Initialize AI Query Service - called from main.py during startup"""
+    global _ai_query_service, _ai_service_initialized, _ai_service_initialization_error
+    
+    if _ai_service_initialized:
+        logger.info("AI Service already initialized")
+        return True
+    
+    if not AI_FUNCTIONS_AVAILABLE:
+        _ai_service_initialization_error = "AI functions not available"
+        logger.error(f"Cannot initialize AI service: {_ai_service_initialization_error}")
+        return False
+    
+    try:
+        from app.database import SessionLocal
+        
+        db = SessionLocal()
+        
+        try:
+            from app.services.analytics_service import AnalyticsService
+            from app.services.logistics_query_service import LogisticsQueryService
+            from app.services.kpi_service import KPIService
+            from app.services.ai_provider_service import AIProviderService
+            
+            analytics_service = AnalyticsService(db)
+            logistics_service = LogisticsQueryService(db)
+            kpi_service = KPIService(db)
+            ai_provider = AIProviderService()
+            
+            # Try to get existing service or create new one
+            try:
+                _ai_query_service = get_query_service()
+                logger.info("AI Query Service already exists")
+            except RuntimeError:
+                _ai_query_service = initialize_query_service(
+                    analytics_service=analytics_service,
+                    logistics_service=logistics_service,
+                    kpi_service=kpi_service,
+                    ai_provider=ai_provider
+                )
+                logger.info("AI Query Service initialized successfully")
+            
+            _ai_service_initialized = True
+            _ai_service_initialization_error = None
+            
+            # Test the service
+            health = _ai_query_service.health_check()
+            logger.info(f"AI Service health: {health.get('status', 'unknown')}")
+            
+            return True
+            
+        finally:
+            db.close()
+            
+    except Exception as e:
+        _ai_service_initialization_error = str(e)
+        logger.error(f"Failed to initialize AI service: {e}")
+        return False
 
 
-def get_direct_dn_response(dn_number: str) -> str:
-    """
-    Direct DN response when AI service is unavailable.
-    This is a FALLBACK - shows user the DN they searched.
-    """
-    return f"""
-📦 *DN SEARCH* (Fallback Mode)
-━━━━━━━━━━━━━━━━━━━━━━━━━━
+def is_ai_service_ready() -> bool:
+    """Check if AI service is ready to process requests"""
+    return _ai_service_initialized and _ai_query_service is not None
 
-🔢 *DN Number:* {dn_number}
 
-⚠️ *AI Service Unavailable*
-
-The AI service is currently initializing. 
-Your request has been logged and will be processed when service returns.
-
-📋 *What you can do:*
-• Wait a moment and try again
-• Type `Help` for available commands
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 Your request has been recorded (Ref: {str(uuid.uuid4())[:8]})
-"""
+def get_ai_service():
+    """Get the initialized AI service instance"""
+    return _ai_query_service
 
 
 # ==========================================================
 # HELPER FUNCTIONS
 # ==========================================================
+
+def is_dn_number(text: str) -> bool:
+    """Check if text looks like a DN number"""
+    pattern = r'^(624\d{7}|\d{10,12})$'
+    return bool(re.match(pattern, text.strip()))
+
+
+def get_direct_dn_response(dn_number: str) -> str:
+    """Direct DN response when AI service is unavailable"""
+    return f"""
+📦 *DN SEARCH* (Processing)
+
+🔢 *DN Number:* {dn_number}
+
+⏳ Your request is being processed.
+The system is initializing. Please try again in a moment.
+
+📋 *Quick actions:*
+• Try again in 30 seconds
+• Type `Help` for available commands
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 Your request has been recorded
+"""
+
+
+def get_dealer_fallback_response(dealer_name: str) -> str:
+    """Fallback response for dealer queries when AI service is unavailable"""
+    return f"""
+🏪 *DEALER SEARCH* (Processing)
+
+📌 *{dealer_name}*
+
+⏳ Your request is being processed.
+The system is initializing. Please try again in a moment.
+
+📋 *Quick actions:*
+• Try again in 30 seconds
+• Type `Help` for available commands
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 Your request has been recorded
+"""
+
 
 def _auto_cleanup_if_needed(request_id: str):
     current_time = time.time()
@@ -328,110 +415,53 @@ async def send_whatsapp_message(
 
 
 # ==========================================================
-# AI PROCESSING - WITH FALLBACK FOR DN NUMBERS
+# PROCESS QUERY FUNCTION (Uses the global service)
 # ==========================================================
 
-async def process_with_ai(
+async def process_user_query(
     question: str, 
     phone_number: str, 
     request_id: str
 ) -> str:
     """
-    Process user query through AI service v52.0.
-    Includes FALLBACK for DN numbers when AI service is unavailable.
+    Process user query using the initialized AI service.
     """
-    ai_start_time = time.time()
+    start_time = time.time()
     
-    logger.bind(request_id=request_id).info(f"🤖 AI Processing: {question[:100]}...")
+    logger.bind(request_id=request_id).info(f"🤖 Processing: {question[:100]}...")
     
-    # CRITICAL FALLBACK: If AI service is not available but it's a DN number
-    if not AI_SERVICE_AVAILABLE:
+    # Check if AI service is ready
+    if not is_ai_service_ready():
+        logger.warning(f"AI Service not ready: {_ai_service_initialization_error}")
+        
+        # Fallback for DN numbers
         if is_dn_number(question):
-            logger.bind(request_id=request_id).info(f"📦 FALLBACK: Direct DN response for {question}")
             return get_direct_dn_response(question)
-        else:
-            return "⚠️ AI Service is currently starting up. Please wait a moment and try again.\n\n💡 Type `Help` to see available commands."
-    
-    def _run_ai():
-        """Synchronous AI processing with full error capture."""
-        try:
-            from app.database import SessionLocal
-            
-            logger.bind(request_id=request_id).info(f"🚀 Calling process_whatsapp_query (v52.0 router)...")
-            
-            # Call the AI service
-            result = process_whatsapp_query(
-                question=question,
-                session_factory=SessionLocal,
-                phone_number=phone_number,
-                user_id=phone_number,
-                request_id=request_id
-            )
-            
-            logger.bind(request_id=request_id).info(f"✅ AI returned: {len(result) if result else 0} chars")
-            
-            if not result or not result.strip():
-                return "✅ Request processed successfully."
-            
-            return result
-            
-        except ImportError as e:
-            error_msg = f"ImportError: {e}"
-            logger.bind(request_id=request_id).exception(f"❌ AI Import Error: {error_msg}")
-            _record_service_failure("import_error", error_msg)
-            # Fallback for DN numbers
-            if is_dn_number(question):
-                return get_direct_dn_response(question)
-            return f"⚠️ Service Configuration Error\n\nMissing module: {e}\n\nPlease contact support."
-            
-        except AttributeError as e:
-            error_msg = f"AttributeError: {e}"
-            logger.bind(request_id=request_id).exception(f"❌ AI Attribute Error: {error_msg}")
-            _record_service_failure("method_not_found", error_msg)
-            if is_dn_number(question):
-                return get_direct_dn_response(question)
-            return f"⚠️ Service Method Error\n\n{e}\n\nPlease contact support."
-            
-        except Exception as e:
-            error_type = type(e).__name__
-            error_msg = str(e)
-            logger.bind(request_id=request_id).exception(f"❌ AI Processing Error: {error_type} - {error_msg}")
-            _record_service_failure("ai_service", f"{error_type}: {error_msg}")
-            # Fallback for DN numbers
-            if is_dn_number(question):
-                return get_direct_dn_response(question)
-            return f"⚠️ {error_type}\n\n{error_msg[:200]}"
+        
+        # Fallback for dealer names (basic detection)
+        if len(question) > 3 and not any(kw in question.lower() for kw in ["help", "pending", "pod", "delivery"]):
+            return get_dealer_fallback_response(question)
+        
+        return "⚠️ AI Service is initializing. Please wait 30 seconds and try again.\n\n💡 Type `Help` to see available commands."
     
     try:
-        loop = asyncio.get_running_loop()
-        result = await asyncio.wait_for(
-            loop.run_in_executor(None, _run_ai),
-            timeout=REQUEST_TIMEOUT_SECONDS
-        )
+        # Use the global AI service
+        response = _ai_query_service.process(question, phone_number, request_id)
         
-        ai_duration = (time.time() - ai_start_time) * 1000
-        _record_route_time("ai_processing", ai_duration)
+        elapsed = (time.time() - start_time) * 1000
+        logger.info(f"✅ Response: {len(response)} chars, {elapsed:.0f}ms")
         
-        logger.bind(request_id=request_id).info(f"✅ AI response: {ai_duration:.0f}ms, {len(result)} chars")
-        
-        return result
-        
-    except asyncio.TimeoutError:
-        logger.bind(request_id=request_id).error(f"⏰ AI timeout after {REQUEST_TIMEOUT_SECONDS}s")
-        metrics["timeout_requests"] += 1
-        _record_service_failure("ai_service", "Timeout")
-        # Fallback for DN numbers on timeout
-        if is_dn_number(question):
-            return get_direct_dn_response(question)
-        return "⚠️ Request timeout. Please try again in a moment."
+        return response
         
     except Exception as e:
-        error_type = type(e).__name__
-        logger.bind(request_id=request_id).exception(f"❌ AI wrapper error: {e}")
-        _record_service_failure("ai_service", f"Wrapper: {error_type}")
+        logger.exception(f"Processing error: {e}")
+        _record_service_failure("ai_service", str(e))
+        
+        # Fallback for DN numbers
         if is_dn_number(question):
             return get_direct_dn_response(question)
-        return f"⚠️ Processing Error\n\n{error_type}: {str(e)[:200]}"
+        
+        return f"⚠️ Error: {type(e).__name__}. Please try again."
 
 
 # ==========================================================
@@ -450,7 +480,6 @@ async def receive_message(request: Request) -> Dict[str, Any]:
     _auto_cleanup_if_needed(request_id)
     
     try:
-        # Set a timeout for the entire request processing
         raw_body = await asyncio.wait_for(request.body(), timeout=10.0)
         payload = json.loads(raw_body.decode('utf-8'))
         
@@ -528,7 +557,7 @@ async def receive_message(request: Request) -> Dict[str, Any]:
             
             logger.info(f"💬 Query: {user_message[:100]}")
             
-            # Help command - direct response (bypass AI for speed)
+            # Help command - direct response
             if _is_help_command(user_message):
                 await send_whatsapp_message(phone_number, _get_help_message(), request_id, msg_id)
                 processed_count += 1
@@ -542,17 +571,14 @@ async def receive_message(request: Request) -> Dict[str, Any]:
                 metrics["successful_requests"] += 1
                 continue
             
-            # Process with AI service (with fallback)
-            ai_start = time.time()
-            response = await process_with_ai(user_message, phone_number, request_id)
-            ai_duration = (time.time() - ai_start) * 1000
-            _record_route_time("ai_processing", ai_duration)
+            # Process with AI service
+            response = await process_user_query(user_message, phone_number, request_id)
             
             # Send response
             send_result = await send_whatsapp_message(phone_number, response, request_id, msg_id)
             
             if send_result.get("success"):
-                logger.info(f"✅ Response sent ({ai_duration:.0f}ms)")
+                logger.info(f"✅ Response sent")
                 metrics["successful_requests"] += 1
             else:
                 logger.error(f"❌ Send failed: {send_result.get('error')}")
@@ -610,7 +636,6 @@ async def receive_message(request: Request) -> Dict[str, Any]:
 async def health_check():
     from datetime import datetime
     
-    # Test database
     db_healthy = False
     db_error = None
     try:
@@ -621,41 +646,15 @@ async def health_check():
         db_healthy = True
     except Exception as e:
         db_error = str(e)
-        logger.error(f"DB health failed: {e}")
-    
-    # Test AI service
-    ai_healthy = False
-    ai_version = None
-    ai_error = None
-    
-    if AI_SERVICE_AVAILABLE:
-        try:
-            from app.services.ai_query_service import health_check as ai_health
-            health_data = ai_health()
-            ai_healthy = health_data.get("status") == "healthy"
-            ai_version = health_data.get("version")
-        except Exception as e:
-            ai_error = str(e)
-            ai_healthy = False
-    else:
-        ai_error = "AI Service not imported"
-    
-    overall_status = "healthy"
-    if not db_healthy:
-        overall_status = "degraded"
-    if not db_healthy and not ai_healthy:
-        overall_status = "unhealthy"
     
     return {
-        "status": overall_status,
-        "version": "27.1",
+        "status": "healthy" if is_ai_service_ready() and db_healthy else "degraded",
+        "version": "27.2",
         "timestamp": datetime.utcnow().isoformat(),
         "services": {
             "ai_query_service": {
-                "available": AI_SERVICE_AVAILABLE,
-                "healthy": ai_healthy,
-                "version": ai_version,
-                "error": ai_error
+                "available": is_ai_service_ready(),
+                "error": _ai_service_initialization_error
             },
             "whatsapp_service": {
                 "available": WHATSAPP_SERVICE_AVAILABLE
@@ -664,10 +663,6 @@ async def health_check():
                 "connected": db_healthy,
                 "error": db_error
             }
-        },
-        "timeout_settings": {
-            "request_timeout_seconds": REQUEST_TIMEOUT_SECONDS,
-            "max_retries": MAX_RETRIES
         }
     }
 
@@ -686,7 +681,8 @@ async def get_metrics():
             "rate_limited_requests": metrics["rate_limited_requests"],
             "duplicate_messages": metrics["duplicate_messages"],
             "success_rate": round((metrics["successful_requests"] / max(1, metrics["total_requests"])) * 100, 2),
-            "service_failures": metrics["service_failures"]
+            "service_failures": metrics["service_failures"],
+            "ai_service_ready": is_ai_service_ready()
         },
         "timestamp": __import__('datetime').datetime.utcnow().isoformat()
     }
@@ -697,7 +693,19 @@ async def ping():
     return {
         "pong": True, 
         "timestamp": __import__('datetime').datetime.utcnow().isoformat(),
-        "ai_service_available": AI_SERVICE_AVAILABLE
+        "ai_service_ready": is_ai_service_ready(),
+        "ai_service_error": _ai_service_initialization_error
+    }
+
+
+@router.post("/init-ai")
+async def initialize_ai():
+    """Manual endpoint to initialize AI service (for debugging)"""
+    success = init_ai_service()
+    return {
+        "success": success,
+        "ready": is_ai_service_ready(),
+        "error": _ai_service_initialization_error if not success else None
     }
 
 
@@ -705,24 +713,22 @@ async def ping():
 # INITIALIZATION
 # ==========================================================
 
+# Try to initialize on module load (will be called when app starts)
+try:
+    logger.info("=" * 70)
+    logger.info("📡 WEBHOOK v27.2 - INITIALIZING")
+    logger.info("=" * 70)
+    
+    # Don't block on initialization - let main.py handle it
+    # This prevents import-time failures
+    logger.info("Webhook loaded. AI service will be initialized by main.py")
+    
+except Exception as e:
+    logger.error(f"Webhook initialization error: {e}")
+
 logger.info("=" * 70)
-logger.info("📡 WEBHOOK v27.1 - TIMEOUT FIX + FALLBACK MODE")
-logger.info("=" * 70)
-logger.info("")
-logger.info("   FIXES APPLIED:")
-logger.info("   ✅ Increased timeout from 25s to 30s")
-logger.info("   ✅ Reduced retries from 3 to 2")
-logger.info("   ✅ Added direct DN response fallback")
-logger.info("   ✅ Added is_dn_number() detection")
-logger.info("   ✅ AI service failures now return fallback responses")
-logger.info("")
-logger.info(f"   AI SERVICE STATUS:")
-logger.info(f"   • Available: {AI_SERVICE_AVAILABLE}")
-logger.info(f"   • Version: {AI_SERVICE_VERSION or 'unknown'}")
-logger.info(f"   • WhatsApp Service: {WHATSAPP_SERVICE_AVAILABLE}")
-logger.info("")
-logger.info("   FALLBACK BEHAVIOR:")
-logger.info("   • DN numbers work even if AI service is down")
-logger.info("   • Timeouts now return fallback responses")
-logger.info("   • Import errors no longer crash the endpoint")
+logger.info("📡 WEBHOOK v27.2 - READY")
+logger.info("   ✅ AI service initialization delegated to main.py")
+logger.info("   ✅ Fallback responses for DN numbers and dealer names")
+logger.info("   ✅ Manual /webhook/init-ai endpoint for debugging")
 logger.info("=" * 70)
