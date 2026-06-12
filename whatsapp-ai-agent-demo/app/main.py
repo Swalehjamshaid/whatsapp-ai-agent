@@ -1,13 +1,19 @@
 # ==========================================================
-# FILE: app/main.py (ENTERPRISE v9.1 - AI QUERY SERVICE INTEGRATION)
+# FILE: app/main.py (ENTERPRISE v9.2 - DEGRADED MODE STARTUP)
 # PROJECT: AI WhatsApp Customer Service Agent
 # ==========================================================
-# IMPROVEMENTS v9.1:
-# - ✅ Added AI Query Service initialization during startup
-# - ✅ Added service creation for analytics, logistics, kpi, ai_provider
-# - ✅ Added startup health validation with fail-fast
-# - ✅ Fixed missing service initialization (root cause of errors)
-# - ✅ Added proper dependency injection for all services
+# IMPROVEMENTS v9.2:
+# - ✅ REMOVED FAIL-FAST - Service failures no longer crash Railway
+# - ✅ Added degraded mode startup - App stays online even if services fail
+# - ✅ Proper database session management with try/finally
+# - ✅ Validated service methods before initialization
+# - ✅ Made AI Query Service optional (no crash on failure)
+# - ✅ Removed startup health dependency
+# - ✅ Reordered initialization (routes first, then services)
+# - ✅ Added comprehensive startup diagnostics
+# - ✅ Added AI Query import check with graceful fallback
+# - ✅ Made KPI service optional (no crash if missing)
+# - ✅ Added app.state.ai_query_available flag
 # ==========================================================
 
 from __future__ import annotations
@@ -75,13 +81,27 @@ from app.models import (
 )
 
 # ==========================================================
-# AI QUERY SERVICE IMPORTS (CRITICAL FIX)
+# AI QUERY SERVICE IMPORTS (CRITICAL IMPROVEMENT 9)
 # ==========================================================
 
-from app.services.ai_query_service import (
-    initialize_query_service,
-    get_query_service
-)
+AI_QUERY_SERVICE_AVAILABLE = False
+AI_QUERY_SERVICE_ERROR = None
+
+try:
+    from app.services.ai_query_service import (
+        process_whatsapp_query,
+        initialize_query_service,
+        get_query_service,
+        health_check as ai_health_check
+    )
+    AI_QUERY_SERVICE_AVAILABLE = True
+    logger.info("✅ AI Query Service imports successful")
+except ImportError as e:
+    AI_QUERY_SERVICE_ERROR = f"ImportError: {e}"
+    logger.error(f"❌ AI Query Service import failed: {e}")
+except Exception as e:
+    AI_QUERY_SERVICE_ERROR = f"Exception: {e}"
+    logger.error(f"❌ AI Query Service import error: {e}")
 
 
 # ==========================================================
@@ -181,7 +201,7 @@ class ServiceRegistry:
 
 
 # ==========================================================
-# LAZY ROUTER LOADING
+# LAZY ROUTER LOADING (Priority 7 - Load routes first)
 # ==========================================================
 
 def load_routers(app: FastAPI):
@@ -217,32 +237,300 @@ def load_routers(app: FastAPI):
 
 def create_analytics_service(db: Session = None):
     """Create analytics service instance"""
-    from app.services.analytics_service import AnalyticsService
-    if db:
-        return AnalyticsService(db)
-    return AnalyticsService
+    try:
+        from app.services.analytics_service import AnalyticsService
+        if db:
+            return AnalyticsService(db)
+        return AnalyticsService
+    except ImportError as e:
+        logger.error(f"Failed to create analytics service: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Analytics service creation error: {e}")
+        return None
 
 
 def create_logistics_service(db: Session = None):
     """Create logistics service instance"""
-    from app.services.logistics_query_service import LogisticsQueryService
-    if db:
-        return LogisticsQueryService(db)
-    return LogisticsQueryService
+    try:
+        from app.services.logistics_query_service import LogisticsQueryService
+        if db:
+            return LogisticsQueryService(db)
+        return LogisticsQueryService
+    except ImportError as e:
+        logger.error(f"Failed to create logistics service: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Logistics service creation error: {e}")
+        return None
 
 
 def create_kpi_service(db: Session = None):
-    """Create KPI service instance"""
-    from app.services.kpi_service import KPIService
-    if db:
-        return KPIService(db)
-    return KPIService
+    """Create KPI service instance (OPTIONAL - Critical Improvement 10)"""
+    try:
+        from app.services.kpi_service import KPIService
+        if db:
+            return KPIService(db)
+        return KPIService
+    except ImportError as e:
+        logger.warning(f"KPI service not available (optional): {e}")
+        return None
+    except Exception as e:
+        logger.warning(f"KPI service creation error (optional): {e}")
+        return None
 
 
 def create_ai_provider_service():
     """Create AI provider service instance"""
-    from app.services.ai_provider_service import AIProviderService
-    return AIProviderService()
+    try:
+        from app.services.ai_provider_service import AIProviderService
+        return AIProviderService()
+    except ImportError as e:
+        logger.error(f"Failed to create AI provider service: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"AI provider service creation error: {e}")
+        return None
+
+
+# ==========================================================
+# VALIDATE SERVICE METHODS (Critical Improvement 5)
+# ==========================================================
+
+def validate_service_methods(service, required_methods: List[str], service_name: str) -> Dict[str, bool]:
+    """Validate that service has required methods"""
+    results = {}
+    if service is None:
+        logger.warning(f"⚠️ {service_name} is None - cannot validate methods")
+        return {method: False for method in required_methods}
+    
+    for method in required_methods:
+        has_method = hasattr(service, method)
+        results[method] = has_method
+        if not has_method:
+            logger.warning(f"⚠️ {service_name} missing method: {method}")
+        else:
+            logger.debug(f"✅ {service_name}.{method} available")
+    
+    return results
+
+
+# ==========================================================
+# AI QUERY SERVICE INITIALIZATION (Critical Improvements 1-6)
+# ==========================================================
+
+def initialize_ai_query_services() -> Tuple[bool, Optional[Any], Dict[str, Any]]:
+    """
+    Initialize AI Query Service with all dependencies.
+    CRITICAL: This function NO LONGER crashes on failures.
+    Returns: (success, service_instance, diagnostics)
+    """
+    diagnostics = {
+        "success": False,
+        "analytics_available": False,
+        "logistics_available": False,
+        "kpi_available": False,
+        "ai_provider_available": False,
+        "analytics_methods": {},
+        "logistics_methods": {},
+        "error": None,
+        "warning": None
+    }
+    
+    logger.info("🔧 Initializing AI Query Service (DEGRADED MODE ENABLED)...")
+    
+    # Check if AI Query Service imports are available
+    if not AI_QUERY_SERVICE_AVAILABLE:
+        diagnostics["error"] = AI_QUERY_SERVICE_ERROR or "AI Query Service imports failed"
+        logger.error(f"❌ {diagnostics['error']}")
+        logger.warning("⚠️ Continuing without AI Query Service - WhatsApp queries will use fallback")
+        return False, None, diagnostics
+    
+    db = None
+    analytics_service = None
+    logistics_service = None
+    kpi_service = None
+    ai_provider_service = None
+    
+    try:
+        # Create database session with proper cleanup (Critical Improvement 3)
+        db = SessionLocal()
+        
+        # Critical Improvement 8: Startup diagnostics
+        logger.info("📋 STARTUP DIAGNOSTICS:")
+        
+        # Create analytics service
+        logger.info("   Creating analytics service...")
+        analytics_service = create_analytics_service(db)
+        if analytics_service:
+            diagnostics["analytics_available"] = True
+            # Validate required methods
+            diagnostics["analytics_methods"] = validate_service_methods(
+                analytics_service, 
+                ["get_dealer_dashboard", "get_dealer_health", "get_pending_pod_aging", "get_pending_delivery_aging"],
+                "AnalyticsService"
+            )
+        else:
+            logger.error("   ❌ Analytics service creation FAILED")
+        
+        # Create logistics service
+        logger.info("   Creating logistics service...")
+        logistics_service = create_logistics_service(db)
+        if logistics_service:
+            diagnostics["logistics_available"] = True
+            # Validate required methods
+            diagnostics["logistics_methods"] = validate_service_methods(
+                logistics_service,
+                ["get_complete_dn_detail", "get_complete_dn_intelligence", "debug_dn_search"],
+                "LogisticsService"
+            )
+        else:
+            logger.error("   ❌ Logistics service creation FAILED")
+        
+        # Create KPI service (OPTIONAL - no crash if missing)
+        logger.info("   Creating KPI service (optional)...")
+        kpi_service = create_kpi_service(db)
+        if kpi_service:
+            diagnostics["kpi_available"] = True
+            logger.info("   ✅ KPI service created")
+        else:
+            logger.warning("   ⚠️ KPI service not available - executive queries will use fallback")
+        
+        # Create AI provider service
+        logger.info("   Creating AI provider service...")
+        ai_provider_service = create_ai_provider_service()
+        if ai_provider_service:
+            diagnostics["ai_provider_available"] = True
+            logger.info("   ✅ AI provider service created")
+        else:
+            logger.error("   ❌ AI provider service creation FAILED")
+        
+        # Check minimum requirements for AI Query Service
+        # Critical Improvement 1: NO FAIL-FAST - Just log warnings
+        if not diagnostics["analytics_available"]:
+            logger.error("⚠️ CRITICAL: Analytics service not available - dealer queries will FAIL")
+            diagnostics["warning"] = "Analytics service missing"
+        
+        if not diagnostics["logistics_available"]:
+            logger.error("⚠️ CRITICAL: Logistics service not available - DN queries will FAIL")
+            diagnostics["warning"] = diagnostics["warning"] or "Logistics service missing"
+        
+        # Check if we have enough to initialize AI Query Service
+        if not diagnostics["analytics_available"] and not diagnostics["logistics_available"]:
+            logger.error("❌ Neither Analytics nor Logistics services available. AI Query Service cannot function.")
+            diagnostics["error"] = "No core services available"
+            return False, None, diagnostics
+        
+        # Initialize AI Query Service
+        logger.info("   Initializing AI Query Service...")
+        
+        # Critical Improvement 4 & 6: Use try-except and don't crash
+        try:
+            # Determine what parameters the initialize_query_service expects
+            import inspect
+            init_signature = inspect.signature(initialize_query_service)
+            init_params = list(init_signature.parameters.keys())
+            logger.info(f"   AI Query Service init expects: {init_params}")
+            
+            # Build kwargs based on available parameters
+            kwargs = {}
+            if 'analytics_service' in init_params:
+                kwargs['analytics_service'] = analytics_service if diagnostics["analytics_available"] else None
+            if 'logistics_service' in init_params:
+                kwargs['logistics_service'] = logistics_service if diagnostics["logistics_available"] else None
+            if 'kpi_service' in init_params:
+                kwargs['kpi_service'] = kpi_service if diagnostics["kpi_available"] else None
+            if 'ai_provider' in init_params or 'ai_provider_service' in init_params:
+                param_name = 'ai_provider' if 'ai_provider' in init_params else 'ai_provider_service'
+                kwargs[param_name] = ai_provider_service if diagnostics["ai_provider_available"] else None
+            
+            # Initialize with proper kwargs
+            initialize_query_service(**kwargs)
+            
+            # Get the initialized service
+            query_service = get_query_service()
+            
+            # Critical Improvement 6: Try health check but don't fail
+            try:
+                health = query_service.health_check()
+                diagnostics["success"] = True
+                logger.info("   ✅ AI Query Service initialized successfully")
+                logger.info(f"   Health: {health.get('status', 'unknown')}")
+                logger.info(f"   Services available: {health.get('services', {})}")
+                logger.info(f"   Handlers available: {health.get('handlers', {})}")
+            except Exception as e:
+                logger.warning(f"   ⚠️ Health check failed but service may still work: {e}")
+                diagnostics["success"] = True
+                diagnostics["warning"] = f"Health check failed: {e}"
+            
+            # Store services in registry
+            if analytics_service:
+                ServiceRegistry.register_service("analytics", analytics_service)
+            if logistics_service:
+                ServiceRegistry.register_service("logistics", logistics_service)
+            if kpi_service:
+                ServiceRegistry.register_service("kpi", kpi_service)
+            if ai_provider_service:
+                ServiceRegistry.register_service("ai_provider", ai_provider_service)
+            ServiceRegistry.register_service("ai_query", query_service)
+            
+            return True, query_service, diagnostics
+            
+        except TypeError as e:
+            # Handle parameter mismatch
+            logger.error(f"❌ Parameter mismatch in initialize_query_service: {e}")
+            diagnostics["error"] = f"Parameter mismatch: {e}"
+            
+            # Try fallback initialization with different parameter names
+            try:
+                logger.info("   Attempting fallback initialization...")
+                # Try with ai_provider instead of ai_provider_service
+                if 'ai_provider' not in init_params and 'ai_provider_service' in init_params:
+                    initialize_query_service(
+                        analytics_service=analytics_service,
+                        logistics_service=logistics_service,
+                        kpi_service=kpi_service,
+                        ai_provider_service=ai_provider_service
+                    )
+                elif 'ai_provider_service' not in init_params and 'ai_provider' in init_params:
+                    initialize_query_service(
+                        analytics_service=analytics_service,
+                        logistics_service=logistics_service,
+                        kpi_service=kpi_service,
+                        ai_provider=ai_provider_service
+                    )
+                else:
+                    # Try without KPI and AI
+                    initialize_query_service(
+                        analytics_service=analytics_service,
+                        logistics_service=logistics_service
+                    )
+                
+                query_service = get_query_service()
+                diagnostics["success"] = True
+                logger.info("   ✅ Fallback initialization successful")
+                return True, query_service, diagnostics
+                
+            except Exception as fallback_e:
+                logger.error(f"❌ Fallback initialization also failed: {fallback_e}")
+                diagnostics["error"] = f"Fallback failed: {fallback_e}"
+                return False, None, diagnostics
+                
+        except Exception as e:
+            logger.error(f"❌ AI Query Service initialization failed: {e}")
+            diagnostics["error"] = str(e)
+            return False, None, diagnostics
+        
+    except Exception as e:
+        logger.error(f"❌ AI Query Service initialization error: {e}")
+        diagnostics["error"] = str(e)
+        return False, None, diagnostics
+        
+    finally:
+        # Critical Improvement 3: Always close database session
+        if db:
+            db.close()
+            logger.debug("Database session closed")
 
 
 # ==========================================================
@@ -348,92 +636,6 @@ class StartupService:
 
 
 # ==========================================================
-# AI QUERY SERVICE INITIALIZATION (CRITICAL FIX)
-# ==========================================================
-
-def initialize_ai_query_services():
-    """
-    Initialize AI Query Service with all dependencies.
-    This is the CRITICAL FIX that was missing.
-    """
-    logger.info("🔧 Initializing AI Query Service...")
-    
-    try:
-        # Create database session for service initialization
-        db = SessionLocal()
-        
-        # Create all required services
-        logger.info("   Creating analytics service...")
-        analytics_service = create_analytics_service(db)
-        
-        logger.info("   Creating logistics service...")
-        logistics_service = create_logistics_service(db)
-        
-        logger.info("   Creating KPI service...")
-        kpi_service = create_kpi_service(db)
-        
-        logger.info("   Creating AI provider service...")
-        ai_provider_service = create_ai_provider_service()
-        
-        # Initialize AI Query Service with all dependencies
-        logger.info("   Initializing AI Query Service...")
-        initialize_query_service(
-            analytics_service=analytics_service,
-            logistics_service=logistics_service,
-            kpi_service=kpi_service,
-            ai_provider=ai_provider_service
-        )
-        
-        # Get health check
-        query_service = get_query_service()
-        health = query_service.health_check()
-        
-        logger.info("   ✅ AI Query Service initialized successfully")
-        logger.info(f"   Health: {health.get('status', 'unknown')}")
-        logger.info(f"   Services available: {health.get('services', {})}")
-        logger.info(f"   Handlers available: {health.get('handlers', {})}")
-        
-        # FAIL FAST: Check if core services are available
-        services_available = health.get('services', {})
-        
-        if not services_available.get('analytics', False):
-            error_msg = "❌ CRITICAL: Analytics service not available. Cannot start application."
-            logger.error(error_msg)
-            raise RuntimeError(error_msg)
-        
-        if not services_available.get('logistics', False):
-            error_msg = "❌ CRITICAL: Logistics service not available. Cannot start application."
-            logger.error(error_msg)
-            raise RuntimeError(error_msg)
-        
-        # Check handlers
-        handlers_available = health.get('handlers', {})
-        if not handlers_available.get('dealer', False):
-            logger.warning("⚠️ Dealer handler not available - dealer queries may fail")
-        
-        if not handlers_available.get('dn', False):
-            logger.warning("⚠️ DN handler not available - DN queries may fail")
-        
-        logger.info("   ✅ AI Query Service health check passed")
-        
-        # Store services in registry for later use
-        ServiceRegistry.register_service("analytics", analytics_service)
-        ServiceRegistry.register_service("logistics", logistics_service)
-        ServiceRegistry.register_service("kpi", kpi_service)
-        ServiceRegistry.register_service("ai_provider", ai_provider_service)
-        ServiceRegistry.register_service("ai_query", query_service)
-        
-        # Close the temporary session
-        db.close()
-        
-        return query_service
-        
-    except Exception as e:
-        logger.error(f"❌ AI Query Service initialization failed: {e}")
-        raise
-
-
-# ==========================================================
 # LIFESPAN HANDLER
 # ==========================================================
 
@@ -442,8 +644,13 @@ async def lifespan(app: FastAPI):
     start_time = time.time()
     
     logger.info("=" * 80)
-    logger.info("🤖 AI WHATSAPP AGENT STARTING v9.1")
+    logger.info("🤖 AI WHATSAPP AGENT STARTING v9.2")
     logger.info("=" * 80)
+    
+    # Critical Improvement 7: Load routers FIRST
+    logger.info("📡 Loading routers...")
+    load_routers(app)
+    logger.info("✅ Routers loaded")
     
     # Validate environment
     env_results = StartupService.validate_environment()
@@ -457,23 +664,35 @@ async def lifespan(app: FastAPI):
     logger.info(f"   WhatsApp: {'✓' if whatsapp_ok else '✗'}")
     logger.info(f"   Environment: {config.ENVIRONMENT}")
     
-    # CRITICAL FIX: Initialize AI Query Service
-    try:
-        ai_query_service = initialize_ai_query_services()
-        logger.info("✅ AI Query Service ready")
-    except Exception as e:
-        logger.error(f"❌ Failed to initialize AI Query Service: {e}")
-        if config.ENVIRONMENT == "production":
-            raise RuntimeError(f"Application cannot start: {e}")
+    # Critical Improvement 4: Initialize AI Query Service in degraded mode
+    ai_initialized = False
+    ai_diagnostics = {}
     
-    # Load routers
-    load_routers(app)
+    logger.info("=" * 40)
+    logger.info("🔧 AI QUERY SERVICE INITIALIZATION")
+    logger.info("=" * 40)
+    
+    ai_initialized, ai_service, ai_diagnostics = initialize_ai_query_services()
+    
+    if ai_initialized:
+        logger.info("✅ AI Query Service initialized successfully")
+        app.state.ai_query_available = True
+        app.state.ai_query_service = ai_service
+    else:
+        logger.error("❌ AI Query Service initialization FAILED")
+        logger.error(f"   Error: {ai_diagnostics.get('error', 'Unknown error')}")
+        logger.warning("⚠️ App will run in DEGRADED MODE - WhatsApp queries may fail")
+        app.state.ai_query_available = False
+        app.state.ai_query_service = None
+        app.state.ai_query_error = ai_diagnostics.get('error')
     
     # Create upload directory
     os.makedirs("uploads", exist_ok=True)
     
     startup_duration = time.time() - start_time
+    logger.info("=" * 80)
     logger.info(f"✅ Application startup complete in {startup_duration:.2f}s")
+    logger.info(f"   AI Query Service: {'AVAILABLE' if ai_initialized else 'UNAVAILABLE (Degraded Mode)'}")
     logger.info("=" * 80)
     
     yield
@@ -493,7 +712,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AI WhatsApp Logistics Assistant",
     description="Enterprise Logistics AI Platform - WhatsApp Integration",
-    version="9.1.0",
+    version="9.2.0",
     docs_url="/api/docs" if config.ENVIRONMENT != "production" else None,
     redoc_url="/api/redoc" if config.ENVIRONMENT != "production" else None,
     openapi_url="/api/openapi.json" if config.ENVIRONMENT != "production" else None,
@@ -703,11 +922,14 @@ async def health():
     
     # Get AI Query Service health if available
     ai_query_health = None
-    try:
-        query_service = get_query_service()
-        ai_query_health = query_service.health_check()
-    except Exception as e:
-        ai_query_health = {"error": str(e)}
+    if hasattr(app.state, 'ai_query_available') and app.state.ai_query_available:
+        try:
+            if hasattr(app.state, 'ai_query_service') and app.state.ai_query_service:
+                ai_query_health = app.state.ai_query_service.health_check()
+        except Exception as e:
+            ai_query_health = {"error": str(e)}
+    else:
+        ai_query_health = {"available": False, "error": getattr(app.state, 'ai_query_error', 'Not initialized')}
     
     return {
         "status": "healthy" if db_connected else "degraded",
@@ -716,6 +938,7 @@ async def health():
         "schema_version": APP_SCHEMA_VERSION,
         "environment": config.ENVIRONMENT,
         "ai_query_service": ai_query_health,
+        "ai_query_available": getattr(app.state, 'ai_query_available', False),
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -750,20 +973,34 @@ async def ping():
 
 
 # ==========================================================
-# AI QUERY SERVICE HEALTH ENDPOINT (NEW)
+# AI QUERY SERVICE HEALTH ENDPOINT (Enhanced)
 # ==========================================================
 
 @app.get("/ai-query-health", tags=["Health"])
 async def ai_query_health():
     """Get AI Query Service health status"""
+    if not hasattr(app.state, 'ai_query_available') or not app.state.ai_query_available:
+        return {
+            "status": "unavailable",
+            "available": False,
+            "error": getattr(app.state, 'ai_query_error', 'Not initialized'),
+            "message": "AI Query Service is not available. App running in degraded mode."
+        }
+    
     try:
-        query_service = get_query_service()
-        return query_service.health_check()
+        if hasattr(app.state, 'ai_query_service') and app.state.ai_query_service:
+            return app.state.ai_query_service.health_check()
+        else:
+            return {
+                "status": "error",
+                "available": False,
+                "error": "Service instance not found"
+            }
     except Exception as e:
         return {
             "status": "error",
-            "error": str(e),
-            "message": "AI Query Service not initialized"
+            "available": False,
+            "error": str(e)
         }
 
 
@@ -821,9 +1058,10 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
                 **dashboard_data,
                 "whatsapp_status": "Online" if whatsapp_token else "Offline",
                 "groq_status": "Online" if groq_key else "Offline",
-                "schema_version": schema_info.get("app_version", "9.1"),
+                "schema_version": schema_info.get("app_version", "9.2"),
                 "last_refresh": last_refresh.strftime('%Y-%m-%d %H:%M:%S'),
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.utcnow().isoformat(),
+                "ai_query_available": getattr(app.state, 'ai_query_available', False)
             }
         )
     except Exception as e:
@@ -845,10 +1083,11 @@ async def status_legacy(db: Session = Depends(get_db)):
     
     result = {
         "application": "AI WhatsApp Agent",
-        "version": "9.1.0",
+        "version": "9.2.0",
         "database": "postgresql",
         "ai_provider": "groq",
         "whatsapp": "active",
+        "ai_query_available": getattr(app.state, 'ai_query_available', False),
         "statistics": {
             "total_customers": db.query(func.count(Customer.id)).scalar() or 0,
             "total_conversations": db.query(func.count(Conversation.id)).scalar() or 0,
@@ -874,12 +1113,12 @@ async def home():
 async def version():
     return {
         "name": "AI WhatsApp Logistics Assistant",
-        "version": "9.1.0",
+        "version": "9.2.0",
         "framework": "FastAPI",
         "database": "PostgreSQL",
         "schema_version": APP_SCHEMA_VERSION,
         "ai_provider": "groq",
-        "ai_query_service": "initialized"
+        "ai_query_service": "initialized" if getattr(app.state, 'ai_query_available', False) else "unavailable"
     }
 
 
@@ -975,6 +1214,21 @@ async def api_info():
 
 
 # ==========================================================
+# DEGRADED MODE STATUS ENDPOINT
+# ==========================================================
+
+@app.get("/degraded-status", tags=["Health"])
+async def degraded_status():
+    """Check if app is running in degraded mode"""
+    return {
+        "ai_query_available": getattr(app.state, 'ai_query_available', False),
+        "degraded_mode": not getattr(app.state, 'ai_query_available', True),
+        "error": getattr(app.state, 'ai_query_error', None),
+        "message": "Application is running but some features may be limited" if not getattr(app.state, 'ai_query_available', True) else "All services available"
+    }
+
+
+# ==========================================================
 # DEBUG ENDPOINTS (Hidden in production)
 # ==========================================================
 
@@ -997,16 +1251,26 @@ if config.ENVIRONMENT != "production":
     @app.get("/ai-query-debug", tags=["Debug"])
     async def ai_query_debug():
         """Debug endpoint for AI Query Service"""
+        if not getattr(app.state, 'ai_query_available', False):
+            return {
+                "initialized": False,
+                "available": False,
+                "error": getattr(app.state, 'ai_query_error', 'Not initialized'),
+                "message": "AI Query Service not available - app in degraded mode"
+            }
+        
         try:
             query_service = get_query_service()
             return {
                 "initialized": True,
+                "available": True,
                 "health": query_service.health_check(),
                 "metrics": query_service.get_metrics()
             }
         except Exception as e:
             return {
                 "initialized": False,
+                "available": False,
                 "error": str(e)
             }
 
@@ -1016,16 +1280,17 @@ if config.ENVIRONMENT != "production":
 # ==========================================================
 
 logger.info("=" * 60)
-logger.info("📡 MAIN APP v9.1 - AI Query Service Integrated")
+logger.info("📡 MAIN APP v9.2 - DEGRADED MODE STARTUP")
 logger.info("   Improvements:")
-logger.info("   ✅ Fixed Customer import crash")
-logger.info("   ✅ Removed ChatService from main.py")
-logger.info("   ✅ Removed DashboardService from main.py")
-logger.info("   ✅ Fixed route loading (all routers)")
-logger.info("   ✅ Removed AI warmup (lazy loading)")
-logger.info("   ✅ Fixed metrics endpoint")
-logger.info("   ✅ Added AI Query Service initialization")
-logger.info("   ✅ Added startup health validation")
-logger.info("   ✅ Added fail-fast on missing services")
-logger.info("   ✅ Added /ai-query-health endpoint")
+logger.info("   ✅ REMOVED FAIL-FAST - No more Railway crashes")
+logger.info("   ✅ Added degraded mode startup")
+logger.info("   ✅ Proper DB session management with try/finally")
+logger.info("   ✅ Validated service methods before initialization")
+logger.info("   ✅ Made AI Query Service optional")
+logger.info("   ✅ Removed startup health dependency")
+logger.info("   ✅ Routes load before services")
+logger.info("   ✅ Added comprehensive startup diagnostics")
+logger.info("   ✅ Made KPI service optional")
+logger.info("   ✅ Added app.state.ai_query_available flag")
+logger.info("   ✅ Added /degraded-status endpoint")
 logger.info("=" * 60)
