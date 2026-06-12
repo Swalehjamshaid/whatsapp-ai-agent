@@ -1,23 +1,19 @@
 # ==========================================================
-# FILE: app/services/logistics_query_service.py (FIXED v6.0 - DN AGGREGATION)
+# FILE: app/services/logistics_query_service.py (FIXED v6.1 - AGGRESSIVE DN SEARCH)
 # ==========================================================
 # PURPOSE: Logistics operational queries for DN, POD, PGI, Deliveries, Warehouse
 #
-# CRITICAL FIXES v6.0:
-# - ✅ Fixed: DN search uses .all() instead of .first() (aggregates all rows)
-# - ✅ Added: DN normalization (handles .0, spaces, None values)
-# - ✅ Added: Multi-format DN search (exact, contains, trimmed, without .0)
-# - ✅ Added: DN aggregation logic (1 DN = multiple products, count once)
-# - ✅ Added: All required DN fields (Sales Office, Delivery Days, POD Days, etc.)
-# - ✅ Fixed: PostgreSQL compatibility (removed all func.datediff())
-# - ✅ Added: Business rule compliant aging calculations
-# - ✅ Fixed: Dealer = Sold-To-Party mapping verification
+# CRITICAL FIXES v6.1:
+# - ✅ Aggressive multi-format DN search (catches ALL variations)
+# - ✅ Handles integer, string, decimal, scientific notation, spaces
+# - ✅ DN normalization with multiple strategies
+# - ✅ ALL original attributes preserved
 # ==========================================================
 
 from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime, date, timedelta
 from sqlalchemy.orm import Session
-from sqlalchemy import func, and_, or_, cast, String
+from sqlalchemy import func, and_, or_, cast, String, Integer, Float
 from loguru import logger
 
 from app.models import DeliveryReport
@@ -26,7 +22,7 @@ from app.models import DeliveryReport
 class LogisticsQueryService:
     def __init__(self, db: Session):
         self.db = db
-        logger.info("Logistics Query Service v6.0 initialized - DN Aggregation Ready")
+        logger.info("Logistics Query Service v6.1 initialized - Aggressive DN Search")
     
     # ==========================================================
     # HELPER METHODS
@@ -40,43 +36,55 @@ class LogisticsQueryService:
         return True
     
     def normalize_dn(self, dn) -> str:
-        """CRITICAL FIX #1: DN normalization - handles .0, spaces, None values"""
+        """
+        DN normalization - handles multiple formats
+        - None values
+        - Decimal .0
+        - Spaces
+        - Scientific notation
+        """
         if dn is None:
             return ""
-        return str(dn).strip().replace(".0", "")
+        
+        dn_str = str(dn).strip()
+        
+        # Remove .0 at the end
+        if dn_str.endswith('.0'):
+            dn_str = dn_str[:-2]
+        
+        # Remove scientific notation (e.g., 6.24361192e+09)
+        if 'e' in dn_str.lower():
+            try:
+                dn_str = str(int(float(dn_str)))
+            except:
+                pass
+        
+        # Remove any non-numeric characters except digits
+        import re
+        dn_str = re.sub(r'[^0-9]', '', dn_str)
+        
+        return dn_str
     
     def _calculate_delivery_aging(self, pgi_date, dn_date) -> int:
-        """
-        Business Rule: Delivery Aging = PGI Date - DN Date
-        Returns days as integer
-        """
+        """Business Rule: Delivery Aging = PGI Date - DN Date"""
         if pgi_date and dn_date:
             return max(0, (pgi_date - dn_date).days)
         return 0
     
     def _calculate_pod_aging(self, pod_date, pgi_date) -> int:
-        """
-        Business Rule: POD Aging = POD Date - PGI Date
-        Returns days as integer
-        """
+        """Business Rule: POD Aging = POD Date - PGI Date"""
         if pod_date and pgi_date:
             return max(0, (pod_date - pgi_date).days)
         return 0
     
     def _calculate_pending_delivery_aging(self, dn_date) -> int:
-        """
-        Business Rule: Pending Delivery Aging = Today - DN Date (if no PGI)
-        Returns days as integer
-        """
+        """Business Rule: Pending Delivery Aging = Today - DN Date (if no PGI)"""
         if dn_date:
             return max(0, (date.today() - dn_date).days)
         return 0
     
     def _calculate_pending_pod_aging(self, pgi_date) -> int:
-        """
-        Business Rule: Pending POD Aging = Today - PGI Date (if no POD)
-        Returns days as integer
-        """
+        """Business Rule: Pending POD Aging = Today - PGI Date (if no POD)"""
         if pgi_date:
             return max(0, (date.today() - pgi_date).days)
         return 0
@@ -108,7 +116,7 @@ class LogisticsQueryService:
     
     def _aggregate_dn_records(self, records: List[DeliveryReport]) -> Dict[str, Any]:
         """
-        CRITICAL FIX #4: DN Aggregation Logic
+        DN Aggregation Logic
         Aggregates multiple rows of same DN into single DN entity.
         1 DN = Multiple Products, counted ONCE.
         """
@@ -192,38 +200,115 @@ class LogisticsQueryService:
     
     def _multi_format_dn_search(self, dn_number: str) -> List[DeliveryReport]:
         """
-        CRITICAL FIX #2 & #3: Multi-format DN search
-        Handles: 6243612311.0, 6243612311, "6243612311 ", etc.
-        Uses .all() instead of .first() to get all rows for aggregation.
+        AGGRESSIVE multi-format DN search - catches ALL variations
+        Handles: integer, string, decimal .0, scientific notation, spaces
         """
         normalized = self.normalize_dn(dn_number)
         
-        # Generate search variants
-        variants = [
-            normalized,
-            str(dn_number).strip(),
-            str(dn_number).replace(".0", ""),
-            str(dn_number).replace("-", ""),
-            f"%{normalized}%",  # Contains
-            f"{normalized}%",   # Starts with
-            f"%{normalized}"    # Ends with
-        ]
-        variants = list(set(variants))  # Remove duplicates
+        logger.info(f"DN Search - Original: '{dn_number}'")
+        logger.info(f"DN Search - Normalized: '{normalized}'")
         
-        logger.info(f"DN Search variants: {variants}")
+        # Generate ALL possible search variants
+        variants = []
         
-        # Build OR conditions
-        conditions = []
+        # Original and normalized
+        variants.append(str(dn_number))
+        variants.append(normalized)
+        
+        # Add .0 version
+        variants.append(f"{normalized}.0")
+        
+        # Add as integer if possible
+        try:
+            variants.append(str(int(float(normalized))))
+        except:
+            pass
+        
+        # Add with different lengths (pad with zeros if needed)
+        if len(normalized) < 10:
+            variants.append(normalized.zfill(10))
+        
+        # Add variations with spaces
+        variants.append(f" {normalized}")
+        variants.append(f"{normalized} ")
+        variants.append(f" {normalized} ")
+        
+        # Add scientific notation variations
+        try:
+            as_float = float(normalized)
+            variants.append(str(as_float))
+            variants.append(f"{as_float:.0f}")
+            if as_float > 999999999:
+                variants.append(f"{as_float:.2e}")
+        except:
+            pass
+        
+        # Remove duplicates and None
+        variants = list(set([str(v) for v in variants if v]))
+        
+        logger.info(f"DN Search variants: {variants[:10]}... (total {len(variants)})")
+        
+        # Try each variant with multiple search strategies
+        all_records = []
+        seen_dns = set()
+        
         for variant in variants:
-            conditions.append(cast(DeliveryReport.dn_no, String) == variant)
-            conditions.append(cast(DeliveryReport.dn_no, String).like(variant))
+            # Strategy 1: Exact match as string
+            exact = self.db.query(DeliveryReport).filter(
+                cast(DeliveryReport.dn_no, String) == variant
+            ).all()
+            
+            for r in exact:
+                if r.dn_no not in seen_dns:
+                    seen_dns.add(r.dn_no)
+                    all_records.append(r)
+                    logger.info(f"Found via exact match: '{variant}'")
+            
+            # Strategy 2: Like match (contains)
+            if len(variant) > 3:  # Only for meaningful variants
+                like = self.db.query(DeliveryReport).filter(
+                    cast(DeliveryReport.dn_no, String).like(f"%{variant}%")
+                ).all()
+                
+                for r in like:
+                    if r.dn_no not in seen_dns:
+                        seen_dns.add(r.dn_no)
+                        all_records.append(r)
+                        logger.info(f"Found via like match: '{variant}'")
         
-        # Search using OR conditions - returns ALL rows for aggregation
-        records = self.db.query(DeliveryReport).filter(or_(*conditions)).all()
+        # Strategy 3: If no records found, try direct integer comparison
+        if not all_records:
+            try:
+                int_val = int(normalized)
+                int_match = self.db.query(DeliveryReport).filter(
+                    DeliveryReport.dn_no == int_val
+                ).all()
+                
+                for r in int_match:
+                    if r.dn_no not in seen_dns:
+                        seen_dns.add(r.dn_no)
+                        all_records.append(r)
+                        logger.info(f"Found via integer match: {int_val}")
+            except:
+                pass
         
-        logger.info(f"DN Search: Found {len(records)} records for {dn_number}")
+        # Strategy 4: Try stripping all non-numeric characters
+        import re
+        only_digits = re.sub(r'[^0-9]', '', normalized)
+        if only_digits and only_digits != normalized:
+            digit_match = self.db.query(DeliveryReport).filter(
+                cast(DeliveryReport.dn_no, String).like(f"%{only_digits}%")
+            ).all()
+            
+            for r in digit_match:
+                if r.dn_no not in seen_dns:
+                    seen_dns.add(r.dn_no)
+                    all_records.append(r)
+                    logger.info(f"Found via digit-only match: '{only_digits}'")
         
-        return records
+        logger.info(f"Total unique records found: {len(all_records)}")
+        
+        return all_records
     
     def _format_success(self, data: Any, summary: str) -> Dict[str, Any]:
         """Standardized success response format"""
@@ -243,12 +328,58 @@ class LogisticsQueryService:
         }
     
     # ==========================================================
-    # DN OPERATIONS (FIXED - with aggregation)
+    # DEBUG METHOD - Check DN in database
+    # ==========================================================
+    
+    def debug_dn_in_database(self, dn_number: str) -> Dict[str, Any]:
+        """Debug method to see how DN is stored in database"""
+        logger.info(f"DEBUG: Checking DN '{dn_number}' in database")
+        
+        try:
+            # Get sample of DNs from database
+            sample_dns = self.db.query(DeliveryReport.dn_no).filter(
+                DeliveryReport.dn_no.isnot(None)
+            ).distinct().limit(20).all()
+            
+            actual_values = [str(r[0]) for r in sample_dns if r[0]]
+            
+            # Check if exact number exists
+            exact_match = self.db.query(DeliveryReport).filter(
+                cast(DeliveryReport.dn_no, String) == str(dn_number)
+            ).count()
+            
+            # Check if contains
+            contains_match = self.db.query(DeliveryReport).filter(
+                cast(DeliveryReport.dn_no, String).like(f"%{dn_number}%")
+            ).count()
+            
+            # Check with .0
+            dot_zero_match = self.db.query(DeliveryReport).filter(
+                cast(DeliveryReport.dn_no, String) == f"{dn_number}.0"
+            ).count()
+            
+            return {
+                "success": True,
+                "data": {
+                    "dn_searched": dn_number,
+                    "exact_match_count": exact_match,
+                    "contains_match_count": contains_match,
+                    "dot_zero_match_count": dot_zero_match,
+                    "sample_dns_in_db": actual_values[:10],
+                    "total_dns_in_db": len(actual_values)
+                },
+                "_summary": f"Found {exact_match} exact matches, {contains_match} contains matches"
+            }
+        except Exception as e:
+            return self._format_error(str(e))
+    
+    # ==========================================================
+    # DN OPERATIONS (FIXED - with aggressive search)
     # ==========================================================
     
     def get_complete_dn_intelligence(self, dn_number: str) -> Dict[str, Any]:
         """
-        CRITICAL FIX: Complete DN intelligence with aggregation.
+        Complete DN intelligence with aggressive aggregation.
         Returns aggregated DN data (1 DN = multiple products, counted once).
         """
         logger.info(f"Getting DN intelligence for: {dn_number}")
@@ -257,13 +388,16 @@ class LogisticsQueryService:
             return self._format_error("Database session unavailable")
         
         try:
-            # CRITICAL FIX #2 & #3: Multi-format search with .all()
+            # Aggressive multi-format search
             records = self._multi_format_dn_search(dn_number)
             
             if not records:
+                # Log debug info to help identify the issue
+                debug_info = self.debug_dn_in_database(dn_number)
+                logger.warning(f"DN not found. Debug info: {debug_info}")
                 return self._format_error(f"DN {dn_number} not found in system")
             
-            # CRITICAL FIX #4: Aggregate all records
+            # Aggregate all records
             aggregated_data = self._aggregate_dn_records(records)
             
             if not aggregated_data:
@@ -300,7 +434,7 @@ class LogisticsQueryService:
                 "priority": priority
             }
             
-            summary = f"DN {aggregated_data['dn_no']} is {aggregated_data['status']}. {aggregated_data['total_models']} models, {aggregated_data['total_quantity']} units. Aging: {aggregated_data['delivery_aging_days']} days delivery, {aggregated_data['pod_aging_days']} days POD."
+            summary = f"DN {aggregated_data['dn_no']} is {aggregated_data['status']}. {aggregated_data['total_models']} models, {aggregated_data['total_quantity']} units."
             
             return self._format_success(response_data, summary)
             
@@ -390,11 +524,11 @@ class LogisticsQueryService:
             return self._format_error(str(e))
     
     # ==========================================================
-    # POD OPERATIONS (PostgreSQL compatible)
+    # POD OPERATIONS
     # ==========================================================
     
     def get_pod_status(self, region: Optional[str] = None) -> Dict[str, Any]:
-        """Get POD status summary - PostgreSQL compatible"""
+        """Get POD status summary"""
         logger.info(f"Getting POD status for region: {region}")
         
         if not self._validate_session():
@@ -416,7 +550,7 @@ class LogisticsQueryService:
                     "No pending PODs. All clear! ✅"
                 )
             
-            # Get top pending dealer using SQL aggregation
+            # Get top pending dealer
             top_dealer_data = self.db.query(
                 DeliveryReport.customer_name,
                 func.count(DeliveryReport.id).label('count')
@@ -430,7 +564,7 @@ class LogisticsQueryService:
             
             top_pending_dealer = top_dealer_data[0] if top_dealer_data else "N/A"
             
-            # PostgreSQL compatible: Calculate average aging using Python (safer)
+            # Calculate average aging
             pending_records = query.all()
             total_aging = 0
             aging_count = 0
@@ -459,11 +593,11 @@ class LogisticsQueryService:
             return self._format_error(str(e))
     
     def get_pod_aging_report(self) -> Dict[str, Any]:
-        """Alias for get_pod_status - for compatibility with router"""
+        """Alias for get_pod_status"""
         return self.get_pod_status()
     
     def get_pod_performance(self) -> Dict[str, Any]:
-        """Get POD performance metrics - PostgreSQL compatible"""
+        """Get POD performance metrics"""
         logger.info("Getting POD performance metrics")
         
         if not self._validate_session():
@@ -500,7 +634,7 @@ class LogisticsQueryService:
     # ==========================================================
     
     def get_pending_pgi(self, days: Optional[int] = None) -> Dict[str, Any]:
-        """Get pending PGI - standardized format"""
+        """Get pending PGI"""
         logger.info(f"Getting pending PGI for days: {days}")
         
         if not self._validate_session():
@@ -543,7 +677,7 @@ class LogisticsQueryService:
             return self._format_error(str(e))
     
     def get_pgi_aging_report(self) -> Dict[str, Any]:
-        """Alias for get_pending_pgi - for compatibility with router"""
+        """Alias for get_pending_pgi"""
         return self.get_pending_pgi()
     
     # ==========================================================
@@ -551,7 +685,7 @@ class LogisticsQueryService:
     # ==========================================================
     
     def get_pending_deliveries(self, days: Optional[int] = None) -> Dict[str, Any]:
-        """Get pending deliveries - with business rule aging"""
+        """Get pending deliveries"""
         logger.info(f"Getting pending deliveries for days: {days}")
         
         if not self._validate_session():
@@ -580,7 +714,6 @@ class LogisticsQueryService:
             deliveries_list = []
             
             for r in query.limit(50).all():
-                # Business rule: Use pending delivery aging for non-dispatched
                 if r.good_issue_date:
                     aging = self._calculate_delivery_aging(r.good_issue_date, r.dn_create_date)
                 else:
@@ -621,7 +754,7 @@ class LogisticsQueryService:
             return self._format_error(str(e))
     
     def get_delivery_aging_report(self) -> Dict[str, Any]:
-        """Alias for get_pending_deliveries - for compatibility with router"""
+        """Alias for get_pending_deliveries"""
         return self.get_pending_deliveries()
     
     def get_delivery_performance(self) -> Dict[str, Any]:
@@ -662,7 +795,7 @@ class LogisticsQueryService:
     # ==========================================================
     
     def get_pending_items(self, region: Optional[str] = None) -> Dict[str, Any]:
-        """Get all pending items - PostgreSQL compatible"""
+        """Get all pending items"""
         logger.info(f"Getting pending items for region: {region}")
         
         if not self._validate_session():
@@ -688,7 +821,6 @@ class LogisticsQueryService:
             pending_pods = sum(1 for r in pending_records if r.pod_status == 'PENDING')
             pending_pgi = sum(1 for r in pending_records if r.pgi_status == 'PENDING')
             
-            # Get top dealers using SQL aggregation
             top_dealers_data = self.db.query(
                 DeliveryReport.customer_name,
                 func.count(DeliveryReport.id).label('pending_count')
@@ -742,11 +874,11 @@ class LogisticsQueryService:
             return self._format_error(str(e))
     
     # ==========================================================
-    # REGION OPERATIONS (PostgreSQL compatible)
+    # REGION OPERATIONS
     # ==========================================================
     
     def get_region_performance(self, region: Optional[str] = None) -> Dict[str, Any]:
-        """Get region performance - PostgreSQL compatible (no func.datediff)"""
+        """Get region performance"""
         logger.info(f"Getting region performance for: {region}")
         
         if not self._validate_session():
@@ -773,7 +905,7 @@ class LogisticsQueryService:
                 func.coalesce(func.sum(DeliveryReport.dn_amount), 0)
             ).scalar() or 0
             
-            # PostgreSQL compatible: Calculate average delivery days in Python
+            # Calculate average delivery days in Python
             delivered_records = query.filter(
                 DeliveryReport.pod_date.isnot(None),
                 DeliveryReport.good_issue_date.isnot(None)
@@ -824,7 +956,7 @@ class LogisticsQueryService:
     # ==========================================================
     
     def get_dealer_performance(self, dealer_name: str) -> Dict[str, Any]:
-        """Get performance for a specific dealer - uses Sold-To-Party"""
+        """Get performance for a specific dealer"""
         logger.info(f"Getting dealer performance for: {dealer_name}")
         
         if not self._validate_session():
@@ -851,7 +983,7 @@ class LogisticsQueryService:
             pending_dns = total_dns - completed_dns
             total_value = sum(r.dn_amount or 0 for r in results)
             
-            # Calculate average delivery days using business rules
+            # Calculate average delivery days
             delivery_days = []
             for r in results:
                 if r.pod_date and r.good_issue_date:
@@ -1062,7 +1194,7 @@ class LogisticsQueryService:
     # ==========================================================
     
     def validate_dn(self, dn_number: str) -> bool:
-        """Validate if DN exists in database (with normalization)"""
+        """Validate if DN exists in database"""
         records = self._multi_format_dn_search(dn_number)
         return len(records) > 0
     
@@ -1075,11 +1207,11 @@ class LogisticsQueryService:
         return {
             "service": "logistics",
             "status": "healthy" if self._validate_session() else "unhealthy",
-            "version": "6.0",
+            "version": "6.1",
             "session_available": self._validate_session(),
             "features": {
                 "dn_aggregation": True,
-                "multi_format_search": True,
+                "aggressive_multi_format_search": True,
                 "postgresql_compatible": True,
                 "business_rules_applied": True
             }
@@ -1100,29 +1232,20 @@ def get_logistics_query_service(db: Session) -> LogisticsQueryService:
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("📦 LOGISTICS QUERY SERVICE v6.0 - DN AGGREGATION READY")
+logger.info("📦 LOGISTICS QUERY SERVICE v6.1 - AGGRESSIVE DN SEARCH")
 logger.info("")
 logger.info("   CRITICAL FIXES APPLIED:")
-logger.info("   ✅ DN search uses .all() instead of .first() (aggregates all rows)")
-logger.info("   ✅ DN normalization (handles .0, spaces, None values)")
-logger.info("   ✅ Multi-format DN search (exact, contains, trimmed, without .0)")
-logger.info("   ✅ DN aggregation logic (1 DN = multiple products, count once)")
-logger.info("   ✅ All required DN fields (Sales Office, Delivery Days, POD Days, etc.)")
-logger.info("   ✅ PostgreSQL compatible (removed all func.datediff())")
-logger.info("   ✅ Business rule compliant aging calculations")
-logger.info("   ✅ Dealer = Sold-To-Party mapping")
+logger.info("   ✅ Aggressive multi-format DN search (catches ALL variations)")
+logger.info("   ✅ Handles integer, string, decimal .0, scientific notation, spaces")
+logger.info("   ✅ DN normalization with multiple strategies")
+logger.info("   ✅ Debug method to see how DN is stored")
+logger.info("   ✅ All original attributes preserved")
 logger.info("")
-logger.info("   BUSINESS RULES IMPLEMENTED:")
-logger.info("   • Delivery Aging = PGI Date - DN Date")
-logger.info("   • POD Aging = POD Date - PGI Date")
-logger.info("   • Pending Delivery Aging = Today - DN Date")
-logger.info("   • Pending POD Aging = Today - PGI Date")
-logger.info("   • Status: Delivery Pending → POD Pending → Delivered")
-logger.info("")
-logger.info("   DN RESPONSE NOW INCLUDES:")
-logger.info("   • DN Number | Dealer | Sales Office | Warehouse")
-logger.info("   • DN Date | PGI Date | POD Date")
-logger.info("   • Delivery Days | POD Days")
-logger.info("   • Total Models | Models List | Total Quantity")
-logger.info("   • Status | Priority | Products")
+logger.info("   DN SEARCH NOW CATCHES:")
+logger.info("   • 6243611920 (string)")
+logger.info("   • 6243611920 (integer)")
+logger.info("   • 6243611920.0 (decimal)")
+logger.info("   • 6243611920  (with spaces)")
+logger.info("   • 6.24361192e+09 (scientific notation)")
+logger.info("   • 6243611920 (any format)")
 logger.info("=" * 70)
