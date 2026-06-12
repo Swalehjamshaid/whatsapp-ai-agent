@@ -1,5 +1,16 @@
 # ==========================================================
-# FILE: app/routes/webhook.py (v28.4 - FIXED TIMEOUT ISSUES)
+# FILE: app/routes/webhook.py (v29.0 - INTEGRATED WITH SERVICE LAYER)
+# ==========================================================
+# PURPOSE: WhatsApp Webhook Handler - Routes to AI Query Service
+# 
+# IMPROVEMENTS v29.0:
+# - ✅ INTEGRATED with AI Query Service (v52.1)
+# - ✅ INTEGRATED with Logistics Query Service (v9.3)
+# - ✅ INTEGRATED with Analytics Service (v9.2)
+# - ✅ All v28.4 timeout fixes preserved
+# - ✅ All direct database functions kept as fallback
+# - ✅ Graceful degradation if services unavailable
+# - ✅ Enhanced performance logging
 # ==========================================================
 
 import json
@@ -23,7 +34,7 @@ from app.models import DeliveryReport
 router = APIRouter(prefix="/webhook", tags=["WhatsApp Webhook"])
 
 # ==========================================================
-# CONSTANTS - INCREASED TIMEOUTS
+# CONSTANTS - INCREASED TIMEOUTS (PRESERVED)
 # ==========================================================
 
 MAX_MESSAGE_LENGTH = 3500
@@ -37,7 +48,7 @@ RATE_LIMIT_WINDOW = 60
 AUTO_CLEANUP_INTERVAL = 500
 
 # ==========================================================
-# CACHES
+# CACHES (PRESERVED)
 # ==========================================================
 
 processed_messages = TTLCache(maxsize=5000, ttl=3600)
@@ -45,7 +56,7 @@ rate_limit_cache = TTLCache(maxsize=10000, ttl=RATE_LIMIT_WINDOW)
 dn_cache = TTLCache(maxsize=1000, ttl=3600)
 
 # ==========================================================
-# METRICS
+# METRICS (PRESERVED)
 # ==========================================================
 
 metrics = {
@@ -60,14 +71,23 @@ metrics = {
     "service_failures": {
         "whatsapp_service": 0,
         "database": 0,
-        "rate_limiter": 0
+        "rate_limiter": 0,
+        "ai_service": 0,
+        "logistics_service": 0,
+        "analytics_service": 0
+    },
+    "service_usage": {
+        "ai_service_calls": 0,
+        "direct_db_calls": 0,
+        "fallback_mode": False
     }
 }
 
 WHATSAPP_SERVICE_AVAILABLE = False
+AI_SERVICE_AVAILABLE = False
 
 # ==========================================================
-# WHATSAPP SERVICE IMPORT
+# WHATSAPP SERVICE IMPORT (PRESERVED)
 # ==========================================================
 
 try:
@@ -80,7 +100,63 @@ except Exception as e:
     logger.error(f"❌ WhatsApp Service error: {e}")
 
 # ==========================================================
-# DIRECT DATABASE FUNCTIONS
+# SERVICE LAYER IMPORTS (NEW v29.0)
+# ==========================================================
+
+try:
+    from app.services.ai_query_service import process_whatsapp_query, get_query_service, initialize_query_service
+    from app.services.logistics_query_service import get_logistics_query_service
+    from app.services.analytics_service import AnalyticsService
+    AI_SERVICE_AVAILABLE = True
+    logger.info("✅ AI Query Service loaded successfully (v52.1)")
+except ImportError as e:
+    logger.warning(f"⚠️ AI Query Service import failed: {e} - Will use direct DB fallback")
+    AI_SERVICE_AVAILABLE = False
+except Exception as e:
+    logger.warning(f"⚠️ AI Query Service error: {e} - Will use direct DB fallback")
+    AI_SERVICE_AVAILABLE = False
+
+# ==========================================================
+# SERVICE INITIALIZATION FLAG (NEW v29.0)
+# ==========================================================
+
+_services_initialized = False
+
+def ensure_services_initialized():
+    """Initialize services once at startup (not per request)"""
+    global _services_initialized, AI_SERVICE_AVAILABLE
+    
+    if _services_initialized:
+        return
+    
+    if AI_SERVICE_AVAILABLE:
+        try:
+            from app.database import SessionLocal
+            db = SessionLocal()
+            try:
+                logistics_service = get_logistics_query_service(db)
+                analytics_service = AnalyticsService(db)
+                
+                initialize_query_service(
+                    analytics_service=analytics_service,
+                    logistics_service=logistics_service,
+                    kpi_service=None,
+                    ai_provider=None
+                )
+                logger.info("✅ AI Query Service initialized with logistics + analytics")
+                _services_initialized = True
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"❌ Service initialization failed: {e}")
+            AI_SERVICE_AVAILABLE = False
+            _services_initialized = False
+    else:
+        logger.info("⚠️ AI Service not available - using direct database fallback")
+        _services_initialized = True  # Mark as initialized to avoid retrying
+
+# ==========================================================
+# DIRECT DATABASE FUNCTIONS (PRESERVED AS FALLBACK)
 # ==========================================================
 
 def normalize_dn(dn_value) -> str:
@@ -115,10 +191,11 @@ def get_dn_details_from_db(dn_number: str) -> Optional[Dict[str, Any]]:
     """
     Get DN details directly from database.
     CRITICAL FIX: Prioritizes integer search since PostgreSQL stores dn_no as INTEGER.
+    PRESERVED as fallback when service layer unavailable.
     """
     
     if dn_number in dn_cache:
-        logger.info(f"📦 DN cache hit: {dn_number}")
+        logger.info(f"📦 DN cache hit (fallback): {dn_number}")
         return dn_cache[dn_number]
     
     db = None
@@ -134,42 +211,30 @@ def get_dn_details_from_db(dn_number: str) -> Optional[Dict[str, Any]]:
             normalized_int = None
             logger.info(f"🔍 Searching for DN as string: {normalized}")
         
-        # Build search conditions - INTEGER FIRST (since your data is stored as integer)
+        # Build search conditions - INTEGER FIRST
         search_conditions = []
         
-        # Priority 1: Integer match (YOUR DATA TYPE - PostgreSQL integer column)
         if normalized_int is not None:
             search_conditions.append(DeliveryReport.dn_no == normalized_int)
-        
-        # Priority 2: String match
         search_conditions.append(cast(DeliveryReport.dn_no, String) == normalized)
-        
-        # Priority 3: With .0 suffix
         search_conditions.append(cast(DeliveryReport.dn_no, String) == f"{normalized}.0")
-        
-        # Priority 4: Contains (last resort)
         search_conditions.append(cast(DeliveryReport.dn_no, String).like(f"%{normalized}%"))
         
-        # Execute search
         records = db.query(DeliveryReport).filter(or_(*search_conditions)).all()
         
         if not records:
-            logger.warning(f"DN {dn_number} (normalized: {normalized}, int: {normalized_int}) not found in database")
+            logger.warning(f"DN {dn_number} not found in database (fallback)")
             return None
         
-        logger.info(f"✅ DN {dn_number} found! {len(records)} records")
+        logger.info(f"✅ DN {dn_number} found! {len(records)} records (fallback)")
         
         first = records[0]
-        
-        # Use actual columns from your database
         dn_date = first.dn_create_date
         pod_date = first.pod_date
         
-        # Use delivery_status and pod_status
         delivery_status = first.delivery_status or "Pending"
         pod_status = first.pod_status or "Pending"
         
-        # Calculate aging and status
         delivery_days = 0
         status = "Delivery Pending"
         status_emoji = "🟡"
@@ -188,7 +253,6 @@ def get_dn_details_from_db(dn_number: str) -> Optional[Dict[str, Any]]:
         priority = calculate_priority(delivery_days)
         priority_emoji = "🔴" if priority == "CRITICAL" else "🟠" if priority == "HIGH" else "🟡" if priority == "MEDIUM" else "🟢"
         
-        # Aggregate products
         unique_models = set()
         total_quantity = 0
         total_amount = 0.0
@@ -241,12 +305,10 @@ def get_dn_details_from_db(dn_number: str) -> Optional[Dict[str, Any]]:
         }
         
         dn_cache[dn_number] = result
-        logger.info(f"✅ DN {dn_number}: {len(records)} records, status={delivery_status}")
-        
         return result
         
     except Exception as e:
-        logger.error(f"DN database lookup error: {e}")
+        logger.error(f"DN database lookup error (fallback): {e}")
         return None
     finally:
         if db:
@@ -254,7 +316,7 @@ def get_dn_details_from_db(dn_number: str) -> Optional[Dict[str, Any]]:
 
 
 def format_dn_response(details: Dict[str, Any]) -> str:
-    """Format DN response for WhatsApp"""
+    """Format DN response for WhatsApp (PRESERVED)"""
     
     products_text = ""
     for idx, p in enumerate(details.get('products', []), 1):
@@ -300,7 +362,7 @@ def format_dn_response(details: Dict[str, Any]) -> str:
 
 
 def search_dealer_in_db(dealer_name: str) -> Optional[Dict[str, Any]]:
-    """Search for dealer in database"""
+    """Search for dealer in database (PRESERVED as fallback)"""
     
     db = None
     try:
@@ -311,10 +373,9 @@ def search_dealer_in_db(dealer_name: str) -> Optional[Dict[str, Any]]:
         ).all()
         
         if not records:
-            logger.warning(f"Dealer '{dealer_name}' not found")
+            logger.warning(f"Dealer '{dealer_name}' not found (fallback)")
             return None
         
-        # Aggregate by DN
         unique_dns = set()
         total_quantity = 0
         total_amount = 0.0
@@ -348,7 +409,6 @@ def search_dealer_in_db(dealer_name: str) -> Optional[Dict[str, Any]]:
         total_dns = len(unique_dns)
         completion_rate = round(delivered_dns / max(1, total_dns) * 100, 1)
         
-        # Health score calculation
         health_score = 100
         health_score -= (pending_deliveries * 5)
         health_score -= (pending_pod * 2)
@@ -382,11 +442,10 @@ def search_dealer_in_db(dealer_name: str) -> Optional[Dict[str, Any]]:
             "health_status": health_status
         }
         
-        logger.info(f"✅ Dealer '{dealer_name}': {total_dns} DNs, {delivered_dns} delivered")
         return result
         
     except Exception as e:
-        logger.error(f"Dealer search error: {e}")
+        logger.error(f"Dealer search error (fallback): {e}")
         return None
     finally:
         if db:
@@ -394,7 +453,7 @@ def search_dealer_in_db(dealer_name: str) -> Optional[Dict[str, Any]]:
 
 
 def format_dealer_response(details: Dict[str, Any]) -> str:
-    """Format dealer response for WhatsApp"""
+    """Format dealer response for WhatsApp (PRESERVED)"""
     
     return f"""
 🏪 *DEALER DASHBOARD*
@@ -424,7 +483,7 @@ def format_dealer_response(details: Dict[str, Any]) -> str:
 
 
 def get_pending_summary_from_db() -> Dict[str, Any]:
-    """Get pending deliveries summary"""
+    """Get pending deliveries summary (PRESERVED as fallback)"""
     db = None
     try:
         db = SessionLocal()
@@ -460,7 +519,7 @@ def get_pending_summary_from_db() -> Dict[str, Any]:
 
 
 def format_pending_response(data: Dict[str, Any], title: str, emoji: str) -> str:
-    """Format pending response"""
+    """Format pending response (PRESERVED)"""
     if data["total"] == 0:
         return f"{emoji} *{title}*\n━━━━━━━━━━━━━━━━━━━━\n✅ No pending items found!"
     
@@ -484,11 +543,52 @@ def format_pending_response(data: Dict[str, Any], title: str, emoji: str) -> str
 
 
 # ==========================================================
-# MAIN PROCESSING FUNCTION
+# ENHANCED PROCESSING FUNCTION (v29.0 - SERVICE INTEGRATION)
 # ==========================================================
 
+def process_message_with_service(message: str, user_id: str = "guest") -> str:
+    """
+    Process message using AI Query Service (v52.1) with fallback to direct DB.
+    NEW v29.0: Routes through service layer first, falls back if unavailable.
+    """
+    process_start = time.time()
+    
+    # Try AI Query Service first if available
+    if AI_SERVICE_AVAILABLE:
+        try:
+            ensure_services_initialized()
+            
+            # Call the WhatsApp compatibility function from ai_query_service
+            response = process_whatsapp_query(
+                question=message,
+                session_factory=None,
+                phone_number=user_id,
+                user_id=user_id,
+                request_id=None
+            )
+            
+            process_time = (time.time() - process_start) * 1000
+            metrics["service_usage"]["ai_service_calls"] += 1
+            logger.info(f"✅ AI Service processed in {process_time:.0f}ms: {message[:50]}")
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"❌ AI Service failed, falling back to direct DB: {e}")
+            metrics["service_failures"]["ai_service"] += 1
+            metrics["service_usage"]["fallback_mode"] = True
+            # Fall through to direct DB processing
+    
+    # Fallback to direct database processing (PRESERVED from v28.4)
+    metrics["service_usage"]["direct_db_calls"] += 1
+    return process_message_direct(message)
+
+
 def process_message_direct(message: str) -> str:
-    """Process message directly using database queries"""
+    """
+    Process message directly using database queries.
+    PRESERVED EXACTLY from v28.4 - no changes.
+    """
     msg_lower = message.lower().strip()
     
     # Help command
@@ -579,7 +679,7 @@ Type `Help` for complete menu
 
 
 # ==========================================================
-# HELPER FUNCTIONS
+# HELPER FUNCTIONS (PRESERVED)
 # ==========================================================
 
 def _auto_cleanup_if_needed(request_id: str):
@@ -618,6 +718,7 @@ async def send_whatsapp_message(
     """
     Send WhatsApp message with proper timeout handling.
     FIXED: Added asyncio timeout wrapper to prevent 15s default timeout.
+    PRESERVED exactly from v28.4.
     """
     send_start_time = time.time()
     
@@ -637,7 +738,6 @@ async def send_whatsapp_message(
     
     for attempt in range(MAX_RETRIES):
         try:
-            # FIXED: Use asyncio timeout wrapper to prevent default 15s timeout
             result = await asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(
                     None,
@@ -652,7 +752,7 @@ async def send_whatsapp_message(
                         request_id=request_id
                     )
                 ),
-                timeout=SEND_MESSAGE_TIMEOUT  # 30 seconds timeout
+                timeout=SEND_MESSAGE_TIMEOUT
             )
             
             if result.get("success"):
@@ -727,11 +827,12 @@ if "route_execution_times" not in metrics:
 
 
 # ==========================================================
-# WEBHOOK ENDPOINTS
+# WEBHOOK ENDPOINTS (UPDATED v29.0)
 # ==========================================================
 
 @router.get("/")
 async def verify_webhook(request: Request):
+    """Webhook verification endpoint - PRESERVED"""
     hub_mode = request.query_params.get("hub.mode")
     hub_verify_token = request.query_params.get("hub.verify_token")
     hub_challenge = request.query_params.get("hub.challenge")
@@ -746,13 +847,17 @@ async def verify_webhook(request: Request):
 
 @router.post("/")
 async def receive_message(request: Request) -> Dict[str, Any]:
+    """
+    Receive WhatsApp message - UPDATED v29.0
+    Now routes through AI Query Service with fallback to direct DB.
+    """
     request_id = str(uuid.uuid4())[:8]
     start_time = time.time()
     
     logger.bind(request_id=request_id)
     metrics["total_requests"] += 1
     
-    logger.info(f"📨 Webhook received")
+    logger.info(f"📨 Webhook received (v29.0 - Service Integrated)")
     _auto_cleanup_if_needed(request_id)
     
     try:
@@ -804,7 +909,13 @@ async def receive_message(request: Request) -> Dict[str, Any]:
             
             logger.info(f"💬 Query: {user_message[:100]}")
             
-            response = process_message_direct(user_message)
+            # UPDATED v29.0: Use service layer with fallback
+            ai_start = time.time()
+            response = process_message_with_service(user_message, phone_number)
+            ai_duration = (time.time() - ai_start) * 1000
+            _record_route_time("ai_processing", ai_duration)
+            logger.info(f"🤖 Processing time: {ai_duration:.0f}ms")
+            
             await send_whatsapp_message(phone_number, response, request_id, msg_id)
             processed_count += 1
         
@@ -817,7 +928,8 @@ async def receive_message(request: Request) -> Dict[str, Any]:
             "success": True,
             "request_id": request_id,
             "processing_time_ms": round(processing_time, 2),
-            "messages_processed": processed_count
+            "messages_processed": processed_count,
+            "service_mode": "ai_service" if AI_SERVICE_AVAILABLE and metrics["service_usage"]["ai_service_calls"] > 0 else "direct_fallback"
         }
         
     except asyncio.TimeoutError:
@@ -835,12 +947,12 @@ async def receive_message(request: Request) -> Dict[str, Any]:
 
 
 # ==========================================================
-# DEBUG ENDPOINTS
+# DEBUG ENDPOINTS (PRESERVED)
 # ==========================================================
 
 @router.get("/debug/check-dn/{dn_number}")
 async def debug_check_dn(dn_number: str):
-    """Debug endpoint to check DN in database"""
+    """Debug endpoint to check DN in database - PRESERVED"""
     db = SessionLocal()
     try:
         normalized = normalize_dn(dn_number)
@@ -879,11 +991,12 @@ async def debug_check_dn(dn_number: str):
 
 
 # ==========================================================
-# MONITORING ENDPOINTS
+# MONITORING ENDPOINTS (UPDATED v29.0)
 # ==========================================================
 
 @router.get("/health")
 async def health_check():
+    """Health check - UPDATED v29.0 with service status"""
     db_healthy = False
     try:
         db = SessionLocal()
@@ -893,11 +1006,26 @@ async def health_check():
     except Exception as e:
         logger.error(f"DB health failed: {e}")
     
+    # Check AI service health if available
+    ai_healthy = False
+    ai_version = None
+    if AI_SERVICE_AVAILABLE:
+        try:
+            ensure_services_initialized()
+            from app.services.ai_query_service import health_check as ai_health
+            ai_status = ai_health()
+            ai_healthy = ai_status.get("status") == "healthy" or ai_status.get("status") == "degraded"
+            ai_version = ai_status.get("version")
+        except Exception as e:
+            logger.warning(f"AI health check failed: {e}")
+    
+    overall_status = "healthy" if db_healthy else "degraded"
+    
     return {
-        "status": "healthy" if db_healthy else "degraded",
-        "version": "28.4",
+        "status": overall_status,
+        "version": "29.0",
         "timestamp": datetime.utcnow().isoformat(),
-        "mode": "DIRECT_DATABASE",
+        "mode": "SERVICE_INTEGRATED",
         "integer_search": "ENABLED",
         "timeout_settings": {
             "request_timeout": REQUEST_TIMEOUT_SECONDS,
@@ -906,18 +1034,27 @@ async def health_check():
         },
         "services": {
             "whatsapp_service": {"available": WHATSAPP_SERVICE_AVAILABLE},
-            "database": {"connected": db_healthy}
+            "database": {"connected": db_healthy},
+            "ai_query_service": {
+                "available": AI_SERVICE_AVAILABLE,
+                "healthy": ai_healthy,
+                "version": ai_version
+            }
         },
-        "cache": {"dn_cache_size": len(dn_cache)}
+        "cache": {"dn_cache_size": len(dn_cache)},
+        "service_usage": metrics["service_usage"],
+        "service_failures": metrics["service_failures"]
     }
 
 
 @router.get("/ping")
 async def ping():
+    """Ping endpoint - PRESERVED"""
     return {
         "pong": True, 
         "timestamp": datetime.utcnow().isoformat(),
-        "mode": "direct_database",
+        "mode": "service_integrated",
+        "ai_available": AI_SERVICE_AVAILABLE,
         "cache_size": len(dn_cache),
         "timeout_seconds": SEND_MESSAGE_TIMEOUT
     }
@@ -925,6 +1062,7 @@ async def ping():
 
 @router.get("/cache/clear")
 async def clear_cache():
+    """Clear cache - PRESERVED"""
     old_size = len(dn_cache)
     dn_cache.clear()
     return {"success": True, "cleared": old_size}
@@ -932,7 +1070,7 @@ async def clear_cache():
 
 @router.get("/timeout-status")
 async def timeout_status():
-    """Check current timeout configuration"""
+    """Check current timeout configuration - PRESERVED"""
     return {
         "send_message_timeout_seconds": SEND_MESSAGE_TIMEOUT,
         "request_timeout_seconds": REQUEST_TIMEOUT_SECONDS,
@@ -941,24 +1079,55 @@ async def timeout_status():
     }
 
 
+@router.get("/metrics")
+async def get_metrics():
+    """Get detailed metrics - NEW v29.0"""
+    return {
+        "total_requests": metrics["total_requests"],
+        "successful_requests": metrics["successful_requests"],
+        "failed_requests": metrics["failed_requests"],
+        "timeout_requests": metrics["timeout_requests"],
+        "rate_limited_requests": metrics["rate_limited_requests"],
+        "service_usage": metrics["service_usage"],
+        "service_failures": metrics["service_failures"],
+        "ai_available": AI_SERVICE_AVAILABLE,
+        "uptime_seconds": time.time() - metrics["start_time"],
+        "route_execution_times": {
+            k: {
+                "avg_ms": round(sum(v) / len(v), 2) if v else 0,
+                "samples": len(v)
+            }
+            for k, v in metrics["route_execution_times"].items()
+        }
+    }
+
+
 # ==========================================================
-# INITIALIZATION
+# INITIALIZATION (UPDATED v29.0)
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("📡 WEBHOOK v28.4 - FIXED TIMEOUT ISSUES")
+logger.info("📡 WEBHOOK v29.0 - INTEGRATED WITH SERVICE LAYER")
 logger.info("=" * 70)
 logger.info("")
-logger.info("   TIMEOUT FIXES:")
-logger.info(f"   ✅ Send message timeout: {SEND_MESSAGE_TIMEOUT}s (was default 15s)")
+logger.info("   TIMEOUT FIXES (PRESERVED):")
+logger.info(f"   ✅ Send message timeout: {SEND_MESSAGE_TIMEOUT}s")
 logger.info(f"   ✅ Request timeout: {REQUEST_TIMEOUT_SECONDS}s")
 logger.info(f"   ✅ Max retries: {MAX_RETRIES}")
 logger.info("")
-logger.info("   CRITICAL FIXES:")
-logger.info("   ✅ Integer search for PostgreSQL dn_no column")
-logger.info("   ✅ Multiple search patterns (int, string, .0, contains)")
-logger.info("   ✅ asyncio timeout wrapper for WhatsApp API calls")
-logger.info("   ✅ Better timeout error handling")
+logger.info("   V29.0 IMPROVEMENTS:")
+logger.info("   ✅ Integrated with AI Query Service (v52.1)")
+logger.info("   ✅ Integrated with Logistics Query Service (v9.3)")
+logger.info("   ✅ Integrated with Analytics Service (v9.2)")
+logger.info("   ✅ Graceful fallback to direct database queries")
+logger.info("   ✅ Enhanced performance monitoring")
+logger.info("")
+logger.info(f"   SERVICE STATUS:")
+logger.info(f"   ✅ WhatsApp Service: {'AVAILABLE' if WHATSAPP_SERVICE_AVAILABLE else 'UNAVAILABLE'}")
+logger.info(f"   ✅ AI Query Service: {'AVAILABLE' if AI_SERVICE_AVAILABLE else 'UNAVAILABLE (fallback mode)'}")
 logger.info("")
 logger.info("   STATUS: ✅ PRODUCTION READY")
 logger.info("=" * 70)
+
+# Initialize services on startup
+ensure_services_initialized()
