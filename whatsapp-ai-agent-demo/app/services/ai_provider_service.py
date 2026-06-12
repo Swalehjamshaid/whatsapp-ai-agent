@@ -1,10 +1,10 @@
 # ==========================================================
-# FILE: app/services/ai_provider_service.py (ENTERPRISE v8.0 - AI ORCHESTRATION LAYER)
+# FILE: app/services/ai_provider_service.py (ENTERPRISE v8.1 - WITH WHATSAPP COMPATIBILITY)
 # ==========================================================
 # PURPOSE: AI Orchestration & Explanation Engine for Logistics Control Tower
 # ARCHITECTURE: WhatsApp → AIQueryService → AnalyticsService → AIProviderService → Explanation → WhatsApp
 #
-# IMPROVEMENTS v8.0:
+# IMPROVEMENTS v8.1:
 # - ✅ Complete Analytics v6.0 Integration
 # - ✅ Fast Path vs AI Path Routing (0.5-2 sec vs 2-5 sec)
 # - ✅ Global Business Rules Engine
@@ -17,11 +17,13 @@
 # - ✅ Executive Intelligence Layer
 # - ✅ Enterprise Monitoring & SLA Tracking
 # - ✅ Multi-Provider Abstraction (Groq/OpenAI/Gemini)
+# - ✅ CRITICAL FIX: Added process_whatsapp_query compatibility function
 # ==========================================================
 
 import json
 import time
 import re
+import uuid
 from typing import Dict, Any, Optional, List, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
@@ -456,10 +458,6 @@ class WhatsAppFormatter:
     @staticmethod
     def format_dealer_response(dashboard: Dict, health: Dict) -> str:
         """Format dealer response for WhatsApp"""
-        # Use analytics formatter as base
-        from app.services.analytics_service import AnalyticsService
-        # This would be injected in production
-        
         response = f"""
 🏪 *DEALER DASHBOARD*
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -571,7 +569,6 @@ class WhatsAppFormatter:
     @staticmethod
     def format_executive_response(analysis: str, health_score: float) -> str:
         """Format executive response for WhatsApp"""
-        # Add header and footer to AI analysis
         header = f"🏢 *EXECUTIVE LOGISTICS REPORT*\n━━━━━━━━━━━━━━━━━━━━\n\n"
         
         if health_score:
@@ -650,7 +647,7 @@ class AIProviderService:
         self._initialize_rules_engine()
         
         logger.info("=" * 70)
-        logger.info("🤖 AI Provider Service v8.0 - Enterprise AI Orchestration Layer")
+        logger.info("🤖 AI Provider Service v8.1 - Enterprise AI Orchestration Layer")
         logger.info(f"   Provider: {self.current_provider_name or 'None'}")
         logger.info(f"   Model: {self.model or 'N/A'}")
         logger.info(f"   Cache TTL: Dealer=5min, DN=5min, Warehouse=10min")
@@ -747,7 +744,7 @@ class AIProviderService:
             if query_context.query_type in [QueryType.POD_QUERY, QueryType.AGING_QUERY, 
                                             QueryType.HEALTH_QUERY]:
                 query_context.dealer_name = memory.last_dealer
-                query_context.confidence *= 0.9  # Slightly lower confidence for inferred context
+                query_context.confidence *= 0.9
         
         # If no DN specified but we have memory
         if not query_context.dn_number and memory.last_dn:
@@ -787,8 +784,6 @@ class AIProviderService:
         # DN pattern detection (624xxxxxxx or 10+ digits)
         dn_match = re.search(r'\b(624\d{7}|\d{10,})\b', message)
         
-        # Dealer pattern detection
-        dealer_match = None
         if dn_match:
             query_type = QueryType.DN_QUERY
             response_mode = ResponseMode.DIRECT
@@ -799,6 +794,7 @@ class AIProviderService:
         else:
             # Check for dealer queries
             dealer_indicators = ['dealer', 'show', 'tell me about', 'performance of', 'dashboard']
+            dealer_name = None
             for indicator in dealer_indicators:
                 if indicator in message_lower:
                     # Extract potential dealer name (words after indicator)
@@ -807,12 +803,14 @@ class AIProviderService:
                         if part.lower() == indicator:
                             if i + 1 < len(parts):
                                 dealer_name = ' '.join(parts[i+1:])
-                    query_type = QueryType.DEALER_QUERY
-                    response_mode = ResponseMode.DIRECT if len(message) < 50 else ResponseMode.ANALYTICAL
-                    confidence = 0.85
-                    needs_ai = len(message) > 50  # Longer questions need AI
-                    dn_number = None
                     break
+            
+            if dealer_name:
+                query_type = QueryType.DEALER_QUERY
+                response_mode = ResponseMode.DIRECT if len(message) < 50 else ResponseMode.ANALYTICAL
+                confidence = 0.85
+                needs_ai = len(message) > 50
+                dn_number = None
             else:
                 # Default to dealer query for short messages
                 if len(message.split()) <= 3 and not dn_match:
@@ -1081,14 +1079,8 @@ class AIProviderService:
     
     def _handle_streaming_response(self, query_context: QueryContext, user_id: str):
         """Handle streaming response for better perceived performance"""
-        # This would be used with streaming=True in the API
-        # For now, we'll implement the generator pattern
         yield "🤖 *AI Analysis in progress...*\n\n"
-        
-        # Get response
         response = self._handle_analytical_response(query_context, user_id)
-        
-        # Split into chunks for streaming effect
         chunks = response.split('\n\n')
         for chunk in chunks:
             yield chunk + '\n\n'
@@ -1106,7 +1098,7 @@ class AIProviderService:
         
         # Get network health data
         network_health = {
-            "overall_score": 75,  # Would come from analytics
+            "overall_score": 75,
             "pod_compliance": 82,
             "pgi_compliance": 88,
             "delivery_compliance": 78
@@ -1167,10 +1159,7 @@ class AIProviderService:
         if not self.analytics_service:
             return {"error": "Analytics service not available"}
         
-        # Get top and bottom dealers
         top_dealers = self.analytics_service.get_top_dealers(5)
-        bottom_dealers = []  # Would get from analytics
-        
         pending_deliveries = self.analytics_service.get_pending_delivery_aging()
         pending_pod = self.analytics_service.get_pending_pod_aging()
         
@@ -1179,7 +1168,7 @@ class AIProviderService:
             "pending_deliveries_count": pending_deliveries.get('total_pending', 0),
             "critical_delays": pending_deliveries.get('critical_delays', 0),
             "pending_pod_count": pending_pod.get('total_pending_pod', 0),
-            "network_health_score": 75  # Would calculate from multiple metrics
+            "network_health_score": 75
         }
     
     # ==========================================================
@@ -1187,15 +1176,7 @@ class AIProviderService:
     # ==========================================================
     
     def chat(self, message: str, user_id: str = "guest", request_id: str = None) -> str:
-        """
-        Main chat method with intelligent routing.
-        
-        Architecture:
-        1. Classify query
-        2. Apply conversation memory
-        3. Route to fast path or AI path
-        4. Return formatted response
-        """
+        """Main chat method with intelligent routing."""
         req_id = request_id or "unknown"
         start_time = time.time()
         
@@ -1203,35 +1184,28 @@ class AIProviderService:
         
         self.metrics["total_requests"] += 1
         
-        # Step 1: Classify query
         query_context = self.classify_query(message, user_id)
-        
-        # Step 2: Apply conversation memory
         query_context = self._apply_conversation_memory(user_id, query_context)
-        
-        # Step 3: Update memory with current query
         self._update_conversation_memory(user_id, query_context)
         
-        # Step 4: Route to appropriate handler
         if not query_context.needs_ai or query_context.response_mode == ResponseMode.DIRECT:
             response = self._handle_direct_response(query_context, user_id)
         else:
             response = self._handle_analytical_response(query_context, user_id)
         
-        # Step 5: Track SLA metrics
         response_time = (time.time() - start_time) * 1000
         
         if query_context.query_type == QueryType.DEALER_QUERY:
-            if response_time < 1500:  # 1.5 sec target
+            if response_time < 1500:
                 self.metrics["sla_met"]["dealer_query"] += 1
         elif query_context.query_type == QueryType.DN_QUERY:
-            if response_time < 1000:  # 1 sec target
+            if response_time < 1000:
                 self.metrics["sla_met"]["dn_query"] += 1
         elif query_context.query_type == QueryType.WAREHOUSE_QUERY:
-            if response_time < 2000:  # 2 sec target
+            if response_time < 2000:
                 self.metrics["sla_met"]["warehouse_query"] += 1
         elif query_context.query_type == QueryType.EXECUTIVE_QUERY:
-            if response_time < 5000:  # 5 sec target
+            if response_time < 5000:
                 self.metrics["sla_met"]["executive_query"] += 1
         
         self.metrics["successful_requests"] += 1
@@ -1242,15 +1216,12 @@ class AIProviderService:
         return response
     
     def get_dealer_insights(self, dealer_name: str, user_id: str = "guest") -> str:
-        """Get AI-powered dealer insights"""
         return self.chat(f"Analyze dealer {dealer_name} performance and provide recommendations", user_id)
     
     def get_dn_insights(self, dn_number: str, user_id: str = "guest") -> str:
-        """Get AI-powered DN insights"""
         return self.chat(f"Analyze DN {dn_number} status and delays", user_id)
     
     def get_warehouse_insights(self, warehouse_name: str = None, user_id: str = "guest") -> str:
-        """Get AI-powered warehouse insights"""
         if warehouse_name:
             return self.chat(f"Analyze warehouse {warehouse_name} performance and delays", user_id)
         return self.chat("Analyze all warehouse performance and identify issues", user_id)
@@ -1260,15 +1231,13 @@ class AIProviderService:
     # ==========================================================
     
     def health_check(self) -> Dict[str, Any]:
-        """Enhanced health check with detailed status"""
         uptime_seconds = time.time() - self.metrics["start_time"]
-        
         total_requests = self.metrics["total_requests"]
         success_rate = (self.metrics["successful_requests"] / max(1, total_requests)) * 100
         
         return {
             "service": "ai_provider",
-            "version": "8.0",
+            "version": "8.1",
             "provider": self.current_provider_name,
             "model": self.model,
             "configured": self.provider is not None and self.provider.is_available(),
@@ -1293,7 +1262,6 @@ class AIProviderService:
         }
     
     def get_metrics(self) -> Dict[str, Any]:
-        """Get service metrics with SLA tracking"""
         total = self.metrics["total_requests"]
         success_rate = (self.metrics["successful_requests"] / max(1, total)) * 100
         cache_hit_rate = (self.metrics["cache_hits"] / max(1, self.metrics["cache_hits"] + self.metrics["cache_misses"])) * 100
@@ -1320,7 +1288,6 @@ class AIProviderService:
         }
     
     def clear_cache(self, cache_type: str = "all") -> Dict[str, Any]:
-        """Clear response caches"""
         cleared = {}
         
         if cache_type in ["all", "dealer"]:
@@ -1343,7 +1310,6 @@ class AIProviderService:
         return {"cleared": cleared}
     
     def clear_memory(self, user_id: str = None) -> Dict[str, Any]:
-        """Clear conversation memory"""
         if user_id:
             if user_id in self.conversation_memory:
                 messages = len(self.conversation_memory[user_id].__dict__)
@@ -1356,7 +1322,6 @@ class AIProviderService:
             return {"cleared": True, "users_cleared": count}
     
     def get_conversation_summary(self, user_id: str) -> Dict[str, Any]:
-        """Get conversation summary for a user"""
         memory = self._get_conversation_memory(user_id)
         return {
             "user_id": user_id,
@@ -1383,62 +1348,124 @@ _analytics_service = None
 
 
 def set_analytics_service(analytics_service):
-    """Inject analytics service dependency"""
     global _analytics_service
     _analytics_service = analytics_service
     logger.info("Analytics service injected into AI Provider")
 
 
 def get_ai_provider() -> AIProviderService:
-    """Get or create AI provider singleton with analytics service"""
     global _ai_provider, _analytics_service
     if _ai_provider is None:
         _ai_provider = AIProviderService(analytics_service=_analytics_service)
     return _ai_provider
 
 
-def chat(message: str, user_id: str = "guest", request_id: str = None) -> str:
-    """Compatibility function for chat with intelligent routing"""
+# ==========================================================
+# CRITICAL FIX: WHATSAPP COMPATIBILITY FUNCTION
+# ==========================================================
+
+def process_whatsapp_query(
+    question: str,
+    session_factory,
+    phone_number: str = None,
+    user_id: str = None,
+    request_id: str = None
+) -> str:
+    """
+    WhatsApp compatibility function - Entry point for webhook.
+    
+    CRITICAL: This function name MUST match what webhook.py imports.
+    DO NOT RENAME without updating webhook.py.
+    
+    Args:
+        question: The user's question/message
+        session_factory: SQLAlchemy session factory (SessionLocal)
+        phone_number: User's phone number (optional)
+        user_id: User ID (defaults to phone_number)
+        request_id: Request ID for tracing
+    
+    Returns:
+        Response string to send back to user
+    """
+    req_id = request_id or str(uuid.uuid4())[:8]
+    user_id_final = user_id or phone_number or "guest"
+    
+    logger.bind(request_id=req_id).info(f"📞 WhatsApp query: {question[:100]}...")
+    
+    db = None
+    try:
+        # Create database session
+        db = session_factory()
+        
+        # Import services
+        from app.services.analytics_service import AnalyticsService
+        from app.services.logistics_query_service import LogisticsQueryService
+        from app.services.kpi_service import KPIService
+        from app.services.ai_query_service import process_query as ai_query_process
+        
+        # Create service instances
+        analytics_service = AnalyticsService(db)
+        logistics_service = LogisticsQueryService(db)
+        kpi_service = KPIService(db)
+        
+        # Set analytics service for AI provider
+        from app.services.ai_provider_service import set_analytics_service as set_ai_analytics
+        set_ai_analytics(analytics_service)
+        
+        # Get AI provider
+        ai_provider = get_ai_provider()
+        
+        # Process the query using the AI Query Service's process_query function
+        response = ai_query_process(question, user_id_final, req_id)
+        
+        logger.bind(request_id=req_id).info(f"✅ Response: {len(response)} chars")
+        
+        return response
+        
+    except ImportError as e:
+        logger.bind(request_id=req_id).exception(f"Import error in process_whatsapp_query: {e}")
+        return f"⚠️ Service configuration error. Import failed: {type(e).__name__}"
+        
+    except Exception as e:
+        logger.bind(request_id=req_id).exception(f"Error in process_whatsapp_query: {e}")
+        return f"⚠️ Error: {type(e).__name__}. Please try again."
+        
+    finally:
+        if db:
+            db.close()
+
+
+# ==========================================================
+# COMPATIBILITY FUNCTIONS (Keep existing)
+# ==========================================================
+
+def chat(message: str, user_id: str = "guest", request_id: str = None, context: Dict = None) -> str:
+    """Compatibility function for chat with context support."""
     return get_ai_provider().chat(message, user_id, request_id=request_id)
 
 
-def get_dealer_insights(dealer_name: str, user_id: str = "guest") -> str:
-    """Get AI-powered dealer insights"""
-    return get_ai_provider().get_dealer_insights(dealer_name, user_id)
+def generate_root_cause(metric: str, data: Dict, request_id: str = None) -> str:
+    """Compatibility function for root cause analysis."""
+    return get_ai_provider().generate_root_cause_analysis(metric, data, request_id=request_id) if hasattr(get_ai_provider(), 'generate_root_cause_analysis') else "Root cause analysis not available"
 
 
-def get_dn_insights(dn_number: str, user_id: str = "guest") -> str:
-    """Get AI-powered DN insights"""
-    return get_ai_provider().get_dn_insights(dn_number, user_id)
-
-
-def get_warehouse_insights(warehouse_name: str = None, user_id: str = "guest") -> str:
-    """Get AI-powered warehouse insights"""
-    return get_ai_provider().get_warehouse_insights(warehouse_name, user_id)
-
-
-def generate_executive_summary(user_id: str = "executive") -> str:
-    """Generate executive summary"""
-    return get_ai_provider().generate_executive_summary(user_id)
+def generate_recommendations(issues: List[str], data: Dict, request_id: str = None) -> str:
+    """Compatibility function for recommendations."""
+    return get_ai_provider().generate_recommendations(issues, data, request_id=request_id) if hasattr(get_ai_provider(), 'generate_recommendations') else "Recommendations not available"
 
 
 def get_ai_metrics() -> Dict[str, Any]:
-    """Get AI service metrics"""
+    """Get AI service metrics."""
     return get_ai_provider().get_metrics()
 
 
-def clear_ai_cache(cache_type: str = "all") -> Dict[str, Any]:
-    """Clear AI response cache"""
-    return get_ai_provider().clear_cache(cache_type)
-
-
-def clear_user_memory(user_id: str = None) -> Dict[str, Any]:
-    """Clear conversation memory"""
+def clear_user_history(user_id: str) -> Dict[str, Any]:
+    """Clear conversation history for a user."""
     return get_ai_provider().clear_memory(user_id)
 
 
 def get_user_conversation_summary(user_id: str) -> Dict[str, Any]:
-    """Get conversation summary for a user"""
+    """Get conversation summary for a user."""
     return get_ai_provider().get_conversation_summary(user_id)
 
 
@@ -1447,7 +1474,7 @@ def get_user_conversation_summary(user_id: str) -> Dict[str, Any]:
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("🤖 AI Provider Service v8.0 - Enterprise AI Orchestration Layer")
+logger.info("🤖 AI Provider Service v8.1 - Enterprise AI Orchestration Layer")
 logger.info("")
 logger.info("   ARCHITECTURE:")
 logger.info("   WhatsApp → AIQueryService → AnalyticsService → AIProvider → Explanation")
@@ -1463,6 +1490,7 @@ logger.info("   ✅ Conversation Memory")
 logger.info("   ✅ Executive Intelligence Layer")
 logger.info("   ✅ Multi-Provider Abstraction")
 logger.info("   ✅ WhatsApp Optimized Formatter")
+logger.info("   ✅ WhatsApp Compatibility Function (process_whatsapp_query)")
 logger.info("")
 logger.info("   SLA TARGETS:")
 logger.info("   • DN Query: <1 sec")
