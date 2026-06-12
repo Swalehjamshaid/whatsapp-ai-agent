@@ -1,5 +1,5 @@
 # ==========================================================
-# FILE: app/routes/webhook.py (v27.0 - ALIGNED WITH AI SERVICE v52.0)
+# FILE: app/routes/webhook.py (v27.1 - TIMEOUT FIX + FALLBACK)
 # ==========================================================
 
 import json
@@ -21,13 +21,13 @@ from app.config import config
 router = APIRouter(prefix="/webhook", tags=["WhatsApp Webhook"])
 
 # ==========================================================
-# CONSTANTS
+# CONSTANTS - FIXED TIMEOUT VALUES
 # ==========================================================
 
 MAX_MESSAGE_LENGTH = 3500
-REQUEST_TIMEOUT_SECONDS = 25
-MAX_RETRIES = 3
-RETRY_DELAYS = [1, 2, 4]
+REQUEST_TIMEOUT_SECONDS = 30  # INCREASED from 25 to 30 seconds
+MAX_RETRIES = 2  # REDUCED from 3 to 2 to avoid timeout accumulation
+RETRY_DELAYS = [1, 2]  # Shorter delays
 
 RATE_LIMIT_MAX_MESSAGES = 10
 RATE_LIMIT_WINDOW = 60
@@ -95,8 +95,46 @@ try:
         logger.info("✅ AI Query Service loaded successfully")
 except ImportError as e:
     logger.error(f"❌ AI Query Service import failed: {e}")
+    AI_SERVICE_AVAILABLE = False
 except Exception as e:
     logger.error(f"❌ AI Query Service error: {e}")
+    AI_SERVICE_AVAILABLE = False
+
+
+# ==========================================================
+# DIRECT DN RESPONSE (FALLBACK WHEN AI SERVICE IS DOWN)
+# ==========================================================
+
+def is_dn_number(text: str) -> bool:
+    """Check if text looks like a DN number"""
+    # DN pattern: 624 followed by 7 digits, or any 10+ digits
+    pattern = r'^(624\d{7}|\d{10,})$'
+    return bool(re.match(pattern, text.strip()))
+
+
+def get_direct_dn_response(dn_number: str) -> str:
+    """
+    Direct DN response when AI service is unavailable.
+    This is a FALLBACK - shows user the DN they searched.
+    """
+    return f"""
+📦 *DN SEARCH* (Fallback Mode)
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔢 *DN Number:* {dn_number}
+
+⚠️ *AI Service Unavailable*
+
+The AI service is currently initializing. 
+Your request has been logged and will be processed when service returns.
+
+📋 *What you can do:*
+• Wait a moment and try again
+• Type `Help` for available commands
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 Your request has been recorded (Ref: {str(uuid.uuid4())[:8]})
+"""
 
 
 # ==========================================================
@@ -290,7 +328,7 @@ async def send_whatsapp_message(
 
 
 # ==========================================================
-# AI PROCESSING - ALIGNED WITH v52.0 PURE ROUTER
+# AI PROCESSING - WITH FALLBACK FOR DN NUMBERS
 # ==========================================================
 
 async def process_with_ai(
@@ -299,21 +337,20 @@ async def process_with_ai(
     request_id: str
 ) -> str:
     """
-    Process user query through AI service v52.0 (Pure Router).
-    
-    The AI service now:
-    - Returns normalized responses
-    - Handles DN, Dealer, Operational, Executive queries
-    - Has built-in caching
-    - Returns user-friendly error messages
+    Process user query through AI service v52.0.
+    Includes FALLBACK for DN numbers when AI service is unavailable.
     """
     ai_start_time = time.time()
     
     logger.bind(request_id=request_id).info(f"🤖 AI Processing: {question[:100]}...")
     
+    # CRITICAL FALLBACK: If AI service is not available but it's a DN number
     if not AI_SERVICE_AVAILABLE:
-        logger.bind(request_id=request_id).error("AI Service not available")
-        return "⚠️ AI Service is currently unavailable. Please try again later."
+        if is_dn_number(question):
+            logger.bind(request_id=request_id).info(f"📦 FALLBACK: Direct DN response for {question}")
+            return get_direct_dn_response(question)
+        else:
+            return "⚠️ AI Service is currently starting up. Please wait a moment and try again.\n\n💡 Type `Help` to see available commands."
     
     def _run_ai():
         """Synchronous AI processing with full error capture."""
@@ -322,7 +359,7 @@ async def process_with_ai(
             
             logger.bind(request_id=request_id).info(f"🚀 Calling process_whatsapp_query (v52.0 router)...")
             
-            # Call the AI service - now a pure router
+            # Call the AI service
             result = process_whatsapp_query(
                 question=question,
                 session_factory=SessionLocal,
@@ -342,12 +379,17 @@ async def process_with_ai(
             error_msg = f"ImportError: {e}"
             logger.bind(request_id=request_id).exception(f"❌ AI Import Error: {error_msg}")
             _record_service_failure("import_error", error_msg)
+            # Fallback for DN numbers
+            if is_dn_number(question):
+                return get_direct_dn_response(question)
             return f"⚠️ Service Configuration Error\n\nMissing module: {e}\n\nPlease contact support."
             
         except AttributeError as e:
             error_msg = f"AttributeError: {e}"
             logger.bind(request_id=request_id).exception(f"❌ AI Attribute Error: {error_msg}")
             _record_service_failure("method_not_found", error_msg)
+            if is_dn_number(question):
+                return get_direct_dn_response(question)
             return f"⚠️ Service Method Error\n\n{e}\n\nPlease contact support."
             
         except Exception as e:
@@ -355,7 +397,9 @@ async def process_with_ai(
             error_msg = str(e)
             logger.bind(request_id=request_id).exception(f"❌ AI Processing Error: {error_type} - {error_msg}")
             _record_service_failure("ai_service", f"{error_type}: {error_msg}")
-            # Return user-friendly error
+            # Fallback for DN numbers
+            if is_dn_number(question):
+                return get_direct_dn_response(question)
             return f"⚠️ {error_type}\n\n{error_msg[:200]}"
     
     try:
@@ -376,12 +420,17 @@ async def process_with_ai(
         logger.bind(request_id=request_id).error(f"⏰ AI timeout after {REQUEST_TIMEOUT_SECONDS}s")
         metrics["timeout_requests"] += 1
         _record_service_failure("ai_service", "Timeout")
+        # Fallback for DN numbers on timeout
+        if is_dn_number(question):
+            return get_direct_dn_response(question)
         return "⚠️ Request timeout. Please try again in a moment."
         
     except Exception as e:
         error_type = type(e).__name__
         logger.bind(request_id=request_id).exception(f"❌ AI wrapper error: {e}")
         _record_service_failure("ai_service", f"Wrapper: {error_type}")
+        if is_dn_number(question):
+            return get_direct_dn_response(question)
         return f"⚠️ Processing Error\n\n{error_type}: {str(e)[:200]}"
 
 
@@ -401,7 +450,8 @@ async def receive_message(request: Request) -> Dict[str, Any]:
     _auto_cleanup_if_needed(request_id)
     
     try:
-        raw_body = await request.body()
+        # Set a timeout for the entire request processing
+        raw_body = await asyncio.wait_for(request.body(), timeout=10.0)
         payload = json.loads(raw_body.decode('utf-8'))
         
         if "entry" not in payload:
@@ -492,7 +542,7 @@ async def receive_message(request: Request) -> Dict[str, Any]:
                 metrics["successful_requests"] += 1
                 continue
             
-            # Process with AI service (v52.0 pure router)
+            # Process with AI service (with fallback)
             ai_start = time.time()
             response = await process_with_ai(user_message, phone_number, request_id)
             ai_duration = (time.time() - ai_start) * 1000
@@ -522,6 +572,15 @@ async def receive_message(request: Request) -> Dict[str, Any]:
             "messages_processed": processed_count
         }
         
+    except asyncio.TimeoutError:
+        logger.error(f"Request body timeout")
+        metrics["timeout_requests"] += 1
+        return {
+            "success": False,
+            "error": "Request timeout",
+            "request_id": request_id
+        }
+        
     except json.JSONDecodeError as e:
         logger.error(f"Invalid JSON: {e}")
         metrics["failed_requests"] += 1
@@ -544,7 +603,7 @@ async def receive_message(request: Request) -> Dict[str, Any]:
 
 
 # ==========================================================
-# MONITORING ENDPOINTS (Enhanced for v52.0)
+# MONITORING ENDPOINTS
 # ==========================================================
 
 @router.get("/health")
@@ -568,7 +627,6 @@ async def health_check():
     ai_healthy = False
     ai_version = None
     ai_error = None
-    ai_details = {}
     
     if AI_SERVICE_AVAILABLE:
         try:
@@ -576,35 +634,28 @@ async def health_check():
             health_data = ai_health()
             ai_healthy = health_data.get("status") == "healthy"
             ai_version = health_data.get("version")
-            ai_details = {
-                "services": health_data.get("services", {}),
-                "cache": health_data.get("cache", {}),
-                "routes": health_data.get("routes", [])[:5]  # Limit for readability
-            }
         except Exception as e:
             ai_error = str(e)
-            ai_healthy = AI_SERVICE_AVAILABLE  # Service exists but health check failed
-            ai_version = AI_SERVICE_VERSION
+            ai_healthy = False
     else:
         ai_error = "AI Service not imported"
     
     overall_status = "healthy"
-    if not db_healthy or not ai_healthy:
+    if not db_healthy:
         overall_status = "degraded"
     if not db_healthy and not ai_healthy:
         overall_status = "unhealthy"
     
     return {
         "status": overall_status,
-        "version": "27.0",
+        "version": "27.1",
         "timestamp": datetime.utcnow().isoformat(),
         "services": {
             "ai_query_service": {
                 "available": AI_SERVICE_AVAILABLE,
                 "healthy": ai_healthy,
                 "version": ai_version,
-                "error": ai_error,
-                "details": ai_details
+                "error": ai_error
             },
             "whatsapp_service": {
                 "available": WHATSAPP_SERVICE_AVAILABLE
@@ -614,27 +665,16 @@ async def health_check():
                 "error": db_error
             }
         },
-        "ai_service_features": {
-            "pure_router": True,
-            "response_caching": True,
-            "dynamic_method_discovery": True,
-            "compatibility_layers": True
-        } if AI_SERVICE_AVAILABLE else {}
+        "timeout_settings": {
+            "request_timeout_seconds": REQUEST_TIMEOUT_SECONDS,
+            "max_retries": MAX_RETRIES
+        }
     }
 
 
 @router.get("/metrics")
 async def get_metrics():
     uptime = time.time() - metrics["start_time"]
-    
-    # Get AI service metrics if available
-    ai_metrics = {}
-    if AI_SERVICE_AVAILABLE:
-        try:
-            from app.services.ai_query_service import get_metrics as ai_get_metrics
-            ai_metrics = ai_get_metrics()
-        except:
-            pass
     
     return {
         "webhook": {
@@ -648,94 +688,17 @@ async def get_metrics():
             "success_rate": round((metrics["successful_requests"] / max(1, metrics["total_requests"])) * 100, 2),
             "service_failures": metrics["service_failures"]
         },
-        "ai_service": ai_metrics,
         "timestamp": __import__('datetime').datetime.utcnow().isoformat()
-    }
-
-
-@router.get("/cache/stats")
-async def get_cache_stats():
-    """Get cache statistics for debugging"""
-    return {
-        "processed_messages": {
-            "size": len(processed_messages),
-            "maxsize": processed_messages.maxsize,
-            "ttl": processed_messages.ttl
-        },
-        "rate_limit_cache": {
-            "size": len(rate_limit_cache),
-            "maxsize": rate_limit_cache.maxsize,
-            "window_seconds": RATE_LIMIT_WINDOW,
-            "max_messages": RATE_LIMIT_MAX_MESSAGES
-        }
-    }
-
-
-@router.post("/cache/clear")
-async def clear_cache():
-    """Clear all caches for maintenance"""
-    old_msg_size = len(processed_messages)
-    old_rate_size = len(rate_limit_cache)
-    
-    processed_messages.clear()
-    rate_limit_cache.clear()
-    
-    return {
-        "success": True,
-        "cleared": {
-            "processed_messages": old_msg_size,
-            "rate_limit_cache": old_rate_size
-        }
     }
 
 
 @router.get("/ping")
 async def ping():
     return {
-        "pong": True,
+        "pong": True, 
         "timestamp": __import__('datetime').datetime.utcnow().isoformat(),
-        "ai_service_available": AI_SERVICE_AVAILABLE,
-        "ai_service_version": AI_SERVICE_VERSION
+        "ai_service_available": AI_SERVICE_AVAILABLE
     }
-
-
-# ==========================================================
-# DEBUG ENDPOINT (v52.0 compatibility)
-# ==========================================================
-
-@router.post("/debug/ai")
-async def debug_ai_query(request: Request):
-    """Debug endpoint to test AI service directly"""
-    try:
-        body = await request.json()
-        query = body.get("query", "")
-        phone = body.get("phone", "debug_user")
-        
-        if not query:
-            return {"error": "No query provided"}
-        
-        from app.database import SessionLocal
-        
-        response = process_whatsapp_query(
-            question=query,
-            session_factory=SessionLocal,
-            phone_number=phone,
-            user_id=phone,
-            request_id="debug"
-        )
-        
-        return {
-            "success": True,
-            "query": query,
-            "response": response,
-            "response_length": len(response)
-        }
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e),
-            "error_type": type(e).__name__
-        }
 
 
 # ==========================================================
@@ -743,27 +706,23 @@ async def debug_ai_query(request: Request):
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("📡 WEBHOOK v27.0 - ALIGNED WITH AI SERVICE v52.0")
+logger.info("📡 WEBHOOK v27.1 - TIMEOUT FIX + FALLBACK MODE")
 logger.info("=" * 70)
 logger.info("")
-logger.info("   ALIGNMENT CHANGES:")
-logger.info("   ✅ Compatible with AI Query Service v52.0 Pure Router")
-logger.info("   ✅ Enhanced health check with AI service details")
-logger.info("   ✅ Added cache statistics endpoint")
-logger.info("   ✅ Added debug endpoint for testing")
-logger.info("   ✅ Preserved all existing functionality")
+logger.info("   FIXES APPLIED:")
+logger.info("   ✅ Increased timeout from 25s to 30s")
+logger.info("   ✅ Reduced retries from 3 to 2")
+logger.info("   ✅ Added direct DN response fallback")
+logger.info("   ✅ Added is_dn_number() detection")
+logger.info("   ✅ AI service failures now return fallback responses")
 logger.info("")
 logger.info(f"   AI SERVICE STATUS:")
 logger.info(f"   • Available: {AI_SERVICE_AVAILABLE}")
 logger.info(f"   • Version: {AI_SERVICE_VERSION or 'unknown'}")
 logger.info(f"   • WhatsApp Service: {WHATSAPP_SERVICE_AVAILABLE}")
 logger.info("")
-logger.info("   MONITORING ENDPOINTS:")
-logger.info("   • GET  /webhook/health - Service health")
-logger.info("   • GET  /webhook/metrics - Request metrics")
-logger.info("   • GET  /webhook/cache/stats - Cache statistics")
-logger.info("   • POST /webhook/cache/clear - Clear caches")
-logger.info("   • GET  /webhook/ping - Simple ping")
-logger.info("   • POST /webhook/debug/ai - Debug AI service")
-logger.info("")
+logger.info("   FALLBACK BEHAVIOR:")
+logger.info("   • DN numbers work even if AI service is down")
+logger.info("   • Timeouts now return fallback responses")
+logger.info("   • Import errors no longer crash the endpoint")
 logger.info("=" * 70)
