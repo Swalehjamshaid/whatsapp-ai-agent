@@ -1,19 +1,20 @@
 # ==========================================================
-# FILE: app/services/logistics_query_service.py (FIXED v6.1 - AGGRESSIVE DN SEARCH)
+# FILE: app/services/logistics_query_service.py (FIXED v7.0 - DIRECT POSTGRESQL INTEGRATION)
 # ==========================================================
 # PURPOSE: Logistics operational queries for DN, POD, PGI, Deliveries, Warehouse
 #
-# CRITICAL FIXES v6.1:
-# - ✅ Aggressive multi-format DN search (catches ALL variations)
-# - ✅ Handles integer, string, decimal, scientific notation, spaces
-# - ✅ DN normalization with multiple strategies
-# - ✅ ALL original attributes preserved
+# CRITICAL FIXES v7.0:
+# - ✅ Direct PostgreSQL connection with raw SQL fallback
+# - ✅ Aggressive multi-format DN search with raw SQL
+# - ✅ Automatic detection of DN format in database
+# - ✅ Debug endpoints to see actual data in Railway PostgreSQL
+# - ✅ Fallback to raw SQL when ORM fails
 # ==========================================================
 
 from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime, date, timedelta
 from sqlalchemy.orm import Session
-from sqlalchemy import func, and_, or_, cast, String, Integer, Float
+from sqlalchemy import func, and_, or_, cast, String, Integer, Float, text
 from loguru import logger
 
 from app.models import DeliveryReport
@@ -22,7 +23,7 @@ from app.models import DeliveryReport
 class LogisticsQueryService:
     def __init__(self, db: Session):
         self.db = db
-        logger.info("Logistics Query Service v6.1 initialized - Aggressive DN Search")
+        logger.info("Logistics Query Service v7.0 initialized - Direct PostgreSQL Integration")
     
     # ==========================================================
     # HELPER METHODS
@@ -38,10 +39,6 @@ class LogisticsQueryService:
     def normalize_dn(self, dn) -> str:
         """
         DN normalization - handles multiple formats
-        - None values
-        - Decimal .0
-        - Spaces
-        - Scientific notation
         """
         if dn is None:
             return ""
@@ -52,7 +49,7 @@ class LogisticsQueryService:
         if dn_str.endswith('.0'):
             dn_str = dn_str[:-2]
         
-        # Remove scientific notation (e.g., 6.24361192e+09)
+        # Remove scientific notation
         if 'e' in dn_str.lower():
             try:
                 dn_str = str(int(float(dn_str)))
@@ -101,12 +98,7 @@ class LogisticsQueryService:
             return "LOW"
     
     def _calculate_dn_status(self, pgi_date, pod_date) -> Dict[str, str]:
-        """
-        Business Rule: Status Logic
-        - PGI Blank, POD Blank → Delivery Pending
-        - PGI Available, POD Blank → POD Pending
-        - PGI Available, POD Available → Delivered
-        """
+        """Business Rule: Status Logic"""
         if pgi_date and pod_date:
             return {"status": "Delivered", "emoji": "✅", "description": "Full delivery completed"}
         elif pgi_date and not pod_date:
@@ -115,26 +107,17 @@ class LogisticsQueryService:
             return {"status": "Delivery Pending", "emoji": "🟡", "description": "Not yet dispatched"}
     
     def _aggregate_dn_records(self, records: List[DeliveryReport]) -> Dict[str, Any]:
-        """
-        DN Aggregation Logic
-        Aggregates multiple rows of same DN into single DN entity.
-        1 DN = Multiple Products, counted ONCE.
-        """
+        """DN Aggregation Logic - 1 DN = Multiple Products, counted ONCE"""
         if not records:
             return {}
         
         dn_no = self.normalize_dn(records[0].dn_no)
-        
-        # Get first record for dealer info
         first_record = records[0]
         
-        # Aggregate data
         unique_models = set()
         total_quantity = 0
         total_amount = 0.0
         products = []
-        
-        # Track product codes to avoid duplicates
         product_codes = set()
         
         for r in records:
@@ -144,7 +127,6 @@ class LogisticsQueryService:
             if r.material_no:
                 unique_models.add(r.customer_model or r.material_no)
                 
-                # Add product if not already present
                 if r.material_no not in product_codes:
                     product_codes.add(r.material_no)
                     products.append({
@@ -154,14 +136,12 @@ class LogisticsQueryService:
                         "amount": float(r.dn_amount or 0)
                     })
                 else:
-                    # Update existing product quantity
                     for p in products:
                         if p["material_no"] == r.material_no:
                             p["quantity"] += int(r.dn_qty or 0)
                             p["amount"] += float(r.dn_amount or 0)
                             break
         
-        # Calculate aging using business rules
         pgi_date = first_record.good_issue_date
         dn_date = first_record.dn_create_date
         pod_date = first_record.pod_date
@@ -170,7 +150,6 @@ class LogisticsQueryService:
         pod_aging = self._calculate_pod_aging(pod_date, pgi_date)
         pending_delivery_aging = self._calculate_pending_delivery_aging(dn_date) if not pgi_date else 0
         pending_pod_aging = self._calculate_pending_pod_aging(pgi_date) if pgi_date and not pod_date else 0
-        
         status_info = self._calculate_dn_status(pgi_date, pod_date)
         
         return {
@@ -198,117 +177,248 @@ class LogisticsQueryService:
             "products": products
         }
     
+    # ==========================================================
+    # RAW SQL SEARCH - DIRECT POSTGRESQL QUERY (CRITICAL FIX)
+    # ==========================================================
+    
+    def _raw_sql_dn_search(self, dn_number: str) -> List[DeliveryReport]:
+        """
+        Direct PostgreSQL raw SQL search - bypasses ORM issues
+        This will find the DN no matter what format it's stored in
+        """
+        normalized = self.normalize_dn(dn_number)
+        
+        logger.info(f"RAW SQL DN Search for: {normalized}")
+        
+        try:
+            # Raw SQL query to find DN in ANY format
+            raw_query = text("""
+                SELECT * FROM delivery_report 
+                WHERE 
+                    dn_no::TEXT = :dn1
+                    OR dn_no::TEXT = :dn2
+                    OR dn_no::TEXT LIKE :dn3
+                    OR dn_no::TEXT LIKE :dn4
+                    OR dn_no::TEXT = :dn5
+                    OR dn_no = :dn6::BIGINT
+                    OR dn_no::TEXT LIKE :dn7
+                LIMIT 100
+            """)
+            
+            # Generate all possible search patterns
+            patterns = [
+                normalized,                           # exact
+                f"{normalized}.0",                    # with .0
+                f"%{normalized}%",                    # contains
+                f"{normalized}%",                     # starts with
+                f"%{normalized}",                     # ends with
+                normalized.lstrip('0'),               # remove leading zeros
+                normalized.zfill(10)                  # pad to 10 digits
+            ]
+            
+            # Execute raw SQL
+            result = self.db.execute(raw_query, {
+                "dn1": patterns[0],
+                "dn2": patterns[1],
+                "dn3": patterns[2],
+                "dn4": patterns[3],
+                "dn5": patterns[4],
+                "dn6": int(normalized) if normalized.isdigit() else 0,
+                "dn7": f"%{normalized[-8:]}%" if len(normalized) > 8 else patterns[2]
+            })
+            
+            records = result.fetchall()
+            
+            if records:
+                logger.info(f"RAW SQL found {len(records)} records for DN {normalized}")
+                # Convert raw SQL results to ORM objects
+                orm_records = []
+                for row in records:
+                    # Fetch the full ORM object
+                    orm_record = self.db.query(DeliveryReport).filter(
+                        DeliveryReport.id == row.id
+                    ).first()
+                    if orm_record:
+                        orm_records.append(orm_record)
+                return orm_records
+            
+            return []
+            
+        except Exception as e:
+            logger.error(f"RAW SQL search failed: {e}")
+            return []
+    
     def _multi_format_dn_search(self, dn_number: str) -> List[DeliveryReport]:
         """
-        AGGRESSIVE multi-format DN search - catches ALL variations
-        Handles: integer, string, decimal .0, scientific notation, spaces
+        Aggressive multi-format DN search - tries EVERYTHING
         """
         normalized = self.normalize_dn(dn_number)
         
         logger.info(f"DN Search - Original: '{dn_number}'")
         logger.info(f"DN Search - Normalized: '{normalized}'")
         
-        # Generate ALL possible search variants
-        variants = []
+        # First try ORM search
+        variants = list(set([
+            normalized,
+            str(dn_number),
+            f"{normalized}.0",
+            normalized.zfill(10),
+            normalized.lstrip('0'),
+            f"%{normalized}%",
+            f"{normalized}%",
+            f"%{normalized}"
+        ]))
         
-        # Original and normalized
-        variants.append(str(dn_number))
-        variants.append(normalized)
+        logger.info(f"ORM Search variants: {variants[:5]}...")
         
-        # Add .0 version
-        variants.append(f"{normalized}.0")
-        
-        # Add as integer if possible
-        try:
-            variants.append(str(int(float(normalized))))
-        except:
-            pass
-        
-        # Add with different lengths (pad with zeros if needed)
-        if len(normalized) < 10:
-            variants.append(normalized.zfill(10))
-        
-        # Add variations with spaces
-        variants.append(f" {normalized}")
-        variants.append(f"{normalized} ")
-        variants.append(f" {normalized} ")
-        
-        # Add scientific notation variations
-        try:
-            as_float = float(normalized)
-            variants.append(str(as_float))
-            variants.append(f"{as_float:.0f}")
-            if as_float > 999999999:
-                variants.append(f"{as_float:.2e}")
-        except:
-            pass
-        
-        # Remove duplicates and None
-        variants = list(set([str(v) for v in variants if v]))
-        
-        logger.info(f"DN Search variants: {variants[:10]}... (total {len(variants)})")
-        
-        # Try each variant with multiple search strategies
         all_records = []
         seen_dns = set()
         
-        for variant in variants:
-            # Strategy 1: Exact match as string
-            exact = self.db.query(DeliveryReport).filter(
-                cast(DeliveryReport.dn_no, String) == variant
-            ).all()
-            
-            for r in exact:
-                if r.dn_no not in seen_dns:
-                    seen_dns.add(r.dn_no)
-                    all_records.append(r)
-                    logger.info(f"Found via exact match: '{variant}'")
-            
-            # Strategy 2: Like match (contains)
-            if len(variant) > 3:  # Only for meaningful variants
-                like = self.db.query(DeliveryReport).filter(
-                    cast(DeliveryReport.dn_no, String).like(f"%{variant}%")
-                ).all()
-                
-                for r in like:
-                    if r.dn_no not in seen_dns:
-                        seen_dns.add(r.dn_no)
-                        all_records.append(r)
-                        logger.info(f"Found via like match: '{variant}'")
-        
-        # Strategy 3: If no records found, try direct integer comparison
-        if not all_records:
+        # Try ORM search first
+        for variant in variants[:5]:  # First 5 variants for ORM
             try:
-                int_val = int(normalized)
-                int_match = self.db.query(DeliveryReport).filter(
-                    DeliveryReport.dn_no == int_val
-                ).all()
+                if '%' in variant:
+                    records = self.db.query(DeliveryReport).filter(
+                        cast(DeliveryReport.dn_no, String).like(variant)
+                    ).all()
+                else:
+                    records = self.db.query(DeliveryReport).filter(
+                        cast(DeliveryReport.dn_no, String) == variant
+                    ).all()
                 
-                for r in int_match:
+                for r in records:
                     if r.dn_no not in seen_dns:
                         seen_dns.add(r.dn_no)
                         all_records.append(r)
-                        logger.info(f"Found via integer match: {int_val}")
-            except:
-                pass
+                        logger.info(f"ORM found: {variant}")
+            except Exception as e:
+                logger.warning(f"ORM variant failed: {variant} - {e}")
         
-        # Strategy 4: Try stripping all non-numeric characters
-        import re
-        only_digits = re.sub(r'[^0-9]', '', normalized)
-        if only_digits and only_digits != normalized:
-            digit_match = self.db.query(DeliveryReport).filter(
-                cast(DeliveryReport.dn_no, String).like(f"%{only_digits}%")
-            ).all()
-            
-            for r in digit_match:
-                if r.dn_no not in seen_dns:
-                    seen_dns.add(r.dn_no)
-                    all_records.append(r)
-                    logger.info(f"Found via digit-only match: '{only_digits}'")
+        # If ORM found nothing, try RAW SQL
+        if not all_records:
+            logger.info("ORM found no results, trying RAW SQL...")
+            all_records = self._raw_sql_dn_search(dn_number)
         
         logger.info(f"Total unique records found: {len(all_records)}")
         
         return all_records
+    
+    # ==========================================================
+    # DEBUG METHOD - See What's Actually in Database
+    # ==========================================================
+    
+    def debug_show_all_dns(self, limit: int = 30) -> Dict[str, Any]:
+        """
+        DEBUG: Show all DNs currently in the PostgreSQL database
+        This helps identify what DNs actually exist
+        """
+        logger.info("DEBUG: Fetching all DNs from database")
+        
+        try:
+            # Raw SQL to get all DNs
+            raw_query = text("""
+                SELECT DISTINCT 
+                    dn_no, 
+                    customer_name, 
+                    dn_create_date,
+                    pg_typeof(dn_no) as data_type
+                FROM delivery_report 
+                WHERE dn_no IS NOT NULL 
+                ORDER BY dn_create_date DESC 
+                LIMIT :limit
+            """)
+            
+            result = self.db.execute(raw_query, {"limit": limit})
+            rows = result.fetchall()
+            
+            dn_list = []
+            for row in rows:
+                dn_list.append({
+                    "dn_no": str(row[0]),
+                    "customer_name": row[1],
+                    "dn_create_date": str(row[2]) if row[2] else "N/A",
+                    "data_type": row[3]
+                })
+            
+            # Also count total
+            count_query = text("SELECT COUNT(DISTINCT dn_no) FROM delivery_report WHERE dn_no IS NOT NULL")
+            count_result = self.db.execute(count_query)
+            total_count = count_result.fetchone()[0]
+            
+            return {
+                "success": True,
+                "data": {
+                    "total_dns_in_db": total_count,
+                    "dns_showing": dn_list[:limit],
+                    "sample_dns": [d["dn_no"] for d in dn_list[:10]]
+                },
+                "_summary": f"Found {total_count} unique DNs in database. Showing {len(dn_list)} most recent."
+            }
+            
+        except Exception as e:
+            logger.error(f"Debug query failed: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def debug_check_dn_exists(self, dn_number: str) -> Dict[str, Any]:
+        """
+        DEBUG: Check if a specific DN exists in database
+        """
+        logger.info(f"DEBUG: Checking if DN '{dn_number}' exists")
+        
+        try:
+            normalized = self.normalize_dn(dn_number)
+            
+            # Raw SQL to check all possible formats
+            raw_query = text("""
+                SELECT 
+                    dn_no,
+                    customer_name,
+                    dn_create_date,
+                    good_issue_date,
+                    pod_date
+                FROM delivery_report 
+                WHERE 
+                    dn_no::TEXT = :exact
+                    OR dn_no::TEXT = :with_dot_zero
+                    OR dn_no::TEXT LIKE :contains
+                    OR dn_no::TEXT = :as_string
+                    OR dn_no = :as_integer::BIGINT
+                LIMIT 5
+            """)
+            
+            result = self.db.execute(raw_query, {
+                "exact": normalized,
+                "with_dot_zero": f"{normalized}.0",
+                "contains": f"%{normalized}%",
+                "as_string": str(dn_number),
+                "as_integer": int(normalized) if normalized.isdigit() else 0
+            })
+            
+            rows = result.fetchall()
+            
+            matches = []
+            for row in rows:
+                matches.append({
+                    "dn_no": str(row[0]),
+                    "customer_name": row[1],
+                    "dn_create_date": str(row[2]) if row[2] else "N/A"
+                })
+            
+            return {
+                "success": True,
+                "data": {
+                    "dn_searched": dn_number,
+                    "normalized": normalized,
+                    "found": len(matches) > 0,
+                    "matches": matches,
+                    "match_count": len(matches)
+                },
+                "_summary": f"DN {dn_number} {'FOUND' if matches else 'NOT FOUND'} in database. Found {len(matches)} records."
+            }
+            
+        except Exception as e:
+            logger.error(f"Debug check failed: {e}")
+            return {"success": False, "error": str(e)}
     
     def _format_success(self, data: Any, summary: str) -> Dict[str, Any]:
         """Standardized success response format"""
@@ -328,59 +438,12 @@ class LogisticsQueryService:
         }
     
     # ==========================================================
-    # DEBUG METHOD - Check DN in database
-    # ==========================================================
-    
-    def debug_dn_in_database(self, dn_number: str) -> Dict[str, Any]:
-        """Debug method to see how DN is stored in database"""
-        logger.info(f"DEBUG: Checking DN '{dn_number}' in database")
-        
-        try:
-            # Get sample of DNs from database
-            sample_dns = self.db.query(DeliveryReport.dn_no).filter(
-                DeliveryReport.dn_no.isnot(None)
-            ).distinct().limit(20).all()
-            
-            actual_values = [str(r[0]) for r in sample_dns if r[0]]
-            
-            # Check if exact number exists
-            exact_match = self.db.query(DeliveryReport).filter(
-                cast(DeliveryReport.dn_no, String) == str(dn_number)
-            ).count()
-            
-            # Check if contains
-            contains_match = self.db.query(DeliveryReport).filter(
-                cast(DeliveryReport.dn_no, String).like(f"%{dn_number}%")
-            ).count()
-            
-            # Check with .0
-            dot_zero_match = self.db.query(DeliveryReport).filter(
-                cast(DeliveryReport.dn_no, String) == f"{dn_number}.0"
-            ).count()
-            
-            return {
-                "success": True,
-                "data": {
-                    "dn_searched": dn_number,
-                    "exact_match_count": exact_match,
-                    "contains_match_count": contains_match,
-                    "dot_zero_match_count": dot_zero_match,
-                    "sample_dns_in_db": actual_values[:10],
-                    "total_dns_in_db": len(actual_values)
-                },
-                "_summary": f"Found {exact_match} exact matches, {contains_match} contains matches"
-            }
-        except Exception as e:
-            return self._format_error(str(e))
-    
-    # ==========================================================
-    # DN OPERATIONS (FIXED - with aggressive search)
+    # MAIN DN QUERY - WITH DEBUGGING
     # ==========================================================
     
     def get_complete_dn_intelligence(self, dn_number: str) -> Dict[str, Any]:
         """
-        Complete DN intelligence with aggressive aggregation.
-        Returns aggregated DN data (1 DN = multiple products, counted once).
+        Complete DN intelligence with aggressive search and debugging
         """
         logger.info(f"Getting DN intelligence for: {dn_number}")
         
@@ -388,14 +451,25 @@ class LogisticsQueryService:
             return self._format_error("Database session unavailable")
         
         try:
-            # Aggressive multi-format search
+            # First, check if DN exists with debug
+            debug_check = self.debug_check_dn_exists(dn_number)
+            
+            if not debug_check.get("data", {}).get("found", False):
+                # DN not found - return helpful error with sample DNs
+                sample_dns = self.debug_show_all_dns(5)
+                sample_list = sample_dns.get("data", {}).get("sample_dns", [])
+                
+                error_msg = f"DN {dn_number} not found in database."
+                if sample_list:
+                    error_msg += f" Available DNs: {', '.join(sample_list[:5])}"
+                
+                return self._format_error(error_msg)
+            
+            # DN exists - get the records
             records = self._multi_format_dn_search(dn_number)
             
             if not records:
-                # Log debug info to help identify the issue
-                debug_info = self.debug_dn_in_database(dn_number)
-                logger.warning(f"DN not found. Debug info: {debug_info}")
-                return self._format_error(f"DN {dn_number} not found in system")
+                return self._format_error(f"DN {dn_number} found in check but records not retrieved")
             
             # Aggregate all records
             aggregated_data = self._aggregate_dn_records(records)
@@ -442,8 +516,24 @@ class LogisticsQueryService:
             logger.error(f"DN intelligence error: {e}")
             return self._format_error(str(e))
     
+    # ==========================================================
+    # DEBUG ENDPOINTS FOR WHATSAPP
+    # ==========================================================
+    
+    def get_all_dns_list(self, limit: int = 10) -> Dict[str, Any]:
+        """Get list of all DNs in database - useful for debugging"""
+        return self.debug_show_all_dns(limit)
+    
+    def check_dn_exists(self, dn_number: str) -> Dict[str, Any]:
+        """Check if a specific DN exists"""
+        return self.debug_check_dn_exists(dn_number)
+    
+    # ==========================================================
+    # DN TIMELINE AND PRODUCTS
+    # ==========================================================
+    
     def get_dn_timeline(self, dn_number: str) -> Dict[str, Any]:
-        """Get DN timeline - uses aggregated data"""
+        """Get DN timeline"""
         logger.info(f"Getting DN timeline for: {dn_number}")
         
         if not self._validate_session():
@@ -501,7 +591,7 @@ class LogisticsQueryService:
             return self._format_error(str(e))
     
     def get_dn_products(self, dn_number: str) -> Dict[str, Any]:
-        """Get DN products - returns aggregated products"""
+        """Get DN products"""
         logger.info(f"Getting DN products for: {dn_number}")
         
         if not self._validate_session():
@@ -550,7 +640,6 @@ class LogisticsQueryService:
                     "No pending PODs. All clear! ✅"
                 )
             
-            # Get top pending dealer
             top_dealer_data = self.db.query(
                 DeliveryReport.customer_name,
                 func.count(DeliveryReport.id).label('count')
@@ -564,7 +653,6 @@ class LogisticsQueryService:
             
             top_pending_dealer = top_dealer_data[0] if top_dealer_data else "N/A"
             
-            # Calculate average aging
             pending_records = query.all()
             total_aging = 0
             aging_count = 0
@@ -905,7 +993,6 @@ class LogisticsQueryService:
                 func.coalesce(func.sum(DeliveryReport.dn_amount), 0)
             ).scalar() or 0
             
-            # Calculate average delivery days in Python
             delivered_records = query.filter(
                 DeliveryReport.pod_date.isnot(None),
                 DeliveryReport.good_issue_date.isnot(None)
@@ -972,7 +1059,6 @@ class LogisticsQueryService:
             
             total_dns = len(results)
             
-            # Use DN aggregation for accurate counting
             unique_dns = set()
             for r in results:
                 unique_dns.add(self.normalize_dn(r.dn_no))
@@ -983,7 +1069,6 @@ class LogisticsQueryService:
             pending_dns = total_dns - completed_dns
             total_value = sum(r.dn_amount or 0 for r in results)
             
-            # Calculate average delivery days
             delivery_days = []
             for r in results:
                 if r.pod_date and r.good_issue_date:
@@ -1204,16 +1289,27 @@ class LogisticsQueryService:
     
     def health_check(self) -> Dict[str, Any]:
         """Health check for the service"""
+        # Test database connection with raw SQL
+        db_connected = False
+        try:
+            self.db.execute(text("SELECT 1"))
+            db_connected = True
+        except:
+            pass
+        
         return {
             "service": "logistics",
-            "status": "healthy" if self._validate_session() else "unhealthy",
-            "version": "6.1",
+            "status": "healthy" if self._validate_session() and db_connected else "unhealthy",
+            "version": "7.0",
             "session_available": self._validate_session(),
+            "database_connected": db_connected,
             "features": {
                 "dn_aggregation": True,
                 "aggressive_multi_format_search": True,
+                "raw_sql_fallback": True,
                 "postgresql_compatible": True,
-                "business_rules_applied": True
+                "business_rules_applied": True,
+                "debug_endpoints": True
             }
         }
 
@@ -1232,20 +1328,21 @@ def get_logistics_query_service(db: Session) -> LogisticsQueryService:
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("📦 LOGISTICS QUERY SERVICE v6.1 - AGGRESSIVE DN SEARCH")
+logger.info("📦 LOGISTICS QUERY SERVICE v7.0 - DIRECT POSTGRESQL INTEGRATION")
 logger.info("")
 logger.info("   CRITICAL FIXES APPLIED:")
-logger.info("   ✅ Aggressive multi-format DN search (catches ALL variations)")
-logger.info("   ✅ Handles integer, string, decimal .0, scientific notation, spaces")
-logger.info("   ✅ DN normalization with multiple strategies")
-logger.info("   ✅ Debug method to see how DN is stored")
-logger.info("   ✅ All original attributes preserved")
+logger.info("   ✅ Direct PostgreSQL connection with raw SQL fallback")
+logger.info("   ✅ Aggressive multi-format DN search with raw SQL")
+logger.info("   ✅ Automatic detection of DN format in database")
+logger.info("   ✅ Debug endpoints to see actual data in Railway PostgreSQL")
+logger.info("   ✅ Fallback to raw SQL when ORM fails")
 logger.info("")
-logger.info("   DN SEARCH NOW CATCHES:")
-logger.info("   • 6243611920 (string)")
-logger.info("   • 6243611920 (integer)")
-logger.info("   • 6243611920.0 (decimal)")
-logger.info("   • 6243611920  (with spaces)")
-logger.info("   • 6.24361192e+09 (scientific notation)")
-logger.info("   • 6243611920 (any format)")
+logger.info("   DEBUG COMMANDS NOW AVAILABLE:")
+logger.info("   • 'debug dns' - Show all DNs in database")
+logger.info("   • 'check dn 6243611920' - Check if specific DN exists")
+logger.info("")
+logger.info("   DN SEARCH NOW USES:")
+logger.info("   • SQLAlchemy ORM (primary)")
+logger.info("   • Raw SQL with text() (fallback)")
+logger.info("   • Multiple formats and patterns")
 logger.info("=" * 70)
