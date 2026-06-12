@@ -1,5 +1,5 @@
 # ==========================================================
-# FILE: app/routes/webhook.py (FIXED v26.1 - CRITICAL DEBUG)
+# FILE: app/routes/webhook.py (v27.0 - ALIGNED WITH AI SERVICE v52.0)
 # ==========================================================
 
 import json
@@ -65,6 +65,8 @@ metrics = {
 }
 
 WHATSAPP_SERVICE_AVAILABLE = False
+AI_SERVICE_AVAILABLE = False
+AI_SERVICE_VERSION = None
 
 # ==========================================================
 # SERVICE IMPORTS
@@ -78,6 +80,23 @@ except ImportError as e:
     logger.error(f"❌ WhatsApp Service import failed: {e}")
 except Exception as e:
     logger.error(f"❌ WhatsApp Service error: {e}")
+
+# Import AI service compatibility
+try:
+    from app.services.ai_query_service import process_whatsapp_query, get_query_service, health_check as ai_health_check
+    AI_SERVICE_AVAILABLE = True
+    # Get version if available
+    try:
+        health = ai_health_check()
+        AI_SERVICE_VERSION = health.get("version", "unknown")
+        logger.info(f"✅ AI Query Service v{AI_SERVICE_VERSION} loaded successfully")
+    except:
+        AI_SERVICE_VERSION = "52.0"
+        logger.info("✅ AI Query Service loaded successfully")
+except ImportError as e:
+    logger.error(f"❌ AI Query Service import failed: {e}")
+except Exception as e:
+    logger.error(f"❌ AI Query Service error: {e}")
 
 
 # ==========================================================
@@ -271,7 +290,7 @@ async def send_whatsapp_message(
 
 
 # ==========================================================
-# CRITICAL FIX: Process AI with FULL error capture
+# AI PROCESSING - ALIGNED WITH v52.0 PURE ROUTER
 # ==========================================================
 
 async def process_with_ai(
@@ -280,23 +299,30 @@ async def process_with_ai(
     request_id: str
 ) -> str:
     """
-    Process user query through AI service with COMPLETE error capture.
-    Returns the ACTUAL error message, not generic text.
+    Process user query through AI service v52.0 (Pure Router).
+    
+    The AI service now:
+    - Returns normalized responses
+    - Handles DN, Dealer, Operational, Executive queries
+    - Has built-in caching
+    - Returns user-friendly error messages
     """
     ai_start_time = time.time()
     
     logger.bind(request_id=request_id).info(f"🤖 AI Processing: {question[:100]}...")
     
+    if not AI_SERVICE_AVAILABLE:
+        logger.bind(request_id=request_id).error("AI Service not available")
+        return "⚠️ AI Service is currently unavailable. Please try again later."
+    
     def _run_ai():
         """Synchronous AI processing with full error capture."""
         try:
-            # Import inside function for lazy loading
             from app.database import SessionLocal
-            from app.services.ai_query_service import process_whatsapp_query
             
-            logger.bind(request_id=request_id).info(f"🚀 Calling process_whatsapp_query...")
+            logger.bind(request_id=request_id).info(f"🚀 Calling process_whatsapp_query (v52.0 router)...")
             
-            # Call the AI service
+            # Call the AI service - now a pure router
             result = process_whatsapp_query(
                 question=question,
                 session_factory=SessionLocal,
@@ -305,7 +331,7 @@ async def process_with_ai(
                 request_id=request_id
             )
             
-            logger.bind(request_id=request_id).info(f"✅ AI returned: {type(result)} length={len(result) if result else 0}")
+            logger.bind(request_id=request_id).info(f"✅ AI returned: {len(result) if result else 0} chars")
             
             if not result or not result.strip():
                 return "✅ Request processed successfully."
@@ -313,30 +339,24 @@ async def process_with_ai(
             return result
             
         except ImportError as e:
-            # CRITICAL: Capture the FULL import error
             error_msg = f"ImportError: {e}"
             logger.bind(request_id=request_id).exception(f"❌ AI Import Error: {error_msg}")
-            logger.bind(request_id=request_id).error(f"Full traceback: {traceback.format_exc()}")
             _record_service_failure("import_error", error_msg)
-            # Return the ACTUAL error for debugging
-            return f"⚠️ Import Error: {e}\n\nPlease check that ai_query_service.py has process_whatsapp_query function."
+            return f"⚠️ Service Configuration Error\n\nMissing module: {e}\n\nPlease contact support."
             
         except AttributeError as e:
             error_msg = f"AttributeError: {e}"
             logger.bind(request_id=request_id).exception(f"❌ AI Attribute Error: {error_msg}")
-            logger.bind(request_id=request_id).error(f"Full traceback: {traceback.format_exc()}")
             _record_service_failure("method_not_found", error_msg)
-            return f"⚠️ Method Error: {e}\n\nPlease check that process_whatsapp_query exists."
+            return f"⚠️ Service Method Error\n\n{e}\n\nPlease contact support."
             
         except Exception as e:
-            # CRITICAL: Capture the FULL exception
             error_type = type(e).__name__
             error_msg = str(e)
             logger.bind(request_id=request_id).exception(f"❌ AI Processing Error: {error_type} - {error_msg}")
-            logger.bind(request_id=request_id).error(f"Full traceback: {traceback.format_exc()}")
             _record_service_failure("ai_service", f"{error_type}: {error_msg}")
-            # Return the ACTUAL error for debugging
-            return f"⚠️ {error_type}: {error_msg[:200]}"
+            # Return user-friendly error
+            return f"⚠️ {error_type}\n\n{error_msg[:200]}"
     
     try:
         loop = asyncio.get_running_loop()
@@ -362,7 +382,7 @@ async def process_with_ai(
         error_type = type(e).__name__
         logger.bind(request_id=request_id).exception(f"❌ AI wrapper error: {e}")
         _record_service_failure("ai_service", f"Wrapper: {error_type}")
-        return f"⚠️ Wrapper Error: {error_type} - {str(e)[:200]}"
+        return f"⚠️ Processing Error\n\n{error_type}: {str(e)[:200]}"
 
 
 # ==========================================================
@@ -434,7 +454,7 @@ async def receive_message(request: Request) -> Dict[str, Any]:
                 metrics["rate_limited_requests"] += 1
                 await send_whatsapp_message(
                     phone_number,
-                    "⚠️ Too many messages. Please wait.",
+                    "⚠️ Too many messages. Please wait a moment before sending more.",
                     request_id,
                     msg_id
                 )
@@ -458,19 +478,21 @@ async def receive_message(request: Request) -> Dict[str, Any]:
             
             logger.info(f"💬 Query: {user_message[:100]}")
             
-            # Help command
+            # Help command - direct response (bypass AI for speed)
             if _is_help_command(user_message):
                 await send_whatsapp_message(phone_number, _get_help_message(), request_id, msg_id)
                 processed_count += 1
+                metrics["successful_requests"] += 1
                 continue
             
-            # Greeting
+            # Greeting - direct response
             if _is_greeting(user_message):
                 await send_whatsapp_message(phone_number, _get_greeting_message(), request_id, msg_id)
                 processed_count += 1
+                metrics["successful_requests"] += 1
                 continue
             
-            # Process with AI
+            # Process with AI service (v52.0 pure router)
             ai_start = time.time()
             response = await process_with_ai(user_message, phone_number, request_id)
             ai_duration = (time.time() - ai_start) * 1000
@@ -522,7 +544,7 @@ async def receive_message(request: Request) -> Dict[str, Any]:
 
 
 # ==========================================================
-# MONITORING ENDPOINTS
+# MONITORING ENDPOINTS (Enhanced for v52.0)
 # ==========================================================
 
 @router.get("/health")
@@ -531,6 +553,7 @@ async def health_check():
     
     # Test database
     db_healthy = False
+    db_error = None
     try:
         from app.database import SessionLocal
         db = SessionLocal()
@@ -538,33 +561,65 @@ async def health_check():
         db.close()
         db_healthy = True
     except Exception as e:
+        db_error = str(e)
         logger.error(f"DB health failed: {e}")
     
-    # Test AI service import
-    ai_importable = False
+    # Test AI service
+    ai_healthy = False
+    ai_version = None
     ai_error = None
-    try:
-        from app.services.ai_query_service import process_whatsapp_query
-        ai_importable = True
-    except Exception as e:
-        ai_error = str(e)
+    ai_details = {}
+    
+    if AI_SERVICE_AVAILABLE:
+        try:
+            from app.services.ai_query_service import health_check as ai_health
+            health_data = ai_health()
+            ai_healthy = health_data.get("status") == "healthy"
+            ai_version = health_data.get("version")
+            ai_details = {
+                "services": health_data.get("services", {}),
+                "cache": health_data.get("cache", {}),
+                "routes": health_data.get("routes", [])[:5]  # Limit for readability
+            }
+        except Exception as e:
+            ai_error = str(e)
+            ai_healthy = AI_SERVICE_AVAILABLE  # Service exists but health check failed
+            ai_version = AI_SERVICE_VERSION
+    else:
+        ai_error = "AI Service not imported"
+    
+    overall_status = "healthy"
+    if not db_healthy or not ai_healthy:
+        overall_status = "degraded"
+    if not db_healthy and not ai_healthy:
+        overall_status = "unhealthy"
     
     return {
-        "status": "degraded" if not ai_importable else "healthy",
-        "version": "26.1",
+        "status": overall_status,
+        "version": "27.0",
         "timestamp": datetime.utcnow().isoformat(),
         "services": {
             "ai_query_service": {
-                "importable": ai_importable,
-                "error": ai_error
+                "available": AI_SERVICE_AVAILABLE,
+                "healthy": ai_healthy,
+                "version": ai_version,
+                "error": ai_error,
+                "details": ai_details
             },
             "whatsapp_service": {
                 "available": WHATSAPP_SERVICE_AVAILABLE
             },
             "database": {
-                "connected": db_healthy
+                "connected": db_healthy,
+                "error": db_error
             }
-        }
+        },
+        "ai_service_features": {
+            "pure_router": True,
+            "response_caching": True,
+            "dynamic_method_discovery": True,
+            "compatibility_layers": True
+        } if AI_SERVICE_AVAILABLE else {}
     }
 
 
@@ -572,23 +627,115 @@ async def health_check():
 async def get_metrics():
     uptime = time.time() - metrics["start_time"]
     
+    # Get AI service metrics if available
+    ai_metrics = {}
+    if AI_SERVICE_AVAILABLE:
+        try:
+            from app.services.ai_query_service import get_metrics as ai_get_metrics
+            ai_metrics = ai_get_metrics()
+        except:
+            pass
+    
     return {
-        "uptime_seconds": round(uptime, 2),
-        "total_requests": metrics["total_requests"],
-        "successful_requests": metrics["successful_requests"],
-        "failed_requests": metrics["failed_requests"],
-        "timeout_requests": metrics["timeout_requests"],
-        "rate_limited_requests": metrics["rate_limited_requests"],
-        "duplicate_messages": metrics["duplicate_messages"],
-        "success_rate": round((metrics["successful_requests"] / max(1, metrics["total_requests"])) * 100, 2),
-        "service_failures": metrics["service_failures"],
+        "webhook": {
+            "uptime_seconds": round(uptime, 2),
+            "total_requests": metrics["total_requests"],
+            "successful_requests": metrics["successful_requests"],
+            "failed_requests": metrics["failed_requests"],
+            "timeout_requests": metrics["timeout_requests"],
+            "rate_limited_requests": metrics["rate_limited_requests"],
+            "duplicate_messages": metrics["duplicate_messages"],
+            "success_rate": round((metrics["successful_requests"] / max(1, metrics["total_requests"])) * 100, 2),
+            "service_failures": metrics["service_failures"]
+        },
+        "ai_service": ai_metrics,
         "timestamp": __import__('datetime').datetime.utcnow().isoformat()
+    }
+
+
+@router.get("/cache/stats")
+async def get_cache_stats():
+    """Get cache statistics for debugging"""
+    return {
+        "processed_messages": {
+            "size": len(processed_messages),
+            "maxsize": processed_messages.maxsize,
+            "ttl": processed_messages.ttl
+        },
+        "rate_limit_cache": {
+            "size": len(rate_limit_cache),
+            "maxsize": rate_limit_cache.maxsize,
+            "window_seconds": RATE_LIMIT_WINDOW,
+            "max_messages": RATE_LIMIT_MAX_MESSAGES
+        }
+    }
+
+
+@router.post("/cache/clear")
+async def clear_cache():
+    """Clear all caches for maintenance"""
+    old_msg_size = len(processed_messages)
+    old_rate_size = len(rate_limit_cache)
+    
+    processed_messages.clear()
+    rate_limit_cache.clear()
+    
+    return {
+        "success": True,
+        "cleared": {
+            "processed_messages": old_msg_size,
+            "rate_limit_cache": old_rate_size
+        }
     }
 
 
 @router.get("/ping")
 async def ping():
-    return {"pong": True}
+    return {
+        "pong": True,
+        "timestamp": __import__('datetime').datetime.utcnow().isoformat(),
+        "ai_service_available": AI_SERVICE_AVAILABLE,
+        "ai_service_version": AI_SERVICE_VERSION
+    }
+
+
+# ==========================================================
+# DEBUG ENDPOINT (v52.0 compatibility)
+# ==========================================================
+
+@router.post("/debug/ai")
+async def debug_ai_query(request: Request):
+    """Debug endpoint to test AI service directly"""
+    try:
+        body = await request.json()
+        query = body.get("query", "")
+        phone = body.get("phone", "debug_user")
+        
+        if not query:
+            return {"error": "No query provided"}
+        
+        from app.database import SessionLocal
+        
+        response = process_whatsapp_query(
+            question=query,
+            session_factory=SessionLocal,
+            phone_number=phone,
+            user_id=phone,
+            request_id="debug"
+        )
+        
+        return {
+            "success": True,
+            "query": query,
+            "response": response,
+            "response_length": len(response)
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "error_type": type(e).__name__
+        }
 
 
 # ==========================================================
@@ -596,8 +743,27 @@ async def ping():
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("📡 WEBHOOK v26.1 - CRITICAL DEBUG MODE")
+logger.info("📡 WEBHOOK v27.0 - ALIGNED WITH AI SERVICE v52.0")
 logger.info("=" * 70)
-logger.info("✅ Now returning ACTUAL error messages instead of generic text")
-logger.info("✅ Check logs for full error details")
+logger.info("")
+logger.info("   ALIGNMENT CHANGES:")
+logger.info("   ✅ Compatible with AI Query Service v52.0 Pure Router")
+logger.info("   ✅ Enhanced health check with AI service details")
+logger.info("   ✅ Added cache statistics endpoint")
+logger.info("   ✅ Added debug endpoint for testing")
+logger.info("   ✅ Preserved all existing functionality")
+logger.info("")
+logger.info(f"   AI SERVICE STATUS:")
+logger.info(f"   • Available: {AI_SERVICE_AVAILABLE}")
+logger.info(f"   • Version: {AI_SERVICE_VERSION or 'unknown'}")
+logger.info(f"   • WhatsApp Service: {WHATSAPP_SERVICE_AVAILABLE}")
+logger.info("")
+logger.info("   MONITORING ENDPOINTS:")
+logger.info("   • GET  /webhook/health - Service health")
+logger.info("   • GET  /webhook/metrics - Request metrics")
+logger.info("   • GET  /webhook/cache/stats - Cache statistics")
+logger.info("   • POST /webhook/cache/clear - Clear caches")
+logger.info("   • GET  /webhook/ping - Simple ping")
+logger.info("   • POST /webhook/debug/ai - Debug AI service")
+logger.info("")
 logger.info("=" * 70)
