@@ -10,6 +10,7 @@
 # - ✅ Added fallback search patterns for maximum compatibility
 # - ✅ Better logging for DN search debugging
 # - ✅ All v9.2 features preserved
+# - ✅ Enhanced debug logging for DN search verification
 # ==========================================================
 
 from typing import Dict, Any, Optional, List, Tuple, Set
@@ -438,54 +439,205 @@ class LogisticsQueryService:
         normalized = self.normalize_dn(dn_number)
         
         total_records = self._get_total_count()
-        logger.info(f"🔍 DN Search: '{dn_number}' -> normalized: '{normalized}'")
+        logger.info(f"🔍 DN Search Input: '{dn_number}' -> normalized: '{normalized}'")
         logger.info(f"   Table: {self.table_name}, Total records: {total_records}")
         
         # Try to convert to integer if possible (CRITICAL for PostgreSQL integer columns)
+        int_val = None
         try:
             int_val = int(normalized)
-            logger.info(f"   Searching as integer: {int_val}")
+            logger.info(f"   ✓ Successfully converted to integer: {int_val} (type: {type(int_val).__name__})")
         except ValueError:
-            int_val = None
+            logger.warning(f"   ✗ Cannot convert '{normalized}' to integer - will use string search only")
         
         # Build search conditions - INTEGER FIRST (since your data is stored as integers)
         search_conditions = []
         
         # Priority 1: Integer match (YOUR DATA TYPE - PostgreSQL integer column)
         if int_val is not None:
+            logger.info(f"   Strategy 1: Integer equality search for {int_val}")
             search_conditions.append(DeliveryReport.dn_no == int_val)
+        else:
+            logger.info(f"   Strategy 1: Skipped (not an integer)")
         
         # Priority 2: String match
+        logger.info(f"   Strategy 2: String exact search for '{normalized}'")
         search_conditions.append(cast(DeliveryReport.dn_no, String) == normalized)
         
         # Priority 3: With .0 suffix
+        logger.info(f"   Strategy 3: String with .0 suffix for '{normalized}.0'")
         search_conditions.append(cast(DeliveryReport.dn_no, String) == f"{normalized}.0")
         
         # Execute combined search
+        logger.info(f"   Executing combined search with {len(search_conditions)} conditions...")
         results = self.db.query(DeliveryReport).filter(or_(*search_conditions)).all()
         
+        # Log detailed results
+        logger.info(f"   📊 Combined search returned {len(results)} records")
+        
         if results:
+            # Verify first result's DN type and value
+            first_dn = results[0].dn_no
+            logger.info(f"   ✅ First result DN: '{first_dn}' (type: {type(first_dn).__name__})")
+            
+            # Check if integer comparison would have worked
+            if int_val is not None and first_dn == int_val:
+                logger.info(f"   ✓ Match verified: {first_dn} == {int_val} (integer match)")
+            elif str(first_dn) == normalized:
+                logger.info(f"   ✓ Match verified: {first_dn} == {normalized} (string match)")
+            else:
+                logger.info(f"   ✓ Match verified via contains or other strategy")
+            
             elapsed = time.time() - start_time
             logger.info(f"✅ DN found: {dn_number} ({len(results)} records, {elapsed:.3f}s)")
             return results
         
         # If still not found, try contains as last resort
+        logger.info(f"   Strategy 4: Contains search for '%{normalized}%' (last resort)")
         contains_results = self.db.query(DeliveryReport).filter(
             cast(DeliveryReport.dn_no, String).like(f"%{normalized}%")
         ).all()
         
+        logger.info(f"   📊 Contains search returned {len(contains_results)} records")
+        
         if contains_results:
+            first_dn = contains_results[0].dn_no
+            logger.info(f"   ✅ First result DN: '{first_dn}' (type: {type(first_dn).__name__})")
             elapsed = time.time() - start_time
             logger.info(f"✅ DN found via contains: {dn_number} ({len(contains_results)} records, {elapsed:.3f}s)")
             return contains_results
         
         elapsed = time.time() - start_time
         logger.info(f"❌ DN {dn_number} not found after all search stages ({elapsed:.3f}s)")
+        
+        # Additional debug: Check what DNs exist in the table
+        sample_dns = self.db.query(DeliveryReport.dn_no).filter(
+            DeliveryReport.dn_no.isnot(None)
+        ).limit(5).all()
+        if sample_dns:
+            sample_str = ', '.join([f"'{dn[0]}' (type: {type(dn[0]).__name__})" for dn in sample_dns])
+            logger.info(f"   Sample DNs in table: {sample_str}")
+        
         return []
     
     # ==========================================================
     # DEBUG DN VERIFICATION TOOL
     # ==========================================================
+    
+    def verify_dn_column_type(self) -> Dict[str, Any]:
+        """Verify the actual data type of dn_no column in the database"""
+        try:
+            inspector = inspect(self.db.bind)
+            columns = inspector.get_columns(self.table_name)
+            
+            dn_column = None
+            for col in columns:
+                if col['name'] == 'dn_no':
+                    dn_column = col
+                    break
+            
+            if dn_column:
+                col_type = str(dn_column['type'])
+                is_integer = 'INT' in col_type.upper() or 'INTEGER' in col_type.upper()
+                
+                # Get sample values to verify
+                samples = self.db.query(DeliveryReport.dn_no).filter(
+                    DeliveryReport.dn_no.isnot(None)
+                ).limit(5).all()
+                
+                sample_values = []
+                for s in samples:
+                    val = s[0]
+                    sample_values.append({
+                        "value": val,
+                        "type": type(val).__name__,
+                        "is_int_instance": isinstance(val, int)
+                    })
+                
+                return {
+                    "column_name": "dn_no",
+                    "database_type": col_type,
+                    "is_integer_column": is_integer,
+                    "python_type_from_db": sample_values[0]["type"] if sample_values else "unknown",
+                    "sample_values": sample_values,
+                    "recommended_search": "integer comparison" if is_integer else "string comparison"
+                }
+            else:
+                return {"error": "dn_no column not found"}
+        except Exception as e:
+            return {"error": str(e)}
+    
+    def test_dn_search_methods(self, dn_number: str) -> Dict[str, Any]:
+        """Test each search method individually to see which works"""
+        start_time = time.time()
+        normalized = self.normalize_dn(dn_number)
+        
+        results = {
+            "dn_searched": dn_number,
+            "normalized": normalized,
+            "tests": {}
+        }
+        
+        # Test 1: Direct integer comparison (if possible)
+        try:
+            int_val = int(normalized)
+            int_results = self.db.query(DeliveryReport).filter(
+                DeliveryReport.dn_no == int_val
+            ).all()
+            results["tests"]["integer_comparison"] = {
+                "used_value": int_val,
+                "found": len(int_results) > 0,
+                "count": len(int_results),
+                "sample_dn": int_results[0].dn_no if int_results else None
+            }
+            logger.info(f"   Test 1 (integer={int_val}): {len(int_results)} results")
+        except ValueError:
+            results["tests"]["integer_comparison"] = {
+                "error": f"Cannot convert '{normalized}' to integer"
+            }
+            logger.warning(f"   Test 1 skipped: not an integer")
+        
+        # Test 2: String exact match
+        str_results = self.db.query(DeliveryReport).filter(
+            cast(DeliveryReport.dn_no, String) == normalized
+        ).all()
+        results["tests"]["string_exact"] = {
+            "found": len(str_results) > 0,
+            "count": len(str_results),
+            "sample_dn": str_results[0].dn_no if str_results else None
+        }
+        logger.info(f"   Test 2 (string='{normalized}'): {len(str_results)} results")
+        
+        # Test 3: Contains
+        contains_results = self.db.query(DeliveryReport).filter(
+            cast(DeliveryReport.dn_no, String).like(f"%{normalized}%")
+        ).all()
+        results["tests"]["contains"] = {
+            "found": len(contains_results) > 0,
+            "count": len(contains_results),
+            "sample_dn": contains_results[0].dn_no if contains_results else None
+        }
+        logger.info(f"   Test 3 (contains='%{normalized}%'): {len(contains_results)} results")
+        
+        # Get column info
+        try:
+            inspector = inspect(self.db.bind)
+            columns = inspector.get_columns(self.table_name)
+            for col in columns:
+                if col['name'] == 'dn_no':
+                    results["column_info"] = {
+                        "type": str(col['type']),
+                        "nullable": col['nullable'],
+                        "python_type": type(self.db.query(DeliveryReport.dn_no).first()[0]).__name__ if self.db.query(DeliveryReport.dn_no).first() else "unknown"
+                    }
+                    break
+        except Exception as e:
+            results["column_info"] = {"error": str(e)}
+        
+        elapsed = time.time() - start_time
+        results["test_time_ms"] = round(elapsed * 1000, 2)
+        
+        return results
     
     def debug_dn_search(self, dn_number: str) -> Dict[str, Any]:
         """Comprehensive DN search debug tool"""
@@ -1514,6 +1666,7 @@ logger.info("   CRITICAL FIXES v9.3:")
 logger.info("   ✅ IMPROVED DN SEARCH - Integer detection first")
 logger.info("   ✅ Multiple search strategies (int, string, .0, contains)")
 logger.info("   ✅ Better logging for DN search debugging")
+logger.info("   ✅ Enhanced debug tools (verify_dn_column_type, test_dn_search_methods)")
 logger.info("   ✅ Removed sold_to_party reference (not in models)")
 logger.info("")
 logger.info("   SEARCH STRATEGIES (in order):")
@@ -1521,6 +1674,11 @@ logger.info("   1. Integer match (for PostgreSQL integer columns)")
 logger.info("   2. String exact match")
 logger.info("   3. With .0 suffix")
 logger.info("   4. Contains (last resort)")
+logger.info("")
+logger.info("   DEBUG TOOLS:")
+logger.info("   - verify_dn_column_type() - Check actual DN column data type")
+logger.info("   - test_dn_search_methods(dn) - Test each search strategy")
+logger.info("   - debug_dn_search(dn) - Comprehensive debug info")
 logger.info("")
 logger.info("   STATUS: ✅ PRODUCTION READY")
 logger.info("=" * 70)
