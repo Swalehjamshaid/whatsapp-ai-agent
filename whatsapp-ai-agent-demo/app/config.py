@@ -249,6 +249,49 @@ REDIS_SSL = os.getenv(
 ).lower() == "true"
 
 # ==========================================================
+# CRITICAL FIX: CACHE TTL SETTINGS (MISSING ATTRIBUTES ADDED)
+# ==========================================================
+
+# Cache TTL in seconds - THIS WAS MISSING AND CAUSING CRASH
+CACHE_TTL = int(os.getenv(
+    "CACHE_TTL",
+    "300"  # 5 minutes default
+))
+
+# Session TTL for user sessions
+CACHE_TTL_SESSION = int(os.getenv(
+    "CACHE_TTL_SESSION",
+    "1800"  # 30 minutes default
+))
+
+# Dealer cache TTL
+CACHE_TTL_DEALER = int(os.getenv(
+    "CACHE_TTL_DEALER",
+    "1800"  # 30 minutes default
+))
+
+# KPI cache TTL
+CACHE_TTL_KPI = int(os.getenv(
+    "CACHE_TTL_KPI",
+    "300"  # 5 minutes default
+))
+
+# Cache enabled flag
+CACHE_ENABLED = os.getenv(
+    "CACHE_ENABLED",
+    "True"
+).lower() == "true"
+
+# Redis config dictionary (for compatibility with services)
+REDIS_CONFIG = {
+    "host": REDIS_HOST,
+    "port": REDIS_PORT,
+    "db": REDIS_DB,
+    "password": REDIS_PASSWORD,
+    "decode_responses": True
+}
+
+# ==========================================================
 # AI TIMEOUT & PERFORMANCE
 # ==========================================================
 
@@ -447,7 +490,7 @@ class Config:
     # Application
     APP_NAME = APP_NAME
     APP_VERSION = APP_VERSION
-    ENVIRONMENT = ENVIRONMENT  # FIXED: Added missing attribute
+    ENVIRONMENT = ENVIRONMENT
     DEBUG = DEBUG
     
     # Database
@@ -501,6 +544,14 @@ class Config:
     REDIS_DB = REDIS_DB
     REDIS_PASSWORD = REDIS_PASSWORD
     REDIS_SSL = REDIS_SSL
+    
+    # CRITICAL FIX: Added missing cache attributes
+    CACHE_TTL = CACHE_TTL
+    CACHE_TTL_SESSION = CACHE_TTL_SESSION
+    CACHE_TTL_DEALER = CACHE_TTL_DEALER
+    CACHE_TTL_KPI = CACHE_TTL_KPI
+    CACHE_ENABLED = CACHE_ENABLED
+    REDIS_CONFIG = REDIS_CONFIG
     
     # AI Timeout & Performance
     AI_TIMEOUT_SECONDS = AI_TIMEOUT_SECONDS
@@ -584,7 +635,7 @@ print("CONFIG LOADED - GROQ EDITION")
 print("===================================")
 print(f"DATABASE: {'✓' if DATABASE_URL else '✗'}")
 print(f"WHATSAPP: {'✓' if WHATSAPP_ACCESS_TOKEN else '✗'}")
-print(f"ENVIRONMENT: {ENVIRONMENT}")  # FIXED: Added to validation output
+print(f"ENVIRONMENT: {ENVIRONMENT}")
 print(f"WHATSAPP API VERSION: {WHATSAPP_API_VERSION}")
 print("===================================")
 print("AI PROVIDERS:")
@@ -606,8 +657,9 @@ if REDIS_URL:
 else:
     print(f"  HOST: {REDIS_HOST}:{REDIS_PORT}")
     print(f"  DB: {REDIS_DB}")
-print(f"  CACHE ENABLED: {CACHE_AI_RESPONSES}")
-print(f"  CACHE TTL: {AI_RESPONSE_CACHE_TTL}s")
+print(f"  CACHE ENABLED: {CACHE_ENABLED}")
+print(f"  CACHE TTL: {CACHE_TTL}s")
+print(f"  CACHE TTL SESSION: {CACHE_TTL_SESSION}s")
 print("===================================")
 print("AI PERFORMANCE:")
 print(f"  TIMEOUT: {AI_TIMEOUT_SECONDS}s")
