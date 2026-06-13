@@ -5,6 +5,7 @@
 
 import re
 import time
+import uuid  # <-- CRITICAL FIX: Added missing uuid import
 from datetime import datetime, date
 from typing import Optional, Callable, Any, Dict, List, Tuple
 from loguru import logger
@@ -35,10 +36,10 @@ def process_whatsapp_query(
     """
     
     # ==========================================================
-    # Improvement #5 & #14: Request Timing and Logging
+    # Request Timing and Logging
     # ==========================================================
     start_time = time.time()
-    req_id = request_id or str(uuid.uuid4())[:8]
+    req_id = request_id or str(uuid.uuid4())[:8]  # <-- Now uuid is defined
     
     logger.info(f"[{req_id}] User={phone_number} Question={question[:200]}")
     
@@ -46,7 +47,7 @@ def process_whatsapp_query(
     
     try:
         # ==========================================================
-        # Improvement #2: Fix Session Factory
+        # Fix Session Factory
         # ==========================================================
         if session_factory:
             db = session_factory()
@@ -63,7 +64,7 @@ def process_whatsapp_query(
             return _format_help_message()
         
         # ==========================================================
-        # 2. DN NUMBER QUERY (Improvement #8 - Enhanced DN Dashboard)
+        # 2. DN NUMBER QUERY
         # ==========================================================
         dn_match = re.search(r'\b(\d{8,12})\b', question)
         if dn_match:
@@ -71,7 +72,7 @@ def process_whatsapp_query(
             return _handle_dn_query(db, dn_number, today, req_id)
         
         # ==========================================================
-        # 3. WAREHOUSE QUERY (Improvement #12 - Dynamic warehouse list)
+        # 3. WAREHOUSE QUERY
         # ==========================================================
         warehouses = _get_warehouse_list(db)
         for wh in warehouses:
@@ -79,19 +80,19 @@ def process_whatsapp_query(
                 return _handle_warehouse_query(db, wh, today, req_id)
         
         # ==========================================================
-        # 4. CONTROL TOWER QUERIES (Critical alerts)
+        # 4. CONTROL TOWER QUERIES
         # ==========================================================
         if any(word in msg_lower for word in ['critical', 'alert', 'urgent', 'control tower', 'control-tower']):
             return _handle_control_tower(db, today, req_id)
         
         # ==========================================================
-        # 5. PENDING DELIVERY QUERIES (Improvement #9)
+        # 5. PENDING DELIVERY QUERIES
         # ==========================================================
         if 'pending' in msg_lower and ('delivery' in msg_lower or 'pgi' in msg_lower):
             return _handle_pending_delivery_query(db, msg_lower, today, req_id)
         
         # ==========================================================
-        # 6. PGI QUERIES (Improvement #10)
+        # 6. PGI QUERIES
         # ==========================================================
         if 'pgi' in msg_lower:
             if 'pending' in msg_lower:
@@ -102,7 +103,7 @@ def process_whatsapp_query(
                 return _handle_pgi_rate_query(db, msg_lower, req_id)
         
         # ==========================================================
-        # 7. POD QUERIES (Improvement #11)
+        # 7. POD QUERIES
         # ==========================================================
         if 'pod' in msg_lower:
             if 'pending' in msg_lower:
@@ -113,7 +114,7 @@ def process_whatsapp_query(
                 return _handle_pod_rate_query(db, msg_lower, req_id)
         
         # ==========================================================
-        # 8. DEALER KPI QUERIES (Improvement #3)
+        # 8. DEALER KPI QUERIES
         # ==========================================================
         if any(word in msg_lower for word in ['revenue', 'sales', 'amount', 'value']):
             return _handle_dealer_revenue_query(db, question, msg_lower, req_id)
@@ -140,14 +141,11 @@ def process_whatsapp_query(
             return _handle_dealer_performance_query(db, question, msg_lower, today, req_id)
         
         # ==========================================================
-        # 9. DEALER SUMMARY (Default - with exact match first)
+        # 9. DEALER SUMMARY (Default)
         # ==========================================================
         return _handle_dealer_summary_query(db, question, msg_lower, req_id)
         
     except Exception as e:
-        # ==========================================================
-        # Improvement #13: Better Error Logging
-        # ==========================================================
         logger.exception(f"[{req_id}] Query Processing Failed: {question[:100]}")
         return f"❌ I encountered an error processing your request. Please try again or type 'Help'."
     
@@ -155,9 +153,6 @@ def process_whatsapp_query(
         if db:
             db.close()
         
-        # ==========================================================
-        # Improvement #14: Request Timing
-        # ==========================================================
         elapsed = time.time() - start_time
         logger.info(f"[{req_id}] Query processed in {elapsed:.2f}s")
 
@@ -201,30 +196,26 @@ Need help? Just ask! 🤖"""
 
 
 def _get_warehouse_list(db: Session) -> List[str]:
-    """Get dynamic warehouse list from database (Improvement #12)"""
+    """Get dynamic warehouse list from database"""
     try:
         warehouses = db.query(DeliveryReport.warehouse).filter(
             DeliveryReport.warehouse.isnot(None)
         ).distinct().limit(50).all()
         return [w[0] for w in warehouses if w[0]]
     except Exception:
-        # Fallback to hardcoded list
         return ['lahore', 'karachi', 'rawalpindi', 'islamabad', 'multan', 'faisalabad', 'sargodha', 'attock', 'sialkot']
 
 
 def _extract_dealer_name(question: str, msg_lower: str) -> Optional[str]:
     """Extract dealer name from question"""
-    # Try pattern "dealer XYZ"
     dealer_match = re.search(r'dealer\s+([a-z0-9\s&]+)', msg_lower)
     if dealer_match:
         return dealer_match.group(1).strip()
     
-    # Try pattern "show XYZ"
     show_match = re.search(r'show\s+([a-z0-9\s&]+)', msg_lower)
     if show_match:
         return show_match.group(1).strip()
     
-    # If message is short, use the whole thing
     if len(msg_lower.split()) <= 5:
         return msg_lower
     
@@ -232,20 +223,17 @@ def _extract_dealer_name(question: str, msg_lower: str) -> Optional[str]:
 
 
 def _handle_dn_query(db: Session, dn_number: str, today: date, req_id: str) -> str:
-    """Enhanced DN dashboard (Improvement #8)"""
+    """Handle DN query"""
     try:
         record = db.query(DeliveryReport).filter(
             DeliveryReport.dn_no == dn_number
         ).first()
         
-        if not record:
-            # Try with .0 suffix
-            if dn_number.isdigit():
-                record = db.query(DeliveryReport).filter(
-                    DeliveryReport.dn_no == f"{dn_number}.0"
-                ).first()
+        if not record and dn_number.isdigit():
+            record = db.query(DeliveryReport).filter(
+                DeliveryReport.dn_no == f"{dn_number}.0"
+            ).first()
         
-        # Try partial match as last resort
         if not record:
             record = db.query(DeliveryReport).filter(
                 DeliveryReport.dn_no.like(f"%{dn_number}%")
@@ -254,7 +242,6 @@ def _handle_dn_query(db: Session, dn_number: str, today: date, req_id: str) -> s
         if not record:
             return f"❌ DN {dn_number} not found in our system."
         
-        # Calculate aging (Improvement #9)
         delivery_aging = None
         pending_delivery_aging = None
         pod_aging = None
@@ -270,7 +257,6 @@ def _handle_dn_query(db: Session, dn_number: str, today: date, req_id: str) -> s
         elif record.good_issue_date and not record.pod_date:
             pending_pod_aging = (today - record.good_issue_date).days
         
-        # Build response
         lines = [f"📄 *DN: {dn_number}*", ""]
         lines.append(f"🏪 *Dealer:* {record.customer_name or 'N/A'}")
         lines.append(f"🏭 *Warehouse:* {record.warehouse or 'N/A'}")
@@ -284,7 +270,6 @@ def _handle_dn_query(db: Session, dn_number: str, today: date, req_id: str) -> s
         lines.append(f"📎 *POD Date:* {record.pod_date.strftime('%Y-%m-%d') if record.pod_date else 'Pending'}")
         lines.append("")
         
-        # Aging information
         if delivery_aging is not None:
             emoji = "✅" if delivery_aging <= 7 else "⚠️" if delivery_aging <= 15 else "🔴"
             lines.append(f"{emoji} *Delivery Aging:* {delivery_aging} days")
@@ -309,9 +294,8 @@ def _handle_dn_query(db: Session, dn_number: str, today: date, req_id: str) -> s
 
 
 def _handle_warehouse_query(db: Session, warehouse_name: str, today: date, req_id: str) -> str:
-    """Enhanced warehouse dashboard with KPIs (Improvement #4 - Aggregation)"""
+    """Handle warehouse query"""
     try:
-        # Use aggregation instead of .all()
         result = db.query(
             func.count(DeliveryReport.id).label('total_dns'),
             func.sum(DeliveryReport.dn_qty).label('total_units'),
@@ -320,26 +304,22 @@ def _handle_warehouse_query(db: Session, warehouse_name: str, today: date, req_i
             DeliveryReport.warehouse.ilike(f"%{warehouse_name}%")
         ).first()
         
-        # Pending delivery count
         pending_delivery = db.query(DeliveryReport).filter(
             DeliveryReport.warehouse.ilike(f"%{warehouse_name}%"),
             DeliveryReport.good_issue_date.is_(None)
         ).count()
         
-        # Pending POD count
         pending_pod = db.query(DeliveryReport).filter(
             DeliveryReport.warehouse.ilike(f"%{warehouse_name}%"),
             DeliveryReport.good_issue_date.isnot(None),
             DeliveryReport.pod_date.is_(None)
         ).count()
         
-        # PGI completed count
         pgi_completed = db.query(DeliveryReport).filter(
             DeliveryReport.warehouse.ilike(f"%{warehouse_name}%"),
             DeliveryReport.good_issue_date.isnot(None)
         ).count()
         
-        # Average delivery aging
         aging_records = db.query(DeliveryReport).filter(
             DeliveryReport.warehouse.ilike(f"%{warehouse_name}%"),
             DeliveryReport.dn_create_date.isnot(None),
@@ -370,14 +350,13 @@ def _handle_warehouse_query(db: Session, warehouse_name: str, today: date, req_i
 
 
 def _handle_dealer_summary_query(db: Session, question: str, msg_lower: str, req_id: str) -> str:
-    """Dealer summary with exact match first (Improvement #7)"""
+    """Handle dealer summary query"""
     try:
         dealer_name = _extract_dealer_name(question, msg_lower)
         
         if not dealer_name:
             return f"❌ Please specify a dealer name. Example: 'Show dealer ABC Traders'"
         
-        # Try exact match first
         exact_match = db.query(DeliveryReport).filter(
             func.lower(DeliveryReport.customer_name) == dealer_name.lower()
         ).first()
@@ -385,7 +364,6 @@ def _handle_dealer_summary_query(db: Session, question: str, msg_lower: str, req
         if exact_match:
             dealer_name = exact_match.customer_name
         else:
-            # Try partial match with limit
             records = db.query(DeliveryReport).filter(
                 DeliveryReport.customer_name.ilike(f"%{dealer_name}%")
             ).limit(20).all()
@@ -395,7 +373,6 @@ def _handle_dealer_summary_query(db: Session, question: str, msg_lower: str, req
             
             dealer_name = records[0].customer_name
         
-        # Aggregate dealer data (Improvement #4)
         result = db.query(
             func.count(DeliveryReport.id).label('total_dns'),
             func.sum(DeliveryReport.dn_qty).label('total_units'),
@@ -404,7 +381,6 @@ def _handle_dealer_summary_query(db: Session, question: str, msg_lower: str, req
             DeliveryReport.customer_name == dealer_name
         ).first()
         
-        # Pending counts
         pending_delivery = db.query(DeliveryReport).filter(
             DeliveryReport.customer_name == dealer_name,
             DeliveryReport.good_issue_date.is_(None)
@@ -416,7 +392,6 @@ def _handle_dealer_summary_query(db: Session, question: str, msg_lower: str, req
             DeliveryReport.pod_date.is_(None)
         ).count()
         
-        # PGI completed
         pgi_completed = db.query(DeliveryReport).filter(
             DeliveryReport.customer_name == dealer_name,
             DeliveryReport.good_issue_date.isnot(None)
@@ -439,7 +414,7 @@ def _handle_dealer_summary_query(db: Session, question: str, msg_lower: str, req
 
 
 def _handle_pending_delivery_query(db: Session, msg_lower: str, today: date, req_id: str) -> str:
-    """Handle pending delivery queries (Improvement #9)"""
+    """Handle pending delivery query"""
     try:
         dealer_name = _extract_dealer_name(msg_lower, msg_lower)
         
@@ -450,7 +425,6 @@ def _handle_pending_delivery_query(db: Session, msg_lower: str, today: date, req
         
         pending_count = query.count()
         
-        # Calculate aging for pending deliveries
         aging_records = query.filter(DeliveryReport.dn_create_date.isnot(None)).limit(100).all()
         if aging_records:
             avg_aging = sum((today - r.dn_create_date).days for r in aging_records) / len(aging_records)
@@ -476,9 +450,8 @@ def _handle_pending_delivery_query(db: Session, msg_lower: str, today: date, req
 
 
 def _handle_control_tower(db: Session, today: date, req_id: str) -> str:
-    """Control tower report for critical alerts"""
+    """Handle control tower query"""
     try:
-        # Critical delivery aging (>15 days without PGI)
         critical_deliveries = db.query(DeliveryReport).filter(
             DeliveryReport.good_issue_date.is_(None),
             DeliveryReport.dn_create_date.isnot(None)
@@ -496,7 +469,6 @@ def _handle_control_tower(db: Session, today: date, req_id: str) -> str:
         
         critical_list = sorted(critical_list, key=lambda x: x['aging'], reverse=True)[:5]
         
-        # Top delayed dealers
         dealer_delays = db.query(
             DeliveryReport.customer_name,
             func.count(DeliveryReport.id).label('pending_count')
@@ -545,7 +517,7 @@ def _handle_dealer_revenue_query(db: Session, question: str, msg_lower: str, req
         
     except Exception as e:
         logger.exception(f"[{req_id}] Revenue query error: {e}")
-        return f"❌ Error fetching revenue for {dealer_name if 'dealer_name' in locals() else 'dealer'}"
+        return f"❌ Error fetching revenue"
 
 
 def _handle_dealer_units_query(db: Session, question: str, msg_lower: str, req_id: str) -> str:
@@ -567,7 +539,7 @@ def _handle_dealer_units_query(db: Session, question: str, msg_lower: str, req_i
         
     except Exception as e:
         logger.exception(f"[{req_id}] Units query error: {e}")
-        return f"❌ Error fetching units for {dealer_name if 'dealer_name' in locals() else 'dealer'}"
+        return f"❌ Error fetching units"
 
 
 def _handle_dealer_dn_count_query(db: Session, question: str, msg_lower: str, req_id: str) -> str:
@@ -589,7 +561,7 @@ def _handle_dealer_dn_count_query(db: Session, question: str, msg_lower: str, re
         
     except Exception as e:
         logger.exception(f"[{req_id}] DN count query error: {e}")
-        return f"❌ Error fetching DN count for {dealer_name if 'dealer_name' in locals() else 'dealer'}"
+        return f"❌ Error fetching DN count"
 
 
 def _handle_pgi_pending_query(db: Session, msg_lower: str, today: date, req_id: str) -> str:
@@ -656,7 +628,7 @@ def _handle_pgi_aging_query(db: Session, msg_lower: str, today: date, req_id: st
 
 
 def _handle_pgi_rate_query(db: Session, msg_lower: str, req_id: str) -> str:
-    """Handle PGI completion rate query"""
+    """Handle PGI rate query"""
     try:
         total = db.query(DeliveryReport).count()
         pgi_done = db.query(DeliveryReport).filter(DeliveryReport.good_issue_date.isnot(None)).count()
@@ -740,7 +712,7 @@ def _handle_pod_aging_query(db: Session, msg_lower: str, today: date, req_id: st
 
 
 def _handle_pod_rate_query(db: Session, msg_lower: str, req_id: str) -> str:
-    """Handle POD completion rate query"""
+    """Handle POD rate query"""
     try:
         pgi_done = db.query(DeliveryReport).filter(DeliveryReport.good_issue_date.isnot(None)).count()
         pod_done = db.query(DeliveryReport).filter(DeliveryReport.pod_date.isnot(None)).count()
@@ -782,7 +754,7 @@ def _handle_delivered_units_query(db: Session, question: str, msg_lower: str, re
 
 
 def _handle_transit_units_query(db: Session, question: str, msg_lower: str, req_id: str) -> str:
-    """Handle transit units query (PGI done but no POD)"""
+    """Handle transit units query"""
     try:
         dealer_name = _extract_dealer_name(question, msg_lower)
         
@@ -840,19 +812,17 @@ def _handle_delivery_aging_query(db: Session, question: str, msg_lower: str, tod
 
 
 def _handle_dealer_performance_query(db: Session, question: str, msg_lower: str, today: date, req_id: str) -> str:
-    """Handle dealer performance KPI query"""
+    """Handle dealer performance query"""
     try:
         dealer_name = _extract_dealer_name(question, msg_lower)
         
         if not dealer_name:
             return "❌ Please specify a dealer name. Example: 'ABC Traders performance'"
         
-        # Get all metrics
         result = db.query(
             func.count(DeliveryReport.id).label('total_dns'),
             func.sum(DeliveryReport.dn_qty).label('total_units'),
-            func.sum(DeliveryReport.dn_amount).label('total_revenue'),
-            func.sum(func.nullif(DeliveryReport.dn_qty, 0)).label('total_quantity')
+            func.sum(DeliveryReport.dn_amount).label('total_revenue')
         ).filter(
             DeliveryReport.customer_name.ilike(f"%{dealer_name}%")
         ).first()
@@ -889,4 +859,4 @@ def _handle_dealer_performance_query(db: Session, question: str, msg_lower: str,
         
     except Exception as e:
         logger.exception(f"[{req_id}] Dealer performance error: {e}")
-        return f"❌ Error fetching performance data for {dealer_name if 'dealer_name' in locals() else 'dealer'}"
+        return f"❌ Error fetching performance data"
