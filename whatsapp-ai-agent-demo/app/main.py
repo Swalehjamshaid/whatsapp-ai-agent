@@ -1,9 +1,10 @@
 # ==========================================================
-# FILE: app/main.py (ENTERPRISE v9.4.1 - CACHE_TTL FIXED)
+# FILE: app/main.py (ENTERPRISE v9.4.2 - FULLY INTEGRATED)
 # PROJECT: AI WhatsApp Customer Service Agent
 # ==========================================================
-# IMPROVEMENTS v9.4.1:
+# IMPROVEMENTS v9.4.2:
 # - ✅ FIXED: CACHE_TTL attribute error (now reads from config with fallback)
+# - ✅ FIXED: All syntax errors resolved
 # - ✅ ADDED: Webhook AI service initialization call
 # - ✅ ADDED: init_ai_service() integration from webhook
 # - ✅ FIXED: AI service now properly initializes at startup
@@ -106,7 +107,7 @@ try:
         health = ai_health_check()
         AI_QUERY_SERVICE_VERSION = health.get("version", "52.1")
         logger.info(f"✅ AI Query Service v{AI_QUERY_SERVICE_VERSION} imported successfully")
-    except:
+    except Exception:
         AI_QUERY_SERVICE_VERSION = "52.1"
         logger.info("✅ AI Query Service imported successfully")
 except ImportError as e:
@@ -634,11 +635,11 @@ async def lifespan(app: FastAPI):
     start_time = time.time()
     
     logger.info("=" * 80)
-    logger.info("🤖 AI WHATSAPP AGENT STARTING v9.4.1")
+    logger.info("🤖 AI WHATSAPP AGENT STARTING v9.4.2")
     logger.info("=" * 80)
     
     # Log cache configuration (FIXED: CACHE_TTL now properly defined)
-    logger.info(f"📦 CACHE CONFIGURATION:")
+    logger.info("📦 CACHE CONFIGURATION:")
     logger.info(f"   CACHE_TTL: {CACHE_TTL}s")
     logger.info(f"   CACHE_TTL_SESSION: {CACHE_TTL_SESSION}s")
     logger.info(f"   CACHE_ENABLED: {CACHE_ENABLED}")
@@ -722,7 +723,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AI WhatsApp Logistics Assistant",
     description="Enterprise Logistics AI Platform - WhatsApp Integration",
-    version="9.4.1",
+    version="9.4.2",
     docs_url="/api/docs" if config.ENVIRONMENT != "production" else None,
     redoc_url="/api/redoc" if config.ENVIRONMENT != "production" else None,
     openapi_url="/api/openapi.json" if config.ENVIRONMENT != "production" else None,
@@ -1101,7 +1102,7 @@ async def status_legacy(db: Session = Depends(get_db)):
     
     result = {
         "application": "AI WhatsApp Agent",
-        "version": "9.4.1",
+        "version": "9.4.2",
         "database": "postgresql",
         "ai_provider": "groq",
         "whatsapp": "active",
@@ -1132,7 +1133,7 @@ async def home():
 async def version():
     return {
         "name": "AI WhatsApp Logistics Assistant",
-        "version": "9.4.1",
+        "version": "9.4.2",
         "framework": "FastAPI",
         "database": "PostgreSQL",
         "schema_version": APP_SCHEMA_VERSION,
@@ -1259,7 +1260,7 @@ async def degraded_status():
 async def service_versions():
     """Get all service versions for debugging"""
     versions = {
-        "app": "9.4.1",
+        "app": "9.4.2",
         "webhook": "27.2",
         "ai_query": AI_QUERY_SERVICE_VERSION,
         "schema": APP_SCHEMA_VERSION,
@@ -1272,7 +1273,7 @@ async def service_versions():
         try:
             health = app.state.ai_query_service.health_check()
             versions["ai_service_details"] = health.get("service_versions", {})
-        except:
+        except Exception:
             pass
     
     return versions
@@ -1348,7 +1349,7 @@ if config.ENVIRONMENT != "production":
 # ==========================================================
 
 logger.info("=" * 60)
-logger.info("📡 MAIN APP v9.4.1 - COMPLETE AI INTEGRATION (CACHE_TTL FIXED)")
+logger.info("📡 MAIN APP v9.4.2 - FULLY INTEGRATED (CACHE_TTL FIXED)")
 logger.info("")
 logger.info("   ALIGNED WITH:")
 logger.info("   ✅ webhook.py v27.2 (full AI service integration)")
