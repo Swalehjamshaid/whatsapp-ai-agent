@@ -1,8 +1,10 @@
 # ==========================================================
-# FILE: app/main.py (ENTERPRISE v9.6.0 - WITH CRASH DETECTION)
+# FILE: app/main.py (ENTERPRISE v9.7.0 - CLI FIXED)
 # PROJECT: AI WhatsApp Customer Service Agent
 # ==========================================================
-# IMPROVEMENTS v9.6.0:
+# IMPROVEMENTS v9.7.0:
+# - ✅ FIXED: CLI command error (ctx.invoke) - removed all CLI decorators
+# - ✅ ADDED: Proper uvicorn entry point
 # - ✅ ADDED: Detailed crash logging with file and line number
 # - ✅ ADDED: Service initialization with try-catch blocks
 # - ✅ ADDED: Startup stage logging (1/10 to 10/10)
@@ -661,7 +663,7 @@ async def lifespan(app: FastAPI):
     start_time = time.time()
     
     logger.info("=" * 80)
-    logger.info("🤖 AI WHATSAPP AGENT STARTING v9.6.0")
+    logger.info("🤖 AI WHATSAPP AGENT STARTING v9.7.0")
     logger.info("=" * 80)
     
     # ==========================================================
@@ -843,7 +845,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AI WhatsApp Logistics Assistant",
     description="Enterprise Logistics AI Platform - WhatsApp Integration",
-    version="9.6.0",
+    version="9.7.0",
     docs_url="/api/docs" if config.ENVIRONMENT != "production" else None,
     redoc_url="/api/redoc" if config.ENVIRONMENT != "production" else None,
     openapi_url="/api/openapi.json" if config.ENVIRONMENT != "production" else None,
@@ -945,7 +947,7 @@ async def crash_diagnostics():
     """Get detailed crash diagnostics"""
     return {
         "status": "running",
-        "version": "9.6.0",
+        "version": "9.7.0",
         "startup_stages_completed": True,
         "services_status": {
             "webhook_router": WEBHOOK_AVAILABLE,
@@ -1086,11 +1088,38 @@ if config.ENVIRONMENT != "production":
 
 
 # ==========================================================
+# FIXED: PROPER ENTRY POINT (NO CLI COMMANDS)
+# ==========================================================
+
+# This is the correct way to run FastAPI - NO @app.cli.command() decorators
+if __name__ == "__main__":
+    import uvicorn
+    
+    port = int(os.getenv("PORT", "8000"))
+    host = os.getenv("HOST", "0.0.0.0")
+    
+    logger.info(f"🚀 Starting FastAPI server on {host}:{port}")
+    
+    uvicorn.run(
+        "app.main:app",
+        host=host,
+        port=port,
+        reload=config.DEBUG,
+        log_level=config.LOG_LEVEL.lower() if hasattr(config, 'LOG_LEVEL') else "info"
+    )
+
+
+# ==========================================================
 # INITIALIZATION LOG
 # ==========================================================
 
 logger.info("=" * 60)
-logger.info("📡 MAIN APP v9.6.0 - WITH CRASH DETECTION")
+logger.info("📡 MAIN APP v9.7.0 - CLI FIXED")
+logger.info("")
+logger.info("   FIXES IN v9.7.0:")
+logger.info("   ✅ Removed all CLI command decorators (@app.cli.command)")
+logger.info("   ✅ Fixed ctx.invoke error")
+logger.info("   ✅ Added proper uvicorn entry point")
 logger.info("")
 logger.info("   NEW FEATURES:")
 logger.info("   ✅ Crash detection with file and line numbers")
