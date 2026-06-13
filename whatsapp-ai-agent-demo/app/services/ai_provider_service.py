@@ -39,7 +39,7 @@ def process_whatsapp_query(
     # Request Timing and Logging
     # ==========================================================
     start_time = time.time()
-    req_id = request_id or str(uuid.uuid4())[:8]  # <-- Now uuid is defined
+    req_id = request_id or str(uuid.uuid4())[:8]
     
     logger.info(f"[{req_id}] User={phone_number} Question={question[:200]}")
     
