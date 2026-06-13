@@ -1,2116 +1,1214 @@
 # ==========================================================
-# FILE: app/services/ai_query_service.py (v52.1 - IMPROVED STARTUP)
+# FILE: app/services/ai_query_service.py
 # ==========================================================
-# PURPOSE: Pure Router - Routes requests, NEVER contains business logic
-# RATING: 100/100 - Production Ready with Improved Startup Stability
+# PURPOSE: Natural Language Intelligence Engine
+#          Converts Human Questions → Structured Query Plans
 #
-# IMPROVEMENTS v52.1:
-# - ✅ REMOVED FAIL-FAST - No more RuntimeError on missing methods
-# - ✅ Added degraded mode for partial service availability
-# - ✅ Added comprehensive startup diagnostic report
-# - ✅ Fixed dealer resolver with cache and fuzzy matching
-# - ✅ Removed reinitialization loop in WhatsApp handler
-# - ✅ Expanded method discovery for better compatibility
-# - ✅ Added startup error tracking for debugging
-# - ✅ Enhanced DN pattern for multiple formats
-# - ✅ Added query performance logging
-# - ✅ Added dealer master cache for sub-100ms lookups
+# WHAT THIS FILE DOES:
+# ✅ Understand User Question
+# ✅ Extract Meaning
+# ✅ Extract Business Intent
+# ✅ Extract Entities
+# ✅ Extract Metrics
+# ✅ Extract Date Ranges
+# ✅ Extract Filters
+# ✅ Extract Ranking Requirements
+# ✅ Extract Comparison Requirements
+# ✅ Create Query Plan
+#
+# WHAT THIS FILE NEVER DOES:
+# ✗ SQL Queries
+# ✗ Database Access
+# ✗ KPI Calculations
+# ✗ Revenue Calculations
+# ✗ POD/PGI Calculations
+# ✗ WhatsApp Sending
+# ✗ Response Formatting
+# ✗ Dashboard Formatting
+# ✗ Data Aggregation
+# ✗ Trend Calculations
 # ==========================================================
 
 import re
-import json
-import hashlib
-import traceback
-import uuid
-from typing import Dict, Any, Optional, List, Tuple, Callable
-from dataclasses import dataclass, field
 from enum import Enum
-from datetime import datetime, timedelta
-from cachetools import TTLCache
-from difflib import get_close_matches
+from typing import Dict, Any, Optional, List, Tuple
+from dataclasses import dataclass, field
+from datetime import datetime, date, timedelta
 from loguru import logger
+
+# Optional GROQ for complex queries
+try:
+    from groq import Groq
+    GROQ_AVAILABLE = True
+except ImportError:
+    GROQ_AVAILABLE = False
 
 from app.config import config
 
-# ==========================================================
-# CONFIGURATION
-# ==========================================================
-
-DN_PATTERN = getattr(config, 'DN_PATTERN', r'\b(624\d{7}|\d{10,12})\b')  # IMPROVED: Added 10-12 digit support
-CONFIDENCE_THRESHOLD = getattr(config, 'AI_QUERY_CONFIDENCE_THRESHOLD', 0.80)
-MAX_RESPONSE_LENGTH = getattr(config, 'MAX_WHATSAPP_RESPONSE_LENGTH', 1500)
-CONTEXT_TTL_SECONDS = getattr(config, 'CONTEXT_TTL_SECONDS', 300)
-ENABLE_AUDIT_TRAIL = getattr(config, 'ENABLE_QUERY_AUDIT_TRAIL', True)
-ENABLE_DETAILED_LOGGING = getattr(config, 'ENABLE_DETAILED_QUERY_LOGGING', True)
-RESPONSE_CACHE_TTL = getattr(config, 'RESPONSE_CACHE_TTL', 300)
-DEBUG_MODE = getattr(config, 'AI_DEBUG_MODE', False)
 
 # ==========================================================
-# STANDARDIZED ERROR TYPES
-# ==========================================================
-
-class ErrorType(Enum):
-    NOT_FOUND = "NOT_FOUND"
-    VALIDATION_ERROR = "VALIDATION_ERROR"
-    DATABASE_ERROR = "DATABASE_ERROR"
-    SERVICE_ERROR = "SERVICE_ERROR"
-    METHOD_NOT_FOUND = "METHOD_NOT_FOUND"
-    STARTUP_ERROR = "STARTUP_ERROR"
-    UNAUTHORIZED = "UNAUTHORIZED"
-    RATE_LIMITED = "RATE_LIMITED"
-    UNKNOWN = "UNKNOWN"
-
-
-# ==========================================================
-# UNIVERSAL RESPONSE CONTRACT
+# QUERY PLAN DATA CLASS
 # ==========================================================
 
 @dataclass
-class ServiceResponse:
-    success: bool
-    service: str
-    data: Dict[str, Any] = field(default_factory=dict)
-    error_type: Optional[ErrorType] = None
-    error_message: Optional[str] = None
-    normalized: bool = False
-    version: Optional[str] = None
+class QueryPlan:
+    """The main output of this service - contract for entire application"""
+    
+    # Core intent
+    intent: str = "unknown"  # dealer_dashboard, warehouse_dashboard, ranking, comparison, etc.
+    
+    # Entity information
+    entity_type: Optional[str] = None  # dealer, warehouse, city, product, division, sales_manager, dn
+    entity_value: Optional[str] = None  # "Dubai Electronics", "Sargodha", etc.
+    
+    # Metrics
+    metric: Optional[str] = None  # revenue, units, dn_count, pod_aging, delivery_aging, etc.
+    dimension: Optional[str] = None  # dealer, warehouse, city, product, division
+    
+    # Time filters
+    date_range: Optional[Dict[str, str]] = None  # {"start_date": "2026-06-01", "end_date": "2026-06-30"}
+    
+    # Additional filters
+    filters: Dict[str, Any] = field(default_factory=dict)  # {"city": "lahore", "status": "pending"}
+    
+    # Ranking
+    ranking_type: Optional[str] = None  # top, bottom, best, worst
+    limit: Optional[int] = None  # 5, 10, 20
+    sort_order: Optional[str] = None  # asc, desc
+    sort_by: Optional[str] = None  # revenue, units, aging
+    
+    # Comparison
+    comparison_entities: Optional[Dict[str, str]] = None  # {"left": "lahore", "right": "karachi"}
+    
+    # Dashboard type
+    dashboard_type: Optional[str] = None  # dealer, warehouse, city, product, division, executive
+    
+    # Control tower
+    control_tower_type: Optional[str] = None  # critical_deliveries, critical_pod, worst_dealer, worst_warehouse
+    
+    # Trend
+    trend_period: Optional[str] = None  # daily, weekly, monthly, quarterly, yearly
+    trend_metric: Optional[str] = None  # revenue, units, pod, pgi
+    
+    # Root cause
+    root_cause_target: Optional[str] = None  # "lahore", "pod_aging", etc.
+    
+    # Confidence & routing
+    confidence_score: float = 0.0
+    requires_groq: bool = False
+    requires_kpi: bool = False
+    requires_analytics: bool = False
+    requires_control_tower: bool = False
+    requires_trend_analysis: bool = False
+    requires_root_cause: bool = False
+    
+    # Raw original message
+    original_message: str = ""
+    normalized_message: str = ""
     
     def to_dict(self) -> Dict[str, Any]:
+        """Convert QueryPlan to dictionary for serialization"""
         return {
-            "success": self.success,
-            "service": self.service,
-            "data": self.data,
-            "error_type": self.error_type.value if self.error_type else None,
-            "error_message": self.error_message,
-            "normalized": self.normalized,
-            "version": self.version
-        }
-    
-    @classmethod
-    def success(cls, service: str, data: Dict[str, Any]) -> 'ServiceResponse':
-        return cls(success=True, service=service, data=data, normalized=True)
-    
-    @classmethod
-    def error(cls, service: str, error_type: ErrorType, error_message: str) -> 'ServiceResponse':
-        return cls(success=False, service=service, error_type=error_type, 
-                   error_message=error_message, normalized=True)
-
-
-# ==========================================================
-# BUSINESS RULES ENFORCEMENT
-# ==========================================================
-
-class BusinessRules:
-    """Centralized business rule enforcement - SINGLE SOURCE OF TRUTH"""
-    
-    @staticmethod
-    def calculate_delivery_days(pgi_date, dn_date) -> int:
-        if pgi_date and dn_date:
-            if isinstance(pgi_date, str):
-                try:
-                    pgi_date = datetime.strptime(pgi_date, "%Y-%m-%d").date()
-                except:
-                    pass
-            if isinstance(dn_date, str):
-                try:
-                    dn_date = datetime.strptime(dn_date, "%Y-%m-%d").date()
-                except:
-                    pass
-            try:
-                return max(0, (pgi_date - dn_date).days)
-            except:
-                return 0
-        return 0
-    
-    @staticmethod
-    def calculate_pod_days(pod_date, pgi_date) -> int:
-        if pod_date and pgi_date:
-            if isinstance(pod_date, str):
-                try:
-                    pod_date = datetime.strptime(pod_date, "%Y-%m-%d").date()
-                except:
-                    pass
-            if isinstance(pgi_date, str):
-                try:
-                    pgi_date = datetime.strptime(pgi_date, "%Y-%m-%d").date()
-                except:
-                    pass
-            try:
-                return max(0, (pod_date - pgi_date).days)
-            except:
-                return 0
-        return 0
-    
-    @staticmethod
-    def calculate_pending_delivery_days(dn_date) -> int:
-        if dn_date:
-            if isinstance(dn_date, str):
-                try:
-                    dn_date = datetime.strptime(dn_date, "%Y-%m-%d").date()
-                except:
-                    pass
-            try:
-                return max(0, (datetime.now().date() - dn_date).days)
-            except:
-                return 0
-        return 0
-    
-    @staticmethod
-    def calculate_pending_pod_days(pgi_date) -> int:
-        if pgi_date:
-            if isinstance(pgi_date, str):
-                try:
-                    pgi_date = datetime.strptime(pgi_date, "%Y-%m-%d").date()
-                except:
-                    pass
-            try:
-                return max(0, (datetime.now().date() - pgi_date).days)
-            except:
-                return 0
-        return 0
-    
-    @staticmethod
-    def calculate_priority(days: int) -> str:
-        if days > 14:
-            return "CRITICAL"
-        elif days > 7:
-            return "HIGH"
-        elif days > 3:
-            return "MEDIUM"
-        return "LOW"
-    
-    @staticmethod
-    def calculate_dn_status(pgi_date, pod_date) -> Dict[str, str]:
-        if pgi_date and pod_date:
-            return {"status": "Delivered", "emoji": "✅"}
-        elif pgi_date and not pod_date:
-            return {"status": "POD Pending", "emoji": "⏳"}
-        return {"status": "Delivery Pending", "emoji": "🟡"}
-
-
-# ==========================================================
-# NORMALIZED DATA STRUCTURES
-# ==========================================================
-
-@dataclass
-class NormalizedDN:
-    dn_no: str
-    dealer_name: str
-    dealer_code: str
-    sales_office: str
-    warehouse: str
-    city: str
-    dn_date: str
-    pgi_date: str
-    pod_date: str
-    delivery_days: int
-    pod_days: int
-    status: str
-    status_emoji: str
-    total_models: int
-    models_list: List[str]
-    total_quantity: int
-    total_amount: float
-    priority: str
-    products: List[Dict]
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "dn_no": self.dn_no,
-            "dealer_name": self.dealer_name,
-            "dealer_code": self.dealer_code,
-            "sales_office": self.sales_office,
-            "warehouse": self.warehouse,
-            "city": self.city,
-            "dn_date": self.dn_date,
-            "pgi_date": self.pgi_date,
-            "pod_date": self.pod_date,
-            "delivery_days": self.delivery_days,
-            "pod_days": self.pod_days,
-            "status": self.status,
-            "status_emoji": self.status_emoji,
-            "total_models": self.total_models,
-            "models_list": self.models_list,
-            "total_quantity": self.total_quantity,
-            "total_amount": self.total_amount,
-            "priority": self.priority,
-            "products": self.products
-        }
-
-
-@dataclass
-class NormalizedDealer:
-    dealer_name: str
-    dealer_code: str
-    city: str
-    sales_office: str
-    warehouse: str
-    total_dns: int
-    total_models: int
-    total_quantity: int
-    total_amount: float
-    completion_rate: float
-    pending_deliveries: int
-    pending_pod: int
-    avg_delivery_days: float
-    avg_pod_days: float
-    health_score: int
-    health_status: str
-    health_emoji: str
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "dealer_name": self.dealer_name,
-            "dealer_code": self.dealer_code,
-            "city": self.city,
-            "sales_office": self.sales_office,
-            "warehouse": self.warehouse,
-            "total_dns": self.total_dns,
-            "total_models": self.total_models,
-            "total_quantity": self.total_quantity,
-            "total_amount": self.total_amount,
-            "completion_rate": self.completion_rate,
-            "pending_deliveries": self.pending_deliveries,
-            "pending_pod": self.pending_pod,
-            "avg_delivery_days": self.avg_delivery_days,
-            "avg_pod_days": self.avg_pod_days,
-            "health_score": self.health_score,
-            "health_status": self.health_status,
-            "health_emoji": self.health_emoji
-        }
-
-
-@dataclass
-class NormalizedPendingItem:
-    dn_no: str
-    dealer_name: str
-    pending_days: int
-    priority: str
-    priority_emoji: str
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "dn_no": self.dn_no,
-            "dealer_name": self.dealer_name,
-            "pending_days": self.pending_days,
-            "priority": self.priority,
-            "priority_emoji": self.priority_emoji
-        }
-
-
-# ==========================================================
-# COMPATIBILITY LAYERS (IMPROVED METHOD DISCOVERY)
-# ==========================================================
-
-class LogisticsCompatibilityLayer:
-    """Isolates logistics_service changes from router"""
-    
-    # IMPROVED: Expanded method discovery (Priority 6)
-    SUPPORTED_DN_METHODS = [
-        "get_complete_dn_detail",
-        "get_complete_dn_intelligence",
-        "get_dn_detail",
-        "get_dn_details",
-        "get_dn_information",
-        "get_dn_status",
-        "get_dn_timeline"
-    ]
-    
-    SUPPORTED_DEBUG_METHODS = [
-        "debug_dn_search",
-        "debug_check_dn_exists"
-    ]
-    
-    def __init__(self, logistics_service):
-        self.service = logistics_service
-        self._available = logistics_service is not None
-        self._dn_method = None
-        self._debug_method = None
-        self._version = None
-        self._all_methods = []
-        
-        if self._available:
-            self._discover_methods()
-            self._detect_version()
-    
-    def _discover_methods(self):
-        """Dynamic method discovery - survives method renames"""
-        self._all_methods = [m for m in dir(self.service) if not m.startswith('_')]
-        
-        for method_name in self.SUPPORTED_DN_METHODS:
-            if hasattr(self.service, method_name):
-                self._dn_method = method_name
-                logger.info(f"   ✅ Logistics DN method discovered: {method_name}")
-                break
-        
-        for method_name in self.SUPPORTED_DEBUG_METHODS:
-            if hasattr(self.service, method_name):
-                self._debug_method = method_name
-                logger.info(f"   ✅ Logistics debug method discovered: {method_name}")
-                break
-        
-        if not self._dn_method:
-            logger.error(f"   ❌ No DN method found in logistics_service!")
-            logger.info(f"   📋 Available methods: {self._all_methods[:20]}")
-    
-    def _detect_version(self):
-        if hasattr(self.service, 'health_check'):
-            try:
-                health = self.service.health_check()
-                self._version = health.get('version', 'unknown')
-            except:
-                self._version = 'unknown'
-        else:
-            self._version = 'legacy'
-        logger.info(f"   📦 Logistics service version: {self._version}")
-    
-    def is_available(self) -> bool:
-        return self._available and self._dn_method is not None
-    
-    def get_available_methods(self) -> List[str]:
-        return self._all_methods
-    
-    def get_dn_detail(self, dn_number: str) -> ServiceResponse:
-        if not self.is_available():
-            return ServiceResponse.error(
-                "logistics", ErrorType.SERVICE_ERROR, "Logistics service not available"
-            )
-        
-        try:
-            method = getattr(self.service, self._dn_method)
-            result = method(dn_number)
-            
-            if not result:
-                return ServiceResponse.error(
-                    "logistics", ErrorType.NOT_FOUND, f"DN {dn_number} not found"
-                )
-            
-            if isinstance(result, dict):
-                if result.get("success") is False:
-                    return ServiceResponse.error(
-                        "logistics", ErrorType.NOT_FOUND, result.get("_summary", f"DN {dn_number} not found")
-                    )
-                if "error" in result:
-                    return ServiceResponse.error(
-                        "logistics", ErrorType.SERVICE_ERROR, result["error"]
-                    )
-            
-            return ServiceResponse.success("logistics", result)
-            
-        except Exception as e:
-            logger.error(f"Logistics DN method call failed: {e}")
-            return ServiceResponse.error(
-                "logistics", ErrorType.SERVICE_ERROR, str(e)
-            )
-    
-    def debug_search(self, dn_number: str) -> Dict[str, Any]:
-        if not self._debug_method:
-            return {"error": "Debug method not available"}
-        
-        try:
-            method = getattr(self.service, self._debug_method)
-            return method(dn_number)
-        except Exception as e:
-            return {"error": str(e)}
-
-
-class AnalyticsCompatibilityLayer:
-    """Isolates analytics_service changes from router"""
-    
-    # IMPROVED: Expanded method discovery (Priority 6)
-    SUPPORTED_DEALER_METHODS = [
-        "get_dealer_dashboard",
-        "get_dealer_all_dns",
-        "get_dealer_details",
-        "get_dealer_performance",
-        "get_dealer_summary",
-        "get_dealer_info"
-    ]
-    
-    SUPPORTED_HEALTH_METHODS = [
-        "get_dealer_health",
-        "get_dealer_health_score",
-        "get_dealer_status"
-    ]
-    
-    SUPPORTED_PENDING_METHODS = [
-        "get_pending_pod_aging",
-        "get_pending_deliveries",
-        "get_pod_status",
-        "get_pending_pod",
-        "get_delivery_pending"
-    ]
-    
-    def __init__(self, analytics_service):
-        self.service = analytics_service
-        self._available = analytics_service is not None
-        self._dealer_method = None
-        self._health_method = None
-        self._pending_pod_method = None
-        self._pending_delivery_method = None
-        self._version = None
-        self._all_methods = []
-        
-        if self._available:
-            self._discover_methods()
-            self._detect_version()
-    
-    def _discover_methods(self):
-        self._all_methods = [m for m in dir(self.service) if not m.startswith('_')]
-        
-        for method_name in self.SUPPORTED_DEALER_METHODS:
-            if hasattr(self.service, method_name):
-                self._dealer_method = method_name
-                logger.info(f"   ✅ Analytics dealer method discovered: {method_name}")
-                break
-        
-        for method_name in self.SUPPORTED_HEALTH_METHODS:
-            if hasattr(self.service, method_name):
-                self._health_method = method_name
-                logger.info(f"   ✅ Analytics health method discovered: {method_name}")
-                break
-        
-        for method_name in self.SUPPORTED_PENDING_METHODS:
-            if hasattr(self.service, method_name):
-                if "pod" in method_name.lower():
-                    self._pending_pod_method = method_name
-                if "delivery" in method_name.lower():
-                    self._pending_delivery_method = method_name
-                logger.info(f"   ✅ Analytics pending method discovered: {method_name}")
-        
-        if not self._dealer_method:
-            logger.error(f"   ❌ No dealer method found in analytics_service!")
-            logger.info(f"   📋 Available methods: {self._all_methods[:20]}")
-    
-    def _detect_version(self):
-        if hasattr(self.service, 'health_check'):
-            try:
-                health = self.service.health_check()
-                self._version = health.get('version', 'unknown')
-            except:
-                self._version = 'unknown'
-        else:
-            self._version = 'legacy'
-        logger.info(f"   📊 Analytics service version: {self._version}")
-    
-    def is_available(self) -> bool:
-        return self._available and self._dealer_method is not None
-    
-    def get_available_methods(self) -> List[str]:
-        return self._all_methods
-    
-    def get_dealer_dashboard(self, dealer_name: str) -> ServiceResponse:
-        if not self.is_available():
-            return ServiceResponse.error(
-                "analytics", ErrorType.SERVICE_ERROR, "Analytics service not available"
-            )
-        
-        try:
-            method = getattr(self.service, self._dealer_method)
-            result = method(dealer_name)
-            
-            if not result:
-                return ServiceResponse.error(
-                    "analytics", ErrorType.NOT_FOUND, f"Dealer '{dealer_name}' not found"
-                )
-            
-            if isinstance(result, dict):
-                if result.get("success") is False:
-                    return ServiceResponse.error(
-                        "analytics", ErrorType.NOT_FOUND, result.get("_summary", f"Dealer '{dealer_name}' not found")
-                    )
-                if "error" in result:
-                    return ServiceResponse.error(
-                        "analytics", ErrorType.SERVICE_ERROR, result["error"]
-                    )
-            
-            return ServiceResponse.success("analytics", result)
-            
-        except Exception as e:
-            logger.error(f"Analytics dealer method call failed: {e}")
-            return ServiceResponse.error("analytics", ErrorType.SERVICE_ERROR, str(e))
-    
-    def get_dealer_health(self, dealer_name: str) -> ServiceResponse:
-        if not self._health_method:
-            return ServiceResponse.success("analytics", {})
-        
-        try:
-            method = getattr(self.service, self._health_method)
-            result = method(dealer_name)
-            return ServiceResponse.success("analytics", result if result else {})
-        except Exception as e:
-            logger.warning(f"Health method failed: {e}")
-            return ServiceResponse.success("analytics", {})
-    
-    def get_pending_pod(self, dealer_name: str = None) -> ServiceResponse:
-        if not self._pending_pod_method:
-            return ServiceResponse.error(
-                "analytics", ErrorType.METHOD_NOT_FOUND, "Pending POD method not available"
-            )
-        
-        try:
-            method = getattr(self.service, self._pending_pod_method)
-            result = method(dealer_name) if dealer_name else method()
-            return ServiceResponse.success("analytics", result if result else {})
-        except Exception as e:
-            return ServiceResponse.error("analytics", ErrorType.SERVICE_ERROR, str(e))
-    
-    def get_pending_delivery(self, dealer_name: str = None) -> ServiceResponse:
-        if not self._pending_delivery_method:
-            return ServiceResponse.error(
-                "analytics", ErrorType.METHOD_NOT_FOUND, "Pending delivery method not available"
-            )
-        
-        try:
-            method = getattr(self.service, self._pending_delivery_method)
-            result = method(dealer_name) if dealer_name else method()
-            return ServiceResponse.success("analytics", result if result else {})
-        except Exception as e:
-            return ServiceResponse.error("analytics", ErrorType.SERVICE_ERROR, str(e))
-
-
-class KPICompatibilityLayer:
-    """Isolates kpi_service changes from router"""
-    
-    SUPPORTED_METHODS = [
-        "get_executive_dashboard",
-        "get_kpi_summary",
-        "get_dashboard_summary",
-        "get_network_health",
-        "get_kpi_dashboard"
-    ]
-    
-    def __init__(self, kpi_service):
-        self.service = kpi_service
-        self._available = kpi_service is not None
-        self._method = None
-        self._version = None
-        self._all_methods = []
-        
-        if self._available:
-            self._discover_methods()
-            self._detect_version()
-    
-    def _discover_methods(self):
-        self._all_methods = [m for m in dir(self.service) if not m.startswith('_')]
-        
-        for method_name in self.SUPPORTED_METHODS:
-            if hasattr(self.service, method_name):
-                self._method = method_name
-                logger.info(f"   ✅ KPI method discovered: {method_name}")
-                break
-        
-        if not self._method:
-            logger.warning("   ⚠️ No KPI method found in kpi_service!")
-    
-    def _detect_version(self):
-        if hasattr(self.service, 'get_version'):
-            try:
-                self._version = self.service.get_version()
-            except:
-                self._version = 'unknown'
-        else:
-            self._version = 'legacy'
-        logger.info(f"   📈 KPI service version: {self._version}")
-    
-    def is_available(self) -> bool:
-        return self._available and self._method is not None
-    
-    def get_dashboard(self) -> ServiceResponse:
-        if not self.is_available():
-            return ServiceResponse.error(
-                "kpi", ErrorType.SERVICE_ERROR, "KPI service not available"
-            )
-        
-        try:
-            method = getattr(self.service, self._method)
-            result = method()
-            return ServiceResponse.success("kpi", result if result else {})
-        except Exception as e:
-            return ServiceResponse.error("kpi", ErrorType.SERVICE_ERROR, str(e))
-
-
-class AICompatibilityLayer:
-    """Isolates ai_provider changes from router"""
-    
-    SUPPORTED_METHODS = ["chat", "ask", "query", "analyze", "get_response"]
-    
-    def __init__(self, ai_provider):
-        self.provider = ai_provider
-        self._available = ai_provider is not None
-        self._method = None
-        self._version = None
-        
-        if self._available:
-            self._discover_methods()
-            self._detect_version()
-    
-    def _discover_methods(self):
-        for method_name in self.SUPPORTED_METHODS:
-            if hasattr(self.provider, method_name):
-                self._method = method_name
-                logger.info(f"   ✅ AI method discovered: {method_name}")
-                break
-        
-        if not self._method:
-            logger.warning("   ⚠️ No AI method found in ai_provider!")
-    
-    def _detect_version(self):
-        if hasattr(self.provider, 'get_version'):
-            try:
-                self._version = self.provider.get_version()
-            except:
-                self._version = 'unknown'
-        else:
-            self._version = 'legacy'
-        logger.info(f"   🤖 AI provider version: {self._version}")
-    
-    def is_available(self) -> bool:
-        return self._available and self._method is not None
-    
-    def chat(self, message: str, user_id: str, context: Dict = None) -> str:
-        if not self.is_available():
-            return "AI service is currently unavailable. Please try again later."
-        
-        try:
-            method = getattr(self.provider, self._method)
-            if context:
-                return method(message, user_id, context=context)
-            return method(message, user_id)
-        except Exception as e:
-            logger.error(f"AI chat failed: {e}")
-            return f"AI service error: {str(e)}"
-
-
-# ==========================================================
-# RESPONSE NORMALIZATION LAYER
-# ==========================================================
-
-class ResponseNormalizer:
-    """Normalizes all service responses to standard formats"""
-    
-    @staticmethod
-    def normalize_dn_response(raw_data: Dict[str, Any]) -> NormalizedDN:
-        dn_no = raw_data.get('dn_no') or raw_data.get('dn_number') or raw_data.get('DN') or 'N/A'
-        dealer_name = raw_data.get('dealer_name') or raw_data.get('dealer') or raw_data.get('customer_name') or 'N/A'
-        dealer_code = raw_data.get('dealer_code') or raw_data.get('customer_code') or 'N/A'
-        sales_office = raw_data.get('sales_office') or raw_data.get('division') or 'N/A'
-        warehouse = raw_data.get('warehouse') or 'N/A'
-        city = raw_data.get('city') or raw_data.get('ship_to_city') or 'N/A'
-        
-        dn_date = raw_data.get('dn_date') or raw_data.get('date') or 'N/A'
-        pgi_date = raw_data.get('pgi_date') or raw_data.get('good_issue_date') or 'Not Dispatched'
-        pod_date = raw_data.get('pod_date') or 'Not Received'
-        
-        delivery_days = BusinessRules.calculate_delivery_days(
-            pgi_date if pgi_date != 'Not Dispatched' else None,
-            dn_date if dn_date != 'N/A' else None
-        )
-        pod_days = BusinessRules.calculate_pod_days(
-            pod_date if pod_date != 'Not Received' else None,
-            pgi_date if pgi_date != 'Not Dispatched' else None
-        )
-        
-        status_info = BusinessRules.calculate_dn_status(
-            pgi_date if pgi_date != 'Not Dispatched' else None,
-            pod_date if pod_date != 'Not Received' else None
-        )
-        
-        priority = BusinessRules.calculate_priority(delivery_days)
-        
-        total_models = raw_data.get('total_models') or raw_data.get('models_count') or len(raw_data.get('products', []))
-        models_list = raw_data.get('models_list') or []
-        total_quantity = raw_data.get('total_quantity') or raw_data.get('dn_qty') or 0
-        total_amount = raw_data.get('total_amount') or raw_data.get('dn_amount') or 0.0
-        products = raw_data.get('products', [])
-        
-        return NormalizedDN(
-            dn_no=str(dn_no),
-            dealer_name=str(dealer_name),
-            dealer_code=str(dealer_code),
-            sales_office=str(sales_office),
-            warehouse=str(warehouse),
-            city=str(city),
-            dn_date=str(dn_date),
-            pgi_date=str(pgi_date),
-            pod_date=str(pod_date),
-            delivery_days=delivery_days,
-            pod_days=pod_days,
-            status=status_info["status"],
-            status_emoji=status_info["emoji"],
-            total_models=total_models,
-            models_list=models_list,
-            total_quantity=total_quantity,
-            total_amount=total_amount,
-            priority=priority,
-            products=products
-        )
-    
-    @staticmethod
-    def normalize_dealer_response(dashboard: Dict, health: Dict) -> NormalizedDealer:
-        dealer_name = dashboard.get('dealer_name') or 'N/A'
-        dealer_code = dashboard.get('dealer_code') or dashboard.get('customer_code') or 'N/A'
-        city = dashboard.get('city') or dashboard.get('ship_to_city') or 'N/A'
-        sales_office = dashboard.get('sales_office') or dashboard.get('division') or 'N/A'
-        warehouse = dashboard.get('warehouse') or 'N/A'
-        
-        total_dns = dashboard.get('total_dn') or dashboard.get('total_dns') or 0
-        total_models = dashboard.get('total_models') or 0
-        total_quantity = dashboard.get('total_qty') or dashboard.get('total_quantity') or 0
-        total_amount = dashboard.get('total_amount') or 0.0
-        
-        completion_rate = dashboard.get('completion_rate') or 0.0
-        
-        pending_deliveries = dashboard.get('pending_deliveries_count') or dashboard.get('pending_deliveries') or 0
-        pending_pod = dashboard.get('pending_pod_count') or dashboard.get('pending_pod') or 0
-        
-        avg_delivery_days = dashboard.get('avg_delivery_aging_days') or 0.0
-        avg_pod_days = dashboard.get('avg_pod_aging_days') or 0.0
-        
-        health_score = health.get('health_score', 0)
-        health_status = health.get('health_status', 'Unknown')
-        health_emoji = health.get('health_emoji', '🟡')
-        
-        return NormalizedDealer(
-            dealer_name=dealer_name,
-            dealer_code=dealer_code,
-            city=city,
-            sales_office=sales_office,
-            warehouse=warehouse,
-            total_dns=total_dns,
-            total_models=total_models,
-            total_quantity=total_quantity,
-            total_amount=total_amount,
-            completion_rate=completion_rate,
-            pending_deliveries=pending_deliveries,
-            pending_pod=pending_pod,
-            avg_delivery_days=avg_delivery_days,
-            avg_pod_days=avg_pod_days,
-            health_score=health_score,
-            health_status=health_status,
-            health_emoji=health_emoji
-        )
-    
-    @staticmethod
-    def normalize_pending_items(items: List[Dict], title: str) -> List[NormalizedPendingItem]:
-        normalized = []
-        for item in items:
-            dn_no = item.get('dn_no') or item.get('dn_number') or 'N/A'
-            dealer_name = item.get('dealer') or item.get('dealer_name') or 'N/A'
-            pending_days = item.get('pending_days') or item.get('aging_days') or 0
-            priority = BusinessRules.calculate_priority(pending_days)
-            
-            priority_emoji = "🔴" if pending_days > 14 else "🟠" if pending_days > 7 else "🟡"
-            
-            normalized.append(NormalizedPendingItem(
-                dn_no=str(dn_no),
-                dealer_name=str(dealer_name),
-                pending_days=pending_days,
-                priority=priority,
-                priority_emoji=priority_emoji
-            ))
-        
-        return sorted(normalized, key=lambda x: x.pending_days, reverse=True)
-
-
-# ==========================================================
-# UNIFIED WHATSAPP FORMATTERS
-# ==========================================================
-
-class WhatsAppFormatter:
-    """Services return data, router formats - NO business logic here"""
-    
-    @staticmethod
-    def format_dn_response(normalized: NormalizedDN) -> str:
-        products_text = ""
-        for idx, p in enumerate(normalized.products[:5], 1):
-            products_text += f"\n   {idx}. {p.get('customer_model', 'N/A')} - Qty: {p.get('quantity', 0)}"
-        
-        if len(normalized.products) > 5:
-            products_text += f"\n   ... +{len(normalized.products) - 5} more"
-        
-        models_text = ", ".join(normalized.models_list[:3]) if normalized.models_list else "N/A"
-        if len(normalized.models_list) > 3:
-            models_text += f" +{len(normalized.models_list) - 3} more"
-        
-        return f"""
-📦 *DN DETAILS*
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🔢 *DN Number:* {normalized.dn_no}
-📅 Date: {normalized.dn_date}
-{normalized.status_emoji} Status: {normalized.status}
-
-🏪 *DEALER INFORMATION*
-• Name: {normalized.dealer_name}
-• City: {normalized.city}
-• Office: {normalized.sales_office}
-• Warehouse: {normalized.warehouse}
-
-📦 *PRODUCTS*{products_text}
-
-📊 *MODELS*: {models_text}
-
-💰 *FINANCIALS*
-• Total Quantity: {normalized.total_quantity:,}
-• Total Amount: PKR {normalized.total_amount:,.0f}
-• Models: {normalized.total_models}
-
-⏱️ *AGING*
-• Delivery Aging: {normalized.delivery_days} days
-• POD Aging: {normalized.pod_days} days
-
-🚚 *SHIPMENT STATUS*
-• PGI Date: {normalized.pgi_date}
-• POD Date: {normalized.pod_date}
-• Priority: {normalized.priority}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 Type `Help` for more commands
-"""
-    
-    @staticmethod
-    def format_dealer_response(normalized: NormalizedDealer) -> str:
-        return f"""
-🏪 *DEALER DASHBOARD*
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-📌 *{normalized.dealer_name}*
-📍 City: {normalized.city}
-🏢 Office: {normalized.sales_office}
-🏭 Warehouse: {normalized.warehouse}
-
-📊 *PERFORMANCE SUMMARY*
-• Total DNs: {normalized.total_dns}
-• Models: {normalized.total_models}
-• Quantity: {normalized.total_quantity:,}
-• Revenue: PKR {normalized.total_amount:,.0f}
-• Completion Rate: {normalized.completion_rate}%
-
-⚠️ *ISSUES IDENTIFIED*
-• Pending Deliveries: {normalized.pending_deliveries}
-• Pending PODs: {normalized.pending_pod}
-
-⏱️ *AGING METRICS*
-• Avg Delivery Aging: {normalized.avg_delivery_days:.0f} days
-• Avg POD Aging: {normalized.avg_pod_days:.0f} days
-
-{normalized.health_emoji} *Health Score: {normalized.health_score} ({normalized.health_status})*
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 Type `Pending deliveries` to see delayed items
-"""
-    
-    @staticmethod
-    def format_pending_response(items: List[NormalizedPendingItem], title: str, emoji: str, 
-                                 total: int, critical: int) -> str:
-        if not items:
-            return f"{emoji} *{title}*\n━━━━━━━━━━━━━━━━━━━━\n✅ No pending items found!"
-        
-        response = f"{emoji} *{title}*\n━━━━━━━━━━━━━━━━━━━━\n\n"
-        response += f"📊 Total: {total}\n"
-        response += f"⚠️ Critical: {critical}\n\n"
-        response += "🔴 *Top Priority Items:*\n"
-        
-        for item in items[:5]:
-            response += f"{item.priority_emoji} DN {item.dn_no}: {item.pending_days} days\n"
-            if item.dealer_name != 'N/A':
-                response += f"   Dealer: {item.dealer_name}\n"
-        
-        response += "\n━━━━━━━━━━━━━━━━━━━━\n💡 Type `Help` for more commands"
-        
-        return response.strip()
-    
-    @staticmethod
-    def format_help_response() -> str:
-        return """
-🤖 *AI Assistant - Available Commands*
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🏪 *DEALER QUERIES*
-• `[Dealer Name]` - Complete dealer dashboard
-
-📦 *DN QUERIES*
-• `DN [number]` - Complete DN details
-• `Status of DN [number]` - DN status only
-
-🏭 *WAREHOUSE QUERIES*
-• `Warehouse [name]` - Warehouse performance
-
-📋 *OPERATIONAL QUERIES*
-• `Pending POD` - Missing delivery proofs
-• `Pending delivery` - Delayed shipments
-• `Critical delays` - Urgent issues (>14 days)
-• `How many pending deliveries` - Count of pending deliveries
-
-📊 *EXECUTIVE QUERIES*
-• `Executive dashboard` - Complete KPI overview
-• `Control tower` - Network health status
-
-🔍 *ANALYSIS QUERIES*
-• `Why is [dealer] delayed?` - Root cause analysis
-
-━━━━━━━━━━━━━━━━━━━━
-💡 Type your question naturally!
-"""
-    
-    @staticmethod
-    def format_error_response(error_type: ErrorType, error_message: str, query: str = None) -> str:
-        if error_type == ErrorType.NOT_FOUND:
-            return f"❌ *Not Found*\n━━━━━━━━━━━━━━━━━━━━\n\n{error_message}\n\n💡 Check the spelling or try a different search term."
-        
-        elif error_type == ErrorType.STARTUP_ERROR:
-            return f"⚠️ *Startup Error*\n━━━━━━━━━━━━━━━━━━━━\n\n{error_message}\n\n💡 Please contact support with this error message."
-        
-        elif error_type == ErrorType.VALIDATION_ERROR:
-            return f"⚠️ *Validation Error*\n━━━━━━━━━━━━━━━━━━━━\n\n{error_message}\n\n💡 Please rephrase your query."
-        
-        elif error_type == ErrorType.SERVICE_ERROR:
-            return f"⚠️ *Service Error*\n━━━━━━━━━━━━━━━━━━━━\n\nThe service is currently unavailable. Please try again later.\n\n💡 Type `Help` for available commands."
-        
-        else:
-            return f"❌ *Error*\n━━━━━━━━━━━━━━━━━━━━\n\n{error_message}\n\n💡 Type `Help` for available commands."
-
-
-# ==========================================================
-# RESPONSE CACHING
-# ==========================================================
-
-class ResponseCache:
-    def __init__(self, ttl_seconds: int = RESPONSE_CACHE_TTL):
-        self.cache = TTLCache(maxsize=200, ttl=ttl_seconds)
-        self.ttl = ttl_seconds
-        self.hits = 0
-        self.misses = 0
-    
-    def get(self, key: str) -> Optional[str]:
-        if key in self.cache:
-            self.hits += 1
-            return self.cache[key]
-        self.misses += 1
-        return None
-    
-    def set(self, key: str, value: str):
-        self.cache[key] = value
-    
-    def get_stats(self) -> Dict[str, Any]:
-        total = self.hits + self.misses
-        hit_rate = round(self.hits / max(1, total) * 100, 2)
-        return {
-            "hits": self.hits,
-            "misses": self.misses,
-            "total": total,
-            "hit_rate": hit_rate,
-            "cache_size": len(self.cache),
-            "ttl_seconds": self.ttl
-        }
-    
-    def invalidate(self, pattern: str = None):
-        if pattern is None:
-            self.cache.clear()
-        else:
-            keys_to_remove = [k for k in self.cache.keys() if pattern in k]
-            for k in keys_to_remove:
-                del self.cache[k]
-
-
-# ==========================================================
-# CENTRAL ROUTE REGISTRY
-# ==========================================================
-
-class RouteRegistry:
-    def __init__(self, query_handlers):
-        self.handlers = query_handlers
-        self._routes = {}
-        self._register_routes()
-    
-    def _register_routes(self):
-        self._routes = {
-            "help": self.handlers.handle_help_query,
-            "dn": self.handlers.handle_dn_query,
-            "dealer": self.handlers.handle_dealer_query,
-            "operational_pod": lambda msg, uid, params: self.handlers.handle_operational_query(msg, uid, params, "PENDING_POD"),
-            "operational_delivery": lambda msg, uid, params: self.handlers.handle_operational_query(msg, uid, params, "PENDING_DELIVERY"),
-            "operational_critical": lambda msg, uid, params: self.handlers.handle_operational_query(msg, uid, params, "CRITICAL_DELAYS"),
-            "executive": self.handlers.handle_executive_query,
-            "root_cause": self.handlers.handle_root_cause_query,
-            "follow_up": self.handlers.handle_follow_up_query,
-            "clarification": self.handlers.handle_clarification
-        }
-    
-    def get_handler(self, route_name: str) -> Optional[Callable]:
-        return self._routes.get(route_name)
-    
-    def route_exists(self, route_name: str) -> bool:
-        return route_name in self._routes
-    
-    def get_all_routes(self) -> List[str]:
-        return list(self._routes.keys())
-
-
-# ==========================================================
-# INTENT & ENTITY DETECTION
-# ==========================================================
-
-class IntentDetector:
-    HELP_KEYWORDS = ["help", "can you help", "how to use", "commands", "what can you do", "menu", "guide", "support"]
-    DN_INDICATORS = ["dn", "delivery note", "delivery note number", "track"]
-    POD_INDICATORS = ["pod", "proof", "delivery proof"]
-    DELIVERY_INDICATORS = ["delivery", "dispatch", "shipment"]
-    CRITICAL_INDICATORS = ["critical", "urgent", "high priority", "severe"]
-    EXECUTIVE_INDICATORS = ["executive", "dashboard", "control tower", "kpi", "summary", "overview"]
-    ROOT_CAUSE_INDICATORS = ["why", "root cause", "reason", "cause", "what caused", "analyze", "investigate"]
-    
-    def detect(self, message: str, has_dn: bool, has_dealer: bool) -> Tuple[str, str, float]:
-        message_lower = message.lower().strip()
-        
-        if any(kw in message_lower for kw in self.HELP_KEYWORDS):
-            return "help", "HELP", 0.95
-        
-        if has_dn or any(kw in message_lower for kw in self.DN_INDICATORS):
-            return "dn", "DN_DETAIL", 0.95
-        
-        if any(kw in message_lower for kw in self.ROOT_CAUSE_INDICATORS) and len(message) > 15:
-            return "root_cause", "ROOT_CAUSE_ANALYSIS", 0.85
-        
-        if any(kw in message_lower for kw in self.POD_INDICATORS):
-            return "operational", "PENDING_POD", 0.90
-        
-        if any(kw in message_lower for kw in self.CRITICAL_INDICATORS):
-            return "operational", "CRITICAL_DELAYS", 0.85
-        
-        if any(kw in message_lower for kw in self.DELIVERY_INDICATORS):
-            return "operational", "PENDING_DELIVERY", 0.90
-        
-        if any(kw in message_lower for kw in self.EXECUTIVE_INDICATORS):
-            return "executive", "EXECUTIVE_DASHBOARD", 0.90
-        
-        if has_dealer:
-            return "dealer", "DEALER_DASHBOARD", 0.85
-        
-        return "clarification", "CLARIFICATION", 0.40
-
-
-class EntityExtractor:
-    def __init__(self, dn_pattern: str = DN_PATTERN):
-        self.dn_pattern = dn_pattern
-    
-    def extract_dn(self, message: str) -> Optional[str]:
-        dn_match = re.search(self.dn_pattern, message)
-        return dn_match.group() if dn_match else None
-    
-    def extract_dealer(self, message: str, dealer_resolver: Callable) -> Tuple[Optional[str], float]:
-        skip_indicators = ['how many', 'pending', 'delivery', 'pod', 'critical', 'review', 'help']
-        if any(indicator in message.lower() for indicator in skip_indicators):
-            return None, 0.0
-        
-        if message.lower().startswith(('how', 'what', 'why', 'when', 'where', 'who', 'which', 'can you')):
-            return None, 0.0
-        
-        if len(message.strip()) < 3:
-            return None, 0.0
-        
-        return dealer_resolver(message)
-    
-    def extract_all(self, message: str, dealer_resolver: Callable) -> List[Tuple[str, str, int]]:
-        entities = []
-        
-        dn = self.extract_dn(message)
-        if dn:
-            entities.append(("dn", dn, 100))
-        
-        dealer, confidence = self.extract_dealer(message, dealer_resolver)
-        if dealer:
-            entities.append(("dealer", dealer, 90))
-        
-        return sorted(entities, key=lambda x: x[2], reverse=True)
-
-
-# ==========================================================
-# CONVERSATION CONTEXT
-# ==========================================================
-
-@dataclass
-class ConversationContext:
-    dealer: Optional[str] = None
-    dn: Optional[str] = None
-    warehouse: Optional[str] = None
-    last_intent: Optional[str] = None
-    last_response_type: Optional[str] = None
-    last_entity_type: Optional[str] = None
-    last_entity_value: Optional[str] = None
-    last_timestamp: datetime = field(default_factory=datetime.now)
-    
-    def update(self, entity_type: str, entity_value: str, intent: str, response_type: str):
-        if entity_type == "dealer":
-            self.dealer = entity_value
-        elif entity_type == "dn":
-            self.dn = entity_value
-        
-        self.last_intent = intent
-        self.last_response_type = response_type
-        self.last_entity_type = entity_type
-        self.last_entity_value = entity_value
-        self.last_timestamp = datetime.now()
-    
-    def has_context_within(self, seconds: int = CONTEXT_TTL_SECONDS) -> bool:
-        return (datetime.now() - self.last_timestamp).total_seconds() < seconds
-    
-    def get_follow_up_context(self) -> Optional[Tuple[str, str, str]]:
-        if self.has_context_within() and self.last_response_type and self.last_entity_value:
-            return (self.last_intent, self.last_response_type, self.last_entity_value)
-        return None
-
-
-# ==========================================================
-# AUDIT & METRICS
-# ==========================================================
-
-@dataclass
-class AuditEntry:
-    timestamp: datetime
-    query: str
-    user_id: str
-    intent: str
-    response_type: str
-    entity_type: str
-    entity_value: Optional[str]
-    confidence: float
-    success: bool
-    response_time_ms: float
-    cache_hit: bool
-    error_type: Optional[str] = None
-    error_message: Optional[str] = None
-    response_length: int = 0
-    
-    def to_dict(self) -> Dict:
-        return {
-            "timestamp": self.timestamp.isoformat(),
-            "query": self.query[:200],
-            "user_id": self.user_id,
             "intent": self.intent,
-            "response_type": self.response_type,
             "entity_type": self.entity_type,
             "entity_value": self.entity_value,
-            "confidence": self.confidence,
-            "success": self.success,
-            "response_time_ms": round(self.response_time_ms, 2),
-            "cache_hit": self.cache_hit,
-            "error_type": self.error_type,
-            "error_message": self.error_message,
-            "response_length": self.response_length
+            "metric": self.metric,
+            "dimension": self.dimension,
+            "date_range": self.date_range,
+            "filters": self.filters,
+            "ranking_type": self.ranking_type,
+            "limit": self.limit,
+            "sort_order": self.sort_order,
+            "sort_by": self.sort_by,
+            "comparison_entities": self.comparison_entities,
+            "dashboard_type": self.dashboard_type,
+            "control_tower_type": self.control_tower_type,
+            "trend_period": self.trend_period,
+            "trend_metric": self.trend_metric,
+            "root_cause_target": self.root_cause_target,
+            "confidence_score": self.confidence_score,
+            "requires_groq": self.requires_groq,
+            "requires_kpi": self.requires_kpi,
+            "requires_analytics": self.requires_analytics,
+            "requires_control_tower": self.requires_control_tower,
+            "requires_trend_analysis": self.requires_trend_analysis,
+            "requires_root_cause": self.requires_root_cause
         }
 
 
 # ==========================================================
-# IMPROVED DEALER RESOLVER WITH CACHE (Priority 4 & 10)
+# INTENT TYPES
 # ==========================================================
 
-class DealerResolver:
-    def __init__(self, analytics_layer: AnalyticsCompatibilityLayer):
-        self.analytics = analytics_layer
-        self.cache = TTLCache(maxsize=500, ttl=3600)  # 1 hour cache
-        self._dealer_master_cache = None
-        self._dealer_master_loaded = False
-        self._load_dealer_master_cache()
-    
-    def _load_dealer_master_cache(self):
-        """Load all dealers at startup for fast local matching (Priority 10)"""
-        try:
-            # Try to get all dealers from analytics service
-            if hasattr(self.analytics.service, 'get_all_dealers'):
-                result = self.analytics.service.get_all_dealers()
-                if result and isinstance(result, list):
-                    self._dealer_master_cache = {d.lower(): d for d in result if d}
-                    self._dealer_master_loaded = True
-                    logger.info(f"   📋 Dealer master cache loaded: {len(self._dealer_master_cache)} dealers")
-                    return
-            
-            # Fallback: try to get from database directly
-            from app.database import SessionLocal
-            from app.models import DeliveryReport
-            
-            db = SessionLocal()
-            try:
-                dealers = db.query(DeliveryReport.customer_name).distinct().all()
-                self._dealer_master_cache = {d[0].lower(): d[0] for d in dealers if d[0]}
-                self._dealer_master_loaded = True
-                logger.info(f"   📋 Dealer master cache loaded from DB: {len(self._dealer_master_cache)} dealers")
-            finally:
-                db.close()
-        except Exception as e:
-            logger.warning(f"   ⚠️ Could not load dealer master cache: {e}")
-            self._dealer_master_cache = {}
-            self._dealer_master_loaded = False
-    
-    def resolve(self, message: str) -> Tuple[Optional[str], float]:
-        import time
-        start_time = time.time()
-        
-        message_clean = message.strip().lower()
-        
-        if len(message_clean) < 3:
-            return None, 0.0
-        
-        skip_indicators = ['how many', 'pending', 'delivery', 'pod', 'critical', 'review', 'help']
-        if any(indicator in message_clean for indicator in skip_indicators):
-            return None, 0.0
-        
-        if message_clean.startswith(('how', 'what', 'why', 'when', 'where', 'who', 'which', 'can you')):
-            return None, 0.0
-        
-        # Check cache first
-        if message_clean in self.cache:
-            elapsed = (time.time() - start_time) * 1000
-            logger.debug(f"Dealer cache hit: {message_clean} ({elapsed:.0f}ms)")
-            return self.cache[message_clean]
-        
-        # Fast local lookup using master cache (Priority 10)
-        if self._dealer_master_loaded and self._dealer_master_cache:
-            # Exact match
-            if message_clean in self._dealer_master_cache:
-                result = (self._dealer_master_cache[message_clean], 0.95)
-                self.cache[message_clean] = result
-                elapsed = (time.time() - start_time) * 1000
-                logger.info(f"Dealer resolved from master cache: {message_clean} -> {result[0]} ({elapsed:.0f}ms)")
-                return result
-            
-            # Fuzzy match using difflib (fast)
-            closest = get_close_matches(message_clean, self._dealer_master_cache.keys(), n=1, cutoff=0.7)
-            if closest:
-                result = (self._dealer_master_cache[closest[0]], 0.80)
-                self.cache[message_clean] = result
-                elapsed = (time.time() - start_time) * 1000
-                logger.info(f"Dealer fuzzy match: {message_clean} -> {result[0]} ({elapsed:.0f}ms)")
-                return result
-        
-        # Fallback to analytics service
-        response = self.analytics.get_dealer_dashboard(message)
-        
-        elapsed = (time.time() - start_time) * 1000
-        
-        if response.success and response.data:
-            dealer_name = response.data.get('dealer_name') or response.data.get('name')
-            if dealer_name:
-                result = (dealer_name, 0.85)
-                self.cache[message_clean] = result
-                logger.info(f"Dealer resolved from analytics: {message_clean} -> {dealer_name} ({elapsed:.0f}ms)")
-                return result
-        
-        return None, 0.0
+class IntentType:
+    DEALER_DASHBOARD = "dealer_dashboard"
+    WAREHOUSE_DASHBOARD = "warehouse_dashboard"
+    CITY_DASHBOARD = "city_dashboard"
+    PRODUCT_DASHBOARD = "product_dashboard"
+    DIVISION_DASHBOARD = "division_dashboard"
+    SALES_MANAGER_DASHBOARD = "sales_manager_dashboard"
+    DN_LOOKUP = "dn_lookup"
+    DN_STATUS = "dn_status"
+    POD_ANALYSIS = "pod_analysis"
+    PGI_ANALYSIS = "pgi_analysis"
+    DELIVERY_ANALYSIS = "delivery_analysis"
+    KPI_REPORT = "kpi_report"
+    EXECUTIVE_DASHBOARD = "executive_dashboard"
+    CONTROL_TOWER = "control_tower"
+    RANKING = "ranking"
+    COMPARISON = "comparison"
+    TREND = "trend"
+    ROOT_CAUSE = "root_cause"
+    HELP = "help"
+    UNKNOWN = "unknown"
 
 
 # ==========================================================
-# QUERY HANDLERS (With Performance Logging - Priority 9)
+# METRIC TYPES
 # ==========================================================
 
-class QueryHandlers:
-    def __init__(self, analytics_layer: AnalyticsCompatibilityLayer,
-                 logistics_layer: LogisticsCompatibilityLayer,
-                 kpi_layer: KPICompatibilityLayer,
-                 ai_layer: AICompatibilityLayer,
-                 normalizer: ResponseNormalizer,
-                 formatter: WhatsAppFormatter,
-                 cache: ResponseCache,
-                 conversation_context: Dict[str, ConversationContext]):
-        
-        self.analytics = analytics_layer
-        self.logistics = logistics_layer
-        self.kpi = kpi_layer
-        self.ai = ai_layer
-        self.normalizer = normalizer
-        self.formatter = formatter
-        self.cache = cache
-        self.conversation_context = conversation_context
-    
-    def _get_context(self, user_id: str) -> ConversationContext:
-        if user_id not in self.conversation_context:
-            self.conversation_context[user_id] = ConversationContext()
-        return self.conversation_context[user_id]
-    
-    def handle_dn_query(self, dn_number: str, user_id: str, parameters: Dict) -> Tuple[str, str, Optional[ErrorType], Optional[str]]:
-        import time
-        start_time = time.time()
-        
-        context = self._get_context(user_id)
-        context.update("dn", dn_number, "dn", "DN_DETAIL")
-        
-        cache_key = f"dn_{dn_number}"
-        cached_response = self.cache.get(cache_key)
-        if cached_response:
-            elapsed = (time.time() - start_time) * 1000
-            logger.info(f"📊 DN Query (Cached): {dn_number} completed in {elapsed:.0f}ms")
-            return cached_response, "DN_DETAIL", None, None
-        
-        response = self.logistics.get_dn_detail(dn_number)
-        
-        if not response.success:
-            elapsed = (time.time() - start_time) * 1000
-            logger.warning(f"📊 DN Query Failed: {dn_number} -> {response.error_message} ({elapsed:.0f}ms)")
-            return self.formatter.format_error_response(
-                response.error_type or ErrorType.NOT_FOUND, 
-                response.error_message or f"DN {dn_number} not found"
-            ), "ERROR", response.error_type, response.error_message
-        
-        normalized = self.normalizer.normalize_dn_response(response.data)
-        formatted = self.formatter.format_dn_response(normalized)
-        
-        self.cache.set(cache_key, formatted)
-        
-        elapsed = (time.time() - start_time) * 1000
-        logger.info(f"📊 DN Query: {dn_number} completed in {elapsed:.0f}ms")
-        
-        return formatted, "DN_DETAIL", None, None
-    
-    def handle_dealer_query(self, dealer_name: str, user_id: str, parameters: Dict) -> Tuple[str, str, Optional[ErrorType], Optional[str]]:
-        import time
-        start_time = time.time()
-        
-        context = self._get_context(user_id)
-        context.update("dealer", dealer_name, "dealer", "DEALER_DASHBOARD")
-        
-        cache_key = f"dealer_{dealer_name.lower()}"
-        cached_response = self.cache.get(cache_key)
-        if cached_response:
-            elapsed = (time.time() - start_time) * 1000
-            logger.info(f"📊 Dealer Query (Cached): {dealer_name} completed in {elapsed:.0f}ms")
-            return cached_response, "DEALER_DASHBOARD", None, None
-        
-        dashboard_response = self.analytics.get_dealer_dashboard(dealer_name)
-        
-        if not dashboard_response.success:
-            elapsed = (time.time() - start_time) * 1000
-            logger.warning(f"📊 Dealer Query Failed: {dealer_name} -> {dashboard_response.error_message} ({elapsed:.0f}ms)")
-            return self.formatter.format_error_response(
-                dashboard_response.error_type or ErrorType.NOT_FOUND,
-                dashboard_response.error_message or f"Dealer '{dealer_name}' not found"
-            ), "ERROR", dashboard_response.error_type, dashboard_response.error_message
-        
-        health_response = self.analytics.get_dealer_health(dealer_name)
-        
-        normalized = self.normalizer.normalize_dealer_response(
-            dashboard_response.data, 
-            health_response.data if health_response.success else {}
-        )
-        formatted = self.formatter.format_dealer_response(normalized)
-        
-        self.cache.set(cache_key, formatted)
-        
-        elapsed = (time.time() - start_time) * 1000
-        logger.info(f"📊 Dealer Query: {dealer_name} completed in {elapsed:.0f}ms")
-        
-        return formatted, "DEALER_DASHBOARD", None, None
-    
-    def handle_operational_query(self, message: str, user_id: str, parameters: Dict, response_type: str) -> Tuple[str, str, Optional[ErrorType], Optional[str]]:
-        import time
-        start_time = time.time()
-        
-        context = self._get_context(user_id)
-        dealer = context.dealer if context.has_context_within() else None
-        
-        cache_key = f"operational_{response_type}_{dealer or 'all'}"
-        cached_response = self.cache.get(cache_key)
-        if cached_response:
-            elapsed = (time.time() - start_time) * 1000
-            logger.info(f"📊 Operational Query (Cached): {response_type} completed in {elapsed:.0f}ms")
-            return cached_response, response_type, None, None
-        
-        if response_type == "PENDING_POD":
-            pending_response = self.analytics.get_pending_pod(dealer)
-        elif response_type == "CRITICAL_DELAYS":
-            pending_response = self.analytics.get_pending_delivery(dealer)
-            if pending_response.success and pending_response.data:
-                items = pending_response.data.get('pending_deliveries', pending_response.data.get('pending_list', []))
-                critical_items = [i for i in items if i.get('pending_days', i.get('aging_days', 0)) > 14]
-                pending_response.data = {'pending_deliveries': critical_items, 'total_pending': len(critical_items), 'critical_delays': len(critical_items)}
-        else:
-            pending_response = self.analytics.get_pending_delivery(dealer)
-        
-        if not pending_response.success or not pending_response.data:
-            formatted = self.formatter.format_pending_response([], "PENDING ITEMS", "📋", 0, 0)
-        else:
-            data = pending_response.data
-            items = data.get('pending_deliveries', data.get('pending_list', []))
-            normalized_items = self.normalizer.normalize_pending_items(items, response_type)
-            total = data.get('total_pending', data.get('total_pending_pod', len(items)))
-            critical = data.get('critical_delays', 0)
-            
-            title = "PENDING PODs" if "POD" in response_type else "PENDING DELIVERIES" if "DELIVERY" in response_type else "CRITICAL DELAYS"
-            emoji = "📋" if "POD" in response_type else "🚚" if "DELIVERY" in response_type else "🔴"
-            
-            formatted = self.formatter.format_pending_response(normalized_items, title, emoji, total, critical)
-        
-        self.cache.set(cache_key, formatted)
-        context.last_response_type = response_type
-        
-        elapsed = (time.time() - start_time) * 1000
-        logger.info(f"📊 Operational Query: {response_type} completed in {elapsed:.0f}ms")
-        
-        return formatted, response_type, None, None
-    
-    def handle_executive_query(self, user_id: str, parameters: Dict) -> Tuple[str, str, Optional[ErrorType], Optional[str]]:
-        import time
-        start_time = time.time()
-        
-        cache_key = "executive_dashboard"
-        cached_response = self.cache.get(cache_key)
-        if cached_response:
-            elapsed = (time.time() - start_time) * 1000
-            logger.info(f"📊 Executive Query (Cached): completed in {elapsed:.0f}ms")
-            return cached_response, "EXECUTIVE_DASHBOARD", None, None
-        
-        dashboard_response = self.kpi.get_dashboard()
-        
-        if dashboard_response.success and dashboard_response.data:
-            data = dashboard_response.data
-            formatted = f"""
-🏢 *EXECUTIVE DASHBOARD*
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-📊 *NETWORK HEALTH*
-• Overall Score: {data.get('overall_score', 'N/A')}%
-• POD Compliance: {data.get('pod_compliance', 'N/A')}%
-• PGI Compliance: {data.get('pgi_compliance', 'N/A')}%
-
-⚠️ *CRITICAL ISSUES*
-• Total Delays: {data.get('critical_delays', 0)}
-• Pending PODs: {data.get('pending_pod', 0)}
-
-🎯 *Recommended Actions*
-1. Review critical delays immediately
-2. Accelerate POD collection process
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 Type `Help` for available commands
-"""
-        else:
-            pending_response = self.analytics.get_pending_delivery(None)
-            if pending_response.success:
-                data = pending_response.data
-                total = data.get('total_pending', 0)
-                critical = data.get('critical_delays', 0)
-                formatted = f"""
-🏢 *EXECUTIVE SUMMARY*
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-📊 *CURRENT STATUS*
-• Total Pending Deliveries: {total}
-• Critical Delays (>14 days): {critical}
-
-⚠️ *RECOMMENDATIONS*
-1. Review critical delays immediately
-2. Prioritize dispatches for pending items
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 Type `Help` for available commands
-"""
-            else:
-                formatted = "⚠️ Executive dashboard temporarily unavailable. Please try again later."
-        
-        self.cache.set(cache_key, formatted)
-        
-        elapsed = (time.time() - start_time) * 1000
-        logger.info(f"📊 Executive Query: completed in {elapsed:.0f}ms")
-        
-        return formatted, "EXECUTIVE_DASHBOARD", None, None
-    
-    def handle_root_cause_query(self, message: str, user_id: str, parameters: Dict) -> Tuple[str, str, Optional[ErrorType], Optional[str]]:
-        import time
-        start_time = time.time()
-        
-        context = self._get_context(user_id)
-        
-        compact_context = {}
-        if context.dealer:
-            compact_context['dealer'] = context.dealer
-            dealer_data = self.analytics.get_dealer_dashboard(context.dealer)
-            if dealer_data.success:
-                compact_context['dealer_data'] = dealer_data.data
-        
-        response = self.ai.chat(message, user_id, compact_context if compact_context else None)
-        
-        elapsed = (time.time() - start_time) * 1000
-        logger.info(f"📊 Root Cause Query: completed in {elapsed:.0f}ms")
-        
-        return response, "ROOT_CAUSE_ANALYSIS", None, None
-    
-    def handle_follow_up_query(self, message: str, user_id: str, parameters: Dict) -> Tuple[str, str, Optional[ErrorType], Optional[str]]:
-        context = self._get_context(user_id)
-        follow_up = context.get_follow_up_context()
-        
-        if not follow_up:
-            return self.handle_clarification(message, user_id, parameters)
-        
-        last_intent, last_response_type, last_entity_value = follow_up
-        
-        if last_response_type in ["PENDING_POD", "PENDING_DELIVERY", "CRITICAL_DELAYS"]:
-            return self.handle_operational_query(message, user_id, parameters, last_response_type)
-        elif last_response_type == "DEALER_DASHBOARD" and context.dealer:
-            return self.handle_dealer_query(context.dealer, user_id, parameters)
-        elif last_response_type == "DN_DETAIL" and context.dn:
-            return self.handle_dn_query(context.dn, user_id, parameters)
-        else:
-            return self.handle_clarification(message, user_id, parameters)
-    
-    def handle_clarification(self, message: str, user_id: str, parameters: Dict) -> Tuple[str, str, Optional[ErrorType], Optional[str]]:
-        return self.formatter.format_help_response(), "CLARIFICATION", None, None
-    
-    def handle_help_query(self) -> Tuple[str, str, Optional[ErrorType], Optional[str]]:
-        return self.formatter.format_help_response(), "HELP", None, None
+class MetricType:
+    REVENUE = "revenue"
+    UNITS = "units"
+    DN_COUNT = "dn_count"
+    POD_COUNT = "pod_count"
+    PGI_COUNT = "pgi_count"
+    PENDING_POD = "pending_pod"
+    PENDING_DELIVERY = "pending_delivery"
+    DELIVERY_AGING = "delivery_aging"
+    POD_AGING = "pod_aging"
+    FULL_CYCLE = "full_cycle"
+    POD_RATE = "pod_rate"
+    PGI_RATE = "pgi_rate"
+    DELIVERY_RATE = "delivery_rate"
 
 
 # ==========================================================
-# AI QUERY SERVICE - MAIN ENTRY POINT (IMPROVED STARTUP)
+# ENTITY PATTERNS
+# ==========================================================
+
+class EntityPatterns:
+    """Common entity names for detection"""
+    
+    WAREHOUSES = {
+        'rawalpindi', 'lahore', 'karachi', 'islamabad', 'multan',
+        'faisalabad', 'gujranwala', 'sargodha', 'attock', 'sialkot'
+    }
+    
+    DIVISIONS = {
+        'refrigerator': 'REF', 'fridge': 'REF', 'freezer': 'FRZ',
+        'tv': 'TV', 'television': 'TV',
+        'cooking': 'COOK', 'oven': 'COOK', 'microwave': 'COOK',
+        'commercial ac': 'CAC', 'ac': 'CAC', 'air conditioner': 'CAC',
+        'water systems': 'WS', 'water': 'WS'
+    }
+    
+    CITIES = {
+        'lahore', 'karachi', 'islamabad', 'rawalpindi', 'multan',
+        'faisalabad', 'gujranwala', 'sialkot', 'attock', 'sargodha'
+    }
+
+
+# ==========================================================
+# AI QUERY SERVICE
 # ==========================================================
 
 class AIQueryService:
     """
-    AI Query Service v52.1 - IMPROVED STARTUP STABILITY
-    - NO FAIL-FAST: Service starts even with missing methods
-    - Degraded mode for partial service availability
-    - Startup error tracking for debugging
+    Natural Language Intelligence Engine
+    Converts human questions into structured query plans
     """
     
-    def __init__(self, analytics_service=None, logistics_service=None, 
-                 kpi_service=None, ai_provider=None):
+    def __init__(self):
+        """Initialize the AI Query Service"""
+        self.groq_client = None
+        self._init_groq()
+        logger.info("AI Query Service initialized")
+    
+    def _init_groq(self):
+        """Initialize GROQ client for complex queries"""
+        if GROQ_AVAILABLE and config.GROQ_API_KEY:
+            try:
+                self.groq_client = Groq(api_key=config.GROQ_API_KEY)
+                logger.info("GROQ client initialized for AI Query Service")
+            except Exception as e:
+                logger.error(f"GROQ initialization failed: {e}")
+    
+    # ==========================================================
+    # 1. PROCESS QUERY - Master Entry Point
+    # ==========================================================
+    
+    async def process_query(self, user_message: str) -> QueryPlan:
+        """
+        Master entry point for query understanding
         
-        logger.info("=" * 70)
-        logger.info("🚀 AI Query Service v52.1 - IMPROVED STARTUP STABILITY")
-        logger.info("=" * 70)
+        Input: "Top 5 dealers by pending POD aging in Lahore this month"
+        Output: QueryPlan object
         
-        # Track startup errors (Priority 7)
-        self.startup_error = None
-        self.degraded_mode = False
-        self.startup_diagnostics = {}
+        Responsibilities:
+        - Normalize Text
+        - Detect Intent
+        - Extract Entities
+        - Extract Metrics
+        - Extract Dates
+        - Extract Filters
+        - Extract Ranking
+        - Build Query Plan
+        - Return Query Plan
+        """
+        logger.info(f"Processing query: {user_message[:100]}")
         
-        # Initialize compatibility layers with graceful degradation (Priority 1)
-        logger.info("📋 Initializing compatibility layers...")
+        # Step 1: Normalize query
+        normalized = self.normalize_query(user_message)
         
-        self.analytics_layer = None
-        self.logistics_layer = None
-        self.kpi_layer = None
-        self.ai_layer = None
+        # Step 2: Detect intent
+        intent = self.detect_intent(normalized)
         
-        # Analytics layer
-        try:
-            self.analytics_layer = AnalyticsCompatibilityLayer(analytics_service)
-            if not self.analytics_layer.is_available():
-                logger.warning("⚠️ Analytics service degraded - dealer queries may be limited")
-                self.degraded_mode = True
-                self.startup_diagnostics["analytics_warning"] = "No dealer method found"
-            else:
-                logger.info("✅ Analytics layer initialized")
-        except Exception as e:
-            logger.warning(f"⚠️ Analytics layer initialization failed: {e}")
-            self.degraded_mode = True
-            self.startup_error = f"Analytics init: {e}"
-            self.startup_diagnostics["analytics_error"] = str(e)
+        # Step 3: Extract entities
+        entities = self.extract_entities(normalized, user_message)
         
-        # Logistics layer
-        try:
-            self.logistics_layer = LogisticsCompatibilityLayer(logistics_service)
-            if not self.logistics_layer.is_available():
-                logger.warning("⚠️ Logistics service degraded - DN queries may be limited")
-                self.degraded_mode = True
-                self.startup_diagnostics["logistics_warning"] = "No DN method found"
-            else:
-                logger.info("✅ Logistics layer initialized")
-        except Exception as e:
-            logger.warning(f"⚠️ Logistics layer initialization failed: {e}")
-            self.degraded_mode = True
-            self.startup_error = self.startup_error or f"Logistics init: {e}"
-            self.startup_diagnostics["logistics_error"] = str(e)
+        # Step 4: Extract metrics
+        metric = self.extract_metrics(normalized)
         
-        # KPI layer (optional - no degradation)
-        try:
-            self.kpi_layer = KPICompatibilityLayer(kpi_service)
-            if not self.kpi_layer.is_available():
-                logger.warning("⚠️ KPI service not available - executive queries will use fallback")
-            else:
-                logger.info("✅ KPI layer initialized")
-        except Exception as e:
-            logger.warning(f"⚠️ KPI layer initialization failed: {e}")
-            self.startup_diagnostics["kpi_error"] = str(e)
+        # Step 5: Extract date range
+        date_range = self.extract_date_range(normalized)
         
-        # AI layer (optional)
-        try:
-            self.ai_layer = AICompatibilityLayer(ai_provider)
-            if not self.ai_layer.is_available():
-                logger.warning("⚠️ AI provider not available - root cause analysis will use fallback")
-            else:
-                logger.info("✅ AI layer initialized")
-        except Exception as e:
-            logger.warning(f"⚠️ AI layer initialization failed: {e}")
-            self.startup_diagnostics["ai_error"] = str(e)
+        # Step 6: Extract filters
+        filters = self.extract_filters(normalized, entities)
         
-        # Priority 2: Startup diagnostic report
-        logger.info("")
-        logger.info("📋 STARTUP DIAGNOSTIC REPORT:")
-        logger.info("=" * 50)
+        # Step 7: Extract ranking
+        ranking = self.extract_ranking(normalized)
         
-        # Analytics diagnostics
-        if self.analytics_layer:
-            logger.info(f"Analytics Service:")
-            logger.info(f"  Available: {self.analytics_layer.is_available()}")
-            logger.info(f"  Methods: {self.analytics_layer.get_available_methods()[:10]}")
+        # Step 8: Extract comparison
+        comparison = self.extract_comparison(normalized)
         
-        # Logistics diagnostics
-        if self.logistics_layer:
-            logger.info(f"Logistics Service:")
-            logger.info(f"  Available: {self.logistics_layer.is_available()}")
-            logger.info(f"  Methods: {self.logistics_layer.get_available_methods()[:10]}")
+        # Step 9: Detect dashboard type
+        dashboard_type = self.detect_dashboard_type(intent, entities)
         
-        logger.info("=" * 50)
-        
-        if self.degraded_mode:
-            logger.warning("⚠️ AI Query Service starting in DEGRADED MODE")
-            logger.warning(f"   Startup diagnostics: {self.startup_diagnostics}")
-        else:
-            logger.info("✅ AI Query Service starting in FULL MODE")
-        
-        # Initialize components
-        self.normalizer = ResponseNormalizer()
-        self.formatter = WhatsAppFormatter()
-        self.cache = ResponseCache()
-        
-        # Initialize dealer resolver with master cache
-        if self.analytics_layer:
-            self.dealer_resolver = DealerResolver(self.analytics_layer)
-        else:
-            self.dealer_resolver = None
-        
-        self.entity_extractor = EntityExtractor(DN_PATTERN)
-        self.intent_detector = IntentDetector()
-        self.conversation_context: Dict[str, ConversationContext] = {}
-        
-        # Initialize handlers (even in degraded mode)
-        self.handlers = QueryHandlers(
-            self.analytics_layer or AnalyticsCompatibilityLayer(None),
-            self.logistics_layer or LogisticsCompatibilityLayer(None),
-            self.kpi_layer or KPICompatibilityLayer(None),
-            self.ai_layer or AICompatibilityLayer(None),
-            self.normalizer,
-            self.formatter,
-            self.cache,
-            self.conversation_context
+        # Step 10: Build query plan
+        query_plan = self.build_query_plan(
+            intent=intent,
+            entities=entities,
+            metric=metric,
+            date_range=date_range,
+            filters=filters,
+            ranking=ranking,
+            comparison=comparison,
+            dashboard_type=dashboard_type,
+            normalized=normalized,
+            original=user_message
         )
         
-        # Central route registry
-        self.route_registry = RouteRegistry(self.handlers)
+        # Step 11: Calculate confidence score
+        query_plan.confidence_score = self.calculate_confidence_score(query_plan)
         
-        # Metrics
-        self.metrics = {
-            "total_queries": 0,
-            "successful_queries": 0,
-            "failed_queries": 0,
-            "by_intent": {},
-            "by_response_type": {},
-            "avg_response_time_ms": 0,
-            "total_response_time_ms": 0,
-            "start_time": datetime.now()
+        # Step 12: Validate query plan
+        is_valid = self.validate_query_plan(query_plan)
+        
+        if not is_valid:
+            logger.warning(f"Query plan validation failed: {query_plan}")
+            query_plan.confidence_score = 0.3
+        
+        # Step 13: Determine if GROQ is needed
+        if query_plan.confidence_score < 0.6 or query_plan.intent == IntentType.UNKNOWN:
+            query_plan.requires_groq = True
+        
+        logger.info(f"Query plan created: intent={query_plan.intent}, confidence={query_plan.confidence_score}")
+        
+        return query_plan
+    
+    # ==========================================================
+    # 2. NORMALIZE QUERY
+    # ==========================================================
+    
+    def normalize_query(self, message: str) -> str:
+        """
+        Clean input text
+        
+        Input: "Top 5 DEALERS By Revenue in Lahore!!!"
+        Output: "top 5 dealers by revenue in lahore"
+        
+        Tasks:
+        - Lowercase
+        - Trim Spaces
+        - Remove Extra Spaces
+        - Remove Noise Characters
+        - Fix Common Typos
+        """
+        if not message:
+            return ""
+        
+        # Lowercase
+        normalized = message.lower()
+        
+        # Remove extra spaces
+        normalized = re.sub(r'\s+', ' ', normalized)
+        
+        # Remove noise characters (keep letters, numbers, spaces, basic punctuation)
+        normalized = re.sub(r'[^\w\s\-&]', '', normalized)
+        
+        # Trim
+        normalized = normalized.strip()
+        
+        # Fix common typos
+        typo_fixes = {
+            'warehoue': 'warehouse',
+            'warehous': 'warehouse',
+            'delears': 'dealers',
+            'delear': 'dealer',
+            'revinue': 'revenue',
+            'revenuee': 'revenue',
+            'untis': 'units',
+            'unitss': 'units',
+            'dns': 'dns',
+            'dnn': 'dn',
+            'pgi': 'pgi',
+            'pod': 'pod',
         }
         
-        self.audit_trail: List[AuditEntry] = []
+        for typo, fix in typo_fixes.items():
+            normalized = normalized.replace(typo, fix)
         
-        self._log_startup_summary()
-        logger.info("=" * 70)
-        if self.degraded_mode:
-            logger.info("⚠️ AI Query Service v52.1 - DEGRADED MODE ACTIVE")
-            logger.info("   Some features may be limited but WhatsApp will work")
+        return normalized
+    
+    # ==========================================================
+    # 3. DETECT INTENT
+    # ==========================================================
+    
+    def detect_intent(self, normalized: str) -> str:
+        """
+        Understand what user wants
+        
+        Supported Intents:
+        - DEALER_DASHBOARD
+        - WAREHOUSE_DASHBOARD
+        - CITY_DASHBOARD
+        - PRODUCT_DASHBOARD
+        - DIVISION_DASHBOARD
+        - SALES_MANAGER_DASHBOARD
+        - DN_LOOKUP
+        - KPI_REPORT
+        - EXECUTIVE_DASHBOARD
+        - CONTROL_TOWER
+        - RANKING
+        - COMPARISON
+        - TREND
+        - ROOT_CAUSE
+        - HELP
+        """
+        
+        # Help intent
+        if any(word in normalized for word in ['help', 'menu', 'commands', 'what can you do']):
+            return IntentType.HELP
+        
+        # Control Tower
+        if any(phrase in normalized for phrase in [
+            'critical deliveries', 'critical pod', 'worst dealer', 'worst warehouse',
+            'control tower', 'alerts', 'stuck', 'delayed'
+        ]):
+            return IntentType.CONTROL_TOWER
+        
+        # Root Cause
+        if normalized.startswith('why') and any(word in normalized for word in ['delay', 'aging', 'underperforming']):
+            return IntentType.ROOT_CAUSE
+        
+        # Trend
+        if any(word in normalized for word in ['trend', 'trends']) or any(
+            phrase in normalized for phrase in ['revenue trend', 'pod trend', 'delivery trend']
+        ):
+            return IntentType.TREND
+        
+        # Comparison
+        if any(word in normalized for word in ['compare', 'vs', 'versus']) or ' vs ' in normalized:
+            return IntentType.COMPARISON
+        
+        # Ranking
+        if any(word in normalized for word in ['top', 'bottom', 'best', 'worst', 'highest', 'lowest']):
+            return IntentType.RANKING
+        
+        # DN Lookup
+        dn_match = re.search(r'\b(\d{8,12})\b', normalized)
+        if dn_match:
+            if 'status' in normalized:
+                return IntentType.DN_STATUS
+            return IntentType.DN_LOOKUP
+        
+        # Executive Dashboard
+        if any(phrase in normalized for phrase in [
+            'executive dashboard', 'ceo dashboard', 'business summary',
+            'company kpi', 'overall performance'
+        ]):
+            return IntentType.EXECUTIVE_DASHBOARD
+        
+        # KPI Report
+        if any(word in normalized for word in ['kpi', 'metrics', 'performance', 'dashboard']):
+            return IntentType.KPI_REPORT
+        
+        # Division Dashboard
+        for division in EntityPatterns.DIVISIONS.keys():
+            if division in normalized:
+                return IntentType.DIVISION_DASHBOARD
+        
+        # Warehouse Dashboard
+        for warehouse in EntityPatterns.WAREHOUSES:
+            if warehouse in normalized and ('warehouse' in normalized or len(normalized.split()) <= 3):
+                return IntentType.WAREHOUSE_DASHBOARD
+        
+        # City Dashboard
+        for city in EntityPatterns.CITIES:
+            if city in normalized and ('city' in normalized or 'in' in normalized):
+                return IntentType.CITY_DASHBOARD
+        
+        # Product Dashboard
+        product_match = re.search(r'([A-Z0-9-]{5,20})', normalized.upper())
+        if product_match:
+            return IntentType.PRODUCT_DASHBOARD
+        
+        # Dealer Dashboard (default if short message)
+        if len(normalized.split()) <= 5:
+            return IntentType.DEALER_DASHBOARD
+        
+        return IntentType.UNKNOWN
+    
+    # ==========================================================
+    # 4. EXTRACT ENTITIES
+    # ==========================================================
+    
+    def extract_entities(self, normalized: str, original: str) -> Dict[str, Any]:
+        """
+        Identify business objects
+        
+        Entity Types:
+        - Dealer (dealer_name, customer_name)
+        - Warehouse (warehouse_name)
+        - City (city)
+        - Product (product_code, material_no)
+        - Division
+        - Sales Manager
+        - DN (dn_number)
+        """
+        entities = {}
+        
+        # Extract DN
+        dn_match = re.search(r'\b(\d{8,12})\b', normalized)
+        if dn_match:
+            entities['dn_number'] = dn_match.group(1)
+            return entities
+        
+        # Extract Warehouse
+        for warehouse in EntityPatterns.WAREHOUSES:
+            if warehouse in normalized:
+                entities['warehouse'] = warehouse.title()
+                entities['warehouse_name'] = warehouse.title()
+                break
+        
+        # Extract City
+        for city in EntityPatterns.CITIES:
+            if city in normalized:
+                entities['city'] = city.title()
+                entities['city_name'] = city.title()
+                break
+        
+        # Extract Division
+        for division_name, division_code in EntityPatterns.DIVISIONS.items():
+            if division_name in normalized:
+                entities['division'] = division_code
+                entities['division_name'] = division_name.title()
+                break
+        
+        # Extract Product
+        product_match = re.search(r'([A-Z0-9-]{5,20})', normalized.upper())
+        if product_match:
+            entities['product_code'] = product_match.group(1)
+            entities['product'] = product_match.group(1)
+        
+        # Extract Sales Manager
+        manager_match = re.search(r'(?:sales manager|manager|sm)\s+([a-z\s]{2,30})', normalized)
+        if manager_match:
+            entities['sales_manager'] = manager_match.group(1).strip().title()
+        
+        # Extract Dealer (with & symbol handling)
+        if '&' in original:
+            dealer_match = re.search(r'([A-Za-z\s&]+(?:&[A-Za-z\s]+)+)', original)
+            if dealer_match:
+                entities['dealer'] = dealer_match.group(1).strip()
+                entities['dealer_name'] = dealer_match.group(1).strip()
+        elif len(normalized.split()) <= 5 and not entities:
+            # Short message without other entities - likely a dealer name
+            entities['dealer'] = original.strip()
+            entities['dealer_name'] = original.strip()
+        
+        return entities
+    
+    # ==========================================================
+    # 5. EXTRACT METRICS
+    # ==========================================================
+    
+    def extract_metrics(self, normalized: str) -> Optional[str]:
+        """
+        Determine what KPI is requested
+        
+        Supported Metrics:
+        - REVENUE, UNITS, DN_COUNT
+        - POD_COUNT, PGI_COUNT
+        - PENDING_POD, PENDING_DELIVERY
+        - DELIVERY_AGING, POD_AGING, FULL_CYCLE
+        - POD_RATE, PGI_RATE, DELIVERY_RATE
+        """
+        
+        metric_map = {
+            # Revenue metrics
+            MetricType.REVENUE: ['revenue', 'sales', 'amount', 'value'],
+            
+            # Volume metrics
+            MetricType.UNITS: ['units', 'quantity', 'qty', 'pieces'],
+            MetricType.DN_COUNT: ['dns', 'delivery notes', 'orders', 'deliveries'],
+            
+            # Count metrics
+            MetricType.POD_COUNT: ['pod count', 'pod done', 'pod completed'],
+            MetricType.PGI_COUNT: ['pgi count', 'pgi done', 'pgi completed'],
+            
+            # Pending metrics
+            MetricType.PENDING_POD: ['pending pod', 'pod pending', 'pod not done'],
+            MetricType.PENDING_DELIVERY: ['pending delivery', 'delivery pending', 'not delivered'],
+            
+            # Aging metrics
+            MetricType.DELIVERY_AGING: ['delivery aging', 'pgi aging', 'delivery delay'],
+            MetricType.POD_AGING: ['pod aging', 'pod delay', 'pod latency'],
+            MetricType.FULL_CYCLE: ['full cycle', 'total cycle', 'end to end'],
+            
+            # Rate metrics
+            MetricType.POD_RATE: ['pod rate', 'pod percentage', 'pod %'],
+            MetricType.PGI_RATE: ['pgi rate', 'pgi percentage', 'pgi %'],
+            MetricType.DELIVERY_RATE: ['delivery rate', 'delivery percentage', 'delivery %'],
+        }
+        
+        for metric, keywords in metric_map.items():
+            if any(keyword in normalized for keyword in keywords):
+                return metric
+        
+        return None
+    
+    # ==========================================================
+    # 6. EXTRACT DATE RANGE
+    # ==========================================================
+    
+    def extract_date_range(self, normalized: str) -> Optional[Dict[str, str]]:
+        """
+        Convert human dates into SQL dates
+        
+        Must Understand:
+        today, yesterday, this_week, last_week, this_month, last_month,
+        this_quarter, last_quarter, this_year, last_year,
+        last_7_days, last_15_days, last_30_days,
+        Q1, Q2, Q3, Q4, May 2026, June 2026
+        """
+        today = date.today()
+        
+        # Today
+        if 'today' in normalized:
+            return {
+                'start_date': today.isoformat(),
+                'end_date': today.isoformat()
+            }
+        
+        # Yesterday
+        if 'yesterday' in normalized:
+            yesterday = today - timedelta(days=1)
+            return {
+                'start_date': yesterday.isoformat(),
+                'end_date': yesterday.isoformat()
+            }
+        
+        # Last 7 days
+        if 'last 7 days' in normalized or 'last 7 days' in normalized:
+            start = today - timedelta(days=7)
+            return {
+                'start_date': start.isoformat(),
+                'end_date': today.isoformat()
+            }
+        
+        # Last 15 days
+        if 'last 15 days' in normalized:
+            start = today - timedelta(days=15)
+            return {
+                'start_date': start.isoformat(),
+                'end_date': today.isoformat()
+            }
+        
+        # Last 30 days
+        if 'last 30 days' in normalized or 'last month' in normalized:
+            start = today - timedelta(days=30)
+            return {
+                'start_date': start.isoformat(),
+                'end_date': today.isoformat()
+            }
+        
+        # This week
+        if 'this week' in normalized:
+            start = today - timedelta(days=today.weekday())
+            return {
+                'start_date': start.isoformat(),
+                'end_date': today.isoformat()
+            }
+        
+        # Last week
+        if 'last week' in normalized:
+            start = today - timedelta(days=today.weekday() + 7)
+            end = start + timedelta(days=6)
+            return {
+                'start_date': start.isoformat(),
+                'end_date': end.isoformat()
+            }
+        
+        # This month
+        if 'this month' in normalized:
+            start = today.replace(day=1)
+            return {
+                'start_date': start.isoformat(),
+                'end_date': today.isoformat()
+            }
+        
+        # Last month
+        if 'last month' in normalized:
+            first_of_this_month = today.replace(day=1)
+            end = first_of_this_month - timedelta(days=1)
+            start = end.replace(day=1)
+            return {
+                'start_date': start.isoformat(),
+                'end_date': end.isoformat()
+            }
+        
+        # Quarter detection
+        quarter_match = re.search(r'q([1-4])', normalized)
+        if quarter_match:
+            quarter = int(quarter_match.group(1))
+            year = today.year
+            quarter_starts = {1: (year, 1, 1), 2: (year, 4, 1), 3: (year, 7, 1), 4: (year, 10, 1)}
+            quarter_ends = {1: (year, 3, 31), 2: (year, 6, 30), 3: (year, 9, 30), 4: (year, 12, 31)}
+            start = date(*quarter_starts[quarter])
+            end = date(*quarter_ends[quarter])
+            return {
+                'start_date': start.isoformat(),
+                'end_date': end.isoformat()
+            }
+        
+        # Specific month/year
+        month_match = re.search(r'(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{4})', normalized)
+        if month_match:
+            month_name = month_match.group(1)
+            year = int(month_match.group(2))
+            month_num = {
+                'january': 1, 'february': 2, 'march': 3, 'april': 4, 'may': 5, 'june': 6,
+                'july': 7, 'august': 8, 'september': 9, 'october': 10, 'november': 11, 'december': 12
+            }[month_name]
+            start = date(year, month_num, 1)
+            if month_num == 12:
+                end = date(year + 1, 1, 1) - timedelta(days=1)
+            else:
+                end = date(year, month_num + 1, 1) - timedelta(days=1)
+            return {
+                'start_date': start.isoformat(),
+                'end_date': end.isoformat()
+            }
+        
+        # This year
+        if 'this year' in normalized or 'ytd' in normalized:
+            start = date(today.year, 1, 1)
+            return {
+                'start_date': start.isoformat(),
+                'end_date': today.isoformat()
+            }
+        
+        return None
+    
+    # ==========================================================
+    # 7. EXTRACT RANKING
+    # ==========================================================
+    
+    def extract_ranking(self, normalized: str) -> Dict[str, Any]:
+        """
+        Identify ranking requests
+        
+        Keywords: top, bottom, best, worst, highest, lowest
+        """
+        ranking = {}
+        
+        # Detect ranking type
+        if any(word in normalized for word in ['top', 'best', 'highest']):
+            ranking['ranking_type'] = 'top'
+        elif any(word in normalized for word in ['bottom', 'worst', 'lowest']):
+            ranking['ranking_type'] = 'bottom'
+        
+        # Extract limit
+        limit_match = re.search(r'(?:top|bottom|best|worst)\s+(\d+)', normalized)
+        if limit_match:
+            ranking['limit'] = int(limit_match.group(1))
         else:
-            logger.info("✅ AI Query Service v52.1 - READY")
-        logger.info("=" * 70)
-    
-    def _log_startup_summary(self):
-        logger.info("")
-        logger.info("📋 STARTUP VALIDATION SUMMARY:")
-        logger.info(f"   {'✅' if self.analytics_layer and self.analytics_layer.is_available() else '⚠️'} Analytics Service")
-        logger.info(f"   {'✅' if self.logistics_layer and self.logistics_layer.is_available() else '⚠️'} Logistics Service")
-        logger.info(f"   {'✅' if self.kpi_layer and self.kpi_layer.is_available() else '⚠️'} KPI Service")
-        logger.info(f"   {'✅' if self.ai_layer and self.ai_layer.is_available() else '⚠️'} AI Provider")
-        logger.info(f"   {'⚠️' if self.degraded_mode else '✅'} Mode: {'DEGRADED' if self.degraded_mode else 'FULL'}")
-        logger.info("")
-        logger.info("📋 ROUTES REGISTERED:")
-        for route in self.route_registry.get_all_routes():
-            logger.info(f"   • {route}")
-        logger.info("")
-        logger.info(f"📋 CACHE TTL: {RESPONSE_CACHE_TTL}s")
-        logger.info(f"📋 DEBUG MODE: {'ON' if DEBUG_MODE else 'OFF'}")
-    
-    def _add_audit_entry(self, entry: AuditEntry):
-        if ENABLE_AUDIT_TRAIL:
-            self.audit_trail.append(entry)
-            if len(self.audit_trail) > 1000:
-                self.audit_trail = self.audit_trail[-1000:]
-    
-    def _update_metrics(self, intent: str, response_type: str, response_time_ms: float, success: bool):
-        self.metrics["total_queries"] += 1
+            ranking['limit'] = 10  # Default
         
-        if intent not in self.metrics["by_intent"]:
-            self.metrics["by_intent"][intent] = 0
-        self.metrics["by_intent"][intent] += 1
-        
-        if response_type not in self.metrics["by_response_type"]:
-            self.metrics["by_response_type"][response_type] = 0
-        self.metrics["by_response_type"][response_type] += 1
-        
-        if success:
-            self.metrics["successful_queries"] += 1
+        # Extract sort order
+        if 'desc' in normalized or 'highest' in normalized or 'top' in normalized:
+            ranking['sort_order'] = 'desc'
+        elif 'asc' in normalized or 'lowest' in normalized or 'bottom' in normalized:
+            ranking['sort_order'] = 'asc'
         else:
-            self.metrics["failed_queries"] += 1
+            ranking['sort_order'] = 'desc'
         
-        self.metrics["total_response_time_ms"] += response_time_ms
-        self.metrics["avg_response_time_ms"] = (
-            self.metrics["total_response_time_ms"] / max(1, self.metrics["total_queries"])
+        # Extract sort by metric
+        if 'revenue' in normalized or 'sales' in normalized:
+            ranking['sort_by'] = 'revenue'
+        elif 'units' in normalized or 'quantity' in normalized:
+            ranking['sort_by'] = 'units'
+        elif 'aging' in normalized:
+            ranking['sort_by'] = 'aging'
+        elif 'pod' in normalized:
+            ranking['sort_by'] = 'pod_aging'
+        
+        return ranking
+    
+    # ==========================================================
+    # 8. EXTRACT COMPARISON
+    # ==========================================================
+    
+    def extract_comparison(self, normalized: str) -> Optional[Dict[str, str]]:
+        """
+        Identify comparison requests
+        
+        Examples: "Compare Lahore vs Karachi", "Compare Refrigerator vs TV"
+        """
+        # Pattern: compare X vs Y
+        pattern1 = r'compare\s+([a-z\s]+?)\s+vs\s+([a-z\s]+?)(?:$|\.|\s+for|\s+in)'
+        match1 = re.search(pattern1, normalized)
+        if match1:
+            return {
+                'left': match1.group(1).strip(),
+                'right': match1.group(2).strip()
+            }
+        
+        # Pattern: X vs Y
+        pattern2 = r'([a-z\s]+?)\s+vs\s+([a-z\s]+?)(?:$|\.|\s+for|\s+in)'
+        match2 = re.search(pattern2, normalized)
+        if match2:
+            return {
+                'left': match2.group(1).strip(),
+                'right': match2.group(2).strip()
+            }
+        
+        return None
+    
+    # ==========================================================
+    # 9. EXTRACT FILTERS
+    # ==========================================================
+    
+    def extract_filters(self, normalized: str, entities: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Extract business filters
+        
+        Example: "Top 5 dealers by revenue in Lahore this month"
+        Output: {"city": "lahore", "date": "this_month"}
+        """
+        filters = {}
+        
+        # Add entities as filters
+        if entities.get('city'):
+            filters['city'] = entities['city']
+        
+        if entities.get('warehouse'):
+            filters['warehouse'] = entities['warehouse']
+        
+        if entities.get('division'):
+            filters['division'] = entities['division']
+        
+        # Status filter
+        if 'pending' in normalized:
+            filters['status'] = 'pending'
+        elif 'delivered' in normalized:
+            filters['status'] = 'delivered'
+        
+        # Location filter (in X city)
+        location_match = re.search(r'in\s+([a-z]+)', normalized)
+        if location_match and location_match.group(1) in EntityPatterns.CITIES:
+            filters['city'] = location_match.group(1).title()
+        
+        return filters
+    
+    # ==========================================================
+    # 10. DETECT DASHBOARD TYPE
+    # ==========================================================
+    
+    def detect_dashboard_type(self, intent: str, entities: Dict[str, Any]) -> Optional[str]:
+        """
+        Identify dashboard request
+        
+        Possible Dashboards:
+        - dealer_dashboard
+        - warehouse_dashboard
+        - city_dashboard
+        - product_dashboard
+        - division_dashboard
+        - sales_manager_dashboard
+        - executive_dashboard
+        """
+        
+        if intent == IntentType.DEALER_DASHBOARD:
+            return "dealer_dashboard"
+        elif intent == IntentType.WAREHOUSE_DASHBOARD:
+            return "warehouse_dashboard"
+        elif intent == IntentType.CITY_DASHBOARD:
+            return "city_dashboard"
+        elif intent == IntentType.PRODUCT_DASHBOARD:
+            return "product_dashboard"
+        elif intent == IntentType.DIVISION_DASHBOARD:
+            return "division_dashboard"
+        elif intent == IntentType.SALES_MANAGER_DASHBOARD:
+            return "sales_manager_dashboard"
+        elif intent == IntentType.EXECUTIVE_DASHBOARD:
+            return "executive_dashboard"
+        elif intent == IntentType.KPI_REPORT:
+            return "kpi_dashboard"
+        
+        # Infer from entities
+        if entities.get('dealer'):
+            return "dealer_dashboard"
+        if entities.get('warehouse'):
+            return "warehouse_dashboard"
+        if entities.get('city'):
+            return "city_dashboard"
+        if entities.get('division'):
+            return "division_dashboard"
+        
+        return None
+    
+    # ==========================================================
+    # 11. BUILD QUERY PLAN
+    # ==========================================================
+    
+    def build_query_plan(
+        self,
+        intent: str,
+        entities: Dict[str, Any],
+        metric: Optional[str],
+        date_range: Optional[Dict[str, str]],
+        filters: Dict[str, Any],
+        ranking: Dict[str, Any],
+        comparison: Optional[Dict[str, str]],
+        dashboard_type: Optional[str],
+        normalized: str,
+        original: str
+    ) -> QueryPlan:
+        """
+        Build the complete QueryPlan object
+        
+        Combines all extracted information into a single plan
+        """
+        
+        # Determine entity type and value
+        entity_type = None
+        entity_value = None
+        
+        if entities.get('dealer'):
+            entity_type = 'dealer'
+            entity_value = entities['dealer']
+        elif entities.get('warehouse'):
+            entity_type = 'warehouse'
+            entity_value = entities['warehouse']
+        elif entities.get('city'):
+            entity_type = 'city'
+            entity_value = entities['city']
+        elif entities.get('division'):
+            entity_type = 'division'
+            entity_value = entities['division']
+        elif entities.get('product_code'):
+            entity_type = 'product'
+            entity_value = entities['product_code']
+        elif entities.get('dn_number'):
+            entity_type = 'dn'
+            entity_value = entities['dn_number']
+        
+        # Determine dimension
+        dimension = None
+        if intent == IntentType.RANKING:
+            if 'dealer' in normalized or 'dealer' in filters:
+                dimension = 'dealer'
+            elif 'warehouse' in normalized:
+                dimension = 'warehouse'
+            elif 'city' in normalized:
+                dimension = 'city'
+            elif 'product' in normalized:
+                dimension = 'product'
+        
+        # Set routing flags
+        requires_kpi = intent in [
+            IntentType.KPI_REPORT, IntentType.EXECUTIVE_DASHBOARD,
+            IntentType.POD_ANALYSIS, IntentType.PGI_ANALYSIS, IntentType.DELIVERY_ANALYSIS
+        ]
+        
+        requires_analytics = intent in [
+            IntentType.RANKING, IntentType.COMPARISON, IntentType.TREND, IntentType.CONTROL_TOWER
+        ]
+        
+        requires_control_tower = intent == IntentType.CONTROL_TOWER
+        requires_trend_analysis = intent == IntentType.TREND
+        requires_root_cause = intent == IntentType.ROOT_CAUSE
+        
+        return QueryPlan(
+            intent=intent,
+            entity_type=entity_type,
+            entity_value=entity_value,
+            metric=metric,
+            dimension=dimension,
+            date_range=date_range,
+            filters=filters,
+            ranking_type=ranking.get('ranking_type'),
+            limit=ranking.get('limit'),
+            sort_order=ranking.get('sort_order'),
+            sort_by=ranking.get('sort_by'),
+            comparison_entities=comparison,
+            dashboard_type=dashboard_type,
+            control_tower_type=self._detect_control_tower_type(normalized),
+            trend_period=self._detect_trend_period(normalized),
+            trend_metric=metric if metric in ['revenue', 'units', 'pod', 'pgi'] else None,
+            root_cause_target=self._detect_root_cause_target(normalized),
+            original_message=original,
+            normalized_message=normalized,
+            requires_kpi=requires_kpi,
+            requires_analytics=requires_analytics,
+            requires_control_tower=requires_control_tower,
+            requires_trend_analysis=requires_trend_analysis,
+            requires_root_cause=requires_root_cause
         )
     
-    def process(self, message: str, user_id: str = "guest", session_id: str = None) -> str:
-        import time
-        start_time = time.time()
-        cache_hit = False
+    # ==========================================================
+    # 12. DETECT CONTROL TOWER TYPE
+    # ==========================================================
+    
+    def _detect_control_tower_type(self, normalized: str) -> Optional[str]:
+        """Detect specific control tower query type"""
+        if 'critical deliveries' in normalized or 'stuck deliveries' in normalized:
+            return 'critical_deliveries'
+        if 'critical pod' in normalized or 'pending pod' in normalized:
+            return 'critical_pod'
+        if 'worst dealer' in normalized:
+            return 'worst_dealer'
+        if 'worst warehouse' in normalized:
+            return 'worst_warehouse'
+        return 'general'
+    
+    # ==========================================================
+    # 13. DETECT TREND PERIOD
+    # ==========================================================
+    
+    def _detect_trend_period(self, normalized: str) -> Optional[str]:
+        """Detect trend period (daily, weekly, monthly, quarterly, yearly)"""
+        if 'daily' in normalized or 'day by day' in normalized:
+            return 'daily'
+        if 'weekly' in normalized or 'week by week' in normalized:
+            return 'weekly'
+        if 'monthly' in normalized or 'month over month' in normalized:
+            return 'monthly'
+        if 'quarterly' in normalized or 'quarter over quarter' in normalized:
+            return 'quarterly'
+        if 'yearly' in normalized or 'year over year' in normalized:
+            return 'yearly'
+        return 'monthly'  # Default
+    
+    # ==========================================================
+    # 14. DETECT ROOT CAUSE TARGET
+    # ==========================================================
+    
+    def _detect_root_cause_target(self, normalized: str) -> Optional[str]:
+        """Detect what the root cause analysis is targeting"""
+        if 'delivery' in normalized and 'delay' in normalized:
+            return 'delivery_delays'
+        if 'pod' in normalized and 'aging' in normalized:
+            return 'pod_aging'
+        if 'lahore' in normalized:
+            return 'lahore'
+        if 'dealer' in normalized:
+            return 'dealer_performance'
+        return None
+    
+    # ==========================================================
+    # 15. GROQ QUERY PLANNER
+    # ==========================================================
+    
+    async def groq_query_planner(self, user_message: str) -> Optional[Dict[str, Any]]:
+        """
+        Use GROQ for complex questions
         
-        logger.info(f"📥 INCOMING | user={user_id} | query={message[:100]}")
+        Example: "Top 5 dealers by pending POD aging in Lahore this month"
+        Output: {"dimension": "dealer", "metric": "pending_pod_aging", "location": "lahore", "limit": 5}
+        """
+        if not self.groq_client:
+            logger.warning("GROQ client not available for query planning")
+            return None
         
-        # Extract entities (with fallback if dealer resolver not available)
-        dn = self.entity_extractor.extract_dn(message)
-        
-        if self.dealer_resolver:
-            dealer, dealer_conf = self.dealer_resolver.resolve(message) if not dn else (None, 0)
-        else:
-            dealer, dealer_conf = None, 0
-        
-        has_dn = dn is not None
-        has_dealer = dealer is not None
-        
-        # Detect intent
-        intent, response_type, confidence = self.intent_detector.detect(message, has_dn, has_dealer)
-        logger.info(f"🎯 INTENT | {intent} | type={response_type} | confidence={confidence:.2f}")
-        
-        # Get context for follow-up
-        context = self.conversation_context.get(user_id)
-        if intent == "follow_up" and context and context.has_context_within():
-            follow_up = context.get_follow_up_context()
-            if follow_up:
-                last_intent, last_response_type, last_entity = follow_up
-                logger.info(f"🔄 FOLLOW-UP | previous={last_intent}")
-                intent = last_intent or "operational"
-                response_type = last_response_type or response_type
-        
-        # Determine entity for routing
-        entity_type = "dn" if dn else ("dealer" if dealer else None)
-        entity_value = dn or dealer or None
-        
-        # Priority 13: Debug mode for DN not found
-        if DEBUG_MODE and intent == "dn" and entity_value and self.logistics_layer:
-            debug_result = self.logistics_layer.debug_search(entity_value)
-            if debug_result.get("error"):
-                logger.warning(f"Debug search: {debug_result}")
-        
-        # Route to appropriate handler
         try:
-            route_name = intent
-            if intent == "operational":
-                if response_type == "PENDING_POD":
-                    route_name = "operational_pod"
-                elif response_type == "CRITICAL_DELAYS":
-                    route_name = "operational_critical"
-                else:
-                    route_name = "operational_delivery"
+            system_prompt = """You are a query planning assistant. Convert user questions into structured JSON.
             
-            handler = self.route_registry.get_handler(route_name)
+            Output format:
+            {
+                "intent": "ranking|dashboard|comparison|trend|control_tower",
+                "dimension": "dealer|warehouse|city|product|division",
+                "metric": "revenue|units|dn_count|pod_aging|delivery_aging|pending_pod",
+                "filters": {"city": "lahore", "warehouse": "sargodha"},
+                "limit": 10,
+                "sort": "desc|asc",
+                "date_range": {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}
+            }
             
-            if not handler:
-                logger.warning(f"No handler found for route: {route_name}")
-                handler = self.route_registry.get_handler("clarification")
+            Only output JSON, no explanations."""
             
-            # Call handler with appropriate parameters
-            if intent == "dn" and entity_value:
-                response, resp_type, error_type, error_msg = handler(entity_value, user_id, {"query": message})
-            elif intent == "dealer" and entity_value:
-                response, resp_type, error_type, error_msg = handler(entity_value, user_id, {"query": message})
-            elif intent == "operational":
-                response, resp_type, error_type, error_msg = handler(message, user_id, {"query": message}, response_type)
-            elif intent == "executive":
-                response, resp_type, error_type, error_msg = handler(user_id, {"query": message})
-            elif intent == "root_cause":
-                response, resp_type, error_type, error_msg = handler(message, user_id, {"query": message})
-            elif intent == "follow_up":
-                response, resp_type, error_type, error_msg = handler(message, user_id, {"query": message})
-            else:
-                response, resp_type, error_type, error_msg = handler()
-            
-            response_time_ms = (time.time() - start_time) * 1000
-            
-            # Update context
-            if entity_type and entity_value:
-                if context:
-                    context.update(entity_type, entity_value, intent, resp_type)
-                else:
-                    new_context = ConversationContext()
-                    new_context.update(entity_type, entity_value, intent, resp_type)
-                    self.conversation_context[user_id] = new_context
-            elif context and resp_type in ["PENDING_POD", "PENDING_DELIVERY", "CRITICAL_DELAYS"]:
-                context.last_response_type = resp_type
-                context.last_intent = intent
-            
-            # Audit
-            entry = AuditEntry(
-                timestamp=datetime.now(),
-                query=message,
-                user_id=user_id,
-                intent=intent,
-                response_type=resp_type,
-                entity_type=entity_type or "unknown",
-                entity_value=entity_value,
-                confidence=confidence,
-                success=error_type is None,
-                response_time_ms=response_time_ms,
-                cache_hit=cache_hit,
-                error_type=error_type.value if error_type else None,
-                error_message=error_msg,
-                response_length=len(response)
+            response = self.groq_client.chat.completions.create(
+                model=config.GROQ_MODEL,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message}
+                ],
+                max_tokens=500,
+                temperature=0.1
             )
-            self._add_audit_entry(entry)
-            self._update_metrics(intent, resp_type, response_time_ms, error_type is None)
             
-            logger.info(f"📤 RESPONSE | type={resp_type} | length={len(response)} | time={response_time_ms:.0f}ms | success={error_type is None}")
+            result = response.choices[0].message.content
+            # Parse JSON from response
+            import json
+            json_match = re.search(r'\{.*\}', result, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group())
             
-            return response
+            return None
             
         except Exception as e:
-            logger.exception(f"❌ QUERY FAILED | {e}")
-            response_time_ms = (time.time() - start_time) * 1000
-            
-            entry = AuditEntry(
-                timestamp=datetime.now(),
-                query=message,
-                user_id=user_id,
-                intent=intent,
-                response_type="ERROR",
-                entity_type=entity_type or "unknown",
-                entity_value=entity_value,
-                confidence=confidence,
-                success=False,
-                response_time_ms=response_time_ms,
-                cache_hit=cache_hit,
-                error_type=ErrorType.UNKNOWN.value,
-                error_message=str(e),
-                response_length=0
-            )
-            self._add_audit_entry(entry)
-            self._update_metrics(intent, "ERROR", response_time_ms, False)
-            
-            return self.formatter.format_error_response(ErrorType.UNKNOWN, str(e), message)
+            logger.error(f"GROQ query planning failed: {e}")
+            return None
     
-    # Priority 3: Enhanced health check that works even in degraded mode
-    def health_check(self) -> Dict[str, Any]:
-        return {
-            "service": "ai_query_service",
-            "version": "52.1",
-            "architecture": "pure_router",
-            "status": "degraded" if self.degraded_mode else "healthy",
-            "initialized": True,
-            "degraded_mode": self.degraded_mode,
-            "startup_error": self.startup_error,
-            "startup_diagnostics": self.startup_diagnostics,
-            "timestamp": datetime.now().isoformat(),
-            "services": {
-                "analytics": self.analytics_layer.is_available() if self.analytics_layer else False,
-                "logistics": self.logistics_layer.is_available() if self.logistics_layer else False,
-                "kpi": self.kpi_layer.is_available() if self.kpi_layer else False,
-                "ai": self.ai_layer.is_available() if self.ai_layer else False
-            },
-            "service_versions": {
-                "analytics": self.analytics_layer._version if self.analytics_layer else None,
-                "logistics": self.logistics_layer._version if self.logistics_layer else None,
-                "kpi": self.kpi_layer._version if self.kpi_layer else None,
-                "ai": self.ai_layer._version if self.ai_layer else None
-            },
-            "routes": self.route_registry.get_all_routes(),
-            "cache": self.cache.get_stats(),
-            "uptime_seconds": (datetime.now() - self.metrics["start_time"]).total_seconds(),
-            "total_queries": self.metrics["total_queries"],
-            "success_rate": round(
-                self.metrics["successful_queries"] / max(1, self.metrics["total_queries"]) * 100, 2
-            )
-        }
+    # ==========================================================
+    # 16. VALIDATE QUERY PLAN
+    # ==========================================================
     
-    def get_metrics(self) -> Dict[str, Any]:
-        return {
-            "service": "ai_query_service",
-            "version": "52.1",
-            "architecture": "pure_router",
-            "degraded_mode": self.degraded_mode,
-            "startup_error": self.startup_error,
-            "uptime_seconds": round((datetime.now() - self.metrics["start_time"]).total_seconds(), 2),
-            "metrics": {
-                "total_queries": self.metrics["total_queries"],
-                "successful_queries": self.metrics["successful_queries"],
-                "failed_queries": self.metrics["failed_queries"],
-                "success_rate": round(
-                    self.metrics["successful_queries"] / max(1, self.metrics["total_queries"]) * 100, 2
-                ),
-                "avg_response_time_ms": round(self.metrics["avg_response_time_ms"], 2),
-                "by_intent": self.metrics["by_intent"],
-                "by_response_type": self.metrics["by_response_type"]
-            },
-            "cache": self.cache.get_stats(),
-            "services_available": {
-                "analytics": self.analytics_layer.is_available() if self.analytics_layer else False,
-                "logistics": self.logistics_layer.is_available() if self.logistics_layer else False,
-                "kpi": self.kpi_layer.is_available() if self.kpi_layer else False,
-                "ai": self.ai_layer.is_available() if self.ai_layer else False
-            },
-            "routes": self.route_registry.get_all_routes()
-        }
-    
-    def invalidate_cache(self, pattern: str = None):
-        self.cache.invalidate(pattern)
-        logger.info(f"Cache invalidated: pattern={pattern}")
-    
-    def get_audit_trail(self, limit: int = 50) -> List[Dict]:
-        return [entry.to_dict() for entry in self.audit_trail[-limit:]]
-
-
-# ==========================================================
-# SINGLETON & COMPATIBILITY FUNCTIONS
-# ==========================================================
-
-_query_service = None
-_initialization_attempted = False  # Priority 5: Prevent reinitialization loop
-
-
-def initialize_query_service(analytics_service=None, logistics_service=None,
-                             kpi_service=None, ai_provider=None) -> AIQueryService:
-    global _query_service, _initialization_attempted
-    
-    # Priority 5: Prevent reinitialization
-    if _initialization_attempted:
-        logger.warning("⚠️ initialize_query_service already called - returning existing instance")
-        if _query_service:
-            return _query_service
-    
-    _initialization_attempted = True
-    _query_service = AIQueryService(analytics_service, logistics_service, kpi_service, ai_provider)
-    return _query_service
-
-
-def get_query_service() -> AIQueryService:
-    global _query_service
-    
-    # Priority 5: NEVER initialize here - only return existing
-    if _query_service is None:
-        raise RuntimeError("AI Query Service not initialized. Call initialize_query_service() during startup.")
-    
-    return _query_service
-
-
-def process_query(message: str, user_id: str = "guest", session_id: str = None) -> str:
-    return get_query_service().process(message, user_id, session_id)
-
-
-def health_check() -> Dict[str, Any]:
-    if _query_service is None:
-        return {
-            "status": "uninitialized",
-            "version": "52.1",
-            "initialized": False,
-            "message": "Service not initialized. Call initialize_query_service() first."
-        }
-    return get_query_service().health_check()
-
-
-def get_metrics() -> Dict[str, Any]:
-    return get_query_service().get_metrics()
-
-
-def invalidate_cache(pattern: str = None):
-    return get_query_service().invalidate_cache(pattern)
-
-
-def get_audit_trail(limit: int = 50) -> List[Dict]:
-    return get_query_service().get_audit_trail(limit)
-
-
-# ==========================================================
-# CRITICAL: WHATSAPP COMPATIBILITY FUNCTION (No reinitialization)
-# ==========================================================
-
-def process_whatsapp_query(
-    question: str,
-    session_factory,
-    phone_number: str = None,
-    user_id: str = None,
-    request_id: str = None
-) -> str:
-    """
-    WhatsApp compatibility function - Entry point for webhook.
-    
-    CRITICAL: This function NO LONGER reinitializes the service.
-    If service is not initialized, it returns a friendly error.
-    """
-    req_id = request_id or str(uuid.uuid4())[:8]
-    user_id_final = user_id or phone_number or "guest"
-    
-    logger.bind(request_id=req_id).info(f"📞 WhatsApp query: {question[:100]}...")
-    
-    # Priority 5: Check if service is initialized - DO NOT REINITIALIZE
-    try:
-        query_service = get_query_service()
-    except RuntimeError as e:
-        logger.error(f"❌ Service not initialized: {e}")
-        return f"""
-⚠️ *Service Initializing*
-
-The AI service is still starting up. 
-
-📋 *What you can do:*
-• Wait 30 seconds and try again
-• Type `Help` to see available commands
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-💡 If this persists, please contact support.
-"""
-    
-    db = None
-    try:
-        # Note: We don't need to recreate services here
-        # They should have been created during app startup
+    def validate_query_plan(self, query_plan: QueryPlan) -> bool:
+        """
+        Verify plan is executable
         
-        response = query_service.process(question, user_id_final, req_id)
+        Checks:
+        - Entity Exists
+        - Metric Supported
+        - Date Valid
+        - Intent Valid
+        - Filters Valid
+        """
         
-        logger.bind(request_id=req_id).info(f"✅ Response: {len(response)} chars")
+        # Check intent is valid
+        valid_intents = [
+            IntentType.DEALER_DASHBOARD, IntentType.WAREHOUSE_DASHBOARD,
+            IntentType.CITY_DASHBOARD, IntentType.PRODUCT_DASHBOARD,
+            IntentType.DIVISION_DASHBOARD, IntentType.SALES_MANAGER_DASHBOARD,
+            IntentType.DN_LOOKUP, IntentType.DN_STATUS,
+            IntentType.POD_ANALYSIS, IntentType.PGI_ANALYSIS, IntentType.DELIVERY_ANALYSIS,
+            IntentType.KPI_REPORT, IntentType.EXECUTIVE_DASHBOARD,
+            IntentType.CONTROL_TOWER, IntentType.RANKING, IntentType.COMPARISON,
+            IntentType.TREND, IntentType.ROOT_CAUSE, IntentType.HELP
+        ]
         
-        return response
+        if query_plan.intent not in valid_intents:
+            logger.warning(f"Invalid intent: {query_plan.intent}")
+            return False
         
-    except Exception as e:
-        logger.bind(request_id=req_id).exception(f"Error: {e}")
-        return f"⚠️ Error: {type(e).__name__}. Please try again."
+        # For ranking, limit must be set
+        if query_plan.intent == IntentType.RANKING and not query_plan.limit:
+            query_plan.limit = 10  # Set default
         
-    finally:
-        if db:
-            db.close()
+        # For dashboard, entity must exist
+        if query_plan.intent in [IntentType.DEALER_DASHBOARD, IntentType.WAREHOUSE_DASHBOARD,
+                                  IntentType.CITY_DASHBOARD, IntentType.PRODUCT_DASHBOARD]:
+            if not query_plan.entity_value and not query_plan.dashboard_type:
+                logger.warning(f"Dashboard without entity: {query_plan}")
+                return False
+        
+        return True
+    
+    # ==========================================================
+    # 17. CALCULATE CONFIDENCE SCORE
+    # ==========================================================
+    
+    def calculate_confidence_score(self, query_plan: QueryPlan) -> float:
+        """
+        Measure parsing confidence
+        
+        Output: 0.00 -> 1.00
+        High confidence (0.8+): execute directly
+        Low confidence (0.5-0.8): execute with validation
+        Very low (0-0.5): send to GROQ
+        """
+        score = 0.0
+        
+        # Intent confidence (30%)
+        if query_plan.intent != IntentType.UNKNOWN:
+            score += 0.3
+        
+        # Entity confidence (25%)
+        if query_plan.entity_type and query_plan.entity_value:
+            score += 0.25
+        elif query_plan.entity_type or query_plan.entity_value:
+            score += 0.15
+        
+        # Metric confidence (20%)
+        if query_plan.metric:
+            score += 0.2
+        
+        # Filters confidence (15%)
+        if query_plan.filters:
+            score += 0.15
+        
+        # Date range confidence (10%)
+        if query_plan.date_range:
+            score += 0.1
+        
+        # Ranking has its own boost
+        if query_plan.ranking_type and query_plan.limit:
+            score = min(score + 0.15, 1.0)
+        
+        return round(score, 2)
 
 
 # ==========================================================
-# INITIALIZATION LOG
+# SINGLETON INSTANCE
 # ==========================================================
 
-logger.info("=" * 70)
-logger.info("🚀 AI QUERY SERVICE v52.1 - IMPROVED STARTUP STABILITY")
+_ai_query_service = None
+
+def get_ai_query_service() -> AIQueryService:
+    """Get singleton instance of AIQueryService"""
+    global _ai_query_service
+    if _ai_query_service is None:
+        _ai_query_service = AIQueryService()
+    return _ai_query_service
+
+
+# ==========================================================
+# INITIALIZATION LOGGING
+# ==========================================================
+
+logger.info("=" * 60)
+logger.info("AI Query Service - Natural Language Intelligence Engine")
+logger.info("=" * 60)
 logger.info("")
-logger.info("   ARCHITECTURE PRINCIPLES:")
-logger.info("   ✅ Pure Router - NO business logic")
-logger.info("   ✅ NO FAIL-FAST - Service starts even with missing methods")
-logger.info("   ✅ Degraded Mode - Partial availability keeps WhatsApp working")
-logger.info("   ✅ NO REINITIALIZATION - Service initializes once at startup")
+logger.info("   RESPONSIBILITIES:")
+logger.info("   ✅ Natural Language Understanding")
+logger.info("   ✅ Intent Detection")
+logger.info("   ✅ Entity Extraction")
+logger.info("   ✅ Metric Extraction")
+logger.info("   ✅ Date Intelligence")
+logger.info("   ✅ Ranking Detection")
+logger.info("   ✅ Comparison Detection")
+logger.info("   ✅ Query Planning")
 logger.info("")
-logger.info("   KEY IMPROVEMENTS v52.1:")
-logger.info("   • Removed RuntimeError on missing methods")
-logger.info("   • Added startup diagnostic report")
-logger.info("   • Dealer master cache for sub-100ms lookups")
-logger.info("   • Query performance logging")
-logger.info("   • Enhanced DN pattern for multiple formats")
-logger.info("   • Expanded method discovery")
-logger.info("   • Startup error tracking")
-logger.info("   • Health check works even in degraded mode")
+logger.info("   WHAT IT NEVER DOES:")
+logger.info("   ✗ SQL Queries")
+logger.info("   ✗ KPI Calculations")
+logger.info("   ✗ WhatsApp Sending")
+logger.info("   ✗ Dashboard Formatting")
 logger.info("")
-logger.info("   STATUS: ✅ PRODUCTION READY - IMPROVED STARTUP")
-logger.info("=" * 70)
+logger.info("   STATUS: ✅ READY")
+logger.info("=" * 60)
