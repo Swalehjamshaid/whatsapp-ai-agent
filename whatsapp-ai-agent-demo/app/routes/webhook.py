@@ -1,14 +1,15 @@
 # ==========================================================
-# FILE: app/routes/webhook.py (v30.0 - ENHANCED DIAGNOSTICS)
+# FILE: app/routes/webhook.py (v31.0 - FULL DIAGNOSTIC SUITE)
 # ==========================================================
-# PURPOSE: WhatsApp Webhook Handler - Routes to AI Query Service
+# PURPOSE: WhatsApp Webhook Handler with Complete Diagnostic Analysis
 # 
-# IMPROVEMENTS v30.0:
-# - ✅ ENHANCED DIAGNOSTICS for DN lookup failures
-# - ✅ Detailed logging of each search attempt
-# - ✅ Added diagnostic mode for troubleshooting
-# - ✅ Fixed integer conversion edge cases
-# - ✅ Added DN validation and formatting checks
+# IMPROVEMENTS v31.0:
+# - ✅ FULL DIAGNOSTIC SUITE - Identifies exact failure point
+# - ✅ Step-by-step execution tracing
+# - ✅ Component-level health checks
+# - ✅ Real-time failure analysis
+# - ✅ Automatic root cause detection
+# - ✅ Comprehensive debug output
 # ==========================================================
 
 import json
@@ -17,10 +18,11 @@ import uuid
 import re
 import asyncio
 import traceback
-from typing import Dict, Any, Optional, List
+import sys
+from typing import Dict, Any, Optional, List, Tuple
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import PlainTextResponse, JSONResponse
-from sqlalchemy import text, or_, cast, String, and_
+from sqlalchemy import text, or_, cast, String, and_, inspect
 from datetime import datetime, date
 from loguru import logger
 from cachetools import TTLCache
@@ -33,7 +35,7 @@ from app.models import DeliveryReport
 router = APIRouter(prefix="/webhook", tags=["WhatsApp Webhook"])
 
 # ==========================================================
-# CONSTANTS - INCREASED TIMEOUTS (PRESERVED)
+# CONSTANTS
 # ==========================================================
 
 MAX_MESSAGE_LENGTH = 3500
@@ -46,11 +48,12 @@ RATE_LIMIT_MAX_MESSAGES = 10
 RATE_LIMIT_WINDOW = 60
 AUTO_CLEANUP_INTERVAL = 500
 
-# Enable diagnostic mode for troubleshooting
-DIAGNOSTIC_MODE = True  # Set to False to disable detailed diagnostics
+# Enable full diagnostic mode
+DIAGNOSTIC_MODE = True
+VERBOSE_LOGGING = True
 
 # ==========================================================
-# CACHES (PRESERVED)
+# CACHES
 # ==========================================================
 
 processed_messages = TTLCache(maxsize=5000, ttl=3600)
@@ -58,7 +61,7 @@ rate_limit_cache = TTLCache(maxsize=10000, ttl=RATE_LIMIT_WINDOW)
 dn_cache = TTLCache(maxsize=1000, ttl=3600)
 
 # ==========================================================
-# METRICS (PRESERVED)
+# COMPREHENSIVE METRICS
 # ==========================================================
 
 metrics = {
@@ -83,12 +86,14 @@ metrics = {
         "direct_db_calls": 0,
         "fallback_mode": False
     },
-    "diagnostics": {  # NEW: Track diagnostic info
+    "diagnostics": {
         "dn_lookup_attempts": 0,
         "dn_lookup_successes": 0,
         "dn_lookup_failures": 0,
         "last_failed_dn": None,
-        "last_error_trace": None
+        "last_error_trace": None,
+        "component_status": {},
+        "execution_path": []
     }
 }
 
@@ -96,47 +101,56 @@ WHATSAPP_SERVICE_AVAILABLE = False
 AI_SERVICE_AVAILABLE = False
 
 # ==========================================================
-# WHATSAPP SERVICE IMPORT (PRESERVED)
+# SERVICE IMPORTS WITH DIAGNOSTICS
 # ==========================================================
 
+logger.info("=" * 80)
+logger.info("🔍 WEBHOOK v31.0 - FULL DIAGNOSTIC SUITE INITIALIZING")
+logger.info("=" * 80)
+
+# Import WhatsApp Service
 try:
     from app.services.whatsapp_service import send_text_message
     WHATSAPP_SERVICE_AVAILABLE = True
-    logger.info("✅ WhatsApp Service loaded successfully")
+    logger.info("✅ [COMPONENT] WhatsApp Service: LOADED")
+    metrics["diagnostics"]["component_status"]["whatsapp_service"] = "healthy"
 except ImportError as e:
-    logger.error(f"❌ WhatsApp Service import failed: {e}")
+    logger.error(f"❌ [COMPONENT] WhatsApp Service: IMPORT FAILED - {e}")
+    metrics["diagnostics"]["component_status"]["whatsapp_service"] = f"import_error: {e}"
 except Exception as e:
-    logger.error(f"❌ WhatsApp Service error: {e}")
+    logger.error(f"❌ [COMPONENT] WhatsApp Service: ERROR - {e}")
+    metrics["diagnostics"]["component_status"]["whatsapp_service"] = f"error: {e}"
 
-# ==========================================================
-# SERVICE LAYER IMPORTS (NEW v29.0)
-# ==========================================================
-
+# Import AI Query Service
 try:
     from app.services.ai_query_service import process_whatsapp_query, get_query_service, initialize_query_service
     from app.services.logistics_query_service import get_logistics_query_service
     from app.services.analytics_service import AnalyticsService
     AI_SERVICE_AVAILABLE = True
-    logger.info("✅ AI Query Service loaded successfully (v52.1)")
+    logger.info("✅ [COMPONENT] AI Query Service: LOADED")
+    metrics["diagnostics"]["component_status"]["ai_service"] = "loaded"
 except ImportError as e:
-    logger.warning(f"⚠️ AI Query Service import failed: {e} - Will use direct DB fallback")
+    logger.warning(f"⚠️ [COMPONENT] AI Query Service: IMPORT FAILED - {e}")
     AI_SERVICE_AVAILABLE = False
+    metrics["diagnostics"]["component_status"]["ai_service"] = f"import_error: {e}"
 except Exception as e:
-    logger.warning(f"⚠️ AI Query Service error: {e} - Will use direct DB fallback")
+    logger.warning(f"⚠️ [COMPONENT] AI Query Service: ERROR - {e}")
     AI_SERVICE_AVAILABLE = False
+    metrics["diagnostics"]["component_status"]["ai_service"] = f"error: {e}"
 
 # ==========================================================
-# SERVICE INITIALIZATION FLAG (NEW v29.0)
+# SERVICE INITIALIZATION
 # ==========================================================
 
 _services_initialized = False
 
 def ensure_services_initialized():
-    """Initialize services once at startup (not per request)"""
     global _services_initialized, AI_SERVICE_AVAILABLE
     
     if _services_initialized:
         return
+    
+    logger.info("🔧 Initializing services...")
     
     if AI_SERVICE_AVAILABLE:
         try:
@@ -152,57 +166,49 @@ def ensure_services_initialized():
                     kpi_service=None,
                     ai_provider=None
                 )
-                logger.info("✅ AI Query Service initialized with logistics + analytics")
+                logger.info("✅ [COMPONENT] AI Query Service: INITIALIZED")
+                metrics["diagnostics"]["component_status"]["ai_service"] = "initialized"
                 _services_initialized = True
             finally:
                 db.close()
         except Exception as e:
-            logger.error(f"❌ Service initialization failed: {e}")
+            logger.error(f"❌ [COMPONENT] AI Query Service: INIT FAILED - {e}")
             AI_SERVICE_AVAILABLE = False
+            metrics["diagnostics"]["component_status"]["ai_service"] = f"init_error: {e}"
             _services_initialized = False
     else:
         logger.info("⚠️ AI Service not available - using direct database fallback")
+        metrics["diagnostics"]["component_status"]["ai_service"] = "fallback_mode"
         _services_initialized = True
 
 # ==========================================================
-# ENHANCED DN NORMALIZATION (FIXED)
+# DN NORMALIZATION & VALIDATION
 # ==========================================================
 
 def normalize_dn(dn_value) -> str:
-    """
-    Normalize DN number for database lookup
-    FIXED: Better handling of different formats
-    """
     if dn_value is None:
         return ""
     
     dn_str = str(dn_value).strip()
     
-    # Remove .0 suffix (common from Excel imports)
     if dn_str.endswith('.0'):
         dn_str = dn_str[:-2]
     
-    # Remove any non-numeric characters except leading zeros
-    # But preserve the original length for debugging
     original_len = len(dn_str)
     dn_str = re.sub(r'[^0-9]', '', dn_str)
     
     if DIAGNOSTIC_MODE and original_len != len(dn_str):
-        logger.debug(f"Normalized DN: '{dn_value}' -> '{dn_str}' (removed {original_len - len(dn_str)} non-numeric chars)")
+        logger.debug(f"📝 Normalized DN: '{dn_value}' -> '{dn_str}'")
     
     return dn_str
 
 
 def validate_dn_format(dn_str: str) -> Dict[str, Any]:
-    """
-    Validate DN format and return diagnostic info
-    NEW: Enhanced validation with detailed diagnostics
-    """
     result = {
         "original": dn_str,
         "normalized": normalize_dn(dn_str),
         "length": len(dn_str),
-        "is_numeric": dn_str.isdigit(),
+        "is_numeric": dn_str.isdigit() if dn_str else False,
         "starts_with_624": dn_str.startswith("624") if dn_str else False,
         "valid_format": False,
         "suggestions": []
@@ -210,32 +216,27 @@ def validate_dn_format(dn_str: str) -> Dict[str, Any]:
     
     normalized = result["normalized"]
     
-    # Check if it's a valid DN format
     if normalized and normalized.isdigit():
         if len(normalized) >= 9 and len(normalized) <= 12:
             result["valid_format"] = True
-            result["suggestions"].append("Format looks valid")
+            result["suggestions"].append("✓ Format looks valid")
         elif len(normalized) < 9:
-            result["suggestions"].append(f"DN too short ({len(normalized)} digits). Expected 9-12 digits")
+            result["suggestions"].append(f"⚠️ DN too short ({len(normalized)} digits). Expected 9-12 digits")
         else:
-            result["suggestions"].append(f"DN too long ({len(normalized)} digits). Expected 9-12 digits")
+            result["suggestions"].append(f"⚠️ DN too long ({len(normalized)} digits). Expected 9-12 digits")
     else:
-        result["suggestions"].append("DN contains non-numeric characters")
+        result["suggestions"].append("❌ DN contains non-numeric characters")
     
     return result
 
 
 def is_dn_number(text: str) -> bool:
-    """Check if text looks like a DN number"""
-    # Remove any whitespace and special characters
     cleaned = re.sub(r'[^0-9]', '', text.strip())
-    # Check if it's 10-12 digits (typical DN length)
     pattern = r'^\d{10,12}$'
     return bool(re.match(pattern, cleaned))
 
 
 def calculate_priority(days: int) -> str:
-    """Calculate priority based on days"""
     if days > 14:
         return "CRITICAL"
     elif days > 7:
@@ -246,233 +247,257 @@ def calculate_priority(days: int) -> str:
 
 
 # ==========================================================
-# ENHANCED DATABASE LOOKUP WITH DIAGNOSTICS (FIXED)
+# COMPLETE DATABASE DIAGNOSTIC FUNCTION
 # ==========================================================
 
-def diagnose_database_schema():
-    """
-    Diagnostic function to check database schema
-    NEW: Helps identify if the issue is schema-related
-    """
+def diagnose_database_complete() -> Dict[str, Any]:
+    """Complete database diagnosis - identifies schema and data issues"""
     db = None
+    diagnosis = {
+        "database_connected": False,
+        "table_exists": False,
+        "columns": [],
+        "dn_column_type": None,
+        "total_records": 0,
+        "sample_dns": [],
+        "dn_length_distribution": {},
+        "issues_found": [],
+        "recommendations": []
+    }
+    
     try:
         db = SessionLocal()
+        diagnosis["database_connected"] = True
         
-        # Check if DeliveryReport table exists and has expected columns
-        inspector = db.execute(text("""
-            SELECT column_name, data_type 
-            FROM information_schema.columns 
-            WHERE table_name = 'delivery_reports'
-        """))
-        
-        columns = {row[0]: row[1] for row in inspector}
-        
-        logger.info(f"📊 Database schema check:")
-        logger.info(f"   Columns found: {list(columns.keys())}")
-        
-        # Check sample data
-        sample = db.execute(text("SELECT dn_no FROM delivery_reports LIMIT 5")).fetchall()
-        if sample:
-            logger.info(f"   Sample DNs in DB: {[str(s[0]) for s in sample]}")
+        # Check if table exists
+        inspector = inspect(db.bind)
+        if "delivery_reports" in inspector.get_table_names():
+            diagnosis["table_exists"] = True
+            
+            # Get columns
+            columns = inspector.get_columns("delivery_reports")
+            diagnosis["columns"] = [c["name"] for c in columns]
+            
+            # Get dn_no column type
+            for col in columns:
+                if col["name"] == "dn_no":
+                    diagnosis["dn_column_type"] = str(col["type"])
+                    break
+            
+            # Get total records
+            diagnosis["total_records"] = db.query(DeliveryReport).count()
+            
+            # Get sample DNs
+            samples = db.query(DeliveryReport.dn_no).limit(10).all()
+            diagnosis["sample_dns"] = [str(s[0]) for s in samples if s[0]]
+            
+            # Analyze DN length distribution
+            length_dist = db.execute("""
+                SELECT LENGTH(CAST(dn_no AS TEXT)) as dn_len, COUNT(*) 
+                FROM delivery_reports 
+                WHERE dn_no IS NOT NULL 
+                GROUP BY dn_len 
+                ORDER BY dn_len
+            """).fetchall()
+            diagnosis["dn_length_distribution"] = {str(l[0]): l[1] for l in length_dist}
+            
+            # Identify issues
+            if diagnosis["total_records"] == 0:
+                diagnosis["issues_found"].append("Database has NO records")
+                diagnosis["recommendations"].append("Import delivery data into database")
+            
+            if not diagnosis["sample_dns"]:
+                diagnosis["issues_found"].append("No DN numbers found in database")
+                diagnosis["recommendations"].append("Check if dn_no column has data")
+            
+            if diagnosis["dn_column_type"] and "INTEGER" in diagnosis["dn_column_type"].upper():
+                diagnosis["recommendations"].append("DN column is INTEGER - search with numbers only")
+            elif diagnosis["dn_column_type"] and "VARCHAR" in diagnosis["dn_column_type"].upper():
+                diagnosis["recommendations"].append("DN column is VARCHAR - search with string patterns")
+            
         else:
-            logger.warning("   No data found in delivery_reports table!")
-        
-        return {
-            "has_table": True,
-            "columns": list(columns.keys()),
-            "sample_dns": [str(s[0]) for s in sample] if sample else [],
-            "row_count": db.execute(text("SELECT COUNT(*) FROM delivery_reports")).scalar()
-        }
+            diagnosis["issues_found"].append("Table 'delivery_reports' does not exist")
+            diagnosis["recommendations"].append("Create the delivery_reports table or check database migration")
+            
     except Exception as e:
-        logger.error(f"Schema diagnosis failed: {e}")
-        return {"error": str(e)}
+        diagnosis["issues_found"].append(f"Database connection error: {str(e)}")
+        diagnosis["recommendations"].append("Check database connection string and credentials")
+        
     finally:
         if db:
             db.close()
+    
+    return diagnosis
 
+
+# ==========================================================
+# ENHANCED DN LOOKUP WITH FULL TRACING
+# ==========================================================
 
 def get_dn_details_from_db(dn_number: str) -> Optional[Dict[str, Any]]:
-    """
-    Get DN details directly from database.
-    CRITICAL FIX: Enhanced with comprehensive search strategies and diagnostics.
-    """
+    """Get DN details with complete execution tracing"""
     
-    # Update diagnostics metrics
+    # Track this lookup attempt
     metrics["diagnostics"]["dn_lookup_attempts"] += 1
+    execution_trace = []
     
-    diagnostic_log = {
-        "dn_number": dn_number,
+    # Add to execution path
+    trace_entry = {
         "timestamp": datetime.now().isoformat(),
-        "search_attempts": []
+        "dn": dn_number,
+        "step": "start_lookup",
+        "status": "initiated"
     }
+    metrics["diagnostics"]["execution_path"].append(trace_entry)
+    execution_trace.append(trace_entry)
     
     # Check cache first
     if dn_number in dn_cache:
-        logger.info(f"📦 DN cache hit (fallback): {dn_number}")
+        logger.info(f"📦 DN cache hit: {dn_number}")
         metrics["diagnostics"]["dn_lookup_successes"] += 1
+        trace_entry = {"step": "cache_check", "status": "hit", "result": "cached"}
+        execution_trace.append(trace_entry)
         return dn_cache[dn_number]
+    
+    trace_entry = {"step": "cache_check", "status": "miss"}
+    execution_trace.append(trace_entry)
     
     db = None
     try:
         db = SessionLocal()
         normalized = normalize_dn(dn_number)
         
-        diagnostic_log["normalized"] = normalized
-        
         # Validate format
         validation = validate_dn_format(dn_number)
-        diagnostic_log["validation"] = validation
+        trace_entry = {"step": "validate_format", "valid": validation["valid_format"], "normalized": normalized}
+        execution_trace.append(trace_entry)
         
-        logger.info(f"🔍 Starting enhanced DN search for: {dn_number} (normalized: {normalized})")
+        logger.info(f"🔍 DN Lookup: {dn_number} (normalized: {normalized})")
         
-        # Strategy 1: Try as INTEGER (most common for PostgreSQL)
-        normalized_int = None
+        # Strategy 1: INTEGER exact match
+        records = None
+        strategy_used = None
+        
         try:
             if normalized and normalized.isdigit():
                 normalized_int = int(normalized)
-                logger.info(f"   Strategy 1: Searching as INTEGER: {normalized_int}")
-                diagnostic_log["search_attempts"].append({
-                    "strategy": "integer_exact",
-                    "value": normalized_int,
-                    "result": None
-                })
+                logger.info(f"   📍 Strategy 1: INTEGER = {normalized_int}")
+                trace_entry = {"step": "strategy_1_integer", "value": normalized_int}
                 
                 int_records = db.query(DeliveryReport).filter(DeliveryReport.dn_no == normalized_int).all()
                 
                 if int_records:
-                    logger.info(f"   ✅ Found {len(int_records)} record(s) via INTEGER search")
-                    diagnostic_log["search_attempts"][-1]["result"] = f"found_{len(int_records)}_records"
-                    # Use these records
+                    logger.info(f"   ✅ Found {len(int_records)} record(s) via INTEGER")
                     records = int_records
+                    strategy_used = "INTEGER_EXACT"
+                    trace_entry["status"] = "success"
+                    trace_entry["count"] = len(int_records)
+                    execution_trace.append(trace_entry)
                 else:
-                    diagnostic_log["search_attempts"][-1]["result"] = "not_found"
-                    records = None
-            else:
-                records = None
-        except ValueError as ve:
-            logger.warning(f"   Strategy 1 failed: Cannot convert '{normalized}' to integer - {ve}")
-            diagnostic_log["search_attempts"].append({
-                "strategy": "integer_exact",
-                "value": normalized,
-                "result": f"conversion_error: {str(ve)}"
-            })
-            records = None
+                    trace_entry["status"] = "not_found"
+                    execution_trace.append(trace_entry)
+        except Exception as e:
+            trace_entry = {"step": "strategy_1_integer", "status": "error", "error": str(e)}
+            execution_trace.append(trace_entry)
         
-        # Strategy 2: Try as STRING exact match
+        # Strategy 2: STRING exact match
         if not records:
-            logger.info(f"   Strategy 2: Searching as STRING exact: '{normalized}'")
-            diagnostic_log["search_attempts"].append({
-                "strategy": "string_exact",
-                "value": normalized,
-                "result": None
-            })
+            logger.info(f"   📍 Strategy 2: STRING = '{normalized}'")
+            trace_entry = {"step": "strategy_2_string", "value": normalized}
             
             string_records = db.query(DeliveryReport).filter(
                 cast(DeliveryReport.dn_no, String) == normalized
             ).all()
             
             if string_records:
-                logger.info(f"   ✅ Found {len(string_records)} record(s) via STRING exact search")
-                diagnostic_log["search_attempts"][-1]["result"] = f"found_{len(string_records)}_records"
+                logger.info(f"   ✅ Found {len(string_records)} record(s) via STRING")
                 records = string_records
+                strategy_used = "STRING_EXACT"
+                trace_entry["status"] = "success"
+                trace_entry["count"] = len(string_records)
+                execution_trace.append(trace_entry)
             else:
-                diagnostic_log["search_attempts"][-1]["result"] = "not_found"
-                records = None
+                trace_entry["status"] = "not_found"
+                execution_trace.append(trace_entry)
         
-        # Strategy 3: Try with .0 suffix (common from Excel)
+        # Strategy 3: With .0 suffix
         if not records and not normalized.endswith('.0'):
             with_dot_zero = f"{normalized}.0"
-            logger.info(f"   Strategy 3: Searching with .0 suffix: '{with_dot_zero}'")
-            diagnostic_log["search_attempts"].append({
-                "strategy": "string_with_dot_zero",
-                "value": with_dot_zero,
-                "result": None
-            })
+            logger.info(f"   📍 Strategy 3: With .0 = '{with_dot_zero}'")
+            trace_entry = {"step": "strategy_3_dot_zero", "value": with_dot_zero}
             
             dot_zero_records = db.query(DeliveryReport).filter(
                 cast(DeliveryReport.dn_no, String) == with_dot_zero
             ).all()
             
             if dot_zero_records:
-                logger.info(f"   ✅ Found {len(dot_zero_records)} record(s) via .0 suffix search")
-                diagnostic_log["search_attempts"][-1]["result"] = f"found_{len(dot_zero_records)}_records"
+                logger.info(f"   ✅ Found {len(dot_zero_records)} record(s) via .0 suffix")
                 records = dot_zero_records
+                strategy_used = "DOT_ZERO_SUFFIX"
+                trace_entry["status"] = "success"
+                trace_entry["count"] = len(dot_zero_records)
+                execution_trace.append(trace_entry)
             else:
-                diagnostic_log["search_attempts"][-1]["result"] = "not_found"
-                records = None
+                trace_entry["status"] = "not_found"
+                execution_trace.append(trace_entry)
         
-        # Strategy 4: Try CONTAINS/LIKE search (most permissive)
+        # Strategy 4: CONTAINS pattern
         if not records:
-            logger.info(f"   Strategy 4: Searching with CONTAINS pattern: '%{normalized}%'")
-            diagnostic_log["search_attempts"].append({
-                "strategy": "contains_pattern",
-                "value": f"%{normalized}%",
-                "result": None
-            })
+            logger.info(f"   📍 Strategy 4: CONTAINS '%{normalized}%'")
+            trace_entry = {"step": "strategy_4_contains", "pattern": f"%{normalized}%"}
             
             like_records = db.query(DeliveryReport).filter(
                 cast(DeliveryReport.dn_no, String).like(f"%{normalized}%")
             ).all()
             
             if like_records:
-                logger.info(f"   ✅ Found {len(like_records)} record(s) via CONTAINS search")
-                diagnostic_log["search_attempts"][-1]["result"] = f"found_{len(like_records)}_records"
+                logger.info(f"   ✅ Found {len(like_records)} record(s) via CONTAINS")
                 records = like_records
+                strategy_used = "CONTAINS_PATTERN"
+                trace_entry["status"] = "success"
+                trace_entry["count"] = len(like_records)
+                execution_trace.append(trace_entry)
             else:
-                diagnostic_log["search_attempts"][-1]["result"] = "not_found"
-                records = None
+                trace_entry["status"] = "not_found"
+                execution_trace.append(trace_entry)
         
-        # Strategy 5: Try as integer with different lengths (remove leading zeros if any)
-        if not records and normalized_int:
-            # Try with different length variations
-            variations = []
-            if len(normalized) > 10:
-                variations.append(normalized[1:])  # Remove first digit
-            if len(normalized) < 12:
-                variations.append(f"0{normalized}")  # Add leading zero
-            
-            for var in variations:
-                if var and var.isdigit():
-                    logger.info(f"   Strategy 5: Trying variation: {var}")
-                    diagnostic_log["search_attempts"].append({
-                        "strategy": "integer_variation",
-                        "value": var,
-                        "result": None
-                    })
-                    
-                    var_int = int(var)
-                    var_records = db.query(DeliveryReport).filter(DeliveryReport.dn_no == var_int).all()
-                    
-                    if var_records:
-                        logger.info(f"   ✅ Found {len(var_records)} record(s) via variation search")
-                        diagnostic_log["search_attempts"][-1]["result"] = f"found_{len(var_records)}_records"
-                        records = var_records
-                        break
-                    else:
-                        diagnostic_log["search_attempts"][-1]["result"] = "not_found"
-        
-        # If still no records found
+        # If no records found - DIAGNOSE WHY
         if not records:
-            logger.warning(f"❌ DN {dn_number} not found in database after all search strategies")
+            logger.warning(f"❌ DN {dn_number} NOT FOUND after all strategies")
             
-            # Store diagnostic info for this failure
+            # Get diagnostic info
+            diagnosis = diagnose_database_complete()
+            
+            # Find similar DNs
+            similar_dns = []
+            if normalized and len(normalized) >= 5:
+                prefix = normalized[:5]
+                db_similar = db.query(DeliveryReport.dn_no).filter(
+                    cast(DeliveryReport.dn_no, String).like(f"{prefix}%")
+                ).limit(10).all()
+                similar_dns = [str(s[0]) for s in db_similar]
+            
+            # Store failure details
+            failure_details = {
+                "dn": dn_number,
+                "normalized": normalized,
+                "validation": validation,
+                "strategies_tried": len([t for t in execution_trace if "strategy" in t.get("step", "")]),
+                "similar_dns_in_db": similar_dns[:5],
+                "database_diagnosis": diagnosis,
+                "execution_trace": execution_trace,
+                "timestamp": datetime.now().isoformat()
+            }
+            
             metrics["diagnostics"]["dn_lookup_failures"] += 1
             metrics["diagnostics"]["last_failed_dn"] = dn_number
-            metrics["diagnostics"]["last_error_trace"] = diagnostic_log
-            
-            # In diagnostic mode, log detailed failure info
-            if DIAGNOSTIC_MODE:
-                logger.error(f"   Diagnostic details for failed DN {dn_number}:")
-                logger.error(f"   - Validation: {validation}")
-                logger.error(f"   - Search attempts: {len(diagnostic_log['search_attempts'])}")
-                for attempt in diagnostic_log['search_attempts']:
-                    logger.error(f"     * {attempt['strategy']}: {attempt['result']}")
+            metrics["diagnostics"]["last_error_trace"] = failure_details
             
             return None
         
-        logger.info(f"✅ DN {dn_number} found! Processing {len(records)} records")
+        # Process found records
+        logger.info(f"✅ DN found using strategy: {strategy_used}")
         
-        # Process the found records (same as before)
         first = records[0]
         dn_date = first.dn_create_date
         pod_date = first.pod_date
@@ -546,29 +571,43 @@ def get_dn_details_from_db(dn_number: str) -> Optional[Dict[str, Any]]:
             "total_amount": total_amount,
             "products": products[:5],
             "delivery_status": delivery_status,
-            "pod_status": pod_status
+            "pod_status": pod_status,
+            "_diagnostic": {
+                "strategy_used": strategy_used,
+                "records_found": len(records),
+                "trace_summary": execution_trace[-3:]  # Last 3 steps
+            }
         }
         
-        # Cache the result
         dn_cache[dn_number] = result
         metrics["diagnostics"]["dn_lookup_successes"] += 1
         
         return result
         
     except Exception as e:
-        logger.error(f"❌ DN database lookup error: {e}")
+        logger.error(f"❌ DN lookup error: {e}")
         logger.error(traceback.format_exc())
+        
+        error_details = {
+            "dn": dn_number,
+            "error": str(e),
+            "trace": traceback.format_exc(),
+            "execution_trace": execution_trace
+        }
         metrics["diagnostics"]["dn_lookup_failures"] += 1
-        metrics["diagnostics"]["last_error_trace"] = str(e)
+        metrics["diagnostics"]["last_error_trace"] = error_details
+        
         return None
     finally:
         if db:
             db.close()
 
 
+# ==========================================================
+# RESPONSE FORMATTERS
+# ==========================================================
+
 def format_dn_response(details: Dict[str, Any]) -> str:
-    """Format DN response for WhatsApp with diagnostic info if in debug mode"""
-    
     products_text = ""
     for idx, p in enumerate(details.get('products', []), 1):
         products_text += f"\n   {idx}. {p['model']} - Qty: {p['quantity']}"
@@ -612,9 +651,92 @@ def format_dn_response(details: Dict[str, Any]) -> str:
 """
 
 
-def search_dealer_in_db(dealer_name: str) -> Optional[Dict[str, Any]]:
-    """Search for dealer in database (PRESERVED as fallback)"""
+def format_diagnostic_not_found_response(dn_number: str) -> str:
+    """Format response with full diagnostic analysis when DN not found"""
     
+    failure_details = metrics["diagnostics"].get("last_error_trace", {})
+    validation = validate_dn_format(dn_number)
+    
+    # Get database diagnosis
+    db_diagnosis = diagnose_database_complete()
+    
+    # Build diagnostic message
+    diagnostic_sections = []
+    
+    # Section 1: Format Validation
+    diagnostic_sections.append("🔍 *FORMAT VALIDATION*")
+    diagnostic_sections.append(f"• DN: {dn_number}")
+    diagnostic_sections.append(f"• Length: {validation['length']} digits")
+    diagnostic_sections.append(f"• Valid Format: {'✅' if validation['valid_format'] else '❌'}")
+    for suggestion in validation['suggestions']:
+        diagnostic_sections.append(f"• {suggestion}")
+    
+    # Section 2: Database Status
+    diagnostic_sections.append("")
+    diagnostic_sections.append("🗄️ *DATABASE STATUS*")
+    diagnostic_sections.append(f"• Connected: {'✅' if db_diagnosis['database_connected'] else '❌'}")
+    diagnostic_sections.append(f"• Table exists: {'✅' if db_diagnosis['table_exists'] else '❌'}")
+    diagnostic_sections.append(f"• Total records: {db_diagnosis['total_records']:,}")
+    diagnostic_sections.append(f"• DN column type: {db_diagnosis.get('dn_column_type', 'Unknown')}")
+    
+    # Section 3: Sample DNs
+    if db_diagnosis.get('sample_dns'):
+        diagnostic_sections.append("")
+        diagnostic_sections.append("📋 *SAMPLE DNS IN DATABASE*")
+        for sample in db_diagnosis['sample_dns'][:5]:
+            diagnostic_sections.append(f"• {sample}")
+    
+    # Section 4: Similar DNs
+    if failure_details and failure_details.get("similar_dns_in_db"):
+        diagnostic_sections.append("")
+        diagnostic_sections.append("🔎 *SIMILAR DNS FOUND*")
+        for similar in failure_details["similar_dns_in_db"][:3]:
+            diagnostic_sections.append(f"• {similar}")
+    
+    # Section 5: Search Attempts
+    if failure_details and failure_details.get("execution_trace"):
+        strategies = [t for t in failure_details["execution_trace"] if "strategy" in t.get("step", "")]
+        diagnostic_sections.append("")
+        diagnostic_sections.append("🎯 *SEARCH STRATEGIES TRIED*")
+        for s in strategies:
+            status_icon = "✅" if s.get("status") == "success" else "❌" if s.get("status") == "not_found" else "⚠️"
+            diagnostic_sections.append(f"• {status_icon} {s.get('step', 'Unknown').replace('_', ' ').title()}")
+    
+    # Section 6: Recommendations
+    if db_diagnosis.get('recommendations'):
+        diagnostic_sections.append("")
+        diagnostic_sections.append("💡 *RECOMMENDATIONS*")
+        for rec in db_diagnosis['recommendations'][:3]:
+            diagnostic_sections.append(f"• {rec}")
+    
+    diagnostic_sections.append("")
+    diagnostic_sections.append("📞 *NEXT STEPS*")
+    diagnostic_sections.append("• Verify the DN number is correct")
+    diagnostic_sections.append("• Check if DN exists in your source system")
+    diagnostic_sections.append("• Contact support with this diagnostic info")
+    
+    diagnostic_text = "\n".join(diagnostic_sections)
+    
+    return f"""
+📦 *DN SEARCH - DIAGNOSTIC REPORT*
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔢 *DN Number:* {dn_number}
+
+❌ *NOT FOUND IN DATABASE*
+
+{diagnostic_text}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 Type `Help` for available commands
+"""
+
+
+# ==========================================================
+# OTHER DATABASE FUNCTIONS
+# ==========================================================
+
+def search_dealer_in_db(dealer_name: str) -> Optional[Dict[str, Any]]:
     db = None
     try:
         db = SessionLocal()
@@ -624,7 +746,7 @@ def search_dealer_in_db(dealer_name: str) -> Optional[Dict[str, Any]]:
         ).all()
         
         if not records:
-            logger.warning(f"Dealer '{dealer_name}' not found (fallback)")
+            logger.warning(f"Dealer '{dealer_name}' not found")
             return None
         
         unique_dns = set()
@@ -696,7 +818,7 @@ def search_dealer_in_db(dealer_name: str) -> Optional[Dict[str, Any]]:
         return result
         
     except Exception as e:
-        logger.error(f"Dealer search error (fallback): {e}")
+        logger.error(f"Dealer search error: {e}")
         return None
     finally:
         if db:
@@ -704,8 +826,6 @@ def search_dealer_in_db(dealer_name: str) -> Optional[Dict[str, Any]]:
 
 
 def format_dealer_response(details: Dict[str, Any]) -> str:
-    """Format dealer response for WhatsApp (PRESERVED)"""
-    
     return f"""
 🏪 *DEALER DASHBOARD*
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -734,7 +854,6 @@ def format_dealer_response(details: Dict[str, Any]) -> str:
 
 
 def get_pending_summary_from_db() -> Dict[str, Any]:
-    """Get pending deliveries summary (PRESERVED as fallback)"""
     db = None
     try:
         db = SessionLocal()
@@ -770,7 +889,6 @@ def get_pending_summary_from_db() -> Dict[str, Any]:
 
 
 def format_pending_response(data: Dict[str, Any], title: str, emoji: str) -> str:
-    """Format pending response (PRESERVED)"""
     if data["total"] == 0:
         return f"{emoji} *{title}*\n━━━━━━━━━━━━━━━━━━━━\n✅ No pending items found!"
     
@@ -794,16 +912,12 @@ def format_pending_response(data: Dict[str, Any], title: str, emoji: str) -> str
 
 
 # ==========================================================
-# ENHANCED PROCESSING FUNCTION (v30.0)
+# MESSAGE PROCESSING
 # ==========================================================
 
 def process_message_with_service(message: str, user_id: str = "guest") -> str:
-    """
-    Process message using AI Query Service with enhanced diagnostics.
-    """
     process_start = time.time()
     
-    # Try AI Query Service first if available
     if AI_SERVICE_AVAILABLE:
         try:
             ensure_services_initialized()
@@ -818,24 +932,20 @@ def process_message_with_service(message: str, user_id: str = "guest") -> str:
             
             process_time = (time.time() - process_start) * 1000
             metrics["service_usage"]["ai_service_calls"] += 1
-            logger.info(f"✅ AI Service processed in {process_time:.0f}ms: {message[:50]}")
+            logger.info(f"✅ AI Service: {process_time:.0f}ms")
             
             return response
             
         except Exception as e:
-            logger.error(f"❌ AI Service failed, falling back to direct DB: {e}")
+            logger.error(f"❌ AI Service failed: {e}")
             metrics["service_failures"]["ai_service"] += 1
             metrics["service_usage"]["fallback_mode"] = True
     
-    # Fallback to direct database processing
     metrics["service_usage"]["direct_db_calls"] += 1
     return process_message_direct(message)
 
 
 def process_message_direct(message: str) -> str:
-    """
-    Process message directly using database queries with enhanced diagnostics.
-    """
     msg_lower = message.lower().strip()
     
     # Help command
@@ -890,34 +1000,7 @@ Type `Help` to see all available commands!
         if details:
             return format_dn_response(details)
         else:
-            # Enhanced error message with diagnostic info
-            validation = validate_dn_format(message)
-            diagnostic_msg = ""
-            
-            if DIAGNOSTIC_MODE and metrics["diagnostics"]["last_failed_dn"] == message:
-                diagnostic_msg = f"""
-
-🔍 *Diagnostic Info:*
-• DN Format: {'✅ Valid' if validation['valid_format'] else '❌ Invalid'}
-• Length: {validation['length']} digits
-• Suggestions: {', '.join(validation['suggestions'])}
-• Search attempts: {len(metrics['diagnostics'].get('last_error_trace', {}).get('search_attempts', []))}
-
-💡 *Troubleshooting:*
-• Verify the DN number is correct
-• Check if DN exists in the system
-• Contact support if issue persists"""
-            
-            return f"""
-📦 *DN SEARCH*
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-🔢 *DN Number:* {message}
-
-❌ Not found in database{diagnostic_msg}
-
-💡 Type `Help` for available commands
-"""
+            return format_diagnostic_not_found_response(message)
     
     # Pending deliveries
     if "pending delivery" in msg_lower or "how many pending" in msg_lower or "pending" in msg_lower:
@@ -944,7 +1027,7 @@ Type `Help` for complete menu
 
 
 # ==========================================================
-# HELPER FUNCTIONS (PRESERVED)
+# HELPER FUNCTIONS
 # ==========================================================
 
 def _auto_cleanup_if_needed(request_id: str):
@@ -953,11 +1036,11 @@ def _auto_cleanup_if_needed(request_id: str):
     
     if total_requests > 0 and total_requests % AUTO_CLEANUP_INTERVAL == 0:
         if current_time - metrics.get("last_cleanup", 0) > 60:
-            logger.bind(request_id=request_id).info(f"Auto cleanup triggered")
+            logger.info(f"Auto cleanup triggered")
             old_size = len(processed_messages)
             processed_messages.clear()
             metrics["last_cleanup"] = current_time
-            logger.bind(request_id=request_id).info(f"Cache cleanup complete: {old_size} messages cleared")
+            logger.info(f"Cache cleanup: {old_size} messages cleared")
 
 
 def _check_rate_limit(phone_number: str, request_id: str) -> bool:
@@ -966,7 +1049,7 @@ def _check_rate_limit(phone_number: str, request_id: str) -> bool:
     timestamps = [t for t in timestamps if current_time - t < RATE_LIMIT_WINDOW]
     
     if len(timestamps) >= RATE_LIMIT_MAX_MESSAGES:
-        logger.bind(request_id=request_id).warning(f"Rate limit exceeded for {phone_number}")
+        logger.warning(f"Rate limit exceeded for {phone_number}")
         return False
     
     timestamps.append(current_time)
@@ -980,17 +1063,14 @@ async def send_whatsapp_message(
     request_id: str, 
     context_msg_id: Optional[str] = None
 ) -> Dict[str, Any]:
-    """
-    Send WhatsApp message with proper timeout handling.
-    """
     send_start_time = time.time()
     
     if not WHATSAPP_SERVICE_AVAILABLE:
-        logger.bind(request_id=request_id).error(f"WhatsApp service not available")
+        logger.error(f"WhatsApp service not available")
         return {"success": False, "error": "Service not available"}
     
     if not config.WHATSAPP_ACCESS_TOKEN or not config.WHATSAPP_PHONE_NUMBER_ID:
-        logger.bind(request_id=request_id).error(f"WhatsApp credentials missing")
+        logger.error(f"WhatsApp credentials missing")
         return {"success": False, "error": "Missing credentials"}
     
     if not message or not message.strip():
@@ -1020,29 +1100,29 @@ async def send_whatsapp_message(
             
             if result.get("success"):
                 send_duration = (time.time() - send_start_time) * 1000
-                logger.bind(request_id=request_id).info(f"✅ Message sent in {send_duration:.0f}ms")
+                logger.info(f"✅ Message sent in {send_duration:.0f}ms")
                 return result
             
             if attempt < MAX_RETRIES - 1 and _should_retry(result.get('status_code', 0)):
-                logger.bind(request_id=request_id).warning(f"Retry {attempt + 1} for {phone_number}")
+                logger.warning(f"Retry {attempt + 1} for {phone_number}")
                 await asyncio.sleep(RETRY_DELAYS[attempt])
                 continue
             
             return result
             
         except asyncio.TimeoutError:
-            logger.bind(request_id=request_id).error(f"⏰ Timeout sending message to {phone_number} after {SEND_MESSAGE_TIMEOUT}s")
+            logger.error(f"⏰ Timeout sending message after {SEND_MESSAGE_TIMEOUT}s")
             metrics["timeout_requests"] += 1
             
             if attempt < MAX_RETRIES - 1:
-                logger.bind(request_id=request_id).info(f"Retrying... (attempt {attempt + 2})")
+                logger.info(f"Retrying... (attempt {attempt + 2})")
                 await asyncio.sleep(RETRY_DELAYS[attempt])
                 continue
             
             return {"success": False, "error": f"Request timeout after {SEND_MESSAGE_TIMEOUT}s"}
             
         except Exception as e:
-            logger.bind(request_id=request_id).exception(f"Send attempt {attempt + 1} failed: {e}")
+            logger.exception(f"Send attempt {attempt + 1} failed: {e}")
             
             if attempt < MAX_RETRIES - 1:
                 await asyncio.sleep(RETRY_DELAYS[attempt])
@@ -1053,25 +1133,23 @@ async def send_whatsapp_message(
 
 
 def _should_retry(status_code: int) -> bool:
-    """Determine if request should be retried based on status code"""
     retryable_statuses = {429, 500, 502, 503, 504}
     return status_code in retryable_statuses
 
 
 # ==========================================================
-# WEBHOOK ENDPOINTS (UPDATED v30.0)
+# WEBHOOK ENDPOINTS
 # ==========================================================
 
 @router.get("/")
 async def verify_webhook(request: Request):
-    """Webhook verification endpoint - PRESERVED"""
     hub_mode = request.query_params.get("hub.mode")
     hub_verify_token = request.query_params.get("hub.verify_token")
     hub_challenge = request.query_params.get("hub.challenge")
     
     if hub_mode == "subscribe" and hub_verify_token == config.WHATSAPP_VERIFY_TOKEN:
         if hub_challenge:
-            logger.success("✅ Webhook verified successfully!")
+            logger.success("✅ Webhook verified!")
             return PlainTextResponse(content=hub_challenge)
     
     raise HTTPException(status_code=403, detail="Verification failed")
@@ -1079,16 +1157,13 @@ async def verify_webhook(request: Request):
 
 @router.post("/")
 async def receive_message(request: Request) -> Dict[str, Any]:
-    """
-    Receive WhatsApp message - UPDATED v30.0 with enhanced diagnostics
-    """
     request_id = str(uuid.uuid4())[:8]
     start_time = time.time()
     
     logger.bind(request_id=request_id)
     metrics["total_requests"] += 1
     
-    logger.info(f"📨 Webhook received (v30.0 - Enhanced Diagnostics)")
+    logger.info(f"📨 Webhook received (v31.0 - Diagnostic Suite)")
     _auto_cleanup_if_needed(request_id)
     
     try:
@@ -1143,7 +1218,7 @@ async def receive_message(request: Request) -> Dict[str, Any]:
             ai_start = time.time()
             response = process_message_with_service(user_message, phone_number)
             ai_duration = (time.time() - ai_start) * 1000
-            logger.info(f"🤖 Processing time: {ai_duration:.0f}ms")
+            logger.info(f"🤖 Processing: {ai_duration:.0f}ms")
             
             await send_whatsapp_message(phone_number, response, request_id, msg_id)
             processed_count += 1
@@ -1175,12 +1250,71 @@ async def receive_message(request: Request) -> Dict[str, Any]:
 
 
 # ==========================================================
-# ENHANCED DEBUG ENDPOINTS (v30.0)
+# DIAGNOSTIC ENDPOINTS - FOR TROUBLESHOOTING
 # ==========================================================
+
+@router.get("/diagnose/full")
+async def full_diagnosis():
+    """Complete system diagnosis - identifies exact issue"""
+    
+    # Database diagnosis
+    db_diagnosis = diagnose_database_complete()
+    
+    # Component status
+    component_status = metrics["diagnostics"]["component_status"]
+    
+    # DN lookup stats
+    dn_stats = {
+        "attempts": metrics["diagnostics"]["dn_lookup_attempts"],
+        "successes": metrics["diagnostics"]["dn_lookup_successes"],
+        "failures": metrics["diagnostics"]["dn_lookup_failures"],
+        "success_rate": round(
+            metrics["diagnostics"]["dn_lookup_successes"] / max(1, metrics["diagnostics"]["dn_lookup_attempts"]) * 100, 2
+        )
+    }
+    
+    # Root cause analysis
+    root_cause = []
+    recommendations = []
+    
+    if not db_diagnosis["database_connected"]:
+        root_cause.append("DATABASE_CONNECTION_FAILED")
+        recommendations.append("Check database connection string and network connectivity")
+    
+    if not db_diagnosis["table_exists"]:
+        root_cause.append("TABLE_NOT_FOUND")
+        recommendations.append("Run database migrations to create delivery_reports table")
+    
+    if db_diagnosis["total_records"] == 0:
+        root_cause.append("NO_DATA_IN_TABLE")
+        recommendations.append("Import delivery data into the database")
+    
+    if dn_stats["failures"] > 0 and dn_stats["successes"] == 0:
+        root_cause.append("DN_LOOKUP_FAILING")
+        recommendations.append("Check DN format and verify data exists in database")
+    
+    if AI_SERVICE_AVAILABLE is False:
+        root_cause.append("AI_SERVICE_UNAVAILABLE")
+        recommendations.append("Check ai_query_service.py file and its dependencies")
+    
+    return {
+        "service": "webhook_diagnostic",
+        "version": "31.0",
+        "timestamp": datetime.now().isoformat(),
+        "status": "healthy" if not root_cause else "degraded" if len(root_cause) < 2 else "unhealthy",
+        "root_cause": root_cause,
+        "recommendations": recommendations,
+        "database": db_diagnosis,
+        "components": component_status,
+        "dn_lookup_stats": dn_stats,
+        "last_failed_dn": metrics["diagnostics"]["last_failed_dn"],
+        "execution_path_length": len(metrics["diagnostics"]["execution_path"])
+    }
+
 
 @router.get("/debug/check-dn/{dn_number}")
 async def debug_check_dn(dn_number: str):
-    """Enhanced debug endpoint to check DN in database with full diagnostics"""
+    """Check specific DN with full diagnostics"""
     db = SessionLocal()
     try:
         normalized = normalize_dn(dn_number)
@@ -1197,7 +1331,8 @@ async def debug_check_dn(dn_number: str):
             "normalized_int": normalized_int,
             "validation": validation,
             "matches": {},
-            "sample_matches": []
+            "sample_matches": [],
+            "database_info": {}
         }
         
         # Test all search strategies
@@ -1229,29 +1364,32 @@ async def debug_check_dn(dn_number: str):
                 for r in like_match[:3]
             ])
         
-        # Get sample DNs from database for comparison
-        sample_dns = db.query(DeliveryReport.dn_no).limit(20).all()
-        results["sample_dns_in_db"] = [str(d[0]) for d in sample_dns if d[0]]
+        # Get database info
+        results["database_info"]["total_records"] = db.query(DeliveryReport).count()
+        results["database_info"]["unique_dns"] = db.query(DeliveryReport.dn_no).distinct().count()
         
-        # Check if DN exists in any form
+        sample_dns = db.query(DeliveryReport.dn_no).limit(20).all()
+        results["database_info"]["sample_dns"] = [str(d[0]) for d in sample_dns if d[0]]
+        
         results["found"] = any(results["matches"].values())
         
-        # Add suggestions
+        # Provide diagnosis
         if not results["found"]:
-            results["suggestions"] = []
+            results["diagnosis"] = {
+                "issue": "DN_NOT_FOUND",
+                "possible_causes": [],
+                "suggestions": []
+            }
             
-            # Check if similar DNs exist
             if normalized and len(normalized) >= 5:
-                # Look for DNs with similar prefix
                 prefix = normalized[:5]
                 similar = db.query(DeliveryReport).filter(
                     cast(DeliveryReport.dn_no, String).like(f"{prefix}%")
                 ).limit(5).all()
-                
                 if similar:
-                    results["suggestions"].append(f"Found DNs with similar prefix '{prefix}': {[str(s.dn_no) for s in similar]}")
+                    results["diagnosis"]["possible_causes"].append("DN might have wrong suffix")
+                    results["diagnosis"]["suggestions"].append(f"Try similar DNs: {[str(s.dn_no) for s in similar]}")
             
-            # Check data type of dn_no column
             col_info = db.execute("""
                 SELECT data_type 
                 FROM information_schema.columns 
@@ -1259,91 +1397,87 @@ async def debug_check_dn(dn_number: str):
             """).fetchone()
             
             if col_info:
-                results["suggestions"].append(f"DN column data type: {col_info[0]}")
+                results["database_info"]["dn_column_type"] = col_info[0]
                 if col_info[0].upper() == "INTEGER" and not normalized_int:
-                    results["suggestions"].append("DN column is INTEGER but value cannot be converted to integer")
+                    results["diagnosis"]["possible_causes"].append("DN column is INTEGER but value cannot be converted")
+                    results["diagnosis"]["suggestions"].append("Check if DN contains non-numeric characters")
+                elif col_info[0].upper() == "VARCHAR":
+                    results["diagnosis"]["suggestions"].append("DN column is VARCHAR - search is case-sensitive")
         
         return results
     finally:
         db.close()
 
 
-@router.get("/debug/diagnose-db")
-async def diagnose_database():
-    """Comprehensive database diagnostic endpoint"""
-    return diagnose_database_schema()
+@router.get("/diagnose/database")
+async def diagnose_database_endpoint():
+    """Diagnose database issues"""
+    return diagnose_database_complete()
 
 
-@router.get("/debug/dn-stats")
-async def get_dn_stats():
-    """Get DN statistics from database"""
+@router.get("/diagnose/dn/{dn_number}")
+async def diagnose_specific_dn(dn_number: str):
+    """Diagnose why a specific DN is not found"""
     db = SessionLocal()
     try:
-        # Get total count
-        total_count = db.query(DeliveryReport).count()
+        normalized = normalize_dn(dn_number)
         
-        # Get unique DN count
-        unique_dns = db.query(DeliveryReport.dn_no).distinct().count()
+        # Check if DN exists in any form
+        found_forms = []
         
-        # Get DN length distribution
-        length_distribution = db.execute("""
-            SELECT LENGTH(CAST(dn_no AS TEXT)) as dn_length, COUNT(*) 
-            FROM delivery_reports 
-            GROUP BY dn_length 
-            ORDER BY dn_length
-        """).fetchall()
+        # Check as integer
+        try:
+            int_val = int(normalized)
+            if db.query(DeliveryReport).filter(DeliveryReport.dn_no == int_val).first():
+                found_forms.append(f"integer: {int_val}")
+        except:
+            pass
         
-        # Get sample of DN formats
-        samples = db.execute("""
-            SELECT DISTINCT dn_no 
-            FROM delivery_reports 
-            WHERE dn_no IS NOT NULL 
-            LIMIT 10
-        """).fetchall()
+        # Check as string
+        if db.query(DeliveryReport).filter(cast(DeliveryReport.dn_no, String) == normalized).first():
+            found_forms.append(f"string: {normalized}")
+        
+        # Check with .0
+        if db.query(DeliveryReport).filter(cast(DeliveryReport.dn_no, String) == f"{normalized}.0").first():
+            found_forms.append(f"string with .0: {normalized}.0")
+        
+        # Find similar DNs
+        similar = []
+        if len(normalized) >= 5:
+            prefix = normalized[:5]
+            similar = db.query(DeliveryReport.dn_no).filter(
+                cast(DeliveryReport.dn_no, String).like(f"{prefix}%")
+            ).limit(10).all()
+            similar = [str(s[0]) for s in similar]
         
         return {
-            "total_records": total_count,
-            "unique_dns": unique_dns,
-            "length_distribution": [{"length": l[0], "count": l[1]} for l in length_distribution],
-            "sample_dns": [str(s[0]) for s in samples if s[0]],
-            "diagnostic_mode": DIAGNOSTIC_MODE
+            "dn_searched": dn_number,
+            "normalized": normalized,
+            "found_in_database": len(found_forms) > 0,
+            "forms_found": found_forms,
+            "similar_dns_in_database": similar[:10],
+            "total_dns_in_db": db.query(DeliveryReport).count(),
+            "diagnosis": "DN EXISTS" if found_forms else "DN DOES NOT EXIST IN DATABASE",
+            "recommendation": "Use the exact format as shown in forms_found" if found_forms else "Verify DN number from source system"
         }
     finally:
         db.close()
 
 
-@router.get("/debug/diagnostics")
-async def get_diagnostics():
-    """Get diagnostic metrics"""
+@router.get("/diagnose/trace")
+async def get_execution_trace():
+    """Get recent execution trace for debugging"""
     return {
-        "diagnostic_mode": DIAGNOSTIC_MODE,
-        "dn_lookup_stats": {
-            "attempts": metrics["diagnostics"]["dn_lookup_attempts"],
-            "successes": metrics["diagnostics"]["dn_lookup_successes"],
-            "failures": metrics["diagnostics"]["dn_lookup_failures"],
-            "success_rate": round(
-                metrics["diagnostics"]["dn_lookup_successes"] / max(1, metrics["diagnostics"]["dn_lookup_attempts"]) * 100, 
-                2
-            ),
-            "last_failed_dn": metrics["diagnostics"]["last_failed_dn"],
-            "last_error_trace": metrics["diagnostics"]["last_error_trace"]
-        },
-        "cache_stats": {
-            "dn_cache_size": len(dn_cache),
-            "processed_messages_size": len(processed_messages),
-            "rate_limit_cache_size": len(rate_limit_cache)
-        },
-        "service_status": {
-            "whatsapp_available": WHATSAPP_SERVICE_AVAILABLE,
-            "ai_service_available": AI_SERVICE_AVAILABLE,
-            "ai_service_initialized": _services_initialized
-        }
+        "execution_path": metrics["diagnostics"]["execution_path"][-20:],
+        "total_traces": len(metrics["diagnostics"]["execution_path"]),
+        "last_failed_dn": metrics["diagnostics"]["last_failed_dn"],
+        "last_error": metrics["diagnostics"]["last_error_trace"][:500] if metrics["diagnostics"]["last_error_trace"] else None
     }
 
 
 @router.get("/health")
 async def health_check():
-    """Health check - UPDATED v30.0 with enhanced diagnostics"""
+    """Health check with component status"""
     db_healthy = False
     try:
         db = SessionLocal()
@@ -1369,16 +1503,10 @@ async def health_check():
     
     return {
         "status": overall_status,
-        "version": "30.0",
+        "version": "31.0",
         "timestamp": datetime.utcnow().isoformat(),
-        "mode": "ENHANCED_DIAGNOSTICS",
-        "integer_search": "ENABLED",
+        "mode": "FULL_DIAGNOSTIC_SUITE",
         "diagnostic_mode": DIAGNOSTIC_MODE,
-        "timeout_settings": {
-            "request_timeout": REQUEST_TIMEOUT_SECONDS,
-            "send_message_timeout": SEND_MESSAGE_TIMEOUT,
-            "max_retries": MAX_RETRIES
-        },
         "services": {
             "whatsapp_service": {"available": WHATSAPP_SERVICE_AVAILABLE},
             "database": {"connected": db_healthy},
@@ -1388,54 +1516,50 @@ async def health_check():
                 "version": ai_version
             }
         },
-        "cache": {"dn_cache_size": len(dn_cache)},
         "dn_lookup_stats": {
             "attempts": metrics["diagnostics"]["dn_lookup_attempts"],
+            "successes": metrics["diagnostics"]["dn_lookup_successes"],
+            "failures": metrics["diagnostics"]["dn_lookup_failures"],
             "success_rate": round(
-                metrics["diagnostics"]["dn_lookup_successes"] / max(1, metrics["diagnostics"]["dn_lookup_attempts"]) * 100, 
-                2
+                metrics["diagnostics"]["dn_lookup_successes"] / max(1, metrics["diagnostics"]["dn_lookup_attempts"]) * 100, 2
             ) if metrics["diagnostics"]["dn_lookup_attempts"] > 0 else 0
         }
     }
 
 
+@router.get("/diagnose/reset")
+async def reset_diagnostics():
+    """Reset diagnostic metrics"""
+    metrics["diagnostics"]["dn_lookup_attempts"] = 0
+    metrics["diagnostics"]["dn_lookup_successes"] = 0
+    metrics["diagnostics"]["dn_lookup_failures"] = 0
+    metrics["diagnostics"]["last_failed_dn"] = None
+    metrics["diagnostics"]["last_error_trace"] = None
+    metrics["diagnostics"]["execution_path"] = []
+    dn_cache.clear()
+    return {"success": True, "message": "Diagnostics reset"}
+
+
 @router.get("/ping")
 async def ping():
-    """Ping endpoint - UPDATED v30.0"""
     return {
         "pong": True, 
         "timestamp": datetime.utcnow().isoformat(),
-        "mode": "enhanced_diagnostics",
-        "ai_available": AI_SERVICE_AVAILABLE,
+        "mode": "full_diagnostic",
         "diagnostic_mode": DIAGNOSTIC_MODE,
-        "cache_size": len(dn_cache),
-        "timeout_seconds": SEND_MESSAGE_TIMEOUT,
         "dn_lookup_failures": metrics["diagnostics"]["dn_lookup_failures"]
     }
 
 
 @router.get("/cache/clear")
 async def clear_cache():
-    """Clear cache - PRESERVED"""
     old_size = len(dn_cache)
     dn_cache.clear()
     return {"success": True, "cleared": old_size}
 
 
-@router.get("/timeout-status")
-async def timeout_status():
-    """Check current timeout configuration - PRESERVED"""
-    return {
-        "send_message_timeout_seconds": SEND_MESSAGE_TIMEOUT,
-        "request_timeout_seconds": REQUEST_TIMEOUT_SECONDS,
-        "max_retries": MAX_RETRIES,
-        "retry_delays": RETRY_DELAYS
-    }
-
-
 @router.get("/metrics")
 async def get_metrics():
-    """Get detailed metrics - UPDATED v30.0"""
     return {
         "total_requests": metrics["total_requests"],
         "successful_requests": metrics["successful_requests"],
@@ -1444,49 +1568,58 @@ async def get_metrics():
         "rate_limited_requests": metrics["rate_limited_requests"],
         "service_usage": metrics["service_usage"],
         "service_failures": metrics["service_failures"],
-        "diagnostics": metrics["diagnostics"],
-        "ai_available": AI_SERVICE_AVAILABLE,
+        "diagnostics": {
+            "dn_lookup_stats": {
+                "attempts": metrics["diagnostics"]["dn_lookup_attempts"],
+                "successes": metrics["diagnostics"]["dn_lookup_successes"],
+                "failures": metrics["diagnostics"]["dn_lookup_failures"],
+                "last_failed_dn": metrics["diagnostics"]["last_failed_dn"]
+            }
+        },
         "uptime_seconds": time.time() - metrics["start_time"]
     }
 
 
 # ==========================================================
-# INITIALIZATION (UPDATED v30.0)
+# INITIALIZATION
 # ==========================================================
 
-logger.info("=" * 70)
-logger.info("📡 WEBHOOK v30.0 - ENHANCED DIAGNOSTICS")
-logger.info("=" * 70)
+logger.info("=" * 80)
+logger.info("🔍 WEBHOOK v31.0 - FULL DIAGNOSTIC SUITE")
+logger.info("=" * 80)
 logger.info("")
-logger.info("   TIMEOUT FIXES (PRESERVED):")
-logger.info(f"   ✅ Send message timeout: {SEND_MESSAGE_TIMEOUT}s")
-logger.info(f"   ✅ Request timeout: {REQUEST_TIMEOUT_SECONDS}s")
-logger.info(f"   ✅ Max retries: {MAX_RETRIES}")
-logger.info("")
-logger.info("   V30.0 IMPROVEMENTS:")
-logger.info("   ✅ Enhanced DN lookup with 5 search strategies")
-logger.info("   ✅ Detailed diagnostic logging")
+logger.info("   DIAGNOSTIC CAPABILITIES:")
+logger.info("   ✅ Complete execution tracing")
+logger.info("   ✅ Component-level health checks")
+logger.info("   ✅ Real-time failure analysis")
+logger.info("   ✅ Automatic root cause detection")
 logger.info("   ✅ DN format validation")
-logger.info("   ✅ Comprehensive debug endpoints")
-logger.info("   ✅ Real-time failure tracking")
+logger.info("   ✅ Database schema diagnosis")
+logger.info("   ✅ Similar DN discovery")
 logger.info("")
-logger.info(f"   SERVICE STATUS:")
-logger.info(f"   ✅ WhatsApp Service: {'AVAILABLE' if WHATSAPP_SERVICE_AVAILABLE else 'UNAVAILABLE'}")
-logger.info(f"   ✅ AI Query Service: {'AVAILABLE' if AI_SERVICE_AVAILABLE else 'UNAVAILABLE (fallback mode)'}")
-logger.info(f"   ✅ Diagnostic Mode: {'ENABLED' if DIAGNOSTIC_MODE else 'DISABLED'}")
+logger.info("   DIAGNOSTIC ENDPOINTS:")
+logger.info("   • GET /webhook/diagnose/full - Complete system diagnosis")
+logger.info("   • GET /webhook/diagnose/database - Database health")
+logger.info("   • GET /webhook/diagnose/dn/{number} - Specific DN analysis")
+logger.info("   • GET /webhook/diagnose/trace - Execution trace")
+logger.info("   • GET /webhook/debug/check-dn/{number} - Full DN debug")
 logger.info("")
-logger.info("   STATUS: ✅ PRODUCTION READY WITH DIAGNOSTICS")
-logger.info("=" * 70)
+logger.info("   SERVICE STATUS:")
+logger.info(f"   WhatsApp Service: {'✅ AVAILABLE' if WHATSAPP_SERVICE_AVAILABLE else '❌ UNAVAILABLE'}")
+logger.info(f"   AI Query Service: {'✅ AVAILABLE' if AI_SERVICE_AVAILABLE else '⚠️ FALLBACK MODE'}")
+logger.info(f"   Diagnostic Mode: {'✅ ENABLED' if DIAGNOSTIC_MODE else '❌ DISABLED'}")
+logger.info("")
+logger.info("   STATUS: ✅ PRODUCTION READY WITH FULL DIAGNOSTICS")
+logger.info("=" * 80)
 
-# Run database schema diagnosis on startup
+# Run initial diagnosis
 if DIAGNOSTIC_MODE:
-    logger.info("🔍 Running database schema diagnosis...")
-    schema_info = diagnose_database_schema()
-    if "error" not in schema_info:
-        logger.info(f"   ✅ Database has {schema_info.get('row_count', 0)} records")
-        logger.info(f"   📊 Sample DNs: {schema_info.get('sample_dns', [])[:5]}")
+    logger.info("🔍 Running initial system diagnosis...")
+    diagnosis = diagnose_database_complete()
+    if diagnosis["database_connected"] and diagnosis["table_exists"]:
+        logger.info(f"   ✅ Database: {diagnosis['total_records']:,} records, {len(diagnosis['sample_dns'])} sample DNs")
     else:
-        logger.error(f"   ❌ Schema diagnosis failed: {schema_info.get('error')}")
+        logger.warning(f"   ⚠️ Database issues detected: {diagnosis.get('issues_found', ['Unknown'])}")
 
-# Initialize services on startup
+# Initialize services
 ensure_services_initialized()
