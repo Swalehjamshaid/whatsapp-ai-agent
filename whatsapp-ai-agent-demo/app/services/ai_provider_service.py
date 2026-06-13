@@ -1,23 +1,20 @@
 # ==========================================================
-# FILE: app/services/ai_provider_service.py (ENTERPRISE v8.1 - WITH WHATSAPP COMPATIBILITY)
+# FILE: app/services/ai_provider_service.py (v9.0 - FULLY INTEGRATED)
 # ==========================================================
 # PURPOSE: AI Orchestration & Explanation Engine for Logistics Control Tower
-# ARCHITECTURE: WhatsApp → AIQueryService → AnalyticsService → AIProviderService → Explanation → WhatsApp
+# 
+# ARCHITECTURE: WhatsApp → webhook.py → ai_query_service.py → 
+#               logistics_query_service.py → kpi_service.py → 
+#               analytics_service.py → ai_provider_service.py → 
+#               whatsapp_service.py → WhatsApp
 #
-# IMPROVEMENTS v8.1:
-# - ✅ Complete Analytics v6.0 Integration
-# - ✅ Fast Path vs AI Path Routing (0.5-2 sec vs 2-5 sec)
-# - ✅ Global Business Rules Engine
-# - ✅ Compact Context Only (80% token reduction)
-# - ✅ Response Caching (TTL-based)
-# - ✅ Hallucination Protection
-# - ✅ Streaming Support
-# - ✅ WhatsApp Optimized Formatter
-# - ✅ Dealer/DN/Warehouse/Sales Office Memory
-# - ✅ Executive Intelligence Layer
-# - ✅ Enterprise Monitoring & SLA Tracking
-# - ✅ Multi-Provider Abstraction (Groq/OpenAI/Gemini)
-# - ✅ CRITICAL FIX: Added process_whatsapp_query compatibility function
+# INTEGRATION WITH ALL SERVICES:
+# ✅ webhook.py - Receives messages, routes to AI
+# ✅ ai_query_service.py - Provides query plans
+# ✅ logistics_query_service.py - Provides business data
+# ✅ kpi_service.py - Provides KPI calculations
+# ✅ analytics_service.py - Provides business intelligence
+# ✅ whatsapp_service.py - Sends final response
 # ==========================================================
 
 import json
@@ -32,13 +29,13 @@ from functools import wraps
 from cachetools import TTLCache
 from loguru import logger
 
-# Simple Groq import - no complex error handling that causes crashes
+# Simple Groq import
 try:
     from groq import Groq
     GROQ_AVAILABLE = True
 except ImportError:
     GROQ_AVAILABLE = False
-    logger.warning("Groq SDK not installed")
+    logger.warning("Groq SDK not installed - AI features will be limited")
 
 try:
     from openai import OpenAI
@@ -62,34 +59,24 @@ class ResponseMode(Enum):
 
 
 class QueryType(Enum):
-    """Query classification types - aligned with Analytics v6.0"""
+    """Query classification types"""
     DEALER_QUERY = "dealer_query"
     DN_QUERY = "dn_query"
     PRODUCT_QUERY = "product_query"
     AGING_QUERY = "aging_query"
     POD_QUERY = "pod_query"
     WAREHOUSE_QUERY = "warehouse_query"
-    SALES_OFFICE_QUERY = "sales_office_query"
-    HEALTH_QUERY = "health_query"
+    CITY_QUERY = "city_query"
+    DIVISION_QUERY = "division_query"
+    SALES_MANAGER_QUERY = "sales_manager_query"
     COMPARISON_QUERY = "comparison_query"
+    RANKING_QUERY = "ranking_query"
+    TREND_QUERY = "trend_query"
     EXECUTIVE_QUERY = "executive_query"
+    CONTROL_TOWER_QUERY = "control_tower_query"
     ROOT_CAUSE_QUERY = "root_cause_query"
-    NETWORK_QUERY = "network_query"
+    HELP_QUERY = "help_query"
     UNKNOWN = "unknown"
-
-
-class PromptType(Enum):
-    """Specialized prompt types for AI generation"""
-    DEALER_PROMPT = "dealer_prompt"
-    DN_PROMPT = "dn_prompt"
-    PRODUCT_PROMPT = "product_prompt"
-    AGING_PROMPT = "aging_prompt"
-    POD_PROMPT = "pod_prompt"
-    WAREHOUSE_PROMPT = "warehouse_prompt"
-    SALES_OFFICE_PROMPT = "sales_office_prompt"
-    EXECUTIVE_PROMPT = "executive_prompt"
-    ROOT_CAUSE_PROMPT = "root_cause_prompt"
-    NETWORK_PROMPT = "network_prompt"
 
 
 @dataclass
@@ -101,7 +88,14 @@ class QueryContext:
     dn_number: Optional[str] = None
     product_code: Optional[str] = None
     warehouse_name: Optional[str] = None
+    city_name: Optional[str] = None
     division: Optional[str] = None
+    sales_manager: Optional[str] = None
+    comparison_entities: Optional[List[str]] = None
+    ranking_type: Optional[str] = None
+    ranking_limit: Optional[int] = None
+    ranking_metric: Optional[str] = None
+    trend_period: Optional[str] = None
     confidence: float = 0.0
     needs_ai: bool = False
 
@@ -125,7 +119,8 @@ class ConversationMemory:
     last_dn: Optional[str] = None
     last_product: Optional[str] = None
     last_warehouse: Optional[str] = None
-    last_sales_office: Optional[str] = None
+    last_city: Optional[str] = None
+    last_division: Optional[str] = None
     last_query_type: Optional[QueryType] = None
     timestamp: datetime = field(default_factory=datetime.now)
 
@@ -149,6 +144,7 @@ LOGISTICS_BUSINESS_RULES = """
    - POD Aging = POD Date - PGI Date
    - Pending Delivery Aging = Today - DN Date (if no PGI)
    - Pending POD Aging = Today - PGI Date (if no POD)
+   - Full Cycle = POD Date - DN Date
 
 3. STATUS RULES:
    - DN Created → "Pending Delivery" (⏳)
@@ -156,10 +152,12 @@ LOGISTICS_BUSINESS_RULES = """
    - POD Complete → "Delivered" (✅)
 
 4. BUSINESS ENTITIES:
-   - Dealer = Sold-To-Party Name
-   - Warehouse = Dispatch Location
-   - Sales Office = Division
-   - Product = Material Number
+   - Dealer = customer_name
+   - Warehouse = warehouse
+   - City = ship_to_city
+   - Product = product_code / product_description
+   - Division = division
+   - Sales Office = sales_organization
 
 5. PERFORMANCE THRESHOLDS:
    - Critical Delay: >14 days
@@ -195,7 +193,7 @@ class GroqProvider(BaseProvider):
     
     def __init__(self, api_key: str, model: str):
         super().__init__(model)
-        self.client = Groq(api_key=api_key) if api_key else None
+        self.client = Groq(api_key=api_key) if api_key and GROQ_AVAILABLE else None
     
     def is_available(self) -> bool:
         return self.client is not None and GROQ_AVAILABLE
@@ -204,22 +202,26 @@ class GroqProvider(BaseProvider):
         if not self.is_available():
             return None
         
-        return self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=kwargs.get('temperature', 0.3),
-            max_tokens=kwargs.get('max_tokens', 500),
-            timeout=kwargs.get('timeout', 15),
-            stream=stream
-        )
+        try:
+            return self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=kwargs.get('temperature', 0.3),
+                max_tokens=kwargs.get('max_tokens', 800),
+                timeout=kwargs.get('timeout', 20),
+                stream=stream
+            )
+        except Exception as e:
+            logger.error(f"Groq API error: {e}")
+            return None
 
 
 class OpenAIProvider(BaseProvider):
-    """OpenAI API provider (future support)"""
+    """OpenAI API provider"""
     
     def __init__(self, api_key: str, model: str):
         super().__init__(model)
-        self.client = OpenAI(api_key=api_key) if api_key else None
+        self.client = OpenAI(api_key=api_key) if api_key and OPENAI_AVAILABLE else None
     
     def is_available(self) -> bool:
         return self.client is not None and OPENAI_AVAILABLE
@@ -228,14 +230,18 @@ class OpenAIProvider(BaseProvider):
         if not self.is_available():
             return None
         
-        return self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=kwargs.get('temperature', 0.3),
-            max_tokens=kwargs.get('max_tokens', 500),
-            timeout=kwargs.get('timeout', 15),
-            stream=stream
-        )
+        try:
+            return self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=kwargs.get('temperature', 0.3),
+                max_tokens=kwargs.get('max_tokens', 800),
+                timeout=kwargs.get('timeout', 20),
+                stream=stream
+            )
+        except Exception as e:
+            logger.error(f"OpenAI API error: {e}")
+            return None
 
 
 # ==========================================================
@@ -246,7 +252,7 @@ class PromptBuilder:
     """Specialized prompt generator for different query types"""
     
     @staticmethod
-    def build_dealer_prompt(dealer_name: str, dashboard: Dict, health: Dict, compact_context: Dict) -> str:
+    def build_dealer_prompt(dealer_name: str, dashboard: Dict, health: Dict) -> str:
         """Build dealer analysis prompt"""
         return f"""
 {LOGISTICS_BUSINESS_RULES}
@@ -256,24 +262,28 @@ DEALER ANALYSIS REQUEST: {dealer_name}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📊 DEALER DASHBOARD DATA (100% ACCURATE)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Dealer: {dashboard.get('dealer_name')}
-• Sales Office: {dashboard.get('sales_office')}
-• Warehouse: {dashboard.get('warehouse')}
-• Total DNs: {dashboard.get('total_dn')}
-• Total Models: {dashboard.get('total_models')}
-• Total Quantity: {dashboard.get('total_qty')}
-• Total Revenue: PKR {dashboard.get('total_amount', 0):,.0f}
-• Completion Rate: {dashboard.get('completion_rate')}%
-• Avg Delivery Aging: {dashboard.get('avg_delivery_aging_days')} days
-• Avg POD Aging: {dashboard.get('avg_pod_aging_days')} days
-• Pending Deliveries: {dashboard.get('pending_deliveries_count')}
-• Pending PODs: {dashboard.get('pending_pod_count')}
+• Dealer: {dashboard.get('dealer_name', dealer_name)}
+• Sales Office: {dashboard.get('sales_office', 'N/A')}
+• City: {dashboard.get('city', 'N/A')}
+• Warehouse: {dashboard.get('warehouse', 'N/A')}
+• Total DNs: {dashboard.get('total_dn', 0)}
+• Total Units: {dashboard.get('total_units', 0)}
+• Total Revenue: PKR {dashboard.get('total_revenue', 0):,.0f}
+• Delivery Rate: {dashboard.get('delivery_rate', 0)}%
+• POD Rate: {dashboard.get('pod_rate', 0)}%
+• Completion Rate: {dashboard.get('completion_rate', 0)}%
+• Avg Delivery Aging: {dashboard.get('avg_delivery_aging', 0)} days
+• Avg POD Aging: {dashboard.get('avg_pod_aging', 0)} days
+• Pending Deliveries: {dashboard.get('pending_delivery', 0)}
+• Pending PODs: {dashboard.get('pending_pod', 0)}
+• Critical DNs: {dashboard.get('critical_dn', 0)}
+• Critical PODs: {dashboard.get('critical_pod', 0)}
 
-🏥 HEALTH SCORE: {health.get('health_score')} ({health.get('health_status')})
+🏥 HEALTH SCORE: {health.get('health_score', 0)} ({health.get('health_status', 'Unknown')})
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Based on the above ACCURATE DATA (never recalculate), provide:
+Based on the above ACCURATE DATA, provide:
 
 1. Performance assessment (what's working well)
 2. Areas requiring attention (specific metrics below targets)
@@ -293,22 +303,19 @@ DN ANALYSIS REQUEST: {dn_number}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📄 DN DETAILS (100% ACCURATE)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• DN Number: {dn_detail.get('dn_no')}
-• Date: {dn_detail.get('dn_date')}
-• Status: {dn_detail.get('delivery_status')} {dn_detail.get('status_emoji')}
-• Dealer: {dn_detail.get('dealer')}
-• City: {dn_detail.get('city')}
-• Warehouse: {dn_detail.get('warehouse')}
-• Total Quantity: {dn_detail.get('dn_qty')}
-• Total Amount: PKR {dn_detail.get('dn_amount', 0):,.0f}
-• Models: {dn_detail.get('models_count')}
-• Delivery Aging: {dn_detail.get('delivery_aging_days')} days
-• POD Aging: {dn_detail.get('pod_aging_days')} days
-• PGI Date: {dn_detail.get('pgi_date')}
-• POD Date: {dn_detail.get('pod_date')}
-
-PRODUCTS:
-{json.dumps(dn_detail.get('products', [])[:5], indent=2)}
+• DN Number: {dn_detail.get('dn_number', dn_number)}
+• DN Date: {dn_detail.get('dn_date', 'N/A')}
+• Status: {dn_detail.get('delivery_status', 'Unknown')}
+• Dealer: {dn_detail.get('dealer_name', 'N/A')}
+• City: {dn_detail.get('city', 'N/A')}
+• Warehouse: {dn_detail.get('warehouse', 'N/A')}
+• Total Quantity: {dn_detail.get('total_quantity', 0)}
+• Total Amount: PKR {dn_detail.get('total_amount', 0):,.0f}
+• Products: {dn_detail.get('products_count', 0)} models
+• Delivery Aging: {dn_detail.get('delivery_aging', 0)} days
+• POD Aging: {dn_detail.get('pod_aging', 0)} days
+• PGI Date: {dn_detail.get('pgi_date', 'Not Dispatched')}
+• POD Date: {dn_detail.get('pod_date', 'Not Received')}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -322,7 +329,7 @@ Based on the above ACCURATE DATA, provide:
 Use the data exactly as provided. Never guess."""
     
     @staticmethod
-    def build_warehouse_prompt(warehouse_name: str, dashboard: Dict, delays: List) -> str:
+    def build_warehouse_prompt(warehouse_name: str, dashboard: Dict) -> str:
         """Build warehouse analysis prompt"""
         return f"""
 {LOGISTICS_BUSINESS_RULES}
@@ -332,84 +339,215 @@ WAREHOUSE ANALYSIS REQUEST: {warehouse_name or 'All Warehouses'}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🏭 WAREHOUSE DATA (100% ACCURATE)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-WAREHOUSES:
-{json.dumps(dashboard.get('warehouses', [])[:5], indent=2)}
-
-DELAY ANALYSIS:
-{json.dumps(delays[:5], indent=2)}
+• Warehouse: {dashboard.get('warehouse_name', warehouse_name or 'Overall')}
+• Total DNs: {dashboard.get('total_dn', 0)}
+• Total Units: {dashboard.get('total_units', 0)}
+• Total Revenue: PKR {dashboard.get('total_revenue', 0):,.0f}
+• Pending Deliveries: {dashboard.get('pending_delivery', 0)}
+• Pending PODs: {dashboard.get('pending_pod', 0)}
+• Avg Delivery Aging: {dashboard.get('avg_delivery_aging', 0)} days
+• Avg POD Aging: {dashboard.get('avg_pod_aging', 0)} days
+• Critical DNs: {dashboard.get('critical_dn', 0)}
+• Same Day Delivery: {dashboard.get('same_day_delivery', 0)}
+• 1 Day Delivery: {dashboard.get('one_day_delivery', 0)}
+• 2 Day Delivery: {dashboard.get('two_day_delivery', 0)}
+• 3 Day Delivery: {dashboard.get('three_day_delivery', 0)}
+• 4 Day Delivery: {dashboard.get('four_day_delivery', 0)}
+• 5+ Day Delivery: {dashboard.get('five_plus_delivery', 0)}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Based on the above ACCURATE DATA, provide:
 
-1. Best and worst performing warehouses
-2. Delay patterns and root causes
-3. Risk assessment by warehouse
-4. Immediate actions for underperformers
-5. Long-term improvement strategies
+1. Performance assessment (delivery SLA compliance)
+2. Bottlenecks and pain points
+3. Risk assessment
+4. Immediate improvement actions
 
 Use the data exactly as provided. Never guess."""
     
     @staticmethod
-    def build_executive_prompt(network_health: Dict, critical_delays: Dict, top_issues: List) -> str:
+    def build_city_prompt(city_name: str, dashboard: Dict) -> str:
+        """Build city analysis prompt"""
+        return f"""
+{LOGISTICS_BUSINESS_RULES}
+
+CITY ANALYSIS REQUEST: {city_name}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📍 CITY DATA (100% ACCURATE)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• City: {dashboard.get('city_name', city_name)}
+• Total DNs: {dashboard.get('dn_count', 0)}
+• Total Units: {dashboard.get('units', 0)}
+• Total Revenue: PKR {dashboard.get('revenue', 0):,.0f}
+• Delivery Rate: {dashboard.get('delivery_rate', 0)}%
+• Pending Deliveries: {dashboard.get('pending_delivery', 0)}
+• Pending PODs: {dashboard.get('pending_pod', 0)}
+• Avg Delivery Aging: {dashboard.get('avg_delivery_aging', 0)} days
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Based on the above ACCURATE DATA, provide:
+
+1. City performance overview
+2. Areas for improvement
+3. Comparison to benchmarks
+4. Recommendations
+
+Use the data exactly as provided. Never guess."""
+    
+    @staticmethod
+    def build_comparison_prompt(entity_a: str, entity_b: str, comparison_data: Dict) -> str:
+        """Build comparison analysis prompt"""
+        return f"""
+{LOGISTICS_BUSINESS_RULES}
+
+COMPARISON ANALYSIS: {entity_a} vs {entity_b}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 COMPARISON DATA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• Revenue: {entity_a}: PKR {comparison_data.get('revenue_a', 0):,.0f} | {entity_b}: PKR {comparison_data.get('revenue_b', 0):,.0f}
+• Units: {entity_a}: {comparison_data.get('units_a', 0)} | {entity_b}: {comparison_data.get('units_b', 0)}
+• DNs: {entity_a}: {comparison_data.get('dns_a', 0)} | {entity_b}: {comparison_data.get('dns_b', 0)}
+• Delivery Aging: {entity_a}: {comparison_data.get('delivery_aging_a', 0)} days | {entity_b}: {comparison_data.get('delivery_aging_b', 0)} days
+• POD Aging: {entity_a}: {comparison_data.get('pod_aging_a', 0)} days | {entity_b}: {comparison_data.get('pod_aging_b', 0)} days
+• Winner (Revenue): {comparison_data.get('winner_revenue', 'Tie')}
+• Winner (Units): {comparison_data.get('winner_units', 'Tie')}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Based on the above ACCURATE DATA, provide:
+
+1. Key differences between entities
+2. What each entity does well
+3. What each entity needs to improve
+4. Actionable recommendations for each
+
+Use the data exactly as provided. Never guess."""
+    
+    @staticmethod
+    def build_ranking_prompt(ranking_type: str, metric: str, items: List[Dict]) -> str:
+        """Build ranking analysis prompt"""
+        items_text = ""
+        for i, item in enumerate(items[:10], 1):
+            items_text += f"{i}. {item.get('name')}: {item.get('value', 0)}\n"
+        
+        return f"""
+{LOGISTICS_BUSINESS_RULES}
+
+RANKING ANALYSIS: {ranking_type.upper()} {len(items)} BY {metric.upper()}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 RANKINGS DATA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{items_text}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Based on the above ACCURATE DATA, provide:
+
+1. Key insights from the ranking
+2. Patterns or trends observed
+3. Top performers analysis
+4. Bottom performers analysis (if applicable)
+
+Use the data exactly as provided. Never guess."""
+    
+    @staticmethod
+    def build_control_tower_prompt(alerts: List[Dict], risk_summary: Dict) -> str:
+        """Build control tower analysis prompt"""
+        alerts_text = ""
+        for alert in alerts[:10]:
+            alerts_text += f"• {alert.get('severity')}: {alert.get('entity_name')} - {alert.get('message')}\n"
+        
+        return f"""
+{LOGISTICS_BUSINESS_RULES}
+
+CONTROL TOWER ANALYSIS REQUEST
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🚨 CONTROL TOWER DATA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RISK SUMMARY:
+• RED: {risk_summary.get('RED', 0)}
+• ORANGE: {risk_summary.get('ORANGE', 0)}
+• YELLOW: {risk_summary.get('YELLOW', 0)}
+• GREEN: {risk_summary.get('GREEN', 0)}
+
+ALERTS:
+{alerts_text}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Based on the above ACCURATE DATA, provide:
+
+1. Immediate risks requiring attention
+2. Root cause patterns
+3. Recommended actions by priority
+4. Long-term improvement strategies
+
+Use the data exactly as provided. Never guess."""
+    
+    @staticmethod
+    def build_executive_prompt(executive_data: Dict) -> str:
         """Build executive summary prompt"""
         return f"""
 {LOGISTICS_BUSINESS_RULES}
 
-EXECUTIVE SUMMARY REQUEST - Logistics Control Tower
+EXECUTIVE SUMMARY REQUEST
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📊 NETWORK HEALTH DATA
+📊 EXECUTIVE DASHBOARD DATA
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-• Overall Score: {network_health.get('overall_score', 'N/A')}%
-• POD Compliance: {network_health.get('pod_compliance', 'N/A')}%
-• PGI Compliance: {network_health.get('pgi_compliance', 'N/A')}%
-• Delivery Compliance: {network_health.get('delivery_compliance', 'N/A')}%
-
-⚠️ CRITICAL ISSUES
-• Total Delays: {critical_delays.get('total_delays', 0)}
-• Critical: {critical_delays.get('critical_count', 0)}
-• High Priority: {critical_delays.get('high_count', 0)}
-
-TOP ISSUES:
-{json.dumps(top_issues[:5], indent=2)}
+• Total Revenue: PKR {executive_data.get('total_revenue', 0):,.0f}
+• Total Units: {executive_data.get('total_units', 0):,}
+• Total DNs: {executive_data.get('total_dn', 0):,}
+• Delivery Rate: {executive_data.get('delivery_rate', 0)}%
+• POD Rate: {executive_data.get('pod_rate', 0)}%
+• PGI Rate: {executive_data.get('pgi_rate', 0)}%
+• Pending Deliveries: {executive_data.get('pending_delivery', 0)}
+• Pending PODs: {executive_data.get('pending_pod', 0)}
+• Critical Deliveries: {executive_data.get('critical_deliveries', 0)}
+• Critical PODs: {executive_data.get('critical_pod', 0)}
+• Top Dealer: {executive_data.get('top_dealer', 'N/A')}
+• Top Warehouse: {executive_data.get('top_warehouse', 'N/A')}
+• Top City: {executive_data.get('top_city', 'N/A')}
+• Risk Summary: {executive_data.get('risk_summary', 'N/A')}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Based on the above ACCURATE DATA, provide an executive summary with:
 
-1. Executive Overview (2-3 sentences on current state)
+1. Executive Overview (2-3 sentences)
 2. Top 3 Risks (with severity and impact)
 3. Top 3 Opportunities (with potential ROI)
 4. Recommended Actions (Immediate, Short-term, Long-term)
-5. Success Metrics (How to measure improvement)
+5. Success Metrics
 
-Use the data exactly as provided. Be concise and actionable."""
+Be concise, data-driven, and actionable."""
     
     @staticmethod
-    def build_root_cause_prompt(metric: str, data: Dict, symptoms: List) -> str:
+    def build_root_cause_prompt(issue: str, data: Dict) -> str:
         """Build root cause analysis prompt"""
         return f"""
 {LOGISTICS_BUSINESS_RULES}
 
-ROOT CAUSE ANALYSIS REQUEST: {metric}
+ROOT CAUSE ANALYSIS: {issue}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📊 OBSERVED SYMPTOMS
+📊 DATA FOR ANALYSIS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{json.dumps(symptoms[:5], indent=2)}
-
-CONTEXT DATA:
-{json.dumps(data, default=str, indent=2)[:800]}
+{json.dumps(data, default=str, indent=2)[:1500]}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Perform structured root cause analysis:
 
-📊 ANALYSIS
+📊 OBSERVATIONS
 • What is happening? (Data-driven observation)
-• Which entities are affected? (Dealers/Warehouses/Regions)
+• Which entities are affected?
 
 ⚠️ ROOT CAUSES
 • Primary cause (Most significant factor)
@@ -417,15 +555,9 @@ Perform structured root cause analysis:
 • Systemic issues (Process/Policy gaps)
 
 🎯 RECOMMENDED ACTIONS
-• Immediate (24-48 hours): [specific actions]
-• Short-term (1 week): [process improvements]
-• Long-term (1 month+): [systemic fixes]
-
-👤 RESPONSIBLE PARTY
-• Which department owns each action
-
-📈 SUCCESS METRICS
-• How to measure that the root cause is addressed
+• Immediate (24-48 hours)
+• Short-term (1 week)
+• Long-term (1 month+)
 
 Be specific, data-driven, and actionable."""
 
@@ -437,8 +569,8 @@ Be specific, data-driven, and actionable."""
 class WhatsAppFormatter:
     """WhatsApp-optimized response formatter"""
     
-    MAX_LENGTH = 1500
-    MAX_LINES = 30
+    MAX_LENGTH = 3500
+    MAX_LINES = 50
     
     @staticmethod
     def truncate_if_needed(text: str, max_length: int = MAX_LENGTH) -> str:
@@ -462,27 +594,29 @@ class WhatsAppFormatter:
 🏪 *DEALER DASHBOARD*
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-📌 *{dashboard.get('dealer_name')}*
-📍 City: {dashboard.get('city')}
-🏢 Office: {dashboard.get('sales_office')}
-🏭 Warehouse: {dashboard.get('warehouse')}
+📌 *{dashboard.get('dealer_name', 'N/A')}*
+📍 City: {dashboard.get('city', 'N/A')}
+🏢 Office: {dashboard.get('sales_office', 'N/A')}
+🏭 Warehouse: {dashboard.get('warehouse', 'N/A')}
 
 📊 *PERFORMANCE*
-• Total DNs: {dashboard.get('total_dn')}
-• Models: {dashboard.get('total_models')}
-• Qty: {dashboard.get('total_qty'):,}
-• Revenue: PKR {dashboard.get('total_amount', 0):,.0f}
-• Completion: {dashboard.get('completion_rate')}%
+• Total DNs: {dashboard.get('total_dn', 0):,}
+• Units: {dashboard.get('total_units', 0):,}
+• Revenue: PKR {dashboard.get('total_revenue', 0):,.0f}
+• Delivery Rate: {dashboard.get('delivery_rate', 0)}%
+• POD Rate: {dashboard.get('pod_rate', 0)}%
+• Completion Rate: {dashboard.get('completion_rate', 0)}%
 
 ⏱️ *AGING*
-• Delivery: {dashboard.get('avg_delivery_aging_days')} days
-• POD: {dashboard.get('avg_pod_aging_days')} days
+• Delivery: {dashboard.get('avg_delivery_aging', 0)} days
+• POD: {dashboard.get('avg_pod_aging', 0)} days
 
 ⚠️ *PENDING*
-• Deliveries: {dashboard.get('pending_deliveries_count')}
-• PODs: {dashboard.get('pending_pod_count')}
+• Deliveries: {dashboard.get('pending_delivery', 0)}
+• PODs: {dashboard.get('pending_pod', 0)}
+• Critical DNs: {dashboard.get('critical_dn', 0)}
 
-{health.get('health_emoji')} *Health: {health.get('health_score')} ({health.get('health_status')})*
+{health.get('health_emoji', '🟢')} *Health: {health.get('health_score', 0)} ({health.get('health_status', 'Unknown')})*
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
         return WhatsAppFormatter.truncate_if_needed(response.strip())
@@ -490,126 +624,291 @@ class WhatsAppFormatter:
     @staticmethod
     def format_dn_response(dn_detail: Dict) -> str:
         """Format DN response for WhatsApp"""
-        products_text = ""
-        for idx, p in enumerate(dn_detail.get("products", [])[:3], 1):
-            products_text += f"\n   {idx}. {p.get('customer_model', 'N/A')} - Qty: {p.get('quantity')}"
-        
-        if len(dn_detail.get("products", [])) > 3:
-            products_text += f"\n   ... +{len(dn_detail['products']) - 3} more"
-        
         response = f"""
-📄 *DN {dn_detail.get('dn_no')}*
+📄 *DN {dn_detail.get('dn_number', 'N/A')}*
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-📅 Date: {dn_detail.get('dn_date')}
-{dn_detail.get('status_emoji')} Status: {dn_detail.get('delivery_status')}
+📅 Date: {dn_detail.get('dn_date', 'N/A')}
+{dn_detail.get('status_emoji', '📦')} Status: {dn_detail.get('delivery_status', 'Unknown')}
 
-🏪 *Dealer:* {dn_detail.get('dealer')}
-📍 City: {dn_detail.get('city')}
-🏭 Warehouse: {dn_detail.get('warehouse')}
+🏪 *Dealer:* {dn_detail.get('dealer_name', 'N/A')}
+📍 City: {dn_detail.get('city', 'N/A')}
+🏭 Warehouse: {dn_detail.get('warehouse', 'N/A')}
 
-📦 *Products:*{products_text}
+💰 *Total:* PKR {dn_detail.get('total_amount', 0):,.0f}
+📦 *Quantity:* {dn_detail.get('total_quantity', 0)}
 
-💰 *Total:* PKR {dn_detail.get('dn_amount', 0):,.0f} (Qty: {dn_detail.get('dn_qty')})
+⏱️ *Delivery Aging:* {dn_detail.get('delivery_aging', 0)} days
+📋 *POD Aging:* {dn_detail.get('pod_aging', 0)} days
 
-⏱️ *Aging:* Delivery: {dn_detail.get('delivery_aging_days')}d | POD: {dn_detail.get('pod_aging_days')}d
-
-🚚 PGI: {dn_detail.get('pgi_date')}
-📋 POD: {dn_detail.get('pod_date')}
+🚚 PGI: {dn_detail.get('pgi_date', 'Not Dispatched')}
+📋 POD: {dn_detail.get('pod_date', 'Not Received')}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
         return WhatsAppFormatter.truncate_if_needed(response.strip())
     
     @staticmethod
-    def format_pending_response(pending_data: Dict, title: str, emoji: str) -> str:
-        """Format pending items response"""
-        items = pending_data.get('pending_deliveries', pending_data.get('pending_pod_list', []))[:5]
-        
-        if not items:
-            return f"{emoji} *{title}*\n━━━━━━━━━━━━━━━━━━━━\n✅ No pending items found!"
-        
-        response = f"{emoji} *{title}*\n━━━━━━━━━━━━━━━━━━━━\n\n"
-        response += f"📊 Total: {pending_data.get('total_pending', pending_data.get('total_pending_pod', 0))}\n"
-        response += f"⚠️ Critical: {pending_data.get('critical_delays', 0)}\n\n"
-        response += "🔴 *Top Priority Items:*\n"
-        
-        for item in items:
-            pending_days = item.get('pending_days', item.get('aging_days', 0))
-            priority_emoji = "🔴" if pending_days > 14 else "🟠" if pending_days > 7 else "🟡"
-            response += f"{priority_emoji} DN {item.get('dn_no')}: {pending_days} days\n"
-        
-        response += "\n━━━━━━━━━━━━━━━━━━━━\n💡 Type `Help` for more commands"
-        
-        return WhatsAppFormatter.truncate_if_needed(response)
-    
-    @staticmethod
     def format_warehouse_response(dashboard: Dict) -> str:
         """Format warehouse response for WhatsApp"""
-        warehouses = dashboard.get('warehouses', [])[:3]
+        response = f"""
+🏭 *WAREHOUSE DASHBOARD*
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📌 *{dashboard.get('warehouse_name', 'Overall')}*
+
+📊 *VOLUME*
+• Total DNs: {dashboard.get('total_dn', 0):,}
+• Units: {dashboard.get('total_units', 0):,}
+• Revenue: PKR {dashboard.get('total_revenue', 0):,.0f}
+
+🚚 *DELIVERY SLA*
+• Same Day: {dashboard.get('same_day_delivery', 0)}
+• 1 Day: {dashboard.get('one_day_delivery', 0)}
+• 2 Days: {dashboard.get('two_day_delivery', 0)}
+• 3 Days: {dashboard.get('three_day_delivery', 0)}
+• 4 Days: {dashboard.get('four_day_delivery', 0)}
+• 5+ Days: {dashboard.get('five_plus_delivery', 0)}
+• **Average: {dashboard.get('avg_delivery_aging', 0)} days**
+
+📋 *POD SLA*
+• Same Day: {dashboard.get('same_day_pod', 0)}
+• 1 Day: {dashboard.get('one_day_pod', 0)}
+• 2 Days: {dashboard.get('two_day_pod', 0)}
+• 3 Days: {dashboard.get('three_day_pod', 0)}
+• 4 Days: {dashboard.get('four_day_pod', 0)}
+• 5+ Days: {dashboard.get('five_plus_pod', 0)}
+• **Average: {dashboard.get('avg_pod_aging', 0)} days**
+
+⚠️ *PENDING*
+• Deliveries: {dashboard.get('pending_delivery', 0)}
+• PODs: {dashboard.get('pending_pod', 0)}
+• Critical: {dashboard.get('critical_dn', 0)}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+        return WhatsAppFormatter.truncate_if_needed(response.strip())
+    
+    @staticmethod
+    def format_city_response(dashboard: Dict) -> str:
+        """Format city response for WhatsApp"""
+        response = f"""
+📍 *CITY DASHBOARD*
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📌 *{dashboard.get('city_name', 'N/A')}*
+
+📊 *PERFORMANCE*
+• Total DNs: {dashboard.get('dn_count', 0):,}
+• Units: {dashboard.get('units', 0):,}
+• Revenue: PKR {dashboard.get('revenue', 0):,.0f}
+• Delivery Rate: {dashboard.get('delivery_rate', 0)}%
+
+⏱️ *Avg Delivery Aging:* {dashboard.get('avg_delivery_aging', 0)} days
+
+⚠️ *PENDING*
+• Deliveries: {dashboard.get('pending_delivery', 0)}
+• PODs: {dashboard.get('pending_pod', 0)}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+        return WhatsAppFormatter.truncate_if_needed(response.strip())
+    
+    @staticmethod
+    def format_ranking_response(title: str, items: List[Dict], metric: str) -> str:
+        """Format ranking response for WhatsApp"""
+        response = f"🏆 *{title}*\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         
-        if not warehouses:
-            return "🏭 No warehouse data available"
+        for i, item in enumerate(items[:10], 1):
+            if metric == 'revenue':
+                response += f"{i}. {item.get('name')}: PKR {item.get('value', 0):,.0f}\n"
+            elif metric == 'units':
+                response += f"{i}. {item.get('name')}: {item.get('value', 0):,} units\n"
+            else:
+                response += f"{i}. {item.get('name')}: {item.get('value', 0)}\n"
         
-        response = f"🏭 *WAREHOUSE PERFORMANCE*\n━━━━━━━━━━━━━━━━━━━━\n\n"
-        
-        for w in warehouses:
-            response += f"📌 *{w.get('warehouse')}*\n"
-            response += f"   DNs: {w.get('total_dn')} | Value: PKR {w.get('total_value', 0):,.0f}\n"
-            response += f"   Dispatch: {w.get('dispatched_rate')}% | POD: {w.get('pod_compliance_rate')}%\n\n"
-        
-        if dashboard.get('warehouse_delays'):
-            response += "⚠️ *Recent Delays:*\n"
-            for d in dashboard.get('warehouse_delays', [])[:2]:
-                response += f"   • {d.get('warehouse')}: DN {d.get('dn_no')} - {d.get('delay_days')} days\n"
-        
-        response += "\n━━━━━━━━━━━━━━━━━━━━\n💡 Type `Warehouse [name]` for details"
+        response += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n💡 Type `Help` for more commands"
         
         return WhatsAppFormatter.truncate_if_needed(response)
     
     @staticmethod
-    def format_executive_response(analysis: str, health_score: float) -> str:
+    def format_comparison_response(comparison_data: Dict) -> str:
+        """Format comparison response for WhatsApp"""
+        response = f"""
+🔄 *COMPARISON: {comparison_data.get('entity_a')} vs {comparison_data.get('entity_b')}*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📊 *REVENUE:*
+• {comparison_data.get('entity_a')}: PKR {comparison_data.get('revenue_a', 0):,.0f}
+• {comparison_data.get('entity_b')}: PKR {comparison_data.get('revenue_b', 0):,.0f}
+• Winner: 🏆 {comparison_data.get('winner_revenue', 'Tie')}
+
+📦 *UNITS:*
+• {comparison_data.get('entity_a')}: {comparison_data.get('units_a', 0):,}
+• {comparison_data.get('entity_b')}: {comparison_data.get('units_b', 0):,}
+• Winner: 🏆 {comparison_data.get('winner_units', 'Tie')}
+
+📋 *DNs:*
+• {comparison_data.get('entity_a')}: {comparison_data.get('dns_a', 0)}
+• {comparison_data.get('entity_b')}: {comparison_data.get('dns_b', 0)}
+
+⏱️ *DELIVERY AGING:*
+• {comparison_data.get('entity_a')}: {comparison_data.get('delivery_aging_a', 0)} days
+• {comparison_data.get('entity_b')}: {comparison_data.get('delivery_aging_b', 0)} days
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+        return WhatsAppFormatter.truncate_if_needed(response)
+    
+    @staticmethod
+    def format_control_tower_response(alerts: List[Dict], risk_summary: Dict) -> str:
+        """Format control tower response for WhatsApp"""
+        response = "🚨 *CONTROL TOWER - CRITICAL ALERTS*\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        
+        response += "📊 *RISK SUMMARY*\n"
+        response += f"🔴 RED: {risk_summary.get('RED', 0)} | 🟠 ORANGE: {risk_summary.get('ORANGE', 0)} | 🟡 YELLOW: {risk_summary.get('YELLOW', 0)} | 🟢 GREEN: {risk_summary.get('GREEN', 0)}\n\n"
+        
+        if alerts:
+            response += "⚠️ *CRITICAL ALERTS:*\n"
+            for alert in alerts[:5]:
+                severity_emoji = "🔴" if alert.get('severity') == "RED" else "🟠" if alert.get('severity') == "ORANGE" else "🟡"
+                response += f"{severity_emoji} {alert.get('entity_name')}: {alert.get('message')}\n"
+        
+        response += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n💡 Type `Help` for more commands"
+        
+        return WhatsAppFormatter.truncate_if_needed(response)
+    
+    @staticmethod
+    def format_executive_response(executive_data: Dict) -> str:
         """Format executive response for WhatsApp"""
-        header = f"🏢 *EXECUTIVE LOGISTICS REPORT*\n━━━━━━━━━━━━━━━━━━━━\n\n"
+        health_score = executive_data.get('health_score', 0)
         
-        if health_score:
-            if health_score >= 80:
-                header += "🟢 *Network Health: EXCELLENT*\n\n"
-            elif health_score >= 60:
-                header += "🟡 *Network Health: GOOD*\n\n"
-            elif health_score >= 40:
-                header += "🟠 *Network Health: AVERAGE*\n\n"
-            else:
-                header += "🔴 *Network Health: POOR - Requires Immediate Action*\n\n"
+        if health_score >= 80:
+            health_emoji = "🟢"
+            health_text = "EXCELLENT"
+        elif health_score >= 60:
+            health_emoji = "🟡"
+            health_text = "GOOD"
+        elif health_score >= 40:
+            health_emoji = "🟠"
+            health_text = "AVERAGE"
+        else:
+            health_emoji = "🔴"
+            health_text = "POOR"
         
-        footer = "\n━━━━━━━━━━━━━━━━━━━━\n💡 Type `Control tower` for real-time dashboard"
-        
-        full_response = header + analysis + footer
-        return WhatsAppFormatter.truncate_if_needed(full_response)
+        response = f"""
+🏢 *EXECUTIVE LOGISTICS REPORT*
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{health_emoji} *Network Health: {health_text} ({health_score}%)*
+
+📊 *COMPANY KPIs*
+• Revenue: PKR {executive_data.get('total_revenue', 0):,.0f}
+• Units: {executive_data.get('total_units', 0):,}
+• Total DNs: {executive_data.get('total_dn', 0):,}
+• Delivery Rate: {executive_data.get('delivery_rate', 0)}%
+• POD Rate: {executive_data.get('pod_rate', 0)}%
+
+🏆 *TOP PERFORMERS*
+• Dealer: {executive_data.get('top_dealer', 'N/A')}
+• Warehouse: {executive_data.get('top_warehouse', 'N/A')}
+• City: {executive_data.get('top_city', 'N/A')}
+
+⚠️ *RISK SUMMARY*
+• Pending Deliveries: {executive_data.get('pending_delivery', 0)}
+• Pending PODs: {executive_data.get('pending_pod', 0)}
+• Critical: {executive_data.get('critical_deliveries', 0)} deliveries | {executive_data.get('critical_pod', 0)} PODs
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 Type `Control tower` for detailed alerts
+"""
+        return WhatsAppFormatter.truncate_if_needed(response)
+    
+    @staticmethod
+    def format_ai_analysis(analysis_text: str) -> str:
+        """Format AI analysis response"""
+        return f"{analysis_text}\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n💡 Type `Help` for more commands"
+    
+    @staticmethod
+    def format_help_response() -> str:
+        """Format help response"""
+        return """
+🤖 *LOGISTICS AI ASSISTANT - COMPLETE GUIDE*
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🏪 *DEALER COMMANDS:*
+• `Dubai Electronics` - Complete dealer dashboard
+• `Dealer KPI` - Dealer performance metrics
+• `Dealer revenue` - Revenue only
+
+🏭 *WAREHOUSE COMMANDS:*
+• `Sargodha Warehouse` - Warehouse SLA dashboard
+• `Warehouse wise delivery aging` - All warehouses aging
+• `Warehouse KPI` - KPI comparison table
+
+📍 *CITY COMMANDS:*
+• `Lahore dashboard` - City performance
+• `Karachi revenue` - City revenue
+
+📦 *PRODUCT COMMANDS:*
+• `Product HRF-438IFRA1` - Product details
+• `Top products` - Best selling products
+
+📊 *RANKING COMMANDS:*
+• `Top 10 dealers` - Best dealers by revenue
+• `Top 10 warehouses` - Best warehouses
+• `Top 10 cities` - Best cities
+
+🔄 *COMPARISON COMMANDS:*
+• `Compare Lahore vs Karachi` - City comparison
+• `Compare Dubai Electronics vs Metro` - Dealer comparison
+
+📈 *TREND COMMANDS:*
+• `Revenue trend monthly` - Revenue trends
+• `POD trend weekly` - POD completion trends
+
+👔 *EXECUTIVE COMMANDS:*
+• `Executive dashboard` - Company KPIs
+• `Control tower` - Risk monitoring
+
+🔍 *ROOT CAUSE:*
+• `Why is Lahore delayed?` - Root cause analysis
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 Just type any dealer, warehouse, or product name!
+"""
 
 
 # ==========================================================
-# MAIN AI PROVIDER SERVICE (v8.0 - Enterprise)
+# MAIN AI PROVIDER SERVICE
 # ==========================================================
 
 class AIProviderService:
     """
     AI Orchestration & Explanation Engine for Logistics Control Tower.
     
-    Architecture:
-    WhatsApp → AIQueryService → AnalyticsService → AIProviderService → Explanation → WhatsApp
+    Integration with other services:
+    - webhook.py: Receives messages, routes to AI
+    - ai_query_service.py: Provides query plans
+    - logistics_query_service.py: Provides business data
+    - kpi_service.py: Provides KPI calculations
+    - analytics_service.py: Provides business intelligence
+    - whatsapp_service.py: Sends final response
     """
     
-    def __init__(self, analytics_service=None):
+    def __init__(self, analytics_service=None, logistics_service=None, kpi_service=None):
+        """Initialize AI Provider Service with dependencies"""
         self.analytics_service = analytics_service
+        self.logistics_service = logistics_service
+        self.kpi_service = kpi_service
         self.provider = None
         self.current_provider_name = None
         self.model = None
         
         # Caches
-        self.response_cache = TTLCache(maxsize=100, ttl=300)  # 5 minutes default
-        self.dealer_cache = TTLCache(maxsize=50, ttl=300)     # 5 minutes
-        self.dn_cache = TTLCache(maxsize=100, ttl=300)        # 5 minutes
-        self.warehouse_cache = TTLCache(maxsize=50, ttl=600)  # 10 minutes
+        self.response_cache = TTLCache(maxsize=200, ttl=300)  # 5 minutes
+        self.dealer_cache = TTLCache(maxsize=50, ttl=300)
+        self.dn_cache = TTLCache(maxsize=100, ttl=300)
+        self.warehouse_cache = TTLCache(maxsize=50, ttl=600)
         
         # Conversation memory
         self.conversation_memory: Dict[str, ConversationMemory] = {}
@@ -623,39 +922,23 @@ class AIProviderService:
             "ai_path_hits": 0,
             "cache_hits": 0,
             "cache_misses": 0,
-            "retry_count": 0,
             "start_time": time.time(),
             "total_response_time_ms": 0,
             "avg_response_time_ms": 0,
             "total_tokens_used": 0,
-            "total_cost_estimate": 0.0,
-            "by_query_type": {qt.value: 0 for qt in QueryType},
-            "sla_met": {
-                "dealer_query": 0,
-                "dn_query": 0,
-                "warehouse_query": 0,
-                "executive_query": 0
-            },
-            "response_quality": {
-                "short_responses": 0,
-                "empty_responses": 0,
-                "hallucination_attempts": 0
-            }
+            "by_query_type": {qt.value: 0 for qt in QueryType}
         }
         
         self._initialize_provider()
-        self._initialize_rules_engine()
-        
         logger.info("=" * 70)
-        logger.info("🤖 AI Provider Service v8.1 - Enterprise AI Orchestration Layer")
+        logger.info("🤖 AI Provider Service v9.0 - Fully Integrated")
         logger.info(f"   Provider: {self.current_provider_name or 'None'}")
         logger.info(f"   Model: {self.model or 'N/A'}")
-        logger.info(f"   Cache TTL: Dealer=5min, DN=5min, Warehouse=10min")
-        logger.info(f"   Status: {'✅ Healthy' if self.provider and self.provider.is_available() else '⚠️ Degraded'}")
+        logger.info(f"   Status: {'✅ Ready' if self.provider and self.provider.is_available() else '⚠️ Degraded'}")
         logger.info("=" * 70)
     
     def _initialize_provider(self):
-        """Initialize AI provider with abstraction layer"""
+        """Initialize AI provider"""
         # Try Groq first
         groq_api_key = getattr(config, 'GROQ_API_KEY', None)
         groq_model = getattr(config, 'GROQ_MODEL', 'mixtral-8x7b-32768')
@@ -670,7 +953,7 @@ class AIProviderService:
             except Exception as e:
                 logger.error(f"Groq init failed: {e}")
         
-        # Fallback to OpenAI if configured
+        # Fallback to OpenAI
         openai_api_key = getattr(config, 'OPENAI_API_KEY', None)
         openai_model = getattr(config, 'OPENAI_MODEL', 'gpt-3.5-turbo')
         
@@ -686,227 +969,199 @@ class AIProviderService:
         
         logger.warning("No AI provider available - operating in degraded mode")
         self.provider = None
-        self.current_provider_name = None
-    
-    def _initialize_rules_engine(self):
-        """Initialize business rules engine with Analytics v6.0 alignment"""
-        self.business_rules = {
-            "dn_count_rule": "COUNT(DISTINCT dn_no) - never count product lines",
-            "delivery_aging_rule": "PGI Date - DN Date",
-            "pod_aging_rule": "POD Date - PGI Date",
-            "pending_delivery_rule": "Today - DN Date (if no PGI)",
-            "pending_pod_rule": "Today - PGI Date (if no POD)",
-            "status_rules": {
-                "pending_delivery": "PGI is NULL",
-                "in_transit": "PGI exists, POD NULL",
-                "delivered": "POD exists"
-            },
-            "thresholds": {
-                "critical_delay": 14,
-                "high_priority_delay": 7,
-                "good_delivery_aging": 3,
-                "good_pod_aging": 5,
-                "excellent_health": 80,
-                "good_health": 60
-            }
-        }
     
     def _get_conversation_memory(self, user_id: str) -> ConversationMemory:
-        """Get or create conversation memory for user"""
+        """Get or create conversation memory"""
         if user_id not in self.conversation_memory:
             self.conversation_memory[user_id] = ConversationMemory()
         return self.conversation_memory[user_id]
     
     def _update_conversation_memory(self, user_id: str, query_context: QueryContext):
-        """Update conversation memory with current query context"""
+        """Update conversation memory"""
         memory = self._get_conversation_memory(user_id)
         
         if query_context.dealer_name:
             memory.last_dealer = query_context.dealer_name
         if query_context.dn_number:
             memory.last_dn = query_context.dn_number
-        if query_context.product_code:
-            memory.last_product = query_context.product_code
         if query_context.warehouse_name:
             memory.last_warehouse = query_context.warehouse_name
+        if query_context.city_name:
+            memory.last_city = query_context.city_name
         if query_context.division:
-            memory.last_sales_office = query_context.division
+            memory.last_division = query_context.division
         
         memory.last_query_type = query_context.query_type
         memory.timestamp = datetime.now()
     
-    def _apply_conversation_memory(self, user_id: str, query_context: QueryContext) -> QueryContext:
-        """Apply conversation memory to fill missing context"""
-        memory = self._get_conversation_memory(user_id)
-        
-        # If no dealer specified but we have memory, use it
-        if not query_context.dealer_name and memory.last_dealer:
-            if query_context.query_type in [QueryType.POD_QUERY, QueryType.AGING_QUERY, 
-                                            QueryType.HEALTH_QUERY]:
-                query_context.dealer_name = memory.last_dealer
-                query_context.confidence *= 0.9
-        
-        # If no DN specified but we have memory
-        if not query_context.dn_number and memory.last_dn:
-            if query_context.query_type == QueryType.DN_QUERY:
-                query_context.dn_number = memory.last_dn
-                query_context.confidence *= 0.9
-        
-        # If no warehouse specified but we have memory
-        if not query_context.warehouse_name and memory.last_warehouse:
-            if query_context.query_type == QueryType.WAREHOUSE_QUERY:
-                query_context.warehouse_name = memory.last_warehouse
-                query_context.confidence *= 0.9
-        
-        return query_context
-    
-    def _log_request(self, method_name: str, start_time: float, success: bool = True):
-        """Track metrics for monitoring"""
+    def _log_request(self, method_name: str, start_time: float):
+        """Track metrics"""
         response_time_ms = (time.time() - start_time) * 1000
         
         self.metrics["total_response_time_ms"] += response_time_ms
         if self.metrics["total_requests"] > 0:
             self.metrics["avg_response_time_ms"] = self.metrics["total_response_time_ms"] / self.metrics["total_requests"]
-        
-        logger.debug(f"AIProvider.{method_name} completed in {response_time_ms:.0f}ms")
     
     # ==========================================================
-    # QUERY CLASSIFICATION & ROUTING
+    # QUERY CLASSIFICATION
     # ==========================================================
     
     def classify_query(self, message: str, user_id: str = "guest") -> QueryContext:
-        """
-        Classify user query and determine response mode.
-        Aligned with Analytics v6.0 query types.
-        """
+        """Classify user query and determine response mode"""
         message_lower = message.lower().strip()
         
-        # DN pattern detection (624xxxxxxx or 10+ digits)
-        dn_match = re.search(r'\b(624\d{7}|\d{10,})\b', message)
+        # Help query
+        if any(word in message_lower for word in ['help', 'menu', 'commands']):
+            return QueryContext(
+                query_type=QueryType.HELP_QUERY,
+                response_mode=ResponseMode.DIRECT,
+                confidence=0.95,
+                needs_ai=False
+            )
         
+        # DN pattern detection
+        dn_match = re.search(r'\b(\d{8,12})\b', message)
         if dn_match:
-            query_type = QueryType.DN_QUERY
-            response_mode = ResponseMode.DIRECT
-            confidence = 0.95
-            needs_ai = False
-            dn_number = dn_match.group()
-            dealer_name = None
-        else:
-            # Check for dealer queries
-            dealer_indicators = ['dealer', 'show', 'tell me about', 'performance of', 'dashboard']
-            dealer_name = None
-            for indicator in dealer_indicators:
-                if indicator in message_lower:
-                    # Extract potential dealer name (words after indicator)
-                    parts = message.split()
-                    for i, part in enumerate(parts):
-                        if part.lower() == indicator:
-                            if i + 1 < len(parts):
-                                dealer_name = ' '.join(parts[i+1:])
-                    break
+            return QueryContext(
+                query_type=QueryType.DN_QUERY,
+                response_mode=ResponseMode.DIRECT,
+                dn_number=dn_match.group(),
+                confidence=0.95,
+                needs_ai=False
+            )
+        
+        # Control Tower
+        if any(word in message_lower for word in ['control tower', 'critical', 'alert', 'risk']):
+            return QueryContext(
+                query_type=QueryType.CONTROL_TOWER_QUERY,
+                response_mode=ResponseMode.DIRECT,
+                confidence=0.90,
+                needs_ai=False
+            )
+        
+        # Executive Dashboard
+        if any(word in message_lower for word in ['executive', 'ceo', 'business summary']):
+            return QueryContext(
+                query_type=QueryType.EXECUTIVE_QUERY,
+                response_mode=ResponseMode.EXECUTIVE,
+                confidence=0.90,
+                needs_ai=True
+            )
+        
+        # Ranking
+        if any(word in message_lower for word in ['top', 'bottom', 'best', 'worst']):
+            ranking_type = 'top' if any(w in message_lower for w in ['top', 'best']) else 'bottom'
             
-            if dealer_name:
-                query_type = QueryType.DEALER_QUERY
-                response_mode = ResponseMode.DIRECT if len(message) < 50 else ResponseMode.ANALYTICAL
-                confidence = 0.85
-                needs_ai = len(message) > 50
-                dn_number = None
+            # Determine dimension
+            if 'dealer' in message_lower:
+                dimension = 'dealer'
+            elif 'warehouse' in message_lower:
+                dimension = 'warehouse'
+            elif 'city' in message_lower:
+                dimension = 'city'
+            elif 'product' in message_lower:
+                dimension = 'product'
             else:
-                # Default to dealer query for short messages
-                if len(message.split()) <= 3 and not dn_match:
-                    dealer_name = message
-                    query_type = QueryType.DEALER_QUERY
-                    response_mode = ResponseMode.DIRECT
-                    confidence = 0.7
-                    needs_ai = False
-                    dn_number = None
-                else:
-                    query_type = QueryType.UNKNOWN
-                    response_mode = ResponseMode.ANALYTICAL
-                    confidence = 0.5
-                    needs_ai = True
-                    dealer_name = None
-                    dn_number = None
+                dimension = 'dealer'
+            
+            # Determine metric
+            if 'revenue' in message_lower or 'sales' in message_lower:
+                metric = 'revenue'
+            elif 'unit' in message_lower or 'quantity' in message_lower:
+                metric = 'units'
+            elif 'pod' in message_lower and 'aging' in message_lower:
+                metric = 'pod_aging'
+            elif 'delivery' in message_lower and 'aging' in message_lower:
+                metric = 'delivery_aging'
+            else:
+                metric = 'revenue'
+            
+            # Extract limit
+            limit_match = re.search(r'top\s+(\d+)', message_lower)
+            limit = int(limit_match.group(1)) if limit_match else 10
+            
+            return QueryContext(
+                query_type=QueryType.RANKING_QUERY,
+                response_mode=ResponseMode.DIRECT,
+                ranking_type=ranking_type,
+                ranking_metric=metric,
+                ranking_limit=limit,
+                dimension=dimension,
+                confidence=0.85,
+                needs_ai=False
+            )
         
-        # Check for analysis keywords that require AI
-        analysis_keywords = ['why', 'analyze', 'root cause', 'explain', 'what caused', 
-                            'how to improve', 'recommend', 'suggest', 'executive']
+        # Comparison
+        if 'compare' in message_lower and 'vs' in message_lower:
+            parts = message_lower.split(' vs ')
+            if len(parts) >= 2:
+                entity_a = parts[0].replace('compare', '').strip()
+                entity_b = parts[1].strip()
+                return QueryContext(
+                    query_type=QueryType.COMPARISON_QUERY,
+                    response_mode=ResponseMode.ANALYTICAL,
+                    comparison_entities=[entity_a, entity_b],
+                    confidence=0.85,
+                    needs_ai=True
+                )
         
-        for keyword in analysis_keywords:
-            if keyword in message_lower:
-                needs_ai = True
-                if 'root cause' in message_lower or 'why' in message_lower:
-                    response_mode = ResponseMode.ROOT_CAUSE
-                elif 'executive' in message_lower:
-                    response_mode = ResponseMode.EXECUTIVE
-                else:
-                    response_mode = ResponseMode.ANALYTICAL
-                break
+        # Root Cause Analysis
+        if message_lower.startswith('why'):
+            return QueryContext(
+                query_type=QueryType.ROOT_CAUSE_QUERY,
+                response_mode=ResponseMode.ROOT_CAUSE,
+                confidence=0.80,
+                needs_ai=True
+            )
         
-        # Check for pending/aging queries (fast path)
-        fast_path_keywords = ['pending pod', 'pending delivery', 'pending dn', 
-                             'critical delays', 'top dealers', 'bottom dealers']
+        # Warehouse query
+        warehouses = ['lahore', 'karachi', 'rawalpindi', 'sargodha', 'islamabad', 'multan']
+        for wh in warehouses:
+            if wh in message_lower and ('warehouse' in message_lower or len(message_lower.split()) <= 3):
+                return QueryContext(
+                    query_type=QueryType.WAREHOUSE_QUERY,
+                    response_mode=ResponseMode.DIRECT,
+                    warehouse_name=wh.title(),
+                    confidence=0.90,
+                    needs_ai=False
+                )
         
-        for keyword in fast_path_keywords:
-            if keyword in message_lower:
-                needs_ai = False
-                response_mode = ResponseMode.DIRECT
-                if 'pod' in keyword:
-                    query_type = QueryType.POD_QUERY
-                elif 'delivery' in keyword or 'delay' in keyword:
-                    query_type = QueryType.AGING_QUERY
-                elif 'dealer' in keyword:
-                    query_type = QueryType.DEALER_QUERY
-                break
+        # City query
+        cities = ['lahore', 'karachi', 'islamabad', 'rawalpindi', 'multan']
+        for city in cities:
+            if city in message_lower and ('city' in message_lower or 'in' in message_lower):
+                return QueryContext(
+                    query_type=QueryType.CITY_QUERY,
+                    response_mode=ResponseMode.DIRECT,
+                    city_name=city.title(),
+                    confidence=0.85,
+                    needs_ai=False
+                )
         
+        # Dealer query (default for short messages)
+        if len(message_lower.split()) <= 5:
+            return QueryContext(
+                query_type=QueryType.DEALER_QUERY,
+                response_mode=ResponseMode.DIRECT,
+                dealer_name=message,
+                confidence=0.80,
+                needs_ai=False
+            )
+        
+        # Default to help
         return QueryContext(
-            query_type=query_type,
-            response_mode=response_mode,
-            dealer_name=dealer_name,
-            dn_number=dn_number,
-            confidence=confidence,
-            needs_ai=needs_ai
+            query_type=QueryType.HELP_QUERY,
+            response_mode=ResponseMode.DIRECT,
+            confidence=0.50,
+            needs_ai=False
         )
-    
-    def validate_context(self, query_context: QueryContext) -> Tuple[bool, str]:
-        """
-        Validate that required data exists before AI call.
-        Prevents hallucinations.
-        """
-        if query_context.query_type == QueryType.DEALER_QUERY:
-            if not query_context.dealer_name:
-                return False, "No dealer name provided"
-            
-            # Check if dealer exists via analytics service
-            if self.analytics_service:
-                dealer_check = self.analytics_service.find_best_matching_dealer(query_context.dealer_name)
-                if "error" in dealer_check:
-                    return False, f"Dealer '{query_context.dealer_name}' not found"
-                return True, dealer_check.get("dealer_name", query_context.dealer_name)
-            
-            return True, query_context.dealer_name
-        
-        elif query_context.query_type == QueryType.DN_QUERY:
-            if not query_context.dn_number:
-                return False, "No DN number provided"
-            
-            # Validate DN exists
-            if self.analytics_service:
-                dn_detail = self.analytics_service.get_complete_dn_detail(query_context.dn_number)
-                if "error" in dn_detail:
-                    return False, f"DN '{query_context.dn_number}' not found"
-                return True, query_context.dn_number
-            
-            return True, query_context.dn_number
-        
-        return True, "Context valid"
     
     # ==========================================================
     # FAST PATH (No AI Call)
     # ==========================================================
     
     def _handle_direct_response(self, query_context: QueryContext, user_id: str) -> str:
-        """Handle direct responses without AI call (Fast Path)"""
+        """Handle direct responses without AI call"""
         start_time = time.time()
         self.metrics["fast_path_hits"] += 1
         
@@ -914,12 +1169,11 @@ class AIProviderService:
             return "⚠️ Analytics service not available. Please try again later."
         
         try:
+            # Dealer query
             if query_context.query_type == QueryType.DEALER_QUERY and query_context.dealer_name:
-                # Check cache
                 cache_key = f"dealer_{query_context.dealer_name.lower()}"
                 if cache_key in self.dealer_cache:
                     self.metrics["cache_hits"] += 1
-                    self._log_request("direct_response", start_time, True)
                     return self.dealer_cache[cache_key]
                 
                 self.metrics["cache_misses"] += 1
@@ -933,15 +1187,14 @@ class AIProviderService:
                     self.dealer_cache[cache_key] = response
                 
                 self.metrics["by_query_type"][query_context.query_type.value] += 1
-                self._log_request("direct_response", start_time, True)
+                self._log_request("direct_response", start_time)
                 return response
             
+            # DN query
             elif query_context.query_type == QueryType.DN_QUERY and query_context.dn_number:
-                # Check cache
                 cache_key = f"dn_{query_context.dn_number}"
                 if cache_key in self.dn_cache:
                     self.metrics["cache_hits"] += 1
-                    self._log_request("direct_response", start_time, True)
                     return self.dn_cache[cache_key]
                 
                 self.metrics["cache_misses"] += 1
@@ -954,41 +1207,84 @@ class AIProviderService:
                     self.dn_cache[cache_key] = response
                 
                 self.metrics["by_query_type"][query_context.query_type.value] += 1
-                self._log_request("direct_response", start_time, True)
+                self._log_request("direct_response", start_time)
                 return response
             
-            elif query_context.query_type == QueryType.POD_QUERY:
-                pending_pod = self.analytics_service.get_pending_pod_aging(query_context.dealer_name)
-                response = WhatsAppFormatter.format_pending_response(pending_pod, "PENDING PODs", "📋")
-                self.metrics["by_query_type"][query_context.query_type.value] += 1
-                self._log_request("direct_response", start_time, True)
-                return response
-            
-            elif query_context.query_type == QueryType.AGING_QUERY:
-                pending = self.analytics_service.get_pending_delivery_aging(query_context.dealer_name)
-                response = WhatsAppFormatter.format_pending_response(pending, "PENDING DELIVERIES", "🚚")
-                self.metrics["by_query_type"][query_context.query_type.value] += 1
-                self._log_request("direct_response", start_time, True)
-                return response
-            
+            # Warehouse query
             elif query_context.query_type == QueryType.WAREHOUSE_QUERY:
                 cache_key = f"warehouse_{query_context.warehouse_name or 'all'}"
                 if cache_key in self.warehouse_cache:
                     self.metrics["cache_hits"] += 1
-                    self._log_request("direct_response", start_time, True)
                     return self.warehouse_cache[cache_key]
                 
                 self.metrics["cache_misses"] += 1
                 dashboard = self.analytics_service.get_warehouse_dashboard(query_context.warehouse_name)
-                response = WhatsAppFormatter.format_warehouse_response(dashboard)
-                self.warehouse_cache[cache_key] = response
+                
+                if "error" in dashboard:
+                    response = f"❌ {dashboard['error']}"
+                else:
+                    response = WhatsAppFormatter.format_warehouse_response(dashboard)
+                    self.warehouse_cache[cache_key] = response
                 
                 self.metrics["by_query_type"][query_context.query_type.value] += 1
-                self._log_request("direct_response", start_time, True)
+                self._log_request("direct_response", start_time)
                 return response
             
+            # City query
+            elif query_context.query_type == QueryType.CITY_QUERY and query_context.city_name:
+                dashboard = self.analytics_service.get_city_dashboard(query_context.city_name)
+                
+                if "error" in dashboard:
+                    response = f"❌ {dashboard['error']}"
+                else:
+                    response = WhatsAppFormatter.format_city_response(dashboard)
+                
+                self.metrics["by_query_type"][query_context.query_type.value] += 1
+                return response
+            
+            # Ranking query
+            elif query_context.query_type == QueryType.RANKING_QUERY:
+                if query_context.ranking_metric == 'revenue':
+                    if query_context.dimension == 'dealer':
+                        items = self.analytics_service.get_top_dealers(query_context.ranking_limit or 10)
+                    elif query_context.dimension == 'warehouse':
+                        items = self.analytics_service.get_top_warehouses(query_context.ranking_limit or 10)
+                    elif query_context.dimension == 'city':
+                        items = self.analytics_service.get_top_cities(query_context.ranking_limit or 10)
+                    else:
+                        items = self.analytics_service.get_top_dealers(query_context.ranking_limit or 10)
+                else:
+                    items = []
+                
+                title = f"{query_context.ranking_type.upper()} {query_context.ranking_limit} {query_context.dimension.upper()}S BY {query_context.ranking_metric.upper()}"
+                response = WhatsAppFormatter.format_ranking_response(title, items, query_context.ranking_metric)
+                
+                self.metrics["by_query_type"][query_context.query_type.value] += 1
+                return response
+            
+            # Control Tower query
+            elif query_context.query_type == QueryType.CONTROL_TOWER_QUERY:
+                alerts = self.analytics_service.get_critical_alerts()
+                risk_summary = self.analytics_service.get_risk_summary()
+                response = WhatsAppFormatter.format_control_tower_response(alerts, risk_summary)
+                
+                self.metrics["by_query_type"][query_context.query_type.value] += 1
+                return response
+            
+            # Executive query
+            elif query_context.query_type == QueryType.EXECUTIVE_QUERY:
+                executive_data = self.analytics_service.get_executive_dashboard()
+                response = WhatsAppFormatter.format_executive_response(executive_data)
+                
+                self.metrics["by_query_type"][query_context.query_type.value] += 1
+                return response
+            
+            # Help query
+            elif query_context.query_type == QueryType.HELP_QUERY:
+                return WhatsAppFormatter.format_help_response()
+            
             else:
-                return self._handle_analytical_response(query_context, user_id)
+                return WhatsAppFormatter.format_help_response()
                 
         except Exception as e:
             logger.exception(f"Direct response failed: {e}")
@@ -1000,7 +1296,7 @@ class AIProviderService:
     # ==========================================================
     
     def _handle_analytical_response(self, query_context: QueryContext, user_id: str) -> str:
-        """Handle analytical responses with AI (AI Path)"""
+        """Handle analytical responses with AI"""
         start_time = time.time()
         self.metrics["ai_path_hits"] += 1
         
@@ -1008,44 +1304,57 @@ class AIProviderService:
             logger.warning("AI provider unavailable, falling back to direct response")
             return self._handle_direct_response(query_context, user_id)
         
-        # Validate context before AI call
-        is_valid, validation_result = self.validate_context(query_context)
-        if not is_valid:
-            self.metrics["response_quality"]["hallucination_attempts"] += 1
-            return f"❌ {validation_result}\n\nPlease check the name/number and try again."
-        
-        # Get compact context from analytics
-        compact_context = {}
-        if self.analytics_service and query_context.dealer_name:
-            compact_context = self.analytics_service.get_compact_ai_context(validation_result)
-        
-        # Build appropriate prompt
-        if query_context.query_type == QueryType.DEALER_QUERY:
-            dashboard = self.analytics_service.get_dealer_dashboard(validation_result) if self.analytics_service else {}
-            health = self.analytics_service.get_dealer_health(validation_result) if self.analytics_service else {}
-            prompt = PromptBuilder.build_dealer_prompt(
-                validation_result, dashboard, health, compact_context
-            )
-        elif query_context.query_type == QueryType.DN_QUERY:
-            dn_detail = self.analytics_service.get_complete_dn_detail(query_context.dn_number) if self.analytics_service else {}
-            prompt = PromptBuilder.build_dn_prompt(query_context.dn_number, dn_detail)
-        elif query_context.query_type == QueryType.WAREHOUSE_QUERY:
-            dashboard = self.analytics_service.get_warehouse_dashboard(query_context.warehouse_name) if self.analytics_service else {}
-            delays = self.analytics_service.get_warehouse_delays(query_context.warehouse_name) if self.analytics_service else []
-            prompt = PromptBuilder.build_warehouse_prompt(query_context.warehouse_name, dashboard, delays)
-        elif query_context.query_type == QueryType.ROOT_CAUSE_QUERY:
-            prompt = PromptBuilder.build_root_cause_prompt(
-                "delivery delays", compact_context, []
-            )
-        else:
-            prompt = PromptBuilder.build_executive_prompt(compact_context, {}, [])
-        
-        messages = [
-            {"role": "system", "content": LOGISTICS_BUSINESS_RULES},
-            {"role": "user", "content": prompt}
-        ]
-        
         try:
+            # Build appropriate prompt
+            if query_context.query_type == QueryType.DEALER_QUERY and query_context.dealer_name:
+                dashboard = self.analytics_service.get_dealer_dashboard(query_context.dealer_name) if self.analytics_service else {}
+                health = self.analytics_service.get_dealer_health(query_context.dealer_name) if self.analytics_service else {}
+                prompt = PromptBuilder.build_dealer_prompt(query_context.dealer_name, dashboard, health)
+            
+            elif query_context.query_type == QueryType.DN_QUERY and query_context.dn_number:
+                dn_detail = self.analytics_service.get_complete_dn_detail(query_context.dn_number) if self.analytics_service else {}
+                prompt = PromptBuilder.build_dn_prompt(query_context.dn_number, dn_detail)
+            
+            elif query_context.query_type == QueryType.WAREHOUSE_QUERY:
+                dashboard = self.analytics_service.get_warehouse_dashboard(query_context.warehouse_name) if self.analytics_service else {}
+                prompt = PromptBuilder.build_warehouse_prompt(query_context.warehouse_name or 'Overall', dashboard)
+            
+            elif query_context.query_type == QueryType.CITY_QUERY and query_context.city_name:
+                dashboard = self.analytics_service.get_city_dashboard(query_context.city_name) if self.analytics_service else {}
+                prompt = PromptBuilder.build_city_prompt(query_context.city_name, dashboard)
+            
+            elif query_context.query_type == QueryType.COMPARISON_QUERY and query_context.comparison_entities:
+                comparison_data = self.analytics_service.compare_entities(
+                    query_context.comparison_entities[0], 
+                    query_context.comparison_entities[1]
+                ) if self.analytics_service else {}
+                prompt = PromptBuilder.build_comparison_prompt(
+                    query_context.comparison_entities[0],
+                    query_context.comparison_entities[1],
+                    comparison_data
+                )
+            
+            elif query_context.query_type == QueryType.ROOT_CAUSE_QUERY:
+                data = self.analytics_service.get_root_cause_data() if self.analytics_service else {}
+                prompt = PromptBuilder.build_root_cause_prompt(query_context.original_message or "delivery delays", data)
+            
+            elif query_context.query_type == QueryType.EXECUTIVE_QUERY:
+                executive_data = self.analytics_service.get_executive_dashboard() if self.analytics_service else {}
+                prompt = PromptBuilder.build_executive_prompt(executive_data)
+            
+            elif query_context.query_type == QueryType.CONTROL_TOWER_QUERY:
+                alerts = self.analytics_service.get_critical_alerts() if self.analytics_service else []
+                risk_summary = self.analytics_service.get_risk_summary() if self.analytics_service else {}
+                prompt = PromptBuilder.build_control_tower_prompt(alerts, risk_summary)
+            
+            else:
+                return self._handle_direct_response(query_context, user_id)
+            
+            messages = [
+                {"role": "system", "content": LOGISTICS_BUSINESS_RULES},
+                {"role": "user", "content": prompt}
+            ]
+            
             response_obj = self.provider.generate(messages, stream=False, max_tokens=800)
             
             if response_obj:
@@ -1055,18 +1364,12 @@ class AIProviderService:
                 if hasattr(response_obj, 'usage'):
                     tokens = response_obj.usage.total_tokens
                     self.metrics["total_tokens_used"] += tokens
-                    # Rough cost estimate (adjust based on provider)
-                    self.metrics["total_cost_estimate"] += tokens * 0.000002
                 
-                # Format for WhatsApp
-                formatted_response = WhatsAppFormatter.format_executive_response(
-                    response_text, 
-                    compact_context.get('health', {}).get('score', 0)
-                )
+                formatted_response = WhatsAppFormatter.format_ai_analysis(response_text)
                 
                 self.metrics["successful_requests"] += 1
                 self.metrics["by_query_type"][query_context.query_type.value] += 1
-                self._log_request("analytical_response", start_time, True)
+                self._log_request("analytical_response", start_time)
                 
                 return formatted_response
             else:
@@ -1077,191 +1380,41 @@ class AIProviderService:
             self.metrics["failed_requests"] += 1
             return self._handle_direct_response(query_context, user_id)
     
-    def _handle_streaming_response(self, query_context: QueryContext, user_id: str):
-        """Handle streaming response for better perceived performance"""
-        yield "🤖 *AI Analysis in progress...*\n\n"
-        response = self._handle_analytical_response(query_context, user_id)
-        chunks = response.split('\n\n')
-        for chunk in chunks:
-            yield chunk + '\n\n'
-    
-    # ==========================================================
-    # EXECUTIVE INTELLIGENCE LAYER
-    # ==========================================================
-    
-    def generate_executive_summary(self, user_id: str = "executive") -> str:
-        """Generate executive summary using AI + Analytics"""
-        start_time = time.time()
-        
-        if not self.analytics_service:
-            return "⚠️ Analytics service not available"
-        
-        # Get network health data
-        network_health = {
-            "overall_score": 75,
-            "pod_compliance": 82,
-            "pgi_compliance": 88,
-            "delivery_compliance": 78
-        }
-        
-        critical_delays = self.analytics_service.get_pending_delivery_aging()
-        top_issues = critical_delays.get('pending_deliveries', [])[:5]
-        
-        # Build executive prompt
-        prompt = PromptBuilder.build_executive_prompt(network_health, critical_delays, top_issues)
-        
-        messages = [
-            {"role": "system", "content": LOGISTICS_BUSINESS_RULES},
-            {"role": "user", "content": prompt}
-        ]
-        
-        if self.provider and self.provider.is_available():
-            try:
-                response_obj = self.provider.generate(messages, stream=False, max_tokens=1000)
-                if response_obj:
-                    response_text = response_obj.choices[0].message.content
-                    formatted = WhatsAppFormatter.format_executive_response(
-                        response_text, network_health.get('overall_score', 0)
-                    )
-                    self._log_request("executive_summary", start_time, True)
-                    return formatted
-            except Exception as e:
-                logger.exception(f"Executive summary failed: {e}")
-        
-        # Fallback to analytics-based summary
-        summary = f"""
-🏢 *EXECUTIVE LOGISTICS REPORT*
-━━━━━━━━━━━━━━━━━━━━
-
-📊 *NETWORK HEALTH*
-• Overall Score: {network_health.get('overall_score')}%
-• POD Compliance: {network_health.get('pod_compliance')}%
-• PGI Compliance: {network_health.get('pgi_compliance')}%
-• Delivery Compliance: {network_health.get('delivery_compliance')}%
-
-⚠️ *CRITICAL DELAYS*
-• Total: {critical_delays.get('total_pending', 0)}
-• Critical: {critical_delays.get('critical_delays', 0)}
-
-🎯 *RECOMMENDATIONS*
-1. Prioritize critical delays (>14 days)
-2. Review warehouse dispatch processes
-3. Accelerate POD collection
-
-━━━━━━━━━━━━━━━━━━━━
-💡 Type `Root cause analysis` for deeper insights
-"""
-        self._log_request("executive_summary", start_time, True)
-        return WhatsAppFormatter.truncate_if_needed(summary)
-    
-    def analyze_network_health(self) -> Dict[str, Any]:
-        """Analyze overall network health"""
-        if not self.analytics_service:
-            return {"error": "Analytics service not available"}
-        
-        top_dealers = self.analytics_service.get_top_dealers(5)
-        pending_deliveries = self.analytics_service.get_pending_delivery_aging()
-        pending_pod = self.analytics_service.get_pending_pod_aging()
-        
-        return {
-            "top_performers": top_dealers,
-            "pending_deliveries_count": pending_deliveries.get('total_pending', 0),
-            "critical_delays": pending_deliveries.get('critical_delays', 0),
-            "pending_pod_count": pending_pod.get('total_pending_pod', 0),
-            "network_health_score": 75
-        }
-    
     # ==========================================================
     # PUBLIC METHODS
     # ==========================================================
     
-    def chat(self, message: str, user_id: str = "guest", request_id: str = None) -> str:
-        """Main chat method with intelligent routing."""
-        req_id = request_id or "unknown"
+    def process_query(self, message: str, user_id: str = "guest") -> str:
+        """Main entry point for processing queries"""
         start_time = time.time()
-        
-        logger.info(f"[{req_id}] AI Chat: {message[:100]}")
-        
         self.metrics["total_requests"] += 1
         
+        # Classify query
         query_context = self.classify_query(message, user_id)
-        query_context = self._apply_conversation_memory(user_id, query_context)
+        
+        # Add original message for context
+        query_context.original_message = message
+        
+        # Update conversation memory
         self._update_conversation_memory(user_id, query_context)
         
+        # Route to appropriate handler
         if not query_context.needs_ai or query_context.response_mode == ResponseMode.DIRECT:
             response = self._handle_direct_response(query_context, user_id)
         else:
             response = self._handle_analytical_response(query_context, user_id)
         
-        response_time = (time.time() - start_time) * 1000
-        
-        if query_context.query_type == QueryType.DEALER_QUERY:
-            if response_time < 1500:
-                self.metrics["sla_met"]["dealer_query"] += 1
-        elif query_context.query_type == QueryType.DN_QUERY:
-            if response_time < 1000:
-                self.metrics["sla_met"]["dn_query"] += 1
-        elif query_context.query_type == QueryType.WAREHOUSE_QUERY:
-            if response_time < 2000:
-                self.metrics["sla_met"]["warehouse_query"] += 1
-        elif query_context.query_type == QueryType.EXECUTIVE_QUERY:
-            if response_time < 5000:
-                self.metrics["sla_met"]["executive_query"] += 1
-        
         self.metrics["successful_requests"] += 1
-        self._log_request("chat", start_time, True)
-        
-        logger.info(f"[{req_id}] Response in {response_time:.0f}ms | Mode: {query_context.response_mode.value}")
+        self._log_request("process_query", start_time)
         
         return response
     
-    def get_dealer_insights(self, dealer_name: str, user_id: str = "guest") -> str:
-        return self.chat(f"Analyze dealer {dealer_name} performance and provide recommendations", user_id)
-    
-    def get_dn_insights(self, dn_number: str, user_id: str = "guest") -> str:
-        return self.chat(f"Analyze DN {dn_number} status and delays", user_id)
-    
-    def get_warehouse_insights(self, warehouse_name: str = None, user_id: str = "guest") -> str:
-        if warehouse_name:
-            return self.chat(f"Analyze warehouse {warehouse_name} performance and delays", user_id)
-        return self.chat("Analyze all warehouse performance and identify issues", user_id)
-    
-    # ==========================================================
-    # HEALTH & METRICS
-    # ==========================================================
-    
-    def health_check(self) -> Dict[str, Any]:
-        uptime_seconds = time.time() - self.metrics["start_time"]
-        total_requests = self.metrics["total_requests"]
-        success_rate = (self.metrics["successful_requests"] / max(1, total_requests)) * 100
-        
-        return {
-            "service": "ai_provider",
-            "version": "8.1",
-            "provider": self.current_provider_name,
-            "model": self.model,
-            "configured": self.provider is not None and self.provider.is_available(),
-            "status": "healthy" if self.provider and self.provider.is_available() else "degraded",
-            "uptime_seconds": round(uptime_seconds, 2),
-            "uptime_hours": round(uptime_seconds / 3600, 2),
-            "metrics": self.get_metrics(),
-            "cache_stats": {
-                "dealer_cache_size": len(self.dealer_cache),
-                "dn_cache_size": len(self.dn_cache),
-                "warehouse_cache_size": len(self.warehouse_cache),
-                "total_cached": len(self.dealer_cache) + len(self.dn_cache) + len(self.warehouse_cache)
-            },
-            "capabilities": {
-                "fast_path": True,
-                "ai_path": self.provider is not None and self.provider.is_available(),
-                "streaming": True,
-                "conversation_memory": True,
-                "context_injection": True,
-                "hallucination_protection": True
-            }
-        }
+    def chat(self, message: str, user_id: str = "guest", request_id: str = None) -> str:
+        """Chat method for compatibility with webhook"""
+        return self.process_query(message, user_id)
     
     def get_metrics(self) -> Dict[str, Any]:
+        """Get service metrics"""
         total = self.metrics["total_requests"]
         success_rate = (self.metrics["successful_requests"] / max(1, total)) * 100
         cache_hit_rate = (self.metrics["cache_hits"] / max(1, self.metrics["cache_hits"] + self.metrics["cache_misses"])) * 100
@@ -1274,20 +1427,29 @@ class AIProviderService:
             "fast_path_hits": self.metrics["fast_path_hits"],
             "ai_path_hits": self.metrics["ai_path_hits"],
             "cache_hit_rate": round(cache_hit_rate, 2),
-            "retry_count": self.metrics["retry_count"],
-            "uptime_seconds": round(time.time() - self.metrics["start_time"], 2),
             "avg_response_time_ms": round(self.metrics["avg_response_time_ms"], 2),
             "total_tokens_used": self.metrics["total_tokens_used"],
-            "total_cost_estimate": round(self.metrics["total_cost_estimate"], 4),
+            "by_query_type": self.metrics["by_query_type"],
+            "provider": self.current_provider_name,
+            "model": self.model
+        }
+    
+    def health_check(self) -> Dict[str, Any]:
+        """Health check endpoint"""
+        uptime_seconds = time.time() - self.metrics["start_time"]
+        
+        return {
+            "service": "ai_provider_service",
+            "version": "9.0",
+            "status": "healthy" if self.provider and self.provider.is_available() else "degraded",
             "provider": self.current_provider_name,
             "model": self.model,
-            "active_conversations": len(self.conversation_memory),
-            "by_query_type": self.metrics["by_query_type"],
-            "sla_met": self.metrics["sla_met"],
-            "response_quality": self.metrics["response_quality"]
+            "uptime_seconds": round(uptime_seconds, 2),
+            "metrics": self.get_metrics()
         }
     
     def clear_cache(self, cache_type: str = "all") -> Dict[str, Any]:
+        """Clear cache"""
         cleared = {}
         
         if cache_type in ["all", "dealer"]:
@@ -1303,40 +1465,21 @@ class AIProviderService:
             self.warehouse_cache.clear()
         
         if cache_type == "all":
-            cleared["total"] = sum(cleared.values())
             self.response_cache.clear()
         
-        logger.info(f"Cache cleared: {cleared}")
         return {"cleared": cleared}
     
     def clear_memory(self, user_id: str = None) -> Dict[str, Any]:
+        """Clear conversation memory"""
         if user_id:
             if user_id in self.conversation_memory:
-                messages = len(self.conversation_memory[user_id].__dict__)
                 del self.conversation_memory[user_id]
-                return {"cleared": True, "user_id": user_id, "memory_items": messages}
-            return {"cleared": False, "user_id": user_id, "error": "User not found"}
+                return {"cleared": True, "user_id": user_id}
+            return {"cleared": False, "user_id": user_id}
         else:
             count = len(self.conversation_memory)
             self.conversation_memory.clear()
             return {"cleared": True, "users_cleared": count}
-    
-    def get_conversation_summary(self, user_id: str) -> Dict[str, Any]:
-        memory = self._get_conversation_memory(user_id)
-        return {
-            "user_id": user_id,
-            "last_dealer": memory.last_dealer,
-            "last_dn": memory.last_dn,
-            "last_product": memory.last_product,
-            "last_warehouse": memory.last_warehouse,
-            "last_sales_office": memory.last_sales_office,
-            "last_query_type": memory.last_query_type.value if memory.last_query_type else None,
-            "timestamp": memory.timestamp.isoformat(),
-            "has_context": any([
-                memory.last_dealer, memory.last_dn, memory.last_product,
-                memory.last_warehouse, memory.last_sales_office
-            ])
-        }
 
 
 # ==========================================================
@@ -1345,23 +1488,33 @@ class AIProviderService:
 
 _ai_provider = None
 _analytics_service = None
+_logistics_service = None
+_kpi_service = None
 
 
-def set_analytics_service(analytics_service):
-    global _analytics_service
+def initialize_services(analytics_service=None, logistics_service=None, kpi_service=None):
+    """Initialize service dependencies"""
+    global _analytics_service, _logistics_service, _kpi_service
     _analytics_service = analytics_service
-    logger.info("Analytics service injected into AI Provider")
+    _logistics_service = logistics_service
+    _kpi_service = kpi_service
+    logger.info("AI Provider Service dependencies initialized")
 
 
 def get_ai_provider() -> AIProviderService:
-    global _ai_provider, _analytics_service
+    """Get singleton instance of AIProviderService"""
+    global _ai_provider, _analytics_service, _logistics_service, _kpi_service
     if _ai_provider is None:
-        _ai_provider = AIProviderService(analytics_service=_analytics_service)
+        _ai_provider = AIProviderService(
+            analytics_service=_analytics_service,
+            logistics_service=_logistics_service,
+            kpi_service=_kpi_service
+        )
     return _ai_provider
 
 
 # ==========================================================
-# CRITICAL FIX: WHATSAPP COMPATIBILITY FUNCTION
+# WHATSAPP COMPATIBILITY FUNCTION
 # ==========================================================
 
 def process_whatsapp_query(
@@ -1401,34 +1554,32 @@ def process_whatsapp_query(
         from app.services.analytics_service import AnalyticsService
         from app.services.logistics_query_service import LogisticsQueryService
         from app.services.kpi_service import KPIService
-        from app.services.ai_query_service import process_query as ai_query_process
         
         # Create service instances
         analytics_service = AnalyticsService(db)
         logistics_service = LogisticsQueryService(db)
         kpi_service = KPIService(db)
         
-        # Set analytics service for AI provider
-        from app.services.ai_provider_service import set_analytics_service as set_ai_analytics
-        set_ai_analytics(analytics_service)
+        # Initialize AI provider with dependencies
+        initialize_services(analytics_service, logistics_service, kpi_service)
         
         # Get AI provider
         ai_provider = get_ai_provider()
         
-        # Process the query using the AI Query Service's process_query function
-        response = ai_query_process(question, user_id_final, req_id)
+        # Process the query
+        response = ai_provider.process_query(question, user_id_final)
         
         logger.bind(request_id=req_id).info(f"✅ Response: {len(response)} chars")
         
         return response
         
     except ImportError as e:
-        logger.bind(request_id=req_id).exception(f"Import error in process_whatsapp_query: {e}")
-        return f"⚠️ Service configuration error. Import failed: {type(e).__name__}"
+        logger.bind(request_id=req_id).exception(f"Import error: {e}")
+        return f"⚠️ Service configuration error. Please try again later."
         
     except Exception as e:
         logger.bind(request_id=req_id).exception(f"Error in process_whatsapp_query: {e}")
-        return f"⚠️ Error: {type(e).__name__}. Please try again."
+        return f"⚠️ Error processing your request. Please try again."
         
     finally:
         if db:
@@ -1436,67 +1587,28 @@ def process_whatsapp_query(
 
 
 # ==========================================================
-# COMPATIBILITY FUNCTIONS (Keep existing)
-# ==========================================================
-
-def chat(message: str, user_id: str = "guest", request_id: str = None, context: Dict = None) -> str:
-    """Compatibility function for chat with context support."""
-    return get_ai_provider().chat(message, user_id, request_id=request_id)
-
-
-def generate_root_cause(metric: str, data: Dict, request_id: str = None) -> str:
-    """Compatibility function for root cause analysis."""
-    return get_ai_provider().generate_root_cause_analysis(metric, data, request_id=request_id) if hasattr(get_ai_provider(), 'generate_root_cause_analysis') else "Root cause analysis not available"
-
-
-def generate_recommendations(issues: List[str], data: Dict, request_id: str = None) -> str:
-    """Compatibility function for recommendations."""
-    return get_ai_provider().generate_recommendations(issues, data, request_id=request_id) if hasattr(get_ai_provider(), 'generate_recommendations') else "Recommendations not available"
-
-
-def get_ai_metrics() -> Dict[str, Any]:
-    """Get AI service metrics."""
-    return get_ai_provider().get_metrics()
-
-
-def clear_user_history(user_id: str) -> Dict[str, Any]:
-    """Clear conversation history for a user."""
-    return get_ai_provider().clear_memory(user_id)
-
-
-def get_user_conversation_summary(user_id: str) -> Dict[str, Any]:
-    """Get conversation summary for a user."""
-    return get_ai_provider().get_conversation_summary(user_id)
-
-
-# ==========================================================
 # INITIALIZATION LOG
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("🤖 AI Provider Service v8.1 - Enterprise AI Orchestration Layer")
+logger.info("🤖 AI Provider Service v9.0 - Fully Integrated")
 logger.info("")
-logger.info("   ARCHITECTURE:")
-logger.info("   WhatsApp → AIQueryService → AnalyticsService → AIProvider → Explanation")
+logger.info("   INTEGRATION WITH OTHER SERVICES:")
+logger.info("   ✅ webhook.py - Receives messages, routes to AI")
+logger.info("   ✅ ai_query_service.py - Provides query plans")
+logger.info("   ✅ logistics_query_service.py - Provides business data")
+logger.info("   ✅ kpi_service.py - Provides KPI calculations")
+logger.info("   ✅ analytics_service.py - Provides business intelligence")
+logger.info("   ✅ whatsapp_service.py - Sends final response")
 logger.info("")
-logger.info("   KEY FEATURES:")
+logger.info("   FEATURES:")
 logger.info("   ✅ Fast Path Routing (0.5-2 sec)")
 logger.info("   ✅ AI Path Routing (2-5 sec)")
 logger.info("   ✅ Global Business Rules Engine")
-logger.info("   ✅ Compact Context (80% token reduction)")
 logger.info("   ✅ Response Caching (TTL-based)")
-logger.info("   ✅ Hallucination Protection")
 logger.info("   ✅ Conversation Memory")
-logger.info("   ✅ Executive Intelligence Layer")
-logger.info("   ✅ Multi-Provider Abstraction")
 logger.info("   ✅ WhatsApp Optimized Formatter")
-logger.info("   ✅ WhatsApp Compatibility Function (process_whatsapp_query)")
-logger.info("")
-logger.info("   SLA TARGETS:")
-logger.info("   • DN Query: <1 sec")
-logger.info("   • Dealer Query: <1.5 sec")
-logger.info("   • Warehouse Query: <2 sec")
-logger.info("   • Executive Analysis: <5 sec")
+logger.info("   ✅ WhatsApp Compatibility Function")
 logger.info("")
 logger.info("   STATUS: ✅ Ready for Production")
 logger.info("=" * 70)
