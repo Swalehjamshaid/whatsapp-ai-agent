@@ -1,8 +1,9 @@
 # ==========================================================
-# FILE: app/main.py (ENTERPRISE v9.4 - COMPLETE AI INTEGRATION)
+# FILE: app/main.py (ENTERPRISE v9.4.1 - CACHE_TTL FIXED)
 # PROJECT: AI WhatsApp Customer Service Agent
 # ==========================================================
-# IMPROVEMENTS v9.4:
+# IMPROVEMENTS v9.4.1:
+# - ✅ FIXED: CACHE_TTL attribute error (now reads from config with fallback)
 # - ✅ ADDED: Webhook AI service initialization call
 # - ✅ ADDED: init_ai_service() integration from webhook
 # - ✅ FIXED: AI service now properly initializes at startup
@@ -20,7 +21,7 @@ import uuid
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from collections import defaultdict
 from threading import Lock
 
@@ -64,6 +65,14 @@ from app.services.schema_service import (
 from app.services.whatsapp_service import get_whatsapp_service
 
 from app.config import config
+
+# ==========================================================
+# FIX: CACHE_TTL with fallback for compatibility
+# ==========================================================
+# This ensures CACHE_TTL is always defined even if missing from config
+CACHE_TTL = getattr(config, 'CACHE_TTL', 300)
+CACHE_TTL_SESSION = getattr(config, 'CACHE_TTL_SESSION', 1800)
+CACHE_ENABLED = getattr(config, 'CACHE_ENABLED', True)
 
 # ==========================================================
 # MODEL IMPORTS
@@ -625,8 +634,14 @@ async def lifespan(app: FastAPI):
     start_time = time.time()
     
     logger.info("=" * 80)
-    logger.info("🤖 AI WHATSAPP AGENT STARTING v9.4")
+    logger.info("🤖 AI WHATSAPP AGENT STARTING v9.4.1")
     logger.info("=" * 80)
+    
+    # Log cache configuration (FIXED: CACHE_TTL now properly defined)
+    logger.info(f"📦 CACHE CONFIGURATION:")
+    logger.info(f"   CACHE_TTL: {CACHE_TTL}s")
+    logger.info(f"   CACHE_TTL_SESSION: {CACHE_TTL_SESSION}s")
+    logger.info(f"   CACHE_ENABLED: {CACHE_ENABLED}")
     
     # Load routers FIRST
     logger.info("📡 Loading routers...")
@@ -645,6 +660,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"   WhatsApp: {'✓' if whatsapp_ok else '✗'}")
     logger.info(f"   Environment: {config.ENVIRONMENT}")
     logger.info(f"   AI Service Import: {'✓' if AI_QUERY_SERVICE_AVAILABLE else '✗'}")
+    logger.info(f"   Cache TTL: {CACHE_TTL}s")
     
     # Initialize AI Query Service in degraded mode
     logger.info("=" * 40)
@@ -686,6 +702,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"   AI Query Service: {'AVAILABLE' if ai_initialized else 'UNAVAILABLE (Degraded Mode)'}")
     logger.info(f"   Webhook AI Service: {'AVAILABLE' if webhook_ai_initialized else 'UNAVAILABLE'}")
     logger.info(f"   Webhook Timeout: 30s (aligned with webhook v27.2)")
+    logger.info(f"   Cache TTL: {CACHE_TTL}s")
     logger.info("=" * 80)
     
     yield
@@ -705,7 +722,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AI WhatsApp Logistics Assistant",
     description="Enterprise Logistics AI Platform - WhatsApp Integration",
-    version="9.4.0",
+    version="9.4.1",
     docs_url="/api/docs" if config.ENVIRONMENT != "production" else None,
     redoc_url="/api/redoc" if config.ENVIRONMENT != "production" else None,
     openapi_url="/api/openapi.json" if config.ENVIRONMENT != "production" else None,
@@ -785,10 +802,10 @@ templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
 
 # ==========================================================
-# CACHE
+# CACHE (FIXED: Now uses CACHE_TTL variable)
 # ==========================================================
 
-dashboard_cache = TTLCache(maxsize=100, ttl=60)
+dashboard_cache = TTLCache(maxsize=100, ttl=CACHE_TTL)
 
 
 # ==========================================================
@@ -933,6 +950,7 @@ async def health():
         "ai_query_available": getattr(app.state, 'ai_query_available', False),
         "webhook_timeout_seconds": 30,
         "webhook_version": "27.2",
+        "cache_ttl": CACHE_TTL,
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -1021,7 +1039,7 @@ async def cache_status():
     return {
         "cache_size": len(dashboard_cache),
         "cache_maxsize": dashboard_cache.maxsize,
-        "cache_ttl_seconds": 60,
+        "cache_ttl_seconds": CACHE_TTL,
         "type": "in_memory_ttlcache"
     }
 
@@ -1060,7 +1078,8 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
                 "schema_version": schema_info.get("app_version", "9.4"),
                 "last_refresh": last_refresh.strftime('%Y-%m-%d %H:%M:%S'),
                 "timestamp": datetime.utcnow().isoformat(),
-                "ai_query_available": getattr(app.state, 'ai_query_available', False)
+                "ai_query_available": getattr(app.state, 'ai_query_available', False),
+                "cache_ttl": CACHE_TTL
             }
         )
     except Exception as e:
@@ -1082,11 +1101,12 @@ async def status_legacy(db: Session = Depends(get_db)):
     
     result = {
         "application": "AI WhatsApp Agent",
-        "version": "9.4.0",
+        "version": "9.4.1",
         "database": "postgresql",
         "ai_provider": "groq",
         "whatsapp": "active",
         "ai_query_available": getattr(app.state, 'ai_query_available', False),
+        "cache_ttl": CACHE_TTL,
         "statistics": {
             "total_customers": db.query(func.count(Customer.id)).scalar() or 0,
             "total_conversations": db.query(func.count(Conversation.id)).scalar() or 0,
@@ -1112,14 +1132,15 @@ async def home():
 async def version():
     return {
         "name": "AI WhatsApp Logistics Assistant",
-        "version": "9.4.0",
+        "version": "9.4.1",
         "framework": "FastAPI",
         "database": "PostgreSQL",
         "schema_version": APP_SCHEMA_VERSION,
         "ai_provider": "groq",
         "ai_query_service": "initialized" if getattr(app.state, 'ai_query_available', False) else "unavailable",
         "webhook_version": "27.2",
-        "ai_query_version": AI_QUERY_SERVICE_VERSION
+        "ai_query_version": AI_QUERY_SERVICE_VERSION,
+        "cache_ttl": CACHE_TTL
     }
 
 
@@ -1238,11 +1259,12 @@ async def degraded_status():
 async def service_versions():
     """Get all service versions for debugging"""
     versions = {
-        "app": "9.4.0",
+        "app": "9.4.1",
         "webhook": "27.2",
         "ai_query": AI_QUERY_SERVICE_VERSION,
         "schema": APP_SCHEMA_VERSION,
-        "environment": config.ENVIRONMENT
+        "environment": config.ENVIRONMENT,
+        "cache_ttl": CACHE_TTL
     }
     
     # Try to get service versions from compatibility layers
@@ -1270,7 +1292,8 @@ if config.ENVIRONMENT != "production":
                 "connected": connected,
                 "database_url_exists": bool(DATABASE_URL),
                 "health": health,
-                "environment": config.ENVIRONMENT
+                "environment": config.ENVIRONMENT,
+                "cache_ttl": CACHE_TTL
             }
         except Exception as e:
             logger.exception("DB test error")
@@ -1325,7 +1348,7 @@ if config.ENVIRONMENT != "production":
 # ==========================================================
 
 logger.info("=" * 60)
-logger.info("📡 MAIN APP v9.4 - COMPLETE AI INTEGRATION")
+logger.info("📡 MAIN APP v9.4.1 - COMPLETE AI INTEGRATION (CACHE_TTL FIXED)")
 logger.info("")
 logger.info("   ALIGNED WITH:")
 logger.info("   ✅ webhook.py v27.2 (full AI service integration)")
@@ -1340,8 +1363,10 @@ logger.info("   ✅ Direct DN fallback when AI service down")
 logger.info("   ✅ 30s webhook timeout alignment")
 logger.info("   ✅ Service version tracking")
 logger.info("   ✅ Debug endpoints for troubleshooting")
+logger.info("   ✅ CACHE_TTL properly configured with fallback")
 logger.info("   ✅ All original attributes preserved")
 logger.info("")
 logger.info(f"   AI SERVICE IMPORT: {'✓' if AI_QUERY_SERVICE_AVAILABLE else '✗'}")
 logger.info(f"   AI SERVICE VERSION: {AI_QUERY_SERVICE_VERSION or 'unknown'}")
+logger.info(f"   CACHE_TTL: {CACHE_TTL}s")
 logger.info("=" * 60)
