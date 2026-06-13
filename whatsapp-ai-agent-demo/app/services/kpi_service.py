@@ -1,1170 +1,978 @@
 # ==========================================================
-# FILE: app/services/kpi_service.py (INTEGRATED v4.0 - PRODUCTION READY)
+# FILE: app/services/kpi_service.py
 # ==========================================================
-# PURPOSE: Executive Dashboard Engine - Real KPI Calculations
+# PURPOSE: Core Logistics Calculations Engine
+#          ALL KPI calculations happen here - NO exceptions
 #
-# IMPROVEMENTS v4.0:
-# - ✅ ADDED get_control_tower_report() - Fixes missing route error
-# - ✅ ADDED Exception handling to all methods (never crash)
-# - ✅ REPLACED hardcoded values with real DB calculations
-# - ✅ ADDED get_management_summary() for executive insights
-# - ✅ ADDED get_daily_operations_summary() for daily ops
-# - ✅ ADDED get_sla_performance() for SLA tracking
-# - ✅ ADDED get_region_performance() with real region data
-# - ✅ ADDED get_branch_ranking() for branch insights
-# - ✅ ADDED get_warehouse_ranking() for warehouse insights
-# - ✅ ADDED get_city_kpi_summary() for city-level AI context
-# - ✅ ADDED get_root_cause_context() for Groq analysis
-# - ✅ ENHANCED health_check() with detailed status
-# - ✅ ADDED metrics tracking for monitoring
-# - ✅ ADDED WhatsApp formatting helpers
+# WHAT THIS FILE DOES:
+# ✅ Delivery Aging (PGI Date - DN Date)
+# ✅ Pending Delivery Aging (Today - DN Date when PGI NULL)
+# ✅ POD Aging (POD Date - PGI Date)
+# ✅ Pending POD Aging (Today - PGI Date when POD NULL)
+# ✅ Full Cycle Time (POD Date - DN Date)
+# ✅ Dealer KPI (Revenue, Units, DN, Delivery %, POD %, Aging)
+# ✅ Warehouse KPI (Revenue, Units, DN, Delivery SLA, POD SLA)
+# ✅ Warehouse Delivery SLA (Same Day, 1-5+ Day buckets)
+# ✅ Warehouse POD SLA (Same Day, 1-5+ Day buckets)
+# ✅ Sales Manager KPI
+# ✅ Division KPI
+# ✅ Executive KPI (Company-wide metrics)
+#
+# WHAT THIS FILE NEVER DOES:
+# ✗ Query Database directly (receives data from schema_service)
+# ✗ Send WhatsApp messages
+# ✗ Parse user questions
+# ✗ Format dashboards
+# ✗ Handle HTTP requests
 # ==========================================================
 
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
+from dataclasses import dataclass, field
 from datetime import datetime, date, timedelta
-from sqlalchemy.orm import Session
-from sqlalchemy import func, and_, or_
+from collections import defaultdict
 from loguru import logger
 
-from app.models import DeliveryReport
 
+# ==========================================================
+# DATA CLASSES FOR KPI OUTPUTS
+# ==========================================================
+
+@dataclass
+class DeliveryMetrics:
+    """Core delivery metrics"""
+    delivery_aging: Optional[int] = None
+    pending_delivery_aging: Optional[int] = None
+    pod_aging: Optional[int] = None
+    pending_pod_aging: Optional[int] = None
+    full_cycle: Optional[int] = None
+
+
+@dataclass
+class DealerKPIData:
+    """Complete KPI data for a dealer"""
+    dealer_name: str
+    customer_code: str
+    
+    # Volume metrics
+    revenue: float
+    units: int
+    dn_count: int
+    
+    # Delivery metrics
+    delivered_dn: int
+    pending_dn: int
+    pgi_done: int
+    pgi_pending: int
+    
+    # POD metrics
+    pod_done: int
+    pod_pending: int
+    
+    # Performance rates
+    delivery_rate: float
+    pod_rate: float
+    pgi_rate: float
+    completion_rate: float
+    
+    # Aging metrics
+    avg_delivery_aging: float
+    avg_pod_aging: float
+    max_delivery_aging: int
+    max_pod_aging: int
+    min_delivery_aging: int
+    min_pod_aging: int
+    
+    # Critical metrics
+    critical_dn: int
+    critical_pod: int
+
+
+@dataclass
+class WarehouseKPIData:
+    """Complete KPI data for a warehouse"""
+    warehouse_name: str
+    
+    # Volume metrics
+    revenue: float
+    units: int
+    dn_count: int
+    
+    # Pending metrics
+    pending_delivery: int
+    pending_pod: int
+    
+    # Aging metrics
+    avg_delivery_aging: float
+    avg_pod_aging: float
+    max_delivery_aging: int
+    max_pod_aging: int
+    
+    # Critical metrics
+    critical_dn: int
+    
+    # Delivery SLA buckets (PGI - DN)
+    same_day_delivery: int
+    one_day_delivery: int
+    two_day_delivery: int
+    three_day_delivery: int
+    four_day_delivery: int
+    five_plus_delivery: int
+    
+    # POD SLA buckets (POD - PGI)
+    same_day_pod: int
+    one_day_pod: int
+    two_day_pod: int
+    three_day_pod: int
+    four_day_pod: int
+    five_plus_pod: int
+
+
+@dataclass
+class SalesManagerKPIData:
+    """KPI data for a sales manager"""
+    manager_name: str
+    revenue: float
+    units: int
+    dn_count: int
+    pending_delivery: int
+    pending_pod: int
+    avg_delivery_aging: float
+    avg_pod_aging: float
+    top_dealer: str
+    top_product: str
+
+
+@dataclass
+class DivisionKPIData:
+    """KPI data for a product division"""
+    division_name: str
+    division_code: str
+    revenue: float
+    units: int
+    dn_count: int
+    market_share: float
+    avg_delivery_aging: float
+    avg_pod_aging: float
+    top_product: str
+    top_dealer: str
+
+
+@dataclass
+class ExecutiveKPIData:
+    """Company-wide executive KPI data"""
+    # Volume metrics
+    total_revenue: float
+    total_units: int
+    total_dn: int
+    
+    # Delivery metrics
+    total_delivered: int
+    total_pending_delivery: int
+    total_pending_pod: int
+    
+    # Performance rates
+    delivery_rate: float
+    pod_rate: float
+    pgi_rate: float
+    
+    # Aging metrics
+    avg_delivery_aging: float
+    avg_pod_aging: float
+    
+    # Critical metrics
+    critical_deliveries: int
+    critical_pod: int
+    
+    # Warehouse summary
+    total_warehouses: int
+    warehouses_with_high_aging: int
+    
+    # Dealer summary
+    total_dealers: int
+    dealers_with_pending: int
+
+
+# ==========================================================
+# KPI SERVICE - MAIN CLASS
+# ==========================================================
 
 class KPIService:
-    def __init__(self, db: Session):
-        self.db = db
-        self.metrics = {
-            "total_requests": 0,
-            "successful_requests": 0,
-            "failed_requests": 0,
-            "total_response_time_ms": 0,
-            "avg_response_time_ms": 0,
-            "start_time": datetime.now()
-        }
-        logger.info("KPI Service v4.0 initialized - Real KPI Calculations")
+    """
+    Core Logistics Calculations Engine
+    All KPI calculations happen here
+    """
+    
+    def __init__(self):
+        """Initialize the KPI Service"""
+        logger.info("KPI Service initialized - Core Logistics Engine")
     
     # ==========================================================
-    # HELPER METHODS
+    # CORE FORMULAS - Business Rules Engine
     # ==========================================================
     
-    def _log_request(self, method_name: str, start_time: float, success: bool = True):
-        """Track metrics for monitoring"""
-        self.metrics["total_requests"] += 1
-        if success:
-            self.metrics["successful_requests"] += 1
-        else:
-            self.metrics["failed_requests"] += 1
-        
-        response_time = (datetime.now() - start_time).total_seconds() * 1000
-        self.metrics["total_response_time_ms"] += response_time
-        self.metrics["avg_response_time_ms"] = self.metrics["total_response_time_ms"] / self.metrics["total_requests"]
-        
-        logger.debug(f"KPI.{method_name} completed in {response_time:.0f}ms")
-    
-    def _calculate_pod_compliance(self, days: int = 30) -> Dict[str, Any]:
-        """Calculate real POD compliance from database"""
-        try:
-            cutoff_date = date.today() - timedelta(days=days)
-            
-            # Total DNs in period
-            total = self.db.query(DeliveryReport).filter(
-                DeliveryReport.dn_create_date >= cutoff_date
-            ).count()
-            
-            if total == 0:
-                return {"compliance": 0, "total": 0, "completed": 0, "pending": 0}
-            
-            # Completed PODs
-            completed = self.db.query(DeliveryReport).filter(
-                DeliveryReport.dn_create_date >= cutoff_date,
-                DeliveryReport.pod_status == 'RECEIVED'
-            ).count()
-            
-            pending = total - completed
-            compliance = round((completed / total) * 100, 1) if total > 0 else 0
-            
-            # Get aging for pending PODs
-            aging_data = self.db.query(
-                func.avg(
-                    func.datediff(date.today(), DeliveryReport.good_issue_date)
-                )
-            ).filter(
-                DeliveryReport.dn_create_date >= cutoff_date,
-                DeliveryReport.pod_status.in_(['PENDING', 'NOT_RECEIVED']),
-                DeliveryReport.good_issue_date.isnot(None)
-            ).scalar() or 0
-            
-            return {
-                "compliance": compliance,
-                "total": total,
-                "completed": completed,
-                "pending": pending,
-                "avg_aging_days": round(aging_data, 1) if aging_data else 0
-            }
-        except Exception as e:
-            logger.exception(f"Failed to calculate POD compliance: {e}")
-            return {"compliance": 0, "total": 0, "completed": 0, "pending": 0, "error": str(e)}
-    
-    def _calculate_pgi_compliance(self, days: int = 30) -> Dict[str, Any]:
-        """Calculate real PGI compliance from database"""
-        try:
-            cutoff_date = date.today() - timedelta(days=days)
-            
-            total = self.db.query(DeliveryReport).filter(
-                DeliveryReport.dn_create_date >= cutoff_date
-            ).count()
-            
-            if total == 0:
-                return {"compliance": 0, "total": 0, "completed": 0, "pending": 0}
-            
-            completed = self.db.query(DeliveryReport).filter(
-                DeliveryReport.dn_create_date >= cutoff_date,
-                DeliveryReport.pgi_status == 'COMPLETED'
-            ).count()
-            
-            pending = total - completed
-            compliance = round((completed / total) * 100, 1) if total > 0 else 0
-            
-            return {
-                "compliance": compliance,
-                "total": total,
-                "completed": completed,
-                "pending": pending
-            }
-        except Exception as e:
-            logger.exception(f"Failed to calculate PGI compliance: {e}")
-            return {"compliance": 0, "total": 0, "completed": 0, "pending": 0, "error": str(e)}
-    
-    def _calculate_delivery_compliance(self, days: int = 30) -> Dict[str, Any]:
-        """Calculate real delivery compliance from database"""
-        try:
-            cutoff_date = date.today() - timedelta(days=days)
-            
-            total = self.db.query(DeliveryReport).filter(
-                DeliveryReport.dn_create_date >= cutoff_date
-            ).count()
-            
-            if total == 0:
-                return {"compliance": 0, "total": 0, "completed": 0, "pending": 0}
-            
-            completed = self.db.query(DeliveryReport).filter(
-                DeliveryReport.dn_create_date >= cutoff_date,
-                DeliveryReport.delivery_status == 'DELIVERED'
-            ).count()
-            
-            pending = total - completed
-            compliance = round((completed / total) * 100, 1) if total > 0 else 0
-            
-            return {
-                "compliance": compliance,
-                "total": total,
-                "completed": completed,
-                "pending": pending
-            }
-        except Exception as e:
-            logger.exception(f"Failed to calculate delivery compliance: {e}")
-            return {"compliance": 0, "total": 0, "completed": 0, "pending": 0, "error": str(e)}
-    
-    def _calculate_critical_delays(self, min_days: int = 7) -> List[Dict]:
-        """Calculate critical delays from database"""
-        try:
-            cutoff_date = date.today() - timedelta(days=min_days)
-            
-            results = self.db.query(DeliveryReport).filter(
-                DeliveryReport.dn_create_date <= cutoff_date,
-                DeliveryReport.delivery_status != 'DELIVERED'
-            ).limit(50).all()
-            
-            delays = []
-            for r in results:
-                aging = (date.today() - r.dn_create_date).days if r.dn_create_date else 0
-                delays.append({
-                    "dn_number": r.dn_no,
-                    "dealer": r.customer_name,
-                    "city": r.ship_to_city,
-                    "aging_days": aging,
-                    "priority": "Critical" if aging > 14 else "High" if aging > 7 else "Medium"
-                })
-            
-            return delays
-        except Exception as e:
-            logger.exception(f"Failed to calculate critical delays: {e}")
-            return []
-    
-    # ==========================================================
-    # CORE KPI METHODS (Phase 2 - Real Calculations)
-    # ==========================================================
-    
-    def get_executive_dashboard(self, days: int = 30) -> Dict[str, Any]:
-        """Get executive dashboard with real KPI calculations"""
-        start_time = datetime.now()
-        try:
-            pod_data = self._calculate_pod_compliance(days)
-            pgi_data = self._calculate_pgi_compliance(days)
-            delivery_data = self._calculate_delivery_compliance(days)
-            
-            # Calculate overall score (weighted average)
-            weights = {"pod": 0.4, "pgi": 0.3, "delivery": 0.3}
-            overall_score = (
-                pod_data["compliance"] * weights["pod"] +
-                pgi_data["compliance"] * weights["pgi"] +
-                delivery_data["compliance"] * weights["delivery"]
-            )
-            
-            # Determine status emoji
-            if overall_score >= 90:
-                status = "🟢"
-                status_text = "Excellent"
-            elif overall_score >= 75:
-                status = "🟡"
-                status_text = "Good"
-            else:
-                status = "🔴"
-                status_text = "Needs Attention"
-            
-            # Generate top priorities based on data
-            top_priorities = []
-            if pod_data["compliance"] < 85:
-                top_priorities.append(f"Improve POD collection ({pod_data['compliance']}%)")
-            if pgi_data["compliance"] < 85:
-                top_priorities.append(f"Reduce PGI backlog ({pgi_data['pending']} pending)")
-            if delivery_data["compliance"] < 85:
-                top_priorities.append(f"Improve delivery completion ({delivery_data['compliance']}%)")
-            
-            if not top_priorities:
-                top_priorities.append("Maintain current performance levels")
-            
-            result = {
-                "executive_summary": {
-                    "overall_score": round(overall_score, 1),
-                    "pod_score": pod_data["compliance"],
-                    "pgi_score": pgi_data["compliance"],
-                    "delivery_score": delivery_data["compliance"],
-                    "status": status,
-                    "status_text": status_text,
-                    "report_date": datetime.now().strftime("%Y-%m-%d"),
-                    "period": f"Last {days} days"
-                },
-                "pod_performance": pod_data,
-                "pgi_performance": pgi_data,
-                "delivery_performance": delivery_data,
-                "top_priorities": top_priorities,
-                "_summary": self._format_dashboard_summary(overall_score, pod_data, pgi_data, delivery_data, top_priorities)
-            }
-            
-            self._log_request("get_executive_dashboard", start_time, True)
-            return result
-            
-        except Exception as e:
-            logger.exception(f"Failed to get executive dashboard: {e}")
-            self._log_request("get_executive_dashboard", start_time, False)
-            return self._get_fallback_dashboard()
-    
-    def get_network_health(self, days: int = 30) -> Dict[str, Any]:
-        """Get network health KPIs with real calculations"""
-        start_time = datetime.now()
-        try:
-            pod_data = self._calculate_pod_compliance(days)
-            pgi_data = self._calculate_pgi_compliance(days)
-            delivery_data = self._calculate_delivery_compliance(days)
-            critical_delays = self._calculate_critical_delays(7)
-            
-            # Calculate health score
-            health_score = (
-                pod_data["compliance"] * 0.35 +
-                pgi_data["compliance"] * 0.35 +
-                delivery_data["compliance"] * 0.30
-            )
-            
-            # Determine status
-            if health_score >= 90:
-                status = "🟢"
-                status_text = "Healthy"
-            elif health_score >= 75:
-                status = "🟡"
-                status_text = "Stable"
-            else:
-                status = "🔴"
-                status_text = "Critical"
-            
-            result = {
-                "overall_score": round(health_score, 1),
-                "status": status,
-                "status_text": status_text,
-                "pod_compliance": pod_data["compliance"],
-                "pgi_compliance": pgi_data["compliance"],
-                "delivery_compliance": delivery_data["compliance"],
-                "critical_delays_count": len(critical_delays),
-                "pending_pods": pod_data["pending"],
-                "pending_pgi": pgi_data["pending"],
-                "summary": f"Network health is {status_text.lower()} with {health_score:.1f}% overall score",
-                "_summary": f"🏥 *Network Health*\n\nStatus: {status_text} {status}\nScore: {health_score:.1f}%\n\n📊 POD Compliance: {pod_data['compliance']}%\n📊 PGI Compliance: {pgi_data['compliance']}%\n📊 Delivery Compliance: {delivery_data['compliance']}%\n\n⚠️ Critical Delays: {len(critical_delays)}"
-            }
-            
-            self._log_request("get_network_health", start_time, True)
-            return result
-            
-        except Exception as e:
-            logger.exception(f"Failed to get network health: {e}")
-            self._log_request("get_network_health", start_time, False)
-            return {"overall_score": 0, "status": "🔴", "status_text": "Unknown", "error": str(e)}
-    
-    def get_critical_delays(self, min_days: int = 7, limit: int = 50) -> Dict[str, Any]:
-        """Get critical delays with real data"""
-        start_time = datetime.now()
-        try:
-            delays = self._calculate_critical_delays(min_days)
-            
-            critical_count = len([d for d in delays if d["priority"] == "Critical"])
-            high_count = len([d for d in delays if d["priority"] == "High"])
-            
-            result = {
-                "total_delays": len(delays),
-                "critical_count": critical_count,
-                "high_count": high_count,
-                "delays": delays[:limit],
-                "summary": f"{critical_count} critical, {high_count} high priority delays require attention",
-                "_summary": self._format_delays_summary(delays, critical_count, high_count)
-            }
-            
-            self._log_request("get_critical_delays", start_time, True)
-            return result
-            
-        except Exception as e:
-            logger.exception(f"Failed to get critical delays: {e}")
-            self._log_request("get_critical_delays", start_time, False)
-            return {"total_delays": 0, "critical_count": 0, "high_count": 0, "delays": [], "error": str(e)}
-    
-    def get_risk_alerts(self) -> Dict[str, Any]:
-        """Get active risk alerts from real data"""
-        start_time = datetime.now()
-        try:
-            pod_data = self._calculate_pod_compliance(30)
-            pgi_data = self._calculate_pgi_compliance(30)
-            delivery_data = self._calculate_delivery_compliance(30)
-            critical_delays = self._calculate_critical_delays(7)
-            
-            alerts = []
-            
-            if pod_data["compliance"] < 80:
-                alerts.append({
-                    "type": "POD_COMPLIANCE",
-                    "message": f"POD compliance is {pod_data['compliance']}% (target: 95%)",
-                    "severity": "HIGH" if pod_data["compliance"] < 70 else "MEDIUM"
-                })
-            
-            if pgi_data["compliance"] < 80:
-                alerts.append({
-                    "type": "PGI_COMPLIANCE",
-                    "message": f"PGI compliance is {pgi_data['compliance']}% (target: 95%)",
-                    "severity": "HIGH" if pgi_data["compliance"] < 70 else "MEDIUM"
-                })
-            
-            if len(critical_delays) > 0:
-                alerts.append({
-                    "type": "CRITICAL_DELAYS",
-                    "message": f"{len(critical_delays)} DNs delayed beyond {7} days",
-                    "severity": "HIGH" if len(critical_delays) > 5 else "MEDIUM"
-                })
-            
-            if pod_data["avg_aging_days"] > 5:
-                alerts.append({
-                    "type": "POD_AGING",
-                    "message": f"Average POD aging is {pod_data['avg_aging_days']} days",
-                    "severity": "MEDIUM"
-                })
-            
-            result = {
-                "total_alerts": len(alerts),
-                "critical_alerts": len([a for a in alerts if a["severity"] == "HIGH"]),
-                "alerts": alerts,
-                "requires_action": len(alerts) > 0,
-                "_summary": self._format_alerts_summary(alerts)
-            }
-            
-            self._log_request("get_risk_alerts", start_time, True)
-            return result
-            
-        except Exception as e:
-            logger.exception(f"Failed to get risk alerts: {e}")
-            self._log_request("get_risk_alerts", start_time, False)
-            return {"total_alerts": 0, "critical_alerts": 0, "alerts": [], "requires_action": False, "error": str(e)}
-    
-    def get_target_vs_actual(self, days: int = 30) -> Dict[str, Any]:
-        """Get target vs actual comparison"""
-        start_time = datetime.now()
-        try:
-            pod_data = self._calculate_pod_compliance(days)
-            pgi_data = self._calculate_pgi_compliance(days)
-            delivery_data = self._calculate_delivery_compliance(days)
-            
-            targets = {
-                "pod_compliance": 95,
-                "pgi_compliance": 95,
-                "delivery_compliance": 95
-            }
-            
-            actuals = {
-                "pod_compliance": pod_data["compliance"],
-                "pgi_compliance": pgi_data["compliance"],
-                "delivery_compliance": delivery_data["compliance"]
-            }
-            
-            achievements = {
-                "pod_compliance": round((pod_data["compliance"] / 95) * 100, 1),
-                "pgi_compliance": round((pgi_data["compliance"] / 95) * 100, 1),
-                "delivery_compliance": round((delivery_data["compliance"] / 95) * 100, 1)
-            }
-            
-            overall_achievement = sum(achievements.values()) / 3
-            
-            result = {
-                "targets": targets,
-                "actuals": actuals,
-                "achievements": achievements,
-                "overall_achievement": round(overall_achievement, 1),
-                "_summary": f"📊 *Target vs Actual*\n\nPOD: {actuals['pod_compliance']}% / {targets['pod_compliance']}% ({achievements['pod_compliance']}%)\nPGI: {actuals['pgi_compliance']}% / {targets['pgi_compliance']}% ({achievements['pgi_compliance']}%)\nDelivery: {actuals['delivery_compliance']}% / {targets['delivery_compliance']}% ({achievements['delivery_compliance']}%)\n\nOverall Achievement: {overall_achievement}%"
-            }
-            
-            self._log_request("get_target_vs_actual", start_time, True)
-            return result
-            
-        except Exception as e:
-            logger.exception(f"Failed to get target vs actual: {e}")
-            self._log_request("get_target_vs_actual", start_time, False)
-            return {"targets": {}, "actuals": {}, "achievements": {}, "overall_achievement": 0, "error": str(e)}
-    
-    # ==========================================================
-    # PHASE 1: CRITICAL FIX - Control Tower Report
-    # ==========================================================
-    
-    def get_control_tower_report(self) -> Dict[str, Any]:
+    @staticmethod
+    def calculate_delivery_aging(dn_date: Optional[date], pgi_date: Optional[date]) -> Optional[int]:
         """
-        Control tower report - combines all critical metrics
-        This fixes the missing route error in WhatsApp
+        Formula: delivery_aging = PGI_Date - DN_Date
+        
+        Returns number of days between DN creation and PGI
         """
-        start_time = datetime.now()
-        try:
-            # Get all critical data
-            network_health = self.get_network_health()
-            critical_delays = self.get_critical_delays()
-            risk_alerts = self.get_risk_alerts()
-            pod_performance = self.get_pod_performance()
-            pgi_performance = self.get_pgi_performance()
-            delivery_performance = self.get_delivery_performance()
-            
-            # Calculate executive summary
-            overall_status = network_health.get("status_text", "Unknown")
-            critical_count = critical_delays.get("critical_count", 0)
-            alert_count = risk_alerts.get("critical_alerts", 0)
-            
-            result = {
-                "network_health": network_health,
-                "critical_delays": critical_delays,
-                "risk_alerts": risk_alerts,
-                "pod_performance": pod_performance,
-                "pgi_performance": pgi_performance,
-                "delivery_performance": delivery_performance,
-                "executive_summary": {
-                    "overall_status": overall_status,
-                    "critical_delays_count": critical_count,
-                    "critical_alerts_count": alert_count,
-                    "requires_attention": critical_count > 0 or alert_count > 0,
-                    "timestamp": datetime.now().isoformat()
-                },
-                "_summary": self._format_control_tower_summary(network_health, critical_delays, risk_alerts)
-            }
-            
-            self._log_request("get_control_tower_report", start_time, True)
-            return result
-            
-        except Exception as e:
-            logger.exception(f"Failed to get control tower report: {e}")
-            self._log_request("get_control_tower_report", start_time, False)
-            return {
-                "error": str(e),
-                "_summary": "🚨 Control Tower temporarily unavailable. Please try again."
-            }
+        if dn_date and pgi_date:
+            return (pgi_date - dn_date).days
+        return None
+    
+    @staticmethod
+    def calculate_pending_delivery_aging(dn_date: Optional[date], pgi_date: Optional[date]) -> Optional[int]:
+        """
+        Formula: pending_delivery_aging = Today - DN_Date
+        Condition: PGI_Date IS NULL
+        
+        Returns number of days DN has been waiting for PGI
+        """
+        if dn_date and not pgi_date:
+            return (date.today() - dn_date).days
+        return None
+    
+    @staticmethod
+    def calculate_pod_aging(pgi_date: Optional[date], pod_date: Optional[date]) -> Optional[int]:
+        """
+        Formula: pod_aging = POD_Date - PGI_Date
+        
+        Returns number of days between PGI and POD
+        """
+        if pgi_date and pod_date:
+            return (pod_date - pgi_date).days
+        return None
+    
+    @staticmethod
+    def calculate_pending_pod_aging(pgi_date: Optional[date], pod_date: Optional[date]) -> Optional[int]:
+        """
+        Formula: pending_pod_aging = Today - PGI_Date
+        Condition: POD_Date IS NULL
+        
+        Returns number of days POD has been pending after PGI
+        """
+        if pgi_date and not pod_date:
+            return (date.today() - pgi_date).days
+        return None
+    
+    @staticmethod
+    def calculate_full_cycle(dn_date: Optional[date], pod_date: Optional[date]) -> Optional[int]:
+        """
+        Formula: full_cycle = POD_Date - DN_Date
+        
+        Returns total days from DN creation to POD completion
+        """
+        if dn_date and pod_date:
+            return (pod_date - dn_date).days
+        return None
+    
+    @staticmethod
+    def get_delivery_sla_bucket(aging_days: int) -> str:
+        """
+        Categorize delivery aging into SLA buckets
+        """
+        if aging_days == 0:
+            return "same_day"
+        elif aging_days == 1:
+            return "one_day"
+        elif aging_days == 2:
+            return "two_day"
+        elif aging_days == 3:
+            return "three_day"
+        elif aging_days == 4:
+            return "four_day"
+        else:
+            return "five_plus"
+    
+    @staticmethod
+    def get_pod_sla_bucket(aging_days: int) -> str:
+        """
+        Categorize POD aging into SLA buckets
+        """
+        if aging_days == 0:
+            return "same_day"
+        elif aging_days == 1:
+            return "one_day"
+        elif aging_days == 2:
+            return "two_day"
+        elif aging_days == 3:
+            return "three_day"
+        elif aging_days == 4:
+            return "four_day"
+        else:
+            return "five_plus"
+    
+    @staticmethod
+    def get_risk_severity(aging_days: int) -> str:
+        """
+        Determine risk severity based on aging days
+        GREEN: 0-7 days
+        YELLOW: 8-15 days
+        ORANGE: 16-30 days
+        RED: 31+ days
+        """
+        if aging_days <= 7:
+            return "GREEN"
+        elif aging_days <= 15:
+            return "YELLOW"
+        elif aging_days <= 30:
+            return "ORANGE"
+        else:
+            return "RED"
     
     # ==========================================================
-    # PHASE 3: EXECUTIVE REPORTING
+    # DEALER KPI ENGINE
     # ==========================================================
     
-    def get_management_summary(self) -> Dict[str, Any]:
-        """Get management-level summary for executive insights"""
-        start_time = datetime.now()
-        try:
-            network = self.get_network_health()
-            risks = self.get_risk_alerts()
-            delays = self.get_critical_delays()
+    def calculate_dealer_kpis(self, records: List[Any]) -> Optional[DealerKPIData]:
+        """
+        Calculate complete KPI data for a dealer
+        
+        Input: List of DeliveryReport records for a dealer
+        Output: DealerKPIData with all calculated KPIs
+        """
+        if not records:
+            return None
+        
+        today = date.today()
+        
+        # Get dealer name from first record
+        dealer_name = records[0].customer_name or "Unknown"
+        customer_code = records[0].customer_code or "N/A"
+        
+        # Unique DNs for this dealer
+        unique_dns = set(r.dn_no for r in records)
+        dn_count = len(unique_dns)
+        
+        # ==========================================================
+        # VOLUME METRICS
+        # ==========================================================
+        revenue = sum(float(r.dn_amount or 0) for r in records)
+        units = sum(int(r.dn_qty or 0) for r in records)
+        
+        # ==========================================================
+        # DELIVERY METRICS (PGI)
+        # ==========================================================
+        pgi_done = sum(1 for r in records if r.good_issue_date is not None)
+        pgi_pending = len(records) - pgi_done
+        pgi_rate = (pgi_done / len(records) * 100) if records else 0
+        
+        # ==========================================================
+        # DN STATUS (by unique DN)
+        # ==========================================================
+        delivered_dn = 0
+        pending_dn = 0
+        
+        for dn in unique_dns:
+            dn_records = [r for r in records if r.dn_no == dn]
+            # Consider DN delivered if any record shows delivered
+            if any(r.delivery_status == "Delivered" for r in dn_records):
+                delivered_dn += 1
+            else:
+                pending_dn += 1
+        
+        # ==========================================================
+        # POD METRICS
+        # ==========================================================
+        pod_done = sum(1 for r in records if r.pod_date is not None)
+        pod_pending = len(records) - pod_done
+        pod_rate = (pod_done / len(records) * 100) if records else 0
+        
+        completion_rate = (delivered_dn / dn_count * 100) if dn_count else 0
+        
+        # ==========================================================
+        # AGING METRICS
+        # ==========================================================
+        delivery_agings = []
+        pod_agings = []
+        
+        for r in records:
+            # Delivery aging (PGI - DN)
+            if r.dn_create_date and r.good_issue_date:
+                aging = (r.good_issue_date - r.dn_create_date).days
+                delivery_agings.append(aging)
             
-            # Generate recommended actions
-            recommended_actions = []
-            if network.get("pod_compliance", 100) < 85:
-                recommended_actions.append("Prioritize POD collection with field teams")
-            if network.get("pgi_compliance", 100) < 85:
-                recommended_actions.append("Review warehouse dispatch processes for PGI backlog")
-            if delays.get("critical_count", 0) > 0:
-                recommended_actions.append(f"Escalate {delays['critical_count']} critical delayed DNs")
+            # POD aging (POD - PGI)
+            if r.good_issue_date and r.pod_date:
+                aging = (r.pod_date - r.good_issue_date).days
+                pod_agings.append(aging)
+        
+        avg_delivery_aging = round(sum(delivery_agings) / len(delivery_agings), 1) if delivery_agings else 0
+        avg_pod_aging = round(sum(pod_agings) / len(pod_agings), 1) if pod_agings else 0
+        
+        max_delivery_aging = max(delivery_agings) if delivery_agings else 0
+        max_pod_aging = max(pod_agings) if pod_agings else 0
+        min_delivery_aging = min(delivery_agings) if delivery_agings else 0
+        min_pod_aging = min(pod_agings) if pod_agings else 0
+        
+        # ==========================================================
+        # CRITICAL METRICS
+        # ==========================================================
+        critical_dn = 0
+        critical_pod = 0
+        
+        for r in records:
+            # Critical DN: No PGI and DN create date > 15 days
+            if not r.good_issue_date and r.dn_create_date:
+                if (today - r.dn_create_date).days > 15:
+                    critical_dn += 1
             
-            if not recommended_actions:
-                recommended_actions.append("Maintain current performance levels")
-            
-            result = {
-                "overall_health": network.get("status_text", "Unknown"),
-                "overall_score": network.get("overall_score", 0),
-                "top_risks": risks.get("alerts", [])[:3],
-                "critical_delays_count": delays.get("critical_count", 0),
-                "recommended_actions": recommended_actions,
-                "report_date": datetime.now().strftime("%Y-%m-%d"),
-                "_summary": self._format_management_summary(network, risks, recommended_actions)
-            }
-            
-            self._log_request("get_management_summary", start_time, True)
-            return result
-            
-        except Exception as e:
-            logger.exception(f"Failed to get management summary: {e}")
-            self._log_request("get_management_summary", start_time, False)
-            return {"overall_health": "Unknown", "overall_score": 0, "top_risks": [], "recommended_actions": ["Check system status"], "error": str(e)}
+            # Critical POD: PGI done but no POD, and PGI > 15 days
+            if r.good_issue_date and not r.pod_date:
+                if (today - r.good_issue_date).days > 15:
+                    critical_pod += 1
+        
+        return DealerKPIData(
+            dealer_name=dealer_name,
+            customer_code=customer_code,
+            revenue=revenue,
+            units=units,
+            dn_count=dn_count,
+            delivered_dn=delivered_dn,
+            pending_dn=pending_dn,
+            pgi_done=pgi_done,
+            pgi_pending=pgi_pending,
+            pod_done=pod_done,
+            pod_pending=pod_pending,
+            delivery_rate=round((delivered_dn / dn_count * 100), 1) if dn_count else 0,
+            pod_rate=round(pod_rate, 1),
+            pgi_rate=round(pgi_rate, 1),
+            completion_rate=round(completion_rate, 1),
+            avg_delivery_aging=avg_delivery_aging,
+            avg_pod_aging=avg_pod_aging,
+            max_delivery_aging=max_delivery_aging,
+            max_pod_aging=max_pod_aging,
+            min_delivery_aging=min_delivery_aging,
+            min_pod_aging=min_pod_aging,
+            critical_dn=critical_dn,
+            critical_pod=critical_pod
+        )
     
-    def get_daily_operations_summary(self) -> Dict[str, Any]:
-        """Get today's operations summary"""
-        start_time = datetime.now()
-        try:
-            today = date.today()
-            
-            # Today's stats
-            today_dns = self.db.query(DeliveryReport).filter(
-                DeliveryReport.dn_create_date == today
-            ).count()
-            
-            pending_pods = self.db.query(DeliveryReport).filter(
-                DeliveryReport.pod_status.in_(['PENDING', 'NOT_RECEIVED'])
-            ).count()
-            
-            pending_pgi = self.db.query(DeliveryReport).filter(
-                DeliveryReport.pgi_status == 'PENDING'
-            ).count()
-            
-            pending_deliveries = self.db.query(DeliveryReport).filter(
-                DeliveryReport.delivery_status.in_(['PENDING', 'IN_TRANSIT'])
-            ).count()
-            
-            critical_delays = self._calculate_critical_delays(7)
-            
-            result = {
-                "date": today.strftime("%Y-%m-%d"),
-                "today_dns": today_dns,
-                "pending_pods": pending_pods,
-                "pending_pgi": pending_pgi,
-                "pending_deliveries": pending_deliveries,
-                "critical_delays_count": len(critical_delays),
-                "risks": [d for d in critical_delays if d["priority"] == "Critical"][:5],
-                "_summary": self._format_daily_summary(today_dns, pending_pods, pending_pgi, pending_deliveries, len(critical_delays))
-            }
-            
-            self._log_request("get_daily_operations_summary", start_time, True)
-            return result
-            
-        except Exception as e:
-            logger.exception(f"Failed to get daily operations summary: {e}")
-            self._log_request("get_daily_operations_summary", start_time, False)
-            return {"date": date.today().strftime("%Y-%m-%d"), "error": str(e)}
-    
-    def get_sla_performance(self) -> Dict[str, Any]:
-        """Get SLA performance metrics"""
-        start_time = datetime.now()
-        try:
-            pod_data = self._calculate_pod_compliance(30)
-            pgi_data = self._calculate_pgi_compliance(30)
-            delivery_data = self._calculate_delivery_compliance(30)
-            
-            # Determine underperforming KPIs
-            underperforming = []
-            if pod_data["compliance"] < 90:
-                underperforming.append(f"POD Compliance ({pod_data['compliance']}%)")
-            if pgi_data["compliance"] < 90:
-                underperforming.append(f"PGI Compliance ({pgi_data['compliance']}%)")
-            if delivery_data["compliance"] < 90:
-                underperforming.append(f"Delivery Compliance ({delivery_data['compliance']}%)")
-            
-            result = {
-                "pod_sla": {
-                    "target": 95,
-                    "actual": pod_data["compliance"],
-                    "status": "✅" if pod_data["compliance"] >= 95 else "⚠️" if pod_data["compliance"] >= 80 else "❌"
-                },
-                "pgi_sla": {
-                    "target": 95,
-                    "actual": pgi_data["compliance"],
-                    "status": "✅" if pgi_data["compliance"] >= 95 else "⚠️" if pgi_data["compliance"] >= 80 else "❌"
-                },
-                "delivery_sla": {
-                    "target": 95,
-                    "actual": delivery_data["compliance"],
-                    "status": "✅" if delivery_data["compliance"] >= 95 else "⚠️" if delivery_data["compliance"] >= 80 else "❌"
-                },
-                "underperforming_kpis": underperforming,
-                "_summary": self._format_sla_summary(pod_data, pgi_data, delivery_data, underperforming)
-            }
-            
-            self._log_request("get_sla_performance", start_time, True)
-            return result
-            
-        except Exception as e:
-            logger.exception(f"Failed to get SLA performance: {e}")
-            self._log_request("get_sla_performance", start_time, False)
-            return {"error": str(e)}
-    
-    # ==========================================================
-    # PHASE 4: REGION & BRANCH INTELLIGENCE
-    # ==========================================================
-    
-    def get_region_performance(self, days: int = 30) -> Dict[str, Any]:
-        """Get region performance with real data"""
-        start_time = datetime.now()
-        try:
-            cutoff_date = date.today() - timedelta(days=days)
-            
-            # Get all unique divisions/regions
-            regions_data = self.db.query(
-                DeliveryReport.division,
-                func.count(DeliveryReport.id).label('total_dns'),
-                func.sum(case((DeliveryReport.pod_status == 'RECEIVED', 1), else_=0)).label('completed')
-            ).filter(
-                DeliveryReport.dn_create_date >= cutoff_date,
-                DeliveryReport.division.isnot(None)
-            ).group_by(
-                DeliveryReport.division
-            ).all()
-            
-            regions = []
-            for r in regions_data:
-                completion_rate = round((r.completed / r.total_dns) * 100, 1) if r.total_dns > 0 else 0
-                regions.append({
-                    "region_name": r.division,
-                    "total_dns": r.total_dns,
-                    "completion_rate": completion_rate,
-                    "status": "🟢" if completion_rate >= 90 else "🟡" if completion_rate >= 75 else "🔴"
-                })
-            
-            # Sort by completion rate
-            regions.sort(key=lambda x: x["completion_rate"], reverse=True)
-            
-            best_region = regions[0]["region_name"] if regions else "N/A"
-            avg_score = sum(r["completion_rate"] for r in regions) / len(regions) if regions else 0
-            
-            result = {
-                "regions": regions,
-                "summary": {
-                    "total_regions": len(regions),
-                    "best_region": best_region,
-                    "average_score": round(avg_score, 1)
-                },
-                "_summary": self._format_regions_summary(regions, best_region, avg_score)
-            }
-            
-            self._log_request("get_region_performance", start_time, True)
-            return result
-            
-        except Exception as e:
-            logger.exception(f"Failed to get region performance: {e}")
-            self._log_request("get_region_performance", start_time, False)
-            return {"regions": [], "summary": {"total_regions": 0, "best_region": "N/A", "average_score": 0}, "error": str(e)}
-    
-    def get_branch_performance(self, days: int = 30, limit: int = 20) -> Dict[str, Any]:
-        """Get branch performance with ranking"""
-        start_time = datetime.now()
-        try:
-            cutoff_date = date.today() - timedelta(days=days)
-            
-            branches_data = self.db.query(
-                DeliveryReport.customer_name,
-                DeliveryReport.customer_code,
-                func.count(DeliveryReport.id).label('total_dns'),
-                func.sum(case((DeliveryReport.pod_status == 'RECEIVED', 1), else_=0)).label('completed'),
-                func.sum(DeliveryReport.dn_amount).label('total_value')
-            ).filter(
-                DeliveryReport.dn_create_date >= cutoff_date,
-                DeliveryReport.customer_name.isnot(None)
-            ).group_by(
-                DeliveryReport.customer_name,
-                DeliveryReport.customer_code
-            ).having(
-                func.count(DeliveryReport.id) > 0
-            ).all()
-            
-            branches = []
-            for b in branches_data:
-                completion_rate = round((b.completed / b.total_dns) * 100, 1) if b.total_dns > 0 else 0
-                branches.append({
-                    "branch_name": b.customer_name,
-                    "branch_code": b.customer_code,
-                    "total_dns": b.total_dns,
-                    "completion_rate": completion_rate,
-                    "total_value": float(b.total_value or 0),
-                    "score": completion_rate  # For ranking
-                })
-            
-            # Sort for rankings
-            branches.sort(key=lambda x: x["score"], reverse=True)
-            top_branches = branches[:10]
-            bottom_branches = branches[-10:] if len(branches) > 10 else []
-            
-            avg_score = sum(b["score"] for b in branches) / len(branches) if branches else 0
-            
-            result = {
-                "branches": branches[:limit],
-                "top_branches": top_branches,
-                "bottom_branches": bottom_branches,
-                "summary": {
-                    "total_branches": len(branches),
-                    "average_score": round(avg_score, 1),
-                    "top_performer": top_branches[0]["branch_name"] if top_branches else "N/A"
-                },
-                "_summary": self._format_branches_summary(top_branches, avg_score)
-            }
-            
-            self._log_request("get_branch_performance", start_time, True)
-            return result
-            
-        except Exception as e:
-            logger.exception(f"Failed to get branch performance: {e}")
-            self._log_request("get_branch_performance", start_time, False)
-            return {"branches": [], "top_branches": [], "bottom_branches": [], "summary": {}, "error": str(e)}
-    
-    def get_warehouse_ranking(self, limit: int = 10) -> Dict[str, Any]:
-        """Get warehouse ranking by performance"""
-        start_time = datetime.now()
-        try:
-            warehouse_data = self.db.query(
-                DeliveryReport.warehouse,
-                DeliveryReport.warehouse_code,
-                func.count(DeliveryReport.id).label('total_dns'),
-                func.sum(case((DeliveryReport.pgi_status == 'COMPLETED', 1), else_=0)).label('completed_pgi')
-            ).filter(
-                DeliveryReport.warehouse.isnot(None)
-            ).group_by(
-                DeliveryReport.warehouse,
-                DeliveryReport.warehouse_code
-            ).all()
-            
-            warehouses = []
-            for w in warehouse_data:
-                efficiency = round((w.completed_pgi / w.total_dns) * 100, 1) if w.total_dns > 0 else 0
-                warehouses.append({
-                    "warehouse_name": w.warehouse,
-                    "warehouse_code": w.warehouse_code,
-                    "total_dns": w.total_dns,
-                    "pgi_completion_rate": efficiency
-                })
-            
-            # Sort by efficiency
-            warehouses.sort(key=lambda x: x["pgi_completion_rate"], reverse=True)
-            top_warehouses = warehouses[:limit]
-            bottom_warehouses = warehouses[-limit:] if len(warehouses) > limit else []
-            
-            result = {
-                "top_warehouses": top_warehouses,
-                "bottom_warehouses": bottom_warehouses,
-                "total_warehouses": len(warehouses),
-                "_summary": self._format_warehouses_summary(top_warehouses)
-            }
-            
-            self._log_request("get_warehouse_ranking", start_time, True)
-            return result
-            
-        except Exception as e:
-            logger.exception(f"Failed to get warehouse ranking: {e}")
-            self._log_request("get_warehouse_ranking", start_time, False)
-            return {"top_warehouses": [], "bottom_warehouses": [], "total_warehouses": 0, "error": str(e)}
+    def calculate_all_dealers_kpis(self, all_records: List[Any]) -> List[DealerKPIData]:
+        """
+        Calculate KPIs for all dealers
+        
+        Groups records by dealer and calculates KPIs for each
+        """
+        # Group records by dealer
+        dealer_records = defaultdict(list)
+        for record in all_records:
+            if record.customer_name:
+                dealer_records[record.customer_name].append(record)
+        
+        # Calculate KPIs for each dealer
+        dealer_kpis = []
+        for dealer_name, records in dealer_records.items():
+            kpi = self.calculate_dealer_kpis(records)
+            if kpi:
+                dealer_kpis.append(kpi)
+        
+        return dealer_kpis
     
     # ==========================================================
-    # PHASE 5: AI READINESS METHODS
+    # WAREHOUSE KPI ENGINE
     # ==========================================================
     
-    def get_city_kpi_summary(self, city: str) -> Dict[str, Any]:
-        """Get KPI summary for a specific city (for AI root cause analysis)"""
-        start_time = datetime.now()
-        try:
-            results = self.db.query(DeliveryReport).filter(
-                DeliveryReport.ship_to_city.ilike(f"%{city}%")
-            ).all()
+    def calculate_warehouse_kpis(self, records: List[Any]) -> Optional[WarehouseKPIData]:
+        """
+        Calculate complete KPI data for a warehouse
+        
+        Includes:
+        - Volume metrics (revenue, units, DN count)
+        - Pending metrics
+        - Aging metrics
+        - Delivery SLA buckets (PGI - DN)
+        - POD SLA buckets (POD - PGI)
+        """
+        if not records:
+            return None
+        
+        today = date.today()
+        warehouse_name = records[0].warehouse or "Unknown"
+        
+        # Unique DNs
+        unique_dns = set(r.dn_no for r in records)
+        dn_count = len(unique_dns)
+        
+        # Volume metrics
+        revenue = sum(float(r.dn_amount or 0) for r in records)
+        units = sum(int(r.dn_qty or 0) for r in records)
+        
+        # Pending metrics
+        pending_delivery = len([r for r in records if not r.good_issue_date])
+        pending_pod = len([r for r in records if r.good_issue_date and not r.pod_date])
+        
+        # Aging metrics
+        delivery_agings = []
+        pod_agings = []
+        
+        for r in records:
+            if r.dn_create_date and r.good_issue_date:
+                aging = (r.good_issue_date - r.dn_create_date).days
+                delivery_agings.append(aging)
             
-            pending_pod = sum(1 for r in results if r.pod_status in ['PENDING', 'NOT_RECEIVED'])
-            pending_pgi = sum(1 for r in results if r.pgi_status == 'PENDING')
-            pending_deliveries = sum(1 for r in results if r.delivery_status in ['PENDING', 'IN_TRANSIT'])
-            
-            # Calculate critical delays for this city
-            critical = 0
-            for r in results:
-                if r.dn_create_date and (date.today() - r.dn_create_date).days > 7:
-                    if r.delivery_status != 'DELIVERED':
-                        critical += 1
-            
-            result = {
-                "city": city,
-                "total_dns": len(results),
-                "pending_pod": pending_pod,
-                "pending_pgi": pending_pgi,
-                "pending_deliveries": pending_deliveries,
-                "critical_delays": critical,
-                "completion_rate": round(((len(results) - pending_pod) / max(1, len(results))) * 100, 1),
-                "_summary": f"📊 *{city} KPI Summary*\n\nTotal DNs: {len(results)}\nPending POD: {pending_pod}\nPending PGI: {pending_pgi}\nPending Deliveries: {pending_deliveries}\nCritical Delays: {critical}\nCompletion Rate: {round(((len(results) - pending_pod) / max(1, len(results))) * 100, 1)}%"
-            }
-            
-            self._log_request("get_city_kpi_summary", start_time, True)
-            return result
-            
-        except Exception as e:
-            logger.exception(f"Failed to get city KPI summary: {e}")
-            self._log_request("get_city_kpi_summary", start_time, False)
-            return {"city": city, "error": str(e)}
+            if r.good_issue_date and r.pod_date:
+                aging = (r.pod_date - r.good_issue_date).days
+                pod_agings.append(aging)
+        
+        avg_delivery_aging = round(sum(delivery_agings) / len(delivery_agings), 1) if delivery_agings else 0
+        avg_pod_aging = round(sum(pod_agings) / len(pod_agings), 1) if pod_agings else 0
+        max_delivery_aging = max(delivery_agings) if delivery_agings else 0
+        max_pod_aging = max(pod_agings) if pod_agings else 0
+        
+        # Critical DN count
+        critical_dn = len([r for r in records if not r.good_issue_date and r.dn_create_date 
+                          and (today - r.dn_create_date).days > 15])
+        
+        # ==========================================================
+        # DELIVERY SLA BUCKETS (PGI - DN)
+        # ==========================================================
+        delivery_buckets = {
+            "same_day": 0, "one_day": 0, "two_day": 0,
+            "three_day": 0, "four_day": 0, "five_plus": 0
+        }
+        
+        for aging in delivery_agings:
+            bucket = self.get_delivery_sla_bucket(aging)
+            delivery_buckets[bucket] += 1
+        
+        # ==========================================================
+        # POD SLA BUCKETS (POD - PGI)
+        # ==========================================================
+        pod_buckets = {
+            "same_day": 0, "one_day": 0, "two_day": 0,
+            "three_day": 0, "four_day": 0, "five_plus": 0
+        }
+        
+        for aging in pod_agings:
+            bucket = self.get_pod_sla_bucket(aging)
+            pod_buckets[bucket] += 1
+        
+        return WarehouseKPIData(
+            warehouse_name=warehouse_name,
+            revenue=revenue,
+            units=units,
+            dn_count=dn_count,
+            pending_delivery=pending_delivery,
+            pending_pod=pending_pod,
+            avg_delivery_aging=avg_delivery_aging,
+            avg_pod_aging=avg_pod_aging,
+            max_delivery_aging=max_delivery_aging,
+            max_pod_aging=max_pod_aging,
+            critical_dn=critical_dn,
+            same_day_delivery=delivery_buckets["same_day"],
+            one_day_delivery=delivery_buckets["one_day"],
+            two_day_delivery=delivery_buckets["two_day"],
+            three_day_delivery=delivery_buckets["three_day"],
+            four_day_delivery=delivery_buckets["four_day"],
+            five_plus_delivery=delivery_buckets["five_plus"],
+            same_day_pod=pod_buckets["same_day"],
+            one_day_pod=pod_buckets["one_day"],
+            two_day_pod=pod_buckets["two_day"],
+            three_day_pod=pod_buckets["three_day"],
+            four_day_pod=pod_buckets["four_day"],
+            five_plus_pod=pod_buckets["five_plus"]
+        )
     
-    def get_root_cause_context(self) -> Dict[str, Any]:
-        """Get comprehensive context for AI root cause analysis"""
-        start_time = datetime.now()
-        try:
-            network = self.get_network_health()
-            delays = self.get_critical_delays()
-            risks = self.get_risk_alerts()
-            
-            result = {
-                "network_health": {
-                    "overall_score": network.get("overall_score", 0),
-                    "status": network.get("status_text", "Unknown"),
-                    "pod_compliance": network.get("pod_compliance", 0),
-                    "pgi_compliance": network.get("pgi_compliance", 0),
-                    "delivery_compliance": network.get("delivery_compliance", 0)
-                },
-                "critical_delays": {
-                    "total": delays.get("total_delays", 0),
-                    "critical": delays.get("critical_count", 0),
-                    "high": delays.get("high_count", 0)
-                },
-                "risk_alerts": risks.get("alerts", [])[:5],
-                "timestamp": datetime.now().isoformat()
-            }
-            
-            self._log_request("get_root_cause_context", start_time, True)
-            return result
-            
-        except Exception as e:
-            logger.exception(f"Failed to get root cause context: {e}")
-            self._log_request("get_root_cause_context", start_time, False)
-            return {"error": str(e)}
+    def calculate_all_warehouses_kpis(self, all_records: List[Any]) -> List[WarehouseKPIData]:
+        """
+        Calculate KPIs for all warehouses
+        
+        Groups records by warehouse and calculates KPIs for each
+        """
+        warehouse_records = defaultdict(list)
+        for record in all_records:
+            if record.warehouse:
+                warehouse_records[record.warehouse].append(record)
+        
+        warehouse_kpis = []
+        for warehouse_name, records in warehouse_records.items():
+            kpi = self.calculate_warehouse_kpis(records)
+            if kpi:
+                warehouse_kpis.append(kpi)
+        
+        return warehouse_kpis
     
     # ==========================================================
-    # PHASE 6: MONITORING & METRICS
+    # CITY KPI ENGINE
     # ==========================================================
     
-    def health_check(self) -> Dict[str, Any]:
-        """Enhanced health check with detailed status"""
-        try:
-            # Test database connection
-            db_healthy = False
-            try:
-                self.db.execute("SELECT 1")
-                db_healthy = True
-            except:
-                pass
-            
-            # Count available routes
-            available_routes = len([m for m in dir(self) if m.startswith("get_") and callable(getattr(self, m))])
-            
-            uptime = (datetime.now() - self.metrics["start_time"]).total_seconds()
-            
-            return {
-                "service": "kpi",
-                "version": "4.0",
-                "status": "healthy" if db_healthy else "degraded",
-                "database": db_healthy,
-                "available_routes": available_routes,
-                "metrics": {
-                    "total_requests": self.metrics["total_requests"],
-                    "successful_requests": self.metrics["successful_requests"],
-                    "failed_requests": self.metrics["failed_requests"],
-                    "avg_response_time_ms": round(self.metrics["avg_response_time_ms"], 2),
-                    "success_rate": round((self.metrics["successful_requests"] / max(1, self.metrics["total_requests"])) * 100, 1)
-                },
-                "uptime_seconds": round(uptime, 2),
-                "uptime_hours": round(uptime / 3600, 2)
-            }
-        except Exception as e:
-            logger.exception(f"Health check failed: {e}")
-            return {"service": "kpi", "version": "4.0", "status": "unhealthy", "error": str(e)}
-    
-    def get_metrics(self) -> Dict[str, Any]:
-        """Get service metrics for monitoring"""
+    def calculate_city_kpis(self, records: List[Any]) -> Dict[str, Any]:
+        """Calculate KPIs for a city"""
+        if not records:
+            return {}
+        
+        city_name = records[0].ship_to_city or "Unknown"
+        
+        revenue = sum(float(r.dn_amount or 0) for r in records)
+        units = sum(int(r.dn_qty or 0) for r in records)
+        dn_count = len(set(r.dn_no for r in records))
+        
+        pending_delivery = len([r for r in records if not r.good_issue_date])
+        pending_pod = len([r for r in records if r.good_issue_date and not r.pod_date])
+        
+        # Delivery aging
+        delivery_agings = []
+        for r in records:
+            if r.dn_create_date and r.good_issue_date:
+                delivery_agings.append((r.good_issue_date - r.dn_create_date).days)
+        
+        avg_delivery_aging = round(sum(delivery_agings) / len(delivery_agings), 1) if delivery_agings else 0
+        
+        # Delivery rate
+        delivered = len([r for r in records if r.delivery_status == "Delivered"])
+        delivery_rate = (delivered / len(records) * 100) if records else 0
+        
         return {
-            "total_requests": self.metrics["total_requests"],
-            "successful_requests": self.metrics["successful_requests"],
-            "failed_requests": self.metrics["failed_requests"],
-            "avg_response_time_ms": round(self.metrics["avg_response_time_ms"], 2),
-            "success_rate": round((self.metrics["successful_requests"] / max(1, self.metrics["total_requests"])) * 100, 1),
-            "start_time": self.metrics["start_time"].isoformat()
+            "city_name": city_name,
+            "revenue": revenue,
+            "units": units,
+            "dn_count": dn_count,
+            "pending_delivery": pending_delivery,
+            "pending_pod": pending_pod,
+            "avg_delivery_aging": avg_delivery_aging,
+            "delivery_rate": round(delivery_rate, 1)
         }
     
-    # ==========================================================
-    # COMPATIBILITY METHODS (Preserved)
-    # ==========================================================
-    
-    def get_pod_performance(self, days: int = 30) -> Dict[str, Any]:
-        """Get POD performance with real data"""
-        start_time = datetime.now()
-        try:
-            data = self._calculate_pod_compliance(days)
-            result = {
-                "overall_score": data["compliance"],
-                "total": data["total"],
-                "completed": data["completed"],
-                "pending": data["pending"],
-                "avg_aging_days": data.get("avg_aging_days", 0),
-                "_summary": f"📋 *POD Performance*\n\nScore: {data['compliance']}%\nCompleted: {data['completed']}/{data['total']}\nPending: {data['pending']}\nAvg Aging: {data.get('avg_aging_days', 0)} days"
-            }
-            self._log_request("get_pod_performance", start_time, True)
-            return result
-        except Exception as e:
-            logger.exception(f"Failed to get POD performance: {e}")
-            self._log_request("get_pod_performance", start_time, False)
-            return {"overall_score": 0, "error": str(e)}
-    
-    def get_pgi_performance(self, days: int = 30) -> Dict[str, Any]:
-        """Get PGI performance with real data"""
-        start_time = datetime.now()
-        try:
-            data = self._calculate_pgi_compliance(days)
-            result = {
-                "overall_score": data["compliance"],
-                "total": data["total"],
-                "completed": data["completed"],
-                "pending": data["pending"],
-                "_summary": f"📦 *PGI Performance*\n\nScore: {data['compliance']}%\nCompleted: {data['completed']}/{data['total']}\nPending: {data['pending']}"
-            }
-            self._log_request("get_pgi_performance", start_time, True)
-            return result
-        except Exception as e:
-            logger.exception(f"Failed to get PGI performance: {e}")
-            self._log_request("get_pgi_performance", start_time, False)
-            return {"overall_score": 0, "error": str(e)}
-    
-    def get_delivery_performance(self, days: int = 30) -> Dict[str, Any]:
-        """Get delivery performance with real data"""
-        start_time = datetime.now()
-        try:
-            data = self._calculate_delivery_compliance(days)
-            result = {
-                "overall_score": data["compliance"],
-                "total": data["total"],
-                "completed": data["completed"],
-                "pending": data["pending"],
-                "_summary": f"🚚 *Delivery Performance*\n\nScore: {data['compliance']}%\nCompleted: {data['completed']}/{data['total']}\nPending: {data['pending']}"
-            }
-            self._log_request("get_delivery_performance", start_time, True)
-            return result
-        except Exception as e:
-            logger.exception(f"Failed to get delivery performance: {e}")
-            self._log_request("get_delivery_performance", start_time, False)
-            return {"overall_score": 0, "error": str(e)}
-    
-    def get_all_kpis(self, time_period: Dict = None) -> Dict[str, Any]:
-        """Get all KPIs"""
-        start_time = datetime.now()
-        try:
-            result = {
-                "network_health": self.get_network_health(),
-                "pod_performance": self.get_pod_performance(),
-                "pgi_performance": self.get_pgi_performance(),
-                "delivery_performance": self.get_delivery_performance(),
-                "control_tower": self.get_control_tower_report()
-            }
-            self._log_request("get_all_kpis", start_time, True)
-            return result
-        except Exception as e:
-            logger.exception(f"Failed to get all KPIs: {e}")
-            self._log_request("get_all_kpis", start_time, False)
-            return {"error": str(e)}
+    def calculate_all_cities_kpis(self, all_records: List[Any]) -> List[Dict]:
+        """Calculate KPIs for all cities"""
+        city_records = defaultdict(list)
+        for record in all_records:
+            if record.ship_to_city:
+                city_records[record.ship_to_city].append(record)
+        
+        city_kpis = []
+        for city_name, records in city_records.items():
+            kpi = self.calculate_city_kpis(records)
+            if kpi:
+                city_kpis.append(kpi)
+        
+        return sorted(city_kpis, key=lambda x: x.get("revenue", 0), reverse=True)
     
     # ==========================================================
-    # FALLBACK & FORMATTING HELPERS
+    # PRODUCT KPI ENGINE
     # ==========================================================
     
-    def _get_fallback_dashboard(self) -> Dict[str, Any]:
-        """Fallback dashboard when database fails"""
+    def calculate_product_kpis(self, records: List[Any]) -> Dict[str, Any]:
+        """Calculate KPIs for a product"""
+        if not records:
+            return {}
+        
+        product_code = records[0].product_code or "Unknown"
+        product_name = records[0].product_description or product_code
+        
+        revenue = sum(float(r.dn_amount or 0) for r in records)
+        units = sum(int(r.dn_qty or 0) for r in records)
+        dn_count = len(set(r.dn_no for r in records))
+        
+        # Delivery aging for this product
+        delivery_agings = []
+        for r in records:
+            if r.dn_create_date and r.good_issue_date:
+                delivery_agings.append((r.good_issue_date - r.dn_create_date).days)
+        
+        avg_delivery_aging = round(sum(delivery_agings) / len(delivery_agings), 1) if delivery_agings else 0
+        
         return {
-            "executive_summary": {
-                "overall_score": 0,
-                "pod_score": 0,
-                "pgi_score": 0,
-                "delivery_score": 0,
-                "status": "🔴",
-                "status_text": "Data Unavailable",
-                "report_date": datetime.now().strftime("%Y-%m-%d"),
-                "period": "Data unavailable"
-            },
-            "pod_performance": {"compliance": 0, "error": "Data unavailable"},
-            "pgi_performance": {"compliance": 0, "error": "Data unavailable"},
-            "delivery_performance": {"compliance": 0, "error": "Data unavailable"},
-            "top_priorities": ["Check database connection", "Verify data availability"],
-            "_summary": "⚠️ Dashboard temporarily unavailable. Please try again later."
+            "product_code": product_code,
+            "product_name": product_name,
+            "revenue": revenue,
+            "units": units,
+            "dn_count": dn_count,
+            "avg_delivery_aging": avg_delivery_aging
         }
     
-    def _format_dashboard_summary(self, score, pod, pgi, delivery, priorities) -> str:
-        """Format dashboard summary for WhatsApp"""
-        status_emoji = "🟢" if score >= 90 else "🟡" if score >= 75 else "🔴"
-        summary = f"📊 *Executive Dashboard* {status_emoji}\n\n"
-        summary += f"Overall Score: {score}%\n"
-        summary += f"━━━━━━━━━━━━━━━━━━━━\n"
-        summary += f"📋 POD: {pod['compliance']}%\n"
-        summary += f"📦 PGI: {pgi['compliance']}%\n"
-        summary += f"🚚 Delivery: {delivery['compliance']}%\n\n"
-        summary += f"⚠️ *Top Priorities:*\n"
-        for p in priorities[:3]:
-            summary += f"• {p}\n"
-        return summary
-    
-    def _format_delays_summary(self, delays, critical, high) -> str:
-        """Format delays summary for WhatsApp"""
-        if not delays:
-            return "✅ No critical delays detected."
+    def calculate_all_products_kpis(self, all_records: List[Any]) -> List[Dict]:
+        """Calculate KPIs for all products"""
+        product_records = defaultdict(list)
+        for record in all_records:
+            if record.product_code:
+                product_records[record.product_code].append(record)
         
-        summary = f"⚠️ *Critical Delays*\n\n"
-        summary += f"Critical: {critical} | High: {high}\n"
-        summary += f"━━━━━━━━━━━━━━━━━━━━\n"
-        for d in delays[:5]:
-            summary += f"• DN {d['dn_number']}: {d['aging_days']} days\n"
-        if len(delays) > 5:
-            summary += f"\n... and {len(delays) - 5} more"
-        return summary
-    
-    def _format_alerts_summary(self, alerts) -> str:
-        """Format alerts summary for WhatsApp"""
-        if not alerts:
-            return "✅ No active alerts."
+        product_kpis = []
+        for product_code, records in product_records.items():
+            kpi = self.calculate_product_kpis(records)
+            if kpi:
+                product_kpis.append(kpi)
         
-        summary = f"🚨 *Risk Alerts*\n\n"
-        for a in alerts[:3]:
-            emoji = "🔴" if a["severity"] == "HIGH" else "🟡"
-            summary += f"{emoji} {a['message']}\n"
-        return summary
+        return sorted(product_kpis, key=lambda x: x.get("units", 0), reverse=True)
     
-    def _format_control_tower_summary(self, network, delays, risks) -> str:
-        """Format control tower summary for WhatsApp"""
-        summary = f"🚁 *CONTROL TOWER REPORT*\n"
-        summary += f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        summary += f"🏥 Network Health: {network.get('status_text', 'Unknown')} ({network.get('overall_score', 0)}%)\n"
-        summary += f"⚠️ Critical Delays: {delays.get('critical_count', 0)}\n"
-        summary += f"🚨 Risk Alerts: {risks.get('critical_alerts', 0)}\n\n"
-        
-        if delays.get('critical_count', 0) > 0:
-            summary += f"*Requires Immediate Attention*\n"
-        else:
-            summary += f"✅ System is stable"
-        
-        return summary
+    # ==========================================================
+    # DIVISION KPI ENGINE
+    # ==========================================================
     
-    def _format_management_summary(self, network, risks, actions) -> str:
-        """Format management summary for WhatsApp"""
-        summary = f"📈 *MANAGEMENT SUMMARY*\n"
-        summary += f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        summary += f"Overall Health: {network.get('status_text', 'Unknown')}\n"
-        summary += f"Score: {network.get('overall_score', 0)}%\n\n"
-        summary += f"🎯 *Recommended Actions:*\n"
-        for a in actions[:3]:
-            summary += f"• {a}\n"
-        return summary
-    
-    def _format_daily_summary(self, today_dns, pending_pods, pending_pgi, pending_deliveries, critical) -> str:
-        """Format daily operations summary for WhatsApp"""
-        summary = f"📅 *Today's Operations*\n"
-        summary += f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        summary += f"📋 New DNs Today: {today_dns}\n"
-        summary += f"⏳ Pending POD: {pending_pods}\n"
-        summary += f"⏳ Pending PGI: {pending_pgi}\n"
-        summary += f"⏳ Pending Deliveries: {pending_deliveries}\n"
-        summary += f"⚠️ Critical Delays: {critical}\n"
-        return summary
-    
-    def _format_sla_summary(self, pod, pgi, delivery, underperforming) -> str:
-        """Format SLA summary for WhatsApp"""
-        summary = f"🎯 *SLA Performance*\n"
-        summary += f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        summary += f"POD SLA: {pod['compliance']}% (Target: 95%)\n"
-        summary += f"PGI SLA: {pgi['compliance']}% (Target: 95%)\n"
-        summary += f"Delivery SLA: {delivery['compliance']}% (Target: 95%)\n\n"
+    def calculate_division_kpis(self, records: List[Any], division_name: str, division_code: str) -> DivisionKPIData:
+        """Calculate KPIs for a product division"""
+        if not records:
+            return DivisionKPIData(
+                division_name=division_name,
+                division_code=division_code,
+                revenue=0,
+                units=0,
+                dn_count=0,
+                market_share=0,
+                avg_delivery_aging=0,
+                avg_pod_aging=0,
+                top_product="N/A",
+                top_dealer="N/A"
+            )
         
-        if underperforming:
-            summary += f"⚠️ *Underperforming KPIs:*\n"
-            for k in underperforming[:3]:
-                summary += f"• {k}\n"
-        else:
-            summary += f"✅ All KPIs meeting targets"
+        revenue = sum(float(r.dn_amount or 0) for r in records)
+        units = sum(int(r.dn_qty or 0) for r in records)
+        dn_count = len(set(r.dn_no for r in records))
         
-        return summary
+        # Aging metrics
+        delivery_agings = []
+        pod_agings = []
+        
+        for r in records:
+            if r.dn_create_date and r.good_issue_date:
+                delivery_agings.append((r.good_issue_date - r.dn_create_date).days)
+            if r.good_issue_date and r.pod_date:
+                pod_agings.append((r.pod_date - r.good_issue_date).days)
+        
+        avg_delivery_aging = round(sum(delivery_agings) / len(delivery_agings), 1) if delivery_agings else 0
+        avg_pod_aging = round(sum(pod_agings) / len(pod_agings), 1) if pod_agings else 0
+        
+        # Find top product in this division
+        product_units = defaultdict(int)
+        for r in records:
+            product = r.product_description or r.product_code or "Unknown"
+            product_units[product] += int(r.dn_qty or 0)
+        
+        top_product = max(product_units.items(), key=lambda x: x[1])[0] if product_units else "N/A"
+        
+        # Find top dealer in this division
+        dealer_units = defaultdict(int)
+        for r in records:
+            if r.customer_name:
+                dealer_units[r.customer_name] += int(r.dn_qty or 0)
+        
+        top_dealer = max(dealer_units.items(), key=lambda x: x[1])[0] if dealer_units else "N/A"
+        
+        return DivisionKPIData(
+            division_name=division_name,
+            division_code=division_code,
+            revenue=revenue,
+            units=units,
+            dn_count=dn_count,
+            market_share=0,  # Would need total market data
+            avg_delivery_aging=avg_delivery_aging,
+            avg_pod_aging=avg_pod_aging,
+            top_product=top_product,
+            top_dealer=top_dealer
+        )
     
-    def _format_regions_summary(self, regions, best_region, avg_score) -> str:
-        """Format regions summary for WhatsApp"""
-        if not regions:
-            return "No region data available."
-        
-        summary = f"🗺️ *Region Performance*\n"
-        summary += f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        summary += f"Best Region: {best_region}\n"
-        summary += f"Average Score: {avg_score}%\n\n"
-        summary += f"*Top Regions:*\n"
-        for r in regions[:5]:
-            summary += f"{r['status']} {r['region_name']}: {r['completion_rate']}%\n"
-        return summary
+    # ==========================================================
+    # EXECUTIVE KPI ENGINE
+    # ==========================================================
     
-    def _format_branches_summary(self, top_branches, avg_score) -> str:
-        """Format branches summary for WhatsApp"""
-        if not top_branches:
-            return "No branch data available."
+    def calculate_executive_kpis(self, all_records: List[Any]) -> ExecutiveKPIData:
+        """
+        Calculate company-wide executive KPIs
         
-        summary = f"🏪 *Branch Performance*\n"
-        summary += f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        summary += f"Average Score: {avg_score}%\n\n"
-        summary += f"*Top Performers:*\n"
-        for b in top_branches[:5]:
-            summary += f"🏆 {b['branch_name']}: {b['completion_rate']}%\n"
-        return summary
+        This is the master KPI function that aggregates everything
+        """
+        if not all_records:
+            return ExecutiveKPIData(
+                total_revenue=0, total_units=0, total_dn=0,
+                total_delivered=0, total_pending_delivery=0, total_pending_pod=0,
+                delivery_rate=0, pod_rate=0, pgi_rate=0,
+                avg_delivery_aging=0, avg_pod_aging=0,
+                critical_deliveries=0, critical_pod=0,
+                total_warehouses=0, warehouses_with_high_aging=0,
+                total_dealers=0, dealers_with_pending=0
+            )
+        
+        today = date.today()
+        
+        # Volume metrics
+        total_revenue = sum(float(r.dn_amount or 0) for r in all_records)
+        total_units = sum(int(r.dn_qty or 0) for r in all_records)
+        total_dn = len(set(r.dn_no for r in all_records))
+        
+        # Delivery metrics
+        total_delivered = len([r for r in all_records if r.delivery_status == "Delivered"])
+        total_pending_delivery = len([r for r in all_records if not r.good_issue_date])
+        total_pending_pod = len([r for r in all_records if r.good_issue_date and not r.pod_date])
+        
+        delivery_rate = (total_delivered / len(all_records) * 100) if all_records else 0
+        pod_rate = (len([r for r in all_records if r.pod_date]) / len(all_records) * 100) if all_records else 0
+        pgi_rate = (len([r for r in all_records if r.good_issue_date]) / len(all_records) * 100) if all_records else 0
+        
+        # Aging metrics
+        delivery_agings = []
+        pod_agings = []
+        
+        for r in all_records:
+            if r.dn_create_date and r.good_issue_date:
+                delivery_agings.append((r.good_issue_date - r.dn_create_date).days)
+            if r.good_issue_date and r.pod_date:
+                pod_agings.append((r.pod_date - r.good_issue_date).days)
+        
+        avg_delivery_aging = round(sum(delivery_agings) / len(delivery_agings), 1) if delivery_agings else 0
+        avg_pod_aging = round(sum(pod_agings) / len(pod_agings), 1) if pod_agings else 0
+        
+        # Critical metrics
+        critical_deliveries = len([r for r in all_records 
+                                   if not r.good_issue_date and r.dn_create_date 
+                                   and (today - r.dn_create_date).days > 15])
+        critical_pod = len([r for r in all_records 
+                           if r.good_issue_date and not r.pod_date 
+                           and (today - r.good_issue_date).days > 15])
+        
+        # Warehouse summary
+        warehouses = set(r.warehouse for r in all_records if r.warehouse)
+        warehouses_with_high_aging = 0
+        
+        for wh in warehouses:
+            wh_records = [r for r in all_records if r.warehouse == wh]
+            wh_agings = [(r.good_issue_date - r.dn_create_date).days 
+                        for r in wh_records if r.dn_create_date and r.good_issue_date]
+            if wh_agings and sum(wh_agings) / len(wh_agings) > 10:
+                warehouses_with_high_aging += 1
+        
+        # Dealer summary
+        dealers = set(r.customer_name for r in all_records if r.customer_name)
+        dealers_with_pending = len([d for d in dealers 
+                                   if any(not r.good_issue_date for r in all_records if r.customer_name == d)])
+        
+        return ExecutiveKPIData(
+            total_revenue=total_revenue,
+            total_units=total_units,
+            total_dn=total_dn,
+            total_delivered=total_delivered,
+            total_pending_delivery=total_pending_delivery,
+            total_pending_pod=total_pending_pod,
+            delivery_rate=round(delivery_rate, 1),
+            pod_rate=round(pod_rate, 1),
+            pgi_rate=round(pgi_rate, 1),
+            avg_delivery_aging=avg_delivery_aging,
+            avg_pod_aging=avg_pod_aging,
+            critical_deliveries=critical_deliveries,
+            critical_pod=critical_pod,
+            total_warehouses=len(warehouses),
+            warehouses_with_high_aging=warehouses_with_high_aging,
+            total_dealers=len(dealers),
+            dealers_with_pending=dealers_with_pending
+        )
     
-    def _format_warehouses_summary(self, top_warehouses) -> str:
-        """Format warehouses summary for WhatsApp"""
-        if not top_warehouses:
-            return "No warehouse data available."
+    # ==========================================================
+    # SALES MANAGER KPI ENGINE
+    # ==========================================================
+    
+    def calculate_sales_manager_kpis(self, records: List[Any], manager_name: str) -> SalesManagerKPIData:
+        """Calculate KPIs for a sales manager"""
+        if not records:
+            return SalesManagerKPIData(
+                manager_name=manager_name,
+                revenue=0,
+                units=0,
+                dn_count=0,
+                pending_delivery=0,
+                pending_pod=0,
+                avg_delivery_aging=0,
+                avg_pod_aging=0,
+                top_dealer="N/A",
+                top_product="N/A"
+            )
         
-        summary = f"🏭 *Warehouse Ranking*\n"
-        summary += f"━━━━━━━━━━━━━━━━━━━━\n\n"
-        summary += f"*Top Warehouses:*\n"
-        for w in top_warehouses[:5]:
-            summary += f"📦 {w['warehouse_name']}: {w['pgi_completion_rate']}%\n"
-        return summary
+        revenue = sum(float(r.dn_amount or 0) for r in records)
+        units = sum(int(r.dn_qty or 0) for r in records)
+        dn_count = len(set(r.dn_no for r in records))
+        
+        pending_delivery = len([r for r in records if not r.good_issue_date])
+        pending_pod = len([r for r in records if r.good_issue_date and not r.pod_date])
+        
+        # Aging metrics
+        delivery_agings = []
+        pod_agings = []
+        
+        for r in records:
+            if r.dn_create_date and r.good_issue_date:
+                delivery_agings.append((r.good_issue_date - r.dn_create_date).days)
+            if r.good_issue_date and r.pod_date:
+                pod_agings.append((r.pod_date - r.good_issue_date).days)
+        
+        avg_delivery_aging = round(sum(delivery_agings) / len(delivery_agings), 1) if delivery_agings else 0
+        avg_pod_aging = round(sum(pod_agings) / len(pod_agings), 1) if pod_agings else 0
+        
+        # Find top dealer
+        dealer_revenue = defaultdict(float)
+        for r in records:
+            if r.customer_name:
+                dealer_revenue[r.customer_name] += float(r.dn_amount or 0)
+        top_dealer = max(dealer_revenue.items(), key=lambda x: x[1])[0] if dealer_revenue else "N/A"
+        
+        # Find top product
+        product_units = defaultdict(int)
+        for r in records:
+            product = r.product_description or r.product_code or "Unknown"
+            product_units[product] += int(r.dn_qty or 0)
+        top_product = max(product_units.items(), key=lambda x: x[1])[0] if product_units else "N/A"
+        
+        return SalesManagerKPIData(
+            manager_name=manager_name,
+            revenue=revenue,
+            units=units,
+            dn_count=dn_count,
+            pending_delivery=pending_delivery,
+            pending_pod=pending_pod,
+            avg_delivery_aging=avg_delivery_aging,
+            avg_pod_aging=avg_pod_aging,
+            top_dealer=top_dealer,
+            top_product=top_product
+        )
 
 
 # ==========================================================
-# INITIALIZATION LOG
+# SINGLETON INSTANCE
 # ==========================================================
 
-logger.info("=" * 70)
-logger.info("📊 KPI SERVICE v4.0 - PRODUCTION READY")
+_kpi_service = None
+
+def get_kpi_service() -> KPIService:
+    """Get singleton instance of KPIService"""
+    global _kpi_service
+    if _kpi_service is None:
+        _kpi_service = KPIService()
+    return _kpi_service
+
+
+# ==========================================================
+# INITIALIZATION LOGGING
+# ==========================================================
+
+logger.info("=" * 60)
+logger.info("KPI Service - Core Logistics Calculations Engine")
+logger.info("=" * 60)
 logger.info("")
-logger.info("   CRITICAL FIXES:")
-logger.info("   ✅ ADDED get_control_tower_report() - Fixes missing route error")
-logger.info("   ✅ ADDED Exception handling to all methods")
-logger.info("   ✅ REPLACED hardcoded values with real DB calculations")
+logger.info("   FORMULAS IMPLEMENTED:")
+logger.info("   ✅ Delivery Aging = PGI Date - DN Date")
+logger.info("   ✅ Pending Delivery Aging = Today - DN Date (PGI NULL)")
+logger.info("   ✅ POD Aging = POD Date - PGI Date")
+logger.info("   ✅ Pending POD Aging = Today - PGI Date (POD NULL)")
+logger.info("   ✅ Full Cycle = POD Date - DN Date")
 logger.info("")
-logger.info("   NEW FEATURES:")
-logger.info("   ✅ Management Summary for executive insights")
-logger.info("   ✅ Daily Operations Summary")
-logger.info("   ✅ SLA Performance Tracking")
-logger.info("   ✅ Region & Branch Intelligence")
-logger.info("   ✅ Warehouse Ranking")
-logger.info("   ✅ City KPI Summary for AI analysis")
-logger.info("   ✅ Root Cause Context for Groq")
+logger.info("   KPI ENGINES:")
+logger.info("   ✅ Dealer KPI Engine")
+logger.info("   ✅ Warehouse KPI Engine")
+logger.info("   ✅ City KPI Engine")
+logger.info("   ✅ Product KPI Engine")
+logger.info("   ✅ Division KPI Engine")
+logger.info("   ✅ Executive KPI Engine")
+logger.info("   ✅ Sales Manager KPI Engine")
 logger.info("")
-logger.info("   MONITORING:")
-logger.info("   ✅ Metrics Tracking")
-logger.info("   ✅ Enhanced Health Check")
-logger.info("   ✅ WhatsApp Response Formatting")
-logger.info("=" * 70)
+logger.info("   SLA BUCKETS:")
+logger.info("   ✅ Delivery SLA (Same Day, 1-5+ Days)")
+logger.info("   ✅ POD SLA (Same Day, 1-5+ Days)")
+logger.info("")
+logger.info("   RISK SEVERITY:")
+logger.info("   ✅ GREEN (0-7 days)")
+logger.info("   ✅ YELLOW (8-15 days)")
+logger.info("   ✅ ORANGE (16-30 days)")
+logger.info("   ✅ RED (31+ days)")
+logger.info("")
+logger.info("   STATUS: ✅ PRODUCTION READY")
+logger.info("=" * 60)
