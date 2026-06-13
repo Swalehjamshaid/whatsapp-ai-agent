@@ -1,14 +1,15 @@
 # ==========================================================
-# FILE: app/main.py (ENTERPRISE v9.4.2 - FULLY INTEGRATED)
+# FILE: app/main.py (ENTERPRISE v9.5.0 - FASTAPI WEBHOOK INTEGRATED)
 # PROJECT: AI WhatsApp Customer Service Agent
 # ==========================================================
-# IMPROVEMENTS v9.4.2:
+# IMPROVEMENTS v9.5.0:
+# - ✅ FIXED: FastAPI webhook router integration (no Flask conflict)
 # - ✅ FIXED: CACHE_TTL attribute error (now reads from config with fallback)
 # - ✅ FIXED: All syntax errors resolved
 # - ✅ ADDED: Webhook AI service initialization call
 # - ✅ ADDED: init_ai_service() integration from webhook
 # - ✅ FIXED: AI service now properly initializes at startup
-# - ✅ FULLY ALIGNED with webhook.py v27.2
+# - ✅ FULLY ALIGNED with webhook.py v5.3 (FastAPI version)
 # - ✅ FULLY ALIGNED with ai_query_service.py v52.1
 # - ✅ Degraded mode startup - NO RAILWAY CRASHES
 # - ✅ All original attributes preserved
@@ -86,6 +87,24 @@ from app.models import (
     AIResponseLog,
     DeliveryReport
 )
+
+# ==========================================================
+# WEBHOOK ROUTER IMPORT (FastAPI version)
+# ==========================================================
+
+WEBHOOK_AVAILABLE = False
+WEBHOOK_ERROR = None
+
+try:
+    from app.routes.webhook import router as webhook_router
+    WEBHOOK_AVAILABLE = True
+    logger.info("✅ Webhook router (FastAPI) imported successfully")
+except ImportError as e:
+    WEBHOOK_ERROR = f"ImportError: {e}"
+    logger.error(f"❌ Webhook router import failed: {e}")
+except Exception as e:
+    WEBHOOK_ERROR = f"Exception: {e}"
+    logger.error(f"❌ Webhook router import error: {e}")
 
 # ==========================================================
 # AI QUERY SERVICE IMPORTS (CRITICAL - With Fallback)
@@ -635,7 +654,7 @@ async def lifespan(app: FastAPI):
     start_time = time.time()
     
     logger.info("=" * 80)
-    logger.info("🤖 AI WHATSAPP AGENT STARTING v9.4.2")
+    logger.info("🤖 AI WHATSAPP AGENT STARTING v9.5.0")
     logger.info("=" * 80)
     
     # Log cache configuration (FIXED: CACHE_TTL now properly defined)
@@ -647,6 +666,18 @@ async def lifespan(app: FastAPI):
     # Load routers FIRST
     logger.info("📡 Loading routers...")
     load_routers(app)
+    
+    # Also register webhook router directly if available (FastAPI version)
+    if WEBHOOK_AVAILABLE:
+        try:
+            app.include_router(webhook_router)
+            ServiceRegistry.register_route("webhook_direct", webhook_router)
+            logger.info("✅ Webhook router (FastAPI) registered directly")
+        except Exception as e:
+            logger.error(f"❌ Failed to register webhook router directly: {e}")
+    else:
+        logger.warning(f"⚠️ Webhook router not available: {WEBHOOK_ERROR}")
+    
     logger.info("✅ Routers loaded")
     
     # Validate environment
@@ -661,6 +692,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"   WhatsApp: {'✓' if whatsapp_ok else '✗'}")
     logger.info(f"   Environment: {config.ENVIRONMENT}")
     logger.info(f"   AI Service Import: {'✓' if AI_QUERY_SERVICE_AVAILABLE else '✗'}")
+    logger.info(f"   Webhook Router: {'✓' if WEBHOOK_AVAILABLE else '✗'}")
     logger.info(f"   Cache TTL: {CACHE_TTL}s")
     
     # Initialize AI Query Service in degraded mode
@@ -702,7 +734,8 @@ async def lifespan(app: FastAPI):
     logger.info(f"✅ Application startup complete in {startup_duration:.2f}s")
     logger.info(f"   AI Query Service: {'AVAILABLE' if ai_initialized else 'UNAVAILABLE (Degraded Mode)'}")
     logger.info(f"   Webhook AI Service: {'AVAILABLE' if webhook_ai_initialized else 'UNAVAILABLE'}")
-    logger.info(f"   Webhook Timeout: 30s (aligned with webhook v27.2)")
+    logger.info(f"   Webhook Router: {'AVAILABLE' if WEBHOOK_AVAILABLE else 'UNAVAILABLE'}")
+    logger.info(f"   Webhook Timeout: 30s (aligned with webhook v5.3)")
     logger.info(f"   Cache TTL: {CACHE_TTL}s")
     logger.info("=" * 80)
     
@@ -723,7 +756,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AI WhatsApp Logistics Assistant",
     description="Enterprise Logistics AI Platform - WhatsApp Integration",
-    version="9.4.2",
+    version="9.5.0",
     docs_url="/api/docs" if config.ENVIRONMENT != "production" else None,
     redoc_url="/api/redoc" if config.ENVIRONMENT != "production" else None,
     openapi_url="/api/openapi.json" if config.ENVIRONMENT != "production" else None,
@@ -838,15 +871,15 @@ def get_chat_service():
 
 @app.post("/chat", response_model=ChatResponse, tags=["Chat"])
 @limiter.limit("5 per second")
-async def chat_endpoint(request: ChatRequest, req: Request, db: Session = Depends(get_db)):
+async def chat_endpoint(chat_request: ChatRequest, req: Request, db: Session = Depends(get_db)):
     """Chat endpoint - uses ChatService from service layer"""
     try:
         ChatServiceClass = get_chat_service()
         chat_service = ChatServiceClass(db)
         result = chat_service.process_chat(
-            message=request.message,
-            customer_name=request.customer_name,
-            phone_number=request.phone_number
+            message=chat_request.message,
+            customer_name=chat_request.customer_name,
+            phone_number=chat_request.phone_number
         )
         return {"success": True, "reply": result}
     except Exception as e:
@@ -860,15 +893,15 @@ async def chat_endpoint(request: ChatRequest, req: Request, db: Session = Depend
 
 @app.get("/api/v1/chat", response_model=ChatResponse, tags=["API v1"])
 @limiter.limit("5 per second")
-async def chat_v1(request: ChatRequest, req: Request, db: Session = Depends(get_db)):
+async def chat_v1(chat_request: ChatRequest, req: Request, db: Session = Depends(get_db)):
     """Versioned chat endpoint - API v1"""
     try:
         ChatServiceClass = get_chat_service()
         chat_service = ChatServiceClass(db)
         result = chat_service.process_chat(
-            message=request.message,
-            customer_name=request.customer_name,
-            phone_number=request.phone_number
+            message=chat_request.message,
+            customer_name=chat_request.customer_name,
+            phone_number=chat_request.phone_number
         )
         return {"success": True, "reply": result}
     except Exception as e:
@@ -903,7 +936,7 @@ async def status_v1(db: Session = Depends(get_db)):
 
 
 # ==========================================================
-# HEALTH ENDPOINTS (Aligned with webhook v27.2)
+# HEALTH ENDPOINTS (Aligned with webhook v5.3)
 # ==========================================================
 
 @app.get("/liveness", tags=["Health"])
@@ -915,12 +948,14 @@ async def liveness():
 async def readiness():
     db_connected = check_database_connection()
     groq_key = os.getenv("GROQ_API_KEY") or getattr(config, 'GROQ_API_KEY', None)
+    webhook_ready = WEBHOOK_AVAILABLE
     
     return {
         "ready": db_connected and bool(groq_key),
         "checks": {
             "database": "connected" if db_connected else "disconnected",
-            "groq": "configured" if groq_key else "not_configured"
+            "groq": "configured" if groq_key else "not_configured",
+            "webhook": "available" if webhook_ready else "unavailable"
         },
         "timestamp": datetime.utcnow().isoformat()
     }
@@ -949,8 +984,8 @@ async def health():
         "environment": config.ENVIRONMENT,
         "ai_query_service": ai_query_health,
         "ai_query_available": getattr(app.state, 'ai_query_available', False),
-        "webhook_timeout_seconds": 30,
-        "webhook_version": "27.2",
+        "webhook_router_available": WEBHOOK_AVAILABLE,
+        "webhook_version": "5.3",
         "cache_ttl": CACHE_TTL,
         "timestamp": datetime.utcnow().isoformat()
     }
@@ -985,7 +1020,8 @@ async def ping():
     return {
         "ping": "pong", 
         "timestamp": datetime.utcnow().isoformat(),
-        "ai_query_available": getattr(app.state, 'ai_query_available', False)
+        "ai_query_available": getattr(app.state, 'ai_query_available', False),
+        "webhook_available": WEBHOOK_AVAILABLE
     }
 
 
@@ -1076,7 +1112,8 @@ async def dashboard(request: Request, db: Session = Depends(get_db)):
                 **dashboard_data,
                 "whatsapp_status": "Online" if whatsapp_token else "Offline",
                 "groq_status": "Online" if groq_key else "Offline",
-                "schema_version": schema_info.get("app_version", "9.4"),
+                "webhook_status": "Online" if WEBHOOK_AVAILABLE else "Offline",
+                "schema_version": schema_info.get("app_version", "9.5"),
                 "last_refresh": last_refresh.strftime('%Y-%m-%d %H:%M:%S'),
                 "timestamp": datetime.utcnow().isoformat(),
                 "ai_query_available": getattr(app.state, 'ai_query_available', False),
@@ -1102,10 +1139,11 @@ async def status_legacy(db: Session = Depends(get_db)):
     
     result = {
         "application": "AI WhatsApp Agent",
-        "version": "9.4.2",
+        "version": "9.5.0",
         "database": "postgresql",
         "ai_provider": "groq",
         "whatsapp": "active",
+        "webhook": "available" if WEBHOOK_AVAILABLE else "unavailable",
         "ai_query_available": getattr(app.state, 'ai_query_available', False),
         "cache_ttl": CACHE_TTL,
         "statistics": {
@@ -1133,13 +1171,14 @@ async def home():
 async def version():
     return {
         "name": "AI WhatsApp Logistics Assistant",
-        "version": "9.4.2",
+        "version": "9.5.0",
         "framework": "FastAPI",
         "database": "PostgreSQL",
         "schema_version": APP_SCHEMA_VERSION,
         "ai_provider": "groq",
         "ai_query_service": "initialized" if getattr(app.state, 'ai_query_available', False) else "unavailable",
-        "webhook_version": "27.2",
+        "webhook_version": "5.3",
+        "webhook_available": WEBHOOK_AVAILABLE,
         "ai_query_version": AI_QUERY_SERVICE_VERSION,
         "cache_ttl": CACHE_TTL
     }
@@ -1227,6 +1266,12 @@ async def api_info():
             "health": "/api/v1/health",
             "status": "/api/v1/status"
         },
+        "webhook_endpoints": {
+            "verify": "/webhook (GET)",
+            "receive": "/webhook (POST)",
+            "health": "/webhook/health",
+            "session": "/webhook/session/{phone_number}"
+        },
         "legacy_endpoints": {
             "chat": "/chat",
             "dashboard": "/dashboard",
@@ -1245,6 +1290,7 @@ async def degraded_status():
     """Check if app is running in degraded mode"""
     return {
         "ai_query_available": getattr(app.state, 'ai_query_available', False),
+        "webhook_available": WEBHOOK_AVAILABLE,
         "degraded_mode": not getattr(app.state, 'ai_query_available', True),
         "error": getattr(app.state, 'ai_query_error', None),
         "message": "Application is running but some features may be limited" if not getattr(app.state, 'ai_query_available', True) else "All services available",
@@ -1260,12 +1306,13 @@ async def degraded_status():
 async def service_versions():
     """Get all service versions for debugging"""
     versions = {
-        "app": "9.4.2",
-        "webhook": "27.2",
+        "app": "9.5.0",
+        "webhook": "5.3",
         "ai_query": AI_QUERY_SERVICE_VERSION,
         "schema": APP_SCHEMA_VERSION,
         "environment": config.ENVIRONMENT,
-        "cache_ttl": CACHE_TTL
+        "cache_ttl": CACHE_TTL,
+        "webhook_router_available": WEBHOOK_AVAILABLE
     }
     
     # Try to get service versions from compatibility layers
@@ -1335,13 +1382,27 @@ if config.ENVIRONMENT != "production":
             return {
                 "ai_service_ready": is_ai_service_ready(),
                 "initialization_error": _ai_service_initialization_error,
+                "router_available": WEBHOOK_AVAILABLE,
                 "fallback_active": not is_ai_service_ready()
             }
         except Exception as e:
             return {
                 "error": str(e),
-                "ai_service_ready": False
+                "ai_service_ready": False,
+                "router_available": WEBHOOK_AVAILABLE
             }
+    
+    @app.get("/routes", tags=["Debug"])
+    async def list_routes():
+        """List all registered routes for debugging"""
+        routes = []
+        for route in app.routes:
+            routes.append({
+                "path": route.path,
+                "methods": list(route.methods) if hasattr(route, 'methods') else [],
+                "name": route.name if hasattr(route, 'name') else None
+            })
+        return {"routes": routes, "count": len(routes)}
 
 
 # ==========================================================
@@ -1349,16 +1410,17 @@ if config.ENVIRONMENT != "production":
 # ==========================================================
 
 logger.info("=" * 60)
-logger.info("📡 MAIN APP v9.4.2 - FULLY INTEGRATED (CACHE_TTL FIXED)")
+logger.info("📡 MAIN APP v9.5.0 - FASTAPI WEBHOOK INTEGRATED")
 logger.info("")
 logger.info("   ALIGNED WITH:")
-logger.info("   ✅ webhook.py v27.2 (full AI service integration)")
+logger.info("   ✅ webhook.py v5.3 (FastAPI version)")
 logger.info("   ✅ ai_query_service.py v52.1 (improved startup)")
 logger.info("   ✅ logistics_query_service.py v9.2")
 logger.info("   ✅ analytics_service.py")
 logger.info("")
 logger.info("   KEY FEATURES:")
 logger.info("   ✅ Webhook AI service initialization at startup")
+logger.info("   ✅ FastAPI webhook router integration")
 logger.info("   ✅ Degraded mode - NO RAILWAY CRASHES")
 logger.info("   ✅ Direct DN fallback when AI service down")
 logger.info("   ✅ 30s webhook timeout alignment")
@@ -1369,5 +1431,6 @@ logger.info("   ✅ All original attributes preserved")
 logger.info("")
 logger.info(f"   AI SERVICE IMPORT: {'✓' if AI_QUERY_SERVICE_AVAILABLE else '✗'}")
 logger.info(f"   AI SERVICE VERSION: {AI_QUERY_SERVICE_VERSION or 'unknown'}")
+logger.info(f"   WEBHOOK ROUTER: {'✓' if WEBHOOK_AVAILABLE else '✗'}")
 logger.info(f"   CACHE_TTL: {CACHE_TTL}s")
 logger.info("=" * 60)
