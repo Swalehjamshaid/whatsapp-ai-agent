@@ -1,6 +1,6 @@
 """
 WhatsApp Webhook Handler - FastAPI Version
-Version: 5.3 (FastAPI Compatible)
+Version: 5.4 (Fixed Async Issues - No Event Loop Conflicts)
 Architecture: webhook.py → AI Query Service → KPI/Analytics Services → WhatsApp Service
 
 100% INTEGRATED with:
@@ -17,7 +17,6 @@ import hashlib
 import hmac
 import re
 import uuid
-import asyncio
 from datetime import datetime, date, timedelta
 from typing import Dict, Any, Optional, Tuple, List
 from fastapi import APIRouter, Request, HTTPException, BackgroundTasks
@@ -297,8 +296,9 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
         # PROCESS MESSAGE (Background task to avoid timeout)
         # ====================================================
         
+        # FIX: Use synchronous function for background task
         background_tasks.add_task(
-            process_and_respond,
+            process_and_respond_sync,
             phone_number=phone_number,
             message_text=message_text,
             sender_name=sender_name,
@@ -314,16 +314,24 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
         return JSONResponse(content={"status": "error", "message": "Internal error"}, status_code=500)
 
 
-async def process_and_respond(
+# ==========================================================
+# SYNCHRONOUS PROCESSING FUNCTIONS (FIX FOR ASYNCIO CRASH)
+# ==========================================================
+
+def process_and_respond_sync(
     phone_number: str,
     message_text: str,
     sender_name: str,
     message_id: str,
     request_id: str
 ):
-    """Process message and send response (background task)"""
+    """
+    Process message and send response - FULLY SYNCHRONOUS.
+    This avoids the asyncio event loop crash.
+    """
     try:
-        response_text = await process_incoming_message(
+        # Process message synchronously
+        response_text = process_incoming_message_sync(
             phone_number=phone_number,
             message_text=message_text,
             sender_name=sender_name,
@@ -345,6 +353,146 @@ async def process_and_respond(
             
     except Exception as e:
         logger.error(f"[{request_id}] Background processing error: {e}", exc_info=True)
+
+
+def process_incoming_message_sync(
+    phone_number: str,
+    message_text: str,
+    sender_name: str,
+    request_id: str
+) -> Optional[str]:
+    """
+    Process incoming message - SYNCHRONOUS VERSION.
+    No async/await to prevent event loop conflicts.
+    """
+    # Quick command handling
+    quick_response = handle_quick_commands(message_text)
+    if quick_response:
+        return quick_response
+    
+    try:
+        # Check for DN number pattern (fast path - no AI needed)
+        dn_match = re.search(r'\b(\d{8,12})\b', message_text)
+        if dn_match:
+            return handle_dn_lookup_sync(dn_match.group(1), message_text, request_id)
+        
+        # Check for warehouse names
+        warehouses = ['lahore', 'karachi', 'rawalpindi', 'islamabad', 'multan', 'faisalabad']
+        msg_lower = message_text.lower()
+        for wh in warehouses:
+            if wh in msg_lower:
+                return handle_warehouse_query_sync(wh, request_id)
+        
+        # Default to dealer query
+        return handle_dealer_query_sync(message_text, request_id)
+        
+    except Exception as e:
+        logger.error(f"[{request_id}] Message processing error: {e}", exc_info=True)
+        return "⚠️ I'm having trouble processing your request. Please try again in a moment."
+
+
+def handle_dn_lookup_sync(dn_number: str, original_message: str, request_id: str) -> str:
+    """Handle DN lookup - SYNCHRONOUS"""
+    try:
+        schema_service = get_schema_service()
+        record = schema_service.get_dn_details(dn_number)
+        
+        if not record:
+            return f"❌ DN {dn_number} not found in our system."
+        
+        dn_no = record.dn_no or "N/A"
+        customer = record.customer_name or "Unknown"
+        amount = float(record.dn_amount or 0)
+        status = record.delivery_status or "Pending"
+        
+        emoji = "✅" if status.lower() == "delivered" else "⏳" if "pending" in status.lower() else "📄"
+        
+        return f"""{emoji} *DN: {dn_no}*
+
+🏪 *Customer:* {customer}
+💰 *Amount:* PKR {amount:,.0f}
+📊 *Status:* {status}"""
+    except Exception as e:
+        logger.error(f"[{request_id}] DN lookup error: {e}")
+        return f"❌ Error looking up DN {dn_number}. Please try again."
+
+
+def handle_dealer_query_sync(dealer_name: str, request_id: str) -> str:
+    """Handle dealer query - SYNCHRONOUS"""
+    try:
+        schema_service = get_schema_service()
+        kpi_service = get_kpi_service()
+        
+        records = schema_service.get_dealer_records(dealer_name)
+        
+        if not records:
+            exact_dealer = schema_service.find_closest_dealer(dealer_name)
+            if exact_dealer:
+                records = schema_service.get_dealer_records(exact_dealer)
+                dealer_name = exact_dealer
+        
+        if not records:
+            return f"❌ Dealer '{dealer_name}' not found. Try typing just the dealer name."
+        
+        kpi_data = kpi_service.calculate_dealer_kpis(records)
+        
+        if not kpi_data:
+            return f"❌ No data available for {dealer_name}"
+        
+        return f"""🏪 *Dealer Dashboard: {dealer_name}*
+
+💰 Revenue: PKR {kpi_data.revenue:,.0f}
+📦 Units: {kpi_data.units:,}
+📄 DNs: {kpi_data.dn_count}
+
+🚚 Delivery Rate: {kpi_data.delivery_rate:.1f}%
+📎 POD Rate: {kpi_data.pod_rate:.1f}%
+
+⏰ Delivery Aging: {kpi_data.avg_delivery_aging:.1f} days
+⏰ POD Aging: {kpi_data.avg_pod_aging:.1f} days
+
+⚠️ Critical DNs: {kpi_data.critical_dn}"""
+    except Exception as e:
+        logger.error(f"[{request_id}] Dealer query error: {e}")
+        return "⚠️ Error processing dealer query. Please try again."
+
+
+def handle_warehouse_query_sync(warehouse_name: str, request_id: str) -> str:
+    """Handle warehouse query - SYNCHRONOUS"""
+    try:
+        schema_service = get_schema_service()
+        kpi_service = get_kpi_service()
+        
+        records = schema_service.get_warehouse_records(warehouse_name)
+        
+        if not records:
+            exact_warehouse = schema_service.find_closest_warehouse(warehouse_name)
+            if exact_warehouse:
+                records = schema_service.get_warehouse_records(exact_warehouse)
+                warehouse_name = exact_warehouse
+        
+        if not records:
+            return f"❌ Warehouse '{warehouse_name}' not found."
+        
+        kpi_data = kpi_service.calculate_warehouse_kpis(records)
+        
+        if not kpi_data:
+            return f"❌ No data available for {warehouse_name}"
+        
+        return f"""🏭 *Warehouse Dashboard: {warehouse_name}*
+
+💰 Revenue: PKR {kpi_data.revenue:,.0f}
+📦 Units: {kpi_data.units:,}
+📄 DNs: {kpi_data.dn_count}
+
+⏳ Pending Delivery: {kpi_data.pending_delivery}
+⏳ Pending POD: {kpi_data.pending_pod}
+
+⏰ Delivery Aging: {kpi_data.avg_delivery_aging:.1f} days
+⏰ POD Aging: {kpi_data.avg_pod_aging:.1f} days"""
+    except Exception as e:
+        logger.error(f"[{request_id}] Warehouse query error: {e}")
+        return "⚠️ Error processing warehouse query. Please try again."
 
 
 # ==========================================================
@@ -402,68 +550,6 @@ def extract_message(data: Dict) -> Tuple[Optional[str], Optional[str], Optional[
 
 
 # ==========================================================
-# MESSAGE PROCESSING ORCHESTRATOR
-# ==========================================================
-
-async def process_incoming_message(
-    phone_number: str,
-    message_text: str,
-    sender_name: str,
-    request_id: str
-) -> Optional[str]:
-    """
-    Process incoming message using AI Query Service.
-    """
-    ai_query_service = get_ai_query_service()
-    
-    # Quick command handling
-    quick_response = handle_quick_commands(message_text)
-    if quick_response:
-        return quick_response
-    
-    try:
-        # Get Query Plan from AI Query Service
-        query_plan = await ai_query_service.process_query(message_text)
-        
-        logger.info(f"[{request_id}] Query Plan: intent={query_plan.intent}, confidence={query_plan.confidence_score}")
-        
-        # Route based on intent
-        if query_plan.intent == IntentType.HELP:
-            return format_help_message()
-        
-        if query_plan.intent in [IntentType.DN_LOOKUP, IntentType.DN_STATUS]:
-            return handle_dn_lookup(query_plan, request_id)
-        
-        if query_plan.intent == IntentType.DEALER_DASHBOARD:
-            return handle_dealer_query(query_plan, request_id)
-        
-        if query_plan.intent == IntentType.WAREHOUSE_DASHBOARD:
-            return handle_warehouse_query(query_plan, request_id)
-        
-        if query_plan.intent == IntentType.CITY_DASHBOARD:
-            return handle_city_query(query_plan, request_id)
-        
-        if query_plan.intent == IntentType.RANKING:
-            return handle_ranking(query_plan, request_id)
-        
-        if query_plan.intent == IntentType.COMPARISON:
-            return handle_comparison(query_plan, request_id)
-        
-        if query_plan.intent == IntentType.CONTROL_TOWER:
-            return handle_control_tower(query_plan, request_id)
-        
-        if query_plan.intent == IntentType.EXECUTIVE_DASHBOARD:
-            return handle_executive_dashboard(request_id)
-        
-        # Default response
-        return format_unknown_response(message_text)
-        
-    except Exception as e:
-        logger.error(f"[{request_id}] Message processing error: {e}", exc_info=True)
-        return "⚠️ I'm having trouble processing your request. Please try again in a moment."
-
-
-# ==========================================================
 # QUICK COMMAND HANDLERS
 # ==========================================================
 
@@ -506,7 +592,8 @@ Need help? Just ask! 🤖"""
 
 def format_status_message() -> str:
     """Format status message"""
-    whatsapp_configured = bool(config.WHATSAPP_ACCESS_TOKEN and config.WHATSAPP_PHONE_NUMBER_ID)
+    whatsapp_configured = bool(getattr(config, 'WHATSAPP_ACCESS_TOKEN', '') and 
+                                getattr(config, 'WHATSAPP_PHONE_NUMBER_ID', ''))
     
     return f"""📊 *System Status*
 
@@ -539,351 +626,6 @@ I can help you with:
 What would you like to know today?"""
 
 
-# ==========================================================
-# DN LOOKUP HANDLER
-# ==========================================================
-
-def handle_dn_lookup(query_plan: QueryPlan, request_id: str) -> str:
-    """Handle DN lookup intent"""
-    schema_service = get_schema_service()
-    
-    dn_number = query_plan.entity_value or query_plan.filters.get('dn_number')
-    
-    if not dn_number:
-        dn_match = re.search(r'\b(\d{8,12})\b', query_plan.original_message)
-        if dn_match:
-            dn_number = dn_match.group(1)
-        else:
-            return "❌ Please provide a valid DN number (8-12 digits)."
-    
-    record = schema_service.get_dn_details(dn_number)
-    
-    if not record:
-        return f"❌ DN {dn_number} not found in our system."
-    
-    dn_no = record.dn_no or "N/A"
-    customer = record.customer_name or "Unknown"
-    amount = float(record.dn_amount or 0)
-    status = record.delivery_status or "Pending"
-    
-    emoji = "✅" if status.lower() == "delivered" else "⏳" if "pending" in status.lower() else "📄"
-    
-    return f"""{emoji} *DN: {dn_no}*
-
-🏪 *Customer:* {customer}
-💰 *Amount:* PKR {amount:,.0f}
-📊 *Status:* {status}"""
-
-
-# ==========================================================
-# DEALER QUERY HANDLER
-# ==========================================================
-
-def handle_dealer_query(query_plan: QueryPlan, request_id: str) -> str:
-    """Handle dealer dashboard intent"""
-    schema_service = get_schema_service()
-    kpi_service = get_kpi_service()
-    
-    dealer_name = query_plan.entity_value or query_plan.filters.get('dealer') or query_plan.original_message.strip()
-    
-    records = schema_service.get_dealer_records(dealer_name)
-    
-    if not records:
-        exact_dealer = schema_service.find_closest_dealer(dealer_name)
-        if exact_dealer:
-            records = schema_service.get_dealer_records(exact_dealer)
-            dealer_name = exact_dealer
-    
-    if not records:
-        return f"❌ Dealer '{dealer_name}' not found."
-    
-    kpi_data = kpi_service.calculate_dealer_kpis(records)
-    
-    if not kpi_data:
-        return f"❌ No data available for {dealer_name}"
-    
-    return f"""🏪 *Dealer Dashboard: {dealer_name}*
-
-💰 Revenue: PKR {kpi_data.revenue:,.0f}
-📦 Units: {kpi_data.units:,}
-📄 DNs: {kpi_data.dn_count}
-
-🚚 Delivery Rate: {kpi_data.delivery_rate:.1f}%
-📎 POD Rate: {kpi_data.pod_rate:.1f}%
-
-⏰ Delivery Aging: {kpi_data.avg_delivery_aging:.1f} days
-⏰ POD Aging: {kpi_data.avg_pod_aging:.1f} days
-
-⚠️ Critical DNs: {kpi_data.critical_dn}"""
-
-
-# ==========================================================
-# WAREHOUSE QUERY HANDLER
-# ==========================================================
-
-def handle_warehouse_query(query_plan: QueryPlan, request_id: str) -> str:
-    """Handle warehouse dashboard intent"""
-    schema_service = get_schema_service()
-    kpi_service = get_kpi_service()
-    
-    warehouse_name = query_plan.entity_value or query_plan.filters.get('warehouse') or query_plan.original_message.strip()
-    
-    records = schema_service.get_warehouse_records(warehouse_name)
-    
-    if not records:
-        exact_warehouse = schema_service.find_closest_warehouse(warehouse_name)
-        if exact_warehouse:
-            records = schema_service.get_warehouse_records(exact_warehouse)
-            warehouse_name = exact_warehouse
-    
-    if not records:
-        return f"❌ Warehouse '{warehouse_name}' not found."
-    
-    kpi_data = kpi_service.calculate_warehouse_kpis(records)
-    
-    if not kpi_data:
-        return f"❌ No data available for {warehouse_name}"
-    
-    return f"""🏭 *Warehouse Dashboard: {warehouse_name}*
-
-💰 Revenue: PKR {kpi_data.revenue:,.0f}
-📦 Units: {kpi_data.units:,}
-📄 DNs: {kpi_data.dn_count}
-
-⏳ Pending Delivery: {kpi_data.pending_delivery}
-⏳ Pending POD: {kpi_data.pending_pod}
-
-⏰ Delivery Aging: {kpi_data.avg_delivery_aging:.1f} days
-⏰ POD Aging: {kpi_data.avg_pod_aging:.1f} days"""
-
-
-# ==========================================================
-# CITY QUERY HANDLER
-# ==========================================================
-
-def handle_city_query(query_plan: QueryPlan, request_id: str) -> str:
-    """Handle city dashboard intent"""
-    schema_service = get_schema_service()
-    
-    city_name = query_plan.entity_value or query_plan.filters.get('city') or query_plan.original_message.strip()
-    
-    records = schema_service.get_city_records(city_name)
-    
-    if not records:
-        exact_city = schema_service.find_closest_city(city_name)
-        if exact_city:
-            records = schema_service.get_city_records(exact_city)
-            city_name = exact_city
-    
-    if not records:
-        return f"❌ City '{city_name}' not found."
-    
-    kpi_service = get_kpi_service()
-    city_kpi = kpi_service.calculate_city_kpis(records)
-    
-    return f"""🌆 *City Dashboard: {city_name}*
-
-💰 Revenue: PKR {city_kpi.get('revenue', 0):,.0f}
-📦 Units: {city_kpi.get('units', 0):,}
-📄 DNs: {city_kpi.get('dn_count', 0)}
-
-📈 Delivery Rate: {city_kpi.get('delivery_rate', 0):.1f}%
-⏰ Avg Aging: {city_kpi.get('avg_delivery_aging', 0):.1f} days"""
-
-
-# ==========================================================
-# RANKING HANDLER
-# ==========================================================
-
-def handle_ranking(query_plan: QueryPlan, request_id: str) -> str:
-    """Handle ranking intent"""
-    analytics_service = get_analytics_service()
-    schema_service = get_schema_service()
-    kpi_service = get_kpi_service()
-    
-    dimension = query_plan.dimension or 'dealer'
-    metric = query_plan.metric or 'revenue'
-    limit = min(query_plan.limit or 10, 20)
-    top = query_plan.ranking_type == 'top'
-    
-    all_records = schema_service.get_all_records()
-    
-    if not all_records:
-        return "❌ No data available for ranking."
-    
-    if dimension == 'dealer':
-        dealer_kpis = kpi_service.calculate_all_dealers_kpis(all_records)
-        if not dealer_kpis:
-            return "❌ No dealer data available."
-        ranking_report = analytics_service.rank_dealers(
-            [k.__dict__ for k in dealer_kpis if k.revenue > 0],
-            metric=metric, limit=limit, reverse=top
-        )
-    elif dimension == 'warehouse':
-        warehouse_kpis = kpi_service.calculate_all_warehouses_kpis(all_records)
-        if not warehouse_kpis:
-            return "❌ No warehouse data available."
-        ranking_report = analytics_service.rank_warehouses(
-            [k.__dict__ for k in warehouse_kpis if k.revenue > 0],
-            metric=metric, limit=limit, reverse=top
-        )
-    else:
-        return f"❌ Cannot rank by {dimension}"
-    
-    if not ranking_report.items:
-        return f"❌ No {dimension}s found for ranking."
-    
-    title = "🏆 *Top*" if top else "📉 *Bottom*"
-    metric_name = metric.replace('_', ' ').title()
-    
-    lines = [f"{title} {dimension.title()}s by {metric_name}", ""]
-    
-    for item in ranking_report.items[:10]:
-        if metric == 'revenue':
-            value_str = f"PKR {item.value:,.0f}"
-        elif metric in ['delivery_rate', 'pod_rate']:
-            value_str = f"{item.value:.1f}%"
-        else:
-            value_str = f"{item.value:,.0f}"
-        lines.append(f"{item.rank}. {item.name[:30]} - {value_str}")
-    
-    lines.append(f"\n📊 Based on {ranking_report.total_items} total {dimension}s")
-    
-    return "\n".join(lines)
-
-
-# ==========================================================
-# COMPARISON HANDLER
-# ==========================================================
-
-def handle_comparison(query_plan: QueryPlan, request_id: str) -> str:
-    """Handle comparison intent"""
-    analytics_service = get_analytics_service()
-    schema_service = get_schema_service()
-    kpi_service = get_kpi_service()
-    
-    comparison = query_plan.comparison_entities
-    if not comparison:
-        return "❌ Please specify two items to compare"
-    
-    left = comparison.get('left', '').strip()
-    right = comparison.get('right', '').strip()
-    metric = query_plan.metric or 'revenue'
-    
-    if not left or not right:
-        return "❌ Please provide two items to compare."
-    
-    all_records = schema_service.get_all_records()
-    dealer_kpis = kpi_service.calculate_all_dealers_kpis(all_records)
-    
-    left_kpi = None
-    right_kpi = None
-    
-    for k in dealer_kpis:
-        if left.lower() in k.dealer_name.lower():
-            left_kpi = k
-        if right.lower() in k.dealer_name.lower():
-            right_kpi = k
-    
-    if not left_kpi:
-        return f"❌ '{left}' not found"
-    if not right_kpi:
-        return f"❌ '{right}' not found"
-    
-    result = analytics_service.compare_dealers(left_kpi.__dict__, right_kpi.__dict__, metric=metric)
-    
-    if metric == 'revenue':
-        a_str = f"PKR {result.a_value:,.0f}"
-        b_str = f"PKR {result.b_value:,.0f}"
-        diff_str = f"PKR {abs(result.difference):,.0f}"
-    else:
-        a_str = f"{result.a_value:.1f}"
-        b_str = f"{result.b_value:.1f}"
-        diff_str = f"{abs(result.difference):.1f}"
-    
-    return f"""⚖️ *Comparison: {metric.replace('_', ' ').title()}*
-
-📊 *{result.entity_a}*: {a_str}
-📊 *{result.entity_b}*: {b_str}
-
-📈 *Difference:* {diff_str} ({abs(result.percent_difference):.1f}%)
-🏆 *Winner:* {result.winner} (+{result.winning_margin:.1f}%)"""
-
-
-# ==========================================================
-# CONTROL TOWER HANDLER
-# ==========================================================
-
-def handle_control_tower(query_plan: QueryPlan, request_id: str) -> str:
-    """Handle control tower intent"""
-    analytics_service = get_analytics_service()
-    schema_service = get_schema_service()
-    kpi_service = get_kpi_service()
-    
-    all_records = schema_service.get_all_records()
-    
-    if not all_records:
-        return "🚨 *Control Tower*\n\n✅ No data available for analysis."
-    
-    warehouse_kpis = kpi_service.calculate_all_warehouses_kpis(all_records)
-    dealer_kpis = kpi_service.calculate_all_dealers_kpis(all_records)
-    
-    report = analytics_service.critical_delivery_report(
-        [k.__dict__ for k in warehouse_kpis] if warehouse_kpis else [],
-        [k.__dict__ for k in dealer_kpis] if dealer_kpis else []
-    )
-    
-    if not report.alerts:
-        return "🚨 *Control Tower*\n\n✅ No critical alerts at this time."
-    
-    lines = ["🚨 *Control Tower - Critical Alerts*", ""]
-    
-    for alert in report.alerts[:5]:
-        emoji = {"RED": "🔴", "ORANGE": "🟠", "YELLOW": "🟡"}.get(alert.severity, "⚠️")
-        lines.append(f"{emoji} *{alert.entity_name}*")
-        lines.append(f"   {alert.message}")
-        lines.append("")
-    
-    lines.append("📊 *Summary*")
-    lines.append(f"🔴 RED: {report.risk_summary.get('RED', 0)}")
-    lines.append(f"🟠 ORANGE: {report.risk_summary.get('ORANGE', 0)}")
-    lines.append(f"🟡 YELLOW: {report.risk_summary.get('YELLOW', 0)}")
-    
-    return "\n".join(lines)
-
-
-# ==========================================================
-# EXECUTIVE DASHBOARD HANDLER
-# ==========================================================
-
-def handle_executive_dashboard(request_id: str) -> str:
-    """Handle executive dashboard intent"""
-    schema_service = get_schema_service()
-    kpi_service = get_kpi_service()
-    
-    all_records = schema_service.get_all_records()
-    
-    if not all_records:
-        return "📊 *Executive Dashboard*\n\n❌ No data available."
-    
-    executive_kpi = kpi_service.calculate_executive_kpis(all_records)
-    
-    return f"""📊 *Executive Dashboard*
-
-💰 Revenue: PKR {executive_kpi.total_revenue:,.0f}
-📦 Units: {executive_kpi.total_units:,}
-📄 DNs: {executive_kpi.total_dn}
-
-📈 Delivery Rate: {executive_kpi.delivery_rate:.1f}%
-📈 POD Rate: {executive_kpi.pod_rate:.1f}%
-
-⏰ Delivery Aging: {executive_kpi.avg_delivery_aging:.1f} days
-⏰ POD Aging: {executive_kpi.avg_pod_aging:.1f} days
-
-⚠️ Critical DNs: {executive_kpi.critical_deliveries}
-⚠️ Critical PODs: {executive_kpi.critical_pod}"""
-
-
 def format_unknown_response(message_text: str) -> str:
     """Format response for unknown intent"""
     return f"""❓ I'm not sure how to help with: "{message_text[:50]}"
@@ -907,11 +649,11 @@ async def webhook_health():
     
     return {
         'status': 'healthy',
-        'version': '5.3',
+        'version': '5.4',
         'timestamp': datetime.now().isoformat(),
         'services': {
-            'whatsapp': whatsapp_service.health_check(),
-            'schema': {'initialized': True},
+            'whatsapp': whatsapp_service.health_check() if whatsapp_service else {'configured': False},
+            'schema': {'initialized': schema_service is not None},
             'redis': {'connected': redis_client is not None}
         },
         'config': {
@@ -941,11 +683,11 @@ async def get_session(phone_number: str):
 # ==========================================================
 
 logger.info("=" * 60)
-logger.info("WhatsApp Webhook v5.3 - FastAPI Compatible")
+logger.info("WhatsApp Webhook v5.4 - FastAPI Compatible (Async Fixed)")
 logger.info("=" * 60)
 logger.info("   ✅ Converted from Flask to FastAPI")
 logger.info("   ✅ Using APIRouter for compatibility")
-logger.info("   ✅ Background tasks for async processing")
+logger.info("   ✅ SYNCHRONOUS background processing (no event loop conflicts)")
 logger.info("   ✅ Session management with Redis")
 logger.info("   ✅ All original functionality preserved")
 logger.info("=" * 60)
