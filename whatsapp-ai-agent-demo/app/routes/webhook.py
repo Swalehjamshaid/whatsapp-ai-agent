@@ -1,6 +1,6 @@
 """
 WhatsApp Webhook Handler - Complete Production Integration
-Version: 5.1 (Enterprise Grade)
+Version: 5.2 (Enterprise Grade - Enhanced)
 Architecture: webhook.py → AI Query Service → KPI/Analytics Services → WhatsApp Service
 
 100% INTEGRATED with:
@@ -39,7 +39,7 @@ import asyncio
 from datetime import datetime, date, timedelta
 from typing import Dict, Any, Optional, Tuple, List
 from functools import wraps
-from flask import Blueprint, request, jsonify, g
+from flask import Blueprint, request, jsonify, g, current_app
 from loguru import logger
 
 # Import services (100% integration)
@@ -74,6 +74,16 @@ DEDUP_TTL = 86400
 RATE_LIMIT_REQUESTS = 20
 RATE_LIMIT_WINDOW = 60
 
+# Cache TTL from config (with fallback)
+CACHE_TTL = getattr(config, 'CACHE_TTL', 300)
+
+# AI Configuration
+AI_TIMEOUT = getattr(config, 'AI_TIMEOUT', 15)
+AI_MAX_RETRIES = getattr(config, 'AI_MAX_RETRIES', 3)
+
+# Performance targets
+TARGET_RESPONSE_TIME = 8.0  # seconds
+
 
 # ==========================================================
 # HELPER FUNCTIONS
@@ -104,6 +114,71 @@ def get_redis_client():
             logger.warning(f"Redis not available: {e}")
             _redis_client = None
     return _redis_client
+
+
+def get_session_key(phone_number: str) -> str:
+    """Get Redis key for user session"""
+    return f"session:{phone_number}"
+
+
+def get_user_session(phone_number: str) -> Optional[Dict[str, Any]]:
+    """Get user session from Redis"""
+    redis_client = get_redis_client()
+    if not redis_client:
+        return None
+    
+    try:
+        key = get_session_key(phone_number)
+        data = redis_client.get(key)
+        if data:
+            return json.loads(data)
+    except Exception as e:
+        logger.error(f"Session retrieval error: {e}")
+    
+    return None
+
+
+def save_user_session(phone_number: str, session_data: Dict[str, Any]) -> bool:
+    """Save user session to Redis"""
+    redis_client = get_redis_client()
+    if not redis_client:
+        return False
+    
+    try:
+        key = get_session_key(phone_number)
+        redis_client.setex(key, SESSION_TTL, json.dumps(session_data))
+        return True
+    except Exception as e:
+        logger.error(f"Session save error: {e}")
+        return False
+
+
+def update_conversation_history(phone_number: str, user_message: str, bot_response: str) -> None:
+    """Update conversation history in session"""
+    session = get_user_session(phone_number) or {
+        "phone": phone_number,
+        "conversation_id": str(uuid.uuid4()),
+        "history": [],
+        "created_at": datetime.now().isoformat()
+    }
+    
+    session["history"].append({
+        "role": "user",
+        "content": user_message,
+        "timestamp": datetime.now().isoformat()
+    })
+    session["history"].append({
+        "role": "assistant",
+        "content": bot_response,
+        "timestamp": datetime.now().isoformat()
+    })
+    
+    # Keep last 50 messages
+    if len(session["history"]) > 50:
+        session["history"] = session["history"][-50:]
+    
+    session["updated_at"] = datetime.now().isoformat()
+    save_user_session(phone_number, session)
 
 
 # ==========================================================
@@ -159,10 +234,14 @@ def handle_webhook():
         → Validate payload
         → Extract message
         → Check duplicate (Redis)
+        → Get user session
         → Process message via AI Query Service
         → Execute appropriate service
+        → Update conversation history
         → Send response via WhatsApp Service
+        → Log metrics
     """
+    start_time = datetime.now()
     request_id = generate_request_id()
     g.request_id = request_id
     
@@ -218,6 +297,19 @@ def handle_webhook():
             return jsonify({'status': 'ok', 'message': 'duplicate'}), 200
         
         # ====================================================
+        # GET USER SESSION
+        # ====================================================
+        
+        session = get_user_session(phone_number)
+        if not session:
+            session = {
+                "phone": phone_number,
+                "conversation_id": str(uuid.uuid4()),
+                "history": [],
+                "created_at": datetime.now().isoformat()
+            }
+        
+        # ====================================================
         # PROCESS MESSAGE (ORCHESTRATION)
         # ====================================================
         
@@ -225,11 +317,18 @@ def handle_webhook():
             phone_number=phone_number,
             message_text=message_text,
             sender_name=sender_name,
+            session=session,
             request_id=request_id
         )
         
         if not response_text:
             response_text = "I'm sorry, I couldn't process your request. Please try again."
+        
+        # ====================================================
+        # UPDATE CONVERSATION HISTORY
+        # ====================================================
+        
+        update_conversation_history(phone_number, message_text, response_text)
         
         # ====================================================
         # SEND RESPONSE
@@ -244,6 +343,14 @@ def handle_webhook():
         
         if not send_result.get('success'):
             logger.error(f"[{request_id}] Failed to send response: {send_result.get('error')}")
+        
+        # ====================================================
+        # LOG METRICS
+        # ====================================================
+        
+        response_time = (datetime.now() - start_time).total_seconds()
+        if response_time > TARGET_RESPONSE_TIME:
+            logger.warning(f"[{request_id}] Response time {response_time:.2f}s exceeded target {TARGET_RESPONSE_TIME}s")
         
         return jsonify({'status': 'ok', 'message': 'processed'}), 200
         
@@ -341,6 +448,9 @@ def _extract_message(data: Dict) -> Tuple[Optional[str], Optional[str], Optional
                 message_text = interactive.get('button_reply', {}).get('title', '')
             elif interactive.get('type') == 'list_reply':
                 message_text = interactive.get('list_reply', {}).get('title', '')
+        elif message_type == 'button':
+            button = messages.get('button', {})
+            message_text = button.get('text', '')
         
         return phone_number, message_text, message_id, sender_name
         
@@ -374,7 +484,13 @@ def _is_duplicate(message_id: str, request_id: str) -> bool:
 # 5. MESSAGE PROCESSING ORCHESTRATOR (CORE LOGIC)
 # ==========================================================
 
-def _process_incoming_message(phone_number: str, message_text: str, sender_name: str, request_id: str) -> Optional[str]:
+def _process_incoming_message(
+    phone_number: str, 
+    message_text: str, 
+    sender_name: str, 
+    session: Dict[str, Any],
+    request_id: str
+) -> Optional[str]:
     """
     Process incoming message using AI Query Service.
     
@@ -389,7 +505,7 @@ def _process_incoming_message(phone_number: str, message_text: str, sender_name:
     ai_query_service = get_ai_query_service()
     
     # Quick command handling (bypass AI for simple commands)
-    quick_response = _handle_quick_commands(message_text)
+    quick_response = _handle_quick_commands(message_text, session)
     if quick_response:
         return quick_response
     
@@ -398,8 +514,7 @@ def _process_incoming_message(phone_number: str, message_text: str, sender_name:
         # STEP 1: Get Query Plan from AI Query Service
         # ====================================================
         
-        # Run async query planning (will be synchronous in webhook)
-        import asyncio
+        # Use asyncio to run async function
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         query_plan = loop.run_until_complete(ai_query_service.process_query(message_text))
@@ -414,6 +529,11 @@ def _process_incoming_message(phone_number: str, message_text: str, sender_name:
         # Help intent
         if query_plan.intent == IntentType.HELP:
             return _format_help_message()
+        
+        # Clear session intent
+        if query_plan.intent == IntentType.CLEAR:
+            _clear_user_session(phone_number, request_id)
+            return "✨ Conversation cleared! How can I help you today?"
         
         # DN Lookup
         if query_plan.intent in [IntentType.DN_LOOKUP, IntentType.DN_STATUS]:
@@ -461,7 +581,6 @@ def _process_incoming_message(phone_number: str, message_text: str, sender_name:
         
         # Unknown intent - try generic dealer query as fallback
         if query_plan.confidence_score < 0.5:
-            # Try dealer search with the message text
             return _handle_dealer_fallback(message_text, request_id)
         
         # Default response
@@ -472,11 +591,27 @@ def _process_incoming_message(phone_number: str, message_text: str, sender_name:
         return "⚠️ I'm having trouble processing your request. Please try again in a moment."
 
 
+def _clear_user_session(phone_number: str, request_id: str) -> bool:
+    """Clear user session from Redis"""
+    redis_client = get_redis_client()
+    if not redis_client:
+        return False
+    
+    try:
+        key = get_session_key(phone_number)
+        redis_client.delete(key)
+        logger.info(f"[{request_id}] Session cleared for {phone_number}")
+        return True
+    except Exception as e:
+        logger.error(f"[{request_id}] Session clear error: {e}")
+        return False
+
+
 # ==========================================================
 # 6. QUICK COMMAND HANDLERS
 # ==========================================================
 
-def _handle_quick_commands(message_text: str) -> Optional[str]:
+def _handle_quick_commands(message_text: str, session: Dict[str, Any]) -> Optional[str]:
     """Handle simple commands without AI processing"""
     msg_lower = message_text.lower().strip()
     
@@ -488,12 +623,12 @@ def _handle_quick_commands(message_text: str) -> Optional[str]:
     if msg_lower in ['/status', 'status', 'health', 'ping']:
         return _format_status_message()
     
-    # Clear session (handled by session manager)
-    if msg_lower in ['/clear', '/reset', 'clear', 'reset']:
-        return "✨ Conversation cleared! How can I help you today?"
+    # Clear session command
+    if msg_lower in ['/clear', '/reset', 'clear', 'reset', 'clear chat', 'reset chat']:
+        return None  # Will be handled by intent router
     
-    # Welcome/WiFi message
-    if msg_lower in ['hi', 'hello', 'hey', 'start', 'welcome']:
+    # Welcome/Hello messages
+    if msg_lower in ['hi', 'hello', 'hey', 'start', 'welcome', 'good morning', 'good evening']:
         return _format_welcome_message()
     
     return None
@@ -516,26 +651,36 @@ def _format_help_message() -> str:
 🏭 *Warehouse Queries*
 • "Lahore warehouse summary"
 • "Karachi pending PODs"
+• "Warehouse performance report"
 
 📊 *Rankings*
 • "Top 5 dealers by revenue"
-• "Worst performing warehouses"
+• "Top 10 warehouses by delivery rate"
+• "Worst performing dealers"
 
 ⚖️ *Comparisons*
 • "Compare Lahore vs Karachi"
 • "Compare AC vs Refrigerator"
+• "Compare Dealer A vs Dealer B"
 
 🚨 *Control Tower*
 • "Control tower - critical deliveries"
 • "Show me alerts"
+• "Risk report"
 
 📈 *Executive Dashboard*
-• "Show executive dashboard"
+• "Executive dashboard"
+• "Company KPI report"
+• "Overall performance"
+
+🌆 *City Analytics*
+• "Lahore city dashboard"
+• "Karachi performance"
 
 *Commands:*
 • `/help` - This menu
 • `/status` - System status
-• `/clear` - Clear conversation
+• `/clear` - Clear conversation history
 
 *Example:* "Show top 10 dealers by revenue this month"
 
@@ -549,7 +694,8 @@ def _format_status_message() -> str:
         "KPI Service": "✅",
         "Analytics Service": "✅",
         "Schema Service": "✅",
-        "WhatsApp Service": "✅" if get_whatsapp_service().health_check().get('configured') else "❌"
+        "WhatsApp Service": "✅" if get_whatsapp_service().health_check().get('configured') else "❌",
+        "Redis Cache": "✅" if get_redis_client() else "❌"
     }
     
     status_lines = [f"{icon} {name}" for name, icon in services.items()]
@@ -560,6 +706,8 @@ def _format_status_message() -> str:
 
 *Environment:* {getattr(config, 'ENVIRONMENT', 'development')}
 *WhatsApp API:* {getattr(config, 'WHATSAPP_API_VERSION', 'v20.0')}
+*Cache TTL:* {CACHE_TTL}s
+*AI Timeout:* {AI_TIMEOUT}s
 
 All systems operational! 🚀"""
 
@@ -568,16 +716,29 @@ def _format_welcome_message() -> str:
     """Format welcome message"""
     return """👋 *Welcome to Logistics AI Assistant!*
 
-I can help you with:
-• Track deliveries (send DN number)
-• Dealer performance reports
-• Warehouse analytics
+I'm your intelligent logistics companion. I can help you with:
+
+📦 *Delivery Tracking*
+• Send any DN number to track
+
+🏪 *Dealer Analytics*
+• Performance reports
+• Pending deliveries
+• Revenue analysis
+
+🏭 *Warehouse Intelligence*
+• Stock status
+• Delivery SLA
+• POD analysis
+
+📊 *Business Intelligence*
 • Rankings & comparisons
 • Executive dashboards
+• Control tower alerts
 
 📋 Type *Help* to see all commands
 
-What would you like to know today?"""
+What would you like to know today? 🚀"""
 
 
 # ==========================================================
@@ -591,13 +752,18 @@ def _handle_dn_lookup(query_plan: QueryPlan, request_id: str) -> str:
     dn_number = query_plan.entity_value or query_plan.filters.get('dn_number')
     
     if not dn_number:
-        return "❌ Please provide a valid DN number (10+ digits)."
+        # Try to extract from original message
+        dn_match = re.search(r'\b(\d{8,12})\b', query_plan.original_message)
+        if dn_match:
+            dn_number = dn_match.group(1)
+        else:
+            return "❌ Please provide a valid DN number (8-12 digits)."
     
     # Get DN details
     record = schema_service.get_dn_details(dn_number)
     
     if not record:
-        return f"❌ DN {dn_number} not found in our system."
+        return f"❌ DN {dn_number} not found in our system. Please check the number and try again."
     
     # Format response based on intent
     if query_plan.intent == IntentType.DN_STATUS:
@@ -641,7 +807,6 @@ def _format_dn_status(record) -> str:
     # Calculate aging if applicable
     aging_text = ""
     if record.dn_create_date and not record.good_issue_date:
-        from datetime import date
         days = (date.today() - record.dn_create_date).days
         aging_text = f"\n⏰ *Aging:* {days} days"
     
@@ -666,29 +831,30 @@ def _handle_dealer_query(query_plan: QueryPlan, request_id: str) -> str:
     dealer_name = query_plan.entity_value or query_plan.filters.get('dealer')
     
     if not dealer_name:
-        # Try to find dealer from message
         dealer_name = query_plan.original_message.strip()
     
-    # Get dealer records
+    # Get dealer records with date filter
     date_filter = None
     if query_plan.date_range:
-        date_filter = DateFilter(
-            start_date=datetime.fromisoformat(query_plan.date_range['start_date']).date() if query_plan.date_range.get('start_date') else None,
-            end_date=datetime.fromisoformat(query_plan.date_range['end_date']).date() if query_plan.date_range.get('end_date') else None
-        )
+        try:
+            start_date = datetime.fromisoformat(query_plan.date_range['start_date']).date() if query_plan.date_range.get('start_date') else None
+            end_date = datetime.fromisoformat(query_plan.date_range['end_date']).date() if query_plan.date_range.get('end_date') else None
+            if start_date or end_date:
+                date_filter = DateFilter(start_date=start_date, end_date=end_date)
+        except Exception as e:
+            logger.warning(f"Date filter parsing error: {e}")
     
     records = schema_service.get_dealer_records(dealer_name, date_filter)
     
     if not records:
         # Try fuzzy search
-        schema = get_schema_service()
-        exact_dealer = schema.find_closest_dealer(dealer_name)
+        exact_dealer = schema_service.find_closest_dealer(dealer_name)
         if exact_dealer:
             records = schema_service.get_dealer_records(exact_dealer, date_filter)
             dealer_name = exact_dealer
     
     if not records:
-        return f"❌ Dealer '{dealer_name}' not found. Try typing just the dealer name."
+        return f"❌ Dealer '{dealer_name}' not found. Try typing just the dealer name or check spelling."
     
     # Calculate KPIs
     kpi_data = kpi_service.calculate_dealer_kpis(records)
@@ -742,6 +908,8 @@ def _format_dealer_kpi_by_metric(kpi_data, metric: str, dealer_name: str) -> str
         'pod_aging': f"⏰ *POD Aging:* {kpi_data.avg_pod_aging:.1f} days",
         'pending_pod': f"⏳ *Pending POD:* {kpi_data.pod_pending}",
         'pending_delivery': f"⏳ *Pending Delivery:* {kpi_data.pending_dn}",
+        'delivery_rate': f"📈 *Delivery Rate:* {kpi_data.delivery_rate:.1f}%",
+        'pod_rate': f"📊 *POD Rate:* {kpi_data.pod_rate:.1f}%"
     }
     
     response = metric_map.get(metric, f"📊 *{metric.replace('_', ' ').title()}*")
@@ -766,16 +934,16 @@ def _handle_warehouse_query(query_plan: QueryPlan, request_id: str) -> str:
     records = schema_service.get_warehouse_records(warehouse_name)
     
     if not records:
-        # Try fuzzy search
         exact_warehouse = schema_service.find_closest_warehouse(warehouse_name)
         if exact_warehouse:
             records = schema_service.get_warehouse_records(exact_warehouse)
             warehouse_name = exact_warehouse
     
     if not records:
-        return f"❌ Warehouse '{warehouse_name}' not found."
+        available_warehouses = schema_service.get_all_warehouses()[:5]
+        suggestion = f"\n\nAvailable warehouses: {', '.join(available_warehouses)}" if available_warehouses else ""
+        return f"❌ Warehouse '{warehouse_name}' not found.{suggestion}"
     
-    # Calculate KPIs
     kpi_data = kpi_service.calculate_warehouse_kpis(records)
     
     if not kpi_data:
@@ -822,7 +990,6 @@ def _handle_city_query(query_plan: QueryPlan, request_id: str) -> str:
     if not city_name:
         city_name = query_plan.original_message.strip()
     
-    # Get city KPIs
     records = schema_service.get_city_records(city_name)
     
     if not records:
@@ -832,10 +999,15 @@ def _handle_city_query(query_plan: QueryPlan, request_id: str) -> str:
             city_name = exact_city
     
     if not records:
-        return f"❌ City '{city_name}' not found."
+        available_cities = schema_service.get_all_cities()[:5]
+        suggestion = f"\n\nAvailable cities: {', '.join(available_cities)}" if available_cities else ""
+        return f"❌ City '{city_name}' not found.{suggestion}"
     
     kpi_service = get_kpi_service()
     city_kpi = kpi_service.calculate_city_kpis(records)
+    
+    if not city_kpi:
+        return f"❌ No data available for {city_name}"
     
     return f"""🌆 *City Dashboard: {city_name}*
 
@@ -862,33 +1034,39 @@ def _handle_ranking(query_plan: QueryPlan, request_id: str) -> str:
     
     dimension = query_plan.dimension or 'dealer'
     metric = query_plan.metric or 'revenue'
-    limit = query_plan.limit or 10
+    limit = min(query_plan.limit or 10, 20)  # Max 20 items
     top = query_plan.ranking_type == 'top'
     
-    # Get all records
     all_records = schema_service.get_all_records()
+    
+    if not all_records:
+        return "❌ No data available for ranking."
     
     if dimension == 'dealer':
         dealer_kpis = kpi_service.calculate_all_dealers_kpis(all_records)
+        if not dealer_kpis:
+            return "❌ No dealer data available."
         ranking_report = analytics_service.rank_dealers(
-            [k.__dict__ for k in dealer_kpis], 
+            [k.__dict__ for k in dealer_kpis if k.revenue > 0], 
             metric=metric, 
             limit=limit, 
             reverse=top
         )
     elif dimension == 'warehouse':
         warehouse_kpis = kpi_service.calculate_all_warehouses_kpis(all_records)
+        if not warehouse_kpis:
+            return "❌ No warehouse data available."
         ranking_report = analytics_service.rank_warehouses(
-            [k.__dict__ for k in warehouse_kpis],
+            [k.__dict__ for k in warehouse_kpis if k.revenue > 0],
             metric=metric,
             limit=limit,
             reverse=top
         )
     else:
-        return f"❌ Cannot rank by {dimension}"
+        return f"❌ Cannot rank by {dimension}. Available dimensions: dealer, warehouse"
     
     if not ranking_report.items:
-        return f"❌ No {dimension}s found for ranking."
+        return f"❌ No {dimension}s found for ranking by {metric}."
     
     return _format_ranking_response(ranking_report, top, dimension, metric)
 
@@ -906,6 +1084,8 @@ def _format_ranking_response(ranking_report: RankingReport, top: bool, dimension
             value_str = f"PKR {item.value:,.0f}"
         elif metric in ['delivery_rate', 'pod_rate']:
             value_str = f"{item.value:.1f}%"
+        elif metric in ['delivery_aging', 'pod_aging']:
+            value_str = f"{item.value:.1f} days"
         else:
             value_str = f"{item.value:,.0f}"
         
@@ -931,9 +1111,12 @@ def _handle_comparison(query_plan: QueryPlan, request_id: str) -> str:
     if not comparison:
         return "❌ Please specify two items to compare (e.g., 'Compare Lahore vs Karachi')"
     
-    left = comparison.get('left')
-    right = comparison.get('right')
+    left = comparison.get('left', '').strip()
+    right = comparison.get('right', '').strip()
     metric = query_plan.metric or 'revenue'
+    
+    if not left or not right:
+        return "❌ Please provide two items to compare."
     
     all_records = schema_service.get_all_records()
     dealer_kpis = kpi_service.calculate_all_dealers_kpis(all_records)
@@ -949,9 +1132,9 @@ def _handle_comparison(query_plan: QueryPlan, request_id: str) -> str:
             right_kpi = k
     
     if not left_kpi:
-        return f"❌ '{left}' not found"
+        return f"❌ '{left}' not found. Please check the spelling."
     if not right_kpi:
-        return f"❌ '{right}' not found"
+        return f"❌ '{right}' not found. Please check the spelling."
     
     result = analytics_service.compare_dealers(
         left_kpi.__dict__, 
@@ -970,6 +1153,10 @@ def _format_comparison_response(result, metric: str) -> str:
         a_str = f"PKR {result.a_value:,.0f}"
         b_str = f"PKR {result.b_value:,.0f}"
         diff_str = f"PKR {abs(result.difference):,.0f}"
+    elif metric in ['delivery_rate', 'pod_rate']:
+        a_str = f"{result.a_value:.1f}%"
+        b_str = f"{result.b_value:.1f}%"
+        diff_str = f"{abs(result.difference):.1f}%"
     else:
         a_str = f"{result.a_value:.1f}" if isinstance(result.a_value, float) else f"{result.a_value}"
         b_str = f"{result.b_value:.1f}" if isinstance(result.b_value, float) else f"{result.b_value}"
@@ -995,12 +1182,15 @@ def _handle_control_tower(query_plan: QueryPlan, request_id: str) -> str:
     kpi_service = get_kpi_service()
     
     all_records = schema_service.get_all_records()
+    
+    if not all_records:
+        return "🚨 *Control Tower*\n\n✅ No data available for analysis."
+    
     warehouse_kpis = kpi_service.calculate_all_warehouses_kpis(all_records)
     dealer_kpis = kpi_service.calculate_all_dealers_kpis(all_records)
     
-    # Convert to dicts for analytics service
-    warehouse_dicts = [k.__dict__ for k in warehouse_kpis]
-    dealer_dicts = [k.__dict__ for k in dealer_kpis]
+    warehouse_dicts = [k.__dict__ for k in warehouse_kpis] if warehouse_kpis else []
+    dealer_dicts = [k.__dict__ for k in dealer_kpis] if dealer_kpis else []
     
     report = analytics_service.critical_delivery_report(warehouse_dicts, dealer_dicts)
     
@@ -1014,7 +1204,6 @@ def _format_control_tower_response(report: ControlTowerReport) -> str:
     """Format control tower response"""
     lines = ["🚨 *Control Tower - Critical Alerts*", ""]
     
-    # Show top 5 alerts
     for alert in report.alerts[:5]:
         severity_emoji = {
             "RED": "🔴",
@@ -1046,9 +1235,12 @@ def _handle_executive_dashboard(request_id: str) -> str:
     """Handle executive dashboard intent"""
     schema_service = get_schema_service()
     kpi_service = get_kpi_service()
-    analytics_service = get_analytics_service()
     
     all_records = schema_service.get_all_records()
+    
+    if not all_records:
+        return "📊 *Executive Dashboard*\n\n❌ No data available for executive dashboard."
+    
     executive_kpi = kpi_service.calculate_executive_kpis(all_records)
     
     # Get top performers
@@ -1063,7 +1255,16 @@ def _handle_executive_dashboard(request_id: str) -> str:
 
 def _format_executive_dashboard(executive_kpi, top_dealer, top_warehouse) -> str:
     """Format executive dashboard response"""
-    health_emoji = "🟢" if executive_kpi.health_score > 70 else "🟡" if executive_kpi.health_score > 50 else "🔴"
+    # Calculate health score if not already present
+    if not hasattr(executive_kpi, 'health_score'):
+        delivery_score = executive_kpi.delivery_rate
+        pod_score = executive_kpi.pod_rate
+        aging_penalty = max(0, 100 - (executive_kpi.avg_delivery_aging * 5))
+        health_score = (delivery_score * 0.4 + pod_score * 0.4 + aging_penalty * 0.2)
+    else:
+        health_score = executive_kpi.health_score
+    
+    health_emoji = "🟢" if health_score > 70 else "🟡" if health_score > 50 else "🔴"
     
     return f"""📊 *Executive Dashboard* {health_emoji}
 
@@ -1088,7 +1289,7 @@ def _format_executive_dashboard(executive_kpi, top_dealer, top_warehouse) -> str
 • Dealer: {top_dealer.dealer_name if top_dealer else 'N/A'}
 • Warehouse: {top_warehouse.warehouse_name if top_warehouse else 'N/A'}
 
-📊 *Health Score:* {executive_kpi.health_score:.1f}/100"""
+📊 *Health Score:* {health_score:.1f}/100"""
 
 
 # ==========================================================
@@ -1100,12 +1301,10 @@ def _handle_dealer_fallback(message_text: str, request_id: str) -> str:
     schema_service = get_schema_service()
     kpi_service = get_kpi_service()
     
-    # Try to find dealer by name
     dealer_name = message_text.strip()
     records = schema_service.get_dealer_records(dealer_name)
     
     if not records:
-        # Try fuzzy search
         exact_dealer = schema_service.find_closest_dealer(dealer_name)
         if exact_dealer:
             records = schema_service.get_dealer_records(exact_dealer)
@@ -1118,26 +1317,51 @@ def _handle_dealer_fallback(message_text: str, request_id: str) -> str:
     
     return f"""❌ I couldn't understand: "{message_text[:50]}"
 
-📋 Try:
-• Send a DN number (10+ digits)
-• Type a dealer name
-• Type "Help" for all commands"""
+📋 Try these examples:
+• Send a DN number (8-12 digits)
+• Type a dealer name (e.g., "ABC Traders")
+• Type "Help" for all commands
+• Type "Status" for system status"""
 
 
 def _handle_kpi_report(query_plan: QueryPlan, request_id: str) -> str:
     """Handle KPI report intent"""
-    # Route to executive dashboard for now
     return _handle_executive_dashboard(request_id)
 
 
 def _handle_trend(query_plan: QueryPlan, request_id: str) -> str:
     """Handle trend analysis intent"""
-    return "📈 Trend analysis coming soon! For now, try 'Executive Dashboard' for current metrics."
+    metric = query_plan.trend_metric or 'revenue'
+    period = query_plan.trend_period or 'monthly'
+    
+    return f"""📈 *Trend Analysis*
+
+Trend analysis for {metric} ({period}) is coming soon!
+
+In the meantime, you can:
+• Check Executive Dashboard for current metrics
+• Use rankings to see top performers
+• Ask for specific dealer performance
+
+Would you like to try something else?"""
 
 
 def _handle_root_cause(query_plan: QueryPlan, request_id: str) -> str:
     """Handle root cause analysis intent"""
-    return "🔍 Root cause analysis coming soon! For now, check Control Tower for critical alerts."
+    target = query_plan.root_cause_target or 'delivery delays'
+    
+    return f"""🔍 *Root Cause Analysis*
+
+Analyzing root causes for {target}...
+
+📊 Key findings will be available in the next update.
+
+Current recommendations:
+• Check Control Tower for critical alerts
+• Review warehouse performance reports
+• Analyze dealer-specific metrics
+
+Want to investigate a specific area?"""
 
 
 def _format_unknown_response(message_text: str) -> str:
@@ -1150,7 +1374,7 @@ def _format_unknown_response(message_text: str) -> str:
 • "Top 10 dealers by revenue"
 • Send a DN number to track
 
-What would you like to know?"""
+What would you like to know? 🤖"""
 
 
 # ==========================================================
@@ -1162,17 +1386,57 @@ def health_check():
     """Health check endpoint for monitoring"""
     whatsapp_service = get_whatsapp_service()
     schema_service = get_schema_service()
+    redis_client = get_redis_client()
     
     return jsonify({
         'status': 'healthy',
+        'version': '5.2',
         'timestamp': datetime.now().isoformat(),
         'services': {
             'whatsapp': whatsapp_service.health_check(),
             'schema': {'initialized': True},
+            'redis': {'connected': redis_client is not None},
             'cache_stats': schema_service.get_cache_stats()
         },
-        'environment': getattr(config, 'ENVIRONMENT', 'development')
+        'config': {
+            'environment': getattr(config, 'ENVIRONMENT', 'development'),
+            'cache_ttl': CACHE_TTL,
+            'ai_timeout': AI_TIMEOUT,
+            'rate_limit': f"{RATE_LIMIT_REQUESTS}/{RATE_LIMIT_WINDOW}s"
+        }
     })
+
+
+# ==========================================================
+# 17. SESSION MANAGEMENT ENDPOINT
+# ==========================================================
+
+@webhook_bp.route('/webhook/session/<phone_number>', methods=['GET', 'DELETE'])
+def manage_session(phone_number: str):
+    """Manage user session (GET to view, DELETE to clear)"""
+    request_id = generate_request_id()
+    
+    if request.method == 'DELETE':
+        success = _clear_user_session(phone_number, request_id)
+        return jsonify({
+            'success': success,
+            'message': 'Session cleared' if success else 'Session not found'
+        })
+    
+    # GET method
+    session = get_user_session(phone_number)
+    if session:
+        # Remove sensitive/history data for response
+        safe_session = {
+            'phone': session.get('phone'),
+            'conversation_id': session.get('conversation_id'),
+            'created_at': session.get('created_at'),
+            'updated_at': session.get('updated_at'),
+            'history_count': len(session.get('history', []))
+        }
+        return jsonify({'success': True, 'session': safe_session})
+    
+    return jsonify({'success': False, 'message': 'Session not found'}), 404
 
 
 # ==========================================================
@@ -1180,7 +1444,7 @@ def health_check():
 # ==========================================================
 
 logger.info("=" * 60)
-logger.info("WhatsApp Webhook v5.1 - Enterprise Grade")
+logger.info("WhatsApp Webhook v5.2 - Enterprise Grade (Enhanced)")
 logger.info("=" * 60)
 logger.info("")
 logger.info("   INTEGRATED SERVICES:")
@@ -1190,8 +1454,21 @@ logger.info("   ✅ Analytics Service (Business Intelligence)")
 logger.info("   ✅ Schema Service (Database Repository)")
 logger.info("   ✅ WhatsApp Service (Meta API)")
 logger.info("")
+logger.info("   ENHANCEMENTS v5.2:")
+logger.info("   ✅ User Session Management (Redis)")
+logger.info("   ✅ Conversation History Tracking")
+logger.info("   ✅ Enhanced Error Handling")
+logger.info("   ✅ Performance Metrics")
+logger.info("   ✅ Session Management API")
+logger.info("   ✅ Better Fallback Responses")
+logger.info("")
 logger.info("   ORCHESTRATION FLOW:")
-logger.info("   Webhook → AI Query → KPI → Analytics → Response")
+logger.info("   Webhook → Session → AI Query → KPI → Analytics → Response")
+logger.info("")
+logger.info(f"   CONFIGURATION:")
+logger.info(f"   Cache TTL: {CACHE_TTL}s")
+logger.info(f"   AI Timeout: {AI_TIMEOUT}s")
+logger.info(f"   Rate Limit: {RATE_LIMIT_REQUESTS}/{RATE_LIMIT_WINDOW}s")
 logger.info("")
 logger.info("   STATUS: ✅ PRODUCTION READY")
 logger.info("=" * 60)
