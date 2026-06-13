@@ -1,14 +1,17 @@
 # ==========================================================
-# FILE: app/main.py (ENTERPRISE v9.7.0 - CLI FIXED)
+# FILE: app/main.py (ENTERPRISE v10.0.0 - STARTUP DIAGNOSTICS)
 # PROJECT: AI WhatsApp Customer Service Agent
 # ==========================================================
-# IMPROVEMENTS v9.7.0:
-# - ✅ FIXED: CLI command error (ctx.invoke) - removed all CLI decorators
-# - ✅ ADDED: Proper uvicorn entry point
-# - ✅ ADDED: Detailed crash logging with file and line number
-# - ✅ ADDED: Service initialization with try-catch blocks
-# - ✅ ADDED: Startup stage logging (1/10 to 10/10)
-# - ✅ ADDED: Crash diagnostics endpoint
+# IMPROVEMENTS v10.0.0:
+# - ✅ ADDED: Production Startup Diagnostics System
+# - ✅ ADDED: Universal Service Checker with timing
+# - ✅ ADDED: Import diagnostics for all service files
+# - ✅ ADDED: Environment variable validation
+# - ✅ ADDED: Diagnostic endpoint (/diagnostics)
+# - ✅ ADDED: Last error endpoint (/last-error)
+# - ✅ ADDED: Fatal crash handler with detailed logging
+# - ✅ ADDED: Startup summary with service status
+# - ✅ FIXED: CLI command error (ctx.invoke)
 # - ✅ FIXED: CACHE_TTL attribute error
 # - ✅ All original attributes preserved
 # ==========================================================
@@ -45,25 +48,172 @@ from slowapi.errors import RateLimitExceeded
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
 # ==========================================================
-# CRASH DETECTION - WRAP ALL IMPORTS
+# STARTUP DIAGNOSTICS REGISTRY (Improvement #1)
 # ==========================================================
 
-def safe_import(module_name: str, attr_name: str = None):
-    """Safely import a module with crash logging"""
+STARTUP_DIAGNOSTICS = {
+    "startup_time": None,
+    "startup_duration": None,
+    "status": "STARTING",
+    "services": {},
+    "imports": {},
+    "env_vars": {},
+    "errors": [],
+    "stages": []
+}
+
+
+# ==========================================================
+# UNIVERSAL SERVICE CHECKER (Improvement #2)
+# ==========================================================
+
+def diagnose_service(service_name: str, func, *args, **kwargs):
+    """Universal service checker with timing and error capture"""
+    import time
+    
+    start = time.time()
+    stage_data = {
+        "name": service_name,
+        "start_time": datetime.now().isoformat(),
+        "status": "RUNNING"
+    }
+    STARTUP_DIAGNOSTICS["stages"].append(stage_data)
+    
+    try:
+        logger.info(f"🚀 STARTING: {service_name}")
+        
+        result = func(*args, **kwargs)
+        
+        elapsed = round(time.time() - start, 2)
+        
+        STARTUP_DIAGNOSTICS["services"][service_name] = {
+            "status": "SUCCESS",
+            "load_time": elapsed,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        stage_data["status"] = "SUCCESS"
+        stage_data["duration"] = elapsed
+        
+        logger.success(f"✅ {service_name} loaded in {elapsed}s")
+        
+        return result
+        
+    except Exception as e:
+        elapsed = round(time.time() - start, 2)
+        
+        error_data = {
+            "service": service_name,
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "load_time": elapsed,
+            "traceback": traceback.format_exc(),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        STARTUP_DIAGNOSTICS["services"][service_name] = {
+            "status": "FAILED",
+            "load_time": elapsed,
+            "error": str(e),
+            "error_type": type(e).__name__
+        }
+        
+        STARTUP_DIAGNOSTICS["errors"].append(error_data)
+        
+        stage_data["status"] = "FAILED"
+        stage_data["duration"] = elapsed
+        stage_data["error"] = str(e)
+        
+        logger.error(f"❌ {service_name} FAILED after {elapsed}s")
+        logger.error(f"   Error: {str(e)}")
+        logger.error(f"   Traceback: {traceback.format_exc()}")
+        
+        raise
+
+
+# ==========================================================
+# IMPORT DIAGNOSTICS (Improvement #3)
+# ==========================================================
+
+def diagnose_import(module_name: str, attr_name: str = None):
+    """Diagnose import with detailed logging"""
     try:
         if attr_name:
             module = __import__(module_name, fromlist=[attr_name])
-            return getattr(module, attr_name)
+            result = getattr(module, attr_name)
         else:
-            return __import__(module_name)
+            result = __import__(module_name)
+        
+        STARTUP_DIAGNOSTICS["imports"][module_name] = {
+            "status": "IMPORT_OK",
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        logger.success(f"✅ Import OK: {module_name}")
+        
+        return result
+        
     except Exception as e:
-        logger.error(f"❌ CRASH DETECTED: Failed to import {module_name}.{attr_name if attr_name else ''}")
+        error_data = {
+            "module": module_name,
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "traceback": traceback.format_exc()
+        }
+        
+        STARTUP_DIAGNOSTICS["imports"][module_name] = {
+            "status": "IMPORT_FAILED",
+            "error": str(e),
+            "error_type": type(e).__name__
+        }
+        
+        STARTUP_DIAGNOSTICS["errors"].append(error_data)
+        
+        logger.error(f"❌ Import Failed: {module_name}")
         logger.error(f"   Error: {str(e)}")
-        logger.error(f"   Traceback: {traceback.format_exc()}")
+        logger.error(f"   Location: {traceback.extract_tb(e.__traceback__)[-1].filename}:{traceback.extract_tb(e.__traceback__)[-1].lineno}")
+        
         raise
 
+
 # ==========================================================
-# DATABASE IMPORTS (with crash logging)
+# SERVICE FILES TO DIAGNOSE (Improvement #4)
+# ==========================================================
+
+SERVICE_FILES = [
+    "app.services.ai_provider_service",
+    "app.services.ai_query_service",
+    "app.services.analytics_service",
+    "app.services.kpi_service",
+    "app.services.logistics_query_service",
+    "app.services.schema_service",
+    "app.services.whatsapp_service",
+    "app.routes.webhook"
+]
+
+# ==========================================================
+# REQUIRED ENVIRONMENT VARIABLES (Improvement #5)
+# ==========================================================
+
+REQUIRED_ENVS = [
+    "DATABASE_URL",
+    "GROQ_API_KEY",
+    "WHATSAPP_ACCESS_TOKEN",
+    "WHATSAPP_PHONE_NUMBER_ID",
+    "WHATSAPP_VERIFY_TOKEN"
+]
+
+OPTIONAL_ENVS = [
+    "OPENAI_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "REDIS_URL"
+]
+
+
+# ==========================================================
+# DATABASE IMPORTS (with diagnostics)
 # ==========================================================
 
 try:
@@ -76,8 +226,12 @@ try:
         check_database_connection,
         get_database_health
     )
+    STARTUP_DIAGNOSTICS["imports"]["app.database"] = {"status": "IMPORT_OK"}
     logger.info("✅ Database imports successful")
 except Exception as e:
+    error_data = {"module": "app.database", "error": str(e), "traceback": traceback.format_exc()}
+    STARTUP_DIAGNOSTICS["errors"].append(error_data)
+    STARTUP_DIAGNOSTICS["imports"]["app.database"] = {"status": "IMPORT_FAILED", "error": str(e)}
     logger.error(f"❌ CRASH: Database imports failed at: {traceback.extract_tb(e.__traceback__)[-1].filename}:{traceback.extract_tb(e.__traceback__)[-1].lineno}")
     logger.error(f"   Error: {str(e)}")
     raise
@@ -88,24 +242,36 @@ try:
         get_schema_info,
         APP_SCHEMA_VERSION
     )
+    STARTUP_DIAGNOSTICS["imports"]["app.services.schema_service"] = {"status": "IMPORT_OK"}
     logger.info("✅ Schema service imports successful")
 except Exception as e:
+    error_data = {"module": "app.services.schema_service", "error": str(e), "traceback": traceback.format_exc()}
+    STARTUP_DIAGNOSTICS["errors"].append(error_data)
+    STARTUP_DIAGNOSTICS["imports"]["app.services.schema_service"] = {"status": "IMPORT_FAILED", "error": str(e)}
     logger.error(f"❌ CRASH: Schema service imports failed at: {traceback.extract_tb(e.__traceback__)[-1].filename}:{traceback.extract_tb(e.__traceback__)[-1].lineno}")
     logger.error(f"   Error: {str(e)}")
     raise
 
 try:
     from app.services.whatsapp_service import get_whatsapp_service
+    STARTUP_DIAGNOSTICS["imports"]["app.services.whatsapp_service"] = {"status": "IMPORT_OK"}
     logger.info("✅ WhatsApp service imports successful")
 except Exception as e:
+    error_data = {"module": "app.services.whatsapp_service", "error": str(e), "traceback": traceback.format_exc()}
+    STARTUP_DIAGNOSTICS["errors"].append(error_data)
+    STARTUP_DIAGNOSTICS["imports"]["app.services.whatsapp_service"] = {"status": "IMPORT_FAILED", "error": str(e)}
     logger.error(f"❌ CRASH: WhatsApp service imports failed at: {traceback.extract_tb(e.__traceback__)[-1].filename}:{traceback.extract_tb(e.__traceback__)[-1].lineno}")
     logger.error(f"   Error: {str(e)}")
     raise
 
 try:
     from app.config import config
+    STARTUP_DIAGNOSTICS["imports"]["app.config"] = {"status": "IMPORT_OK"}
     logger.info("✅ Config imports successful")
 except Exception as e:
+    error_data = {"module": "app.config", "error": str(e), "traceback": traceback.format_exc()}
+    STARTUP_DIAGNOSTICS["errors"].append(error_data)
+    STARTUP_DIAGNOSTICS["imports"]["app.config"] = {"status": "IMPORT_FAILED", "error": str(e)}
     logger.error(f"❌ CRASH: Config imports failed at: {traceback.extract_tb(e.__traceback__)[-1].filename}:{traceback.extract_tb(e.__traceback__)[-1].lineno}")
     logger.error(f"   Error: {str(e)}")
     raise
@@ -118,7 +284,7 @@ CACHE_TTL_SESSION = getattr(config, 'CACHE_TTL_SESSION', 1800)
 CACHE_ENABLED = getattr(config, 'CACHE_ENABLED', True)
 
 # ==========================================================
-# MODEL IMPORTS (with crash logging)
+# MODEL IMPORTS (with diagnostics)
 # ==========================================================
 
 try:
@@ -129,8 +295,12 @@ try:
         AIResponseLog,
         DeliveryReport
     )
+    STARTUP_DIAGNOSTICS["imports"]["app.models"] = {"status": "IMPORT_OK"}
     logger.info("✅ Model imports successful")
 except Exception as e:
+    error_data = {"module": "app.models", "error": str(e), "traceback": traceback.format_exc()}
+    STARTUP_DIAGNOSTICS["errors"].append(error_data)
+    STARTUP_DIAGNOSTICS["imports"]["app.models"] = {"status": "IMPORT_FAILED", "error": str(e)}
     logger.error(f"❌ CRASH: Model imports failed at: {traceback.extract_tb(e.__traceback__)[-1].filename}:{traceback.extract_tb(e.__traceback__)[-1].lineno}")
     logger.error(f"   Error: {str(e)}")
     raise
@@ -145,13 +315,16 @@ WEBHOOK_ERROR = None
 try:
     from app.routes.webhook import router as webhook_router
     WEBHOOK_AVAILABLE = True
+    STARTUP_DIAGNOSTICS["imports"]["app.routes.webhook"] = {"status": "IMPORT_OK"}
     logger.info("✅ Webhook router (FastAPI) imported successfully")
 except ImportError as e:
     WEBHOOK_ERROR = f"ImportError: {e}"
+    STARTUP_DIAGNOSTICS["imports"]["app.routes.webhook"] = {"status": "IMPORT_FAILED", "error": str(e)}
     logger.error(f"❌ CRASH: Webhook router import failed: {e}")
     logger.error(f"   Location: {traceback.extract_tb(e.__traceback__)[-1].filename}:{traceback.extract_tb(e.__traceback__)[-1].lineno}")
 except Exception as e:
     WEBHOOK_ERROR = f"Exception: {e}"
+    STARTUP_DIAGNOSTICS["imports"]["app.routes.webhook"] = {"status": "IMPORT_FAILED", "error": str(e)}
     logger.error(f"❌ CRASH: Webhook router import error: {e}")
     logger.error(f"   Location: {traceback.extract_tb(e.__traceback__)[-1].filename}:{traceback.extract_tb(e.__traceback__)[-1].lineno}")
 
@@ -171,6 +344,7 @@ try:
         health_check as ai_health_check
     )
     AI_QUERY_SERVICE_AVAILABLE = True
+    STARTUP_DIAGNOSTICS["imports"]["app.services.ai_query_service"] = {"status": "IMPORT_OK"}
     try:
         health = ai_health_check()
         AI_QUERY_SERVICE_VERSION = health.get("version", "52.1")
@@ -180,12 +354,45 @@ try:
         logger.info("✅ AI Query Service imported successfully")
 except ImportError as e:
     AI_QUERY_SERVICE_ERROR = f"ImportError: {e}"
+    STARTUP_DIAGNOSTICS["imports"]["app.services.ai_query_service"] = {"status": "IMPORT_FAILED", "error": str(e)}
     logger.error(f"❌ CRASH: AI Query Service import failed: {e}")
     logger.error(f"   Location: {traceback.extract_tb(e.__traceback__)[-1].filename}:{traceback.extract_tb(e.__traceback__)[-1].lineno}")
 except Exception as e:
     AI_QUERY_SERVICE_ERROR = f"Exception: {e}"
+    STARTUP_DIAGNOSTICS["imports"]["app.services.ai_query_service"] = {"status": "IMPORT_FAILED", "error": str(e)}
     logger.error(f"❌ CRASH: AI Query Service import error: {e}")
     logger.error(f"   Location: {traceback.extract_tb(e.__traceback__)[-1].filename}:{traceback.extract_tb(e.__traceback__)[-1].lineno}")
+
+
+# ==========================================================
+# ENVIRONMENT VARIABLE DIAGNOSTICS (Improvement #5)
+# ==========================================================
+
+def diagnose_environment_variables():
+    """Check all required and optional environment variables"""
+    logger.info("🔍 Diagnosing Environment Variables...")
+    
+    # Check required envs
+    for env in REQUIRED_ENVS:
+        value = os.getenv(env)
+        if value:
+            STARTUP_DIAGNOSTICS["env_vars"][env] = {"status": "SET", "value": "***HIDDEN***"}
+            logger.info(f"   ✅ {env}: SET")
+        else:
+            STARTUP_DIAGNOSTICS["env_vars"][env] = {"status": "MISSING"}
+            error_data = {"env": env, "error": "Missing required environment variable"}
+            STARTUP_DIAGNOSTICS["errors"].append(error_data)
+            logger.error(f"   ❌ {env}: MISSING")
+    
+    # Check optional envs
+    for env in OPTIONAL_ENVS:
+        value = os.getenv(env)
+        if value:
+            STARTUP_DIAGNOSTICS["env_vars"][env] = {"status": "SET", "value": "***HIDDEN***"}
+            logger.info(f"   ✅ {env}: SET (optional)")
+        else:
+            STARTUP_DIAGNOSTICS["env_vars"][env] = {"status": "NOT_SET"}
+            logger.warning(f"   ⚠️ {env}: NOT SET (optional)")
 
 
 # ==========================================================
@@ -285,7 +492,7 @@ class ServiceRegistry:
 
 
 # ==========================================================
-# LAZY ROUTER LOADING (with crash detection)
+# LAZY ROUTER LOADING (with diagnostics)
 # ==========================================================
 
 def load_routers(app: FastAPI):
@@ -403,7 +610,7 @@ def validate_service_methods(service, required_methods: List[str], service_name:
 
 
 # ==========================================================
-# AI QUERY SERVICE INITIALIZATION (with crash detection)
+# AI QUERY SERVICE INITIALIZATION (with diagnostics)
 # ==========================================================
 
 def initialize_ai_query_services() -> Tuple[bool, Optional[Any], Dict[str, Any]]:
@@ -655,187 +862,266 @@ class StartupService:
 
 
 # ==========================================================
-# LIFESPAN HANDLER (with crash detection stages)
+# LIFESPAN HANDLER (with fatal crash handler - Improvement #10)
 # ==========================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    STARTUP_DIAGNOSTICS["startup_time"] = datetime.now().isoformat()
     start_time = time.time()
     
-    logger.info("=" * 80)
-    logger.info("🤖 AI WHATSAPP AGENT STARTING v9.7.0")
-    logger.info("=" * 80)
-    
-    # ==========================================================
-    # STAGE 1/10 - Cache Configuration
-    # ==========================================================
-    logger.info("📍 STAGE 1/10: Cache Configuration")
     try:
-        logger.info(f"   CACHE_TTL: {CACHE_TTL}s")
-        logger.info(f"   CACHE_TTL_SESSION: {CACHE_TTL_SESSION}s")
-        logger.info(f"   CACHE_ENABLED: {CACHE_ENABLED}")
-        logger.info("   ✅ Cache configuration loaded")
-    except Exception as e:
-        logger.error(f"   ❌ CRASH at STAGE 1: {e}")
-        logger.error(f"   Location: {traceback.extract_tb(e.__traceback__)[-1].filename}:{traceback.extract_tb(e.__traceback__)[-1].lineno}")
-        raise
-    
-    # ==========================================================
-    # STAGE 2/10 - Load Routers
-    # ==========================================================
-    logger.info("📍 STAGE 2/10: Loading Routers")
-    try:
-        load_routers(app)
-        logger.info("   ✅ Routers loaded")
-    except Exception as e:
-        logger.error(f"   ❌ CRASH at STAGE 2: {e}")
-        logger.error(f"   Location: {traceback.extract_tb(e.__traceback__)[-1].filename}:{traceback.extract_tb(e.__traceback__)[-1].lineno}")
-        raise
-    
-    # ==========================================================
-    # STAGE 3/10 - Register Webhook Router
-    # ==========================================================
-    logger.info("📍 STAGE 3/10: Registering Webhook Router")
-    try:
-        if WEBHOOK_AVAILABLE:
-            app.include_router(webhook_router)
-            ServiceRegistry.register_route("webhook_direct", webhook_router)
-            logger.info("   ✅ Webhook router registered directly")
-        else:
-            logger.warning(f"   ⚠️ Webhook router not available: {WEBHOOK_ERROR}")
-    except Exception as e:
-        logger.error(f"   ❌ CRASH at STAGE 3: {e}")
-        logger.error(f"   Location: {traceback.extract_tb(e.__traceback__)[-1].filename}:{traceback.extract_tb(e.__traceback__)[-1].lineno}")
-        raise
-    
-    # ==========================================================
-    # STAGE 4/10 - Validate Environment
-    # ==========================================================
-    logger.info("📍 STAGE 4/10: Validating Environment")
-    try:
-        env_results = StartupService.validate_environment()
-        db_ok = StartupService.validate_database()
-        groq_ok = StartupService.validate_groq()
-        whatsapp_ok = StartupService.validate_whatsapp()
+        logger.info("=" * 80)
+        logger.info("🤖 AI WHATSAPP AGENT STARTING v10.0.0")
+        logger.info("=" * 80)
         
-        logger.info(f"   Database: {'✓' if db_ok else '✗'}")
-        logger.info(f"   GROQ API: {'✓' if groq_ok else '✗'}")
-        logger.info(f"   WhatsApp: {'✓' if whatsapp_ok else '✗'}")
-        logger.info(f"   Environment: {config.ENVIRONMENT}")
-        logger.info(f"   AI Service Import: {'✓' if AI_QUERY_SERVICE_AVAILABLE else '✗'}")
-        logger.info(f"   Webhook Router: {'✓' if WEBHOOK_AVAILABLE else '✗'}")
+        # ==========================================================
+        # STAGE 1/12 - Environment Variables
+        # ==========================================================
+        logger.info("📍 STAGE 1/12: Environment Variables")
+        diagnose_environment_variables()
+        
+        # ==========================================================
+        # STAGE 2/12 - Service Imports
+        # ==========================================================
+        logger.info("📍 STAGE 2/12: Diagnosing Service Imports")
+        for module in SERVICE_FILES:
+            diagnose_import(module)
+        
+        # ==========================================================
+        # STAGE 3/12 - Cache Configuration
+        # ==========================================================
+        logger.info("📍 STAGE 3/12: Cache Configuration")
+        try:
+            logger.info(f"   CACHE_TTL: {CACHE_TTL}s")
+            logger.info(f"   CACHE_TTL_SESSION: {CACHE_TTL_SESSION}s")
+            logger.info(f"   CACHE_ENABLED: {CACHE_ENABLED}")
+            logger.info("   ✅ Cache configuration loaded")
+        except Exception as e:
+            logger.error(f"   ❌ CRASH at STAGE 3: {e}")
+            logger.error(f"   Location: {traceback.extract_tb(e.__traceback__)[-1].filename}:{traceback.extract_tb(e.__traceback__)[-1].lineno}")
+            raise
+        
+        # ==========================================================
+        # STAGE 4/12 - Load Routers (with diagnostics)
+        # ==========================================================
+        logger.info("📍 STAGE 4/12: Loading Routers")
+        diagnose_service("Router Loader", load_routers, app)
+        
+        # ==========================================================
+        # STAGE 5/12 - Register Webhook Router
+        # ==========================================================
+        logger.info("📍 STAGE 5/12: Registering Webhook Router")
+        try:
+            if WEBHOOK_AVAILABLE:
+                app.include_router(webhook_router)
+                ServiceRegistry.register_route("webhook_direct", webhook_router)
+                logger.info("   ✅ Webhook router registered directly")
+            else:
+                logger.warning(f"   ⚠️ Webhook router not available: {WEBHOOK_ERROR}")
+        except Exception as e:
+            logger.error(f"   ❌ CRASH at STAGE 5: {e}")
+            logger.error(f"   Location: {traceback.extract_tb(e.__traceback__)[-1].filename}:{traceback.extract_tb(e.__traceback__)[-1].lineno}")
+            raise
+        
+        # ==========================================================
+        # STAGE 6/12 - Validate Environment
+        # ==========================================================
+        logger.info("📍 STAGE 6/12: Validating Environment")
+        try:
+            env_results = StartupService.validate_environment()
+            db_ok = StartupService.validate_database()
+            groq_ok = StartupService.validate_groq()
+            whatsapp_ok = StartupService.validate_whatsapp()
+            
+            logger.info(f"   Database: {'✓' if db_ok else '✗'}")
+            logger.info(f"   GROQ API: {'✓' if groq_ok else '✗'}")
+            logger.info(f"   WhatsApp: {'✓' if whatsapp_ok else '✗'}")
+            logger.info(f"   Environment: {config.ENVIRONMENT}")
+            logger.info(f"   AI Service Import: {'✓' if AI_QUERY_SERVICE_AVAILABLE else '✗'}")
+            logger.info(f"   Webhook Router: {'✓' if WEBHOOK_AVAILABLE else '✗'}")
+            logger.info(f"   Cache TTL: {CACHE_TTL}s")
+        except Exception as e:
+            logger.error(f"   ❌ CRASH at STAGE 6: {e}")
+            logger.error(f"   Location: {traceback.extract_tb(e.__traceback__)[-1].filename}:{traceback.extract_tb(e.__traceback__)[-1].lineno}")
+            raise
+        
+        # ==========================================================
+        # STAGE 7/12 - Initialize AI Query Service
+        # ==========================================================
+        logger.info("📍 STAGE 7/12: Initializing AI Query Service")
+        try:
+            ai_initialized, ai_service, ai_diagnostics = diagnose_service(
+                "AI Query Service Initialization", 
+                initialize_ai_query_services
+            )
+            
+            if ai_initialized:
+                logger.info("   ✅ AI Query Service initialized successfully")
+                app.state.ai_query_available = True
+                app.state.ai_query_service = ai_service
+            else:
+                logger.error("   ❌ AI Query Service initialization FAILED")
+                logger.error(f"   Error: {ai_diagnostics.get('error', 'Unknown error')}")
+                logger.warning("   ⚠️ App will run in DEGRADED MODE")
+                app.state.ai_query_available = False
+                app.state.ai_query_service = None
+                app.state.ai_query_error = ai_diagnostics.get('error')
+        except Exception as e:
+            logger.error(f"   ❌ CRASH at STAGE 7: {e}")
+            logger.error(f"   Location: {traceback.extract_tb(e.__traceback__)[-1].filename}:{traceback.extract_tb(e.__traceback__)[-1].lineno}")
+            raise
+        
+        # ==========================================================
+        # STAGE 8/12 - Initialize Webhook AI Service
+        # ==========================================================
+        logger.info("📍 STAGE 8/12: Initializing Webhook AI Service")
+        try:
+            webhook_ai_initialized = diagnose_service(
+                "Webhook AI Service",
+                initialize_webhook_ai_service
+            )
+            
+            if webhook_ai_initialized:
+                logger.info("   ✅ Webhook AI service initialized successfully")
+            else:
+                logger.warning("   ⚠️ Webhook AI service initialization failed - fallback mode active")
+        except Exception as e:
+            logger.error(f"   ❌ CRASH at STAGE 8: {e}")
+            logger.error(f"   Location: {traceback.extract_tb(e.__traceback__)[-1].filename}:{traceback.extract_tb(e.__traceback__)[-1].lineno}")
+            raise
+        
+        # ==========================================================
+        # STAGE 9/12 - Create Upload Directory
+        # ==========================================================
+        logger.info("📍 STAGE 9/12: Creating Upload Directory")
+        try:
+            os.makedirs("uploads", exist_ok=True)
+            logger.info("   ✅ Upload directory created")
+        except Exception as e:
+            logger.error(f"   ❌ CRASH at STAGE 9: {e}")
+            logger.error(f"   Location: {traceback.extract_tb(e.__traceback__)[-1].filename}:{traceback.extract_tb(e.__traceback__)[-1].lineno}")
+            raise
+        
+        # ==========================================================
+        # STAGE 10/12 - Initialize Templates
+        # ==========================================================
+        logger.info("📍 STAGE 10/12: Initializing Templates")
+        try:
+            TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
+            os.makedirs(TEMPLATES_DIR, exist_ok=True)
+            logger.info("   ✅ Templates directory ready")
+        except Exception as e:
+            logger.error(f"   ❌ CRASH at STAGE 10: {e}")
+            logger.error(f"   Location: {traceback.extract_tb(e.__traceback__)[-1].filename}:{traceback.extract_tb(e.__traceback__)[-1].lineno}")
+            raise
+        
+        # ==========================================================
+        # STAGE 11/12 - Final Validation
+        # ==========================================================
+        logger.info("📍 STAGE 11/12: Final Validation")
+        try:
+            if not db_ok:
+                logger.warning("   ⚠️ Database connection issues detected")
+            if not groq_ok:
+                logger.warning("   ⚠️ GROQ API not configured - AI features limited")
+            if not whatsapp_ok:
+                logger.warning("   ⚠️ WhatsApp API not configured - webhook may not work")
+        except Exception as e:
+            logger.error(f"   ❌ CRASH at STAGE 11: {e}")
+            logger.error(f"   Location: {traceback.extract_tb(e.__traceback__)[-1].filename}:{traceback.extract_tb(e.__traceback__)[-1].lineno}")
+            raise
+        
+        # ==========================================================
+        # STAGE 12/12 - Startup Complete
+        # ==========================================================
+        startup_duration = time.time() - start_time
+        STARTUP_DIAGNOSTICS["startup_duration"] = startup_duration
+        STARTUP_DIAGNOSTICS["status"] = "COMPLETED"
+        
+        logger.info("📍 STAGE 12/12: Startup Complete")
+        logger.info("=" * 80)
+        logger.info(f"✅ Application startup complete in {startup_duration:.2f}s")
+        logger.info(f"   AI Query Service: {'AVAILABLE' if ai_initialized else 'UNAVAILABLE (Degraded Mode)'}")
+        logger.info(f"   Webhook AI Service: {'AVAILABLE' if webhook_ai_initialized else 'UNAVAILABLE'}")
+        logger.info(f"   Webhook Router: {'AVAILABLE' if WEBHOOK_AVAILABLE else 'UNAVAILABLE'}")
+        logger.info(f"   Webhook Timeout: 30s")
         logger.info(f"   Cache TTL: {CACHE_TTL}s")
-    except Exception as e:
-        logger.error(f"   ❌ CRASH at STAGE 4: {e}")
-        logger.error(f"   Location: {traceback.extract_tb(e.__traceback__)[-1].filename}:{traceback.extract_tb(e.__traceback__)[-1].lineno}")
-        raise
-    
-    # ==========================================================
-    # STAGE 5/10 - Initialize AI Query Service
-    # ==========================================================
-    logger.info("📍 STAGE 5/10: Initializing AI Query Service")
-    try:
-        ai_initialized, ai_service, ai_diagnostics = initialize_ai_query_services()
+        logger.info("=" * 80)
+        logger.info("🚀 APPLICATION STARTED SUCCESSFULLY")
+        logger.info("📡 READY FOR TRAFFIC")
         
-        if ai_initialized:
-            logger.info("   ✅ AI Query Service initialized successfully")
-            app.state.ai_query_available = True
-            app.state.ai_query_service = ai_service
-        else:
-            logger.error("   ❌ AI Query Service initialization FAILED")
-            logger.error(f"   Error: {ai_diagnostics.get('error', 'Unknown error')}")
-            logger.warning("   ⚠️ App will run in DEGRADED MODE")
-            app.state.ai_query_available = False
-            app.state.ai_query_service = None
-            app.state.ai_query_error = ai_diagnostics.get('error')
-    except Exception as e:
-        logger.error(f"   ❌ CRASH at STAGE 5: {e}")
-        logger.error(f"   Location: {traceback.extract_tb(e.__traceback__)[-1].filename}:{traceback.extract_tb(e.__traceback__)[-1].lineno}")
-        raise
-    
-    # ==========================================================
-    # STAGE 6/10 - Initialize Webhook AI Service
-    # ==========================================================
-    logger.info("📍 STAGE 6/10: Initializing Webhook AI Service")
-    try:
-        webhook_ai_initialized = initialize_webhook_ai_service()
+        # ==========================================================
+        # STARTUP SUMMARY (Improvement #9)
+        # ==========================================================
+        logger.info("=" * 80)
+        logger.info("STARTUP DIAGNOSTICS SUMMARY")
+        logger.info("-" * 40)
         
-        if webhook_ai_initialized:
-            logger.info("   ✅ Webhook AI service initialized successfully")
+        # Service imports summary
+        for module, data in STARTUP_DIAGNOSTICS["imports"].items():
+            status_icon = "✅" if data["status"] == "IMPORT_OK" else "❌"
+            logger.info(f"{status_icon} {module}: {data['status']}")
+        
+        logger.info("-" * 40)
+        
+        # Environment variables summary
+        for env, data in STARTUP_DIAGNOSTICS["env_vars"].items():
+            if data["status"] == "SET":
+                logger.info(f"✅ {env}: SET")
+            else:
+                logger.info(f"❌ {env}: {data['status']}")
+        
+        logger.info("-" * 40)
+        
+        # Errors summary
+        if STARTUP_DIAGNOSTICS["errors"]:
+            logger.error(f"❌ Total Errors: {len(STARTUP_DIAGNOSTICS['errors'])}")
+            for error in STARTUP_DIAGNOSTICS["errors"]:
+                if "service" in error:
+                    logger.error(f"   - Service '{error['service']}': {error['error']}")
+                elif "module" in error:
+                    logger.error(f"   - Import '{error['module']}': {error['error']}")
+                elif "env" in error:
+                    logger.error(f"   - Environment '{error['env']}': {error['error']}")
         else:
-            logger.warning("   ⚠️ Webhook AI service initialization failed - fallback mode active")
+            logger.info("✅ No errors detected during startup")
+        
+        logger.info("=" * 80)
+        
+        yield
+        
     except Exception as e:
-        logger.error(f"   ❌ CRASH at STAGE 6: {e}")
-        logger.error(f"   Location: {traceback.extract_tb(e.__traceback__)[-1].filename}:{traceback.extract_tb(e.__traceback__)[-1].lineno}")
+        # ==========================================================
+        # FATAL CRASH HANDLER (Improvement #10)
+        # ==========================================================
+        STARTUP_DIAGNOSTICS["status"] = "FAILED"
+        
+        logger.critical("=" * 80)
+        logger.critical("💥 APPLICATION STARTUP FAILED 💥")
+        logger.critical("=" * 80)
+        logger.critical(f"Error: {str(e)}")
+        logger.critical(f"Error Type: {type(e).__name__}")
+        logger.critical("=" * 80)
+        logger.critical("FULL TRACEBACK:")
+        logger.critical(traceback.format_exc())
+        logger.critical("=" * 80)
+        
+        # Log which file failed
+        tb = traceback.extract_tb(e.__traceback__)[-1]
+        logger.critical(f"CRASH LOCATION: {tb.filename}:{tb.lineno}")
+        logger.critical(f"CRASH FUNCTION: {tb.name}")
+        logger.critical("=" * 80)
+        
         raise
     
-    # ==========================================================
-    # STAGE 7/10 - Create Upload Directory
-    # ==========================================================
-    logger.info("📍 STAGE 7/10: Creating Upload Directory")
-    try:
-        os.makedirs("uploads", exist_ok=True)
-        logger.info("   ✅ Upload directory created")
-    except Exception as e:
-        logger.error(f"   ❌ CRASH at STAGE 7: {e}")
-        logger.error(f"   Location: {traceback.extract_tb(e.__traceback__)[-1].filename}:{traceback.extract_tb(e.__traceback__)[-1].lineno}")
-        raise
-    
-    # ==========================================================
-    # STAGE 8/10 - Initialize Templates
-    # ==========================================================
-    logger.info("📍 STAGE 8/10: Initializing Templates")
-    try:
-        TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
-        os.makedirs(TEMPLATES_DIR, exist_ok=True)
-        logger.info("   ✅ Templates directory ready")
-    except Exception as e:
-        logger.error(f"   ❌ CRASH at STAGE 8: {e}")
-        logger.error(f"   Location: {traceback.extract_tb(e.__traceback__)[-1].filename}:{traceback.extract_tb(e.__traceback__)[-1].lineno}")
-        raise
-    
-    # ==========================================================
-    # STAGE 9/10 - Final Validation
-    # ==========================================================
-    logger.info("📍 STAGE 9/10: Final Validation")
-    try:
-        # Verify critical components
-        if not db_ok:
-            logger.warning("   ⚠️ Database connection issues detected")
-        if not groq_ok:
-            logger.warning("   ⚠️ GROQ API not configured - AI features limited")
-        if not whatsapp_ok:
-            logger.warning("   ⚠️ WhatsApp API not configured - webhook may not work")
-    except Exception as e:
-        logger.error(f"   ❌ CRASH at STAGE 9: {e}")
-        logger.error(f"   Location: {traceback.extract_tb(e.__traceback__)[-1].filename}:{traceback.extract_tb(e.__traceback__)[-1].lineno}")
-        raise
-    
-    # ==========================================================
-    # STAGE 10/10 - Startup Complete
-    # ==========================================================
-    startup_duration = time.time() - start_time
-    logger.info("📍 STAGE 10/10: Startup Complete")
-    logger.info("=" * 80)
-    logger.info(f"✅ Application startup complete in {startup_duration:.2f}s")
-    logger.info(f"   AI Query Service: {'AVAILABLE' if ai_initialized else 'UNAVAILABLE (Degraded Mode)'}")
-    logger.info(f"   Webhook AI Service: {'AVAILABLE' if webhook_ai_initialized else 'UNAVAILABLE'}")
-    logger.info(f"   Webhook Router: {'AVAILABLE' if WEBHOOK_AVAILABLE else 'UNAVAILABLE'}")
-    logger.info(f"   Webhook Timeout: 30s")
-    logger.info(f"   Cache TTL: {CACHE_TTL}s")
-    logger.info("=" * 80)
-    logger.info("🚀 APPLICATION STARTED SUCCESSFULLY")
-    logger.info("📡 READY FOR TRAFFIC")
-    logger.info("=" * 80)
-    
-    yield
-    
-    # Shutdown
-    logger.info("🛑 AI WHATSAPP AGENT SHUTTING DOWN")
-    engine.dispose()
-    dashboard_cache.clear()
-    ServiceRegistry.clear()
-    logger.info("✅ Resources cleaned up")
+    finally:
+        # Shutdown
+        logger.info("🛑 AI WHATSAPP AGENT SHUTTING DOWN")
+        engine.dispose()
+        dashboard_cache.clear()
+        ServiceRegistry.clear()
+        logger.info("✅ Resources cleaned up")
 
 
 # ==========================================================
@@ -845,7 +1131,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AI WhatsApp Logistics Assistant",
     description="Enterprise Logistics AI Platform - WhatsApp Integration",
-    version="9.7.0",
+    version="10.0.0",
     docs_url="/api/docs" if config.ENVIRONMENT != "production" else None,
     redoc_url="/api/redoc" if config.ENVIRONMENT != "production" else None,
     openapi_url="/api/openapi.json" if config.ENVIRONMENT != "production" else None,
@@ -939,29 +1225,44 @@ dashboard_cache = TTLCache(maxsize=100, ttl=CACHE_TTL)
 
 
 # ==========================================================
-# CRASH DIAGNOSTICS ENDPOINT
+# DIAGNOSTICS ENDPOINTS (Improvement #7 & #8)
 # ==========================================================
+
+@app.get("/diagnostics", tags=["Diagnostics"])
+async def get_diagnostics():
+    """Get complete startup diagnostics (Improvement #7)"""
+    return STARTUP_DIAGNOSTICS
+
+
+@app.get("/last-error", tags=["Diagnostics"])
+async def get_last_error():
+    """Get the last error that occurred during startup (Improvement #8)"""
+    if not STARTUP_DIAGNOSTICS["errors"]:
+        return {"status": "NO_ERRORS", "message": "No errors detected during startup"}
+    return STARTUP_DIAGNOSTICS["errors"][-1]
+
 
 @app.get("/crash-diagnostics", tags=["Debug"])
 async def crash_diagnostics():
     """Get detailed crash diagnostics"""
     return {
-        "status": "running",
-        "version": "9.7.0",
-        "startup_stages_completed": True,
+        "status": STARTUP_DIAGNOSTICS["status"],
+        "version": "10.0.0",
+        "startup_time": STARTUP_DIAGNOSTICS["startup_time"],
+        "startup_duration": STARTUP_DIAGNOSTICS["startup_duration"],
         "services_status": {
             "webhook_router": WEBHOOK_AVAILABLE,
             "ai_query_service": AI_QUERY_SERVICE_AVAILABLE,
             "ai_query_initialized": getattr(app.state, 'ai_query_available', False),
-            "webhook_ai_initialized": getattr(app.state, 'ai_query_available', False)
         },
+        "errors_count": len(STARTUP_DIAGNOSTICS["errors"]),
+        "imports_count": len(STARTUP_DIAGNOSTICS["imports"]),
         "config": {
             "environment": config.ENVIRONMENT,
             "cache_ttl": CACHE_TTL,
             "database_configured": bool(config.DATABASE_URL),
             "whatsapp_configured": bool(config.WHATSAPP_ACCESS_TOKEN)
-        },
-        "crash_log": "No crashes detected during current session"
+        }
     }
 
 
@@ -1062,6 +1363,7 @@ async def health():
         "webhook_router_available": WEBHOOK_AVAILABLE,
         "webhook_version": "6.0",
         "cache_ttl": CACHE_TTL,
+        "diagnostics_available": True,
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -1114,18 +1416,17 @@ if __name__ == "__main__":
 # ==========================================================
 
 logger.info("=" * 60)
-logger.info("📡 MAIN APP v9.7.0 - CLI FIXED")
+logger.info("📡 MAIN APP v10.0.0 - STARTUP DIAGNOSTICS")
 logger.info("")
-logger.info("   FIXES IN v9.7.0:")
-logger.info("   ✅ Removed all CLI command decorators (@app.cli.command)")
-logger.info("   ✅ Fixed ctx.invoke error")
-logger.info("   ✅ Added proper uvicorn entry point")
-logger.info("")
-logger.info("   NEW FEATURES:")
-logger.info("   ✅ Crash detection with file and line numbers")
-logger.info("   ✅ Startup stages (1/10 to 10/10)")
-logger.info("   ✅ Crash diagnostics endpoint")
-logger.info("   ✅ Enhanced error logging")
+logger.info("   NEW FEATURES IN v10.0.0:")
+logger.info("   ✅ Production Startup Diagnostics System")
+logger.info("   ✅ Universal Service Checker with timing")
+logger.info("   ✅ Import diagnostics for all service files")
+logger.info("   ✅ Environment variable validation")
+logger.info("   ✅ Diagnostic endpoint (/diagnostics)")
+logger.info("   ✅ Last error endpoint (/last-error)")
+logger.info("   ✅ Fatal crash handler with detailed logging")
+logger.info("   ✅ Startup summary with service status")
 logger.info("")
 logger.info("   ALIGNED WITH:")
 logger.info("   ✅ webhook.py v6.0")
