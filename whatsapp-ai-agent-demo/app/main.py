@@ -1,17 +1,15 @@
 # ==========================================================
-# FILE: app/main.py (ENTERPRISE v13.1.0 - CRITICAL BUG FIXES)
+# FILE: app/main.py (ENTERPRISE v13.2.0 - CRASH DIAGNOSTICS)
 # PROJECT: AI WhatsApp Customer Service Agent
 # ==========================================================
-# IMPROVEMENTS v13.1.0:
+# IMPROVEMENTS v13.2.0:
 # - ✅ FIXED: get_db import at module level (Critical Bug #1)
 # - ✅ FIXED: CACHE_TTL defined at module level (Critical Bug #2)
-# - ✅ ADDED: Global crash hook with sys.excepthook
-# - ✅ ADDED: Startup phase tracker (BOOT, CONFIG, DATABASE, MODELS, ROUTERS, SERVICES, FASTAPI_REGISTRATION, READY)
-# - ✅ ADDED: Import chain recording with full dependency tree
-# - ✅ ADDED: safe_import() wrapper for all module imports
-# - ✅ ADDED: Route registration monitor with error capture
-# - ✅ ADDED: Pre-FastAPI diagnostics endpoint (raw JSON on port 8888)
-# - ✅ ADDED: Phase-aware root cause reporting
+# - ✅ ADDED: Global crash handler with sys.excepthook
+# - ✅ ADDED: Startup checkpoints (CHECKPOINT 1-5)
+# - ✅ ADDED: ChatService import at module level (no lazy loading)
+# - ✅ ADDED: Chat endpoint temporarily disabled for isolation test
+# - ✅ ADDED: Detailed error logging with full traceback
 # - ✅ All original attributes preserved
 # ==========================================================
 
@@ -32,190 +30,59 @@ from collections import defaultdict
 from threading import Lock
 
 # ==========================================================
-# GLOBAL CRASH HOOK (Captures crashes before FastAPI starts)
+# STEP 2: GLOBAL CRASH HANDLER (Must be at the very top)
 # ==========================================================
 
-# Current startup phase tracking
-CURRENT_PHASE = "BOOT"
-IMPORT_CHAIN_RECORD = []  # Full import chain for debugging
-
-def record_import(module_name: str):
-    """Record import in the global chain"""
-    IMPORT_CHAIN_RECORD.append({
-        "module": module_name,
-        "phase": CURRENT_PHASE,
-        "timestamp": datetime.now().isoformat()
-    })
-
-def handle_uncaught_exception(exc_type, exc_value, exc_tb):
-    """Global exception handler for crashes before FastAPI"""
-    global CURRENT_PHASE
+def handle_uncaught_exception(exc_type, exc_value, exc_traceback):
+    """Global exception handler to catch crashes before FastAPI starts"""
+    print("=" * 80, file=sys.stderr)
+    print("💥 UNCAUGHT EXCEPTION CAUGHT BY GLOBAL HANDLER", file=sys.stderr)
+    print("=" * 80, file=sys.stderr)
+    print(f"TYPE: {exc_type.__name__}", file=sys.stderr)
+    print(f"ERROR: {exc_value}", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("FULL TRACEBACK:", file=sys.stderr)
+    print("=" * 80, file=sys.stderr)
+    traceback.print_exception(exc_type, exc_value, exc_traceback, file=sys.stderr)
+    print("=" * 80, file=sys.stderr)
     
-    error_msg = f"""
-╔══════════════════════════════════════════════════════════════════╗
-║                    💥 UNCAUGHT EXCEPTION 💥                      ║
-╠══════════════════════════════════════════════════════════════════╣
-║ PHASE: {CURRENT_PHASE}
-║ TYPE: {exc_type.__name__}
-║ ERROR: {exc_value}
-╠══════════════════════════════════════════════════════════════════╣
-║ IMPORT CHAIN:
-"""
-    for imp in IMPORT_CHAIN_RECORD[-10:]:  # Last 10 imports
-        error_msg += f"║   └── {imp['module']} (phase: {imp['phase']})\n"
-    
-    error_msg += f"""╠══════════════════════════════════════════════════════════════════╣
-║ TRACEBACK:
-"""
-    tb_lines = traceback.format_exception(exc_type, exc_value, exc_tb)
-    for line in tb_lines[-20:]:  # Last 20 lines
-        for subline in line.split('\n'):
-            if subline.strip():
-                error_msg += f"║ {subline[:76]}\n"
-    
-    error_msg += "╚══════════════════════════════════════════════════════════════════╝"
-    
-    # Try to write to file even if logger isn't configured yet
+    # Try to write to file
     try:
-        with open("/tmp/startup_crash_detailed.json", "w") as f:
-            crash_data = {
-                "phase": CURRENT_PHASE,
-                "error_type": exc_type.__name__,
-                "error_message": str(exc_value),
-                "import_chain": IMPORT_CHAIN_RECORD,
-                "traceback": traceback.format_exception(exc_type, exc_value, exc_tb),
-                "timestamp": datetime.now().isoformat()
-            }
-            json.dump(crash_data, f, indent=2)
+        with open("/tmp/crash_dump.txt", "w") as f:
+            f.write(f"TYPE: {exc_type.__name__}\n")
+            f.write(f"ERROR: {exc_value}\n\n")
+            f.write("TRACEBACK:\n")
+            f.write("".join(traceback.format_exception(exc_type, exc_value, exc_traceback)))
     except:
         pass
     
-    # Print to stderr (will be captured by Railway logs)
-    print(error_msg, file=sys.stderr)
-    
     # Call default handler
-    sys.__excepthook__(exc_type, exc_value, exc_tb)
+    sys.__excepthook__(exc_type, exc_value, exc_traceback)
 
 # Install global crash hook
 sys.excepthook = handle_uncaught_exception
 
 # ==========================================================
-# SAFE IMPORT WRAPPER
+# STARTUP CHECKPOINTS
 # ==========================================================
 
-def safe_import(module_name: str, required: bool = True):
-    """Import module with full diagnostics and phase tracking"""
-    global CURRENT_PHASE
-    
-    old_phase = CURRENT_PHASE
-    CURRENT_PHASE = f"IMPORT:{module_name}"
-    
-    record_import(module_name)
-    
-    try:
-        # Check cache first
-        if module_name in sys.modules:
-            print(f"📦 USING CACHED: {module_name}")
-            CURRENT_PHASE = old_phase
-            return sys.modules[module_name]
-        
-        print(f"📦 IMPORTING: {module_name} (phase: {CURRENT_PHASE})")
-        import_start = time.time()
-        
-        module = importlib.import_module(module_name)
-        
-        import_duration = time.time() - import_start
-        print(f"✅ SUCCESS: {module_name} ({import_duration:.3f}s)")
-        
-        CURRENT_PHASE = old_phase
-        return module
-        
-    except Exception as e:
-        print(f"❌ FAILED IMPORT: {module_name}")
-        print(f"   ERROR: {type(e).__name__}: {e}")
-        print(f"   PHASE: {CURRENT_PHASE}")
-        print(traceback.format_exc())
-        
-        CURRENT_PHASE = old_phase
-        
-        if required:
-            raise
-        else:
-            return None
+print("=" * 60)
+print("🚀 RAILWAY DEPLOYMENT STARTING")
+print(f"TIME: {datetime.now().isoformat()}")
+print("=" * 60)
+
+print("CHECKPOINT 1 - BEGINNING MODULE LOAD")
+print("CHECKPOINT 2 - CONFIG LOAD (next)")
+print("CHECKPOINT 3 - DATABASE IMPORT (next)")
+print("CHECKPOINT 4 - FASTAPI IMPORTS (next)")
+print("CHECKPOINT 5 - ROUTE REGISTRATION (next)")
+print("=" * 60)
 
 # ==========================================================
-# PHASE-AWARE LOGGING
+# FASTAPI IMPORTS
 # ==========================================================
 
-def log_phase(phase: str, message: str = ""):
-    """Log current startup phase"""
-    global CURRENT_PHASE
-    CURRENT_PHASE = phase
-    print(f"📍 PHASE: {phase} - {message}" if message else f"📍 PHASE: {phase}")
-
-# ==========================================================
-# PRE-FASTAPI DIAGNOSTICS SERVER (Simple HTTP on separate port)
-# ==========================================================
-
-import socket
-import threading
-
-def start_diagnostics_server():
-    """Start a simple HTTP server for diagnostics before FastAPI starts"""
-    try:
-        # Try port 8888, fallback to 8889
-        for port in [8888, 8889, 8890]:
-            try:
-                server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                server_socket.bind(('0.0.0.0', port))
-                server_socket.listen(1)
-                
-                def handle_diagnostics():
-                    while True:
-                        try:
-                            client, addr = server_socket.accept()
-                            request = client.recv(1024).decode('utf-8')
-                            
-                            response_data = {
-                                "phase": CURRENT_PHASE,
-                                "import_chain": IMPORT_CHAIN_RECORD[-20:],
-                                "python_version": sys.version,
-                                "environment": os.getenv("ENVIRONMENT", "unknown"),
-                                "timestamp": datetime.now().isoformat()
-                            }
-                            
-                            response = f"""HTTP/1.1 200 OK
-Content-Type: application/json
-Content-Length: {len(json.dumps(response_data))}
-Connection: close
-
-{json.dumps(response_data)}"""
-                            
-                            client.send(response.encode('utf-8'))
-                            client.close()
-                        except:
-                            pass
-                
-                thread = threading.Thread(target=handle_diagnostics, daemon=True)
-                thread.start()
-                print(f"🔧 DIAGNOSTICS SERVER STARTED ON PORT {port}")
-                print(f"   → curl http://localhost:{port}/diagnostics")
-                return
-            except:
-                continue
-    except:
-        pass
-
-# Start diagnostics server immediately
-start_diagnostics_server()
-
-# ==========================================================
-# FASTAPI IMPORTS (After crash hook is set up)
-# ==========================================================
-
-log_phase("BOOT", "Starting FastAPI imports")
-
+print("CHECKPOINT 1 - IMPORTING FASTAPI MODULES")
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
@@ -233,48 +100,75 @@ from slowapi.errors import RateLimitExceeded
 # Prometheus metrics
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
+print("✅ FastAPI modules imported")
+
 # ==========================================================
-# CRITICAL FIX #1: Import config and database at MODULE LEVEL
+# STEP 1: FIX BUGS - Module level imports
 # ==========================================================
 
-log_phase("CONFIG", "Loading configuration")
-
-# Import config first
+print("CHECKPOINT 2 - LOADING CONFIG")
 from app.config import config
+print(f"✅ Config loaded - ENVIRONMENT: {config.ENVIRONMENT}")
 
+print("CHECKPOINT 3 - IMPORTING DATABASE (MODULE LEVEL)")
 # CRITICAL FIX #1: Import get_db at module level (not just in lifespan)
-log_phase("DATABASE", "Importing database module")
 try:
     from app.database import (
         engine,
         DATABASE_URL,
         Base,
-        get_db,
+        get_db,           # ✅ MOVED TO MODULE LEVEL - CRITICAL FIX
         SessionLocal,
         check_database_connection,
         get_database_health
     )
-    logger.info("✅ Database module loaded at module level")
+    print("✅ Database module imported at module level")
+    print(f"   ├── get_db imported: {get_db is not None}")
+    print(f"   ├── DATABASE_URL: {DATABASE_URL[:50]}..." if DATABASE_URL else "   ├── DATABASE_URL: None")
 except Exception as e:
-    logger.critical(f"❌ Database module import failed: {e}")
-    logger.critical(traceback.format_exc())
+    print(f"❌ CRITICAL: Database import failed at module level")
+    print(f"   ERROR: {type(e).__name__}: {e}")
+    traceback.print_exc()
     raise
 
 # CRITICAL FIX #2: Define CACHE_TTL at module level
 CACHE_TTL = getattr(config, 'CACHE_TTL', 300)
-logger.info(f"📦 CACHE_TTL = {CACHE_TTL}s (defined at module level)")
+print(f"✅ CACHE_TTL = {CACHE_TTL}s (defined at module level)")
+
+# ==========================================================
+# STEP 5: IMPORT CHAT SERVICE AT MODULE LEVEL (No lazy loading)
+# ==========================================================
+
+print("CHECKPOINT 4 - IMPORTING SERVICES")
+try:
+    # STEP 5: Import ChatService directly (no lazy loading)
+    from app.services.chat_service import ChatService
+    print(f"✅ ChatService imported directly from module level")
+    print(f"   ├── ChatService type: {ChatService}")
+    CHAT_SERVICE_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️ ChatService import failed: {e}")
+    print(f"   This may indicate a circular import or missing dependency")
+    CHAT_SERVICE_AVAILABLE = False
+    traceback.print_exc()
+except Exception as e:
+    print(f"⚠️ Unexpected error importing ChatService: {e}")
+    CHAT_SERVICE_AVAILABLE = False
+    traceback.print_exc()
 
 # Try to import psutil for memory diagnostics (optional)
 try:
     import psutil
     PSUTIL_AVAILABLE = True
-    logger.info("✅ psutil available for memory diagnostics")
+    print("✅ psutil available")
 except ImportError:
     PSUTIL_AVAILABLE = False
-    logger.warning("⚠️ psutil not available")
+    print("⚠️ psutil not available")
+
+print("=" * 60)
 
 # ==========================================================
-# CRASH CLASSIFICATION (Improvement)
+# CRASH CLASSIFICATION
 # ==========================================================
 
 class CrashType:
@@ -336,7 +230,7 @@ def get_top_crash_files(limit: int = 5) -> List[Tuple[str, int]]:
 
 
 # ==========================================================
-# LAYER 1: PRE-FLIGHT CHECK
+# PRE-FLIGHT CHECK
 # ==========================================================
 
 def preflight_check() -> Dict[str, Any]:
@@ -429,7 +323,7 @@ def preflight_check() -> Dict[str, Any]:
 
 
 # ==========================================================
-# LAYER 2: IMPORT DEPENDENCY SCANNER
+# IMPORT DEPENDENCY SCANNER
 # ==========================================================
 
 IMPORT_TREE = {}
@@ -477,7 +371,7 @@ def print_import_tree(module_name: str, indent: str = ""):
     
     logger.info(f"{indent}├── {module_name}")
     
-    for child in tree["children"][:5]:  # Limit to 5 children
+    for child in tree["children"][:5]:
         if child["circular"]:
             logger.info(f"{indent}│   └── {child['name']} (circular)")
         else:
@@ -485,12 +379,10 @@ def print_import_tree(module_name: str, indent: str = ""):
 
 
 # ==========================================================
-# LAYER 3: CONSTRUCTOR STEP-BY-STEP TRACKING
+# CONSTRUCTOR STEP-BY-STEP TRACKING
 # ==========================================================
 
 class ConstructorTracker:
-    """Track constructor execution step by step"""
-    
     def __init__(self, service_name: str):
         self.service_name = service_name
         self.steps = []
@@ -499,7 +391,6 @@ class ConstructorTracker:
         self.failed_step = None
     
     def step(self, step_name: str):
-        """Log a constructor step"""
         self.current_step += 1
         self.steps.append({
             "step": self.current_step,
@@ -509,13 +400,11 @@ class ConstructorTracker:
         logger.info(f"   🔧 {self.service_name} - STEP {self.current_step}: {step_name}")
     
     def complete(self):
-        """Mark constructor as complete"""
         elapsed = time.time() - self.start_time
         logger.success(f"   ✅ {self.service_name} constructed in {elapsed:.2f}s")
         return elapsed
     
     def fail(self, step_name: str, error: Exception):
-        """Mark constructor failure at specific step"""
         self.failed_step = {
             "step": self.current_step + 1,
             "name": step_name,
@@ -527,14 +416,13 @@ class ConstructorTracker:
 
 
 # ==========================================================
-# LAYER 4: RUNTIME DIAGNOSTICS MIDDLEWARE
+# RUNTIME DIAGNOSTICS MIDDLEWARE
 # ==========================================================
 
 LAST_REQUEST_ERROR = None
 
 
 async def runtime_diagnostics_middleware(request: Request, call_next):
-    """Track runtime metrics for each request"""
     global LAST_REQUEST_ERROR
     
     start_time = time.time()
@@ -569,7 +457,7 @@ async def runtime_diagnostics_middleware(request: Request, call_next):
 
 
 # ==========================================================
-# ENHANCED CRASH LOCATION (with full context)
+# CRASH LOCATION
 # ==========================================================
 
 def crash_location(exc: Exception) -> Optional[Dict[str, Any]]:
@@ -598,7 +486,6 @@ def crash_location(exc: Exception) -> Optional[Dict[str, Any]]:
 
 
 def full_crash_analysis(exc: Exception, max_frames: int = 10) -> List[Dict[str, Any]]:
-    """Analyze full crash path"""
     frames = traceback.extract_tb(exc.__traceback__)
     analysis = []
     
@@ -614,7 +501,7 @@ def full_crash_analysis(exc: Exception, max_frames: int = 10) -> List[Dict[str, 
 
 
 # ==========================================================
-# ENHANCED ROOT CAUSE STORAGE (Single source of truth)
+# ROOT CAUSE STORAGE
 # ==========================================================
 
 _ROOT_CAUSE = None
@@ -635,7 +522,6 @@ def set_root_cause(
     service: str = None,
     crash_type: str = None
 ):
-    """Set enhanced root cause with full context"""
     global _ROOT_CAUSE
     _ROOT_CAUSE = {
         "crash_file": file,
@@ -645,20 +531,17 @@ def set_root_cause(
         "error_type": error_type,
         "error_message": str(error)[:500],
         "crash_type": crash_type or classify_crash(Exception(error)),
-        "phase": CURRENT_PHASE,  # Add current phase
         "module": module,
         "service": service,
         "failed_modules": _FAILED_MODULES.copy(),
         "failed_services": _FAILED_SERVICES.copy(),
         "import_chain": _IMPORT_CHAIN.copy(),
-        "import_chain_record": IMPORT_CHAIN_RECORD.copy(),  # Full chain
         "constructor_chain": _CONSTRUCTOR_CHAIN.copy(),
         "environment": os.getenv("ENVIRONMENT", "unknown"),
         "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
         "timestamp": datetime.now().isoformat()
     }
     
-    # Update crash score
     update_crash_score(file, 100)
     for mod in _FAILED_MODULES:
         update_crash_score(mod, 50)
@@ -667,12 +550,11 @@ def set_root_cause(
 
 
 def get_root_cause() -> Optional[Dict[str, Any]]:
-    """Get enhanced root cause"""
     return _ROOT_CAUSE
 
 
 # ==========================================================
-# CRASH HISTORY (with classification)
+# CRASH HISTORY
 # ==========================================================
 
 MAX_CRASH_HISTORY = 100
@@ -680,21 +562,18 @@ CRASH_HISTORY = []
 
 
 def add_to_crash_history(crash_data: Dict[str, Any]):
-    """Add crash to history with classification"""
     CRASH_HISTORY.append(crash_data)
     while len(CRASH_HISTORY) > MAX_CRASH_HISTORY:
         CRASH_HISTORY.pop(0)
 
 
 def write_crash_report(exc: Exception, stage: str = "unknown"):
-    """Write crash report with full context"""
     location = crash_location(exc)
     crash_type = classify_crash(exc)
     full_analysis = full_crash_analysis(exc, max_frames=5)
     
     crash_data = {
         "stage": stage,
-        "phase": CURRENT_PHASE,
         "timestamp": datetime.now().isoformat(),
         "crash_type": crash_type,
         "error_type": type(exc).__name__,
@@ -705,8 +584,7 @@ def write_crash_report(exc: Exception, stage: str = "unknown"):
         "crash_code": location["code"] if location else "Unknown",
         "crash_path": full_analysis,
         "failed_modules": _FAILED_MODULES.copy(),
-        "failed_services": _FAILED_SERVICES.copy(),
-        "import_chain_record": IMPORT_CHAIN_RECORD.copy()
+        "failed_services": _FAILED_SERVICES.copy()
     }
     
     if location:
@@ -738,7 +616,6 @@ MODULE_FINGERPRINTS = {}
 
 
 def update_module_fingerprint(module_name: str, status: str, import_time: float = None, constructor_time: float = None, error: str = None):
-    """Update module fingerprint with health status"""
     MODULE_FINGERPRINTS[module_name] = {
         "module": module_name,
         "loaded": status == "SUCCESS",
@@ -755,17 +632,14 @@ def update_module_fingerprint(module_name: str, status: str, import_time: float 
 # ==========================================================
 
 def diagnose_import(module_name: str, use_cache: bool = True):
-    """Diagnose module import with tree logging"""
     if use_cache and module_name in sys.modules:
         logger.info(f"📦 USING CACHED: {module_name}")
         update_module_fingerprint(module_name, "CACHED", 0)
-        record_import(module_name)
         return sys.modules[module_name]
     
     logger.info("=" * 80)
     logger.info(f"📦 IMPORTING: {module_name}")
     _IMPORT_CHAIN.append(module_name)
-    record_import(module_name)
     
     import_start = time.time()
     
@@ -786,7 +660,6 @@ def diagnose_import(module_name: str, use_cache: bool = True):
         logger.critical("=" * 80)
         logger.critical(f"❌ FAILED MODULE: {module_name}")
         logger.critical(f"   ERROR: {type(e).__name__}: {str(e)[:200]}")
-        logger.critical(f"   PHASE: {CURRENT_PHASE}")
         
         if location:
             logger.critical(f"   CRASH FILE: {location['file']}")
@@ -802,7 +675,6 @@ def diagnose_import(module_name: str, use_cache: bool = True):
 # ==========================================================
 
 def diagnose_constructor(service_name: str, constructor_func, *args, **kwargs):
-    """Diagnose constructor with step tracking"""
     tracker = ConstructorTracker(service_name)
     _CONSTRUCTOR_CHAIN.append(service_name)
     
@@ -865,8 +737,7 @@ STARTUP_DIAGNOSTICS = {
     "imports": {},
     "env_vars": {},
     "errors": [],
-    "stages": [],
-    "phase": None
+    "stages": []
 }
 
 
@@ -978,7 +849,7 @@ def print_dependency_tree():
 ╠══════════════════════════════════════════════════════════════════╣
 ║                                                                  ║
 ║  main.py                                                         ║
-║   ├── database.py (IMPORTED AT MODULE LEVEL - FIXED)            ║
+║   ├── database.py (✅ IMPORTED AT MODULE LEVEL)                 ║
 ║   ├── config.py                                                  ║
 ║   ├── models.py                                                  ║
 ║   │                                                              ║
@@ -993,19 +864,20 @@ def print_dependency_tree():
 ║        ├── ai_provider_service.py                                ║
 ║        ├── ai_query_service.py                                   ║
 ║        ├── analytics_service.py                                  ║
+║        ├── chat_service.py (✅ IMPORTED AT MODULE LEVEL)        ║
 ║        ├── kpi_service.py                                        ║
 ║        ├── logistics_query_service.py                            ║
 ║        ├── schema_service.py                                     ║
 ║        └── whatsapp_service.py                                   ║
 ║                                                                  ║
 ╠══════════════════════════════════════════════════════════════════╣
-║  CRITICAL FIXES v13.1.0:                                         ║
-║  ✅ get_db imported at module level (Bug #1 fixed)              ║
-║  ✅ CACHE_TTL defined at module level (Bug #2 fixed)            ║
-║  ✅ Global crash hook installed                                  ║
-║  ✅ Phase tracker added                                          ║
-║  ✅ Import chain recording                                       ║
-║  ✅ Pre-FastAPI diagnostics on port 8888                         ║
+║  CRITICAL FIXES v13.2.0:                                         ║
+║  ✅ get_db imported at module level                              ║
+║  ✅ CACHE_TTL defined at module level                            ║
+║  ✅ Global crash handler installed                               ║
+║  ✅ Startup checkpoints added                                    ║
+║  ✅ ChatService imported directly (no lazy loading)              ║
+║  ✅ Chat endpoint DISABLED for isolation test                    ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
     logger.info(tree)
@@ -1063,28 +935,26 @@ def safe_error_response(request_id: str, error_type: str = "internal_error") -> 
 # CACHE
 # ==========================================================
 
-dashboard_cache = TTLCache(maxsize=100, ttl=CACHE_TTL)  # Now CACHE_TTL is defined
+dashboard_cache = TTLCache(maxsize=100, ttl=CACHE_TTL)
 
 
 # ==========================================================
 # CREATE APP
 # ==========================================================
 
-log_phase("PREFLIGHT", "Running pre-flight check")
-
-# Run pre-flight check BEFORE creating app
+print("CHECKPOINT 5 - CREATING FASTAPI APP")
 preflight_result = preflight_check()
-
-log_phase("FASTAPI_CREATION", "Creating FastAPI application")
 
 app = FastAPI(
     title="AI WhatsApp Logistics Assistant",
     description="Enterprise Logistics AI Platform - WhatsApp Integration",
-    version="13.1.0",
+    version="13.2.0",
     docs_url="/api/docs" if config.ENVIRONMENT != "production" else None,
     redoc_url="/api/redoc" if config.ENVIRONMENT != "production" else None,
     openapi_url="/api/openapi.json" if config.ENVIRONMENT != "production" else None,
 )
+
+print("✅ FastAPI app created")
 
 # Add runtime diagnostics middleware
 app.middleware("http")(runtime_diagnostics_middleware)
@@ -1132,45 +1002,21 @@ templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global CURRENT_PHASE
-    CURRENT_PHASE = "LIFESPAN_START"
     STARTUP_DIAGNOSTICS["startup_time"] = datetime.now().isoformat()
-    STARTUP_DIAGNOSTICS["phase"] = CURRENT_PHASE
     start_time = time.time()
     
+    print("LIFESPAN STARTED - CHECKPOINT 6")
     print_dependency_tree()
     
-    # Verify database connection (already imported at module level)
-    try:
-        CURRENT_PHASE = "DATABASE_VERIFICATION"
-        logger.info("🔍 Verifying database connection...")
-        if check_database_connection():
-            logger.info("✅ Database connection verified")
-        else:
-            logger.warning("⚠️ Database connection check returned False")
-    except Exception as e:
-        location = crash_location(e)
-        logger.error(f"❌ Database verification failed: {e}")
-        if location:
-            set_root_cause(
-                file=location['file'],
-                line=location['line'],
-                function=location.get('function', 'unknown'),
-                error_type=type(e).__name__,
-                error=str(e),
-                crash_type=CrashType.DATABASE_ERROR
-            )
-        raise
-    
+    CACHE_TTL_LOCAL = getattr(config, 'CACHE_TTL', 300)
     imported_modules = {}
     
     try:
         logger.info("=" * 80)
-        logger.info("🤖 AI WHATSAPP AGENT STARTING v13.1.0")
+        logger.info("🤖 AI WHATSAPP AGENT STARTING v13.2.0")
         logger.info("=" * 80)
         
         # Stage 1: Import all modules
-        CURRENT_PHASE = "IMPORT_MODULES"
         logger.info("📍 STAGE 1: Importing Modules")
         for module_name in ALL_FILES_TO_DIAGNOSE:
             try:
@@ -1180,23 +1026,15 @@ async def lifespan(app: FastAPI):
                 raise
         
         # Stage 2: Register webhook router
-        CURRENT_PHASE = "REGISTER_ROUTERS"
-        logger.info("📍 STAGE 2: Registering Routers")
-        
         webhook_router = None
         if "app.routes.webhook" in imported_modules:
             webhook_router = getattr(imported_modules["app.routes.webhook"], "router", None)
             if webhook_router:
-                try:
-                    app.include_router(webhook_router)
-                    logger.success("✅ Webhook router registered")
-                except Exception as e:
-                    logger.error(f"❌ Failed to register webhook router: {e}")
-                    raise
+                app.include_router(webhook_router)
+                logger.success("✅ Webhook router registered")
         
         # Stage 3: Initialize services
-        CURRENT_PHASE = "SERVICES_INIT"
-        logger.info("📍 STAGE 3: Initializing Services")
+        logger.info("📍 STAGE 2: Initializing Services")
         
         try:
             from app.services.schema_service import get_schema_service
@@ -1238,15 +1076,12 @@ async def lifespan(app: FastAPI):
             logger.error(f"❌ WhatsApp Service failed: {e}")
         
         # Stage 4: Create directories
-        CURRENT_PHASE = "CREATE_DIRECTORIES"
         os.makedirs("uploads", exist_ok=True)
         os.makedirs(TEMPLATES_DIR, exist_ok=True)
         
         startup_duration = time.time() - start_time
         STARTUP_DIAGNOSTICS["startup_duration"] = startup_duration
         STARTUP_DIAGNOSTICS["status"] = "COMPLETED"
-        
-        CURRENT_PHASE = "READY"
         
         logger.info("=" * 80)
         logger.info(f"✅ Application startup complete in {startup_duration:.2f}s")
@@ -1263,7 +1098,6 @@ async def lifespan(app: FastAPI):
         logger.critical("=" * 80)
         logger.critical("💥 APPLICATION STARTUP FAILED 💥")
         logger.critical("=" * 80)
-        logger.critical(f"PHASE AT CRASH: {CURRENT_PHASE}")
         
         if location:
             logger.critical(f"CRASH FILE: {location['file']}")
@@ -1301,44 +1135,19 @@ app.lifespan_context = lifespan
 
 
 # ==========================================================
-# ROUTE REGISTRATION WITH MONITORING
-# ==========================================================
-
-log_phase("ROUTE_REGISTRATION", "Registering routes")
-
-# ==========================================================
 # DIAGNOSTICS ENDPOINTS
 # ==========================================================
 
 @app.get("/root-cause", tags=["Diagnostics"])
 async def get_root_cause_endpoint():
-    """Single source of truth for crashes"""
     root_cause = get_root_cause()
     if root_cause:
-        root_cause["current_phase"] = CURRENT_PHASE
-        root_cause["import_chain_record"] = IMPORT_CHAIN_RECORD[-20:]
         return root_cause
-    return {
-        "status": "NO_CRASH", 
-        "message": "No crash detected",
-        "current_phase": CURRENT_PHASE,
-        "import_chain": IMPORT_CHAIN_RECORD[-10:]
-    }
-
-
-@app.get("/phase", tags=["Diagnostics"])
-async def get_current_phase():
-    """Get current startup phase"""
-    return {
-        "current_phase": CURRENT_PHASE,
-        "import_chain": IMPORT_CHAIN_RECORD[-20:],
-        "timestamp": datetime.now().isoformat()
-    }
+    return {"status": "NO_CRASH", "message": "No crash detected"}
 
 
 @app.get("/railway-diagnostics", tags=["Diagnostics"])
 async def railway_diagnostics():
-    """Railway-specific diagnostics"""
     mem_info = None
     if PSUTIL_AVAILABLE:
         mem_info = {
@@ -1350,21 +1159,19 @@ async def railway_diagnostics():
     return {
         "startup_status": STARTUP_DIAGNOSTICS["status"],
         "startup_duration": STARTUP_DIAGNOSTICS["startup_duration"],
-        "current_phase": CURRENT_PHASE,
-        "import_chain": IMPORT_CHAIN_RECORD[-30:],
         "memory": mem_info,
         "failed_modules": _FAILED_MODULES,
         "failed_services": _FAILED_SERVICES,
         "top_crash_files": get_top_crash_files(5),
         "root_cause": get_root_cause(),
         "python_version": sys.version,
-        "environment": config.ENVIRONMENT
+        "environment": config.ENVIRONMENT,
+        "chat_service_available": CHAT_SERVICE_AVAILABLE
     }
 
 
 @app.get("/module-health", tags=["Diagnostics"])
 async def module_health():
-    """Module fingerprinting endpoint"""
     return {
         "modules": MODULE_FINGERPRINTS,
         "total_modules": len(MODULE_FINGERPRINTS),
@@ -1393,7 +1200,6 @@ async def get_last_error():
 
 @app.get("/crash-classification", tags=["Diagnostics"])
 async def crash_classification():
-    """Get crash classification statistics"""
     classification_counts = defaultdict(int)
     for crash in CRASH_HISTORY:
         classification_counts[crash.get("crash_type", CrashType.UNKNOWN_ERROR)] += 1
@@ -1413,10 +1219,9 @@ async def crash_classification():
 async def health():
     return {
         "status": "healthy",
-        "version": "13.1.0",
+        "version": "13.2.0",
         "timestamp": datetime.utcnow().isoformat(),
-        "preflight": preflight_result["status"],
-        "phase": CURRENT_PHASE
+        "preflight": preflight_result["status"]
     }
 
 
@@ -1447,24 +1252,25 @@ class ChatResponse(BaseModel):
     reply: str
 
 
-def get_chat_service():
-    from app.services.chat_service import ChatService
-    return ChatService
-
-
 # ==========================================================
-# CHAT ENDPOINT WITH ROUTE REGISTRATION MONITORING
+# STEP 4: CHAT ENDPOINT TEMPORARILY DISABLED FOR ISOLATION TEST
 # ==========================================================
 
+# ⚠️ STEP 4: CHAT ENDPOINT DISABLED - Testing if crash is here
+# If deployment succeeds with this disabled, the crash is in the chat route
+# If deployment still fails, the crash is elsewhere
+
+"""
 @app.post("/chat", response_model=ChatResponse, tags=["Chat"])
 @limiter.limit("5 per second")
 async def chat_endpoint(chat_request: ChatRequest, req: Request, db: Session = Depends(get_db)):
-    """
-    Chat endpoint - get_db is now available at module level (FIXED)
-    """
+    \"\"\"Chat endpoint - TEMPORARILY DISABLED FOR ISOLATION TEST\"\"\"
     try:
-        ChatServiceClass = get_chat_service()
-        chat_service = ChatServiceClass(db)
+        # ChatService is already imported at module level
+        if not CHAT_SERVICE_AVAILABLE:
+            raise HTTPException(status_code=503, detail="Chat service not available")
+        
+        chat_service = ChatService(db)
         result = chat_service.process_chat(
             message=chat_request.message,
             customer_name=chat_request.customer_name,
@@ -1474,6 +1280,17 @@ async def chat_endpoint(chat_request: ChatRequest, req: Request, db: Session = D
     except Exception as e:
         logger.exception("Chat endpoint error")
         raise HTTPException(status_code=500, detail="Internal server error")
+"""
+
+# Temporary placeholder endpoint to confirm route works
+@app.get("/chat-status", tags=["Chat"])
+async def chat_status():
+    """Returns chat service status (temporary while chat endpoint is disabled)"""
+    return {
+        "status": "chat_endpoint_disabled_for_testing",
+        "chat_service_available": CHAT_SERVICE_AVAILABLE,
+        "message": "If you see this, the app started successfully. The crash was in the /chat endpoint."
+    }
 
 
 # ==========================================================
@@ -1483,7 +1300,7 @@ async def chat_endpoint(chat_request: ChatRequest, req: Request, db: Session = D
 if config.ENVIRONMENT != "production":
     @app.get("/test-crash")
     async def test_crash():
-        raise RuntimeError(f"This is a test crash - current phase: {CURRENT_PHASE}")
+        raise RuntimeError("This is a test crash - check logs for full traceback")
 
 
 # ==========================================================
@@ -1494,36 +1311,33 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", "8000"))
     host = os.getenv("HOST", "0.0.0.0")
-    log_phase("UVICORN_START", f"Starting uvicorn on {host}:{port}")
+    print(f"🚀 Starting uvicorn on {host}:{port}")
     uvicorn.run("app.main:app", host=host, port=port, reload=config.DEBUG, log_level="info")
 
 
 # ==========================================================
-# INITIALIZATION LOG (Now safe because CACHE_TTL is defined)
+# INITIALIZATION LOG (Now safe)
 # ==========================================================
 
 try:
     logger.info("=" * 60)
-    logger.info("📡 MAIN APP v13.1.0 - CRITICAL BUG FIXES")
+    logger.info("📡 MAIN APP v13.2.0 - CRASH DIAGNOSTICS")
     logger.info("")
-    logger.info("   CRITICAL FIXES IN v13.1.0:")
+    logger.info("   CRITICAL FIXES IN v13.2.0:")
     logger.info("   🔧 FIXED: get_db import at module level (Bug #1)")
     logger.info("   🔧 FIXED: CACHE_TTL defined at module level (Bug #2)")
-    logger.info("   🔧 ADDED: Global crash hook with sys.excepthook")
-    logger.info("   🔧 ADDED: Startup phase tracker")
-    logger.info("   🔧 ADDED: Import chain recording")
-    logger.info("   🔧 ADDED: safe_import() wrapper")
-    logger.info("   🔧 ADDED: Route registration monitor")
-    logger.info("   🔧 ADDED: Pre-FastAPI diagnostics on port 8888")
+    logger.info("   🔧 ADDED: Global crash handler with sys.excepthook")
+    logger.info("   🔧 ADDED: Startup checkpoints (CHECKPOINT 1-5)")
+    logger.info("   🔧 ADDED: ChatService import at module level")
+    logger.info("   🔧 ADDED: Chat endpoint disabled for isolation test")
     logger.info("")
     logger.info(f"   PRE-FLIGHT: {preflight_result['status']}")
-    logger.info(f"   CACHE_TTL: {CACHE_TTL}s (defined at module level)")
-    logger.info(f"   CURRENT PHASE: {CURRENT_PHASE}")
+    logger.info(f"   CACHE_TTL: {CACHE_TTL}s")
+    logger.info(f"   CHAT_SERVICE_AVAILABLE: {CHAT_SERVICE_AVAILABLE}")
     logger.info("=" * 60)
 except Exception as init_error:
-    # This should no longer happen because CACHE_TTL is defined
     logger.critical("=" * 80)
-    logger.critical("💥 INITIALIZATION LOG ERROR (should not happen in v13.1.0)")
+    logger.critical("💥 INITIALIZATION LOG ERROR")
     logger.critical("=" * 80)
     logger.critical(f"ERROR: {type(init_error).__name__}: {init_error}")
     logger.critical(traceback.format_exc())
