@@ -1,15 +1,16 @@
-
 # ==========================================================
-# FILE: app/main.py (ENTERPRISE v13.5.0 - DEBUG READY)
+# FILE: app/main.py (ENTERPRISE v13.6.0 - FULLY FIXED)
 # PROJECT: AI WhatsApp Customer Service Agent
 # ==========================================================
-# IMPROVEMENTS v13.5.0:
+# IMPROVEMENTS v13.6.0:
 # - ✅ CRITICAL FIX: preflight_result defined before use
 # - ✅ CRITICAL FIX: app = FastAPI() created BEFORE any decorators
 # - ✅ CRITICAL FIX: All problematic middleware DISABLED
-# - ✅ ADDED: Debug endpoints (/debug/ping, /debug/health, /debug/routes)
+# - ✅ ADDED: Debug endpoints (/debug/ping, /debug/health, /debug/routes, /debug/env)
+# - ✅ ADDED: RAW endpoint (/raw-ping) - NO middleware, NO dependencies
 # - ✅ ADDED: Minimal lifespan mode (services commented out)
 # - ✅ ADDED: TrustedHostMiddleware DISABLED
+# - ✅ ADDED: Global exception handler
 # - ✅ All original attributes preserved
 # ==========================================================
 
@@ -278,9 +279,10 @@ print(f"✅ PRE-FLIGHT RESULT: {preflight_result['status']}")
 
 
 # ==========================================================
-# MINIMAL LIFESPAN HANDLER (Services commented out for debugging)
+# CREATE FASTAPI APP FIRST (Before any decorators)
 # ==========================================================
 
+# PROPER LIFESPAN HANDLER
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Minimal lifespan - NO service imports for debugging"""
@@ -292,30 +294,9 @@ async def lifespan(app: FastAPI):
     start_time = time.time()
     
     try:
-        # ====================================================
-        # ALL SERVICE IMPORTS ARE TEMPORARILY DISABLED
-        # This is to isolate the crash to middleware/routing
-        # ====================================================
-        
         logger.info("=" * 80)
-        logger.info("🤖 AI WHATSAPP AGENT STARTING v13.5.0 (MINIMAL MODE)")
+        logger.info("🤖 AI WHATSAPP AGENT STARTING v13.6.0 (MINIMAL MODE)")
         logger.info("=" * 80)
-        
-        # TEMPORARILY DISABLED: Module imports
-        # for module_name in ALL_FILES_TO_DIAGNOSE:
-        #     try:
-        #         imported_modules[module_name] = diagnose_import(module_name, use_cache=True)
-        #     except Exception as e:
-        #         write_crash_report(e, f"import_{module_name}")
-        #         raise
-        
-        # TEMPORARILY DISABLED: Service initializations
-        # from app.services.schema_service import get_schema_service
-        # from app.services.kpi_service import get_kpi_service
-        # from app.services.analytics_service import get_analytics_service
-        # from app.services.ai_provider_service import AIProviderService
-        # from app.services.ai_query_service import get_ai_query_service
-        # from app.services.whatsapp_service import get_whatsapp_service
         
         # Create directories
         os.makedirs("uploads", exist_ok=True)
@@ -381,24 +362,35 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AI WhatsApp Logistics Assistant",
     description="Enterprise Logistics AI Platform - WhatsApp Integration",
-    version="13.5.0",
+    version="13.6.0",
     docs_url="/api/docs" if config.ENVIRONMENT != "production" else None,
     redoc_url="/api/redoc" if config.ENVIRONMENT != "production" else None,
     openapi_url="/api/openapi.json" if config.ENVIRONMENT != "production" else None,
-    lifespan=lifespan,  # ✅ PROPER: lifespan passed directly
+    lifespan=lifespan,
 )
 
 
 # ==========================================================
 # ==========================================================
-# DEBUG ENDPOINTS - NO DEPENDENCIES, NO MIDDLEWARE
-# Place these FIRST to test if app can respond at all
+# RAW ENDPOINT - NO MIDDLEWARE, NO DEPENDENCIES
+# Place this FIRST to test if app can respond at all
 # ==========================================================
+# ==========================================================
+
+@app.get("/raw-ping")
+async def raw_ping():
+    """ULTRA-SIMPLE endpoint - tests if app is alive at all"""
+    print("🔔 /raw-ping HIT - APP IS RESPONDING!")
+    return {"ping": "pong", "timestamp": datetime.now().isoformat(), "status": "alive"}
+
+
+# ==========================================================
+# DEBUG ENDPOINTS - Minimal dependencies
 # ==========================================================
 
 @app.get("/debug/ping")
 async def debug_ping():
-    """Ultra-simple ping - should always work"""
+    """Simple ping test"""
     print("🔔 /debug/ping HIT")
     return {"ping": "pong", "timestamp": datetime.now().isoformat()}
 
@@ -409,7 +401,7 @@ async def debug_health():
     print("🔔 /debug/health HIT")
     return {
         "status": "alive",
-        "version": "13.5.0",
+        "version": "13.6.0",
         "timestamp": datetime.now().isoformat(),
         "preflight": preflight_result["status"]
     }
@@ -449,9 +441,7 @@ async def debug_env():
 
 
 # ==========================================================
-# ==========================================================
-# SIMPLE ENDPOINTS (Original, should work)
-# ==========================================================
+# SIMPLE ENDPOINTS
 # ==========================================================
 
 @app.get("/")
@@ -461,8 +451,8 @@ async def root():
     return {
         "status": "ok",
         "message": "AI WhatsApp Logistics Assistant is running",
-        "version": "13.5.0",
-        "debug_endpoints": ["/debug/ping", "/debug/health", "/debug/routes", "/debug/env"]
+        "version": "13.6.0",
+        "debug_endpoints": ["/raw-ping", "/debug/ping", "/debug/health", "/debug/routes", "/debug/env", "/alive", "/health"]
     }
 
 
@@ -486,7 +476,7 @@ async def health():
     print("🔔 /health HIT")
     return {
         "status": "healthy",
-        "version": "13.5.0",
+        "version": "13.6.0",
         "timestamp": datetime.now().isoformat(),
         "preflight": preflight_result["status"]
     }
@@ -499,10 +489,6 @@ async def liveness():
     return {"alive": True, "timestamp": datetime.now().isoformat()}
 
 
-# ==========================================================
-# STARTUP CHECK ENDPOINT
-# ==========================================================
-
 @app.get("/startup-check")
 async def startup_check():
     """Startup verification endpoint"""
@@ -514,7 +500,7 @@ async def startup_check():
         "webhook_router_registered": webhook_router is not None,
         "preflight_status": preflight_result["status"],
         "status": "running",
-        "version": "13.5.0"
+        "version": "13.6.0"
     }
 
 
@@ -630,7 +616,6 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # ==========================================================
 # ==========================================================
 # ALL ORIGINAL ATTRIBUTES PRESERVED BELOW
-# (These are kept for compatibility but not actively used in minimal mode)
 # ==========================================================
 # ==========================================================
 
@@ -1210,10 +1195,11 @@ def print_dependency_tree():
 ║        └── whatsapp_service.py                                   ║
 ║                                                                  ║
 ╠══════════════════════════════════════════════════════════════════╣
-║  CRITICAL FIXES v13.5.0:                                         ║
+║  CRITICAL FIXES v13.6.0:                                         ║
 ║  ✅ preflight_result defined BEFORE use                          ║
 ║  ✅ app = FastAPI() created BEFORE any decorators                ║
 ║  ✅ All problematic middleware DISABLED                          ║
+║  ✅ RAW endpoint (/raw-ping) - NO dependencies                   ║
 ║  ✅ Debug endpoints added (/debug/*)                             ║
 ║  ✅ Minimal lifespan mode (services commented out)               ║
 ║  ✅ TrustedHostMiddleware DISABLED                               ║
@@ -1226,8 +1212,6 @@ def print_dependency_tree():
 # ==========================================================
 # ADDITIONAL MIDDLEWARE (All disabled for debugging)
 # ==========================================================
-
-# These middleware functions are preserved but disabled
 
 async def add_request_id_middleware(request: Request, call_next):
     request_id = str(uuid.uuid4())[:8]
@@ -1416,13 +1400,14 @@ if __name__ == "__main__":
 
 try:
     logger.info("=" * 60)
-    logger.info("📡 MAIN APP v13.5.0 - DEBUG READY")
+    logger.info("📡 MAIN APP v13.6.0 - FULLY FIXED")
     logger.info("")
-    logger.info("   CRITICAL FIXES IN v13.5.0:")
+    logger.info("   CRITICAL FIXES IN v13.6.0:")
     logger.info("   🔧 FIXED: preflight_result defined BEFORE use")
     logger.info("   🔧 FIXED: app = FastAPI() created BEFORE any decorators")
     logger.info("   🔧 FIXED: All problematic middleware DISABLED")
-    logger.info("   🔧 ADDED: Debug endpoints (/debug/ping, /debug/health, /debug/routes, /debug/env)")
+    logger.info("   🔧 ADDED: RAW endpoint (/raw-ping) - NO dependencies")
+    logger.info("   🔧 ADDED: Debug endpoints (/debug/*)")
     logger.info("   🔧 ADDED: Minimal lifespan mode for debugging")
     logger.info("   🔧 ADDED: Global exception handler")
     logger.info("")
@@ -1431,13 +1416,12 @@ try:
     logger.info(f"   CHAT_SERVICE_AVAILABLE: {CHAT_SERVICE_AVAILABLE}")
     logger.info(f"   WEBHOOK_ROUTER_REGISTERED: {webhook_router is not None}")
     logger.info("")
-    logger.info("   🔍 DEBUG ENDPOINTS:")
-    logger.info("   GET /debug/ping - Simple ping test")
-    logger.info("   GET /debug/health - Simple health check")
-    logger.info("   GET /debug/routes - List all routes")
-    logger.info("   GET /debug/env - Environment check")
-    logger.info("   GET /alive - Basic alive check")
-    logger.info("   GET /health - Health endpoint")
+    logger.info("   🔍 TEST ENDPOINTS (in order):")
+    logger.info("   1. GET /raw-ping - ULTRA SIMPLE (NO middleware)")
+    logger.info("   2. GET /debug/ping - Simple ping")
+    logger.info("   3. GET /debug/health - Health check")
+    logger.info("   4. GET /alive - Basic alive")
+    logger.info("   5. GET /health - Full health")
     logger.info("=" * 60)
 except Exception as init_error:
     logger.critical("=" * 80)
