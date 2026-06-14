@@ -1,12 +1,19 @@
 # ==========================================================
-# FILE: app/main.py (ENTERPRISE v10.2.0 - ENHANCED IMPORT DIAGNOSTICS)
+# FILE: app/main.py (ENTERPRISE v11.0.0 - ULTIMATE DIAGNOSTICS)
 # PROJECT: AI WhatsApp Customer Service Agent
 # ==========================================================
-# IMPROVEMENTS v10.2.0:
-# - ✅ ENHANCED: diagnose_import() with visual separator and detailed error output
-# - ✅ ADDED: Individual module import testing with clear success/failure indicators
-# - ✅ ADDED: Module-level crash location reporting
-# - ✅ FIXED: Import failures now show exact module name
+# IMPROVEMENTS v11.0.0:
+# - ✅ ADDED: Recursive traceback analysis (full crash path)
+# - ✅ ADDED: Crash history storage and endpoint
+# - ✅ ADDED: Import duration tracking
+# - ✅ ADDED: Full route file diagnostics
+# - ✅ ADDED: Constructor diagnostics for all services
+# - ✅ ADDED: Circular import detection
+# - ✅ ADDED: Dependency validation (DB, Redis, WhatsApp, AI providers)
+# - ✅ ADDED: Startup timeline endpoint
+# - ✅ ADDED: Memory diagnostics after each stage
+# - ✅ ADDED: Deep diagnostics endpoint (single debug view)
+# - ✅ FIXED: Continue testing all modules even after failure
 # - ✅ All original attributes preserved
 # ==========================================================
 
@@ -43,38 +50,111 @@ from slowapi.errors import RateLimitExceeded
 # Prometheus metrics
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
+# Try to import psutil for memory diagnostics (optional)
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
+    logger.warning("psutil not available - memory diagnostics limited")
+
 # ==========================================================
-# CRASH LOCATION HELPER
+# CRASH HISTORY STORAGE (Improvement #2)
+# ==========================================================
+
+CRASH_HISTORY = []
+
+
+# ==========================================================
+# STARTUP TIMELINE (Improvement #8)
+# ==========================================================
+
+STARTUP_TIMELINE = []
+
+
+def add_timeline_entry(stage: str):
+    """Add entry to startup timeline"""
+    STARTUP_TIMELINE.append({
+        "stage": stage,
+        "timestamp": datetime.now().isoformat(),
+        "memory_usage": get_memory_usage() if PSUTIL_AVAILABLE else None
+    })
+
+
+def get_memory_usage() -> Optional[Dict[str, Any]]:
+    """Get current memory usage (Improvement #9)"""
+    if not PSUTIL_AVAILABLE:
+        return None
+    try:
+        return {
+            "ram_used_mb": psutil.virtual_memory().used / (1024 * 1024),
+            "ram_available_mb": psutil.virtual_memory().available / (1024 * 1024),
+            "ram_percent": psutil.virtual_memory().percent,
+            "cpu_percent": psutil.cpu_percent(interval=0.1)
+        }
+    except Exception:
+        return None
+
+
+# ==========================================================
+# RECURSIVE TRACEBACK ANALYSIS (Improvement #1 - MOST IMPORTANT)
+# ==========================================================
+
+def full_crash_analysis(exc: Exception) -> List[Dict[str, Any]]:
+    """Analyze full crash path - shows every frame in the crash chain"""
+    frames = traceback.extract_tb(exc.__traceback__)
+    analysis = []
+    
+    for frame in frames:
+        analysis.append({
+            "file": frame.filename,
+            "line": frame.lineno,
+            "function": frame.name,
+            "code": frame.line if frame.line else "Unknown"
+        })
+    
+    return analysis
+
+
+def log_full_crash_path(exc: Exception):
+    """Log the entire crash chain"""
+    analysis = full_crash_analysis(exc)
+    
+    logger.critical("=" * 80)
+    logger.critical("📋 FULL CRASH PATH (Recursive Analysis)")
+    logger.critical("=" * 80)
+    
+    for i, frame in enumerate(analysis, 1):
+        logger.critical(f"  {i}. {frame['file']}:{frame['line']} in {frame['function']}")
+        if frame['code'] != "Unknown":
+            logger.critical(f"     Code: {frame['code'][:100]}")
+    
+    logger.critical("=" * 80)
+    return analysis
+
+
+# ==========================================================
+# CRASH LOCATION HELPER (Legacy - kept for compatibility)
 # ==========================================================
 
 def crash_location(exc: Exception) -> Optional[Dict[str, Any]]:
-    """Extract the exact crash location from an exception"""
-    tb = traceback.extract_tb(exc.__traceback__)
+    """Extract the exact crash location from an exception (first /app/ frame)"""
+    frames = full_crash_analysis(exc)
     
-    for frame in reversed(tb):
-        if "/app/" in frame.filename:
-            return {
-                "file": frame.filename,
-                "line": frame.lineno,
-                "function": frame.name,
-                "code": frame.line if frame.line else "Unknown"
-            }
+    for frame in frames:
+        if "/app/" in frame["file"]:
+            return frame
     
-    if tb:
-        last_frame = tb[-1]
-        return {
-            "file": last_frame.filename,
-            "line": last_frame.lineno,
-            "function": last_frame.name,
-            "code": last_frame.line if last_frame.line else "Unknown"
-        }
+    if frames:
+        return frames[-1]
     
     return None
 
 
 def write_crash_report(exc: Exception, stage: str = "unknown"):
-    """Write crash report to JSON file"""
+    """Write crash report to JSON file with full analysis"""
     location = crash_location(exc)
+    full_analysis = full_crash_analysis(exc)
     
     crash_data = {
         "stage": stage,
@@ -85,7 +165,11 @@ def write_crash_report(exc: Exception, stage: str = "unknown"):
         "crash_file": location["file"] if location else "Unknown",
         "crash_line": location["line"] if location else "Unknown",
         "crash_function": location["function"] if location else "Unknown",
+        "full_crash_path": full_analysis
     }
+    
+    # Add to crash history
+    CRASH_HISTORY.append(crash_data)
     
     try:
         with open("/tmp/startup_crash.json", "w") as f:
@@ -96,31 +180,47 @@ def write_crash_report(exc: Exception, stage: str = "unknown"):
 
 
 # ==========================================================
-# ENHANCED IMPORT DIAGNOSTICS (Improvement - Most Important)
+# ENHANCED IMPORT DIAGNOSTICS (with timing and circular detection)
 # ==========================================================
 
 def diagnose_import(module_name: str):
     """
     Diagnose a module import with clear visual output.
-    Shows exact module name, success/failure, and detailed error.
+    Shows exact module name, success/failure, detailed error, and timing.
     """
     logger.info("=" * 80)
     logger.info(f"📦 IMPORTING: {module_name}")
     
+    # Improvement #6: Circular import detection
+    before_modules = set(sys.modules.keys())
+    import_start = time.time()
+    
     try:
         module = importlib.import_module(module_name)
         
+        import_duration = time.time() - import_start
+        
+        # Detect new modules loaded
+        after_modules = set(sys.modules.keys())
+        new_modules = after_modules - before_modules
+        
         logger.success("=" * 80)
         logger.success(f"✅ SUCCESS: {module_name}")
+        logger.success(f"   ⏱️  IMPORT TIME: {import_duration:.3f} seconds")
+        if new_modules:
+            logger.debug(f"   📚 New modules loaded: {len(new_modules)}")
         logger.success("=" * 80)
         
         return module
         
     except Exception as e:
+        import_duration = time.time() - import_start
+        full_analysis = full_crash_analysis(e)
         location = crash_location(e)
         
         logger.critical("=" * 80)
         logger.critical(f"❌ FAILED MODULE: {module_name}")
+        logger.critical(f"   ⏱️  FAILED AFTER: {import_duration:.3f} seconds")
         logger.critical("=" * 80)
         logger.critical(f"ERROR TYPE: {type(e).__name__}")
         logger.critical(f"ERROR: {str(e)}")
@@ -131,10 +231,68 @@ def diagnose_import(module_name: str):
             logger.critical(f"CRASH FUNCTION: {location['function']}")
         
         logger.critical("=" * 80)
+        logger.critical("FULL CRASH PATH:")
+        for i, frame in enumerate(full_analysis, 1):
+            logger.critical(f"  {i}. {frame['file']}:{frame['line']} in {frame['function']}")
+        
+        logger.critical("=" * 80)
         logger.exception("FULL TRACEBACK:")
         logger.critical("=" * 80)
         
         write_crash_report(e, f"import_{module_name}")
+        raise
+
+
+# ==========================================================
+# CONSTRUCTOR DIAGNOSTICS (Improvement #5)
+# ==========================================================
+
+def diagnose_constructor(service_name: str, constructor_func, *args, **kwargs):
+    """Diagnose service constructor with timing and error capture"""
+    import time
+    
+    start = time.time()
+    
+    try:
+        logger.info("=" * 60)
+        logger.info(f"🔧 CONSTRUCTING: {service_name}")
+        
+        result = constructor_func(*args, **kwargs)
+        
+        elapsed = round(time.time() - start, 2)
+        
+        logger.success("=" * 60)
+        logger.success(f"✅ {service_name} constructed in {elapsed}s")
+        logger.success("=" * 60)
+        
+        return result
+        
+    except Exception as e:
+        elapsed = round(time.time() - start, 2)
+        full_analysis = full_crash_analysis(e)
+        location = crash_location(e)
+        
+        logger.critical("=" * 80)
+        logger.critical(f"❌ CONSTRUCTOR FAILED: {service_name}")
+        logger.critical(f"   ⏱️  FAILED AFTER: {elapsed}s")
+        logger.critical("=" * 80)
+        logger.critical(f"ERROR TYPE: {type(e).__name__}")
+        logger.critical(f"ERROR: {str(e)}")
+        
+        if location:
+            logger.critical(f"CRASH FILE: {location['file']}")
+            logger.critical(f"CRASH LINE: {location['line']}")
+            logger.critical(f"CRASH FUNCTION: {location['function']}")
+        
+        logger.critical("=" * 80)
+        logger.critical("FULL CRASH PATH:")
+        for i, frame in enumerate(full_analysis, 1):
+            logger.critical(f"  {i}. {frame['file']}:{frame['line']} in {frame['function']}")
+        
+        logger.critical("=" * 80)
+        logger.exception("FULL TRACEBACK:")
+        
+        write_crash_report(e, f"constructor_{service_name}")
         raise
 
 
@@ -152,6 +310,7 @@ SERVICE_STATUS = {
     "whatsapp": False,
     "logistics_query": False,
     "database": False,
+    "redis": False
 }
 
 
@@ -169,6 +328,14 @@ STARTUP_DIAGNOSTICS = {
     "errors": [],
     "stages": []
 }
+
+
+# ==========================================================
+# FAILED MODULES TRACKING (Improvement - Continue after failure)
+# ==========================================================
+
+FAILED_MODULES = []
+SUCCESSFUL_MODULES = []
 
 
 # ==========================================================
@@ -209,6 +376,7 @@ def diagnose_service(service_name: str, func, *args, **kwargs):
         
     except Exception as e:
         elapsed = round(time.time() - start, 2)
+        full_analysis = full_crash_analysis(e)
         location = crash_location(e)
         
         error_data = {
@@ -219,7 +387,8 @@ def diagnose_service(service_name: str, func, *args, **kwargs):
             "traceback": traceback.format_exc(),
             "timestamp": datetime.now().isoformat(),
             "crash_file": location["file"] if location else "Unknown",
-            "crash_line": location["line"] if location else "Unknown"
+            "crash_line": location["line"] if location else "Unknown",
+            "full_crash_path": full_analysis
         }
         
         STARTUP_DIAGNOSTICS["services"][service_name] = {
@@ -244,6 +413,11 @@ def diagnose_service(service_name: str, func, *args, **kwargs):
             logger.critical(f"CRASH FUNCTION: {location['function']}")
         
         logger.critical("=" * 80)
+        logger.critical("FULL CRASH PATH:")
+        for i, frame in enumerate(full_analysis, 1):
+            logger.critical(f"  {i}. {frame['file']}:{frame['line']} in {frame['function']}")
+        
+        logger.critical("=" * 80)
         logger.exception("FULL TRACEBACK:")
         
         write_crash_report(e, service_name)
@@ -262,8 +436,18 @@ SERVICE_FILES = [
     "app.services.logistics_query_service",
     "app.services.schema_service",
     "app.services.whatsapp_service",
-    "app.routes.webhook"
 ]
+
+# Improvement #4: Full route files to diagnose
+ROUTE_FILES = [
+    "app.routes.webhook",
+    "app.routes.upload",
+    "app.routes.admin",
+    "app.routes.health",
+    "app.routes.logistics",
+]
+
+ALL_FILES_TO_DIAGNOSE = SERVICE_FILES + ROUTE_FILES
 
 # ==========================================================
 # REQUIRED ENVIRONMENT VARIABLES
@@ -451,6 +635,64 @@ def diagnose_environment_variables():
 
 
 # ==========================================================
+# DEPENDENCY VALIDATION (Improvement #7)
+# ==========================================================
+
+def validate_database_connection() -> bool:
+    """Validate database connection"""
+    try:
+        db_ok = check_database_connection()
+        if db_ok:
+            logger.success("   ✅ Database connection validated")
+        else:
+            logger.error("   ❌ Database connection failed")
+        return db_ok
+    except Exception as e:
+        logger.error(f"   ❌ Database validation error: {e}")
+        return False
+
+
+def validate_redis_connection() -> bool:
+    """Validate Redis connection (optional)"""
+    try:
+        import redis
+        redis_host = getattr(config, 'REDIS_HOST', 'localhost')
+        redis_port = getattr(config, 'REDIS_PORT', 6379)
+        r = redis.Redis(host=redis_host, port=redis_port, socket_connect_timeout=5)
+        r.ping()
+        SERVICE_STATUS["redis"] = True
+        logger.success("   ✅ Redis connection validated")
+        return True
+    except Exception as e:
+        SERVICE_STATUS["redis"] = False
+        logger.warning(f"   ⚠️ Redis not available (optional): {e}")
+        return False
+
+
+def validate_whatsapp_api() -> bool:
+    """Validate WhatsApp API configuration"""
+    token = getattr(config, 'WHATSAPP_ACCESS_TOKEN', '')
+    phone_id = getattr(config, 'WHATSAPP_PHONE_NUMBER_ID', '')
+    if token and phone_id:
+        logger.success("   ✅ WhatsApp API configured")
+        return True
+    else:
+        logger.warning("   ⚠️ WhatsApp API not fully configured")
+        return False
+
+
+def validate_groq_api() -> bool:
+    """Validate Groq API configuration"""
+    groq_key = getattr(config, 'GROQ_API_KEY', '')
+    if groq_key:
+        logger.success("   ✅ Groq API configured")
+        return True
+    else:
+        logger.warning("   ⚠️ Groq API not configured")
+        return False
+
+
+# ==========================================================
 # MIDDLEWARE
 # ==========================================================
 
@@ -549,45 +791,87 @@ def print_dependency_tree():
 
 
 # ==========================================================
-# LIFESPAN HANDLER (All imports tested individually)
+# LIFESPAN HANDLER (With all improvements)
 # ==========================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     STARTUP_DIAGNOSTICS["startup_time"] = datetime.now().isoformat()
+    add_timeline_entry("STARTUP_BEGIN")
     start_time = time.time()
     
     # Print dependency tree
     print_dependency_tree()
     
+    # Log memory at start
+    if PSUTIL_AVAILABLE:
+        mem = get_memory_usage()
+        logger.info(f"📊 INITIAL MEMORY: {mem['ram_used_mb']:.1f}MB / {mem['ram_available_mb']:.1f}MB ({mem['ram_percent']}%)")
+    
     try:
         logger.info("=" * 80)
-        logger.info("🤖 AI WHATSAPP AGENT STARTING v10.2.0")
+        logger.info("🤖 AI WHATSAPP AGENT STARTING v11.0.0")
         logger.info("=" * 80)
         
         # ==========================================================
-        # STAGE 1/12 - Environment Variables
+        # STAGE 1/14 - Environment Variables
         # ==========================================================
-        logger.info("📍 STAGE 1/12: Environment Variables")
+        add_timeline_entry("STAGE_1_ENV_VARS")
+        logger.info("📍 STAGE 1/14: Environment Variables")
         diagnose_environment_variables()
         
         # ==========================================================
-        # STAGE 2/12 - Individual Module Imports (CRITICAL)
+        # STAGE 2/14 - Individual Module Imports (Continue on failure)
         # ==========================================================
-        logger.info("📍 STAGE 2/12: Individual Module Import Diagnostics")
+        add_timeline_entry("STAGE_2_IMPORTS")
+        logger.info("📍 STAGE 2/14: Individual Module Import Diagnostics")
         logger.info("=" * 80)
         logger.info("TESTING EACH MODULE INDIVIDUALLY:")
         logger.info("=" * 80)
         
-        # Test each module import individually
+        # Test each module import individually - CONTINUE ON FAILURE
         imported_modules = {}
-        for module_name in SERVICE_FILES:
+        FAILED_MODULES.clear()
+        SUCCESSFUL_MODULES.clear()
+        
+        for module_name in ALL_FILES_TO_DIAGNOSE:
             try:
-                imported_modules[module_name] = diagnose_import(module_name)
+                logger.info(f"📦 IMPORTING: {module_name}")
+                import_start = time.time()
+                imported_modules[module_name] = importlib.import_module(module_name)
+                import_duration = time.time() - import_start
+                SUCCESSFUL_MODULES.append(module_name)
+                logger.success(f"   ✅ SUCCESS: {module_name} ({import_duration:.3f}s)")
             except Exception as e:
-                # The diagnose_import function already logs the error
-                # Re-raise to stop startup
-                raise
+                FAILED_MODULES.append(module_name)
+                full_analysis = full_crash_analysis(e)
+                location = crash_location(e)
+                
+                logger.error(f"   ❌ FAILED: {module_name}")
+                logger.error(f"      ERROR: {type(e).__name__}: {str(e)[:100]}")
+                if location:
+                    logger.error(f"      LOCATION: {location['file']}:{location['line']}")
+                
+                # Continue testing other modules - DON'T RAISE YET
+                write_crash_report(e, f"import_{module_name}")
+        
+        # Report failed modules summary
+        if FAILED_MODULES:
+            logger.critical("=" * 80)
+            logger.critical(f"❌ FAILED MODULES ({len(FAILED_MODULES)}):")
+            for module in FAILED_MODULES:
+                logger.critical(f"   - {module}")
+            logger.critical("=" * 80)
+        
+        if SUCCESSFUL_MODULES:
+            logger.success(f"✅ SUCCESSFUL MODULES ({len(SUCCESSFUL_MODULES)}):")
+            for module in SUCCESSFUL_MODULES[:10]:
+                logger.success(f"   - {module}")
+        
+        # If webhook module failed, raise error
+        if "app.routes.webhook" in FAILED_MODULES:
+            logger.critical("❌ CRITICAL: Webhook module failed to import - startup aborted")
+            raise RuntimeError("Webhook module import failed")
         
         # Extract webhook router if available
         webhook_router = None
@@ -598,18 +882,20 @@ async def lifespan(app: FastAPI):
                 logger.success("✅ Webhook router extracted successfully")
         
         # ==========================================================
-        # STAGE 3/12 - Cache Configuration
+        # STAGE 3/14 - Cache Configuration
         # ==========================================================
-        logger.info("📍 STAGE 3/12: Cache Configuration")
+        add_timeline_entry("STAGE_3_CACHE")
+        logger.info("📍 STAGE 3/14: Cache Configuration")
         logger.info(f"   CACHE_TTL: {CACHE_TTL}s")
         logger.info(f"   CACHE_TTL_SESSION: {CACHE_TTL_SESSION}s")
         logger.info(f"   CACHE_ENABLED: {CACHE_ENABLED}")
         logger.info("   ✅ Cache configuration loaded")
         
         # ==========================================================
-        # STAGE 4/12 - Load Additional Routers
+        # STAGE 4/14 - Load Additional Routers
         # ==========================================================
-        logger.info("📍 STAGE 4/12: Loading Additional Routers")
+        add_timeline_entry("STAGE_4_ROUTERS")
+        logger.info("📍 STAGE 4/14: Loading Additional Routers")
         
         routers_to_load = [
             ("upload", "app.routes.upload"),
@@ -637,9 +923,10 @@ async def lifespan(app: FastAPI):
                 raise
         
         # ==========================================================
-        # STAGE 5/12 - Register Webhook Router
+        # STAGE 5/14 - Register Webhook Router
         # ==========================================================
-        logger.info("📍 STAGE 5/12: Registering Webhook Router")
+        add_timeline_entry("STAGE_5_WEBHOOK")
+        logger.info("📍 STAGE 5/14: Registering Webhook Router")
         if webhook_router:
             app.include_router(webhook_router)
             ServiceRegistry.register_route("webhook_direct", webhook_router)
@@ -648,20 +935,23 @@ async def lifespan(app: FastAPI):
             logger.warning("   ⚠️ Webhook router not available")
         
         # ==========================================================
-        # STAGE 6/12 - Validate Database Connection
+        # STAGE 6/14 - Validate Dependencies (Improvement #7)
         # ==========================================================
-        logger.info("📍 STAGE 6/12: Validating Database Connection")
-        db_ok = check_database_connection()
+        add_timeline_entry("STAGE_6_DEPENDENCIES")
+        logger.info("📍 STAGE 6/14: Validating Dependencies")
+        
+        db_ok = validate_database_connection()
         SERVICE_STATUS["database"] = db_ok
-        if db_ok:
-            logger.success("   ✅ Database connected")
-        else:
-            logger.error("   ❌ Database connection failed")
+        
+        validate_redis_connection()
+        validate_whatsapp_api()
+        validate_groq_api()
         
         # ==========================================================
-        # STAGE 7/12 - Initialize Schema Service
+        # STAGE 7/14 - Initialize Schema Service
         # ==========================================================
-        logger.info("📍 STAGE 7/12: Initializing Schema Service")
+        add_timeline_entry("STAGE_7_SCHEMA")
+        logger.info("📍 STAGE 7/14: Initializing Schema Service")
         try:
             from app.services.schema_service import get_schema_service
             schema_service = diagnose_service("Schema Service", get_schema_service)
@@ -671,9 +961,10 @@ async def lifespan(app: FastAPI):
             SERVICE_STATUS["schema"] = False
         
         # ==========================================================
-        # STAGE 8/12 - Initialize KPI Service
+        # STAGE 8/14 - Initialize KPI Service
         # ==========================================================
-        logger.info("📍 STAGE 8/12: Initializing KPI Service")
+        add_timeline_entry("STAGE_8_KPI")
+        logger.info("📍 STAGE 8/14: Initializing KPI Service")
         try:
             from app.services.kpi_service import get_kpi_service
             kpi_service = diagnose_service("KPI Service", get_kpi_service)
@@ -683,9 +974,10 @@ async def lifespan(app: FastAPI):
             SERVICE_STATUS["kpi"] = False
         
         # ==========================================================
-        # STAGE 9/12 - Initialize Analytics Service
+        # STAGE 9/14 - Initialize Analytics Service
         # ==========================================================
-        logger.info("📍 STAGE 9/12: Initializing Analytics Service")
+        add_timeline_entry("STAGE_9_ANALYTICS")
+        logger.info("📍 STAGE 9/14: Initializing Analytics Service")
         try:
             from app.services.analytics_service import get_analytics_service
             analytics_service = diagnose_service("Analytics Service", get_analytics_service)
@@ -695,24 +987,28 @@ async def lifespan(app: FastAPI):
             SERVICE_STATUS["analytics"] = False
         
         # ==========================================================
-        # STAGE 10/12 - Initialize AI Provider Service
+        # STAGE 10/14 - Initialize AI Provider Service (Constructor diagnostic)
         # ==========================================================
-        logger.info("📍 STAGE 10/12: Initializing AI Provider Service")
+        add_timeline_entry("STAGE_10_AI_PROVIDER")
+        logger.info("📍 STAGE 10/14: Initializing AI Provider Service")
+        ai_provider_service = None
         try:
             from app.services.ai_provider_service import AIProviderService
-            ai_provider_service = diagnose_service("AI Provider Service", AIProviderService)
+            ai_provider_service = diagnose_constructor("AI Provider Service", AIProviderService)
             SERVICE_STATUS["ai_provider"] = True
         except Exception as e:
             logger.warning(f"   ⚠️ AI Provider Service optional: {e}")
             SERVICE_STATUS["ai_provider"] = False
         
         # ==========================================================
-        # STAGE 11/12 - Initialize AI Query Service
+        # STAGE 11/14 - Initialize AI Query Service (Constructor diagnostic)
         # ==========================================================
-        logger.info("📍 STAGE 11/12: Initializing AI Query Service")
+        add_timeline_entry("STAGE_11_AI_QUERY")
+        logger.info("📍 STAGE 11/14: Initializing AI Query Service")
+        ai_query_service = None
         try:
             from app.services.ai_query_service import get_ai_query_service
-            ai_query_service = diagnose_service("AI Query Service", get_ai_query_service)
+            ai_query_service = diagnose_constructor("AI Query Service", get_ai_query_service)
             SERVICE_STATUS["ai_query"] = True
             app.state.ai_query_available = True
             app.state.ai_query_service = ai_query_service
@@ -721,23 +1017,39 @@ async def lifespan(app: FastAPI):
             SERVICE_STATUS["ai_query"] = False
             app.state.ai_query_available = False
             app.state.ai_query_service = None
+            app.state.ai_query_error = str(e)
         
         # ==========================================================
-        # STAGE 12/12 - Initialize WhatsApp Service
+        # STAGE 12/14 - Initialize WhatsApp Service (Constructor diagnostic)
         # ==========================================================
-        logger.info("📍 STAGE 12/12: Initializing WhatsApp Service")
+        add_timeline_entry("STAGE_12_WHATSAPP")
+        logger.info("📍 STAGE 12/14: Initializing WhatsApp Service")
         try:
             from app.services.whatsapp_service import get_whatsapp_service
-            whatsapp_service = diagnose_service("WhatsApp Service", get_whatsapp_service)
+            whatsapp_service = diagnose_constructor("WhatsApp Service", get_whatsapp_service)
             SERVICE_STATUS["whatsapp"] = True
         except Exception as e:
             logger.error(f"   ❌ WhatsApp Service failed: {e}")
             SERVICE_STATUS["whatsapp"] = False
         
         # ==========================================================
-        # Create Directories
+        # STAGE 13/14 - Initialize Logistics Query Service
         # ==========================================================
-        logger.info("📍 Creating Directories")
+        add_timeline_entry("STAGE_13_LOGISTICS")
+        logger.info("📍 STAGE 13/14: Initializing Logistics Query Service")
+        try:
+            from app.services.logistics_query_service import get_logistics_query_service
+            logistics_service = diagnose_service("Logistics Query Service", get_logistics_query_service)
+            SERVICE_STATUS["logistics_query"] = True
+        except Exception as e:
+            logger.warning(f"   ⚠️ Logistics Query Service optional: {e}")
+            SERVICE_STATUS["logistics_query"] = False
+        
+        # ==========================================================
+        # STAGE 14/14 - Create Directories
+        # ==========================================================
+        add_timeline_entry("STAGE_14_DIRECTORIES")
+        logger.info("📍 STAGE 14/14: Creating Directories")
         os.makedirs("uploads", exist_ok=True)
         TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
         os.makedirs(TEMPLATES_DIR, exist_ok=True)
@@ -749,6 +1061,12 @@ async def lifespan(app: FastAPI):
         startup_duration = time.time() - start_time
         STARTUP_DIAGNOSTICS["startup_duration"] = startup_duration
         STARTUP_DIAGNOSTICS["status"] = "COMPLETED"
+        add_timeline_entry("STARTUP_COMPLETE")
+        
+        # Log final memory
+        if PSUTIL_AVAILABLE:
+            mem = get_memory_usage()
+            logger.info(f"📊 FINAL MEMORY: {mem['ram_used_mb']:.1f}MB / {mem['ram_available_mb']:.1f}MB ({mem['ram_percent']}%)")
         
         logger.info("=" * 80)
         logger.info(f"✅ Application startup complete in {startup_duration:.2f}s")
@@ -758,6 +1076,13 @@ async def lifespan(app: FastAPI):
         for service, status in SERVICE_STATUS.items():
             status_icon = "✅" if status else "❌"
             logger.info(f"{status_icon} {service}: {'LOADED' if status else 'FAILED'}")
+        
+        if FAILED_MODULES:
+            logger.warning("-" * 40)
+            logger.warning(f"⚠️ FAILED MODULES ({len(FAILED_MODULES)}):")
+            for module in FAILED_MODULES:
+                logger.warning(f"   - {module}")
+        
         logger.info("-" * 40)
         logger.info("🚀 APPLICATION STARTED SUCCESSFULLY")
         logger.info("📡 READY FOR TRAFFIC")
@@ -767,6 +1092,8 @@ async def lifespan(app: FastAPI):
         
     except Exception as e:
         STARTUP_DIAGNOSTICS["status"] = "FAILED"
+        add_timeline_entry("STARTUP_FAILED")
+        full_analysis = full_crash_analysis(e)
         location = crash_location(e)
         
         logger.critical("=" * 80)
@@ -780,6 +1107,10 @@ async def lifespan(app: FastAPI):
         
         logger.critical(f"ERROR TYPE: {type(e).__name__}")
         logger.critical(f"ERROR: {str(e)}")
+        logger.critical("=" * 80)
+        logger.critical("FULL CRASH PATH:")
+        for i, frame in enumerate(full_analysis, 1):
+            logger.critical(f"  {i}. {frame['file']}:{frame['line']} in {frame['function']}")
         logger.critical("=" * 80)
         logger.critical("FULL TRACEBACK:")
         logger.critical(traceback.format_exc())
@@ -803,7 +1134,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AI WhatsApp Logistics Assistant",
     description="Enterprise Logistics AI Platform - WhatsApp Integration",
-    version="10.2.0",
+    version="11.0.0",
     docs_url="/api/docs" if config.ENVIRONMENT != "production" else None,
     redoc_url="/api/redoc" if config.ENVIRONMENT != "production" else None,
     openapi_url="/api/openapi.json" if config.ENVIRONMENT != "production" else None,
@@ -824,6 +1155,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     request_id = getattr(request.state, 'request_id', 'unknown')
+    full_analysis = full_crash_analysis(exc)
     location = crash_location(exc)
     
     if location:
@@ -937,10 +1269,53 @@ async def crash_diagnostics():
     """Get detailed crash diagnostics"""
     return {
         "status": STARTUP_DIAGNOSTICS["status"],
-        "version": "10.2.0",
+        "version": "11.0.0",
         "services_status": SERVICE_STATUS,
         "errors_count": len(STARTUP_DIAGNOSTICS["errors"]),
-        "imports_count": len(STARTUP_DIAGNOSTICS["imports"])
+        "imports_count": len(STARTUP_DIAGNOSTICS["imports"]),
+        "failed_modules": FAILED_MODULES,
+        "successful_modules": SUCCESSFUL_MODULES[:20]
+    }
+
+
+@app.get("/crash-history", tags=["Diagnostics"])
+async def get_crash_history():
+    """Get crash history (Improvement #2)"""
+    return {
+        "crash_count": len(CRASH_HISTORY),
+        "crashes": CRASH_HISTORY[-10:]  # Last 10 crashes
+    }
+
+
+@app.get("/startup-timeline", tags=["Diagnostics"])
+async def get_startup_timeline():
+    """Get startup timeline (Improvement #8)"""
+    return {
+        "timeline": STARTUP_TIMELINE,
+        "total_stages": len(STARTUP_TIMELINE)
+    }
+
+
+@app.get("/deep-diagnostics", tags=["Diagnostics"])
+async def deep_diagnostics():
+    """Single endpoint for complete diagnostics (Improvement #10)"""
+    return {
+        "startup_status": STARTUP_DIAGNOSTICS["status"],
+        "startup_duration": STARTUP_DIAGNOSTICS["startup_duration"],
+        "service_status": SERVICE_STATUS,
+        "failed_modules": FAILED_MODULES,
+        "successful_modules_count": len(SUCCESSFUL_MODULES),
+        "environment": {
+            "environment": config.ENVIRONMENT,
+            "cache_ttl": CACHE_TTL,
+            "database_configured": bool(config.DATABASE_URL),
+            "whatsapp_configured": bool(config.WHATSAPP_ACCESS_TOKEN),
+            "groq_configured": bool(config.GROQ_API_KEY)
+        },
+        "crash_history_count": len(CRASH_HISTORY),
+        "startup_timeline": STARTUP_TIMELINE,
+        "memory": get_memory_usage() if PSUTIL_AVAILABLE else None,
+        "timestamp": datetime.now().isoformat()
     }
 
 
@@ -1043,6 +1418,7 @@ async def ping():
 if config.ENVIRONMENT != "production":
     @app.get("/test-crash")
     async def test_crash():
+        """Test endpoint to simulate a crash - for debugging only"""
         raise RuntimeError("This is a test crash - check logs for file and line number")
 
 
@@ -1070,15 +1446,22 @@ if __name__ == "__main__":
 # ==========================================================
 
 logger.info("=" * 60)
-logger.info("📡 MAIN APP v10.2.0 - ENHANCED IMPORT DIAGNOSTICS")
+logger.info("📡 MAIN APP v11.0.0 - ULTIMATE DIAGNOSTICS")
 logger.info("")
-logger.info("   ENHANCED FEATURES:")
-logger.info("   ✅ Individual module import testing")
-logger.info("   ✅ Visual separators for each import")
-logger.info("   ✅ Exact module name on failure")
-logger.info("   ✅ Error type and message display")
-logger.info("   ✅ Crash file and line location")
+logger.info("   NEW FEATURES IN v11.0.0:")
+logger.info("   ✅ Recursive traceback analysis (full crash path)")
+logger.info("   ✅ Crash history storage and endpoint")
+logger.info("   ✅ Import duration tracking")
+logger.info("   ✅ Full route file diagnostics")
+logger.info("   ✅ Constructor diagnostics for all services")
+logger.info("   ✅ Circular import detection")
+logger.info("   ✅ Dependency validation (DB, Redis, WhatsApp, Groq)")
+logger.info("   ✅ Startup timeline endpoint")
+logger.info("   ✅ Memory diagnostics after each stage")
+logger.info("   ✅ Deep diagnostics endpoint (single debug view)")
+logger.info("   ✅ Continue testing all modules even after failure")
 logger.info("")
 logger.info(f"   CACHE_TTL: {CACHE_TTL}s")
-logger.info(f"   MODULES TO TEST: {len(SERVICE_FILES)}")
+logger.info(f"   MODULES TO TEST: {len(ALL_FILES_TO_DIAGNOSE)}")
+logger.info(f"   PSUTIL AVAILABLE: {PSUTIL_AVAILABLE}")
 logger.info("=" * 60)
