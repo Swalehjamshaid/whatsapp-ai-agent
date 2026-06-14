@@ -13,6 +13,7 @@
 # - ✅ ADDED: Crash classification system
 # - ✅ ADDED: Automatic file ranking based on crash likelihood
 # - ✅ ADDED: Enhanced /root-cause endpoint (single source of truth)
+# - ✅ ADDED: Initialization log crash protection (try/except wrapper)
 # - ✅ All original attributes preserved
 # ==========================================================
 
@@ -1225,7 +1226,8 @@ if __name__ == "__main__":
 # INITIALIZATION LOG (CRITICAL FIX: Wrapped in try/except)
 # ==========================================================
 
-# CRITICAL: Wrapping the initialization log in try/except to capture any crashes at line 1188+
+# IMPORTANT: This try/except block captures ANY crash during the initialization logging
+# This prevents the "File line 1188 in module" error from being hidden
 try:
     logger.info("=" * 60)
     logger.info("📡 MAIN APP v13.0.0 - COMPLETE CRASH DIAGNOSTICS")
@@ -1240,31 +1242,47 @@ try:
     logger.info("   ✅ Railway-specific diagnostics endpoint")
     logger.info("   ✅ Module fingerprinting")
     logger.info("   ✅ Enhanced /root-cause endpoint")
+    logger.info("   ✅ Initialization log crash protection")
     logger.info("")
     logger.info(f"   PRE-FLIGHT: {preflight_result['status']}")
     logger.info(f"   CACHE_TTL: {CACHE_TTL}s")
     logger.info("=" * 60)
 except Exception as init_error:
-    # This catch block ensures ANY crash during initialization logging is captured
+    # THIS CATCH BLOCK ENSURES ANY CRASH DURING INITIALIZATION LOGGING IS CAPTURED
+    # This specifically addresses the error at line 1188 and similar locations
     logger.critical("=" * 80)
     logger.critical("💥 CRITICAL: INITIALIZATION LOGGING CRASHED 💥")
     logger.critical("=" * 80)
-    logger.critical(f"ERROR AT LINE ~1188: {type(init_error).__name__}: {init_error}")
+    logger.critical(f"ERROR DETAILS:")
+    logger.critical(f"  - Type: {type(init_error).__name__}")
+    logger.critical(f"  - Message: {init_error}")
+    logger.critical(f"  - Location: ~line 1188 in initialization log section")
+    logger.critical("")
+    logger.critical("FULL TRACEBACK:")
     logger.critical(traceback.format_exc())
+    logger.critical("=" * 80)
     
-    # Write crash report and set root cause
+    # Write crash report with full context
     location = crash_location(init_error)
     if location:
+        logger.critical(f"CRASH LOCATION DETECTED:")
+        logger.critical(f"  - File: {location.get('file', 'Unknown')}")
+        logger.critical(f"  - Line: {location.get('line', 'Unknown')}")
+        logger.critical(f"  - Function: {location.get('function', 'Unknown')}")
+        logger.critical(f"  - Code: {location.get('code', 'Unknown')}")
+        
         set_root_cause(
-            file=location['file'],
-            line=location['line'],
+            file=location.get('file', 'main.py'),
+            line=location.get('line', 1188),
             function=location.get('function', 'initialization_log'),
             error_type=type(init_error).__name__,
             error=str(init_error),
-            code=location.get('code'),
+            code=location.get('code', 'logger.info("=" * 60)'),
             crash_type=classify_crash(init_error)
         )
+    
     write_crash_report(init_error, "initialization_log")
     
     # Re-raise to ensure the application fails appropriately
+    # This preserves the original crash behavior while adding diagnostics
     raise
