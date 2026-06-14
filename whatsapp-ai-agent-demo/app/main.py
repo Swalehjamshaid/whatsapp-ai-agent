@@ -49,7 +49,7 @@ from slowapi.errors import RateLimitExceeded
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
 # ==========================================================
-# CRITICAL FIX: Import config BEFORE FastAPI app creation
+# CRITICAL FIX: Import config at MODULE LEVEL (BEFORE FastAPI app creation)
 # ==========================================================
 from app.config import config
 
@@ -88,7 +88,7 @@ def crash_location(exc: Exception) -> Optional[Dict[str, Any]]:
             "file": last_frame.filename,
             "line": last_frame.lineno,
             "function": last_frame.name,
-            "code": last_frame.line if frame.line else "Unknown"
+            "code": last_frame.line if last_frame.line else "Unknown"
         }
     
     return None
