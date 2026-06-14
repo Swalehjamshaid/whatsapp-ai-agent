@@ -1222,23 +1222,49 @@ if __name__ == "__main__":
 
 
 # ==========================================================
-# INITIALIZATION LOG
+# INITIALIZATION LOG (CRITICAL FIX: Wrapped in try/except)
 # ==========================================================
 
-logger.info("=" * 60)
-logger.info("📡 MAIN APP v13.0.0 - COMPLETE CRASH DIAGNOSTICS")
-logger.info("")
-logger.info("   NEW FEATURES IN v13.0.0:")
-logger.info("   ✅ Pre-flight check (Python, packages, env, directories)")
-logger.info("   ✅ Import dependency tree scanner")
-logger.info("   ✅ Constructor step-by-step tracking")
-logger.info("   ✅ Runtime diagnostics middleware")
-logger.info("   ✅ Crash classification system")
-logger.info("   ✅ File ranking based on crash likelihood")
-logger.info("   ✅ Railway-specific diagnostics endpoint")
-logger.info("   ✅ Module fingerprinting")
-logger.info("   ✅ Enhanced /root-cause endpoint")
-logger.info("")
-logger.info(f"   PRE-FLIGHT: {preflight_result['status']}")
-logger.info(f"   CACHE_TTL: {CACHE_TTL}s")
-logger.info("=" * 60)
+# CRITICAL: Wrapping the initialization log in try/except to capture any crashes at line 1188+
+try:
+    logger.info("=" * 60)
+    logger.info("📡 MAIN APP v13.0.0 - COMPLETE CRASH DIAGNOSTICS")
+    logger.info("")
+    logger.info("   NEW FEATURES IN v13.0.0:")
+    logger.info("   ✅ Pre-flight check (Python, packages, env, directories)")
+    logger.info("   ✅ Import dependency tree scanner")
+    logger.info("   ✅ Constructor step-by-step tracking")
+    logger.info("   ✅ Runtime diagnostics middleware")
+    logger.info("   ✅ Crash classification system")
+    logger.info("   ✅ File ranking based on crash likelihood")
+    logger.info("   ✅ Railway-specific diagnostics endpoint")
+    logger.info("   ✅ Module fingerprinting")
+    logger.info("   ✅ Enhanced /root-cause endpoint")
+    logger.info("")
+    logger.info(f"   PRE-FLIGHT: {preflight_result['status']}")
+    logger.info(f"   CACHE_TTL: {CACHE_TTL}s")
+    logger.info("=" * 60)
+except Exception as init_error:
+    # This catch block ensures ANY crash during initialization logging is captured
+    logger.critical("=" * 80)
+    logger.critical("💥 CRITICAL: INITIALIZATION LOGGING CRASHED 💥")
+    logger.critical("=" * 80)
+    logger.critical(f"ERROR AT LINE ~1188: {type(init_error).__name__}: {init_error}")
+    logger.critical(traceback.format_exc())
+    
+    # Write crash report and set root cause
+    location = crash_location(init_error)
+    if location:
+        set_root_cause(
+            file=location['file'],
+            line=location['line'],
+            function=location.get('function', 'initialization_log'),
+            error_type=type(init_error).__name__,
+            error=str(init_error),
+            code=location.get('code'),
+            crash_type=classify_crash(init_error)
+        )
+    write_crash_report(init_error, "initialization_log")
+    
+    # Re-raise to ensure the application fails appropriately
+    raise
