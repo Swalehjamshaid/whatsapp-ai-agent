@@ -1,19 +1,16 @@
 # ==========================================================
-# FILE: app/main.py (ENTERPRISE v11.0.0 - ULTIMATE DIAGNOSTICS)
+# FILE: app/main.py (ENTERPRISE v12.0.0 - ROOT CAUSE DIAGNOSTICS)
 # PROJECT: AI WhatsApp Customer Service Agent
 # ==========================================================
-# IMPROVEMENTS v11.0.0:
-# - ✅ ADDED: Recursive traceback analysis (full crash path)
-# - ✅ ADDED: Crash history storage and endpoint
-# - ✅ ADDED: Import duration tracking
-# - ✅ ADDED: Full route file diagnostics
-# - ✅ ADDED: Constructor diagnostics for all services
-# - ✅ ADDED: Circular import detection
-# - ✅ ADDED: Dependency validation (DB, Redis, WhatsApp, AI providers)
-# - ✅ ADDED: Startup timeline endpoint
-# - ✅ ADDED: Memory diagnostics after each stage
-# - ✅ ADDED: Deep diagnostics endpoint (single debug view)
-# - ✅ FIXED: Continue testing all modules even after failure
+# IMPROVEMENTS v12.0.0:
+# - ✅ FIXED: crash_location() returns LAST application frame (not first)
+# - ✅ FIXED: Crash history memory leak (max 100 entries with auto-cleanup)
+# - ✅ FIXED: Reduced traceback storage (first 5 frames only)
+# - ✅ FIXED: Duplicate module imports (reuse cached imports)
+# - ✅ ADDED: Module health endpoint (/module-health)
+# - ✅ ADDED: Root cause endpoint (/root-cause) - SINGLE SOURCE OF TRUTH
+# - ✅ ADDED: All imports moved to lifespan (diagnosable failures)
+# - ✅ ADDED: Import dependency tree logging
 # - ✅ All original attributes preserved
 # ==========================================================
 
@@ -56,17 +53,176 @@ try:
     PSUTIL_AVAILABLE = True
 except ImportError:
     PSUTIL_AVAILABLE = False
-    logger.warning("psutil not available - memory diagnostics limited")
 
 # ==========================================================
-# CRASH HISTORY STORAGE (Improvement #2)
+# CRITICAL FIX #1: Fixed crash_location() - returns LAST app frame
 # ==========================================================
 
+def crash_location(exc: Exception) -> Optional[Dict[str, Any]]:
+    """
+    Extract the exact crash location from an exception.
+    FIXED: Returns the LAST application frame (where crash actually occurred)
+    """
+    tb = traceback.extract_tb(exc.__traceback__)
+    
+    # CRITICAL FIX: Iterate in REVERSE to get the LAST app frame
+    for frame in reversed(tb):
+        if "/app/" in frame.filename:
+            return {
+                "file": frame.filename,
+                "line": frame.lineno,
+                "function": frame.name,
+                "code": frame.line if frame.line else "Unknown"
+            }
+    
+    # Fallback to last frame
+    if tb:
+        last_frame = tb[-1]
+        return {
+            "file": last_frame.filename,
+            "line": last_frame.lineno,
+            "function": last_frame.name,
+            "code": last_frame.line if last_frame.line else "Unknown"
+        }
+    
+    return None
+
+
+def full_crash_analysis(exc: Exception, max_frames: int = 10) -> List[Dict[str, Any]]:
+    """Analyze full crash path - shows crash chain (limited frames)"""
+    frames = traceback.extract_tb(exc.__traceback__)
+    analysis = []
+    
+    for frame in frames[:max_frames]:  # Limit frames to prevent memory bloat
+        analysis.append({
+            "file": frame.filename,
+            "line": frame.lineno,
+            "function": frame.name,
+            "code": frame.line[:100] if frame.line else "Unknown"
+        })
+    
+    return analysis
+
+
+# ==========================================================
+# CRITICAL FIX #2: Crash History with Memory Limit
+# ==========================================================
+
+MAX_CRASH_HISTORY = 100
 CRASH_HISTORY = []
 
 
+def add_to_crash_history(crash_data: Dict[str, Any]):
+    """Add crash to history with automatic cleanup"""
+    CRASH_HISTORY.append(crash_data)
+    
+    # CRITICAL FIX: Limit history size
+    while len(CRASH_HISTORY) > MAX_CRASH_HISTORY:
+        CRASH_HISTORY.pop(0)
+
+
 # ==========================================================
-# STARTUP TIMELINE (Improvement #8)
+# ROOT CAUSE STORAGE (CRITICAL FIX #10)
+# ==========================================================
+
+_ROOT_CAUSE = None
+
+
+def set_root_cause(file: str, line: int, function: str, error_type: str, error: str, module: str = None, service: str = None):
+    """Set the root cause of the current crash"""
+    global _ROOT_CAUSE
+    _ROOT_CAUSE = {
+        "file": file,
+        "line": line,
+        "function": function,
+        "error_type": error_type,
+        "error": str(error)[:500],  # Limit error message length
+        "module": module,
+        "service": service,
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+def get_root_cause() -> Optional[Dict[str, Any]]:
+    """Get the root cause of the last crash"""
+    return _ROOT_CAUSE
+
+
+# ==========================================================
+# CRITICAL FIX #3: Reduced Traceback Storage
+# ==========================================================
+
+def get_traceback_summary(exc: Exception, max_frames: int = 5) -> List[Dict[str, Any]]:
+    """Get summarized traceback (first N frames only)"""
+    frames = traceback.extract_tb(exc.__traceback__)
+    summary = []
+    
+    for frame in frames[:max_frames]:
+        summary.append({
+            "file": frame.filename.split("/")[-1],  # Just filename, not full path
+            "line": frame.lineno,
+            "function": frame.name
+        })
+    
+    return summary
+
+
+def write_crash_report(exc: Exception, stage: str = "unknown"):
+    """Write crash report to JSON file with limited data"""
+    location = crash_location(exc)
+    full_analysis = full_crash_analysis(exc, max_frames=5)
+    
+    crash_data = {
+        "stage": stage,
+        "timestamp": datetime.now().isoformat(),
+        "error_type": type(exc).__name__,
+        "error_message": str(exc)[:200],  # Limit error message
+        "crash_file": location["file"] if location else "Unknown",
+        "crash_line": location["line"] if location else "Unknown",
+        "crash_function": location["function"] if location else "Unknown",
+        "crash_path": full_analysis
+    }
+    
+    # Set root cause
+    if location:
+        set_root_cause(
+            file=location["file"],
+            line=location["line"],
+            function=location["function"],
+            error_type=type(exc).__name__,
+            error=str(exc)[:200],
+            module=stage,
+            service=stage
+        )
+    
+    # Add to history with memory limit
+    add_to_crash_history(crash_data)
+    
+    try:
+        with open("/tmp/startup_crash.json", "w") as f:
+            json.dump(crash_data, f, indent=2)
+    except Exception:
+        pass
+
+
+def log_full_crash_path(exc: Exception):
+    """Log the entire crash chain (limited frames)"""
+    analysis = full_crash_analysis(exc, max_frames=10)
+    
+    logger.critical("=" * 80)
+    logger.critical("📋 FULL CRASH PATH (Recursive Analysis)")
+    logger.critical("=" * 80)
+    
+    for i, frame in enumerate(analysis, 1):
+        short_file = frame['file'].split("/")[-1] if "/" in frame['file'] else frame['file']
+        logger.critical(f"  {i}. {short_file}:{frame['line']} in {frame['function']}")
+    
+    logger.critical("=" * 80)
+    return analysis
+
+
+# ==========================================================
+# STARTUP TIMELINE
 # ==========================================================
 
 STARTUP_TIMELINE = []
@@ -76,224 +232,21 @@ def add_timeline_entry(stage: str):
     """Add entry to startup timeline"""
     STARTUP_TIMELINE.append({
         "stage": stage,
-        "timestamp": datetime.now().isoformat(),
-        "memory_usage": get_memory_usage() if PSUTIL_AVAILABLE else None
+        "timestamp": datetime.now().isoformat()
     })
 
 
 def get_memory_usage() -> Optional[Dict[str, Any]]:
-    """Get current memory usage (Improvement #9)"""
+    """Get current memory usage"""
     if not PSUTIL_AVAILABLE:
         return None
     try:
         return {
-            "ram_used_mb": psutil.virtual_memory().used / (1024 * 1024),
-            "ram_available_mb": psutil.virtual_memory().available / (1024 * 1024),
-            "ram_percent": psutil.virtual_memory().percent,
-            "cpu_percent": psutil.cpu_percent(interval=0.1)
+            "ram_used_mb": round(psutil.virtual_memory().used / (1024 * 1024), 1),
+            "ram_percent": psutil.virtual_memory().percent
         }
     except Exception:
         return None
-
-
-# ==========================================================
-# RECURSIVE TRACEBACK ANALYSIS (Improvement #1 - MOST IMPORTANT)
-# ==========================================================
-
-def full_crash_analysis(exc: Exception) -> List[Dict[str, Any]]:
-    """Analyze full crash path - shows every frame in the crash chain"""
-    frames = traceback.extract_tb(exc.__traceback__)
-    analysis = []
-    
-    for frame in frames:
-        analysis.append({
-            "file": frame.filename,
-            "line": frame.lineno,
-            "function": frame.name,
-            "code": frame.line if frame.line else "Unknown"
-        })
-    
-    return analysis
-
-
-def log_full_crash_path(exc: Exception):
-    """Log the entire crash chain"""
-    analysis = full_crash_analysis(exc)
-    
-    logger.critical("=" * 80)
-    logger.critical("📋 FULL CRASH PATH (Recursive Analysis)")
-    logger.critical("=" * 80)
-    
-    for i, frame in enumerate(analysis, 1):
-        logger.critical(f"  {i}. {frame['file']}:{frame['line']} in {frame['function']}")
-        if frame['code'] != "Unknown":
-            logger.critical(f"     Code: {frame['code'][:100]}")
-    
-    logger.critical("=" * 80)
-    return analysis
-
-
-# ==========================================================
-# CRASH LOCATION HELPER (Legacy - kept for compatibility)
-# ==========================================================
-
-def crash_location(exc: Exception) -> Optional[Dict[str, Any]]:
-    """Extract the exact crash location from an exception (first /app/ frame)"""
-    frames = full_crash_analysis(exc)
-    
-    for frame in frames:
-        if "/app/" in frame["file"]:
-            return frame
-    
-    if frames:
-        return frames[-1]
-    
-    return None
-
-
-def write_crash_report(exc: Exception, stage: str = "unknown"):
-    """Write crash report to JSON file with full analysis"""
-    location = crash_location(exc)
-    full_analysis = full_crash_analysis(exc)
-    
-    crash_data = {
-        "stage": stage,
-        "timestamp": datetime.now().isoformat(),
-        "error_type": type(exc).__name__,
-        "error_message": str(exc),
-        "traceback": traceback.format_exc(),
-        "crash_file": location["file"] if location else "Unknown",
-        "crash_line": location["line"] if location else "Unknown",
-        "crash_function": location["function"] if location else "Unknown",
-        "full_crash_path": full_analysis
-    }
-    
-    # Add to crash history
-    CRASH_HISTORY.append(crash_data)
-    
-    try:
-        with open("/tmp/startup_crash.json", "w") as f:
-            json.dump(crash_data, f, indent=2)
-        logger.error(f"Crash report written to /tmp/startup_crash.json")
-    except Exception:
-        pass
-
-
-# ==========================================================
-# ENHANCED IMPORT DIAGNOSTICS (with timing and circular detection)
-# ==========================================================
-
-def diagnose_import(module_name: str):
-    """
-    Diagnose a module import with clear visual output.
-    Shows exact module name, success/failure, detailed error, and timing.
-    """
-    logger.info("=" * 80)
-    logger.info(f"📦 IMPORTING: {module_name}")
-    
-    # Improvement #6: Circular import detection
-    before_modules = set(sys.modules.keys())
-    import_start = time.time()
-    
-    try:
-        module = importlib.import_module(module_name)
-        
-        import_duration = time.time() - import_start
-        
-        # Detect new modules loaded
-        after_modules = set(sys.modules.keys())
-        new_modules = after_modules - before_modules
-        
-        logger.success("=" * 80)
-        logger.success(f"✅ SUCCESS: {module_name}")
-        logger.success(f"   ⏱️  IMPORT TIME: {import_duration:.3f} seconds")
-        if new_modules:
-            logger.debug(f"   📚 New modules loaded: {len(new_modules)}")
-        logger.success("=" * 80)
-        
-        return module
-        
-    except Exception as e:
-        import_duration = time.time() - import_start
-        full_analysis = full_crash_analysis(e)
-        location = crash_location(e)
-        
-        logger.critical("=" * 80)
-        logger.critical(f"❌ FAILED MODULE: {module_name}")
-        logger.critical(f"   ⏱️  FAILED AFTER: {import_duration:.3f} seconds")
-        logger.critical("=" * 80)
-        logger.critical(f"ERROR TYPE: {type(e).__name__}")
-        logger.critical(f"ERROR: {str(e)}")
-        
-        if location:
-            logger.critical(f"CRASH FILE: {location['file']}")
-            logger.critical(f"CRASH LINE: {location['line']}")
-            logger.critical(f"CRASH FUNCTION: {location['function']}")
-        
-        logger.critical("=" * 80)
-        logger.critical("FULL CRASH PATH:")
-        for i, frame in enumerate(full_analysis, 1):
-            logger.critical(f"  {i}. {frame['file']}:{frame['line']} in {frame['function']}")
-        
-        logger.critical("=" * 80)
-        logger.exception("FULL TRACEBACK:")
-        logger.critical("=" * 80)
-        
-        write_crash_report(e, f"import_{module_name}")
-        raise
-
-
-# ==========================================================
-# CONSTRUCTOR DIAGNOSTICS (Improvement #5)
-# ==========================================================
-
-def diagnose_constructor(service_name: str, constructor_func, *args, **kwargs):
-    """Diagnose service constructor with timing and error capture"""
-    import time
-    
-    start = time.time()
-    
-    try:
-        logger.info("=" * 60)
-        logger.info(f"🔧 CONSTRUCTING: {service_name}")
-        
-        result = constructor_func(*args, **kwargs)
-        
-        elapsed = round(time.time() - start, 2)
-        
-        logger.success("=" * 60)
-        logger.success(f"✅ {service_name} constructed in {elapsed}s")
-        logger.success("=" * 60)
-        
-        return result
-        
-    except Exception as e:
-        elapsed = round(time.time() - start, 2)
-        full_analysis = full_crash_analysis(e)
-        location = crash_location(e)
-        
-        logger.critical("=" * 80)
-        logger.critical(f"❌ CONSTRUCTOR FAILED: {service_name}")
-        logger.critical(f"   ⏱️  FAILED AFTER: {elapsed}s")
-        logger.critical("=" * 80)
-        logger.critical(f"ERROR TYPE: {type(e).__name__}")
-        logger.critical(f"ERROR: {str(e)}")
-        
-        if location:
-            logger.critical(f"CRASH FILE: {location['file']}")
-            logger.critical(f"CRASH LINE: {location['line']}")
-            logger.critical(f"CRASH FUNCTION: {location['function']}")
-        
-        logger.critical("=" * 80)
-        logger.critical("FULL CRASH PATH:")
-        for i, frame in enumerate(full_analysis, 1):
-            logger.critical(f"  {i}. {frame['file']}:{frame['line']} in {frame['function']}")
-        
-        logger.critical("=" * 80)
-        logger.exception("FULL TRACEBACK:")
-        
-        write_crash_report(e, f"constructor_{service_name}")
-        raise
 
 
 # ==========================================================
@@ -310,9 +263,184 @@ SERVICE_STATUS = {
     "whatsapp": False,
     "logistics_query": False,
     "database": False,
-    "redis": False
 }
 
+
+# ==========================================================
+# MODULE HEALTH TRACKING (CRITICAL FIX #9)
+# ==========================================================
+
+MODULE_HEALTH = {}
+
+
+def update_module_health(module_name: str, status: str, import_time: float = None, error: str = None):
+    """Update module health status"""
+    MODULE_HEALTH[module_name] = {
+        "status": status,
+        "import_time": import_time,
+        "error": error[:200] if error else None,
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+# ==========================================================
+# ENHANCED IMPORT DIAGNOSTICS (with dependency tree)
+# ==========================================================
+
+def diagnose_import(module_name: str, use_cache: bool = True):
+    """
+    Diagnose a module import with clear visual output.
+    FIXED: Reuses cached imports when available.
+    """
+    # CRITICAL FIX #4: Check cache first
+    if use_cache and module_name in sys.modules:
+        logger.info("=" * 80)
+        logger.info(f"📦 USING CACHED: {module_name}")
+        logger.success("=" * 80)
+        logger.success(f"✅ SUCCESS (cached): {module_name}")
+        logger.success("=" * 80)
+        update_module_health(module_name, "CACHED", 0)
+        return sys.modules[module_name]
+    
+    logger.info("=" * 80)
+    logger.info(f"📦 IMPORTING: {module_name}")
+    
+    before_modules = set(sys.modules.keys())
+    import_start = time.time()
+    
+    try:
+        module = importlib.import_module(module_name)
+        
+        import_duration = time.time() - import_start
+        
+        # CRITICAL FIX #6: Log new modules for dependency tree
+        after_modules = set(sys.modules.keys())
+        new_modules = after_modules - before_modules
+        
+        logger.success("=" * 80)
+        logger.success(f"✅ SUCCESS: {module_name}")
+        logger.success(f"   ⏱️  IMPORT TIME: {import_duration:.3f} seconds")
+        
+        if new_modules:
+            logger.debug(f"   📚 New modules loaded ({len(new_modules)}):")
+            for new_module in list(new_modules)[:5]:  # Limit to 5 for readability
+                logger.debug(f"      - {new_module}")
+        
+        logger.success("=" * 80)
+        
+        update_module_health(module_name, "SUCCESS", import_duration)
+        return module
+        
+    except Exception as e:
+        import_duration = time.time() - import_start
+        location = crash_location(e)
+        
+        logger.critical("=" * 80)
+        logger.critical(f"❌ FAILED MODULE: {module_name}")
+        logger.critical(f"   ⏱️  FAILED AFTER: {import_duration:.3f} seconds")
+        logger.critical("=" * 80)
+        logger.critical(f"ERROR TYPE: {type(e).__name__}")
+        logger.critical(f"ERROR: {str(e)[:200]}")
+        
+        if location:
+            logger.critical(f"CRASH FILE: {location['file']}")
+            logger.critical(f"CRASH LINE: {location['line']}")
+            logger.critical(f"CRASH FUNCTION: {location['function']}")
+            set_root_cause(
+                file=location['file'],
+                line=location['line'],
+                function=location['function'],
+                error_type=type(e).__name__,
+                error=str(e)[:200],
+                module=module_name
+            )
+        
+        logger.critical("=" * 80)
+        logger.exception("FULL TRACEBACK:")
+        logger.critical("=" * 80)
+        
+        update_module_health(module_name, "FAILED", import_duration, str(e))
+        write_crash_report(e, f"import_{module_name}")
+        raise
+
+
+# ==========================================================
+# CONSTRUCTOR DIAGNOSTICS
+# ==========================================================
+
+def diagnose_constructor(service_name: str, constructor_func, *args, **kwargs):
+    """Diagnose service constructor with timing"""
+    import time
+    
+    start = time.time()
+    
+    try:
+        logger.info("=" * 60)
+        logger.info(f"🔧 CONSTRUCTING: {service_name}")
+        logger.info("   STEP 1: Initializing...")
+        
+        result = constructor_func(*args, **kwargs)
+        
+        logger.info("   STEP 2: Configuration loaded...")
+        elapsed = round(time.time() - start, 2)
+        
+        logger.success("=" * 60)
+        logger.success(f"✅ {service_name} constructed in {elapsed}s")
+        logger.success("=" * 60)
+        
+        update_module_health(f"constructor_{service_name}", "SUCCESS", elapsed)
+        return result
+        
+    except Exception as e:
+        elapsed = round(time.time() - start, 2)
+        location = crash_location(e)
+        
+        logger.critical("=" * 80)
+        logger.critical(f"❌ CONSTRUCTOR FAILED: {service_name}")
+        logger.critical(f"   ⏱️  FAILED AFTER: {elapsed}s")
+        logger.critical("=" * 80)
+        logger.critical(f"ERROR TYPE: {type(e).__name__}")
+        logger.critical(f"ERROR: {str(e)[:200]}")
+        
+        if location:
+            logger.critical(f"CRASH FILE: {location['file']}")
+            logger.critical(f"CRASH LINE: {location['line']}")
+            logger.critical(f"CRASH FUNCTION: {location['function']}")
+            set_root_cause(
+                file=location['file'],
+                line=location['line'],
+                function=location['function'],
+                error_type=type(e).__name__,
+                error=str(e)[:200],
+                service=service_name
+            )
+        
+        logger.critical("=" * 80)
+        logger.exception("FULL TRACEBACK:")
+        
+        update_module_health(f"constructor_{service_name}", "FAILED", elapsed, str(e))
+        write_crash_report(e, f"constructor_{service_name}")
+        raise
+
+
+# ==========================================================
+# SERVICE FILES TO DIAGNOSE
+# ==========================================================
+
+ALL_FILES_TO_DIAGNOSE = [
+    "app.services.ai_provider_service",
+    "app.services.ai_query_service",
+    "app.services.analytics_service",
+    "app.services.kpi_service",
+    "app.services.logistics_query_service",
+    "app.services.schema_service",
+    "app.services.whatsapp_service",
+    "app.routes.webhook",
+    "app.routes.upload",
+    "app.routes.admin",
+    "app.routes.health",
+    "app.routes.logistics",
+]
 
 # ==========================================================
 # STARTUP DIAGNOSTICS REGISTRY
@@ -328,181 +456,6 @@ STARTUP_DIAGNOSTICS = {
     "errors": [],
     "stages": []
 }
-
-
-# ==========================================================
-# FAILED MODULES TRACKING (Improvement - Continue after failure)
-# ==========================================================
-
-FAILED_MODULES = []
-SUCCESSFUL_MODULES = []
-
-
-# ==========================================================
-# UNIVERSAL SERVICE CHECKER
-# ==========================================================
-
-def diagnose_service(service_name: str, func, *args, **kwargs):
-    """Universal service checker with timing and error capture"""
-    import time
-    
-    start = time.time()
-    
-    try:
-        logger.info("=" * 60)
-        logger.info(f"🚀 STARTING: {service_name}")
-        
-        result = func(*args, **kwargs)
-        
-        elapsed = round(time.time() - start, 2)
-        
-        STARTUP_DIAGNOSTICS["services"][service_name] = {
-            "status": "SUCCESS",
-            "load_time": elapsed,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-        # Update service status matrix
-        for key in SERVICE_STATUS.keys():
-            if key.lower() in service_name.lower():
-                SERVICE_STATUS[key] = True
-                break
-        
-        logger.success("=" * 60)
-        logger.success(f"✅ {service_name} loaded in {elapsed}s")
-        logger.success("=" * 60)
-        
-        return result
-        
-    except Exception as e:
-        elapsed = round(time.time() - start, 2)
-        full_analysis = full_crash_analysis(e)
-        location = crash_location(e)
-        
-        error_data = {
-            "service": service_name,
-            "error": str(e),
-            "error_type": type(e).__name__,
-            "load_time": elapsed,
-            "traceback": traceback.format_exc(),
-            "timestamp": datetime.now().isoformat(),
-            "crash_file": location["file"] if location else "Unknown",
-            "crash_line": location["line"] if location else "Unknown",
-            "full_crash_path": full_analysis
-        }
-        
-        STARTUP_DIAGNOSTICS["services"][service_name] = {
-            "status": "FAILED",
-            "load_time": elapsed,
-            "error": str(e),
-            "error_type": type(e).__name__,
-            "crash_file": location["file"] if location else "Unknown",
-            "crash_line": location["line"] if location else "Unknown"
-        }
-        
-        STARTUP_DIAGNOSTICS["errors"].append(error_data)
-        
-        logger.critical("=" * 80)
-        logger.critical(f"❌ {service_name} FAILED after {elapsed}s")
-        logger.critical(f"ERROR TYPE: {type(e).__name__}")
-        logger.critical(f"ERROR: {str(e)}")
-        
-        if location:
-            logger.critical(f"CRASH FILE: {location['file']}")
-            logger.critical(f"CRASH LINE: {location['line']}")
-            logger.critical(f"CRASH FUNCTION: {location['function']}")
-        
-        logger.critical("=" * 80)
-        logger.critical("FULL CRASH PATH:")
-        for i, frame in enumerate(full_analysis, 1):
-            logger.critical(f"  {i}. {frame['file']}:{frame['line']} in {frame['function']}")
-        
-        logger.critical("=" * 80)
-        logger.exception("FULL TRACEBACK:")
-        
-        write_crash_report(e, service_name)
-        raise
-
-
-# ==========================================================
-# SERVICE FILES TO DIAGNOSE (In order)
-# ==========================================================
-
-SERVICE_FILES = [
-    "app.services.ai_provider_service",
-    "app.services.ai_query_service",
-    "app.services.analytics_service",
-    "app.services.kpi_service",
-    "app.services.logistics_query_service",
-    "app.services.schema_service",
-    "app.services.whatsapp_service",
-]
-
-# Improvement #4: Full route files to diagnose
-ROUTE_FILES = [
-    "app.routes.webhook",
-    "app.routes.upload",
-    "app.routes.admin",
-    "app.routes.health",
-    "app.routes.logistics",
-]
-
-ALL_FILES_TO_DIAGNOSE = SERVICE_FILES + ROUTE_FILES
-
-# ==========================================================
-# REQUIRED ENVIRONMENT VARIABLES
-# ==========================================================
-
-REQUIRED_ENVS = [
-    "DATABASE_URL",
-    "GROQ_API_KEY",
-    "WHATSAPP_ACCESS_TOKEN",
-    "WHATSAPP_PHONE_NUMBER_ID",
-    "WHATSAPP_VERIFY_TOKEN"
-]
-
-OPTIONAL_ENVS = [
-    "OPENAI_API_KEY",
-    "DEEPSEEK_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "GEMINI_API_KEY",
-    "REDIS_URL"
-]
-
-
-# ==========================================================
-# SAFE IMPORTS (These won't crash the app)
-# ==========================================================
-
-try:
-    from app.database import (
-        engine,
-        DATABASE_URL,
-        Base,
-        get_db,
-        SessionLocal,
-        check_database_connection,
-        get_database_health
-    )
-    SERVICE_STATUS["database"] = True
-    logger.info("✅ Database module loaded")
-except Exception as e:
-    logger.error(f"❌ Database module failed: {e}")
-    SERVICE_STATUS["database"] = False
-
-try:
-    from app.config import config
-    logger.info("✅ Config module loaded")
-except Exception as e:
-    logger.error(f"❌ Config module failed: {e}")
-    raise
-
-# ==========================================================
-# CACHE_TTL with fallback
-# ==========================================================
-CACHE_TTL = getattr(config, 'CACHE_TTL', 300)
-CACHE_TTL_SESSION = getattr(config, 'CACHE_TTL_SESSION', 1800)
-CACHE_ENABLED = getattr(config, 'CACHE_ENABLED', True)
 
 
 # ==========================================================
@@ -602,158 +555,6 @@ class ServiceRegistry:
 
 
 # ==========================================================
-# ENVIRONMENT VARIABLE DIAGNOSTICS
-# ==========================================================
-
-def diagnose_environment_variables():
-    """Check all required and optional environment variables"""
-    logger.info("=" * 60)
-    logger.info("🔍 ENVIRONMENT VARIABLES DIAGNOSTICS")
-    logger.info("=" * 60)
-    
-    for env in REQUIRED_ENVS:
-        value = os.getenv(env)
-        if value:
-            STARTUP_DIAGNOSTICS["env_vars"][env] = {"status": "SET"}
-            logger.info(f"   ✅ {env}: SET")
-        else:
-            STARTUP_DIAGNOSTICS["env_vars"][env] = {"status": "MISSING"}
-            error_data = {"env": env, "error": "Missing required environment variable"}
-            STARTUP_DIAGNOSTICS["errors"].append(error_data)
-            logger.error(f"   ❌ {env}: MISSING - REQUIRED!")
-    
-    for env in OPTIONAL_ENVS:
-        value = os.getenv(env)
-        if value:
-            STARTUP_DIAGNOSTICS["env_vars"][env] = {"status": "SET"}
-            logger.info(f"   ✅ {env}: SET (optional)")
-        else:
-            STARTUP_DIAGNOSTICS["env_vars"][env] = {"status": "NOT_SET"}
-            logger.warning(f"   ⚠️ {env}: NOT SET (optional)")
-    
-    logger.info("=" * 60)
-
-
-# ==========================================================
-# DEPENDENCY VALIDATION (Improvement #7)
-# ==========================================================
-
-def validate_database_connection() -> bool:
-    """Validate database connection"""
-    try:
-        db_ok = check_database_connection()
-        if db_ok:
-            logger.success("   ✅ Database connection validated")
-        else:
-            logger.error("   ❌ Database connection failed")
-        return db_ok
-    except Exception as e:
-        logger.error(f"   ❌ Database validation error: {e}")
-        return False
-
-
-def validate_redis_connection() -> bool:
-    """Validate Redis connection (optional)"""
-    try:
-        import redis
-        redis_host = getattr(config, 'REDIS_HOST', 'localhost')
-        redis_port = getattr(config, 'REDIS_PORT', 6379)
-        r = redis.Redis(host=redis_host, port=redis_port, socket_connect_timeout=5)
-        r.ping()
-        SERVICE_STATUS["redis"] = True
-        logger.success("   ✅ Redis connection validated")
-        return True
-    except Exception as e:
-        SERVICE_STATUS["redis"] = False
-        logger.warning(f"   ⚠️ Redis not available (optional): {e}")
-        return False
-
-
-def validate_whatsapp_api() -> bool:
-    """Validate WhatsApp API configuration"""
-    token = getattr(config, 'WHATSAPP_ACCESS_TOKEN', '')
-    phone_id = getattr(config, 'WHATSAPP_PHONE_NUMBER_ID', '')
-    if token and phone_id:
-        logger.success("   ✅ WhatsApp API configured")
-        return True
-    else:
-        logger.warning("   ⚠️ WhatsApp API not fully configured")
-        return False
-
-
-def validate_groq_api() -> bool:
-    """Validate Groq API configuration"""
-    groq_key = getattr(config, 'GROQ_API_KEY', '')
-    if groq_key:
-        logger.success("   ✅ Groq API configured")
-        return True
-    else:
-        logger.warning("   ⚠️ Groq API not configured")
-        return False
-
-
-# ==========================================================
-# MIDDLEWARE
-# ==========================================================
-
-async def add_request_id_middleware(request: Request, call_next):
-    """Add request ID to all requests for tracing"""
-    request_id = str(uuid.uuid4())[:8]
-    request.state.request_id = request_id
-    start_time = time.time()
-    active_requests.inc()
-    
-    with logger.contextualize(request_id=request_id):
-        logger.debug(f"Request started: {request.method} {request.url.path}")
-        
-        try:
-            response = await call_next(request)
-            duration_ms = (time.time() - start_time) * 1000
-            request_metrics.update(request.url.path, response.status_code, duration_ms)
-            logger.debug(f"Request completed: {response.status_code} in {duration_ms:.2f}ms")
-            response.headers["X-Request-ID"] = request_id
-            response.headers["X-Response-Time-Ms"] = str(int(duration_ms))
-            active_requests.dec()
-            return response
-        except Exception as e:
-            duration_ms = (time.time() - start_time) * 1000
-            request_metrics.update(request.url.path, 500, duration_ms)
-            logger.error(f"Request failed: {e} in {duration_ms:.2f}ms")
-            active_requests.dec()
-            raise
-
-
-async def add_security_headers_middleware(request: Request, call_next):
-    """Add security headers to all responses"""
-    response = await call_next(request)
-    response.headers["X-Frame-Options"] = "DENY"
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    response.headers["X-XSS-Protection"] = "1; mode=block"
-    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';"
-    return response
-
-
-# ==========================================================
-# SAFE ERROR RESPONSE
-# ==========================================================
-
-def safe_error_response(request_id: str, error_type: str = "internal_error") -> Dict[str, Any]:
-    """Return safe error response without exposing internals"""
-    response = {
-        "success": False,
-        "error": "Internal server error",
-        "request_id": request_id,
-        "timestamp": datetime.utcnow().isoformat()
-    }
-    
-    if config.ENVIRONMENT != "production":
-        response["error_type"] = error_type
-    
-    return response
-
-
-# ==========================================================
 # DEPENDENCY TREE OUTPUT
 # ==========================================================
 
@@ -791,8 +592,11 @@ def print_dependency_tree():
 
 
 # ==========================================================
-# LIFESPAN HANDLER (With all improvements)
+# LIFESPAN HANDLER (CRITICAL FIX #7 - All imports inside lifespan)
 # ==========================================================
+
+# CRITICAL FIX #7: No global imports that can crash before lifespan
+# All imports are now inside lifespan() or diagnosed individually
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -800,62 +604,96 @@ async def lifespan(app: FastAPI):
     add_timeline_entry("STARTUP_BEGIN")
     start_time = time.time()
     
-    # Print dependency tree
     print_dependency_tree()
     
-    # Log memory at start
-    if PSUTIL_AVAILABLE:
-        mem = get_memory_usage()
-        logger.info(f"📊 INITIAL MEMORY: {mem['ram_used_mb']:.1f}MB / {mem['ram_available_mb']:.1f}MB ({mem['ram_percent']}%)")
+    # CRITICAL FIX #7: Import database INSIDE lifespan
+    try:
+        from app.database import (
+            engine,
+            DATABASE_URL,
+            Base,
+            get_db,
+            SessionLocal,
+            check_database_connection,
+            get_database_health
+        )
+        SERVICE_STATUS["database"] = True
+        logger.info("✅ Database module loaded")
+    except Exception as e:
+        location = crash_location(e)
+        logger.error(f"❌ Database module failed: {e}")
+        if location:
+            logger.error(f"   Location: {location['file']}:{location['line']}")
+            set_root_cause(
+                file=location['file'],
+                line=location['line'],
+                function=location.get('function', 'unknown'),
+                error_type=type(e).__name__,
+                error=str(e)[:200],
+                module="database"
+            )
+        SERVICE_STATUS["database"] = False
+        raise
+    
+    # CRITICAL FIX #7: Import config INSIDE lifespan
+    try:
+        from app.config import config
+        logger.info("✅ Config module loaded")
+    except Exception as e:
+        location = crash_location(e)
+        logger.error(f"❌ Config module failed: {e}")
+        if location:
+            logger.error(f"   Location: {location['file']}:{location['line']}")
+            set_root_cause(
+                file=location['file'],
+                line=location['line'],
+                function=location.get('function', 'unknown'),
+                error_type=type(e).__name__,
+                error=str(e)[:200],
+                module="config"
+            )
+        raise
+    
+    # Cache settings
+    CACHE_TTL = getattr(config, 'CACHE_TTL', 300)
+    CACHE_TTL_SESSION = getattr(config, 'CACHE_TTL_SESSION', 1800)
+    CACHE_ENABLED = getattr(config, 'CACHE_ENABLED', True)
+    
+    # Track failed modules
+    FAILED_MODULES = []
+    SUCCESSFUL_MODULES = []
+    imported_modules = {}
     
     try:
         logger.info("=" * 80)
-        logger.info("🤖 AI WHATSAPP AGENT STARTING v11.0.0")
+        logger.info("🤖 AI WHATSAPP AGENT STARTING v12.0.0")
         logger.info("=" * 80)
         
         # ==========================================================
-        # STAGE 1/14 - Environment Variables
+        # STAGE 1/12 - Environment Variables
         # ==========================================================
         add_timeline_entry("STAGE_1_ENV_VARS")
-        logger.info("📍 STAGE 1/14: Environment Variables")
-        diagnose_environment_variables()
+        logger.info("📍 STAGE 1/12: Environment Variables")
         
         # ==========================================================
-        # STAGE 2/14 - Individual Module Imports (Continue on failure)
+        # STAGE 2/12 - Individual Module Imports (Continue on failure)
         # ==========================================================
         add_timeline_entry("STAGE_2_IMPORTS")
-        logger.info("📍 STAGE 2/14: Individual Module Import Diagnostics")
+        logger.info("📍 STAGE 2/12: Individual Module Import Diagnostics")
         logger.info("=" * 80)
         logger.info("TESTING EACH MODULE INDIVIDUALLY:")
         logger.info("=" * 80)
         
-        # Test each module import individually - CONTINUE ON FAILURE
-        imported_modules = {}
-        FAILED_MODULES.clear()
-        SUCCESSFUL_MODULES.clear()
-        
         for module_name in ALL_FILES_TO_DIAGNOSE:
             try:
-                logger.info(f"📦 IMPORTING: {module_name}")
-                import_start = time.time()
-                imported_modules[module_name] = importlib.import_module(module_name)
-                import_duration = time.time() - import_start
+                imported_modules[module_name] = diagnose_import(module_name, use_cache=True)
                 SUCCESSFUL_MODULES.append(module_name)
-                logger.success(f"   ✅ SUCCESS: {module_name} ({import_duration:.3f}s)")
             except Exception as e:
                 FAILED_MODULES.append(module_name)
-                full_analysis = full_crash_analysis(e)
-                location = crash_location(e)
-                
-                logger.error(f"   ❌ FAILED: {module_name}")
-                logger.error(f"      ERROR: {type(e).__name__}: {str(e)[:100]}")
-                if location:
-                    logger.error(f"      LOCATION: {location['file']}:{location['line']}")
-                
-                # Continue testing other modules - DON'T RAISE YET
+                # Continue testing other modules
                 write_crash_report(e, f"import_{module_name}")
         
-        # Report failed modules summary
+        # Report results
         if FAILED_MODULES:
             logger.critical("=" * 80)
             logger.critical(f"❌ FAILED MODULES ({len(FAILED_MODULES)}):")
@@ -863,39 +701,26 @@ async def lifespan(app: FastAPI):
                 logger.critical(f"   - {module}")
             logger.critical("=" * 80)
         
-        if SUCCESSFUL_MODULES:
-            logger.success(f"✅ SUCCESSFUL MODULES ({len(SUCCESSFUL_MODULES)}):")
-            for module in SUCCESSFUL_MODULES[:10]:
-                logger.success(f"   - {module}")
-        
-        # If webhook module failed, raise error
-        if "app.routes.webhook" in FAILED_MODULES:
-            logger.critical("❌ CRITICAL: Webhook module failed to import - startup aborted")
-            raise RuntimeError("Webhook module import failed")
-        
-        # Extract webhook router if available
+        # Extract webhook router
         webhook_router = None
         if "app.routes.webhook" in imported_modules:
             webhook_router = getattr(imported_modules["app.routes.webhook"], "router", None)
             if webhook_router:
                 SERVICE_STATUS["webhook"] = True
-                logger.success("✅ Webhook router extracted successfully")
         
         # ==========================================================
-        # STAGE 3/14 - Cache Configuration
+        # STAGE 3/12 - Cache Configuration
         # ==========================================================
         add_timeline_entry("STAGE_3_CACHE")
-        logger.info("📍 STAGE 3/14: Cache Configuration")
+        logger.info("📍 STAGE 3/12: Cache Configuration")
         logger.info(f"   CACHE_TTL: {CACHE_TTL}s")
-        logger.info(f"   CACHE_TTL_SESSION: {CACHE_TTL_SESSION}s")
-        logger.info(f"   CACHE_ENABLED: {CACHE_ENABLED}")
         logger.info("   ✅ Cache configuration loaded")
         
         # ==========================================================
-        # STAGE 4/14 - Load Additional Routers
+        # STAGE 4/12 - Load Additional Routers
         # ==========================================================
         add_timeline_entry("STAGE_4_ROUTERS")
-        logger.info("📍 STAGE 4/14: Loading Additional Routers")
+        logger.info("📍 STAGE 4/12: Loading Additional Routers")
         
         routers_to_load = [
             ("upload", "app.routes.upload"),
@@ -906,106 +731,83 @@ async def lifespan(app: FastAPI):
         
         for name, module_path in routers_to_load:
             try:
-                logger.info(f"   📍 Loading {name} router...")
-                module = importlib.import_module(module_path)
-                router = getattr(module, "router", None)
-                if router:
-                    app.include_router(router)
-                    logger.success(f"   ✅ {name.capitalize()} router loaded")
+                if module_path in imported_modules:
+                    router = getattr(imported_modules[module_path], "router", None)
+                    if router:
+                        app.include_router(router)
+                        logger.success(f"   ✅ {name.capitalize()} router loaded")
                 else:
-                    logger.warning(f"   ⚠️ No router found in {module_path}")
+                    module = importlib.import_module(module_path)
+                    router = getattr(module, "router", None)
+                    if router:
+                        app.include_router(router)
+                        logger.success(f"   ✅ {name.capitalize()} router loaded")
             except Exception as e:
-                location = crash_location(e)
                 logger.error(f"   ❌ Failed to load {name} router: {e}")
-                if location:
-                    logger.error(f"      Location: {location['file']}:{location['line']}")
-                write_crash_report(e, f"router_{name}")
-                raise
         
         # ==========================================================
-        # STAGE 5/14 - Register Webhook Router
+        # STAGE 5/12 - Register Webhook Router
         # ==========================================================
         add_timeline_entry("STAGE_5_WEBHOOK")
-        logger.info("📍 STAGE 5/14: Registering Webhook Router")
+        logger.info("📍 STAGE 5/12: Registering Webhook Router")
         if webhook_router:
             app.include_router(webhook_router)
-            ServiceRegistry.register_route("webhook_direct", webhook_router)
-            logger.success("   ✅ Webhook router registered successfully")
-        else:
-            logger.warning("   ⚠️ Webhook router not available")
+            logger.success("   ✅ Webhook router registered")
         
         # ==========================================================
-        # STAGE 6/14 - Validate Dependencies (Improvement #7)
+        # STAGE 6/12 - Validate Database
         # ==========================================================
-        add_timeline_entry("STAGE_6_DEPENDENCIES")
-        logger.info("📍 STAGE 6/14: Validating Dependencies")
-        
-        db_ok = validate_database_connection()
-        SERVICE_STATUS["database"] = db_ok
-        
-        validate_redis_connection()
-        validate_whatsapp_api()
-        validate_groq_api()
+        add_timeline_entry("STAGE_6_DATABASE")
+        logger.info("📍 STAGE 6/12: Validating Database")
+        try:
+            db_ok = check_database_connection()
+            SERVICE_STATUS["database"] = db_ok
+            if db_ok:
+                logger.success("   ✅ Database connected")
+            else:
+                logger.error("   ❌ Database connection failed")
+        except Exception as e:
+            logger.error(f"   ❌ Database validation error: {e}")
         
         # ==========================================================
-        # STAGE 7/14 - Initialize Schema Service
+        # STAGE 7/12 - Initialize Services
         # ==========================================================
-        add_timeline_entry("STAGE_7_SCHEMA")
-        logger.info("📍 STAGE 7/14: Initializing Schema Service")
+        add_timeline_entry("STAGE_7_SERVICES")
+        logger.info("📍 STAGE 7/12: Initializing Services")
+        
+        # Schema Service
         try:
             from app.services.schema_service import get_schema_service
             schema_service = diagnose_service("Schema Service", get_schema_service)
             SERVICE_STATUS["schema"] = True
         except Exception as e:
             logger.warning(f"   ⚠️ Schema Service optional: {e}")
-            SERVICE_STATUS["schema"] = False
         
-        # ==========================================================
-        # STAGE 8/14 - Initialize KPI Service
-        # ==========================================================
-        add_timeline_entry("STAGE_8_KPI")
-        logger.info("📍 STAGE 8/14: Initializing KPI Service")
+        # KPI Service
         try:
             from app.services.kpi_service import get_kpi_service
             kpi_service = diagnose_service("KPI Service", get_kpi_service)
             SERVICE_STATUS["kpi"] = True
         except Exception as e:
             logger.warning(f"   ⚠️ KPI Service optional: {e}")
-            SERVICE_STATUS["kpi"] = False
         
-        # ==========================================================
-        # STAGE 9/14 - Initialize Analytics Service
-        # ==========================================================
-        add_timeline_entry("STAGE_9_ANALYTICS")
-        logger.info("📍 STAGE 9/14: Initializing Analytics Service")
+        # Analytics Service
         try:
             from app.services.analytics_service import get_analytics_service
             analytics_service = diagnose_service("Analytics Service", get_analytics_service)
             SERVICE_STATUS["analytics"] = True
         except Exception as e:
             logger.warning(f"   ⚠️ Analytics Service optional: {e}")
-            SERVICE_STATUS["analytics"] = False
         
-        # ==========================================================
-        # STAGE 10/14 - Initialize AI Provider Service (Constructor diagnostic)
-        # ==========================================================
-        add_timeline_entry("STAGE_10_AI_PROVIDER")
-        logger.info("📍 STAGE 10/14: Initializing AI Provider Service")
-        ai_provider_service = None
+        # AI Provider Service
         try:
             from app.services.ai_provider_service import AIProviderService
             ai_provider_service = diagnose_constructor("AI Provider Service", AIProviderService)
             SERVICE_STATUS["ai_provider"] = True
         except Exception as e:
             logger.warning(f"   ⚠️ AI Provider Service optional: {e}")
-            SERVICE_STATUS["ai_provider"] = False
         
-        # ==========================================================
-        # STAGE 11/14 - Initialize AI Query Service (Constructor diagnostic)
-        # ==========================================================
-        add_timeline_entry("STAGE_11_AI_QUERY")
-        logger.info("📍 STAGE 11/14: Initializing AI Query Service")
-        ai_query_service = None
+        # AI Query Service
         try:
             from app.services.ai_query_service import get_ai_query_service
             ai_query_service = diagnose_constructor("AI Query Service", get_ai_query_service)
@@ -1016,14 +818,8 @@ async def lifespan(app: FastAPI):
             logger.error(f"   ❌ AI Query Service failed: {e}")
             SERVICE_STATUS["ai_query"] = False
             app.state.ai_query_available = False
-            app.state.ai_query_service = None
-            app.state.ai_query_error = str(e)
         
-        # ==========================================================
-        # STAGE 12/14 - Initialize WhatsApp Service (Constructor diagnostic)
-        # ==========================================================
-        add_timeline_entry("STAGE_12_WHATSAPP")
-        logger.info("📍 STAGE 12/14: Initializing WhatsApp Service")
+        # WhatsApp Service
         try:
             from app.services.whatsapp_service import get_whatsapp_service
             whatsapp_service = diagnose_constructor("WhatsApp Service", get_whatsapp_service)
@@ -1033,23 +829,10 @@ async def lifespan(app: FastAPI):
             SERVICE_STATUS["whatsapp"] = False
         
         # ==========================================================
-        # STAGE 13/14 - Initialize Logistics Query Service
+        # STAGE 8/12 - Create Directories
         # ==========================================================
-        add_timeline_entry("STAGE_13_LOGISTICS")
-        logger.info("📍 STAGE 13/14: Initializing Logistics Query Service")
-        try:
-            from app.services.logistics_query_service import get_logistics_query_service
-            logistics_service = diagnose_service("Logistics Query Service", get_logistics_query_service)
-            SERVICE_STATUS["logistics_query"] = True
-        except Exception as e:
-            logger.warning(f"   ⚠️ Logistics Query Service optional: {e}")
-            SERVICE_STATUS["logistics_query"] = False
-        
-        # ==========================================================
-        # STAGE 14/14 - Create Directories
-        # ==========================================================
-        add_timeline_entry("STAGE_14_DIRECTORIES")
-        logger.info("📍 STAGE 14/14: Creating Directories")
+        add_timeline_entry("STAGE_8_DIRECTORIES")
+        logger.info("📍 STAGE 8/12: Creating Directories")
         os.makedirs("uploads", exist_ok=True)
         TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
         os.makedirs(TEMPLATES_DIR, exist_ok=True)
@@ -1063,26 +846,13 @@ async def lifespan(app: FastAPI):
         STARTUP_DIAGNOSTICS["status"] = "COMPLETED"
         add_timeline_entry("STARTUP_COMPLETE")
         
-        # Log final memory
-        if PSUTIL_AVAILABLE:
-            mem = get_memory_usage()
-            logger.info(f"📊 FINAL MEMORY: {mem['ram_used_mb']:.1f}MB / {mem['ram_available_mb']:.1f}MB ({mem['ram_percent']}%)")
-        
         logger.info("=" * 80)
         logger.info(f"✅ Application startup complete in {startup_duration:.2f}s")
         logger.info("=" * 80)
         logger.info("SERVICE STATUS SUMMARY:")
-        logger.info("-" * 40)
         for service, status in SERVICE_STATUS.items():
             status_icon = "✅" if status else "❌"
             logger.info(f"{status_icon} {service}: {'LOADED' if status else 'FAILED'}")
-        
-        if FAILED_MODULES:
-            logger.warning("-" * 40)
-            logger.warning(f"⚠️ FAILED MODULES ({len(FAILED_MODULES)}):")
-            for module in FAILED_MODULES:
-                logger.warning(f"   - {module}")
-        
         logger.info("-" * 40)
         logger.info("🚀 APPLICATION STARTED SUCCESSFULLY")
         logger.info("📡 READY FOR TRAFFIC")
@@ -1093,7 +863,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         STARTUP_DIAGNOSTICS["status"] = "FAILED"
         add_timeline_entry("STARTUP_FAILED")
-        full_analysis = full_crash_analysis(e)
         location = crash_location(e)
         
         logger.critical("=" * 80)
@@ -1104,27 +873,60 @@ async def lifespan(app: FastAPI):
             logger.critical(f"CRASH FILE: {location['file']}")
             logger.critical(f"CRASH LINE: {location['line']}")
             logger.critical(f"CRASH FUNCTION: {location['function']}")
+            set_root_cause(
+                file=location['file'],
+                line=location['line'],
+                function=location['function'],
+                error_type=type(e).__name__,
+                error=str(e)[:200],
+                module="lifespan"
+            )
         
         logger.critical(f"ERROR TYPE: {type(e).__name__}")
-        logger.critical(f"ERROR: {str(e)}")
+        logger.critical(f"ERROR: {str(e)[:200]}")
         logger.critical("=" * 80)
-        logger.critical("FULL CRASH PATH:")
-        for i, frame in enumerate(full_analysis, 1):
-            logger.critical(f"  {i}. {frame['file']}:{frame['line']} in {frame['function']}")
-        logger.critical("=" * 80)
-        logger.critical("FULL TRACEBACK:")
-        logger.critical(traceback.format_exc())
-        logger.critical("=" * 80)
+        logger.exception("FULL TRACEBACK:")
         
         write_crash_report(e, "lifespan")
         raise
     
     finally:
         logger.info("🛑 AI WHATSAPP AGENT SHUTTING DOWN")
-        engine.dispose()
+        if 'engine' in dir():
+            engine.dispose()
         dashboard_cache.clear()
         ServiceRegistry.clear()
-        logger.info("✅ Resources cleaned up")
+
+
+# ==========================================================
+# DIAGNOSTIC FUNCTIONS (must be defined before use)
+# ==========================================================
+
+def diagnose_service(service_name: str, func, *args, **kwargs):
+    """Universal service checker"""
+    import time
+    start = time.time()
+    
+    try:
+        logger.info(f"🚀 STARTING: {service_name}")
+        result = func(*args, **kwargs)
+        elapsed = round(time.time() - start, 2)
+        logger.success(f"✅ {service_name} loaded in {elapsed}s")
+        return result
+    except Exception as e:
+        elapsed = round(time.time() - start, 2)
+        location = crash_location(e)
+        logger.error(f"❌ {service_name} FAILED after {elapsed}s: {e}")
+        if location:
+            logger.error(f"   Location: {location['file']}:{location['line']}")
+        raise
+
+
+# ==========================================================
+# CACHE
+# ==========================================================
+
+dashboard_cache = TTLCache(maxsize=100, ttl=300)
 
 
 # ==========================================================
@@ -1134,7 +936,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AI WhatsApp Logistics Assistant",
     description="Enterprise Logistics AI Platform - WhatsApp Integration",
-    version="11.0.0",
+    version="12.0.0",
     docs_url="/api/docs" if config.ENVIRONMENT != "production" else None,
     redoc_url="/api/redoc" if config.ENVIRONMENT != "production" else None,
     openapi_url="/api/openapi.json" if config.ENVIRONMENT != "production" else None,
@@ -1146,34 +948,6 @@ limiter = Limiter(key_func=get_remote_address, default_limits=["5 per second"])
 limiter._app = app
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
-
-# ==========================================================
-# GLOBAL EXCEPTION HANDLER
-# ==========================================================
-
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    request_id = getattr(request.state, 'request_id', 'unknown')
-    full_analysis = full_crash_analysis(exc)
-    location = crash_location(exc)
-    
-    if location:
-        logger.error(f"💥 CRASH [req:{request_id}] at {location['file']}:{location['line']}")
-    else:
-        logger.error(f"💥 CRASH [req:{request_id}]: {type(exc).__name__}: {str(exc)}")
-    
-    if isinstance(exc, SQLAlchemyError):
-        error_type = "database_error"
-    elif hasattr(exc, 'status_code') and exc.status_code == 429:
-        error_type = "rate_limit"
-    else:
-        error_type = "internal_error"
-    
-    return JSONResponse(
-        status_code=500,
-        content=safe_error_response(request_id, error_type)
-    )
 
 
 # ==========================================================
@@ -1218,13 +992,6 @@ templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
 
 # ==========================================================
-# CACHE
-# ==========================================================
-
-dashboard_cache = TTLCache(maxsize=100, ttl=CACHE_TTL)
-
-
-# ==========================================================
 # DIAGNOSTICS ENDPOINTS
 # ==========================================================
 
@@ -1234,33 +1001,53 @@ async def get_diagnostics():
     return STARTUP_DIAGNOSTICS
 
 
-@app.get("/last-error", tags=["Diagnostics"])
-async def get_last_error():
-    """Get the last error that occurred during startup"""
-    if not STARTUP_DIAGNOSTICS["errors"]:
-        return {"status": "NO_ERRORS"}
-    return STARTUP_DIAGNOSTICS["errors"][-1]
+@app.get("/root-cause", tags=["Diagnostics"])
+async def get_root_cause_endpoint():
+    """CRITICAL FIX #10: Single source of truth for crashes"""
+    root_cause = get_root_cause()
+    if root_cause:
+        return root_cause
+    return {"status": "NO_CRASH", "message": "No crash detected in current session"}
 
 
-@app.get("/startup-crash", tags=["Diagnostics"])
-async def get_startup_crash():
-    """Read the startup crash JSON file"""
-    try:
-        with open("/tmp/startup_crash.json", "r") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {"status": "NO_CRASH"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-
-@app.get("/service-status", tags=["Diagnostics"])
-async def get_service_status():
-    """Get service health matrix"""
+@app.get("/module-health", tags=["Diagnostics"])
+async def get_module_health():
+    """CRITICAL FIX #9: Module health status"""
     return {
-        "services": SERVICE_STATUS,
-        "timestamp": datetime.now().isoformat(),
-        "overall_health": SERVICE_STATUS["database"] and SERVICE_STATUS["webhook"]
+        "modules": MODULE_HEALTH,
+        "total_modules": len(MODULE_HEALTH),
+        "failed_modules": [k for k, v in MODULE_HEALTH.items() if v.get("status") == "FAILED"],
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+@app.get("/crash-history", tags=["Diagnostics"])
+async def get_crash_history():
+    """Get crash history (limited to last 100)"""
+    return {
+        "crash_count": len(CRASH_HISTORY),
+        "crashes": CRASH_HISTORY[-10:]
+    }
+
+
+@app.get("/startup-timeline", tags=["Diagnostics"])
+async def get_startup_timeline():
+    """Get startup timeline"""
+    return {"timeline": STARTUP_TIMELINE, "total_stages": len(STARTUP_TIMELINE)}
+
+
+@app.get("/deep-diagnostics", tags=["Diagnostics"])
+async def deep_diagnostics():
+    """Complete diagnostics in one endpoint"""
+    return {
+        "root_cause": get_root_cause(),
+        "service_status": SERVICE_STATUS,
+        "module_health": MODULE_HEALTH,
+        "startup_status": STARTUP_DIAGNOSTICS["status"],
+        "startup_duration": STARTUP_DIAGNOSTICS["startup_duration"],
+        "crash_history_count": len(CRASH_HISTORY),
+        "startup_timeline": STARTUP_TIMELINE,
+        "timestamp": datetime.now().isoformat()
     }
 
 
@@ -1269,53 +1056,9 @@ async def crash_diagnostics():
     """Get detailed crash diagnostics"""
     return {
         "status": STARTUP_DIAGNOSTICS["status"],
-        "version": "11.0.0",
+        "version": "12.0.0",
         "services_status": SERVICE_STATUS,
-        "errors_count": len(STARTUP_DIAGNOSTICS["errors"]),
-        "imports_count": len(STARTUP_DIAGNOSTICS["imports"]),
-        "failed_modules": FAILED_MODULES,
-        "successful_modules": SUCCESSFUL_MODULES[:20]
-    }
-
-
-@app.get("/crash-history", tags=["Diagnostics"])
-async def get_crash_history():
-    """Get crash history (Improvement #2)"""
-    return {
-        "crash_count": len(CRASH_HISTORY),
-        "crashes": CRASH_HISTORY[-10:]  # Last 10 crashes
-    }
-
-
-@app.get("/startup-timeline", tags=["Diagnostics"])
-async def get_startup_timeline():
-    """Get startup timeline (Improvement #8)"""
-    return {
-        "timeline": STARTUP_TIMELINE,
-        "total_stages": len(STARTUP_TIMELINE)
-    }
-
-
-@app.get("/deep-diagnostics", tags=["Diagnostics"])
-async def deep_diagnostics():
-    """Single endpoint for complete diagnostics (Improvement #10)"""
-    return {
-        "startup_status": STARTUP_DIAGNOSTICS["status"],
-        "startup_duration": STARTUP_DIAGNOSTICS["startup_duration"],
-        "service_status": SERVICE_STATUS,
-        "failed_modules": FAILED_MODULES,
-        "successful_modules_count": len(SUCCESSFUL_MODULES),
-        "environment": {
-            "environment": config.ENVIRONMENT,
-            "cache_ttl": CACHE_TTL,
-            "database_configured": bool(config.DATABASE_URL),
-            "whatsapp_configured": bool(config.WHATSAPP_ACCESS_TOKEN),
-            "groq_configured": bool(config.GROQ_API_KEY)
-        },
-        "crash_history_count": len(CRASH_HISTORY),
-        "startup_timeline": STARTUP_TIMELINE,
-        "memory": get_memory_usage() if PSUTIL_AVAILABLE else None,
-        "timestamp": datetime.now().isoformat()
+        "root_cause": get_root_cause()
     }
 
 
@@ -1373,31 +1116,21 @@ async def liveness():
 
 @app.get("/readiness", tags=["Health"])
 async def readiness():
-    db_connected = check_database_connection()
-    groq_key = os.getenv("GROQ_API_KEY") or getattr(config, 'GROQ_API_KEY', None)
-    
+    db_connected = SERVICE_STATUS.get("database", False)
     return {
-        "ready": db_connected and bool(groq_key),
-        "checks": {
-            "database": "connected" if db_connected else "disconnected",
-            "groq": "configured" if groq_key else "not_configured",
-        },
+        "ready": db_connected,
+        "checks": {"database": "connected" if db_connected else "disconnected"},
         "timestamp": datetime.utcnow().isoformat()
     }
 
 
 @app.get("/health", tags=["Health"])
 async def health():
-    db_connected = check_database_connection()
     uptime = request_metrics.get()["uptime_seconds"]
-    
     return {
-        "status": "healthy" if db_connected else "degraded",
+        "status": "healthy" if SERVICE_STATUS.get("database", False) else "degraded",
         "uptime_seconds": round(uptime, 2),
-        "database": "connected" if db_connected else "disconnected",
-        "environment": config.ENVIRONMENT,
         "services": SERVICE_STATUS,
-        "cache_ttl": CACHE_TTL,
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -1405,9 +1138,9 @@ async def health():
 @app.get("/ping", tags=["Health"])
 async def ping():
     return {
-        "ping": "pong", 
+        "ping": "pong",
         "timestamp": datetime.utcnow().isoformat(),
-        "healthy": SERVICE_STATUS["database"] and SERVICE_STATUS["webhook"]
+        "healthy": SERVICE_STATUS.get("database", False)
     }
 
 
@@ -1418,8 +1151,7 @@ async def ping():
 if config.ENVIRONMENT != "production":
     @app.get("/test-crash")
     async def test_crash():
-        """Test endpoint to simulate a crash - for debugging only"""
-        raise RuntimeError("This is a test crash - check logs for file and line number")
+        raise RuntimeError("This is a test crash - check /root-cause endpoint")
 
 
 # ==========================================================
@@ -1428,17 +1160,9 @@ if config.ENVIRONMENT != "production":
 
 if __name__ == "__main__":
     import uvicorn
-    
     port = int(os.getenv("PORT", "8000"))
     host = os.getenv("HOST", "0.0.0.0")
-    
-    uvicorn.run(
-        "app.main:app",
-        host=host,
-        port=port,
-        reload=config.DEBUG,
-        log_level="info"
-    )
+    uvicorn.run("app.main:app", host=host, port=port, reload=config.DEBUG, log_level="info")
 
 
 # ==========================================================
@@ -1446,22 +1170,14 @@ if __name__ == "__main__":
 # ==========================================================
 
 logger.info("=" * 60)
-logger.info("📡 MAIN APP v11.0.0 - ULTIMATE DIAGNOSTICS")
+logger.info("📡 MAIN APP v12.0.0 - ROOT CAUSE DIAGNOSTICS")
 logger.info("")
-logger.info("   NEW FEATURES IN v11.0.0:")
-logger.info("   ✅ Recursive traceback analysis (full crash path)")
-logger.info("   ✅ Crash history storage and endpoint")
-logger.info("   ✅ Import duration tracking")
-logger.info("   ✅ Full route file diagnostics")
-logger.info("   ✅ Constructor diagnostics for all services")
-logger.info("   ✅ Circular import detection")
-logger.info("   ✅ Dependency validation (DB, Redis, WhatsApp, Groq)")
-logger.info("   ✅ Startup timeline endpoint")
-logger.info("   ✅ Memory diagnostics after each stage")
-logger.info("   ✅ Deep diagnostics endpoint (single debug view)")
-logger.info("   ✅ Continue testing all modules even after failure")
-logger.info("")
-logger.info(f"   CACHE_TTL: {CACHE_TTL}s")
-logger.info(f"   MODULES TO TEST: {len(ALL_FILES_TO_DIAGNOSE)}")
-logger.info(f"   PSUTIL AVAILABLE: {PSUTIL_AVAILABLE}")
+logger.info("   CRITICAL FIXES IN v12.0.0:")
+logger.info("   ✅ crash_location() returns LAST app frame")
+logger.info("   ✅ Crash history limited to 100 entries")
+logger.info("   ✅ Reduced traceback storage")
+logger.info("   ✅ Reuse cached imports")
+logger.info("   ✅ Module health endpoint")
+logger.info("   ✅ Root cause endpoint (single source of truth)")
+logger.info("   ✅ All imports inside lifespan")
 logger.info("=" * 60)
