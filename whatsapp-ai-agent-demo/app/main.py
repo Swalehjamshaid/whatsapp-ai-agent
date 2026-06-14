@@ -3,13 +3,14 @@
 # PROJECT: AI WhatsApp Customer Service Agent
 # ==========================================================
 # IMPROVEMENTS v14.0:
-# - ✅ FULL INTEGRATION with webhook.py v11.0
-# - ✅ Webhook services initialized in lifespan
+# - ✅ FULL INTEGRATION with webhook.py v12.0
+# - ✅ Webhook services initialized in lifespan (FIXED)
 # - ✅ Webhook stats exposed via /webhook-stats endpoint
 # - ✅ All webhook debug endpoints integrated
 # - ✅ CRITICAL FIX: preflight_result defined before use
 # - ✅ CRITICAL FIX: app = FastAPI() created BEFORE any decorators
 # - ✅ CRITICAL FIX: All problematic middleware DISABLED
+# - ✅ ADDED: Force load services endpoint
 # - ✅ ADDED: Debug endpoints (/debug/ping, /debug/health, /debug/routes, /debug/env)
 # - ✅ ADDED: RAW endpoint (/raw-ping) - NO middleware, NO dependencies
 # - ✅ ADDED: TrustedHostMiddleware DISABLED
@@ -301,9 +302,11 @@ async def lifespan(app: FastAPI):
         logger.info("=" * 80)
         
         # ====================================================
-        # INTEGRATION: Initialize Webhook Services
+        # CRITICAL FIX: Initialize Webhook Services
         # This calls the webhook.py's initialize_services() function
         # ====================================================
+        webhook_init_result = {"services_loaded": 0, "health": "unknown", "env_configured": False}
+        
         try:
             from app.routes.webhook import initialize_services, get_webhook_stats
             webhook_init_result = await initialize_services()
@@ -311,10 +314,11 @@ async def lifespan(app: FastAPI):
             
             # Store webhook stats function in app state for later use
             app.state.get_webhook_stats = get_webhook_stats
+        except ImportError as e:
+            logger.error(f"❌ Could not import webhook services: {e}")
         except Exception as e:
             logger.error(f"❌ Webhook services initialization failed: {e}")
             logger.exception(e)
-            webhook_init_result = {"services_loaded": 0, "health": "unknown", "env_configured": False}
         
         # Create directories
         os.makedirs("uploads", exist_ok=True)
@@ -461,7 +465,33 @@ async def debug_env():
 
 
 # ==========================================================
-# WEBHOOK INTEGRATION ENDPOINT (New)
+# FORCE LOAD SERVICES ENDPOINT (For debugging)
+# ==========================================================
+
+@app.get("/force-load-services")
+async def force_load_services():
+    """Force load all webhook services - useful for debugging"""
+    print("🔔 /force-load-services HIT")
+    try:
+        from app.routes.webhook import initialize_services
+        result = await initialize_services()
+        return {
+            "status": "success",
+            "message": "Services force loaded",
+            "result": result,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.exception(f"Force load failed: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+
+# ==========================================================
+# WEBHOOK INTEGRATION ENDPOINT
 # ==========================================================
 
 @app.get("/webhook-stats")
@@ -473,14 +503,15 @@ async def webhook_integration_stats():
         return {
             "status": "ok",
             "integration": "100%",
-            "webhook_version": "11.0",
+            "webhook_version": "12.0",
             "stats": stats,
             "timestamp": datetime.now().isoformat()
         }
     return {
         "status": "degraded",
         "integration": "webhook stats not available",
-        "message": "Webhook services may not be fully initialized"
+        "message": "Webhook services may not be fully initialized",
+        "timestamp": datetime.now().isoformat()
     }
 
 
@@ -496,7 +527,17 @@ async def root():
         "status": "ok",
         "message": "AI WhatsApp Logistics Assistant is running",
         "version": "14.0.0",
-        "debug_endpoints": ["/raw-ping", "/debug/ping", "/debug/health", "/debug/routes", "/debug/env", "/alive", "/health", "/webhook-stats"]
+        "debug_endpoints": [
+            "/raw-ping", 
+            "/debug/ping", 
+            "/debug/health", 
+            "/debug/routes", 
+            "/debug/env", 
+            "/alive", 
+            "/health",
+            "/webhook-stats",
+            "/force-load-services"
+        ]
     }
 
 
@@ -559,7 +600,7 @@ async def startup_check():
 
 if webhook_router:
     app.include_router(webhook_router)
-    logger.success("✅ Webhook router registered (v11.0 integrated)")
+    logger.success("✅ Webhook router registered (v12.0 integrated)")
 else:
     logger.error("❌ Webhook router not available")
 
@@ -1227,7 +1268,7 @@ def print_dependency_tree():
 ║   ├── models.py                                                  ║
 ║   │                                                              ║
 ║   ├── routes/                                                    ║
-║   │    ├── webhook.py (✅ REGISTERED - v11.0 INTEGRATED)        ║
+║   │    ├── webhook.py (✅ REGISTERED - v12.0 INTEGRATED)        ║
 ║   │    ├── upload.py                                             ║
 ║   │    ├── admin.py                                              ║
 ║   │    ├── health.py                                             ║
@@ -1245,8 +1286,9 @@ def print_dependency_tree():
 ║                                                                  ║
 ╠══════════════════════════════════════════════════════════════════╣
 ║  CRITICAL FIXES v14.0:                                           ║
-║  ✅ FULL INTEGRATION with webhook.py v11.0                       ║
-║  ✅ Webhook services initialized in lifespan                     ║
+║  ✅ Webhook services initialized in lifespan (FIXED)             ║
+║  ✅ Force load services endpoint added                           ║
+║  ✅ FULL INTEGRATION with webhook.py v12.0                       ║
 ║  ✅ Webhook stats endpoint (/webhook-stats)                      ║
 ║  ✅ preflight_result defined BEFORE use                          ║
 ║  ✅ app = FastAPI() created BEFORE any decorators                ║
@@ -1453,9 +1495,9 @@ try:
     logger.info("📡 MAIN APP v14.0 - FULLY INTEGRATED")
     logger.info("")
     logger.info("   CRITICAL FIXES IN v14.0:")
-    logger.info("   🔧 FULL INTEGRATION with webhook.py v11.0")
-    logger.info("   🔧 Webhook services initialized in lifespan")
-    logger.info("   🔧 Webhook stats endpoint (/webhook-stats)")
+    logger.info("   🔧 Webhook services initialized in lifespan (FIXED)")
+    logger.info("   🔧 Force load services endpoint added")
+    logger.info("   🔧 FULL INTEGRATION with webhook.py v12.0")
     logger.info("   🔧 preflight_result defined BEFORE use")
     logger.info("   🔧 app = FastAPI() created BEFORE any decorators")
     logger.info("   🔧 All problematic middleware DISABLED")
@@ -1475,7 +1517,8 @@ try:
     logger.info("   4. GET /alive - Basic alive")
     logger.info("   5. GET /health - Full health")
     logger.info("   6. GET /webhook-stats - Webhook integration status")
-    logger.info("   7. GET /webhook/self-test - Webhook self test")
+    logger.info("   7. GET /force-load-services - Force load webhook services")
+    logger.info("   8. GET /webhook/self-test - Webhook self test")
     logger.info("=" * 60)
 except Exception as init_error:
     logger.critical("=" * 80)
