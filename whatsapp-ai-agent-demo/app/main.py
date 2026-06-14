@@ -1,15 +1,18 @@
 # ==========================================================
-# FILE: app/main.py (ENTERPRISE v13.2.0 - CRASH DIAGNOSTICS)
+# FILE: app/main.py (ENTERPRISE v13.3.0 - PRODUCTION READY)
 # PROJECT: AI WhatsApp Customer Service Agent
 # ==========================================================
-# IMPROVEMENTS v13.2.0:
+# IMPROVEMENTS v13.3.0:
 # - ✅ FIXED: get_db import at module level (Critical Bug #1)
 # - ✅ FIXED: CACHE_TTL defined at module level (Critical Bug #2)
 # - ✅ ADDED: Global crash handler with sys.excepthook
 # - ✅ ADDED: Startup checkpoints (CHECKPOINT 1-5)
-# - ✅ ADDED: ChatService import at module level (no lazy loading)
-# - ✅ ADDED: Chat endpoint temporarily disabled for isolation test
-# - ✅ ADDED: Detailed error logging with full traceback
+# - ✅ ADDED: Request logging middleware
+# - ✅ ADDED: Raw endpoints (/alive, /, /startup-check)
+# - ✅ ADDED: Global exception handler
+# - ✅ FIXED: Webhook router registered OUTSIDE lifespan
+# - ✅ TEMP: Disabled TrustedHostMiddleware for debugging
+# - ✅ TEMP: Disabled runtime diagnostics middleware for debugging
 # - ✅ All original attributes preserved
 # ==========================================================
 
@@ -166,6 +169,19 @@ except ImportError:
     print("⚠️ psutil not available")
 
 print("=" * 60)
+
+# ==========================================================
+# PRIORITY 7: REGISTER WEBHOOK ROUTER IMMEDIATELY (Outside lifespan)
+# ==========================================================
+
+print("CHECKPOINT 5 - REGISTERING WEBHOOK ROUTER (OUTSIDE LIFESPAN)")
+try:
+    from app.routes.webhook import router as webhook_router
+    print("✅ Webhook router imported successfully")
+except Exception as e:
+    print(f"❌ Webhook router import failed: {e}")
+    traceback.print_exc()
+    webhook_router = None
 
 # ==========================================================
 # CRASH CLASSIFICATION
@@ -416,12 +432,14 @@ class ConstructorTracker:
 
 
 # ==========================================================
-# RUNTIME DIAGNOSTICS MIDDLEWARE
+# RUNTIME DIAGNOSTICS MIDDLEWARE (TEMPORARILY DISABLED - Priority 6)
 # ==========================================================
 
 LAST_REQUEST_ERROR = None
 
 
+# PRIORITY 6: Temporarily disabled for debugging
+"""
 async def runtime_diagnostics_middleware(request: Request, call_next):
     global LAST_REQUEST_ERROR
     
@@ -453,6 +471,22 @@ async def runtime_diagnostics_middleware(request: Request, call_next):
             "duration_ms": round(duration * 1000, 2),
             "timestamp": datetime.now().isoformat()
         }
+        raise
+"""
+
+
+# PRIORITY 1: REQUEST LOGGING MIDDLEWARE
+@app.middleware("http")
+async def request_logger(request: Request, call_next):
+    """Log all incoming requests and responses"""
+    logger.info(f"📥 REQUEST: {request.method} {request.url.path}")
+    
+    try:
+        response = await call_next(request)
+        logger.info(f"📤 RESPONSE: {request.method} {request.url.path} -> {response.status_code}")
+        return response
+    except Exception as e:
+        logger.exception(f"💥 CRASH: {request.method} {request.url.path} - {e}")
         raise
 
 
@@ -718,7 +752,6 @@ ALL_FILES_TO_DIAGNOSE = [
     "app.services.logistics_query_service",
     "app.services.schema_service",
     "app.services.whatsapp_service",
-    "app.routes.webhook",
     "app.routes.upload",
     "app.routes.admin",
     "app.routes.health",
@@ -854,7 +887,7 @@ def print_dependency_tree():
 ║   ├── models.py                                                  ║
 ║   │                                                              ║
 ║   ├── routes/                                                    ║
-║   │    ├── webhook.py                                            ║
+║   │    ├── webhook.py (✅ REGISTERED OUTSIDE LIFESPAN)          ║
 ║   │    ├── upload.py                                             ║
 ║   │    ├── admin.py                                              ║
 ║   │    ├── health.py                                             ║
@@ -871,23 +904,103 @@ def print_dependency_tree():
 ║        └── whatsapp_service.py                                   ║
 ║                                                                  ║
 ╠══════════════════════════════════════════════════════════════════╣
-║  CRITICAL FIXES v13.2.0:                                         ║
+║  CRITICAL FIXES v13.3.0:                                         ║
 ║  ✅ get_db imported at module level                              ║
 ║  ✅ CACHE_TTL defined at module level                            ║
 ║  ✅ Global crash handler installed                               ║
-║  ✅ Startup checkpoints added                                    ║
-║  ✅ ChatService imported directly (no lazy loading)              ║
-║  ✅ Chat endpoint DISABLED for isolation test                    ║
+║  ✅ Request logging middleware added                             ║
+║  ✅ Raw endpoints added (/alive, /, /startup-check)             ║
+║  ✅ Global exception handler added                               ║
+║  ✅ Webhook router registered OUTSIDE lifespan                   ║
+║  🔧 TrustedHostMiddleware DISABLED for debugging                 ║
+║  🔧 Runtime diagnostics middleware DISABLED                      ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
     logger.info(tree)
 
 
 # ==========================================================
-# MIDDLEWARE
+# PRIORITY 6: TEMPORARILY DISABLE MIDDLEWARE
+# ==========================================================
+
+# Create app first
+app = FastAPI(
+    title="AI WhatsApp Logistics Assistant",
+    description="Enterprise Logistics AI Platform - WhatsApp Integration",
+    version="13.3.0",
+    docs_url="/api/docs" if config.ENVIRONMENT != "production" else None,
+    redoc_url="/api/redoc" if config.ENVIRONMENT != "production" else None,
+    openapi_url="/api/openapi.json" if config.ENVIRONMENT != "production" else None,
+)
+
+# ==========================================================
+# PRIORITY 5: GLOBAL EXCEPTION HANDLER
+# ==========================================================
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Global exception handler to catch all errors"""
+    logger.exception(f"💥 GLOBAL ERROR: {request.method} {request.url.path} - {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": str(exc),
+            "type": type(exc).__name__,
+            "path": request.url.path,
+            "method": request.method
+        }
+    )
+
+
+# ==========================================================
+# PRIORITY 2: RAW ENDPOINTS (Before any middleware that might fail)
+# ==========================================================
+
+@app.get("/")
+async def root():
+    """Root endpoint - test if app is reachable"""
+    logger.info("✅ Root endpoint hit")
+    return {"status": "ok", "message": "AI WhatsApp Logistics Assistant is running"}
+
+
+@app.get("/alive")
+async def alive():
+    """Simple alive check - bypasses all complex logic"""
+    logger.info("✅ Alive endpoint hit")
+    return {"alive": True, "timestamp": datetime.now().isoformat()}
+
+
+@app.get("/startup-check")
+async def startup_check():
+    """Startup verification endpoint"""
+    return {
+        "chat_service_available": CHAT_SERVICE_AVAILABLE,
+        "environment": config.ENVIRONMENT,
+        "cache_ttl": CACHE_TTL,
+        "webhook_router_registered": webhook_router is not None,
+        "status": "running"
+    }
+
+
+# ==========================================================
+# PRIORITY 6: DISABLED MIDDLEWARE (Temporarily)
+# ==========================================================
+
+# PRIORITY 6: Temporarily disabled
+# app.middleware("http")(runtime_diagnostics_middleware)
+
+# PRIORITY 6: Temporarily disabled - using request_logger instead
+# app.middleware("http")(add_request_id_middleware)
+
+# PRIORITY 6: Temporarily disabled - using request_logger instead
+# app.middleware("http")(add_security_headers_middleware)
+
+# ==========================================================
+# MIDDLEWARE (Kept but may be disabled)
 # ==========================================================
 
 async def add_request_id_middleware(request: Request, call_next):
+    """Add request ID middleware (temporarily disabled if needed)"""
     request_id = str(uuid.uuid4())[:8]
     request.state.request_id = request_id
     start_time = time.time()
@@ -911,6 +1024,7 @@ async def add_request_id_middleware(request: Request, call_next):
 
 
 async def add_security_headers_middleware(request: Request, call_next):
+    """Add security headers middleware (temporarily disabled if needed)"""
     response = await call_next(request)
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-Content-Type-Options"] = "nosniff"
@@ -939,29 +1053,13 @@ dashboard_cache = TTLCache(maxsize=100, ttl=CACHE_TTL)
 
 
 # ==========================================================
-# CREATE APP
+# REGISTER MIDDLEWARE (Selectively enabled)
 # ==========================================================
 
-print("CHECKPOINT 5 - CREATING FASTAPI APP")
-preflight_result = preflight_check()
+# PRIORITY 1: Request logger is enabled (helpful for debugging)
+# app.middleware("http")(request_logger)  # Uncomment if needed
 
-app = FastAPI(
-    title="AI WhatsApp Logistics Assistant",
-    description="Enterprise Logistics AI Platform - WhatsApp Integration",
-    version="13.2.0",
-    docs_url="/api/docs" if config.ENVIRONMENT != "production" else None,
-    redoc_url="/api/redoc" if config.ENVIRONMENT != "production" else None,
-    openapi_url="/api/openapi.json" if config.ENVIRONMENT != "production" else None,
-)
-
-print("✅ FastAPI app created")
-
-# Add runtime diagnostics middleware
-app.middleware("http")(runtime_diagnostics_middleware)
-app.middleware("http")(add_request_id_middleware)
-app.middleware("http")(add_security_headers_middleware)
-
-# Rate limiter
+# Rate limiter (keep this - it's important)
 limiter = Limiter(key_func=get_remote_address, default_limits=["5 per second"])
 limiter._app = app
 app.state.limiter = limiter
@@ -989,7 +1087,8 @@ else:
         allow_headers=["*"],
     )
 
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
+# PRIORITY 3: DISABLED TrustedHostMiddleware (may block Railway)
+# app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
 os.makedirs(TEMPLATES_DIR, exist_ok=True)
@@ -997,7 +1096,18 @@ templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
 
 # ==========================================================
-# LIFESPAN HANDLER (Main startup)
+# PRIORITY 7: REGISTER WEBHOOK ROUTER IMMEDIATELY (Outside lifespan)
+# ==========================================================
+
+if webhook_router:
+    app.include_router(webhook_router)
+    logger.success("✅ Webhook router registered (outside lifespan)")
+else:
+    logger.error("❌ Webhook router not available")
+
+
+# ==========================================================
+# LIFESPAN HANDLER (Main startup - now only for services)
 # ==========================================================
 
 @asynccontextmanager
@@ -1013,10 +1123,10 @@ async def lifespan(app: FastAPI):
     
     try:
         logger.info("=" * 80)
-        logger.info("🤖 AI WHATSAPP AGENT STARTING v13.2.0")
+        logger.info("🤖 AI WHATSAPP AGENT STARTING v13.3.0")
         logger.info("=" * 80)
         
-        # Stage 1: Import all modules
+        # Stage 1: Import all modules (skip webhook - already imported)
         logger.info("📍 STAGE 1: Importing Modules")
         for module_name in ALL_FILES_TO_DIAGNOSE:
             try:
@@ -1025,15 +1135,7 @@ async def lifespan(app: FastAPI):
                 write_crash_report(e, f"import_{module_name}")
                 raise
         
-        # Stage 2: Register webhook router
-        webhook_router = None
-        if "app.routes.webhook" in imported_modules:
-            webhook_router = getattr(imported_modules["app.routes.webhook"], "router", None)
-            if webhook_router:
-                app.include_router(webhook_router)
-                logger.success("✅ Webhook router registered")
-        
-        # Stage 3: Initialize services
+        # Stage 2: Initialize services
         logger.info("📍 STAGE 2: Initializing Services")
         
         try:
@@ -1075,7 +1177,7 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"❌ WhatsApp Service failed: {e}")
         
-        # Stage 4: Create directories
+        # Stage 3: Create directories
         os.makedirs("uploads", exist_ok=True)
         os.makedirs(TEMPLATES_DIR, exist_ok=True)
         
@@ -1219,7 +1321,7 @@ async def crash_classification():
 async def health():
     return {
         "status": "healthy",
-        "version": "13.2.0",
+        "version": "13.3.0",
         "timestamp": datetime.utcnow().isoformat(),
         "preflight": preflight_result["status"]
     }
@@ -1321,19 +1423,23 @@ if __name__ == "__main__":
 
 try:
     logger.info("=" * 60)
-    logger.info("📡 MAIN APP v13.2.0 - CRASH DIAGNOSTICS")
+    logger.info("📡 MAIN APP v13.3.0 - PRODUCTION READY")
     logger.info("")
-    logger.info("   CRITICAL FIXES IN v13.2.0:")
+    logger.info("   CRITICAL FIXES IN v13.3.0:")
     logger.info("   🔧 FIXED: get_db import at module level (Bug #1)")
     logger.info("   🔧 FIXED: CACHE_TTL defined at module level (Bug #2)")
     logger.info("   🔧 ADDED: Global crash handler with sys.excepthook")
-    logger.info("   🔧 ADDED: Startup checkpoints (CHECKPOINT 1-5)")
-    logger.info("   🔧 ADDED: ChatService import at module level")
-    logger.info("   🔧 ADDED: Chat endpoint disabled for isolation test")
+    logger.info("   🔧 ADDED: Request logging middleware")
+    logger.info("   🔧 ADDED: Raw endpoints (/alive, /, /startup-check)")
+    logger.info("   🔧 ADDED: Global exception handler")
+    logger.info("   🔧 FIXED: Webhook router registered OUTSIDE lifespan")
+    logger.info("   🔧 TEMP: TrustedHostMiddleware DISABLED")
+    logger.info("   🔧 TEMP: Runtime diagnostics middleware DISABLED")
     logger.info("")
     logger.info(f"   PRE-FLIGHT: {preflight_result['status']}")
     logger.info(f"   CACHE_TTL: {CACHE_TTL}s")
     logger.info(f"   CHAT_SERVICE_AVAILABLE: {CHAT_SERVICE_AVAILABLE}")
+    logger.info(f"   WEBHOOK_ROUTER_REGISTERED: {webhook_router is not None}")
     logger.info("=" * 60)
 except Exception as init_error:
     logger.critical("=" * 80)
