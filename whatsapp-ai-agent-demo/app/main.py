@@ -11,6 +11,7 @@
 # - ✅ ADDED: Root cause endpoint (/root-cause) - SINGLE SOURCE OF TRUTH
 # - ✅ ADDED: All imports moved to lifespan (diagnosable failures)
 # - ✅ ADDED: Import dependency tree logging
+# - ✅ FIXED: config import at module level (NameError fix)
 # - ✅ All original attributes preserved
 # ==========================================================
 
@@ -47,6 +48,11 @@ from slowapi.errors import RateLimitExceeded
 # Prometheus metrics
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
+# ==========================================================
+# CRITICAL FIX: Import config BEFORE FastAPI app creation
+# ==========================================================
+from app.config import config
+
 # Try to import psutil for memory diagnostics (optional)
 try:
     import psutil
@@ -82,7 +88,7 @@ def crash_location(exc: Exception) -> Optional[Dict[str, Any]]:
             "file": last_frame.filename,
             "line": last_frame.lineno,
             "function": last_frame.name,
-            "code": last_frame.line if last_frame.line else "Unknown"
+            "code": last_frame.line if frame.line else "Unknown"
         }
     
     return None
@@ -592,11 +598,11 @@ def print_dependency_tree():
 
 
 # ==========================================================
-# LIFESPAN HANDLER (CRITICAL FIX #7 - All imports inside lifespan)
+# LIFESPAN HANDLER (All imports inside lifespan)
 # ==========================================================
 
-# CRITICAL FIX #7: No global imports that can crash before lifespan
-# All imports are now inside lifespan() or diagnosed individually
+# Note: config is already imported at the top of the file
+# Other imports are inside lifespan to make failures diagnosable
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -606,7 +612,7 @@ async def lifespan(app: FastAPI):
     
     print_dependency_tree()
     
-    # CRITICAL FIX #7: Import database INSIDE lifespan
+    # Import database INSIDE lifespan
     try:
         from app.database import (
             engine,
@@ -635,26 +641,7 @@ async def lifespan(app: FastAPI):
         SERVICE_STATUS["database"] = False
         raise
     
-    # CRITICAL FIX #7: Import config INSIDE lifespan
-    try:
-        from app.config import config
-        logger.info("✅ Config module loaded")
-    except Exception as e:
-        location = crash_location(e)
-        logger.error(f"❌ Config module failed: {e}")
-        if location:
-            logger.error(f"   Location: {location['file']}:{location['line']}")
-            set_root_cause(
-                file=location['file'],
-                line=location['line'],
-                function=location.get('function', 'unknown'),
-                error_type=type(e).__name__,
-                error=str(e)[:200],
-                module="config"
-            )
-        raise
-    
-    # Cache settings
+    # Cache settings (config already imported at top)
     CACHE_TTL = getattr(config, 'CACHE_TTL', 300)
     CACHE_TTL_SESSION = getattr(config, 'CACHE_TTL_SESSION', 1800)
     CACHE_ENABLED = getattr(config, 'CACHE_ENABLED', True)
@@ -923,6 +910,67 @@ def diagnose_service(service_name: str, func, *args, **kwargs):
 
 
 # ==========================================================
+# MIDDLEWARE FUNCTIONS
+# ==========================================================
+
+async def add_request_id_middleware(request: Request, call_next):
+    """Add request ID to all requests for tracing"""
+    request_id = str(uuid.uuid4())[:8]
+    request.state.request_id = request_id
+    start_time = time.time()
+    active_requests.inc()
+    
+    with logger.contextualize(request_id=request_id):
+        logger.debug(f"Request started: {request.method} {request.url.path}")
+        
+        try:
+            response = await call_next(request)
+            duration_ms = (time.time() - start_time) * 1000
+            request_metrics.update(request.url.path, response.status_code, duration_ms)
+            logger.debug(f"Request completed: {response.status_code} in {duration_ms:.2f}ms")
+            response.headers["X-Request-ID"] = request_id
+            response.headers["X-Response-Time-Ms"] = str(int(duration_ms))
+            active_requests.dec()
+            return response
+        except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
+            request_metrics.update(request.url.path, 500, duration_ms)
+            logger.error(f"Request failed: {e} in {duration_ms:.2f}ms")
+            active_requests.dec()
+            raise
+
+
+async def add_security_headers_middleware(request: Request, call_next):
+    """Add security headers to all responses"""
+    response = await call_next(request)
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';"
+    return response
+
+
+# ==========================================================
+# SAFE ERROR RESPONSE
+# ==========================================================
+
+def safe_error_response(request_id: str, error_type: str = "internal_error") -> Dict[str, Any]:
+    """Return safe error response without exposing internals"""
+    response = {
+        "success": False,
+        "error": "Internal server error",
+        "request_id": request_id,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    
+    if config.ENVIRONMENT != "production":
+        response["error_type"] = error_type
+    
+    return response
+
+
+# ==========================================================
 # CACHE
 # ==========================================================
 
@@ -1151,6 +1199,7 @@ async def ping():
 if config.ENVIRONMENT != "production":
     @app.get("/test-crash")
     async def test_crash():
+        """Test endpoint to simulate a crash - for debugging only"""
         raise RuntimeError("This is a test crash - check /root-cause endpoint")
 
 
@@ -1180,4 +1229,8 @@ logger.info("   ✅ Reuse cached imports")
 logger.info("   ✅ Module health endpoint")
 logger.info("   ✅ Root cause endpoint (single source of truth)")
 logger.info("   ✅ All imports inside lifespan")
+logger.info("   ✅ Config import at module level (NameError fix)")
+logger.info("")
+logger.info(f"   CACHE_TTL: {CACHE_TTL}s")
+logger.info(f"   ENVIRONMENT: {config.ENVIRONMENT}")
 logger.info("=" * 60)
