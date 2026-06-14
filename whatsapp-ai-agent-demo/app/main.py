@@ -1,14 +1,17 @@
 # ==========================================================
-# FILE: app/main.py (ENTERPRISE v13.6.0 - FULLY FIXED)
+# FILE: app/main.py (ENTERPRISE v14.0 - FULLY INTEGRATED)
 # PROJECT: AI WhatsApp Customer Service Agent
 # ==========================================================
-# IMPROVEMENTS v13.6.0:
+# IMPROVEMENTS v14.0:
+# - ✅ FULL INTEGRATION with webhook.py v11.0
+# - ✅ Webhook services initialized in lifespan
+# - ✅ Webhook stats exposed via /webhook-stats endpoint
+# - ✅ All webhook debug endpoints integrated
 # - ✅ CRITICAL FIX: preflight_result defined before use
 # - ✅ CRITICAL FIX: app = FastAPI() created BEFORE any decorators
 # - ✅ CRITICAL FIX: All problematic middleware DISABLED
 # - ✅ ADDED: Debug endpoints (/debug/ping, /debug/health, /debug/routes, /debug/env)
 # - ✅ ADDED: RAW endpoint (/raw-ping) - NO middleware, NO dependencies
-# - ✅ ADDED: Minimal lifespan mode (services commented out)
 # - ✅ ADDED: TrustedHostMiddleware DISABLED
 # - ✅ ADDED: Global exception handler
 # - ✅ All original attributes preserved
@@ -279,15 +282,14 @@ print(f"✅ PRE-FLIGHT RESULT: {preflight_result['status']}")
 
 
 # ==========================================================
-# CREATE FASTAPI APP FIRST (Before any decorators)
+# INTEGRATED LIFESPAN HANDLER (with Webhook initialization)
 # ==========================================================
 
-# PROPER LIFESPAN HANDLER
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Minimal lifespan - NO service imports for debugging"""
+    """Integrated lifespan - initializes webhook services and more"""
     print("=" * 60)
-    print("🚀 LIFESPAN STARTED - MINIMAL MODE")
+    print("🚀 LIFESPAN STARTED - INTEGRATED MODE")
     print("=" * 60)
     
     STARTUP_DIAGNOSTICS["startup_time"] = datetime.now().isoformat()
@@ -295,8 +297,24 @@ async def lifespan(app: FastAPI):
     
     try:
         logger.info("=" * 80)
-        logger.info("🤖 AI WHATSAPP AGENT STARTING v13.6.0 (MINIMAL MODE)")
+        logger.info("🤖 AI WHATSAPP AGENT STARTING v14.0 (INTEGRATED MODE)")
         logger.info("=" * 80)
+        
+        # ====================================================
+        # INTEGRATION: Initialize Webhook Services
+        # This calls the webhook.py's initialize_services() function
+        # ====================================================
+        try:
+            from app.routes.webhook import initialize_services, get_webhook_stats
+            webhook_init_result = await initialize_services()
+            logger.info(f"✅ Webhook services initialized: {webhook_init_result}")
+            
+            # Store webhook stats function in app state for later use
+            app.state.get_webhook_stats = get_webhook_stats
+        except Exception as e:
+            logger.error(f"❌ Webhook services initialization failed: {e}")
+            logger.exception(e)
+            webhook_init_result = {"services_loaded": 0, "health": "unknown", "env_configured": False}
         
         # Create directories
         os.makedirs("uploads", exist_ok=True)
@@ -308,7 +326,9 @@ async def lifespan(app: FastAPI):
         STARTUP_DIAGNOSTICS["status"] = "COMPLETED"
         
         logger.info("=" * 80)
-        logger.info(f"✅ Application startup complete in {startup_duration:.2f}s (MINIMAL MODE)")
+        logger.info(f"✅ Application startup complete in {startup_duration:.2f}s (INTEGRATED MODE)")
+        logger.info(f"   Webhook Services: {webhook_init_result.get('services_loaded', 0)} loaded")
+        logger.info(f"   Webhook Health: {webhook_init_result.get('health', 'unknown')}")
         logger.info("🚀 APPLICATION STARTED SUCCESSFULLY")
         logger.info("📡 READY FOR TRAFFIC")
         logger.info("=" * 80)
@@ -362,7 +382,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AI WhatsApp Logistics Assistant",
     description="Enterprise Logistics AI Platform - WhatsApp Integration",
-    version="13.6.0",
+    version="14.0.0",
     docs_url="/api/docs" if config.ENVIRONMENT != "production" else None,
     redoc_url="/api/redoc" if config.ENVIRONMENT != "production" else None,
     openapi_url="/api/openapi.json" if config.ENVIRONMENT != "production" else None,
@@ -401,7 +421,7 @@ async def debug_health():
     print("🔔 /debug/health HIT")
     return {
         "status": "alive",
-        "version": "13.6.0",
+        "version": "14.0.0",
         "timestamp": datetime.now().isoformat(),
         "preflight": preflight_result["status"]
     }
@@ -441,6 +461,30 @@ async def debug_env():
 
 
 # ==========================================================
+# WEBHOOK INTEGRATION ENDPOINT (New)
+# ==========================================================
+
+@app.get("/webhook-stats")
+async def webhook_integration_stats():
+    """Get webhook integration statistics from webhook.py"""
+    print("🔔 /webhook-stats HIT")
+    if hasattr(app.state, 'get_webhook_stats'):
+        stats = app.state.get_webhook_stats()
+        return {
+            "status": "ok",
+            "integration": "100%",
+            "webhook_version": "11.0",
+            "stats": stats,
+            "timestamp": datetime.now().isoformat()
+        }
+    return {
+        "status": "degraded",
+        "integration": "webhook stats not available",
+        "message": "Webhook services may not be fully initialized"
+    }
+
+
+# ==========================================================
 # SIMPLE ENDPOINTS
 # ==========================================================
 
@@ -451,8 +495,8 @@ async def root():
     return {
         "status": "ok",
         "message": "AI WhatsApp Logistics Assistant is running",
-        "version": "13.6.0",
-        "debug_endpoints": ["/raw-ping", "/debug/ping", "/debug/health", "/debug/routes", "/debug/env", "/alive", "/health"]
+        "version": "14.0.0",
+        "debug_endpoints": ["/raw-ping", "/debug/ping", "/debug/health", "/debug/routes", "/debug/env", "/alive", "/health", "/webhook-stats"]
     }
 
 
@@ -476,7 +520,7 @@ async def health():
     print("🔔 /health HIT")
     return {
         "status": "healthy",
-        "version": "13.6.0",
+        "version": "14.0.0",
         "timestamp": datetime.now().isoformat(),
         "preflight": preflight_result["status"]
     }
@@ -493,14 +537,19 @@ async def liveness():
 async def startup_check():
     """Startup verification endpoint"""
     print("🔔 /startup-check HIT")
+    webhook_stats = {}
+    if hasattr(app.state, 'get_webhook_stats'):
+        webhook_stats = app.state.get_webhook_stats()
+    
     return {
         "chat_service_available": CHAT_SERVICE_AVAILABLE,
         "environment": config.ENVIRONMENT,
         "cache_ttl": CACHE_TTL,
         "webhook_router_registered": webhook_router is not None,
+        "webhook_stats": webhook_stats,
         "preflight_status": preflight_result["status"],
         "status": "running",
-        "version": "13.6.0"
+        "version": "14.0.0"
     }
 
 
@@ -510,7 +559,7 @@ async def startup_check():
 
 if webhook_router:
     app.include_router(webhook_router)
-    logger.success("✅ Webhook router registered")
+    logger.success("✅ Webhook router registered (v11.0 integrated)")
 else:
     logger.error("❌ Webhook router not available")
 
@@ -1178,7 +1227,7 @@ def print_dependency_tree():
 ║   ├── models.py                                                  ║
 ║   │                                                              ║
 ║   ├── routes/                                                    ║
-║   │    ├── webhook.py (✅ REGISTERED)                           ║
+║   │    ├── webhook.py (✅ REGISTERED - v11.0 INTEGRATED)        ║
 ║   │    ├── upload.py                                             ║
 ║   │    ├── admin.py                                              ║
 ║   │    ├── health.py                                             ║
@@ -1195,14 +1244,15 @@ def print_dependency_tree():
 ║        └── whatsapp_service.py                                   ║
 ║                                                                  ║
 ╠══════════════════════════════════════════════════════════════════╣
-║  CRITICAL FIXES v13.6.0:                                         ║
+║  CRITICAL FIXES v14.0:                                           ║
+║  ✅ FULL INTEGRATION with webhook.py v11.0                       ║
+║  ✅ Webhook services initialized in lifespan                     ║
+║  ✅ Webhook stats endpoint (/webhook-stats)                      ║
 ║  ✅ preflight_result defined BEFORE use                          ║
 ║  ✅ app = FastAPI() created BEFORE any decorators                ║
 ║  ✅ All problematic middleware DISABLED                          ║
 ║  ✅ RAW endpoint (/raw-ping) - NO dependencies                   ║
 ║  ✅ Debug endpoints added (/debug/*)                             ║
-║  ✅ Minimal lifespan mode (services commented out)               ║
-║  ✅ TrustedHostMiddleware DISABLED                               ║
 ║  ✅ Global exception handler added                               ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
@@ -1400,16 +1450,18 @@ if __name__ == "__main__":
 
 try:
     logger.info("=" * 60)
-    logger.info("📡 MAIN APP v13.6.0 - FULLY FIXED")
+    logger.info("📡 MAIN APP v14.0 - FULLY INTEGRATED")
     logger.info("")
-    logger.info("   CRITICAL FIXES IN v13.6.0:")
-    logger.info("   🔧 FIXED: preflight_result defined BEFORE use")
-    logger.info("   🔧 FIXED: app = FastAPI() created BEFORE any decorators")
-    logger.info("   🔧 FIXED: All problematic middleware DISABLED")
-    logger.info("   🔧 ADDED: RAW endpoint (/raw-ping) - NO dependencies")
-    logger.info("   🔧 ADDED: Debug endpoints (/debug/*)")
-    logger.info("   🔧 ADDED: Minimal lifespan mode for debugging")
-    logger.info("   🔧 ADDED: Global exception handler")
+    logger.info("   CRITICAL FIXES IN v14.0:")
+    logger.info("   🔧 FULL INTEGRATION with webhook.py v11.0")
+    logger.info("   🔧 Webhook services initialized in lifespan")
+    logger.info("   🔧 Webhook stats endpoint (/webhook-stats)")
+    logger.info("   🔧 preflight_result defined BEFORE use")
+    logger.info("   🔧 app = FastAPI() created BEFORE any decorators")
+    logger.info("   🔧 All problematic middleware DISABLED")
+    logger.info("   🔧 RAW endpoint (/raw-ping) - NO dependencies")
+    logger.info("   🔧 Debug endpoints (/debug/*)")
+    logger.info("   🔧 Global exception handler")
     logger.info("")
     logger.info(f"   PRE-FLIGHT: {preflight_result['status']}")
     logger.info(f"   CACHE_TTL: {CACHE_TTL}s")
@@ -1422,6 +1474,8 @@ try:
     logger.info("   3. GET /debug/health - Health check")
     logger.info("   4. GET /alive - Basic alive")
     logger.info("   5. GET /health - Full health")
+    logger.info("   6. GET /webhook-stats - Webhook integration status")
+    logger.info("   7. GET /webhook/self-test - Webhook self test")
     logger.info("=" * 60)
 except Exception as init_error:
     logger.critical("=" * 80)
