@@ -1,19 +1,6 @@
 # ==========================================================
-# FILE: app/services/ai_provider_service.py (v3.0 - PRODUCTION READY)
+# FILE: app/services/ai_provider_service.py (WORKING v3.0 - COMPLETE)
 # PURPOSE: AI Provider Service - Natural Language Query Processing
-# 
-# REFACTORING v3.0:
-# - ✅ PRESERVED: Original function signature (100% backward compatible)
-# - ✅ PRESERVED: All existing business logic (DN, Dealer, Warehouse queries)
-# - ✅ ADDED: Intent Classification System
-# - ✅ ADDED: Groq Integration Layer
-# - ✅ ADDED: Conversation Context Awareness
-# - ✅ ADDED: Smart Entity Extraction
-# - ✅ ADDED: Executive Insight Engine
-# - ✅ ADDED: Ranking & Analytics Queries
-# - ✅ ADDED: Caching Layer (TTLCache)
-# - ✅ ADDED: Proper Error Handling
-# - ✅ OPTIMIZED: Database queries (aggregations, no .all() scans)
 # ==========================================================
 
 import re
@@ -38,9 +25,8 @@ from app.config import config
 # ==========================================================
 
 GROQ_API_KEY = getattr(config, 'GROQ_API_KEY', '')
-GROQ_MODEL = getattr(config, 'GROQ_MODEL', 'llama-3.3-70b-versatile')
-CACHE_TTL_SECONDS = 300  # 5 minutes
-CONTEXT_TTL_SECONDS = 1800  # 30 minutes
+CACHE_TTL_SECONDS = 300
+CONTEXT_TTL_SECONDS = 1800
 PROCESSING_TIMEOUT_SECONDS = 20
 
 # ==========================================================
@@ -65,7 +51,6 @@ class IntentType(Enum):
 
 @dataclass
 class ProcessedQuery:
-    """Internal structured query result"""
     intent: IntentType
     entity: Optional[str] = None
     entity_type: Optional[str] = None
@@ -77,7 +62,6 @@ class ProcessedQuery:
 
 @dataclass
 class ConversationContext:
-    """User conversation context"""
     phone_number: str
     last_intent: Optional[str] = None
     last_dealer: Optional[str] = None
@@ -94,17 +78,13 @@ class ConversationContext:
 
 _conversation_cache: Dict[str, ConversationContext] = {}
 _query_cache = TTLCache(maxsize=1000, ttl=CACHE_TTL_SECONDS)
-_dealer_cache = TTLCache(maxsize=500, ttl=CACHE_TTL_SECONDS)
-_warehouse_cache = TTLCache(maxsize=200, ttl=CACHE_TTL_SECONDS)
 
 
 def get_conversation_context(phone_number: str) -> ConversationContext:
-    """Get or create conversation context for a user"""
     if phone_number not in _conversation_cache:
         _conversation_cache[phone_number] = ConversationContext(phone_number=phone_number)
     
     context = _conversation_cache[phone_number]
-    # Check if context expired
     if time.time() - context.last_updated > CONTEXT_TTL_SECONDS:
         context = ConversationContext(phone_number=phone_number)
         _conversation_cache[phone_number] = context
@@ -114,7 +94,6 @@ def get_conversation_context(phone_number: str) -> ConversationContext:
 
 def update_conversation_context(phone_number: str, intent: IntentType = None, 
                                 entity: str = None, entity_type: str = None):
-    """Update conversation context"""
     context = get_conversation_context(phone_number)
     
     if intent:
@@ -132,7 +111,6 @@ def update_conversation_context(phone_number: str, intent: IntentType = None,
 
 
 def get_cache_key(question: str, phone_number: str = None) -> str:
-    """Generate cache key for query"""
     key = question.lower().strip()
     if phone_number:
         key = f"{phone_number}:{key}"
@@ -140,503 +118,10 @@ def get_cache_key(question: str, phone_number: str = None) -> str:
 
 
 # ==========================================================
-# GROQ SERVICE INTEGRATION
-# ==========================================================
-
-class GroqService:
-    """Dedicated Groq Integration Layer"""
-    
-    def __init__(self):
-        self.api_key = GROQ_API_KEY
-        self.model = GROQ_MODEL
-        self.is_available = bool(self.api_key)
-        
-        if not self.is_available:
-            logger.warning("GROQ_API_KEY not configured - Groq features disabled")
-    
-    def _call_groq(self, messages: List[Dict[str, str]]) -> Optional[str]:
-        """Internal Groq API call with timeout protection"""
-        if not self.is_available:
-            return None
-        
-        try:
-            import httpx
-            
-            with httpx.Client(timeout=PROCESSING_TIMEOUT_SECONDS) as client:
-                response = client.post(
-                    "https://api.groq.com/openai/v1/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": self.model,
-                        "messages": messages,
-                        "temperature": 0.7,
-                        "max_tokens": 500
-                    }
-                )
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    return data.get("choices", [{}])[0].get("message", {}).get("content", "")
-                else:
-                    logger.error(f"Groq API error: {response.status_code}")
-                    return None
-                    
-        except Exception as e:
-            logger.error(f"Groq call failed: {e}")
-            return None
-    
-    def classify_intent(self, question: str, context: ConversationContext = None) -> Tuple[str, float]:
-        """Use Groq to classify intent when rule-based fails"""
-        messages = [
-            {"role": "system", "content": """You are an intent classifier for a logistics system.
-            Classify into one of: DN_QUERY, DEALER_QUERY, WAREHOUSE_QUERY, PGI_QUERY, POD_QUERY, 
-            CONTROL_TOWER, EXECUTIVE_INSIGHT, RANKING_QUERY, HELP, GENERAL_AI.
-            Return ONLY the category name."""},
-            {"role": "user", "content": question}
-        ]
-        
-        result = self._call_groq(messages)
-        if result:
-            valid_intents = [i.value for i in IntentType]
-            for intent in valid_intents:
-                if intent.upper() in result.upper():
-                    return intent, 0.8
-        
-        return "unknown", 0.0
-    
-    def extract_entities(self, question: str, intent: str) -> Dict[str, str]:
-        """Extract entities (dealer, warehouse, etc.) using Groq"""
-        messages = [
-            {"role": "system", "content": f"""Extract entities from this {intent} query.
-            Return JSON: {{"dealer_name": "", "warehouse_name": "", "dn_number": "", "metric": ""}}
-            Only include fields that exist. Return ONLY JSON."""},
-            {"role": "user", "content": question}
-        ]
-        
-        result = self._call_groq(messages)
-        if result:
-            try:
-                json_match = re.search(r'\{.*\}', result, re.DOTALL)
-                if json_match:
-                    import json
-                    return json.loads(json_match.group())
-            except:
-                pass
-        return {}
-    
-    def generate_response(self, question: str, context: ConversationContext = None, 
-                          business_data: Dict = None) -> str:
-        """Generate natural language response"""
-        
-        system_prompt = """You are a Logistics AI Assistant for a Pakistan-based distribution company.
-        
-        Capabilities:
-        - Track Delivery Notes (DN numbers)
-        - Dealer performance (revenue, units, pending)
-        - Warehouse operations (PGI, POD, aging)
-        - Executive insights and recommendations
-        - Rankings and analytics
-        
-        Be helpful, concise, and professional. Use emojis (📦, 🚚, 📊, ✅, ⚠️, 🔴).
-        If non-logistics question, politely redirect.
-        Keep responses WhatsApp-friendly (max 1500 chars)."""
-        
-        user_message = question
-        if context and context.last_dealer:
-            user_message = f"[Context: last dealer was {context.last_dealer}] {question}"
-        
-        if business_data:
-            user_message = f"Data: {business_data}\n\nQuestion: {question}"
-        
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message}
-        ]
-        
-        result = self._call_groq(messages)
-        if result:
-            return result
-        
-        return self._get_fallback_response(question)
-    
-    def generate_executive_insight(self, metrics: Dict[str, Any]) -> str:
-        """Generate executive insight from business metrics"""
-        messages = [
-            {"role": "system", "content": """You are a Logistics Executive Analyst.
-            Analyze the metrics and provide:
-            1. Key issue (1 sentence)
-            2. Primary risk (1 sentence)
-            3. Recommendation (1 sentence)
-            Be specific and actionable. Use emojis."""},
-            {"role": "user", "content": f"Metrics: {metrics}"}
-        ]
-        
-        result = self._call_groq(messages)
-        if result and len(result) > 50:
-            return f"🚨 *Executive Insight*\n\n{result}"
-        
-        return None
-    
-    def _get_fallback_response(self, question: str) -> str:
-        """Fallback when Groq unavailable"""
-        q_lower = question.lower()
-        
-        if any(w in q_lower for w in ['what do you do', 'what can you do', 'capabilities']):
-            return _format_help_message()
-        
-        if any(w in q_lower for w in ['hello', 'hi', 'hey', 'assalam', 'salam']):
-            return "👋 Hello! I'm your Logistics AI Assistant. How can I help you today?"
-        
-        if any(w in q_lower for w in ['thank', 'thanks']):
-            return "You're welcome! 😊 Is there anything else I can help with?"
-        
-        return f"I understand you're asking: {question[:100]}\n\nFor logistics queries, try:\n• Send a DN number\n• 'Show dealer [name]'\n• '[City] warehouse summary'\n• Type 'Help' for all commands"
-
-
-# Initialize Groq service
-_groq_service = None
-
-def get_groq_service() -> Optional[GroqService]:
-    global _groq_service
-    if _groq_service is None and GROQ_API_KEY:
-        _groq_service = GroqService()
-    return _groq_service
-
-
-# ==========================================================
-# EXECUTIVE INSIGHT ENGINE
-# ==========================================================
-
-def _generate_executive_insight(db: Session) -> str:
-    """Generate executive insight using Groq"""
-    try:
-        today = date.today()
-        
-        # Get key metrics using aggregations (no .all())
-        total_pending_pgi = db.query(func.count(DeliveryReport.id)).filter(
-            DeliveryReport.good_issue_date.is_(None)
-        ).scalar() or 0
-        
-        total_pending_pod = db.query(func.count(DeliveryReport.id)).filter(
-            DeliveryReport.good_issue_date.isnot(None),
-            DeliveryReport.pod_date.is_(None)
-        ).scalar() or 0
-        
-        # Get oldest pending
-        oldest = db.query(
-            DeliveryReport.dn_no, DeliveryReport.customer_name, DeliveryReport.dn_create_date
-        ).filter(
-            DeliveryReport.good_issue_date.is_(None),
-            DeliveryReport.dn_create_date.isnot(None)
-        ).order_by(DeliveryReport.dn_create_date).first()
-        
-        oldest_aging = (today - oldest.dn_create_date).days if oldest else 0
-        
-        # Get worst warehouse
-        worst_wh = db.query(
-            DeliveryReport.warehouse,
-            func.count(DeliveryReport.id).label('cnt')
-        ).filter(
-            DeliveryReport.good_issue_date.is_(None),
-            DeliveryReport.warehouse.isnot(None)
-        ).group_by(DeliveryReport.warehouse).order_by(desc('cnt')).first()
-        
-        # Get PGI rate
-        total = db.query(func.count(DeliveryReport.id)).scalar() or 1
-        pgi_done = db.query(func.count(DeliveryReport.id)).filter(
-            DeliveryReport.good_issue_date.isnot(None)
-        ).scalar() or 0
-        pgi_rate = (pgi_done / total) * 100
-        
-        metrics = {
-            "pending_pgi": total_pending_pgi,
-            "pending_pod": total_pending_pod,
-            "pgi_completion_rate": round(pgi_rate, 1),
-            "oldest_pending_days": oldest_aging,
-            "worst_warehouse": worst_wh[0] if worst_wh else "None",
-            "worst_warehouse_pending": worst_wh[1] if worst_wh else 0
-        }
-        
-        # Try Groq for insight
-        groq = get_groq_service()
-        if groq:
-            insight = groq.generate_executive_insight(metrics)
-            if insight:
-                return insight
-        
-        # Fallback insights
-        lines = ["🚨 *Executive Dashboard*", ""]
-        lines.append(f"📊 *PGI Rate:* {pgi_rate:.1f}% ({pgi_done:,}/{total:,})")
-        lines.append(f"⏳ *Pending PGI:* {total_pending_pgi}")
-        lines.append(f"📎 *Pending POD:* {total_pending_pod}")
-        
-        if oldest_aging > 15:
-            lines.append(f"🔴 *Critical:* DN {oldest.dn_no} aging {oldest_aging} days")
-        
-        if worst_wh:
-            lines.append(f"🏭 *Alert:* {worst_wh[0]} warehouse has {worst_wh[1]} pending")
-        
-        lines.append("")
-        lines.append("📋 *Recommendations:*")
-        if total_pending_pgi > 50:
-            lines.append("• Expedite PGI processing immediately")
-        if total_pending_pod > 100:
-            lines.append("• Escalate POD collection team")
-        if oldest_aging > 15:
-            lines.append("• Escalate oldest DN to management")
-        
-        return "\n".join(lines)
-        
-    except Exception as e:
-        logger.error(f"Executive insight error: {e}")
-        return "📊 I'm analyzing the data. Please check back shortly."
-
-
-# ==========================================================
-# RANKING QUERIES
-# ==========================================================
-
-def _handle_ranking_query(db: Session, msg_lower: str, req_id: str) -> str:
-    """Handle ranking/top queries"""
-    try:
-        # Top dealers by revenue
-        if 'dealer' in msg_lower and 'revenue' in msg_lower:
-            limit = 10
-            if 'top 5' in msg_lower:
-                limit = 5
-            elif 'top 3' in msg_lower:
-                limit = 3
-            
-            results = db.query(
-                DeliveryReport.customer_name,
-                func.sum(DeliveryReport.dn_amount).label('total_revenue')
-            ).filter(
-                DeliveryReport.customer_name.isnot(None),
-                DeliveryReport.dn_amount.isnot(None)
-            ).group_by(DeliveryReport.customer_name).order_by(
-                desc('total_revenue')
-            ).limit(limit).all()
-            
-            lines = [f"🏆 *Top {limit} Dealers by Revenue*", ""]
-            for i, (name, revenue) in enumerate(results, 1):
-                rev = float(revenue or 0)
-                lines.append(f"{i}. {name}: PKR {rev:,.0f}")
-            return "\n".join(lines)
-        
-        # Top dealers by units
-        elif 'dealer' in msg_lower and 'units' in msg_lower:
-            limit = 10
-            if 'top 5' in msg_lower:
-                limit = 5
-            
-            results = db.query(
-                DeliveryReport.customer_name,
-                func.sum(DeliveryReport.dn_qty).label('total_units')
-            ).filter(
-                DeliveryReport.customer_name.isnot(None)
-            ).group_by(DeliveryReport.customer_name).order_by(
-                desc('total_units')
-            ).limit(limit).all()
-            
-            lines = [f"🏆 *Top {limit} Dealers by Units*", ""]
-            for i, (name, units) in enumerate(results, 1):
-                lines.append(f"{i}. {name}: {int(units or 0):,} units")
-            return "\n".join(lines)
-        
-        # Top warehouses by pending
-        elif 'warehouse' in msg_lower and 'pending' in msg_lower:
-            results = db.query(
-                DeliveryReport.warehouse,
-                func.count(DeliveryReport.id).label('pending_count')
-            ).filter(
-                DeliveryReport.warehouse.isnot(None),
-                DeliveryReport.good_issue_date.is_(None)
-            ).group_by(DeliveryReport.warehouse).order_by(
-                desc('pending_count')
-            ).limit(10).all()
-            
-            lines = ["🏭 *Warehouses with Most Pending*", ""]
-            for i, (name, count) in enumerate(results, 1):
-                lines.append(f"{i}. {name}: {count} pending")
-            return "\n".join(lines)
-        
-        return "📊 Please specify: 'Top 10 dealers by revenue' or 'Top warehouses by pending'"
-        
-    except Exception as e:
-        logger.exception(f"[{req_id}] Ranking error: {e}")
-        return "❌ Error fetching rankings"
-
-
-# ==========================================================
-# SMART ENTITY EXTRACTION
-# ==========================================================
-
-def _extract_dealer_name_smart(question: str, msg_lower: str, db: Session, 
-                                context: ConversationContext = None) -> Optional[str]:
-    """Smart dealer extraction with multiple strategies"""
-    
-    # Stop words that indicate NOT a dealer query
-    stop_patterns = [
-        'what', 'how', 'why', 'when', 'where', 'who', 'which',
-        'is', 'are', 'can', 'could', 'would', 'should',
-        'help', 'menu', 'status', 'pending', 'pgi', 'pod', 'aging',
-        'revenue', 'units', 'performance', 'delivered', 'transit',
-        'critical', 'alert', 'control', 'tower', 'top', 'best'
-    ]
-    
-    # Strategy 1: Explicit dealer pattern
-    dealer_match = re.search(r'(?:dealer|show|display|get)\s+([a-z0-9\s&\-\.]+)', msg_lower)
-    if dealer_match:
-        candidate = dealer_match.group(1).strip()
-        if len(candidate) > 2 and candidate not in stop_patterns:
-            # Verify exists in DB
-            exists = db.query(DeliveryReport).filter(
-                DeliveryReport.customer_name.ilike(f"%{candidate}%")
-            ).first()
-            if exists:
-                return candidate
-    
-    # Strategy 2: Check if whole message looks like a dealer name
-    if len(msg_lower) < 30 and len(msg_lower) > 3:
-        # Check if contains any stop words
-        if not any(pattern in msg_lower for pattern in stop_patterns):
-            # Verify in DB
-            exists = db.query(DeliveryReport).filter(
-                DeliveryReport.customer_name.ilike(f"%{msg_lower}%")
-            ).first()
-            if exists:
-                return msg_lower
-    
-    # Strategy 3: Use context from previous conversation
-    if context and context.last_dealer:
-        follow_up_patterns = ['pending', 'units', 'revenue', 'performance', 'dn', 'delivery']
-        if any(pattern in msg_lower for pattern in follow_up_patterns):
-            return context.last_dealer
-    
-    # Strategy 4: Use Groq for extraction (if available)
-    groq = get_groq_service()
-    if groq:
-        entities = groq.extract_entities(question, "dealer_query")
-        if entities.get("dealer_name"):
-            candidate = entities["dealer_name"]
-            exists = db.query(DeliveryReport).filter(
-                DeliveryReport.customer_name.ilike(f"%{candidate}%")
-            ).first()
-            if exists:
-                return candidate
-    
-    return None
-
-
-def _detect_warehouse_intent(msg_lower: str, db: Session) -> Tuple[bool, Optional[str]]:
-    """Detect if query is warehouse-related"""
-    
-    # Must have warehouse indicator
-    warehouse_indicators = ['warehouse', 'wh', 'godown', 'summary', 'report']
-    if not any(ind in msg_lower for ind in warehouse_indicators):
-        return False, None
-    
-    # Get warehouse list
-    warehouses = _get_warehouse_list(db)
-    
-    for wh in warehouses:
-        wh_lower = wh.lower()
-        if wh_lower in msg_lower:
-            return True, wh
-    
-    return False, None
-
-
-# ==========================================================
-# INTENT CLASSIFICATION
-# ==========================================================
-
-def _classify_intent(question: str, msg_lower: str, db: Session, 
-                     context: ConversationContext) -> ProcessedQuery:
-    """Classify query intent"""
-    
-    # 1. HELP
-    if msg_lower in ['help', '/help', 'menu', '?', 'commands', 'what can you do']:
-        return ProcessedQuery(intent=IntentType.HELP, confidence=1.0)
-    
-    # 2. DN NUMBER
-    dn_match = re.search(r'\b(\d{8,12})\b', question)
-    if dn_match:
-        return ProcessedQuery(intent=IntentType.DN_QUERY, entity=dn_match.group(1),
-                            entity_type="dn", confidence=1.0)
-    
-    # 3. EXECUTIVE INSIGHT
-    insight_keywords = ['key issue', 'biggest problem', 'bottleneck', 'executive insight', 
-                        'national dashboard', 'management summary']
-    if any(kw in msg_lower for kw in insight_keywords):
-        return ProcessedQuery(intent=IntentType.EXECUTIVE_INSIGHT, confidence=0.95)
-    
-    # 4. RANKING QUERY
-    if ('top' in msg_lower or 'best' in msg_lower or 'highest' in msg_lower) and \
-       ('dealer' in msg_lower or 'warehouse' in msg_lower):
-        return ProcessedQuery(intent=IntentType.RANKING_QUERY, confidence=0.9)
-    
-    # 5. CONTROL TOWER
-    if any(kw in msg_lower for kw in ['critical', 'alert', 'urgent', 'control tower']):
-        return ProcessedQuery(intent=IntentType.CONTROL_TOWER, confidence=0.95)
-    
-    # 6. WAREHOUSE QUERY
-    is_warehouse, warehouse_name = _detect_warehouse_intent(msg_lower, db)
-    if is_warehouse and warehouse_name:
-        return ProcessedQuery(intent=IntentType.WAREHOUSE_QUERY, entity=warehouse_name,
-                            entity_type="warehouse", confidence=0.85)
-    
-    # 7. PGI QUERIES
-    if 'pgi' in msg_lower:
-        if 'pending' in msg_lower:
-            return ProcessedQuery(intent=IntentType.PGI_QUERY, confidence=0.9,
-                                context_updates={"pgi_type": "pending"})
-        elif 'aging' in msg_lower:
-            return ProcessedQuery(intent=IntentType.PGI_QUERY, confidence=0.9,
-                                context_updates={"pgi_type": "aging"})
-        elif any(kw in msg_lower for kw in ['rate', 'percentage', 'completion']):
-            return ProcessedQuery(intent=IntentType.PGI_QUERY, confidence=0.9,
-                                context_updates={"pgi_type": "rate"})
-    
-    # 8. POD QUERIES
-    if 'pod' in msg_lower:
-        if 'pending' in msg_lower:
-            return ProcessedQuery(intent=IntentType.POD_QUERY, confidence=0.9,
-                                context_updates={"pod_type": "pending"})
-        elif 'aging' in msg_lower:
-            return ProcessedQuery(intent=IntentType.POD_QUERY, confidence=0.9,
-                                context_updates={"pod_type": "aging"})
-        elif any(kw in msg_lower for kw in ['rate', 'percentage', 'completion']):
-            return ProcessedQuery(intent=IntentType.POD_QUERY, confidence=0.9,
-                                context_updates={"pod_type": "rate"})
-    
-    # 9. DEALER QUERY (smart extraction)
-    dealer_name = _extract_dealer_name_smart(question, msg_lower, db, context)
-    if dealer_name:
-        metric = None
-        if any(kw in msg_lower for kw in ['revenue', 'sales', 'amount']):
-            metric = "revenue"
-        elif any(kw in msg_lower for kw in ['units', 'quantity', 'qty']):
-            metric = "units"
-        elif 'performance' in msg_lower or 'kpi' in msg_lower:
-            metric = "performance"
-        
-        return ProcessedQuery(intent=IntentType.DEALER_QUERY, entity=dealer_name,
-                            entity_type="dealer", metric=metric, confidence=0.85)
-    
-    # 10. GENERAL AI (use Groq)
-    return ProcessedQuery(intent=IntentType.GENERAL_AI, needs_groq=True, confidence=0.5)
-
-
-# ==========================================================
-# BUSINESS HANDLERS (PRESERVED ORIGINAL FUNCTIONS)
+# FORMAT HELP MESSAGE
 # ==========================================================
 
 def _format_help_message() -> str:
-    """Format help message - UNCHANGED"""
     return """📋 *AI Logistics Assistant - Help*
 
 *DN Tracking:*
@@ -653,21 +138,14 @@ def _format_help_message() -> str:
 
 *Executive Insights:*
 • "What is the key issue?"
-• "National dashboard"
 
 *Rankings:*
 • "Top 10 dealers by revenue"
-• "Top warehouses by pending"
-
-*AI Conversations:*
-• "What do you do?"
-• "Can you help me?"
 
 Need help? Just ask! 🤖"""
 
 
 def _get_warehouse_list(db: Session) -> List[str]:
-    """Get dynamic warehouse list - UNCHANGED"""
     try:
         warehouses = db.query(DeliveryReport.warehouse).filter(
             DeliveryReport.warehouse.isnot(None)
@@ -677,11 +155,11 @@ def _get_warehouse_list(db: Session) -> List[str]:
         return ['lahore', 'karachi', 'rawalpindi', 'islamabad', 'multan', 'faisalabad']
 
 
-# All original handler functions preserved exactly as they were
-# (These functions are not modified to maintain backward compatibility)
+# ==========================================================
+# DN QUERY HANDLER
+# ==========================================================
 
 def _handle_dn_query(db: Session, dn_number: str, today: date, req_id: str) -> str:
-    """Handle DN query - PRESERVED ORIGINAL"""
     try:
         record = db.query(DeliveryReport).filter(
             DeliveryReport.dn_no == dn_number
@@ -700,7 +178,6 @@ def _handle_dn_query(db: Session, dn_number: str, today: date, req_id: str) -> s
         if not record:
             return f"❌ DN {dn_number} not found in our system."
         
-        # Calculate aging
         delivery_aging = None
         pending_delivery_aging = None
         pod_aging = None
@@ -752,8 +229,11 @@ def _handle_dn_query(db: Session, dn_number: str, today: date, req_id: str) -> s
         return f"❌ Error looking up DN {dn_number}"
 
 
+# ==========================================================
+# WAREHOUSE QUERY HANDLER
+# ==========================================================
+
 def _handle_warehouse_query(db: Session, warehouse_name: str, today: date, req_id: str) -> str:
-    """Handle warehouse query - PRESERVED ORIGINAL"""
     try:
         result = db.query(
             func.count(DeliveryReport.id).label('total_dns'),
@@ -779,17 +259,6 @@ def _handle_warehouse_query(db: Session, warehouse_name: str, today: date, req_i
             DeliveryReport.good_issue_date.isnot(None)
         ).count()
         
-        # Optimized aging calculation - using aggregation
-        aging_result = db.query(
-            func.avg(func.datediff(DeliveryReport.good_issue_date, DeliveryReport.dn_create_date)).label('avg_aging')
-        ).filter(
-            DeliveryReport.warehouse.ilike(f"%{warehouse_name}%"),
-            DeliveryReport.dn_create_date.isnot(None),
-            DeliveryReport.good_issue_date.isnot(None)
-        ).first()
-        
-        avg_aging = round(aging_result.avg_aging or 0, 1)
-        
         lines = [f"🏭 *Warehouse: {warehouse_name.title()}*", ""]
         lines.append(f"📄 *Total DNs:* {result.total_dns or 0:,}")
         lines.append(f"📦 *Total Units:* {int(result.total_units or 0):,}")
@@ -798,7 +267,6 @@ def _handle_warehouse_query(db: Session, warehouse_name: str, today: date, req_i
         lines.append(f"✅ *PGI Completed:* {pgi_completed}")
         lines.append(f"⏳ *Pending Delivery:* {pending_delivery}")
         lines.append(f"📎 *Pending POD:* {pending_pod}")
-        lines.append(f"⏰ *Avg Delivery Aging:* {avg_aging} days")
         
         return "\n".join(lines)
         
@@ -807,10 +275,28 @@ def _handle_warehouse_query(db: Session, warehouse_name: str, today: date, req_i
         return f"❌ Error fetching {warehouse_name} warehouse data"
 
 
+# ==========================================================
+# DEALER SUMMARY QUERY HANDLER
+# ==========================================================
+
+def _extract_dealer_name(question: str, msg_lower: str) -> Optional[str]:
+    dealer_match = re.search(r'dealer\s+([a-z0-9\s&]+)', msg_lower)
+    if dealer_match:
+        return dealer_match.group(1).strip()
+    
+    show_match = re.search(r'show\s+([a-z0-9\s&]+)', msg_lower)
+    if show_match:
+        return show_match.group(1).strip()
+    
+    if len(msg_lower.split()) <= 5:
+        return msg_lower
+    
+    return None
+
+
 def _handle_dealer_summary_query(db: Session, question: str, msg_lower: str, req_id: str) -> str:
-    """Handle dealer summary query - PRESERVED ORIGINAL"""
     try:
-        dealer_name = _extract_dealer_name_smart(question, msg_lower, db, None)
+        dealer_name = _extract_dealer_name(question, msg_lower)
         
         if not dealer_name:
             return f"❌ Please specify a dealer name. Example: 'Show dealer ABC Traders'"
@@ -871,23 +357,454 @@ def _handle_dealer_summary_query(db: Session, question: str, msg_lower: str, req
         return f"❌ Error fetching dealer data for '{question}'"
 
 
-def _handle_control_tower(db: Session, today: date, req_id: str) -> str:
-    """Handle control tower query - OPTIMIZED"""
+# ==========================================================
+# DEALER REVENUE QUERY HANDLER
+# ==========================================================
+
+def _handle_dealer_revenue_query(db: Session, question: str, msg_lower: str, req_id: str) -> str:
     try:
-        # Optimized: Use aggregations instead of loading all
-        critical_count = db.query(func.count(DeliveryReport.id)).filter(
-            DeliveryReport.good_issue_date.is_(None),
-            DeliveryReport.dn_create_date.isnot(None),
-            func.datediff(today, DeliveryReport.dn_create_date) > 15
-        ).scalar() or 0
+        dealer_name = _extract_dealer_name(question, msg_lower)
+        if not dealer_name:
+            return "❌ Please specify a dealer name. Example: 'ABC Traders revenue'"
         
-        # Get top 5 critical deliveries
-        critical_list = db.query(
-            DeliveryReport.dn_no, DeliveryReport.customer_name, DeliveryReport.dn_create_date
+        result = db.query(
+            func.sum(DeliveryReport.dn_amount).label('total_revenue')
         ).filter(
+            DeliveryReport.customer_name.ilike(f"%{dealer_name}%")
+        ).first()
+        
+        total_revenue = float(result.total_revenue or 0)
+        
+        return f"💰 *Revenue for {dealer_name.title()}:* PKR {total_revenue:,.0f}"
+        
+    except Exception as e:
+        logger.exception(f"[{req_id}] Revenue query error: {e}")
+        return f"❌ Error fetching revenue"
+
+
+# ==========================================================
+# DEALER UNITS QUERY HANDLER
+# ==========================================================
+
+def _handle_dealer_units_query(db: Session, question: str, msg_lower: str, req_id: str) -> str:
+    try:
+        dealer_name = _extract_dealer_name(question, msg_lower)
+        if not dealer_name:
+            return "❌ Please specify a dealer name. Example: 'ABC Traders units'"
+        
+        result = db.query(
+            func.sum(DeliveryReport.dn_qty).label('total_units')
+        ).filter(
+            DeliveryReport.customer_name.ilike(f"%{dealer_name}%")
+        ).first()
+        
+        total_units = int(result.total_units or 0)
+        
+        return f"📦 *Units for {dealer_name.title()}:* {total_units:,}"
+        
+    except Exception as e:
+        logger.exception(f"[{req_id}] Units query error: {e}")
+        return f"❌ Error fetching units"
+
+
+# ==========================================================
+# DEALER DN COUNT QUERY HANDLER
+# ==========================================================
+
+def _handle_dealer_dn_count_query(db: Session, question: str, msg_lower: str, req_id: str) -> str:
+    try:
+        dealer_name = _extract_dealer_name(question, msg_lower)
+        if not dealer_name:
+            return "❌ Please specify a dealer name. Example: 'ABC Traders DN count'"
+        
+        result = db.query(
+            func.count(DeliveryReport.id).label('total_dns')
+        ).filter(
+            DeliveryReport.customer_name.ilike(f"%{dealer_name}%")
+        ).first()
+        
+        total_dns = result.total_dns or 0
+        
+        return f"📄 *DN Count for {dealer_name.title()}:* {total_dns:,}"
+        
+    except Exception as e:
+        logger.exception(f"[{req_id}] DN count query error: {e}")
+        return f"❌ Error fetching DN count"
+
+
+# ==========================================================
+# DEALER PERFORMANCE QUERY HANDLER
+# ==========================================================
+
+def _handle_dealer_performance_query(db: Session, question: str, msg_lower: str, today: date, req_id: str) -> str:
+    try:
+        dealer_name = _extract_dealer_name(question, msg_lower)
+        
+        if not dealer_name:
+            return "❌ Please specify a dealer name. Example: 'ABC Traders performance'"
+        
+        result = db.query(
+            func.count(DeliveryReport.id).label('total_dns'),
+            func.sum(DeliveryReport.dn_qty).label('total_units'),
+            func.sum(DeliveryReport.dn_amount).label('total_revenue')
+        ).filter(
+            DeliveryReport.customer_name.ilike(f"%{dealer_name}%")
+        ).first()
+        
+        pending_delivery = db.query(DeliveryReport).filter(
+            DeliveryReport.customer_name.ilike(f"%{dealer_name}%"),
+            DeliveryReport.good_issue_date.is_(None)
+        ).count()
+        
+        pgi_completed = db.query(DeliveryReport).filter(
+            DeliveryReport.customer_name.ilike(f"%{dealer_name}%"),
+            DeliveryReport.good_issue_date.isnot(None)
+        ).count()
+        
+        pod_completed = db.query(DeliveryReport).filter(
+            DeliveryReport.customer_name.ilike(f"%{dealer_name}%"),
+            DeliveryReport.pod_date.isnot(None)
+        ).count()
+        
+        total = result.total_dns or 1
+        delivery_rate = (pgi_completed / total) * 100 if total > 0 else 0
+        pod_rate = (pod_completed / pgi_completed) * 100 if pgi_completed > 0 else 0
+        
+        lines = [f"📊 *Performance Dashboard: {dealer_name.title()}*", ""]
+        lines.append(f"💰 *Revenue:* PKR {float(result.total_revenue or 0):,.0f}")
+        lines.append(f"📦 *Units:* {int(result.total_units or 0):,}")
+        lines.append(f"📄 *Total DNs:* {result.total_dns or 0}")
+        lines.append("")
+        lines.append(f"🚚 *Delivery Rate:* {delivery_rate:.1f}%")
+        lines.append(f"📎 *POD Rate:* {pod_rate:.1f}%")
+        lines.append(f"⏳ *Pending Delivery:* {pending_delivery}")
+        
+        return "\n".join(lines)
+        
+    except Exception as e:
+        logger.exception(f"[{req_id}] Dealer performance error: {e}")
+        return f"❌ Error fetching performance data"
+
+
+# ==========================================================
+# PGI QUERY HANDLERS
+# ==========================================================
+
+def _handle_pgi_pending_query(db: Session, msg_lower: str, today: date, req_id: str) -> str:
+    try:
+        dealer_name = _extract_dealer_name(msg_lower, msg_lower)
+        
+        query = db.query(DeliveryReport).filter(DeliveryReport.good_issue_date.is_(None))
+        
+        if dealer_name:
+            query = query.filter(DeliveryReport.customer_name.ilike(f"%{dealer_name}%"))
+        
+        pending_count = query.count()
+        
+        lines = ["⏳ *PGI Pending Report*", ""]
+        lines.append(f"📊 *Total Pending PGI:* {pending_count}")
+        
+        if dealer_name:
+            lines.append(f"🏪 *Dealer:* {dealer_name.title()}")
+        
+        return "\n".join(lines)
+        
+    except Exception as e:
+        logger.exception(f"[{req_id}] PGI pending error: {e}")
+        return "❌ Error fetching PGI pending data"
+
+
+def _handle_pgi_aging_query(db: Session, msg_lower: str, today: date, req_id: str) -> str:
+    try:
+        dealer_name = _extract_dealer_name(msg_lower, msg_lower)
+        
+        query = db.query(DeliveryReport).filter(
+            DeliveryReport.good_issue_date.isnot(None),
+            DeliveryReport.pod_date.is_(None)
+        )
+        
+        if dealer_name:
+            query = query.filter(DeliveryReport.customer_name.ilike(f"%{dealer_name}%"))
+        
+        records = query.limit(100).all()
+        
+        if records:
+            avg_aging = sum((today - r.good_issue_date).days for r in records) / len(records)
+            avg_aging = round(avg_aging, 1)
+            max_aging = max((today - r.good_issue_date).days for r in records)
+        else:
+            avg_aging = 0
+            max_aging = 0
+        
+        lines = ["⏰ *PGI Aging Report*", ""]
+        lines.append(f"📊 *Pending POD after PGI:* {len(records)}")
+        lines.append(f"⏰ *Average PGI Aging:* {avg_aging} days")
+        lines.append(f"🔴 *Maximum PGI Aging:* {max_aging} days")
+        
+        if dealer_name:
+            lines.append(f"🏪 *Dealer:* {dealer_name.title()}")
+        
+        return "\n".join(lines)
+        
+    except Exception as e:
+        logger.exception(f"[{req_id}] PGI aging error: {e}")
+        return "❌ Error fetching PGI aging data"
+
+
+def _handle_pgi_rate_query(db: Session, msg_lower: str, req_id: str) -> str:
+    try:
+        total = db.query(DeliveryReport).count()
+        pgi_done = db.query(DeliveryReport).filter(DeliveryReport.good_issue_date.isnot(None)).count()
+        
+        if total > 0:
+            rate = (pgi_done / total) * 100
+        else:
+            rate = 0
+        
+        return f"📊 *PGI Completion Rate:* {rate:.1f}% ({pgi_done:,}/{total:,})"
+        
+    except Exception as e:
+        logger.exception(f"[{req_id}] PGI rate error: {e}")
+        return "❌ Error fetching PGI rate"
+
+
+# ==========================================================
+# POD QUERY HANDLERS
+# ==========================================================
+
+def _handle_pod_pending_query(db: Session, msg_lower: str, today: date, req_id: str) -> str:
+    try:
+        dealer_name = _extract_dealer_name(msg_lower, msg_lower)
+        
+        query = db.query(DeliveryReport).filter(
+            DeliveryReport.good_issue_date.isnot(None),
+            DeliveryReport.pod_date.is_(None)
+        )
+        
+        if dealer_name:
+            query = query.filter(DeliveryReport.customer_name.ilike(f"%{dealer_name}%"))
+        
+        pending_count = query.count()
+        
+        lines = ["📎 *POD Pending Report*", ""]
+        lines.append(f"📊 *Total Pending POD:* {pending_count}")
+        
+        if dealer_name:
+            lines.append(f"🏪 *Dealer:* {dealer_name.title()}")
+        
+        return "\n".join(lines)
+        
+    except Exception as e:
+        logger.exception(f"[{req_id}] POD pending error: {e}")
+        return "❌ Error fetching POD pending data"
+
+
+def _handle_pod_aging_query(db: Session, msg_lower: str, today: date, req_id: str) -> str:
+    try:
+        dealer_name = _extract_dealer_name(msg_lower, msg_lower)
+        
+        query = db.query(DeliveryReport).filter(
+            DeliveryReport.good_issue_date.isnot(None),
+            DeliveryReport.pod_date.is_(None)
+        )
+        
+        if dealer_name:
+            query = query.filter(DeliveryReport.customer_name.ilike(f"%{dealer_name}%"))
+        
+        records = query.limit(100).all()
+        
+        if records:
+            avg_aging = sum((today - r.good_issue_date).days for r in records) / len(records)
+            avg_aging = round(avg_aging, 1)
+            max_aging = max((today - r.good_issue_date).days for r in records)
+        else:
+            avg_aging = 0
+            max_aging = 0
+        
+        lines = ["⏰ *POD Aging Report*", ""]
+        lines.append(f"📊 *Pending POD after PGI:* {len(records)}")
+        lines.append(f"⏰ *Average POD Aging:* {avg_aging} days")
+        lines.append(f"🔴 *Maximum POD Aging:* {max_aging} days")
+        
+        if dealer_name:
+            lines.append(f"🏪 *Dealer:* {dealer_name.title()}")
+        
+        return "\n".join(lines)
+        
+    except Exception as e:
+        logger.exception(f"[{req_id}] POD aging error: {e}")
+        return "❌ Error fetching POD aging data"
+
+
+def _handle_pod_rate_query(db: Session, msg_lower: str, req_id: str) -> str:
+    try:
+        pgi_done = db.query(DeliveryReport).filter(DeliveryReport.good_issue_date.isnot(None)).count()
+        pod_done = db.query(DeliveryReport).filter(DeliveryReport.pod_date.isnot(None)).count()
+        
+        if pgi_done > 0:
+            rate = (pod_done / pgi_done) * 100
+        else:
+            rate = 0
+        
+        return f"📊 *POD Completion Rate:* {rate:.1f}% ({pod_done:,}/{pgi_done:,})"
+        
+    except Exception as e:
+        logger.exception(f"[{req_id}] POD rate error: {e}")
+        return "❌ Error fetching POD rate"
+
+
+# ==========================================================
+# DELIVERED UNITS QUERY HANDLER
+# ==========================================================
+
+def _handle_delivered_units_query(db: Session, question: str, msg_lower: str, req_id: str) -> str:
+    try:
+        dealer_name = _extract_dealer_name(question, msg_lower)
+        
+        query = db.query(func.sum(DeliveryReport.dn_qty)).filter(
+            DeliveryReport.delivery_status == "Delivered"
+        )
+        
+        if dealer_name:
+            query = query.filter(DeliveryReport.customer_name.ilike(f"%{dealer_name}%"))
+        
+        delivered_units = int(query.scalar() or 0)
+        
+        if dealer_name:
+            return f"✅ *Delivered Units for {dealer_name.title()}:* {delivered_units:,}"
+        else:
+            return f"✅ *Total Delivered Units:* {delivered_units:,}"
+        
+    except Exception as e:
+        logger.exception(f"[{req_id}] Delivered units error: {e}")
+        return "❌ Error fetching delivered units"
+
+
+# ==========================================================
+# TRANSIT UNITS QUERY HANDLER
+# ==========================================================
+
+def _handle_transit_units_query(db: Session, question: str, msg_lower: str, req_id: str) -> str:
+    try:
+        dealer_name = _extract_dealer_name(question, msg_lower)
+        
+        query = db.query(func.sum(DeliveryReport.dn_qty)).filter(
+            DeliveryReport.good_issue_date.isnot(None),
+            DeliveryReport.pod_date.is_(None)
+        )
+        
+        if dealer_name:
+            query = query.filter(DeliveryReport.customer_name.ilike(f"%{dealer_name}%"))
+        
+        transit_units = int(query.scalar() or 0)
+        
+        if dealer_name:
+            return f"🚚 *Transit Units for {dealer_name.title()}:* {transit_units:,}"
+        else:
+            return f"🚚 *Total Transit Units:* {transit_units:,}"
+        
+    except Exception as e:
+        logger.exception(f"[{req_id}] Transit units error: {e}")
+        return "❌ Error fetching transit units"
+
+
+# ==========================================================
+# DELIVERY AGING QUERY HANDLER
+# ==========================================================
+
+def _handle_delivery_aging_query(db: Session, question: str, msg_lower: str, today: date, req_id: str) -> str:
+    try:
+        dealer_name = _extract_dealer_name(question, msg_lower)
+        
+        query = db.query(DeliveryReport).filter(
+            DeliveryReport.good_issue_date.isnot(None),
+            DeliveryReport.dn_create_date.isnot(None)
+        )
+        
+        if dealer_name:
+            query = query.filter(DeliveryReport.customer_name.ilike(f"%{dealer_name}%"))
+        
+        records = query.limit(100).all()
+        
+        if records:
+            avg_aging = sum((r.good_issue_date - r.dn_create_date).days for r in records) / len(records)
+            avg_aging = round(avg_aging, 1)
+            max_aging = max((r.good_issue_date - r.dn_create_date).days for r in records)
+        else:
+            avg_aging = 0
+            max_aging = 0
+        
+        if dealer_name:
+            return f"⏰ *Delivery Aging for {dealer_name.title()}:* Avg {avg_aging} days, Max {max_aging} days"
+        else:
+            return f"⏰ *Overall Delivery Aging:* Avg {avg_aging} days, Max {max_aging} days"
+        
+    except Exception as e:
+        logger.exception(f"[{req_id}] Delivery aging error: {e}")
+        return "❌ Error fetching delivery aging data"
+
+
+# ==========================================================
+# PENDING DELIVERY QUERY HANDLER
+# ==========================================================
+
+def _handle_pending_delivery_query(db: Session, msg_lower: str, today: date, req_id: str) -> str:
+    try:
+        dealer_name = _extract_dealer_name(msg_lower, msg_lower)
+        
+        query = db.query(DeliveryReport).filter(DeliveryReport.good_issue_date.is_(None))
+        
+        if dealer_name:
+            query = query.filter(DeliveryReport.customer_name.ilike(f"%{dealer_name}%"))
+        
+        pending_count = query.count()
+        
+        aging_records = query.filter(DeliveryReport.dn_create_date.isnot(None)).limit(100).all()
+        if aging_records:
+            avg_aging = sum((today - r.dn_create_date).days for r in aging_records) / len(aging_records)
+            avg_aging = round(avg_aging, 1)
+            oldest = max((today - r.dn_create_date).days for r in aging_records)
+        else:
+            avg_aging = 0
+            oldest = 0
+        
+        lines = ["⏳ *Pending Delivery Report*", ""]
+        lines.append(f"📊 *Total Pending:* {pending_count}")
+        lines.append(f"⏰ *Average Aging:* {avg_aging} days")
+        lines.append(f"🔴 *Oldest Pending:* {oldest} days")
+        
+        if dealer_name:
+            lines.append(f"🏪 *Dealer:* {dealer_name.title()}")
+        
+        return "\n".join(lines)
+        
+    except Exception as e:
+        logger.exception(f"[{req_id}] Pending delivery error: {e}")
+        return "❌ Error fetching pending delivery data"
+
+
+# ==========================================================
+# CONTROL TOWER QUERY HANDLER
+# ==========================================================
+
+def _handle_control_tower(db: Session, today: date, req_id: str) -> str:
+    try:
+        critical_deliveries = db.query(DeliveryReport).filter(
             DeliveryReport.good_issue_date.is_(None),
             DeliveryReport.dn_create_date.isnot(None)
-        ).order_by(DeliveryReport.dn_create_date).limit(5).all()
+        ).all()
+        
+        critical_list = []
+        for r in critical_deliveries:
+            aging = (today - r.dn_create_date).days
+            if aging > 15:
+                critical_list.append({
+                    'dn': r.dn_no,
+                    'dealer': r.customer_name,
+                    'aging': aging
+                })
+        
+        critical_list = sorted(critical_list, key=lambda x: x['aging'], reverse=True)[:5]
         
         dealer_delays = db.query(
             DeliveryReport.customer_name,
@@ -895,20 +812,19 @@ def _handle_control_tower(db: Session, today: date, req_id: str) -> str:
         ).filter(
             DeliveryReport.good_issue_date.is_(None),
             DeliveryReport.customer_name.isnot(None)
-        ).group_by(DeliveryReport.customer_name).order_by(desc('pending_count')).limit(5).all()
+        ).group_by(DeliveryReport.customer_name).order_by(func.count(DeliveryReport.id).desc()).limit(5).all()
         
         lines = ["🚨 *Control Tower - Critical Alerts*", ""]
         
-        if critical_count > 0:
-            lines.append(f"🔴 *Critical Deliveries:* {critical_count} (>15 days)")
+        if critical_list:
+            lines.append("🔴 *Critical Deliveries (>15 days)*")
             for item in critical_list[:3]:
-                aging = (today - item.dn_create_date).days if item.dn_create_date else 0
-                lines.append(f"   • DN {item.dn_no}: {item.customer_name} - {aging} days")
+                lines.append(f"   • DN {item['dn']}: {item['dealer']} - {item['aging']} days")
         else:
             lines.append("✅ No critical delivery alerts")
         
         lines.append("")
-        lines.append("📊 *Top Dealers with Most Pending*")
+        lines.append("📊 *Top 5 Dealers with Most Pending*")
         for dealer, count in dealer_delays[:3]:
             lines.append(f"   • {dealer}: {count} pending")
         
@@ -919,18 +835,172 @@ def _handle_control_tower(db: Session, today: date, req_id: str) -> str:
         return "❌ Error generating control tower report"
 
 
-# Preserved original handler functions (all remain unchanged)
-# _handle_pending_delivery_query, _handle_pgi_pending_query, _handle_pgi_aging_query,
-# _handle_pgi_rate_query, _handle_pod_pending_query, _handle_pod_aging_query,
-# _handle_pod_rate_query, _handle_dealer_revenue_query, _handle_dealer_units_query,
-# _handle_dealer_dn_count_query, _handle_delivered_units_query, _handle_transit_units_query,
-# _handle_delivery_aging_query, _handle_dealer_performance_query
+# ==========================================================
+# RANKING QUERY HANDLER
+# ==========================================================
 
-# Note: These functions remain exactly as in the original file (preserved for backward compatibility)
+def _handle_ranking_query(db: Session, msg_lower: str, req_id: str) -> str:
+    try:
+        if 'dealer' in msg_lower and 'revenue' in msg_lower:
+            limit = 10
+            if 'top 5' in msg_lower:
+                limit = 5
+            elif 'top 3' in msg_lower:
+                limit = 3
+            
+            results = db.query(
+                DeliveryReport.customer_name,
+                func.sum(DeliveryReport.dn_amount).label('total_revenue')
+            ).filter(
+                DeliveryReport.customer_name.isnot(None),
+                DeliveryReport.dn_amount.isnot(None)
+            ).group_by(DeliveryReport.customer_name).order_by(
+                desc('total_revenue')
+            ).limit(limit).all()
+            
+            lines = [f"🏆 *Top {limit} Dealers by Revenue*", ""]
+            for i, (name, revenue) in enumerate(results, 1):
+                rev = float(revenue or 0)
+                lines.append(f"{i}. {name}: PKR {rev:,.0f}")
+            return "\n".join(lines)
+        
+        elif 'dealer' in msg_lower and 'units' in msg_lower:
+            limit = 10
+            if 'top 5' in msg_lower:
+                limit = 5
+            
+            results = db.query(
+                DeliveryReport.customer_name,
+                func.sum(DeliveryReport.dn_qty).label('total_units')
+            ).filter(
+                DeliveryReport.customer_name.isnot(None)
+            ).group_by(DeliveryReport.customer_name).order_by(
+                desc('total_units')
+            ).limit(limit).all()
+            
+            lines = [f"🏆 *Top {limit} Dealers by Units*", ""]
+            for i, (name, units) in enumerate(results, 1):
+                lines.append(f"{i}. {name}: {int(units or 0):,} units")
+            return "\n".join(lines)
+        
+        elif 'warehouse' in msg_lower and 'pending' in msg_lower:
+            results = db.query(
+                DeliveryReport.warehouse,
+                func.count(DeliveryReport.id).label('pending_count')
+            ).filter(
+                DeliveryReport.warehouse.isnot(None),
+                DeliveryReport.good_issue_date.is_(None)
+            ).group_by(DeliveryReport.warehouse).order_by(
+                desc('pending_count')
+            ).limit(10).all()
+            
+            lines = ["🏭 *Warehouses with Most Pending*", ""]
+            for i, (name, count) in enumerate(results, 1):
+                lines.append(f"{i}. {name}: {count} pending")
+            return "\n".join(lines)
+        
+        return "📊 Please specify: 'Top 10 dealers by revenue' or 'Top warehouses by pending'"
+        
+    except Exception as e:
+        logger.exception(f"[{req_id}] Ranking error: {e}")
+        return "❌ Error fetching rankings"
 
 
 # ==========================================================
-# MAIN ENTRY POINT (PRESERVED SIGNATURE)
+# EXECUTIVE INSIGHT HANDLER
+# ==========================================================
+
+def _generate_executive_insight(db: Session) -> str:
+    try:
+        today = date.today()
+        
+        total_pending_pgi = db.query(func.count(DeliveryReport.id)).filter(
+            DeliveryReport.good_issue_date.is_(None)
+        ).scalar() or 0
+        
+        total_pending_pod = db.query(func.count(DeliveryReport.id)).filter(
+            DeliveryReport.good_issue_date.isnot(None),
+            DeliveryReport.pod_date.is_(None)
+        ).scalar() or 0
+        
+        total = db.query(func.count(DeliveryReport.id)).scalar() or 1
+        pgi_done = db.query(func.count(DeliveryReport.id)).filter(
+            DeliveryReport.good_issue_date.isnot(None)
+        ).scalar() or 0
+        pgi_rate = (pgi_done / total) * 100
+        
+        lines = ["🚨 *Executive Insight*", ""]
+        lines.append(f"📊 *PGI Rate:* {pgi_rate:.1f}% ({pgi_done:,}/{total:,})")
+        lines.append(f"⏳ *Pending PGI:* {total_pending_pgi}")
+        lines.append(f"📎 *Pending POD:* {total_pending_pod}")
+        
+        return "\n".join(lines)
+        
+    except Exception as e:
+        logger.error(f"Executive insight error: {e}")
+        return "📊 I'm analyzing the data. Please check back shortly."
+
+
+# ==========================================================
+# INTENT CLASSIFICATION
+# ==========================================================
+
+def _classify_intent(question: str, msg_lower: str, db: Session, 
+                     context: ConversationContext) -> ProcessedQuery:
+    
+    if msg_lower in ['help', '/help', 'menu', '?', 'commands']:
+        return ProcessedQuery(intent=IntentType.HELP, confidence=1.0)
+    
+    dn_match = re.search(r'\b(\d{8,12})\b', question)
+    if dn_match:
+        return ProcessedQuery(intent=IntentType.DN_QUERY, entity=dn_match.group(1),
+                            entity_type="dn", confidence=1.0)
+    
+    if any(kw in msg_lower for kw in ['key issue', 'biggest problem', 'bottleneck', 'executive insight']):
+        return ProcessedQuery(intent=IntentType.EXECUTIVE_INSIGHT, confidence=0.95)
+    
+    if ('top' in msg_lower or 'best' in msg_lower) and ('dealer' in msg_lower or 'warehouse' in msg_lower):
+        return ProcessedQuery(intent=IntentType.RANKING_QUERY, confidence=0.9)
+    
+    if any(kw in msg_lower for kw in ['critical', 'alert', 'urgent', 'control tower']):
+        return ProcessedQuery(intent=IntentType.CONTROL_TOWER, confidence=0.95)
+    
+    warehouses = _get_warehouse_list(db)
+    for wh in warehouses:
+        if wh.lower() in msg_lower:
+            return ProcessedQuery(intent=IntentType.WAREHOUSE_QUERY, entity=wh,
+                                entity_type="warehouse", confidence=0.85)
+    
+    if 'pgi' in msg_lower:
+        if 'pending' in msg_lower:
+            return ProcessedQuery(intent=IntentType.PGI_QUERY, confidence=0.9,
+                                context_updates={"pgi_type": "pending"})
+        elif 'aging' in msg_lower:
+            return ProcessedQuery(intent=IntentType.PGI_QUERY, confidence=0.9,
+                                context_updates={"pgi_type": "aging"})
+    
+    if 'pod' in msg_lower:
+        if 'pending' in msg_lower:
+            return ProcessedQuery(intent=IntentType.POD_QUERY, confidence=0.9,
+                                context_updates={"pod_type": "pending"})
+        elif 'aging' in msg_lower:
+            return ProcessedQuery(intent=IntentType.POD_QUERY, confidence=0.9,
+                                context_updates={"pod_type": "aging"})
+    
+    if any(kw in msg_lower for kw in ['revenue', 'sales', 'amount']):
+        return ProcessedQuery(intent=IntentType.DEALER_QUERY, metric="revenue", confidence=0.85)
+    
+    if any(kw in msg_lower for kw in ['units', 'quantity', 'qty']):
+        return ProcessedQuery(intent=IntentType.DEALER_QUERY, metric="units", confidence=0.85)
+    
+    if 'performance' in msg_lower or 'kpi' in msg_lower:
+        return ProcessedQuery(intent=IntentType.DEALER_QUERY, metric="performance", confidence=0.85)
+    
+    return ProcessedQuery(intent=IntentType.DEALER_QUERY, confidence=0.7)
+
+
+# ==========================================================
+# MAIN ENTRY POINT
 # ==========================================================
 
 def process_whatsapp_query(
@@ -940,18 +1010,6 @@ def process_whatsapp_query(
     user_id: Optional[str] = None,
     request_id: Optional[str] = None
 ) -> str:
-    """
-    Enterprise-grade WhatsApp query processor for logistics.
-    
-    REFACTORED v3.0:
-    - Intent classification first
-    - Groq AI fallback for general queries
-    - Conversation context awareness
-    - Executive insights
-    - Ranking queries
-    - 100% backward compatible
-    """
-    
     start_time = time.time()
     req_id = request_id or str(uuid.uuid4())[:8]
     
@@ -968,20 +1026,16 @@ def process_whatsapp_query(
         msg_lower = question.lower().strip()
         today = date.today()
         
-        # Get conversation context
         context = get_conversation_context(phone_number) if phone_number else None
         
-        # Check cache
         cache_key = get_cache_key(question, phone_number)
         if cache_key in _query_cache:
             logger.info(f"[{req_id}] Cache hit")
             return _query_cache[cache_key]
         
-        # Classify intent
         processed = _classify_intent(question, msg_lower, db, context)
-        logger.info(f"[{req_id}] Intent: {processed.intent.value}, confidence: {processed.confidence}")
+        logger.info(f"[{req_id}] Intent: {processed.intent.value}")
         
-        # Route based on intent
         response = None
         
         if processed.intent == IntentType.HELP:
@@ -1030,27 +1084,13 @@ def process_whatsapp_query(
         elif processed.intent == IntentType.RANKING_QUERY:
             response = _handle_ranking_query(db, msg_lower, req_id)
         
-        elif processed.intent == IntentType.GENERAL_AI or processed.needs_groq:
-            groq = get_groq_service()
-            if groq and groq.is_available:
-                response = groq.generate_response(question, context)
-            else:
-                response = _format_help_message()
-        
         else:
-            # Fallback to Groq or help
-            groq = get_groq_service()
-            if groq and groq.is_available:
-                response = groq.generate_response(question, context)
-            else:
-                response = _format_help_message()
+            response = _format_help_message()
         
-        # Update conversation context
         if phone_number and response:
             update_conversation_context(phone_number, processed.intent, 
                                        processed.entity, processed.entity_type)
         
-        # Cache response (except dynamic queries)
         if processed.intent not in [IntentType.PGI_QUERY, IntentType.POD_QUERY, 
                                      IntentType.CONTROL_TOWER, IntentType.EXECUTIVE_INSIGHT]:
             _query_cache[cache_key] = response
