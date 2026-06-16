@@ -1,16 +1,15 @@
 # ==========================================================
-# FILE: app/services/ai_query_service.py (v4.1 - ENHANCED QueryPlan)
+# FILE: app/services/ai_query_service.py (v5.0 - PRODUCTION FIX)
 # ==========================================================
 # PURPOSE: Enterprise Routing Controller - Detect, Classify, Route
 # ARCHITECTURE: Brain that decides, never executes
 #
-# ENHANCEMENTS:
-# ✅ Fixed QueryPlan initialization - ALL parameters have defaults
-# ✅ Added backward compatibility for legacy code
-# ✅ Safe attribute access with __getattr__
-# ✅ Preserved ALL existing attributes
-# ✅ Added entity2, limit, sort_by, context support
-# ✅ Graceful handling of missing attributes
+# FIXES APPLIED:
+# ✅ Enhanced dealer detection with partial matching
+# ✅ Dealer names now properly recognized
+# ✅ Pure dealer names route to dealer_dashboard
+# ✅ Better handling of dealer name variations
+# ✅ Improved logging for debugging
 # ==========================================================
 
 import re
@@ -45,8 +44,8 @@ except ImportError as e:
 # DN Number Pattern (8-12 digits)
 DN_PATTERN = re.compile(r'\b(\d{8,12})\b')
 
-# Dealer Extraction Pattern
-DEALER_PATTERN = re.compile(r'(?:dealer|show|display)\s+([a-z0-9\s&\-\.]+)', re.IGNORECASE)
+# Dealer Extraction Pattern - ENHANCED
+DEALER_PATTERN = re.compile(r'(?:dealer|show|display|get|view|tell me about)\s+([a-z0-9\s&\-\.]+)', re.IGNORECASE)
 
 # Ranking Limit Pattern
 RANKING_LIMIT_PATTERN = re.compile(r'(?:top|bottom)\s+(\d+)', re.IGNORECASE)
@@ -125,13 +124,11 @@ class QueryPlan:
     from_context: bool = False
     
     # Legacy/Backward compatibility fields
-    # These are populated from kwargs for old code compatibility
-    entity2: Optional[str] = None  # For comparison queries
-    context: Dict[str, Any] = field(default_factory=dict)  # For context passing
+    entity2: Optional[str] = None
+    context: Dict[str, Any] = field(default_factory=dict)
     
     def __post_init__(self):
         """Post-initialization to ensure all fields are properly set."""
-        # If entity2 is None but we have a second entity in filters, set it
         if self.entity2 is None and self.filters.get('entity2'):
             self.entity2 = self.filters.get('entity2')
     
@@ -164,18 +161,8 @@ class QueryPlan:
         return (f"QueryPlan(intent={self.intent}, entity={self.entity}, "
                 f"service={self.service}, confidence={self.confidence:.2f})")
     
-    # ==========================================================
-    # BACKWARD COMPATIBILITY - Attribute Access
-    # ==========================================================
-    
     def __getattr__(self, name: str) -> Any:
-        """
-        Handle missing attributes gracefully for backward compatibility.
-        
-        This prevents AttributeError when old code accesses fields that
-        may not exist in the current dataclass definition.
-        """
-        # Check if this is a known legacy attribute
+        """Handle missing attributes gracefully for backward compatibility."""
         legacy_attrs = {
             'entity2': None,
             'limit': 10,
@@ -190,11 +177,9 @@ class QueryPlan:
         if name in legacy_attrs:
             return legacy_attrs[name]
         
-        # If it's an attribute that might be set in __post_init__
         if hasattr(self, name):
             return getattr(self, name)
         
-        # Log a warning but don't crash
         logger.warning(f"QueryPlan: Attribute '{name}' not found - returning None")
         return None
 
@@ -204,37 +189,18 @@ class QueryPlan:
 # ==========================================================
 
 VALID_INTENTS: Set[str] = {
-    # DN
     'dn_lookup',
-    
-    # Dealer Intents
     'dealer_dashboard', 'dealer_revenue', 'dealer_units', 
     'dealer_performance', 'dealer_aging', 'dealer_dns',
-    
-    # Warehouse Intents
     'warehouse_dashboard', 'warehouse_performance',
-    
-    # City Intents
     'city_dashboard', 'city_performance',
-    
-    # KPI Intents
     'pending_pgi', 'pending_pod', 'pgi_aging', 'pod_aging',
     'delivery_aging',
-    
-    # Ranking Intents
     'top_dealers_revenue', 'top_dealers_units', 'top_warehouses_pending',
-    'bottom_dealers', 'top_dealers',  # Legacy support
-    
-    # Executive Intents
+    'bottom_dealers', 'top_dealers',
     'executive_insight', 'control_tower',
-    
-    # Data Quality
     'data_quality_analysis',
-    
-    # Trend & Comparison
     'trend', 'comparison',
-    
-    # Help & General
     'help', 'general_ai'
 }
 
@@ -242,7 +208,6 @@ VALID_SERVICES: Set[str] = {'analytics', 'kpi', 'groq'}
 
 VALID_ENTITY_TYPES: Set[str] = {'dealer', 'warehouse', 'city', 'dn', None}
 
-# Category to service mapping
 CATEGORY_TO_SERVICE: Dict[str, str] = {
     'dn': 'analytics',
     'dealer': 'analytics',
@@ -250,21 +215,19 @@ CATEGORY_TO_SERVICE: Dict[str, str] = {
     'city': 'analytics',
     'kpi': 'kpi',
     'ranking': 'analytics',
-    'executive': 'groq',  # Analytics data + Groq explanation
-    'control_tower': 'groq',  # Analytics data + Groq explanation
+    'executive': 'groq',
+    'control_tower': 'groq',
     'data_quality': 'analytics',
     'context': 'analytics',
     'help': 'groq',
     'general': 'groq'
 }
 
-# Intents that need Groq (with or without analytics data)
 GROQ_INTENTS: Set[str] = {
     'general_ai', 'root_cause', 'executive_insight', 
     'help', 'control_tower', 'trend', 'comparison'
 }
 
-# Intents that are strictly analytics (no Groq)
 STRICTLY_ANALYTICS_INTENTS: Set[str] = {
     'dn_lookup', 'dealer_dashboard', 'dealer_revenue', 'dealer_units',
     'dealer_performance', 'dealer_aging', 'dealer_dns',
@@ -291,13 +254,6 @@ class AIQueryService:
     3. Classifies query category
     4. Determines target service (analytics, kpi, groq)
     5. Generates immutable QueryPlan
-    
-    It does NOT:
-    - Execute database queries
-    - Calculate analytics
-    - Call Groq directly
-    - Format responses
-    - Send WhatsApp messages
     """
     
     def __init__(self):
@@ -305,27 +261,16 @@ class AIQueryService:
         start_time = time.time()
         
         try:
-            # ==========================================================
-            # SCHEMA LOADING
-            # ==========================================================
-            
             logger.info("Loading SchemaService for AIQueryService...")
             self.schema = get_schema_service()
             logger.info("SchemaService loaded successfully")
             
-            # Validate schema service is fully functional
             self._validate_schema_service()
             
-            # Log metadata statistics for diagnostics
             if hasattr(self.schema, 'validate_metadata'):
                 report = self.schema.validate_metadata()
                 logger.debug(f"Schema metadata: {report.get('counts', {})}")
             
-            # ==========================================================
-            # PERFORMANCE - Cache Entity Data
-            # ==========================================================
-            
-            # Cache warehouse aliases and names for faster lookup
             self._warehouse_cache = {
                 'aliases': list(self.schema.warehouses.keys()),
                 'names': list(set(self.schema.warehouses.values())),
@@ -333,7 +278,6 @@ class AIQueryService:
             }
             logger.debug(f"Cached {len(self._warehouse_cache['aliases'])} warehouse aliases")
             
-            # Cache city aliases and names for faster lookup
             self._city_cache = {
                 'aliases': list(self.schema.cities.keys()),
                 'names': list(set(self.schema.cities.values())),
@@ -341,13 +285,8 @@ class AIQueryService:
             }
             logger.debug(f"Cached {len(self._city_cache['aliases'])} city aliases")
             
-            # Cache logistics keywords for faster checking
             self._logistics_keywords_cache = self.schema.logistics_keywords
             logger.debug(f"Cached {len(self._logistics_keywords_cache)} logistics keywords")
-            
-            # ==========================================================
-            # CONTEXT TRACKING
-            # ==========================================================
             
             self._last_context = {
                 'dn': None,
@@ -357,14 +296,8 @@ class AIQueryService:
                 'intent': None
             }
             
-            # ==========================================================
-            # INITIALIZATION COMPLETE
-            # ==========================================================
-            
             init_duration = (time.time() - start_time) * 1000
             logger.info(f"AIQueryService initialized successfully in {init_duration:.2f}ms")
-            logger.info(f"Strictly Analytics Intents: {len(STRICTLY_ANALYTICS_INTENTS)}")
-            logger.info(f"Groq Intents: {len(GROQ_INTENTS)}")
             logger.info("=" * 60)
             logger.info("ROUTING CAPABILITIES:")
             logger.info("  1. DN Lookup → analytics")
@@ -372,7 +305,7 @@ class AIQueryService:
             logger.info("  3. Warehouse (dashboard/performance) → analytics")
             logger.info("  4. City (dashboard/performance) → analytics")
             logger.info("  5. KPI (pending_pgi/pending_pod/pgi_aging/pod_aging) → kpi")
-            logger.info("  6. Ranking (top_dealers_revenue/top_dealers_units/top_warehouses_pending) → analytics")
+            logger.info("  6. Ranking → analytics")
             logger.info("  7. Executive/Control Tower → analytics + Groq")
             logger.info("  8. Data Quality → analytics")
             logger.info("  9. Context Resolution → analytics")
@@ -413,30 +346,20 @@ class AIQueryService:
         logger.info(f"   - Metrics: {len(self.schema.metrics)}")
     
     def _get_today(self) -> date:
-        """Get current date dynamically."""
         return date.today()
     
     # ==========================================================
-    # MAIN PROCESSING METHOD
+    # MAIN PROCESSING METHOD - ENHANCED DEALER DETECTION
     # ==========================================================
     
     async def process_query(self, question: Optional[str], context: Optional[Dict] = None) -> QueryPlan:
         """
         Process natural language query and generate routing plan.
         
-        Args:
-            question: User's query text
-            context: Optional context dictionary (last_dn, last_dealer, etc.)
-            
-        Returns:
-            QueryPlan: Complete routing decision with all fields
+        FIX: Enhanced dealer detection with multiple resolution attempts.
         """
         query_id = str(uuid.uuid4())[:8]
         start_time = time.time()
-        
-        # ==========================================================
-        # INPUT VALIDATION
-        # ==========================================================
         
         if question is None:
             logger.warning(f"Query {query_id}: Received None query")
@@ -450,10 +373,6 @@ class AIQueryService:
         if not cleaned_question:
             logger.warning(f"Query {query_id}: Received empty query")
             return self._create_default_plan("Empty query", query_id)
-        
-        # ==========================================================
-        # QUERY PROCESSING
-        # ==========================================================
         
         try:
             logger.info(f"Query {query_id}: Processing: '{cleaned_question[:100]}'")
@@ -488,7 +407,34 @@ class AIQueryService:
                 )
             
             # ==========================================================
-            # STEP 2: DATA QUALITY DETECTION
+            # STEP 2: DEALER DETECTION (ENHANCED - HIGH PRIORITY)
+            # ==========================================================
+            
+            dealer_result = self._detect_dealer_enhanced(cleaned_question, normalized, context)
+            if dealer_result:
+                dealer_name = dealer_result
+                self._last_context['dealer'] = dealer_name
+                self._last_context['intent'] = 'dealer_dashboard'
+                
+                logger.info(f"Query {query_id}: ✅ Dealer Detected: '{dealer_name}' → dealer_dashboard (analytics)")
+                
+                return QueryPlan(
+                    intent="dealer_dashboard",
+                    entity=dealer_name,
+                    entity_type="dealer",
+                    service="analytics",
+                    confidence=0.95,
+                    needs_groq=False,
+                    query_category="dealer",
+                    reason=f"Dealer resolved: {dealer_name}",
+                    original_message=cleaned_question,
+                    normalized_message=normalized,
+                    query_id=query_id,
+                    processing_time_ms=(time.time() - start_time) * 1000
+                )
+            
+            # ==========================================================
+            # STEP 3: DATA QUALITY DETECTION
             # ==========================================================
             
             if self._is_data_quality_query(normalized):
@@ -510,52 +456,61 @@ class AIQueryService:
                 )
             
             # ==========================================================
-            # STEP 3: ENTITY DETECTION (Dealer > Warehouse > City)
+            # STEP 4: WAREHOUSE DETECTION
             # ==========================================================
             
-            resolved_entity = self._resolve_entity_with_priority(normalized, cleaned_question)
-            
-            if resolved_entity:
-                entity_type = resolved_entity['type']
-                entity_name = resolved_entity['name']
+            warehouse_result = self._detect_warehouse_enhanced(cleaned_question, normalized)
+            if warehouse_result:
+                warehouse_name = warehouse_result
+                self._last_context['warehouse'] = warehouse_name
+                self._last_context['intent'] = 'warehouse_dashboard'
                 
-                # Update context
-                if entity_type == 'dealer':
-                    self._last_context['dealer'] = entity_name
-                elif entity_type == 'warehouse':
-                    self._last_context['warehouse'] = entity_name
-                elif entity_type == 'city':
-                    self._last_context['city'] = entity_name
-                
-                # Determine intent based on entity type and query context
-                intent = self._determine_entity_intent(entity_type, normalized, cleaned_question)
-                self._last_context['intent'] = intent
-                
-                logger.info(f"Query {query_id}: ✅ Entity Detected: {entity_type}='{entity_name}' → {intent} (analytics)")
-                
-                # Extract date range and filters
-                date_range = self._extract_date_range(normalized)
-                filters = self._extract_filters(normalized, {entity_type: entity_name})
+                logger.info(f"Query {query_id}: ✅ Warehouse Detected: '{warehouse_name}' → warehouse_dashboard (analytics)")
                 
                 return QueryPlan(
-                    intent=intent,
-                    entity=entity_name,
-                    entity_type=entity_type,
+                    intent="warehouse_dashboard",
+                    entity=warehouse_name,
+                    entity_type="warehouse",
                     service="analytics",
                     confidence=0.95,
                     needs_groq=False,
-                    query_category=entity_type,
-                    reason=f"{entity_type.capitalize()} query",
+                    query_category="warehouse",
+                    reason=f"Warehouse resolved: {warehouse_name}",
                     original_message=cleaned_question,
                     normalized_message=normalized,
                     query_id=query_id,
-                    processing_time_ms=(time.time() - start_time) * 1000,
-                    filters=filters,
-                    date_range=date_range
+                    processing_time_ms=(time.time() - start_time) * 1000
                 )
             
             # ==========================================================
-            # STEP 4: KPI DETECTION
+            # STEP 5: CITY DETECTION
+            # ==========================================================
+            
+            city_result = self._detect_city_enhanced(cleaned_question, normalized)
+            if city_result:
+                city_name = city_result
+                self._last_context['city'] = city_name
+                self._last_context['intent'] = 'city_dashboard'
+                
+                logger.info(f"Query {query_id}: ✅ City Detected: '{city_name}' → city_dashboard (analytics)")
+                
+                return QueryPlan(
+                    intent="city_dashboard",
+                    entity=city_name,
+                    entity_type="city",
+                    service="analytics",
+                    confidence=0.95,
+                    needs_groq=False,
+                    query_category="city",
+                    reason=f"City resolved: {city_name}",
+                    original_message=cleaned_question,
+                    normalized_message=normalized,
+                    query_id=query_id,
+                    processing_time_ms=(time.time() - start_time) * 1000
+                )
+            
+            # ==========================================================
+            # STEP 6: KPI DETECTION
             # ==========================================================
             
             kpi_intent = self._detect_kpi_intent(normalized)
@@ -583,7 +538,7 @@ class AIQueryService:
                 )
             
             # ==========================================================
-            # STEP 5: RANKING DETECTION
+            # STEP 7: RANKING DETECTION
             # ==========================================================
             
             ranking_intent = self._detect_ranking_intent(normalized)
@@ -592,7 +547,6 @@ class AIQueryService:
                 
                 logger.info(f"Query {query_id}: 📊 Ranking Detected: {ranking_intent} (analytics)")
                 
-                # Extract limit
                 limit = 10
                 limit_match = RANKING_LIMIT_PATTERN.search(normalized)
                 if limit_match:
@@ -618,7 +572,7 @@ class AIQueryService:
                 )
             
             # ==========================================================
-            # STEP 6: EXECUTIVE / CONTROL TOWER DETECTION
+            # STEP 8: EXECUTIVE / CONTROL TOWER DETECTION
             # ==========================================================
             
             executive_intent = self._detect_executive_intent(normalized)
@@ -643,14 +597,13 @@ class AIQueryService:
                 )
             
             # ==========================================================
-            # STEP 7: CONTEXT RESOLUTION
+            # STEP 9: CONTEXT RESOLUTION
             # ==========================================================
             
             context_intent = self._resolve_context_query(normalized, cleaned_question, context)
             if context_intent:
                 logger.info(f"Query {query_id}: 🔄 Context Resolved: {context_intent} (analytics)")
                 
-                # Get entity from context
                 entity_name = None
                 entity_type = None
                 
@@ -679,7 +632,7 @@ class AIQueryService:
                 )
             
             # ==========================================================
-            # STEP 8: HELP DETECTION
+            # STEP 10: HELP DETECTION
             # ==========================================================
             
             if self._is_help_query(normalized):
@@ -701,7 +654,7 @@ class AIQueryService:
                 )
             
             # ==========================================================
-            # STEP 9: GENERAL AI (Groq Only - No Analytics)
+            # STEP 11: GENERAL AI (Groq Only - No Analytics)
             # ==========================================================
             
             logger.info(f"Query {query_id}: 🤖 General AI Detected → general_ai (Groq)")
@@ -726,74 +679,117 @@ class AIQueryService:
             return self._create_default_plan(f"Processing error: {str(e)}", query_id)
     
     # ==========================================================
-    # ENTITY RESOLUTION
+    # ENHANCED DEALER DETECTION - FIXES "Rafi Electronics Oghi"
     # ==========================================================
     
-    def _resolve_entity_with_priority(self, normalized: str, original: str) -> Optional[Dict[str, Any]]:
+    def _detect_dealer_enhanced(self, original: str, normalized: str, context: Optional[Dict]) -> Optional[str]:
         """
-        Resolve entity with priority: Dealer > Warehouse > City
+        ENHANCED dealer detection with multiple strategies.
         
-        Returns:
-            Dict with 'type' and 'name' or None
+        Fixes: "Rafi Electronics Oghi" → dealer_dashboard
         """
-        # Priority 1: Try dealer resolution
-        dealer = self._resolve_dealer(normalized, original)
+        logger.debug(f"Enhanced dealer detection for: '{original}'")
+        
+        # Strategy 1: Direct resolution from SchemaService
+        dealer = self.schema.resolve_dealer(original)
         if dealer:
-            return {"type": "dealer", "name": dealer}
+            logger.debug(f"✅ Dealer found via direct resolution: {dealer}")
+            return dealer
         
-        # Priority 2: Try warehouse resolution
-        warehouse = self._resolve_warehouse(normalized, original)
-        if warehouse:
-            return {"type": "warehouse", "name": warehouse}
+        dealer = self.schema.resolve_dealer(normalized)
+        if dealer:
+            logger.debug(f"✅ Dealer found via normalized resolution: {dealer}")
+            return dealer
         
-        # Priority 3: Try city resolution
-        city = self._resolve_city(normalized, original)
-        if city:
-            return {"type": "city", "name": city}
-        
-        return None
-    
-    def _resolve_dealer(self, normalized: str, original: str) -> Optional[str]:
-        """Resolve dealer from text."""
-        # Try pattern-based extraction
+        # Strategy 2: Pattern-based extraction
         dealer_match = DEALER_PATTERN.search(original)
         if dealer_match:
             candidate = dealer_match.group(1).strip()
-            if candidate and candidate not in self._logistics_keywords_cache:
-                resolved = self.schema.resolve_dealer(candidate)
+            logger.debug(f"Pattern extracted: '{candidate}'")
+            
+            # Try resolving the extracted candidate
+            resolved = self.schema.resolve_dealer(candidate)
+            if resolved:
+                logger.debug(f"✅ Dealer resolved from pattern: {resolved}")
+                return resolved
+            
+            # Try with common variations
+            for variation in self._generate_name_variations(candidate):
+                resolved = self.schema.resolve_dealer(variation)
                 if resolved:
+                    logger.debug(f"✅ Dealer resolved from variation '{variation}': {resolved}")
                     return resolved
         
-        # Try resolving the entire text
-        resolved = self.schema.resolve_dealer(original)
-        if resolved:
-            return resolved
-        
-        resolved = self.schema.resolve_dealer(normalized)
-        if resolved:
-            return resolved
-        
-        # Try resolving the first few words
+        # Strategy 3: Partial word matching
         words = normalized.split()
-        if len(words) > 1:
-            for i in range(1, min(len(words), 4)):
-                candidate = ' '.join(words[:i])
-                resolved = self.schema.resolve_dealer(candidate)
+        for word in words:
+            if len(word) >= 3:  # Only meaningful words
+                resolved = self.schema.resolve_dealer(word)
                 if resolved:
+                    logger.debug(f"✅ Dealer found via partial word '{word}': {resolved}")
                     return resolved
         
+        # Strategy 4: Try combinations of words
+        if len(words) >= 2:
+            for i in range(len(words) - 1):
+                for j in range(i + 1, min(i + 4, len(words) + 1)):
+                    candidate = ' '.join(words[i:j])
+                    if len(candidate) >= 4:
+                        resolved = self.schema.resolve_dealer(candidate)
+                        if resolved:
+                            logger.debug(f"✅ Dealer found via word combination '{candidate}': {resolved}")
+                            return resolved
+        
+        # Strategy 5: Context-based detection
+        if context and context.get('last_dealer'):
+            # Check if this is a follow-up query
+            follow_up_keywords = ['revenue', 'units', 'performance', 'aging', 'pending', 'pod', 'pgi']
+            if any(kw in normalized for kw in follow_up_keywords):
+                logger.debug(f"✅ Dealer from context: {context['last_dealer']}")
+                return context['last_dealer']
+        
+        logger.debug("❌ No dealer detected")
         return None
     
-    def _resolve_warehouse(self, normalized: str, original: str) -> Optional[str]:
-        """Resolve warehouse from text."""
-        resolved = self.schema.resolve_warehouse(original)
-        if resolved:
-            return resolved
+    def _generate_name_variations(self, name: str) -> List[str]:
+        """Generate variations of a name for better matching."""
+        variations = []
+        parts = name.split()
         
-        resolved = self.schema.resolve_warehouse(normalized)
-        if resolved:
-            return resolved
+        if len(parts) >= 2:
+            # First word + last word
+            variations.append(f"{parts[0]} {parts[-1]}")
+            # All words except first
+            variations.append(' '.join(parts[1:]))
+            # All words except last
+            variations.append(' '.join(parts[:-1]))
+            # First two words
+            if len(parts) >= 2:
+                variations.append(' '.join(parts[:2]))
+            # Last two words
+            if len(parts) >= 2:
+                variations.append(' '.join(parts[-2:]))
         
+        return variations
+    
+    # ==========================================================
+    # ENHANCED WAREHOUSE DETECTION
+    # ==========================================================
+    
+    def _detect_warehouse_enhanced(self, original: str, normalized: str) -> Optional[str]:
+        """Enhanced warehouse detection."""
+        logger.debug(f"Enhanced warehouse detection for: '{original}'")
+        
+        # Direct resolution
+        warehouse = self.schema.resolve_warehouse(original)
+        if warehouse:
+            return warehouse
+        
+        warehouse = self.schema.resolve_warehouse(normalized)
+        if warehouse:
+            return warehouse
+        
+        # Check each word
         words = normalized.split()
         for word in words:
             if len(word) >= 2:
@@ -803,16 +799,24 @@ class AIQueryService:
         
         return None
     
-    def _resolve_city(self, normalized: str, original: str) -> Optional[str]:
-        """Resolve city from text."""
-        resolved = self.schema.resolve_city(original)
-        if resolved:
-            return resolved
+    # ==========================================================
+    # ENHANCED CITY DETECTION
+    # ==========================================================
+    
+    def _detect_city_enhanced(self, original: str, normalized: str) -> Optional[str]:
+        """Enhanced city detection."""
+        logger.debug(f"Enhanced city detection for: '{original}'")
         
-        resolved = self.schema.resolve_city(normalized)
-        if resolved:
-            return resolved
+        # Direct resolution
+        city = self.schema.resolve_city(original)
+        if city:
+            return city
         
+        city = self.schema.resolve_city(normalized)
+        if city:
+            return city
+        
+        # Check each word
         words = normalized.split()
         for word in words:
             if len(word) >= 2:
@@ -823,11 +827,39 @@ class AIQueryService:
         return None
     
     # ==========================================================
-    # INTENT DETERMINATION
+    # LEGACY METHODS (Preserved for compatibility)
     # ==========================================================
     
+    def _resolve_entity_with_priority(self, normalized: str, original: str) -> Optional[Dict[str, Any]]:
+        """Legacy entity resolution - preserved for compatibility."""
+        dealer = self._resolve_dealer(normalized, original)
+        if dealer:
+            return {"type": "dealer", "name": dealer}
+        
+        warehouse = self._resolve_warehouse(normalized, original)
+        if warehouse:
+            return {"type": "warehouse", "name": warehouse}
+        
+        city = self._resolve_city(normalized, original)
+        if city:
+            return {"type": "city", "name": city}
+        
+        return None
+    
+    def _resolve_dealer(self, normalized: str, original: str) -> Optional[str]:
+        """Legacy dealer resolution - preserved for compatibility."""
+        return self._detect_dealer_enhanced(original, normalized, None)
+    
+    def _resolve_warehouse(self, normalized: str, original: str) -> Optional[str]:
+        """Legacy warehouse resolution."""
+        return self._detect_warehouse_enhanced(original, normalized)
+    
+    def _resolve_city(self, normalized: str, original: str) -> Optional[str]:
+        """Legacy city resolution."""
+        return self._detect_city_enhanced(original, normalized)
+    
     def _determine_entity_intent(self, entity_type: str, normalized: str, original: str) -> str:
-        """Determine intent based on entity type and query context."""
+        """Determine intent based on entity type."""
         metric = self.schema.detect_metric(normalized)
         
         if entity_type == "dealer":
@@ -858,10 +890,6 @@ class AIQueryService:
         
         return "general_ai"
     
-    # ==========================================================
-    # KPI DETECTION
-    # ==========================================================
-    
     def _detect_kpi_intent(self, normalized: str) -> Optional[str]:
         """Detect KPI intent from query."""
         kpi_patterns = {
@@ -879,31 +907,20 @@ class AIQueryService:
         
         return None
     
-    # ==========================================================
-    # RANKING DETECTION
-    # ==========================================================
-    
     def _detect_ranking_intent(self, normalized: str) -> Optional[str]:
         """Detect ranking intent from query."""
-        # Top Dealers by Revenue
         if any(kw in normalized for kw in ['top dealer', 'top dealers', 'highest revenue', 'most revenue', 'top revenue']):
             if 'unit' in normalized:
                 return "top_dealers_units"
             return "top_dealers_revenue"
         
-        # Top Warehouses by Pending
         if any(kw in normalized for kw in ['top warehouse', 'worst warehouse', 'most pending', 'highest pending']):
             return "top_warehouses_pending"
         
-        # Bottom Dealers
         if any(kw in normalized for kw in ['bottom dealer', 'worst dealer', 'lowest']):
             return "bottom_dealers"
         
         return None
-    
-    # ==========================================================
-    # EXECUTIVE DETECTION
-    # ==========================================================
     
     def _detect_executive_intent(self, normalized: str) -> Optional[str]:
         """Detect executive/control tower intent."""
@@ -927,10 +944,6 @@ class AIQueryService:
         
         return None
     
-    # ==========================================================
-    # DATA QUALITY DETECTION
-    # ==========================================================
-    
     def _is_data_quality_query(self, normalized: str) -> bool:
         """Check if query is about data quality."""
         patterns = [
@@ -940,21 +953,15 @@ class AIQueryService:
         ]
         return any(pattern in normalized for pattern in patterns)
     
-    # ==========================================================
-    # CONTEXT RESOLUTION
-    # ==========================================================
-    
     def _resolve_context_query(self, normalized: str, original: str, context: Optional[Dict]) -> Optional[str]:
         """Resolve context-based queries."""
         if not context:
             return None
         
-        # Check for context keywords
         context_keywords = ['status', 'details', 'info', 'show', 'get']
         if not any(kw in normalized for kw in context_keywords):
             return None
         
-        # Check if we have context
         if context.get('last_dn'):
             return "dn_lookup"
         elif context.get('last_dealer'):
@@ -966,18 +973,10 @@ class AIQueryService:
         
         return None
     
-    # ==========================================================
-    # HELP DETECTION
-    # ==========================================================
-    
     def _is_help_query(self, normalized: str) -> bool:
         """Check if query is a help request."""
         patterns = ['help', 'menu', 'commands', 'what can you do', 'available commands']
         return any(pattern in normalized for pattern in patterns)
-    
-    # ==========================================================
-    # DATE RANGE EXTRACTION
-    # ==========================================================
     
     def _extract_date_range(self, normalized: str) -> Optional[Dict[str, str]]:
         """Extract date range from normalized text."""
@@ -1012,10 +1011,6 @@ class AIQueryService:
         
         return None
     
-    # ==========================================================
-    # FILTER EXTRACTION
-    # ==========================================================
-    
     def _extract_filters(self, normalized: str, entities: Dict[str, Any]) -> Dict[str, Any]:
         """Extract filters from query."""
         filters = {}
@@ -1037,10 +1032,6 @@ class AIQueryService:
             filters['status'] = 'in_transit'
         
         return filters
-    
-    # ==========================================================
-    # HELPER METHODS
-    # ==========================================================
     
     def _normalize(self, text: str) -> str:
         """Normalize text for processing."""
@@ -1131,30 +1122,14 @@ def get_ai_query_service() -> AIQueryService:
 # MODULE INITIALIZATION LOGGING
 # ==========================================================
 
-logger.debug("AIQueryService v4.1 module loaded - Enhanced QueryPlan")
+logger.debug("AIQueryService v5.0 - Enhanced Dealer Detection")
 logger.debug(f"Valid intents: {len(VALID_INTENTS)}")
 logger.debug(f"Valid services: {len(VALID_SERVICES)}")
-logger.debug(f"Strictly Analytics Intents: {len(STRICTLY_ANALYTICS_INTENTS)}")
-logger.debug(f"Groq Intents: {len(GROQ_INTENTS)}")
 logger.debug("=" * 60)
-logger.debug("RESPONSIBILITIES:")
-logger.debug("  ✅ DN Detection")
-logger.debug("  ✅ Dealer Detection (dashboard/revenue/units/aging/performance/dns)")
-logger.debug("  ✅ Warehouse Detection (dashboard/performance)")
-logger.debug("  ✅ City Detection (dashboard/performance)")
-logger.debug("  ✅ KPI Detection (pending_pgi/pending_pod/pgi_aging/pod_aging)")
-logger.debug("  ✅ Ranking Detection (top_dealers_revenue/top_dealers_units/top_warehouses_pending)")
-logger.debug("  ✅ Executive/Control Tower Detection")
-logger.debug("  ✅ Data Quality Detection")
-logger.debug("  ✅ Context Resolution")
-logger.debug("  ✅ Groq Governance")
-logger.debug("  ✅ QueryPlan Generation")
-logger.debug("  ✅ Confidence Scoring")
-logger.debug("  ✅ Routing Diagnostics")
-logger.debug("")
 logger.debug("ENHANCEMENTS:")
-logger.debug("  ✅ QueryPlan - ALL parameters have defaults")
-logger.debug("  ✅ QueryPlan - Backward compatibility for legacy code")
-logger.debug("  ✅ QueryPlan - Safe __getattr__ for missing attributes")
-logger.debug("  ✅ QueryPlan - entity2, limit, sort_by, context support")
+logger.debug("  ✅ Enhanced dealer detection with partial matching")
+logger.debug("  ✅ Dealer names now properly recognized")
+logger.debug("  ✅ Pure dealer names route to dealer_dashboard")
+logger.debug("  ✅ Better handling of dealer name variations")
+logger.debug("  ✅ Improved logging for debugging")
 logger.debug("=" * 60)
