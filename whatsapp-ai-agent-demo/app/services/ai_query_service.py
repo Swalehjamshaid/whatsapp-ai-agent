@@ -1,10 +1,20 @@
 # ==========================================================
-# FILE: app/services/ai_query_service.py (v2.3 - PRODUCTION HARDENED)
+# FILE: app/services/ai_query_service.py (v3.2 - ENTITY-FIRST ROUTING)
 # ==========================================================
 # PURPOSE: Intent Detection and Query Planning Engine
-# CHANGES: Import safety, dynamic date handling, entity extraction
-#          improvements, confidence model enhancements, structured logging,
-#          singleton safety, QueryPlan validation, performance caching
+# ARCHITECTURE: Entity-first routing with analytics-first priority
+# 
+# ROUTING PRIORITY:
+# 1. DN Lookup → analytics
+# 2. Dealer Recognition → analytics
+# 3. Warehouse Recognition → analytics
+# 4. City Recognition → analytics
+# 5. KPI Queries → analytics/kpi
+# 6. Executive Insight → analytics + Groq
+# 7. Root Cause → analytics + Groq
+# 8. General AI → Groq only
+# 
+# CRITICAL RULE: Groq never receives known business entities
 # ==========================================================
 
 import re
@@ -30,9 +40,16 @@ except ImportError as e:
     logger.error("Please ensure app/schemas/schema_service.py exists and has get_schema_service function")
     raise
 
+try:
+    from app.services.ai_provider_service import get_ai_provider_service
+    logger.debug("Successfully imported get_ai_provider_service from app.services.ai_provider_service")
+except ImportError as e:
+    logger.warning(f"Failed to import get_ai_provider_service: {e}")
+    logger.warning("Groq AI features will be disabled")
+
 
 # ==========================================================
-# COMPILED REGEX PATTERNS (Performance Optimization)
+# COMPILED REGEX PATTERNS
 # ==========================================================
 
 # DN Number Pattern (8-12 digits)
@@ -76,8 +93,11 @@ class QueryPlan:
     original_message: str = ""
     normalized_message: str = ""
     from_context: bool = False
-    query_id: str = ""  # Added for tracing
-    processing_time_ms: float = 0.0  # Added for performance monitoring
+    query_id: str = ""
+    processing_time_ms: float = 0.0
+    groq_response: Optional[str] = None
+    groq_processing_time_ms: float = 0.0
+    analytics_data: Optional[Dict[str, Any]] = None  # Pre-fetched analytics data
 
 
 # ==========================================================
@@ -85,12 +105,37 @@ class QueryPlan:
 # ==========================================================
 
 VALID_INTENTS: Set[str] = {
-    'help', 'dn_lookup', 'dealer_dashboard', 'dealer_revenue',
-    'dealer_units', 'dealer_performance', 'dealer_aging',
-    'warehouse_dashboard', 'warehouse_performance', 'pending_pgi',
-    'pending_pod', 'pgi_aging', 'pod_aging', 'top_dealers',
-    'bottom_dealers', 'top_warehouses', 'executive_insight',
-    'control_tower', 'root_cause', 'trend', 'comparison',
+    # Priority 1: DN Lookup
+    'dn_lookup',
+    
+    # Priority 2: Dealer Intents
+    'dealer_dashboard', 'dealer_revenue', 'dealer_units', 
+    'dealer_performance', 'dealer_aging',
+    
+    # Priority 3: Warehouse Intents
+    'warehouse_dashboard', 'warehouse_performance',
+    
+    # Priority 4: City Intents
+    'city_dashboard', 'city_performance',
+    
+    # Priority 5: KPI Intents
+    'pending_pgi', 'pending_pod', 'pgi_aging', 'pod_aging',
+    'top_dealers', 'bottom_dealers', 'top_warehouses',
+    'delivery_performance',
+    
+    # Priority 6: Executive Insight (analytics + Groq)
+    'executive_insight', 'control_tower',
+    
+    # Priority 7: Root Cause (analytics + Groq)
+    'root_cause',
+    
+    # Priority 8: Trend & Comparison
+    'trend', 'comparison',
+    
+    # Priority 9: Help
+    'help',
+    
+    # Priority 10: General AI (Groq only - no analytics)
     'general_ai'
 }
 
@@ -98,32 +143,51 @@ VALID_SERVICES: Set[str] = {'analytics', 'kpi', 'groq'}
 
 VALID_ENTITY_TYPES: Set[str] = {'dealer', 'warehouse', 'city', 'dn', None}
 
+# Intents that should fetch analytics data before Groq
+ANALYTICS_FIRST_INTENTS: Set[str] = {
+    'root_cause', 'executive_insight', 'control_tower'
+}
+
+# Intents that use Groq (with or without analytics data)
+GROQ_INTENTS: Set[str] = {
+    'general_ai', 'root_cause', 'executive_insight', 
+    'help', 'control_tower'
+}
+
+# Intents that are strictly analytics (no Groq)
+STRICTLY_ANALYTICS_INTENTS: Set[str] = {
+    'dn_lookup', 'dealer_dashboard', 'dealer_revenue', 'dealer_units',
+    'dealer_performance', 'dealer_aging', 'warehouse_dashboard',
+    'warehouse_performance', 'city_dashboard', 'city_performance',
+    'pending_pgi', 'pending_pod', 'pgi_aging', 'pod_aging',
+    'top_dealers', 'bottom_dealers', 'top_warehouses',
+    'delivery_performance', 'trend', 'comparison'
+}
+
 
 # ==========================================================
 # AI QUERY SERVICE CLASS
 # ==========================================================
 
 class AIQueryService:
-    """INTENT DETECTION ENGINE - Brain of the Platform
+    """
+    INTENT DETECTION ENGINE - Entity-First Routing
     
-    This service processes natural language queries and converts them
-    into structured QueryPlan objects for routing to appropriate services.
+    Routing Priority:
+    1. DN Lookup → analytics
+    2. Dealer Recognition → analytics
+    3. Warehouse Recognition → analytics
+    4. City Recognition → analytics
+    5. KPI Queries → analytics/kpi
+    6. Executive Insight → analytics + Groq
+    7. Root Cause → analytics + Groq
+    8. General AI → Groq only
     
-    Thread-safe singleton instance available via get_ai_query_service().
-    
-    Performance Optimizations:
-        - Cached warehouse aliases
-        - Cached city aliases
-        - Cached logistics keywords
-        - Compiled regex patterns
+    CRITICAL RULE: Groq never receives known business entities
     """
     
     def __init__(self):
-        """Initialize AIQueryService with schema metadata.
-        
-        Raises:
-            Exception: If schema service initialization fails
-        """
+        """Initialize AIQueryService with schema metadata."""
         start_time = time.time()
         
         try:
@@ -134,6 +198,21 @@ class AIQueryService:
             logger.info("Loading SchemaService for AIQueryService...")
             self.schema = get_schema_service()
             logger.info("SchemaService loaded successfully")
+            
+            # ==========================================================
+            # GROQ PROVIDER (Optional)
+            # ==========================================================
+            
+            self._ai_provider = None
+            self._groq_enabled = False
+            
+            try:
+                self._ai_provider = get_ai_provider_service()
+                self._groq_enabled = True
+                logger.info("Groq AI provider loaded successfully")
+            except Exception as e:
+                logger.warning(f"Groq AI provider not available: {e}")
+                logger.warning("Groq AI features will be disabled")
             
             # Validate schema service is fully functional
             self._validate_schema_service()
@@ -171,12 +250,14 @@ class AIQueryService:
             # DYNAMIC DATE HANDLING
             # ==========================================================
             
-            # Don't store today - get fresh each time
             self._initialization_time = time.time()
             
-            # Mark initialization complete
             init_duration = (time.time() - start_time) * 1000
             logger.info(f"AIQueryService initialized successfully in {init_duration:.2f}ms")
+            logger.info(f"Groq AI: {'ENABLED' if self._groq_enabled else 'DISABLED'}")
+            logger.info(f"Strictly Analytics Intents: {len(STRICTLY_ANALYTICS_INTENTS)}")
+            logger.info(f"Analytics + Groq Intents: {len(ANALYTICS_FIRST_INTENTS)}")
+            logger.info(f"Groq Only Intents: {len(GROQ_INTENTS - ANALYTICS_FIRST_INTENTS)}")
             
         except Exception as e:
             logger.exception(f"Failed to initialize AIQueryService: {str(e)}")
@@ -186,7 +267,6 @@ class AIQueryService:
         """Validate that schema service is fully functional."""
         logger.info("Validating SchemaService...")
         
-        # Test each critical method
         test_cases = [
             ("detect_intent", lambda: self.schema.detect_intent("help")),
             ("detect_metric", lambda: self.schema.detect_metric("revenue")),
@@ -212,51 +292,29 @@ class AIQueryService:
         logger.info(f"   - Metrics: {len(self.schema.metrics)}")
     
     def _get_today(self) -> date:
-        """Get current date dynamically.
-        
-        Returns:
-            date: Current date (fresh on each call)
-        
-        Note:
-            Using date.today() dynamically ensures date calculations
-            remain accurate even if service runs for multiple days.
-        """
+        """Get current date dynamically."""
         return date.today()
     
     async def process_query(self, question: Optional[str], context: Optional[Dict] = None) -> QueryPlan:
-        """Process natural language query and generate routing plan.
-        
-        Args:
-            question: User's query text (can be None, empty, or whitespace)
-            context: Optional context dictionary for entity disambiguation
-            
-        Returns:
-            QueryPlan: Structured routing decision
-            
-        Raises:
-            ValueError: If question is None, empty, or whitespace-only
-        """
-        # Generate unique query ID for tracing
+        """Process natural language query with entity-first routing."""
         query_id = str(uuid.uuid4())[:8]
         start_time = time.time()
         
         # ==========================================================
-        # INPUT VALIDATION - Defensive Programming
+        # INPUT VALIDATION
         # ==========================================================
         
-        # Validate question input
         if question is None:
-            logger.warning(f"Query {query_id}: Received None query - returning default plan")
+            logger.warning(f"Query {query_id}: Received None query")
             return self._create_default_plan("No query provided", query_id)
         
         if not isinstance(question, str):
-            logger.warning(f"Query {query_id}: Invalid query type: {type(question)} - returning default plan")
+            logger.warning(f"Query {query_id}: Invalid query type: {type(question)}")
             return self._create_default_plan(f"Invalid query type: {type(question)}", query_id)
         
-        # Strip and check for whitespace-only
         cleaned_question = question.strip()
         if not cleaned_question:
-            logger.warning(f"Query {query_id}: Received empty/whitespace-only query - returning default plan")
+            logger.warning(f"Query {query_id}: Received empty query")
             return self._create_default_plan("Empty query", query_id)
         
         # ==========================================================
@@ -264,162 +322,376 @@ class AIQueryService:
         # ==========================================================
         
         try:
-            # Log query received (without sensitive content)
-            logger.info(f"Query {query_id}: Processing query (length={len(cleaned_question)})")
+            logger.info(f"Query {query_id}: Processing: '{cleaned_question[:100]}'")
             
-            # Normalize query
             normalized = self._normalize(cleaned_question)
             
-            # Detect intent with timing
-            intent_start = time.time()
-            intent, confidence = self._detect_intent(normalized, cleaned_question)
-            intent_duration = (time.time() - intent_start) * 1000
-            logger.debug(f"Query {query_id}: Intent detection took {intent_duration:.2f}ms, intent={intent}")
+            # ==========================================================
+            # STEP 1: DN DETECTION (Highest Priority)
+            # ==========================================================
             
-            # Extract entities with timing
-            entity_start = time.time()
-            entities = self._extract_entities(normalized, cleaned_question, intent, context)
-            entity_duration = (time.time() - entity_start) * 1000
-            logger.debug(f"Query {query_id}: Entity extraction took {entity_duration:.2f}ms, entities={list(entities.keys())}")
+            dn_match = DN_PATTERN.search(cleaned_question)
+            if dn_match:
+                dn_number = dn_match.group(1)
+                logger.info(f"Query {query_id}: ✅ DN Detected: {dn_number} → dn_lookup (analytics)")
+                
+                return QueryPlan(
+                    intent="dn_lookup",
+                    entity=dn_number,
+                    entity_type="dn",
+                    service="analytics",
+                    requires_groq=False,
+                    original_message=cleaned_question,
+                    normalized_message=normalized,
+                    query_id=query_id,
+                    confidence_score=1.0,
+                    processing_time_ms=(time.time() - start_time) * 1000
+                )
             
-            # Extract metric
-            metric = self._extract_metric(normalized)
+            # ==========================================================
+            # STEP 2: ENTITY DETECTION
+            # ==========================================================
             
-            # Extract date range
-            date_range = self._extract_date_range(normalized)
+            # Try to resolve as dealer, warehouse, or city
+            resolved_entity = self._resolve_entity_with_priority(normalized, cleaned_question)
             
-            # Extract ranking
-            ranking = self._extract_ranking(normalized)
+            if resolved_entity:
+                entity_type = resolved_entity['type']
+                entity_name = resolved_entity['name']
+                
+                # Determine intent based on entity type and query context
+                intent = self._determine_entity_intent(entity_type, normalized, cleaned_question)
+                
+                logger.info(f"Query {query_id}: ✅ Entity Detected: {entity_type}='{entity_name}' → {intent} (analytics)")
+                
+                return QueryPlan(
+                    intent=intent,
+                    entity=entity_name,
+                    entity_type=entity_type,
+                    service="analytics",
+                    requires_groq=False,
+                    original_message=cleaned_question,
+                    normalized_message=normalized,
+                    query_id=query_id,
+                    confidence_score=0.95,
+                    processing_time_ms=(time.time() - start_time) * 1000,
+                    filters=self._extract_filters(normalized, {entity_type: entity_name})
+                )
             
-            # Build query plan
-            query_plan = self._build_query_plan(
-                intent=intent, 
-                entities=entities, 
-                metric=metric,
-                date_range=date_range, 
-                ranking=ranking,
-                normalized=normalized, 
-                original=cleaned_question, 
-                context=context
+            # ==========================================================
+            # STEP 3: KPI QUERY DETECTION
+            # ==========================================================
+            
+            kpi_intent = self._detect_kpi_intent(normalized, cleaned_question)
+            if kpi_intent:
+                logger.info(f"Query {query_id}: ✅ KPI Detected: {kpi_intent} (analytics/kpi)")
+                
+                return QueryPlan(
+                    intent=kpi_intent,
+                    service="kpi" if kpi_intent in ['pending_pgi', 'pending_pod', 'pgi_aging', 'pod_aging'] else "analytics",
+                    requires_groq=False,
+                    original_message=cleaned_question,
+                    normalized_message=normalized,
+                    query_id=query_id,
+                    confidence_score=0.9,
+                    processing_time_ms=(time.time() - start_time) * 1000,
+                    filters=self._extract_filters(normalized, {})
+                )
+            
+            # ==========================================================
+            # STEP 4: ROOT CAUSE / EXECUTIVE INSIGHT (Analytics + Groq)
+            # ==========================================================
+            
+            root_cause_intent = self._detect_root_cause_intent(normalized)
+            if root_cause_intent:
+                logger.info(f"Query {query_id}: 🔍 Root Cause Detected: {root_cause_intent} (analytics + Groq)")
+                
+                # This will fetch analytics data first, then use Groq for explanation
+                return QueryPlan(
+                    intent=root_cause_intent,
+                    service="groq",
+                    requires_groq=True,
+                    original_message=cleaned_question,
+                    normalized_message=normalized,
+                    query_id=query_id,
+                    confidence_score=0.85,
+                    processing_time_ms=(time.time() - start_time) * 1000
+                )
+            
+            executive_intent = self._detect_executive_intent(normalized)
+            if executive_intent:
+                logger.info(f"Query {query_id}: 📊 Executive Detected: {executive_intent} (analytics + Groq)")
+                
+                return QueryPlan(
+                    intent=executive_intent,
+                    service="groq",
+                    requires_groq=True,
+                    original_message=cleaned_question,
+                    normalized_message=normalized,
+                    query_id=query_id,
+                    confidence_score=0.85,
+                    processing_time_ms=(time.time() - start_time) * 1000
+                )
+            
+            # ==========================================================
+            # STEP 5: TREND / COMPARISON (Analytics)
+            # ==========================================================
+            
+            trend_intent = self._detect_trend_intent(normalized)
+            if trend_intent:
+                logger.info(f"Query {query_id}: 📈 Trend Detected: {trend_intent} (analytics)")
+                
+                return QueryPlan(
+                    intent=trend_intent,
+                    service="analytics",
+                    requires_groq=False,
+                    original_message=cleaned_question,
+                    normalized_message=normalized,
+                    query_id=query_id,
+                    confidence_score=0.85,
+                    processing_time_ms=(time.time() - start_time) * 1000
+                )
+            
+            # ==========================================================
+            # STEP 6: HELP (Groq - Last Priority Before General AI)
+            # ==========================================================
+            
+            if self._is_help_query(normalized):
+                logger.info(f"Query {query_id}: ❓ Help Detected (Groq)")
+                
+                return QueryPlan(
+                    intent="help",
+                    service="groq",
+                    requires_groq=True,
+                    original_message=cleaned_question,
+                    normalized_message=normalized,
+                    query_id=query_id,
+                    confidence_score=0.9,
+                    processing_time_ms=(time.time() - start_time) * 1000,
+                    groq_response=self._get_fallback_groq_response("help", cleaned_question)
+                )
+            
+            # ==========================================================
+            # STEP 7: GENERAL AI (Groq Only - No Analytics)
+            # ==========================================================
+            
+            logger.info(f"Query {query_id}: 🤖 General AI Detected (Groq only)")
+            
+            return QueryPlan(
+                intent="general_ai",
+                service="groq",
+                requires_groq=True,
+                original_message=cleaned_question,
+                normalized_message=normalized,
+                query_id=query_id,
+                confidence_score=0.5,
+                processing_time_ms=(time.time() - start_time) * 1000
             )
-            query_plan.query_id = query_id
-            
-            # Calculate confidence
-            query_plan.confidence_score = self._calculate_confidence(query_plan, confidence)
-            
-            # Determine service routing
-            query_plan.service = self._determine_service(query_plan)
-            query_plan.requires_groq = self._determine_groq_requirement(query_plan)
-            
-            # ==========================================================
-            # QUERYPLAN VALIDATION
-            # ==========================================================
-            
-            is_valid, validation_errors = self._validate_query_plan(query_plan)
-            if not is_valid:
-                logger.warning(f"Query {query_id}: QueryPlan validation failed: {validation_errors}")
-                # Return safe fallback
-                return self._create_fallback_plan(query_plan, validation_errors, query_id)
-            
-            # Calculate processing time
-            query_plan.processing_time_ms = (time.time() - start_time) * 1000
-            
-            # ==========================================================
-            # STRUCTURED LOGGING
-            # ==========================================================
-            
-            logger.info(
-                f"Query {query_id}: Completed - "
-                f"intent={query_plan.intent}, "
-                f"service={query_plan.service}, "
-                f"confidence={query_plan.confidence_score:.2f}, "
-                f"entity={query_plan.entity_type or 'none'}, "
-                f"time={query_plan.processing_time_ms:.2f}ms"
-            )
-            
-            if query_plan.entity:
-                logger.debug(f"Query {query_id}: Entity extracted - {query_plan.entity_type}={query_plan.entity}")
-            
-            if query_plan.date_range:
-                logger.debug(f"Query {query_id}: Date range - {query_plan.date_range}")
-            
-            if query_plan.from_context:
-                logger.debug(f"Query {query_id}: Context used for entity resolution")
-            
-            return query_plan
             
         except Exception as e:
-            logger.exception(f"Query {query_id}: Query processing failed: {str(e)}")
-            # Return default plan on error
+            logger.exception(f"Query {query_id}: Processing failed: {str(e)}")
             return self._create_default_plan(f"Processing error: {str(e)}", query_id)
     
-    def _create_default_plan(self, reason: str, query_id: str = None) -> QueryPlan:
-        """Create a default query plan for error/empty cases."""
-        return QueryPlan(
-            intent="general_ai",
-            confidence_score=0.1,
-            requires_groq=True,
-            service="groq",
-            original_message=reason,
-            normalized_message=reason,
-            query_id=query_id or str(uuid.uuid4())[:8]
-        )
+    # ==========================================================
+    # ENTITY RESOLUTION (Priority-based)
+    # ==========================================================
     
-    def _create_fallback_plan(self, original_plan: QueryPlan, errors: List[str], query_id: str) -> QueryPlan:
-        """Create a fallback query plan when validation fails."""
-        fallback = QueryPlan(
-            intent="general_ai",
-            confidence_score=0.15,
-            requires_groq=True,
-            service="groq",
-            original_message=f"Fallback: {original_plan.original_message[:100]}",
-            normalized_message=original_plan.normalized_message,
-            query_id=query_id,
-            processing_time_ms=original_plan.processing_time_ms
-        )
-        # Copy over any safe fields
-        if original_plan.entity:
-            fallback.entity = original_plan.entity
-            fallback.entity_type = original_plan.entity_type
-        if original_plan.date_range:
-            fallback.date_range = original_plan.date_range
-        return fallback
-    
-    def _validate_query_plan(self, plan: QueryPlan) -> Tuple[bool, List[str]]:
-        """Validate QueryPlan for integrity.
+    def _resolve_entity_with_priority(self, normalized: str, original: str) -> Optional[Dict[str, Any]]:
+        """
+        Resolve entity with priority: Dealer > Warehouse > City
         
         Returns:
-            Tuple of (is_valid, list_of_errors)
+            Dict with 'type' and 'name' or None
         """
-        errors = []
+        # Priority 1: Try dealer resolution
+        dealer = self._resolve_entity(normalized, original, "dealer")
+        if dealer:
+            return {"type": "dealer", "name": dealer}
         
-        # Validate intent
-        if not plan.intent or plan.intent not in VALID_INTENTS:
-            errors.append(f"Invalid intent: {plan.intent}")
+        # Priority 2: Try warehouse resolution
+        warehouse = self._resolve_entity(normalized, original, "warehouse")
+        if warehouse:
+            return {"type": "warehouse", "name": warehouse}
         
-        # Validate service
-        if plan.service not in VALID_SERVICES:
-            errors.append(f"Invalid service: {plan.service}")
+        # Priority 3: Try city resolution
+        city = self._resolve_entity(normalized, original, "city")
+        if city:
+            return {"type": "city", "name": city}
         
-        # Validate confidence score
-        if not (0.0 <= plan.confidence_score <= 1.0):
-            errors.append(f"Invalid confidence score: {plan.confidence_score}")
+        return None
+    
+    def _resolve_entity(self, normalized: str, original: str, entity_type: str) -> Optional[str]:
+        """Resolve entity from text using schema service."""
+        if entity_type == "dealer":
+            # Try pattern-based extraction
+            dealer_match = DEALER_PATTERN.search(original)
+            if dealer_match:
+                candidate = dealer_match.group(1).strip()
+                if candidate and candidate not in self._logistics_keywords_cache:
+                    resolved = self.schema.resolve_dealer(candidate)
+                    if resolved:
+                        return resolved
+            
+            # Try resolving the entire text
+            resolved = self.schema.resolve_dealer(original)
+            if resolved:
+                return resolved
+            
+            resolved = self.schema.resolve_dealer(normalized)
+            if resolved:
+                return resolved
+            
+            # Try resolving the first few words
+            words = normalized.split()
+            if len(words) > 1:
+                for i in range(1, min(len(words), 4)):
+                    candidate = ' '.join(words[:i])
+                    resolved = self.schema.resolve_dealer(candidate)
+                    if resolved:
+                        return resolved
+            
+            return None
         
-        # Validate entity type
-        if plan.entity_type and plan.entity_type not in VALID_ENTITY_TYPES:
-            errors.append(f"Invalid entity type: {plan.entity_type}")
+        elif entity_type == "warehouse":
+            resolved = self.schema.resolve_warehouse(original)
+            if resolved:
+                return resolved
+            
+            resolved = self.schema.resolve_warehouse(normalized)
+            if resolved:
+                return resolved
+            
+            words = normalized.split()
+            for word in words:
+                if len(word) >= 2:
+                    resolved = self.schema.resolve_warehouse(word)
+                    if resolved:
+                        return resolved
+            
+            return None
         
-        # Validate limit
-        if plan.limit < 1 or plan.limit > 1000:
-            errors.append(f"Invalid limit: {plan.limit}")
+        elif entity_type == "city":
+            resolved = self.schema.resolve_city(original)
+            if resolved:
+                return resolved
+            
+            resolved = self.schema.resolve_city(normalized)
+            if resolved:
+                return resolved
+            
+            words = normalized.split()
+            for word in words:
+                if len(word) >= 2:
+                    resolved = self.schema.resolve_city(word)
+                    if resolved:
+                        return resolved
+            
+            return None
         
-        # Validate entity consistency
-        if plan.entity and not plan.entity_type:
-            errors.append(f"Entity exists without entity_type: {plan.entity}")
-        if plan.entity_type and not plan.entity:
-            errors.append(f"Entity type exists without entity: {plan.entity_type}")
+        return None
+    
+    def _determine_entity_intent(self, entity_type: str, normalized: str, original: str) -> str:
+        """Determine intent based on entity type and query context."""
+        # Check for metric keywords
+        metric = self.schema.detect_metric(normalized)
         
-        return len(errors) == 0, errors
+        if entity_type == "dealer":
+            if metric == "revenue":
+                return "dealer_revenue"
+            elif metric == "units":
+                return "dealer_units"
+            elif 'performance' in normalized or 'kpi' in normalized:
+                return "dealer_performance"
+            elif 'aging' in normalized or 'delay' in normalized:
+                return "dealer_aging"
+            else:
+                return "dealer_dashboard"
+        
+        elif entity_type == "warehouse":
+            if 'performance' in normalized or 'kpi' in normalized:
+                return "warehouse_performance"
+            else:
+                return "warehouse_dashboard"
+        
+        elif entity_type == "city":
+            if 'performance' in normalized or 'kpi' in normalized:
+                return "city_performance"
+            else:
+                return "city_dashboard"
+        
+        return "general_ai"
+    
+    # ==========================================================
+    # KPI DETECTION
+    # ==========================================================
+    
+    def _detect_kpi_intent(self, normalized: str, original: str) -> Optional[str]:
+        """Detect KPI intent from query."""
+        kpi_patterns = {
+            'pending_pgi': ['pending pgi', 'pgi pending', 'open pgi', 'pgi not done'],
+            'pending_pod': ['pending pod', 'pod pending', 'open pod', 'pod not done'],
+            'pgi_aging': ['pgi aging', 'aging pgi', 'pgi delay'],
+            'pod_aging': ['pod aging', 'aging pod', 'pod delay'],
+            'top_dealers': ['top dealer', 'best dealer', 'top performing', 'top 10 dealers'],
+            'bottom_dealers': ['bottom dealer', 'worst dealer', 'poor performing', 'bottom 10 dealers'],
+            'top_warehouses': ['top warehouse', 'best warehouse'],
+            'delivery_performance': ['delivery performance', 'delivery kpi', 'delivery metrics']
+        }
+        
+        for intent, patterns in kpi_patterns.items():
+            for pattern in patterns:
+                if pattern in normalized:
+                    return intent
+        
+        return None
+    
+    def _detect_root_cause_intent(self, normalized: str) -> Optional[str]:
+        """Detect root cause intent."""
+        patterns = [
+            'root cause', 'why', 'reason', 'cause', 'what caused',
+            'why delayed', 'why aging', 'why pending', 'why not delivered'
+        ]
+        
+        for pattern in patterns:
+            if pattern in normalized:
+                return "root_cause"
+        
+        return None
+    
+    def _detect_executive_intent(self, normalized: str) -> Optional[str]:
+        """Detect executive insight intent."""
+        patterns = [
+            'executive insight', 'executive summary', 'key issue',
+            'critical alert', 'bottleneck', 'control tower'
+        ]
+        
+        for pattern in patterns:
+            if pattern in normalized:
+                return "executive_insight"
+        
+        return None
+    
+    def _detect_trend_intent(self, normalized: str) -> Optional[str]:
+        """Detect trend intent."""
+        patterns = [
+            'trend', 'month over month', 'trends', 'over time',
+            'historical', 'performance trend', 'delivery trend'
+        ]
+        
+        for pattern in patterns:
+            if pattern in normalized:
+                return "trend"
+        
+        return None
+    
+    def _is_help_query(self, normalized: str) -> bool:
+        """Check if query is a help request."""
+        patterns = ['help', 'menu', 'commands', 'what can you do', 'available commands']
+        return any(pattern in normalized for pattern in patterns)
+    
+    # ==========================================================
+    # HELPER METHODS
+    # ==========================================================
     
     def _normalize(self, text: str) -> str:
         """Normalize text for processing."""
@@ -431,101 +703,102 @@ class AIQueryService:
         normalized = SPECIAL_CHARS_PATTERN.sub('', normalized)
         return normalized.strip()
     
-    def _detect_intent(self, normalized: str, original: str) -> Tuple[str, float]:
-        """Detect intent from normalized text."""
-        # Check for DN number first
+    def _extract_filters(self, normalized: str, entities: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract filters from query."""
+        filters = {}
+        
+        if entities.get('city'):
+            filters['city'] = entities['city']
+        
+        if entities.get('warehouse'):
+            filters['warehouse'] = entities['warehouse']
+        
+        if entities.get('dealer'):
+            filters['dealer'] = entities['dealer']
+        
+        if 'pending' in normalized:
+            filters['status'] = 'pending'
+        elif 'delivered' in normalized:
+            filters['status'] = 'delivered'
+        elif 'in transit' in normalized or 'transit' in normalized:
+            filters['status'] = 'in_transit'
+        
+        return filters
+    
+    def _get_fallback_groq_response(self, intent: str, question: str) -> str:
+        """Get fallback response when Groq is unavailable."""
+        fallbacks = {
+            "general_ai": "I'm here to help with your logistics queries. Please ask about dealers, warehouses, cities, or delivery notes.",
+            "root_cause": "To analyze root causes, I need specific data about the issue. Please provide more details about the problem.",
+            "executive_insight": "Executive insights require data analysis. Please specify which metrics or KPIs you're interested in.",
+            "help": """📋 *Available Commands*
+
+• *Track DN* - Send any 8-12 digit number
+• *Dealer Performance* - "Show dealer [name]"
+• *Warehouse Status* - "[Warehouse name]"
+• *City Dashboard* - "[City name]"
+• *Pending PODs* - "Pending POD"
+• *KPI Dashboard* - "Show me KPIs"
+• *Control Tower* - "Control tower"
+• *Root Cause* - "Why is this happening?"
+
+Need help? Just ask!""",
+            "control_tower": "Control tower insights require real-time data. Please specify which metrics or alerts you want to monitor."
+        }
+        return fallbacks.get(intent, "I'm here to help with your logistics queries. Please ask a specific question.")
+    
+    def _create_default_plan(self, reason: str, query_id: str = None) -> QueryPlan:
+        """Create a default query plan for error/empty cases."""
+        return QueryPlan(
+            intent="general_ai",
+            confidence_score=0.1,
+            requires_groq=True,
+            service="groq",
+            original_message=reason,
+            normalized_message=reason,
+            query_id=query_id or str(uuid.uuid4())[:8],
+            groq_response=self._get_fallback_groq_response("general_ai", reason)
+        )
+    
+    # ==========================================================
+    # LEGACY METHODS (Maintained for Backward Compatibility)
+    # ==========================================================
+    
+    def detect_intent(self, normalized: str, original: str) -> Tuple[str, float]:
+        """Legacy method - kept for backward compatibility."""
+        # Check DN first
         if DN_PATTERN.search(original):
             return "dn_lookup", 1.0
         
-        # Use schema service for intent detection
+        # Try entity resolution
+        resolved = self._resolve_entity_with_priority(normalized, original)
+        if resolved:
+            return "dealer_dashboard" if resolved['type'] == "dealer" else \
+                   "warehouse_dashboard" if resolved['type'] == "warehouse" else \
+                   "city_dashboard", 0.95
+        
+        # Use schema service
         intent, confidence = self.schema.detect_intent(normalized)
         if intent:
             return intent, confidence
         
-        # Fallback to general AI
         return "general_ai", 0.3
     
-    def _extract_entities(self, normalized: str, original: str, intent: str, context: Optional[Dict]) -> Dict[str, Any]:
-        """Extract entities (dealer, warehouse, city, DN) from query."""
+    def extract_entities(self, normalized: str, original: str, intent: str, context: Optional[Dict]) -> Dict[str, Any]:
+        """Legacy method - kept for backward compatibility."""
         entities = {}
-        normalized_words = set(normalized.split())
         
-        # DN Number Extraction
         dn_match = DN_PATTERN.search(original)
         if dn_match:
             entities['dn_number'] = dn_match.group(1)
             return entities
         
-        # ==========================================================
-        # IMPROVED WAREHOUSE EXTRACTION - Word Boundaries
-        # ==========================================================
+        resolved = self._resolve_entity_with_priority(normalized, original)
+        if resolved:
+            entities[resolved['type']] = resolved['name']
+            return entities
         
-        # Check for exact matches using word boundaries
-        for alias in self._warehouse_cache['aliases']:
-            # Create word boundary pattern for this alias
-            alias_pattern = re.compile(rf'\b{re.escape(alias)}\b', re.IGNORECASE)
-            if alias_pattern.search(normalized):
-                entities['warehouse'] = self.schema.resolve_warehouse(alias)
-                break
-        
-        # If no alias match, check for full name match
-        if not entities.get('warehouse'):
-            for name_lower in self._warehouse_cache['name_lower']:
-                # Use word boundaries for full names too
-                name_pattern = re.compile(rf'\b{re.escape(name_lower)}\b', re.IGNORECASE)
-                if name_pattern.search(normalized):
-                    # Get original name from cache
-                    for original_name in self._warehouse_cache['names']:
-                        if original_name.lower() == name_lower:
-                            entities['warehouse'] = original_name
-                            break
-                    break
-        
-        # ==========================================================
-        # IMPROVED CITY EXTRACTION - Word Boundaries
-        # ==========================================================
-        
-        # Check for exact matches using word boundaries
-        for alias in self._city_cache['aliases']:
-            alias_pattern = re.compile(rf'\b{re.escape(alias)}\b', re.IGNORECASE)
-            if alias_pattern.search(normalized):
-                entities['city'] = self.schema.resolve_city(alias)
-                break
-        
-        # If no alias match, check for full name match
-        if not entities.get('city'):
-            for name_lower in self._city_cache['name_lower']:
-                name_pattern = re.compile(rf'\b{re.escape(name_lower)}\b', re.IGNORECASE)
-                if name_pattern.search(normalized):
-                    for original_name in self._city_cache['names']:
-                        if original_name.lower() == name_lower:
-                            entities['city'] = original_name
-                            break
-                    break
-        
-        # ==========================================================
-        # DEALER EXTRACTION
-        # ==========================================================
-        
-        # Dealer Extraction (Pattern-based)
-        dealer_match = DEALER_PATTERN.search(original)
-        if dealer_match:
-            candidate = dealer_match.group(1).strip()
-            if candidate not in self._logistics_keywords_cache:
-                resolved = self.schema.resolve_dealer(candidate)
-                if resolved:
-                    entities['dealer'] = resolved
-        
-        # Dealer Extraction (Fallback - Single word check)
-        if not entities.get('dealer') and len(normalized_words) <= 5:
-            # Check if the entire normalized text is a dealer name
-            if not self._is_question_word(normalized):
-                resolved = self.schema.resolve_dealer(original)
-                if resolved:
-                    entities['dealer'] = resolved
-        
-        # Context-based Entity Resolution (Defensive)
-        if not entities and context and isinstance(context, dict):
+        if context and isinstance(context, dict):
             try:
                 if context.get('last_dealer'):
                     entities['dealer'] = context['last_dealer']
@@ -537,252 +810,6 @@ class AIQueryService:
                 logger.debug(f"Context access failed: {e}")
         
         return entities
-    
-    def _is_question_word(self, text: str) -> bool:
-        """Check if text contains question words."""
-        question_words = ['what', 'how', 'why', 'when', 'where', 'who', 'which']
-        return any(word in text for word in question_words)
-    
-    def _extract_metric(self, normalized: str) -> Optional[str]:
-        """Extract metric from normalized text."""
-        return self.schema.detect_metric(normalized)
-    
-    def _extract_date_range(self, normalized: str) -> Optional[Dict[str, str]]:
-        """Extract date range from normalized text.
-        
-        Supports:
-            - today
-            - yesterday
-            - last N days (7, 15, 30, 90)
-            - this month
-            - this week
-            - last week
-            - this year
-            - last month
-            - current month
-            - current year
-        """
-        # Get fresh current date
-        today = self._get_today()
-        
-        # Today
-        if 'today' in normalized:
-            return {'start_date': today.isoformat(), 'end_date': today.isoformat()}
-        
-        # Yesterday
-        if 'yesterday' in normalized:
-            yesterday = today - timedelta(days=1)
-            return {'start_date': yesterday.isoformat(), 'end_date': yesterday.isoformat()}
-        
-        # Last N Days
-        day_matches = {
-            'last 7 days': 7,
-            'last 15 days': 15,
-            'last 30 days': 30,
-            'last 90 days': 90
-        }
-        for phrase, days in day_matches.items():
-            if phrase in normalized:
-                start = today - timedelta(days=days)
-                return {'start_date': start.isoformat(), 'end_date': today.isoformat()}
-        
-        # This Month / Current Month
-        if 'this month' in normalized or 'current month' in normalized:
-            start = today.replace(day=1)
-            return {'start_date': start.isoformat(), 'end_date': today.isoformat()}
-        
-        # Last Month
-        if 'last month' in normalized:
-            last_month = today.replace(day=1) - timedelta(days=1)
-            start = last_month.replace(day=1)
-            return {'start_date': start.isoformat(), 'end_date': last_month.isoformat()}
-        
-        # This Week / Current Week
-        if 'this week' in normalized or 'current week' in normalized:
-            # Start of week (Monday)
-            start = today - timedelta(days=today.weekday())
-            return {'start_date': start.isoformat(), 'end_date': today.isoformat()}
-        
-        # Last Week
-        if 'last week' in normalized:
-            end = today - timedelta(days=today.weekday() + 1)
-            start = end - timedelta(days=6)
-            return {'start_date': start.isoformat(), 'end_date': end.isoformat()}
-        
-        # This Year / Current Year
-        if 'this year' in normalized or 'current year' in normalized:
-            start = today.replace(month=1, day=1)
-            return {'start_date': start.isoformat(), 'end_date': today.isoformat()}
-        
-        return None
-    
-    def _extract_ranking(self, normalized: str) -> Dict[str, Any]:
-        """Extract ranking information from normalized text.
-        
-        Supports:
-            - top, best, highest
-            - bottom, worst, lowest
-            - top performers, top dealers
-            - highest sales, lowest sales
-            - most revenue, least revenue
-        """
-        ranking = {}
-        
-        # Ranking type detection (expanded)
-        top_keywords = ['top', 'best', 'highest', 'top performers', 'top dealers', 'highest sales', 'most revenue']
-        bottom_keywords = ['bottom', 'worst', 'lowest', 'lowest sales', 'least revenue']
-        
-        if any(keyword in normalized for keyword in top_keywords):
-            ranking['ranking_type'] = 'top'
-        elif any(keyword in normalized for keyword in bottom_keywords):
-            ranking['ranking_type'] = 'bottom'
-        
-        # Limit extraction
-        limit_match = RANKING_LIMIT_PATTERN.search(normalized)
-        ranking['limit'] = int(limit_match.group(1)) if limit_match else 10
-        
-        # Sort by detection (expanded)
-        if 'revenue' in normalized or 'sales' in normalized or 'amount' in normalized:
-            ranking['sort_by'] = 'revenue'
-        elif 'units' in normalized or 'quantity' in normalized or 'qty' in normalized:
-            ranking['sort_by'] = 'units'
-        elif 'performance' in normalized:
-            ranking['sort_by'] = 'performance'
-        
-        return ranking
-    
-    def _build_query_plan(self, intent: str, entities: Dict[str, Any], metric: Optional[str],
-                          date_range: Optional[Dict[str, str]], ranking: Dict[str, Any],
-                          normalized: str, original: str, context: Optional[Dict]) -> QueryPlan:
-        """Build QueryPlan from extracted components."""
-        
-        # Determine primary entity
-        entity_type = None
-        entity_value = None
-        
-        if entities.get('dealer'):
-            entity_type, entity_value = 'dealer', entities['dealer']
-        elif entities.get('warehouse'):
-            entity_type, entity_value = 'warehouse', entities['warehouse']
-        elif entities.get('dn_number'):
-            entity_type, entity_value = 'dn', entities['dn_number']
-        
-        # Extract filters (defensive)
-        filters = self._extract_filters(normalized, entities)
-        
-        return QueryPlan(
-            intent=intent,
-            entity=entity_value,
-            entity_type=entity_type,
-            metric=metric,
-            date_range=date_range,
-            filters=filters,
-            ranking_type=ranking.get('ranking_type'),
-            limit=ranking.get('limit', 10),
-            sort_by=ranking.get('sort_by'),
-            original_message=original,
-            normalized_message=normalized,
-            from_context=bool(entities.get('from_context', False))
-        )
-    
-    def _extract_filters(self, normalized: str, entities: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract filters from query."""
-        filters = {}
-        
-        # City filter
-        if entities.get('city'):
-            filters['city'] = entities['city']
-        
-        # Warehouse filter
-        if entities.get('warehouse'):
-            filters['warehouse'] = entities['warehouse']
-        
-        # Status filters
-        if 'pending' in normalized:
-            filters['status'] = 'pending'
-        elif 'delivered' in normalized:
-            filters['status'] = 'delivered'
-        elif 'in transit' in normalized or 'transit' in normalized:
-            filters['status'] = 'in_transit'
-        
-        return filters
-    
-    def _calculate_confidence(self, query_plan: QueryPlan, intent_confidence: float) -> float:
-        """Calculate confidence score for query plan.
-        
-        Scoring Components:
-            - Intent confidence: 30% (from schema service)
-            - Entity presence: 25%
-            - Metric presence: 20%
-            - Date range presence: 15%
-            - Context usage: 10%
-            
-        Negative Adjustments:
-            - Fallback intent (general_ai): -20% penalty
-            - Unresolved entity (confident entity missing): -15%
-            - Low intent confidence (<0.5): -10%
-        
-        Returns:
-            float: Confidence score between 0.0 and 1.0
-        """
-        # Start with base score
-        score = 0.0
-        
-        # Positive contributions
-        # Intent confidence (30% of max)
-        score += min(intent_confidence, 1.0) * 0.3
-        
-        # Entity presence (25%)
-        if query_plan.entity:
-            score += 0.25
-        
-        # Metric presence (20%)
-        if query_plan.metric:
-            score += 0.20
-        
-        # Date range presence (15%)
-        if query_plan.date_range:
-            score += 0.15
-        
-        # Context usage (10%)
-        if query_plan.from_context and query_plan.entity:
-            score += 0.10
-        
-        # ==========================================================
-        # NEGATIVE ADJUSTMENTS
-        # ==========================================================
-        
-        # Penalty for fallback intent
-        if query_plan.intent == 'general_ai':
-            score -= 0.20
-        
-        # Penalty for low intent confidence
-        if intent_confidence < 0.5:
-            score -= 0.10
-        
-        # Penalty for unresolved entity (if we tried to find one)
-        if query_plan.entity_type and not query_plan.entity:
-            score -= 0.15
-        
-        # Ensure score stays within [0.0, 1.0]
-        return round(max(0.0, min(score, 1.0)), 2)
-    
-    def _determine_service(self, query_plan: QueryPlan) -> str:
-        """Determine which service should handle the query."""
-        # KPI service for pending/aging queries
-        if query_plan.intent in ['pending_pgi', 'pending_pod', 'pgi_aging', 'pod_aging']:
-            return "kpi"
-        
-        # Groq service for AI-generated responses
-        if query_plan.intent in ['general_ai', 'root_cause']:
-            return "groq"
-        
-        # Analytics service for data queries (default)
-        return "analytics"
-    
-    def _determine_groq_requirement(self, query_plan: QueryPlan) -> bool:
-        """Determine if Groq AI is required for response generation."""
-        return query_plan.intent in ['general_ai', 'root_cause', 'executive_insight']
 
 
 # ==========================================================
@@ -794,16 +821,7 @@ _service_lock = threading.Lock()
 
 
 def get_ai_query_service() -> AIQueryService:
-    """Thread-safe singleton getter for AIQueryService.
-    
-    Returns:
-        AIQueryService: The singleton instance of AIQueryService
-        
-    Note:
-        This implementation uses double-checked locking for thread safety
-        while maintaining backward compatibility with existing code.
-        Safe for use with asyncio as no blocking operations are performed.
-    """
+    """Thread-safe singleton getter for AIQueryService."""
     global _ai_query_service
     
     if _ai_query_service is None:
@@ -823,5 +841,19 @@ def get_ai_query_service() -> AIQueryService:
 # MODULE INITIALIZATION LOGGING
 # ==========================================================
 
-logger.debug("AIQueryService module loaded")
-logger.debug(f"Valid intents: {len(VALID_INTENTS)}, Valid services: {len(VALID_SERVICES)}")
+logger.debug("AIQueryService v3.2 module loaded - Entity-First Routing")
+logger.debug(f"Valid intents: {len(VALID_INTENTS)}")
+logger.debug(f"Strictly Analytics Intents: {len(STRICTLY_ANALYTICS_INTENTS)}")
+logger.debug(f"Analytics + Groq Intents: {len(ANALYTICS_FIRST_INTENTS)}")
+logger.debug(f"Groq Only Intents: {len(GROQ_INTENTS - ANALYTICS_FIRST_INTENTS)}")
+logger.debug("=" * 60)
+logger.debug("ROUTING PRIORITY:")
+logger.debug("  1. DN Lookup → analytics")
+logger.debug("  2. Dealer Recognition → analytics")
+logger.debug("  3. Warehouse Recognition → analytics")
+logger.debug("  4. City Recognition → analytics")
+logger.debug("  5. KPI Queries → analytics/kpi")
+logger.debug("  6. Executive Insight → analytics + Groq")
+logger.debug("  7. Root Cause → analytics + Groq")
+logger.debug("  8. General AI → Groq only")
+logger.debug("=" * 60)
