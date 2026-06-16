@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from loguru import logger
 
+
 # ==========================================================
 # IMPORT SAFETY - Startup Diagnostics
 # ==========================================================
@@ -134,6 +135,9 @@ class AIQueryService:
             self.schema = get_schema_service()
             logger.info("SchemaService loaded successfully")
             
+            # Validate schema service is fully functional
+            self._validate_schema_service()
+            
             # Log metadata statistics for diagnostics
             if hasattr(self.schema, 'validate_metadata'):
                 report = self.schema.validate_metadata()
@@ -177,6 +181,35 @@ class AIQueryService:
         except Exception as e:
             logger.exception(f"Failed to initialize AIQueryService: {str(e)}")
             raise RuntimeError(f"AIQueryService initialization failed: {str(e)}") from e
+    
+    def _validate_schema_service(self):
+        """Validate that schema service is fully functional."""
+        logger.info("Validating SchemaService...")
+        
+        # Test each critical method
+        test_cases = [
+            ("detect_intent", lambda: self.schema.detect_intent("help")),
+            ("detect_metric", lambda: self.schema.detect_metric("revenue")),
+            ("resolve_dealer", lambda: self.schema.resolve_dealer("nce")),
+            ("resolve_warehouse", lambda: self.schema.resolve_warehouse("lhr")),
+            ("resolve_city", lambda: self.schema.resolve_city("lhr")),
+            ("is_logistics_keyword", lambda: self.schema.is_logistics_keyword("pending"))
+        ]
+        
+        for name, test_func in test_cases:
+            try:
+                result = test_func()
+                logger.info(f"  ✅ {name}() - returned: {result}")
+            except Exception as e:
+                logger.error(f"  ❌ {name}() - failed: {e}")
+                raise RuntimeError(f"SchemaService validation failed at {name}()") from e
+        
+        logger.info("✅ SchemaService validation passed")
+        logger.info(f"   - Dealers: {len(self.schema.dealers)}")
+        logger.info(f"   - Warehouses: {len(self.schema.warehouses)}")
+        logger.info(f"   - Cities: {len(self.schema.cities)}")
+        logger.info(f"   - Intents: {len(self.schema.intents)}")
+        logger.info(f"   - Metrics: {len(self.schema.metrics)}")
     
     def _get_today(self) -> date:
         """Get current date dynamically.
