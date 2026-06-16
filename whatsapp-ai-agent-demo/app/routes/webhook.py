@@ -1,19 +1,5 @@
 # ==========================================================
-# FILE: app/routes/webhook.py (v18.0 - WHATSAPP GATEWAY LAYER)
-# ==========================================================
-# PURPOSE: Single entry point from Meta WhatsApp
-#
-# ENTERPRISE FEATURES:
-# - ✅ Webhook Verification
-# - ✅ Signature Validation
-# - ✅ Payload Validation
-# - ✅ Message Parsing
-# - ✅ Rate Limiting
-# - ✅ Deduplication
-# - ✅ Metrics & Audit Trail
-# - ✅ Circuit Breaker
-# - ✅ Background Processing
-# - ✅ Correlation IDs
+# FILE: app/routes/webhook.py (v18.1 - NO PSUTIL DEPENDENCY)
 # ==========================================================
 
 import re
@@ -22,6 +8,8 @@ import asyncio
 import time
 import hmac
 import hashlib
+import os
+import sys
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 from collections import defaultdict, deque
@@ -31,8 +19,6 @@ from fastapi import APIRouter, Request, BackgroundTasks, Query, HTTPException, H
 from fastapi.responses import JSONResponse, Response
 from loguru import logger
 from cachetools import TTLCache
-import psutil
-import os
 
 from app.config import config
 from app.services.ai_provider_service import process_whatsapp_query
@@ -69,6 +55,28 @@ CPU_COUNT = os.cpu_count() or 2
 MAX_WORKERS = min(32, CPU_COUNT * 4)
 
 # ==========================================================
+# MEMORY UTILITY (without psutil)
+# ==========================================================
+
+def get_memory_mb():
+    """Get memory usage in MB without psutil"""
+    try:
+        import resource
+        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024  # Linux
+    except:
+        try:
+            # Windows fallback
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            process = kernel32.GetCurrentProcess()
+            handle = kernel32.OpenProcess(0x0400 | 0x0010, False, process)
+            process_memory = ctypes.c_size_t()
+            kernel32.GetProcessMemoryInfo(handle, ctypes.byref(process_memory), ctypes.sizeof(process_memory))
+            return process_memory.value / 1024 / 1024
+        except:
+            return 0
+
+# ==========================================================
 # GLOBALS
 # ==========================================================
 
@@ -84,7 +92,6 @@ _error_timestamps: deque = deque(maxlen=1000)
 _timeout_timestamps: deque = deque(maxlen=1000)
 _request_timestamps: deque = deque(maxlen=10000)
 _active_requests: Dict[str, float] = {}
-
 
 # ==========================================================
 # CIRCUIT BREAKER
@@ -154,7 +161,6 @@ class AIServiceCircuitBreaker:
             "success_rate": self.total_successes / (self.total_failures + self.total_successes) if (self.total_failures + self.total_successes) > 0 else 1.0
         }
 
-
 _ai_circuit_breaker = AIServiceCircuitBreaker()
 
 # ==========================================================
@@ -168,7 +174,6 @@ class ConversationContext:
     created_at: float = field(default_factory=time.time)
     last_updated: float = field(default_factory=time.time)
     last_request_id: Optional[str] = None
-
 
 class ConversationTracker:
     def __init__(self, maxsize: int = 10000, ttl: int = CONVERSATION_TTL_SECONDS):
@@ -197,7 +202,6 @@ class ConversationTracker:
     
     def get_stats(self) -> Dict[str, int]:
         return {"cache_size": len(self._cache), "maxsize": self._cache.maxsize, "ttl_seconds": self._ttl}
-
 
 _conversation_tracker = ConversationTracker()
 
@@ -240,7 +244,6 @@ class WebhookMetrics:
         }
     
     _start_time: float = field(default_factory=time.time, init=False)
-
 
 _metrics = WebhookMetrics()
 
@@ -572,9 +575,10 @@ async def webhook_ping():
 
 @router.get("/webhook/health")
 async def webhook_health():
+    memory_mb = get_memory_mb()
     return {
         'status': 'healthy',
-        'version': '18.0',
+        'version': '18.1',
         'timestamp': datetime.now().isoformat(),
         'metrics': {
             'messages_received': _metrics.messages_received,
@@ -582,7 +586,8 @@ async def webhook_health():
             'processing_failures': _metrics.processing_failures,
             'service_timeouts': _metrics.service_timeouts,
         },
-        'conversation_cache_size': _conversation_tracker.get_stats()["cache_size"]
+        'conversation_cache_size': _conversation_tracker.get_stats()["cache_size"],
+        'memory_mb': round(memory_mb, 2) if memory_mb else 0
     }
 
 @router.get("/webhook/metrics")
@@ -591,14 +596,14 @@ async def webhook_metrics():
         "overall": _metrics.to_dict(),
         "conversation_stats": _conversation_tracker.get_stats(),
         "circuit_breaker": _ai_circuit_breaker.get_stats(),
-        "version": "18.0"
+        "version": "18.1"
     }
 
 @router.get("/webhook/self-test")
 async def webhook_self_test():
     return {
         "status": "running",
-        "version": "18.0",
+        "version": "18.1",
         "timestamp": datetime.now().isoformat(),
         "whatsapp_token": bool(getattr(config, 'WHATSAPP_ACCESS_TOKEN', '')),
         "phone_number_id": bool(getattr(config, 'WHATSAPP_PHONE_NUMBER_ID', '')),
@@ -665,7 +670,7 @@ async def shutdown_webhook():
 
 async def initialize_services():
     logger.info("=" * 60)
-    logger.info("Webhook v18.0 - WhatsApp Gateway Layer")
+    logger.info("Webhook v18.1 - WhatsApp Gateway Layer")
     logger.info("=" * 60)
     logger.info(f"  Environment: {getattr(config, 'ENVIRONMENT', 'development')}")
     logger.info(f"  WhatsApp Token: {'✅' if getattr(config, 'WHATSAPP_ACCESS_TOKEN', '') else '❌'}")
@@ -674,6 +679,6 @@ async def initialize_services():
     logger.info(f"  Thread Pool: {MAX_WORKERS} workers")
     logger.info(f"  Timeout: {PROCESSING_TIMEOUT_SECONDS}s")
     logger.info("=" * 60)
-    return {"services_loaded": 1, "version": "18.0"}
+    return {"services_loaded": 1, "version": "18.1"}
 
-logger.info(f"Webhook v18.0 ready | Env: {getattr(config, 'ENVIRONMENT', 'development')} | Workers: {MAX_WORKERS}")
+logger.info(f"Webhook v18.1 ready | Env: {getattr(config, 'ENVIRONMENT', 'development')} | Workers: {MAX_WORKERS}")
