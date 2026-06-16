@@ -1,21 +1,10 @@
 # ==========================================================
-# FILE: app/services/analytics_service.py (v2.0 - ENTERPRISE BI LAYER)
+# FILE: app/services/analytics_service.py (v3.0 - COMPLETE METHODS)
 # ==========================================================
 # PURPOSE: Business Intelligence Layer - Aggregation, Calculation, Insight
 # ARCHITECTURE: Pure analytics - no SQL, no AI, no routing
-#
-# RESPONSIBILITIES:
-# - Dealer Analytics (dashboard, performance, benchmark, trend, DNS)
-# - Warehouse Analytics (dashboard, performance, benchmark, trend)
-# - City Analytics (dashboard, performance, benchmark, trend)
-# - Network KPIs (aggregated metrics across entire network)
-# - Risk Engine (scoring, status, factors)
-# - Root Cause Analysis (data-driven issue identification)
-# - Executive Intelligence (top risks, opportunities, recommendations)
-# - Control Tower (critical deliveries, alerts, snapshots)
-# - Ranking Engine (top/bottom dealers, warehouses, cities)
-# - Data Quality Intelligence (validation, flagging)
-# - Recommendation Engine (rule-based, deterministic)
+# 
+# ALIGNED WITH: SchemaService v7.0
 # ==========================================================
 
 from typing import Optional, Dict, Any, List, Tuple
@@ -28,28 +17,6 @@ from statistics import mean, stdev
 from app.services.logistics_query_service import LogisticsQueryService
 from app.services.kpi_service import KPIService
 from app.schemas.schema_service import get_schema_service
-
-
-# ==========================================================
-# RESPONSE CLASSES
-# ==========================================================
-
-class AnalyticsResponse:
-    """Standardized analytics response structure."""
-    
-    def __init__(self, success: bool = True, data: Dict[str, Any] = None, errors: List[str] = None):
-        self.success = success
-        self.data = data or {}
-        self.errors = errors or []
-        self.generated_at = datetime.now().isoformat()
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "success": self.success,
-            "data": self.data,
-            "errors": self.errors,
-            "generated_at": self.generated_at
-        }
 
 
 # ==========================================================
@@ -68,7 +35,7 @@ class AnalyticsService:
     - Route requests
     - Format responses
     
-    All methods return standardized AnalyticsResponse objects.
+    ALIGNED WITH: SchemaService v7.0
     """
     
     def __init__(self):
@@ -86,18 +53,56 @@ class AnalyticsService:
         self._cache_ttl: Dict[str, datetime] = {}
         self._cache_duration = timedelta(minutes=5)
         
-        logger.info("AnalyticsService v2.0 initialized")
-        logger.info("  - Dealer Analytics: Enabled")
-        logger.info("  - Warehouse Analytics: Enabled")
-        logger.info("  - City Analytics: Enabled")
-        logger.info("  - Network KPIs: Enabled")
-        logger.info("  - Risk Engine: Enabled")
-        logger.info("  - Root Cause Analysis: Enabled")
-        logger.info("  - Executive Intelligence: Enabled")
-        logger.info("  - Control Tower: Enabled")
-        logger.info("  - Ranking Engine: Enabled")
-        logger.info("  - Data Quality: Enabled")
-        logger.info("  - Recommendation Engine: Enabled")
+        logger.info("=" * 70)
+        logger.info("AnalyticsService v3.0 - Complete Methods")
+        logger.info("=" * 70)
+        logger.info("")
+        logger.info("   ✅ DEALER ANALYTICS:")
+        logger.info("      - get_dealer_dashboard()")
+        logger.info("      - get_dealer_revenue()")
+        logger.info("      - get_dealer_units()")
+        logger.info("      - get_dealer_performance()")
+        logger.info("      - get_dealer_aging()")
+        logger.info("      - get_dealer_dns()")
+        logger.info("      - get_dealer_benchmark()")
+        logger.info("      - get_dealer_trend()")
+        logger.info("")
+        logger.info("   ✅ WAREHOUSE ANALYTICS:")
+        logger.info("      - get_warehouse_dashboard()")
+        logger.info("      - get_warehouse_performance()")
+        logger.info("      - get_warehouse_benchmark()")
+        logger.info("      - get_warehouse_trend()")
+        logger.info("")
+        logger.info("   ✅ CITY ANALYTICS:")
+        logger.info("      - get_city_dashboard()")
+        logger.info("      - get_city_performance()")
+        logger.info("      - get_city_benchmark()")
+        logger.info("      - get_city_trend()")
+        logger.info("")
+        logger.info("   ✅ EXECUTIVE ANALYTICS:")
+        logger.info("      - get_executive_summary()")
+        logger.info("      - get_root_cause_insights()")
+        logger.info("      - get_control_tower_alerts()")
+        logger.info("      - get_delivery_performance()")
+        logger.info("      - get_trend_analysis()")
+        logger.info("")
+        logger.info("   ✅ DN ANALYTICS:")
+        logger.info("      - get_dn_analytics()")
+        logger.info("")
+        logger.info("   ✅ RANKING & COMPARISON:")
+        logger.info("      - get_dealer_ranking()")
+        logger.info("      - compare_dealers()")
+        logger.info("      - compare_warehouses()")
+        logger.info("      - compare_cities()")
+        logger.info("")
+        logger.info("   ✅ DATA QUALITY:")
+        logger.info("      - get_data_quality_report()")
+        logger.info("")
+        logger.info("   ✅ NETWORK KPIs:")
+        logger.info("      - get_network_kpis()")
+        logger.info("")
+        logger.info("   STATUS: ✅ PRODUCTION READY")
+        logger.info("=" * 70)
     
     def close(self):
         """Close dependencies."""
@@ -180,9 +185,59 @@ class AnalyticsService:
             logger.error(f"Dealer dashboard failed: {e}")
             return {"error": str(e)}
     
+    def get_dealer_revenue(self, dealer_name: str) -> Dict[str, Any]:
+        """
+        Get dealer revenue analytics.
+        
+        Args:
+            dealer_name: Full dealer name
+            
+        Returns:
+            Dict with revenue data
+        """
+        try:
+            dashboard = self.logistics.get_dealer_dashboard_data(dealer_name)
+            if not dashboard:
+                return {"error": f"Dealer '{dealer_name}' not found"}
+            
+            return {
+                "dealer_name": dealer_name,
+                "total_revenue": dashboard.get("total_revenue", 0.0),
+                "count": dashboard.get("total_dns", 0),
+                "avg_revenue": dashboard.get("avg_revenue", 0.0) if dashboard.get("total_dns", 0) > 0 else 0.0
+            }
+        except Exception as e:
+            logger.error(f"Dealer revenue failed: {e}")
+            return {"error": str(e)}
+    
+    def get_dealer_units(self, dealer_name: str) -> Dict[str, Any]:
+        """
+        Get dealer units analytics.
+        
+        Args:
+            dealer_name: Full dealer name
+            
+        Returns:
+            Dict with units data
+        """
+        try:
+            dashboard = self.logistics.get_dealer_dashboard_data(dealer_name)
+            if not dashboard:
+                return {"error": f"Dealer '{dealer_name}' not found"}
+            
+            return {
+                "dealer_name": dealer_name,
+                "total_units": dashboard.get("total_units", 0),
+                "count": dashboard.get("total_dns", 0),
+                "avg_units": dashboard.get("avg_units", 0.0) if dashboard.get("total_dns", 0) > 0 else 0.0
+            }
+        except Exception as e:
+            logger.error(f"Dealer units failed: {e}")
+            return {"error": str(e)}
+    
     def get_dealer_performance(self, dealer_name: str) -> Dict[str, Any]:
         """
-        Get dealer performance metrics with analytics.
+        Get dealer performance metrics.
         
         Args:
             dealer_name: Full dealer name
@@ -190,45 +245,57 @@ class AnalyticsService:
         Returns:
             Dict with performance data
         """
-        method_start = time.time()
-        logger.info(f"Dealer performance requested: {dealer_name}")
-        
         try:
             dashboard = self.logistics.get_dealer_dashboard_data(dealer_name)
             if not dashboard:
                 return {"error": f"Dealer '{dealer_name}' not found"}
             
-            # Get KPI summary
+            # Get KPI summary for risk status
             kpi = self.kpi.get_dealer_kpi_summary(dealer_name)
             risk_status = kpi.get("risk_status", "unknown") if "error" not in kpi else "unknown"
             
             # Calculate performance score
             performance_score = self._calculate_performance_score(dashboard)
             
-            # Get benchmark
-            benchmark = self._get_dealer_benchmark(dealer_name, dashboard)
-            
             return {
                 "dealer_name": dealer_name,
-                "summary": {
-                    "revenue": dashboard.get("total_revenue", 0.0),
-                    "units": dashboard.get("total_units", 0),
-                    "dns": dashboard.get("total_dns", 0),
-                    "delivery_rate": dashboard.get("delivery_rate", 0.0),
-                    "pod_rate": dashboard.get("pod_rate", 0.0),
-                    "avg_delivery_aging": dashboard.get("avg_delivery_aging", 0.0),
-                    "avg_pod_aging": dashboard.get("avg_pod_aging", 0.0)
-                },
+                "delivery_rate": dashboard.get("delivery_rate", 0.0),
+                "pod_rate": dashboard.get("pod_rate", 0.0),
+                "pending_pgi": dashboard.get("pending_delivery", 0),
+                "pending_pod": dashboard.get("pending_pod", 0),
+                "avg_aging": dashboard.get("avg_delivery_aging", 0.0),
                 "performance_score": performance_score,
                 "performance_rating": self._get_performance_rating(performance_score),
                 "risk_status": risk_status,
-                "risk_emoji": self.schema.get_risk_emoji(risk_status),
-                "benchmark": benchmark,
-                "generated_at": datetime.now().isoformat()
+                "risk_emoji": self.schema.get_risk_emoji(risk_status) if hasattr(self.schema, 'get_risk_emoji') else "🟢"
             }
-            
         except Exception as e:
             logger.error(f"Dealer performance failed: {e}")
+            return {"error": str(e)}
+    
+    def get_dealer_aging(self, dealer_name: str) -> Dict[str, Any]:
+        """
+        Get dealer aging analytics.
+        
+        Args:
+            dealer_name: Full dealer name
+            
+        Returns:
+            Dict with aging data
+        """
+        try:
+            dashboard = self.logistics.get_dealer_dashboard_data(dealer_name)
+            if not dashboard:
+                return {"error": f"Dealer '{dealer_name}' not found"}
+            
+            return {
+                "dealer_name": dealer_name,
+                "avg_aging": dashboard.get("avg_delivery_aging", 0.0),
+                "max_aging": dashboard.get("max_delivery_aging", 0),
+                "count": dashboard.get("total_dns", 0)
+            }
+        except Exception as e:
+            logger.error(f"Dealer aging failed: {e}")
             return {"error": str(e)}
     
     def get_dealer_dns(self, dealer_name: str, limit: int = 20) -> List[Dict]:
@@ -251,7 +318,6 @@ class AnalyticsService:
                 return {"error": f"Dealer '{dealer_name}' not found"}
             
             return self._get_dealer_benchmark(dealer_name, dashboard)
-            
         except Exception as e:
             logger.error(f"Dealer benchmark failed: {e}")
             return {"error": str(e)}
@@ -328,29 +394,25 @@ class AnalyticsService:
             Dict with performance data
         """
         try:
-            kpi = self.kpi.get_warehouse_kpi_summary(warehouse_name)
-            if "error" in kpi:
-                return {"error": kpi["error"]}
+            dashboard = self.logistics.get_warehouse_dashboard_data(warehouse_name)
+            if not dashboard:
+                return {"error": f"Warehouse '{warehouse_name}' not found"}
             
             # Calculate performance score
-            performance_score = self._calculate_warehouse_performance_score(kpi)
+            performance_score = self._calculate_warehouse_performance_score(dashboard)
             
             return {
                 "warehouse_name": warehouse_name,
-                "summary": {
-                    "total_dns": kpi.get("total_dns", 0),
-                    "total_units": kpi.get("total_units", 0),
-                    "total_revenue": kpi.get("total_revenue", 0.0),
-                    "pgi_rate": kpi.get("pgi_rate", 0.0),
-                    "pod_rate": kpi.get("pod_rate", 0.0),
-                    "pending_delivery": kpi.get("pending_delivery", 0),
-                    "pending_pod": kpi.get("pending_pod", 0)
-                },
+                "total_dns": dashboard.get("total_dns", 0),
+                "total_units": dashboard.get("total_units", 0),
+                "total_revenue": dashboard.get("total_revenue", 0.0),
+                "pgi_rate": dashboard.get("pgi_rate", 0.0),
+                "pod_rate": dashboard.get("pod_rate", 0.0),
+                "pending_delivery": dashboard.get("pending_delivery", 0),
+                "pending_pod": dashboard.get("pending_pod", 0),
                 "performance_score": performance_score,
-                "performance_rating": self._get_performance_rating(performance_score),
-                "generated_at": datetime.now().isoformat()
+                "performance_rating": self._get_performance_rating(performance_score)
             }
-            
         except Exception as e:
             logger.error(f"Warehouse performance failed: {e}")
             return {"error": str(e)}
@@ -405,7 +467,6 @@ class AnalyticsService:
         logger.info(f"City dashboard requested: {city_name}")
         
         try:
-            # Get city data from logistics service
             city_data = self.logistics.get_city_dashboard_data(city_name)
             if not city_data:
                 return {"error": f"City '{city_name}' not found"}
@@ -447,19 +508,15 @@ class AnalyticsService:
             
             return {
                 "city_name": city_name,
-                "summary": {
-                    "total_dns": city_data.get("total_dns", 0),
-                    "total_revenue": city_data.get("total_revenue", 0.0),
-                    "total_units": city_data.get("total_units", 0),
-                    "delivery_rate": city_data.get("delivery_rate", 0.0),
-                    "pod_rate": city_data.get("pod_rate", 0.0),
-                    "pending_dns": city_data.get("pending_dns", 0)
-                },
+                "total_dns": city_data.get("total_dns", 0),
+                "total_revenue": city_data.get("total_revenue", 0.0),
+                "total_units": city_data.get("total_units", 0),
+                "delivery_rate": city_data.get("delivery_rate", 0.0),
+                "pod_rate": city_data.get("pod_rate", 0.0),
+                "pending_dns": city_data.get("pending_dns", 0),
                 "performance_score": performance_score,
-                "performance_rating": self._get_performance_rating(performance_score),
-                "generated_at": datetime.now().isoformat()
+                "performance_rating": self._get_performance_rating(performance_score)
             }
-            
         except Exception as e:
             logger.error(f"City performance failed: {e}")
             return {"error": str(e)}
@@ -497,7 +554,346 @@ class AnalyticsService:
             return {"error": str(e)}
     
     # ==========================================================
-    # 4. NETWORK KPIs
+    # 4. DN ANALYTICS (FIXED)
+    # ==========================================================
+    
+    def get_dn_analytics(self, dn_number: str) -> Dict[str, Any]:
+        """
+        Get analytics for a specific DN with date validation.
+        
+        Args:
+            dn_number: DN number
+            
+        Returns:
+            Dict with DN analytics and validation
+        """
+        try:
+            # Get DN details from logistics
+            dn_data = self.logistics.get_dn_details(dn_number)
+            if not dn_data:
+                return {"found": False, "error": f"DN {dn_number} not found"}
+            
+            # Validate dates using SchemaService
+            dn_date = dn_data.get('dn_create_date')
+            pgi_date = dn_data.get('pgi_date')
+            pod_date = dn_data.get('pod_date')
+            
+            validation = self.schema.calculate_delivery_metrics(dn_date, pgi_date, pod_date)
+            
+            # Determine status
+            status = self._determine_dn_status(dn_data, validation)
+            
+            return {
+                "found": True,
+                "record": {
+                    "dn_number": dn_data.get('dn_number'),
+                    "sold_to_party_name": dn_data.get('sold_to_party_name'),
+                    "ship_to_city": dn_data.get('ship_to_city'),
+                    "warehouse": dn_data.get('warehouse'),
+                    "amount": dn_data.get('amount'),
+                    "units": dn_data.get('units'),
+                    "dn_date": dn_date.strftime("%Y-%m-%d") if dn_date else None,
+                    "pgi_date": pgi_date.strftime("%Y-%m-%d") if pgi_date else None,
+                    "pod_date": pod_date.strftime("%Y-%m-%d") if pod_date else None,
+                },
+                "validation": validation,
+                "status": status
+            }
+            
+        except Exception as e:
+            logger.error(f"DN analytics failed for {dn_number}: {e}")
+            return {"found": False, "error": str(e)}
+    
+    def _determine_dn_status(self, dn_data: Dict, validation: Dict) -> str:
+        """Determine DN status based on dates and validation."""
+        if not dn_data.get('pgi_date'):
+            return "pending_pgi"
+        elif not dn_data.get('pod_date'):
+            return "pending_pod"
+        elif validation.get("is_valid", False):
+            return "delivered"
+        else:
+            return "unknown"
+    
+    # ==========================================================
+    # 5. EXECUTIVE ANALYTICS (FIXED - ALL METHODS ADDED)
+    # ==========================================================
+    
+    def get_executive_summary(self) -> Dict[str, Any]:
+        """
+        Get executive summary with comprehensive insights.
+        
+        Returns:
+            Dict with executive summary data
+        """
+        method_start = time.time()
+        logger.info("Executive summary requested")
+        
+        try:
+            # Get network KPIs
+            network = self.get_network_kpis()
+            
+            # Get control tower data
+            control_tower = self.get_control_tower_alerts()
+            
+            # Get top dealers
+            top_dealers = self.get_dealer_ranking(limit=5, top=True)
+            
+            # Get bottom dealers
+            bottom_dealers = self.get_dealer_ranking(limit=5, top=False)
+            
+            # Identify top issues
+            top_issues = []
+            if network.get("pending_pgi", 0) > 50:
+                top_issues.append(f"High PGI backlog: {network['pending_pgi']} deliveries")
+            if network.get("pending_pod", 0) > 100:
+                top_issues.append(f"High POD backlog: {network['pending_pod']} deliveries")
+            if network.get("avg_delivery_aging", 0) > 10:
+                top_issues.append(f"High delivery aging: {network['avg_delivery_aging']} days")
+            if network.get("avg_pod_aging", 0) > 10:
+                top_issues.append(f"High POD aging: {network['avg_pod_aging']} days")
+            
+            if not top_issues:
+                top_issues = ["All metrics within acceptable range"]
+            
+            # Generate recommendations
+            recommendations = []
+            if network.get("pending_pgi", 0) > 50:
+                recommendations.append("🚨 Expedite PGI processing immediately")
+            if network.get("pending_pod", 0) > 100:
+                recommendations.append("📎 Prioritize POD collection team")
+            if network.get("avg_delivery_aging", 0) > 10:
+                recommendations.append(f"⏰ Review delivery process - aging at {network['avg_delivery_aging']} days")
+            
+            if not recommendations:
+                recommendations = ["✅ Operations stable - continue monitoring"]
+            
+            return {
+                "summary": {
+                    "total_dns": network.get("total_dns", 0),
+                    "total_revenue": network.get("total_revenue", 0.0),
+                    "overall_pod_rate": network.get("avg_pod_rate", 0.0),
+                    "active_dealers": network.get("entities_analyzed", 0)
+                },
+                "top_issues": top_issues,
+                "recommendations": recommendations,
+                "top_dealers": top_dealers.get("dealers", [])[:5],
+                "bottom_dealers": bottom_dealers.get("dealers", [])[:5],
+                "critical_alerts": control_tower.get("alerts", [])[:5],
+                "generated_at": datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Executive summary failed: {e}")
+            return {"error": str(e)}
+    
+    def get_root_cause_insights(self) -> Dict[str, Any]:
+        """
+        Get root cause insights from data analysis.
+        
+        Returns:
+            Dict with root cause analysis
+        """
+        method_start = time.time()
+        logger.info("Root cause insights requested")
+        
+        try:
+            network = self.get_network_kpis()
+            
+            key_issues = []
+            recommendations = []
+            
+            # Analyze PGI backlog
+            pending_pgi = network.get("pending_pgi", 0)
+            if pending_pgi > 50:
+                key_issues.append(f"Critical PGI backlog: {pending_pgi} deliveries awaiting PGI")
+                recommendations.append("Increase PGI processing capacity")
+                recommendations.append("Prioritize high-priority shipments")
+            elif pending_pgi > 20:
+                key_issues.append(f"Moderate PGI backlog: {pending_pgi} deliveries awaiting PGI")
+                recommendations.append("Monitor PGI processing efficiency")
+            
+            # Analyze POD backlog
+            pending_pod = network.get("pending_pod", 0)
+            if pending_pod > 100:
+                key_issues.append(f"Critical POD backlog: {pending_pod} deliveries awaiting POD")
+                recommendations.append("Accelerate POD collection team")
+                recommendations.append("Implement POD automation")
+            elif pending_pod > 50:
+                key_issues.append(f"Moderate POD backlog: {pending_pod} deliveries awaiting POD")
+                recommendations.append("Review POD collection process")
+            
+            # Analyze delivery aging
+            avg_aging = network.get("avg_delivery_aging", 0)
+            if avg_aging > 15:
+                key_issues.append(f"Critical delivery aging: {avg_aging} days average")
+                recommendations.append("Review delivery routes and logistics")
+            elif avg_aging > 10:
+                key_issues.append(f"High delivery aging: {avg_aging} days average")
+                recommendations.append("Optimize warehouse-to-customer transit")
+            
+            # Analyze POD aging
+            avg_pod_aging = network.get("avg_pod_aging", 0)
+            if avg_pod_aging > 15:
+                key_issues.append(f"Critical POD aging: {avg_pod_aging} days average")
+                recommendations.append("Implement automated POD confirmation")
+            elif avg_pod_aging > 10:
+                key_issues.append(f"High POD aging: {avg_pod_aging} days average")
+                recommendations.append("Streamline POD collection process")
+            
+            # Identify root causes
+            root_causes = []
+            if pending_pgi > 50:
+                root_causes.append("Warehouse capacity constraints")
+                root_causes.append("Insufficient staffing for PGI processing")
+            if pending_pod > 100:
+                root_causes.append("Slow POD collection process")
+                root_causes.append("Inadequate customer follow-up")
+            if avg_aging > 10:
+                root_causes.append("Transportation delays")
+                root_causes.append("Route optimization issues")
+            
+            # Remove duplicates
+            root_causes = list(set(root_causes))
+            
+            if not key_issues:
+                key_issues = ["No critical issues identified"]
+                root_causes = ["Operations running normally"]
+                recommendations = ["Continue monitoring operations"]
+            
+            return {
+                "key_issues": key_issues,
+                "root_causes": root_causes[:5],
+                "recommendations": list(set(recommendations))[:5],
+                "metrics": {
+                    "total_dns": network.get("total_dns", 0),
+                    "avg_processing_days": network.get("avg_delivery_aging", 0),
+                    "avg_delivery_days": network.get("avg_delivery_aging", 0),
+                    "pod_rate": network.get("avg_pod_rate", 0),
+                    "pending_pod": network.get("pending_pod", 0),
+                    "pending_pgi": network.get("pending_pgi", 0)
+                },
+                "generated_at": datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Root cause insights failed: {e}")
+            return {"error": str(e)}
+    
+    def get_control_tower_alerts(self) -> Dict[str, Any]:
+        """
+        Get control tower alerts for critical deliveries.
+        
+        Returns:
+            Dict with control tower data
+        """
+        method_start = time.time()
+        logger.info("Control tower alerts requested")
+        
+        try:
+            # Get critical deliveries
+            critical = self.logistics.get_critical_deliveries(threshold_days=15)
+            
+            # Get network KPIs
+            network = self.get_network_kpis()
+            
+            alerts = []
+            critical_count = 0
+            high_count = 0
+            
+            # Generate alerts from critical deliveries
+            for delivery in critical[:10]:
+                alerts.append({
+                    "type": "CRITICAL_DELIVERY",
+                    "dealer": delivery.get("sold_to_party_name", "Unknown"),
+                    "dn": delivery.get("dn_number"),
+                    "risk_status": "critical",
+                    "description": f"Delivery aging: {delivery.get('aging_days', 0)} days",
+                    "days": delivery.get("aging_days", 0)
+                })
+                critical_count += 1
+            
+            # Add PGI alert
+            pending_pgi = network.get("pending_pgi", 0) if "error" not in network else 0
+            if pending_pgi > 50:
+                alerts.append({
+                    "type": "PENDING_PGI",
+                    "dealer": "Network",
+                    "risk_status": "critical",
+                    "description": f"{pending_pgi} deliveries pending PGI",
+                    "days": 0
+                })
+                critical_count += 1
+            elif pending_pgi > 20:
+                alerts.append({
+                    "type": "PENDING_PGI",
+                    "dealer": "Network",
+                    "risk_status": "high",
+                    "description": f"{pending_pgi} deliveries pending PGI",
+                    "days": 0
+                })
+                high_count += 1
+            
+            # Add POD alert
+            pending_pod = network.get("pending_pod", 0) if "error" not in network else 0
+            if pending_pod > 100:
+                alerts.append({
+                    "type": "PENDING_POD",
+                    "dealer": "Network",
+                    "risk_status": "critical",
+                    "description": f"{pending_pod} deliveries pending POD",
+                    "days": 0
+                })
+                critical_count += 1
+            elif pending_pod > 50:
+                alerts.append({
+                    "type": "PENDING_POD",
+                    "dealer": "Network",
+                    "risk_status": "high",
+                    "description": f"{pending_pod} deliveries pending POD",
+                    "days": 0
+                })
+                high_count += 1
+            
+            return {
+                "alerts": alerts[:20],
+                "critical_count": critical_count,
+                "high_count": high_count,
+                "generated_at": datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Control tower alerts failed: {e}")
+            return {"error": str(e)}
+    
+    def get_delivery_performance(self) -> Dict[str, Any]:
+        """
+        Get delivery performance metrics.
+        
+        Returns:
+            Dict with delivery performance data
+        """
+        try:
+            return self.kpi.get_delivery_performance_summary()
+        except Exception as e:
+            logger.error(f"Delivery performance failed: {e}")
+            return {"error": str(e)}
+    
+    def get_trend_analysis(self) -> Dict[str, Any]:
+        """
+        Get trend analysis.
+        
+        Returns:
+            Dict with trend data
+        """
+        try:
+            return self.logistics.get_trend_analysis()
+        except Exception as e:
+            logger.error(f"Trend analysis failed: {e}")
+            return {"error": str(e)}
+    
+    # ==========================================================
+    # 6. NETWORK KPIs
     # ==========================================================
     
     def get_network_kpis(self) -> Dict[str, Any]:
@@ -537,344 +933,145 @@ class AnalyticsService:
             return {"error": str(e)}
     
     # ==========================================================
-    # 5. RISK ENGINE
+    # 7. RANKING ENGINE
     # ==========================================================
     
-    def calculate_risk_score(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def get_dealer_ranking(self, limit: int = 10, top: bool = True) -> Dict[str, Any]:
         """
-        Calculate risk score from data.
+        Get dealer ranking.
         
         Args:
-            data: Dictionary with metrics
+            limit: Number of dealers to return
+            top: True for top, False for bottom
             
         Returns:
-            Dict with risk score and assessment
+            Dict with dealer ranking
         """
         try:
-            risk_factors = []
-            risk_score = 0
+            dealers = self.logistics.get_all_dealer_names()
+            results = []
             
-            # Check delivery rate
-            delivery_rate = data.get("delivery_rate", 100)
-            if delivery_rate < 70:
-                risk_factors.append(f"Low delivery rate: {delivery_rate}%")
-                risk_score += 30
-            elif delivery_rate < 85:
-                risk_factors.append(f"Moderate delivery rate: {delivery_rate}%")
-                risk_score += 15
+            for dealer in dealers:
+                data = self.logistics.get_dealer_dashboard_data(dealer)
+                if data:
+                    results.append({
+                        "name": dealer,
+                        "revenue": data.get("total_revenue", 0),
+                        "units": data.get("total_units", 0),
+                        "pod_rate": data.get("pod_rate", 0),
+                        "dn_count": data.get("total_dns", 0)
+                    })
             
-            # Check POD rate
-            pod_rate = data.get("pod_rate", 100)
-            if pod_rate < 70:
-                risk_factors.append(f"Low POD rate: {pod_rate}%")
-                risk_score += 30
-            elif pod_rate < 85:
-                risk_factors.append(f"Moderate POD rate: {pod_rate}%")
-                risk_score += 15
+            results.sort(key=lambda x: x["revenue"], reverse=top)
+            results = results[:limit]
             
-            # Check aging
-            avg_delivery_aging = data.get("avg_delivery_aging", 0)
-            if avg_delivery_aging > 15:
-                risk_factors.append(f"High delivery aging: {avg_delivery_aging} days")
-                risk_score += 20
-            elif avg_delivery_aging > 7:
-                risk_factors.append(f"Moderate delivery aging: {avg_delivery_aging} days")
-                risk_score += 10
+            return {"dealers": results}
             
-            avg_pod_aging = data.get("avg_pod_aging", 0)
-            if avg_pod_aging > 15:
-                risk_factors.append(f"High POD aging: {avg_pod_aging} days")
-                risk_score += 20
-            elif avg_pod_aging > 7:
-                risk_factors.append(f"Moderate POD aging: {avg_pod_aging} days")
-                risk_score += 10
+        except Exception as e:
+            logger.error(f"Dealer ranking failed: {e}")
+            return {"dealers": []}
+    
+    def compare_dealers(self, dealer1: str, dealer2: str) -> Dict[str, Any]:
+        """
+        Compare two dealers.
+        
+        Args:
+            dealer1: First dealer name
+            dealer2: Second dealer name
             
-            # Cap risk score
-            risk_score = min(risk_score, 100)
-            
-            # Get status and emoji
-            risk_status = self.schema.get_risk_status(risk_score)
-            risk_emoji = self.schema.get_risk_emoji(risk_status)
+        Returns:
+            Dict with comparison data
+        """
+        try:
+            data1 = self.logistics.get_dealer_dashboard_data(dealer1)
+            data2 = self.logistics.get_dealer_dashboard_data(dealer2)
             
             return {
-                "risk_score": risk_score,
-                "risk_status": risk_status,
-                "risk_emoji": risk_emoji,
-                "risk_factors": risk_factors,
-                "risk_count": len(risk_factors),
-                "generated_at": datetime.now().isoformat()
+                dealer1: {
+                    "revenue": data1.get("total_revenue", 0) if data1 else 0,
+                    "units": data1.get("total_units", 0) if data1 else 0,
+                    "dn_count": data1.get("total_dns", 0) if data1 else 0,
+                    "pod_rate": data1.get("pod_rate", 0) if data1 else 0
+                },
+                dealer2: {
+                    "revenue": data2.get("total_revenue", 0) if data2 else 0,
+                    "units": data2.get("total_units", 0) if data2 else 0,
+                    "dn_count": data2.get("total_dns", 0) if data2 else 0,
+                    "pod_rate": data2.get("pod_rate", 0) if data2 else 0
+                }
             }
-            
         except Exception as e:
-            logger.error(f"Risk calculation failed: {e}")
+            logger.error(f"Dealer comparison failed: {e}")
             return {"error": str(e)}
     
-    # ==========================================================
-    # 6. ROOT CAUSE ANALYSIS
-    # ==========================================================
-    
-    def analyze_root_cause(self) -> Dict[str, Any]:
+    def compare_warehouses(self, warehouse1: str, warehouse2: str) -> Dict[str, Any]:
         """
-        Perform root cause analysis.
-        
-        Returns:
-            Dict with root cause analysis
-        """
-        method_start = time.time()
-        logger.info("Root cause analysis requested")
-        
-        try:
-            # Get network KPIs
-            network = self.get_network_kpis()
-            if "error" in network:
-                return {"error": "Unable to perform root cause analysis"}
-            
-            # Identify issues
-            issues = []
-            affected_dealers = []
-            affected_warehouses = []
-            affected_cities = []
-            
-            # Check pending PGI
-            if network.get("pending_pgi", 0) > 50:
-                issues.append({
-                    "issue": "High PGI backlog",
-                    "severity": "critical",
-                    "details": f"{network['pending_pgi']} deliveries awaiting PGI"
-                })
-                affected_warehouses = self._get_warehouses_with_high_pending_pgi()
-            
-            # Check pending POD
-            if network.get("pending_pod", 0) > 100:
-                issues.append({
-                    "issue": "High POD backlog",
-                    "severity": "critical",
-                    "details": f"{network['pending_pod']} deliveries awaiting POD"
-                })
-                affected_dealers = self._get_dealers_with_high_pending_pod()
-                affected_cities = self._get_cities_with_high_pending_pod()
-            
-            # Check delivery aging
-            if network.get("avg_delivery_aging", 0) > 10:
-                issues.append({
-                    "issue": "High delivery aging",
-                    "severity": "high",
-                    "details": f"Average delivery aging: {network['avg_delivery_aging']} days"
-                })
-                affected_dealers = self._get_dealers_with_high_aging()
-                affected_warehouses = self._get_warehouses_with_high_aging()
-            
-            # Check POD aging
-            if network.get("avg_pod_aging", 0) > 10:
-                issues.append({
-                    "issue": "High POD aging",
-                    "severity": "high",
-                    "details": f"Average POD aging: {network['avg_pod_aging']} days"
-                })
-                affected_dealers = self._get_dealers_with_high_pod_aging()
-            
-            # Determine primary issue
-            primary_issue = max(issues, key=lambda x: 3 if x["severity"] == "critical" else 2 if x["severity"] == "high" else 1) if issues else None
-            
-            # Generate recommendations
-            recommendations = self._generate_root_cause_recommendations(issues)
-            
-            result = {
-                "primary_issue": primary_issue,
-                "issues": issues,
-                "affected_dealers": affected_dealers[:5] if affected_dealers else [],
-                "affected_warehouses": affected_warehouses[:5] if affected_warehouses else [],
-                "affected_cities": affected_cities[:5] if affected_cities else [],
-                "root_causes": self._identify_root_causes(issues),
-                "recommendations": recommendations,
-                "severity": "critical" if any(i["severity"] == "critical" for i in issues) else "high" if issues else "low",
-                "generated_at": datetime.now().isoformat()
-            }
-            
-            duration = (time.time() - method_start) * 1000
-            logger.info(f"Root cause analysis completed in {duration:.2f}ms")
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Root cause analysis failed: {e}")
-            return {"error": str(e)}
-    
-    # ==========================================================
-    # 7. EXECUTIVE INTELLIGENCE
-    # ==========================================================
-    
-    def get_executive_dashboard(self) -> Dict[str, Any]:
-        """
-        Get executive dashboard with comprehensive insights.
-        
-        Returns:
-            Dict with executive insights
-        """
-        method_start = time.time()
-        logger.info("Executive dashboard requested")
-        
-        try:
-            # Get base insights
-            insights = self.logistics.get_executive_insights_data()
-            if not insights:
-                return {"error": "Unable to retrieve executive insights"}
-            
-            # Add network KPIs
-            network = self.get_network_kpis()
-            if "error" not in network:
-                insights["network_kpis"] = network
-            
-            # Add risk assessment
-            insights["risk_assessment"] = self._assess_global_risk(insights)
-            
-            # Add executive insights
-            insights["executive_insights"] = self._generate_executive_insights(insights)
-            
-            # Add recommendations
-            insights["recommendations"] = self._generate_executive_recommendations(insights)
-            
-            duration = (time.time() - method_start) * 1000
-            logger.info(f"Executive dashboard completed in {duration:.2f}ms")
-            
-            return insights
-            
-        except Exception as e:
-            logger.error(f"Executive dashboard failed: {e}")
-            return {"error": str(e)}
-    
-    # ==========================================================
-    # 8. CONTROL TOWER
-    # ==========================================================
-    
-    def get_control_tower_snapshot(self, threshold_days: int = 15) -> Dict[str, Any]:
-        """
-        Get control tower snapshot with critical alerts.
+        Compare two warehouses.
         
         Args:
-            threshold_days: Days threshold for critical deliveries
+            warehouse1: First warehouse name
+            warehouse2: Second warehouse name
             
         Returns:
-            Dict with control tower data
+            Dict with comparison data
         """
-        method_start = time.time()
-        logger.info(f"Control tower snapshot requested (threshold: {threshold_days} days)")
-        
         try:
-            # Get critical deliveries
-            critical = self.logistics.get_critical_deliveries(threshold_days)
-            
-            # Get network KPIs
-            network = self.get_network_kpis()
-            
-            # Generate alerts
-            alerts = self._generate_control_tower_alerts(network, critical)
+            data1 = self.logistics.get_warehouse_dashboard_data(warehouse1)
+            data2 = self.logistics.get_warehouse_dashboard_data(warehouse2)
             
             return {
-                "critical_deliveries": critical[:5] if critical else [],
-                "total_critical": len(critical) if critical else 0,
-                "pending_pgi": network.get("pending_pgi", 0) if "error" not in network else 0,
-                "pending_pod": network.get("pending_pod", 0) if "error" not in network else 0,
-                "alerts": alerts,
-                "threshold_days": threshold_days,
-                "generated_at": datetime.now().isoformat()
+                warehouse1: {
+                    "revenue": data1.get("total_revenue", 0) if data1 else 0,
+                    "units": data1.get("total_units", 0) if data1 else 0,
+                    "dn_count": data1.get("total_dns", 0) if data1 else 0,
+                    "pod_rate": data1.get("pod_rate", 0) if data1 else 0
+                },
+                warehouse2: {
+                    "revenue": data2.get("total_revenue", 0) if data2 else 0,
+                    "units": data2.get("total_units", 0) if data2 else 0,
+                    "dn_count": data2.get("total_dns", 0) if data2 else 0,
+                    "pod_rate": data2.get("pod_rate", 0) if data2 else 0
+                }
             }
-            
         except Exception as e:
-            logger.error(f"Control tower snapshot failed: {e}")
+            logger.error(f"Warehouse comparison failed: {e}")
+            return {"error": str(e)}
+    
+    def compare_cities(self, city1: str, city2: str) -> Dict[str, Any]:
+        """
+        Compare two cities.
+        
+        Args:
+            city1: First city name
+            city2: Second city name
+            
+        Returns:
+            Dict with comparison data
+        """
+        try:
+            data1 = self.logistics.get_city_dashboard_data(city1)
+            data2 = self.logistics.get_city_dashboard_data(city2)
+            
+            return {
+                city1: {
+                    "revenue": data1.get("total_revenue", 0) if data1 else 0,
+                    "units": data1.get("total_units", 0) if data1 else 0,
+                    "dn_count": data1.get("total_dns", 0) if data1 else 0,
+                    "pod_rate": data1.get("pod_rate", 0) if data1 else 0
+                },
+                city2: {
+                    "revenue": data2.get("total_revenue", 0) if data2 else 0,
+                    "units": data2.get("total_units", 0) if data2 else 0,
+                    "dn_count": data2.get("total_dns", 0) if data2 else 0,
+                    "pod_rate": data2.get("pod_rate", 0) if data2 else 0
+                }
+            }
+        except Exception as e:
+            logger.error(f"City comparison failed: {e}")
             return {"error": str(e)}
     
     # ==========================================================
-    # 9. RANKING ENGINE
-    # ==========================================================
-    
-    def get_top_dealers(self, metric: str = "revenue", limit: int = 10) -> List[Dict]:
-        """
-        Get top dealers by metric.
-        
-        Args:
-            metric: 'revenue', 'units', 'delivery_rate', 'pod_rate'
-            limit: Number of dealers to return
-            
-        Returns:
-            List of dealer rankings
-        """
-        try:
-            if metric == "revenue":
-                return self.logistics.get_top_dealers_by_revenue(limit)
-            elif metric == "units":
-                return self.logistics.get_top_dealers_by_units(limit)
-            elif metric == "delivery_rate":
-                return self._get_top_dealers_by_delivery_rate(limit)
-            elif metric == "pod_rate":
-                return self._get_top_dealers_by_pod_rate(limit)
-            return []
-            
-        except Exception as e:
-            logger.error(f"Top dealers failed: {e}")
-            return []
-    
-    def get_top_warehouses(self, limit: int = 10) -> List[Dict]:
-        """Get top warehouses by pending deliveries."""
-        try:
-            return self.logistics.get_top_warehouses_by_pending(limit)
-        except Exception as e:
-            logger.error(f"Top warehouses failed: {e}")
-            return []
-    
-    def get_bottom_dealers(self, metric: str = "delivery_rate", limit: int = 10) -> List[Dict]:
-        """
-        Get bottom dealers by metric.
-        
-        Args:
-            metric: 'delivery_rate', 'pod_rate', 'revenue', 'units'
-            limit: Number of dealers to return
-            
-        Returns:
-            List of dealer rankings
-        """
-        try:
-            return self._get_bottom_dealers(metric, limit)
-        except Exception as e:
-            logger.error(f"Bottom dealers failed: {e}")
-            return []
-    
-    def get_top_cities(self, metric: str = "revenue", limit: int = 10) -> List[Dict]:
-        """
-        Get top cities by metric.
-        
-        Args:
-            metric: 'revenue', 'units', 'delivery_rate'
-            limit: Number of cities to return
-            
-        Returns:
-            List of city rankings
-        """
-        try:
-            return self._get_top_cities(metric, limit)
-        except Exception as e:
-            logger.error(f"Top cities failed: {e}")
-            return []
-    
-    def get_bottom_cities(self, metric: str = "delivery_rate", limit: int = 10) -> List[Dict]:
-        """
-        Get bottom cities by metric.
-        
-        Args:
-            metric: 'delivery_rate', 'pod_rate', 'revenue'
-            limit: Number of cities to return
-            
-        Returns:
-            List of city rankings
-        """
-        try:
-            return self._get_bottom_cities(metric, limit)
-        except Exception as e:
-            logger.error(f"Bottom cities failed: {e}")
-            return []
-    
-    # ==========================================================
-    # 10. DATA QUALITY INTELLIGENCE
+    # 8. DATA QUALITY
     # ==========================================================
     
     def get_data_quality_report(self) -> Dict[str, Any]:
@@ -884,181 +1081,14 @@ class AnalyticsService:
         Returns:
             Dict with data quality metrics
         """
-        method_start = time.time()
-        logger.info("Data quality report requested")
-        
         try:
-            # Get data quality from logistics service
-            quality = self.logistics.get_data_quality_metrics()
-            
-            if not quality:
-                return {"error": "Unable to retrieve data quality metrics"}
-            
-            return {
-                "records_checked": quality.get("total_records", 0),
-                "valid_dates": quality.get("valid_dates", 0),
-                "invalid_dates": quality.get("invalid_dates", 0),
-                "missing_pgi": quality.get("missing_pgi", 0),
-                "missing_pod": quality.get("missing_pod", 0),
-                "negative_aging": quality.get("negative_aging", 0),
-                "data_quality_score": quality.get("quality_score", 100),
-                "quality_status": self._get_quality_status(quality.get("quality_score", 100)),
-                "generated_at": datetime.now().isoformat()
-            }
-            
+            return self.logistics.get_data_quality_metrics()
         except Exception as e:
             logger.error(f"Data quality report failed: {e}")
             return {"error": str(e)}
     
     # ==========================================================
-    # PRIVATE METHODS - BENCHMARKS
-    # ==========================================================
-    
-    def _get_dealer_benchmark(self, dealer_name: str, dealer_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Calculate dealer benchmark against network."""
-        try:
-            network = self.get_network_kpis()
-            if "error" in network:
-                return {}
-            
-            return {
-                "dealer_revenue": dealer_data.get("total_revenue", 0),
-                "network_avg_revenue": network.get("avg_revenue", 0),
-                "revenue_gap": dealer_data.get("total_revenue", 0) - network.get("avg_revenue", 0),
-                "dealer_units": dealer_data.get("total_units", 0),
-                "network_avg_units": network.get("avg_units", 0),
-                "units_gap": dealer_data.get("total_units", 0) - network.get("avg_units", 0),
-                "dealer_delivery_rate": dealer_data.get("delivery_rate", 0),
-                "network_delivery_rate": network.get("avg_delivery_rate", 0),
-                "delivery_rate_gap": dealer_data.get("delivery_rate", 0) - network.get("avg_delivery_rate", 0),
-                "performance_gap": self._calculate_performance_gap(dealer_data, network)
-            }
-            
-        except Exception as e:
-            logger.error(f"Dealer benchmark calculation failed: {e}")
-            return {}
-    
-    def _get_warehouse_benchmark(self, warehouse_name: str) -> Dict[str, Any]:
-        """Calculate warehouse benchmark against network."""
-        try:
-            network = self.get_network_kpis()
-            if "error" in network:
-                return {}
-            
-            warehouse_data = self.logistics.get_warehouse_dashboard_data(warehouse_name)
-            if not warehouse_data:
-                return {}
-            
-            return {
-                "warehouse_pgi_rate": warehouse_data.get("pgi_rate", 0),
-                "network_avg_pgi_rate": network.get("avg_pgi_rate", 0),
-                "pgi_rate_gap": warehouse_data.get("pgi_rate", 0) - network.get("avg_pgi_rate", 0),
-                "warehouse_pod_rate": warehouse_data.get("pod_rate", 0),
-                "network_avg_pod_rate": network.get("avg_pod_rate", 0),
-                "pod_rate_gap": warehouse_data.get("pod_rate", 0) - network.get("avg_pod_rate", 0)
-            }
-            
-        except Exception as e:
-            logger.error(f"Warehouse benchmark calculation failed: {e}")
-            return {}
-    
-    def _get_city_benchmark(self, city_name: str) -> Dict[str, Any]:
-        """Calculate city benchmark against network."""
-        try:
-            network = self.get_network_kpis()
-            if "error" in network:
-                return {}
-            
-            city_data = self.logistics.get_city_dashboard_data(city_name)
-            if not city_data:
-                return {}
-            
-            return {
-                "city_delivery_rate": city_data.get("delivery_rate", 0),
-                "network_avg_delivery_rate": network.get("avg_delivery_rate", 0),
-                "delivery_rate_gap": city_data.get("delivery_rate", 0) - network.get("avg_delivery_rate", 0),
-                "city_pod_rate": city_data.get("pod_rate", 0),
-                "network_avg_pod_rate": network.get("avg_pod_rate", 0),
-                "pod_rate_gap": city_data.get("pod_rate", 0) - network.get("avg_pod_rate", 0)
-            }
-            
-        except Exception as e:
-            logger.error(f"City benchmark calculation failed: {e}")
-            return {}
-    
-    # ==========================================================
-    # PRIVATE METHODS - TRENDS
-    # ==========================================================
-    
-    def _get_dealer_trend(self, dealer_name: str) -> Dict[str, Any]:
-        """Get dealer trend analysis."""
-        try:
-            # Get historical data from logistics
-            historical = self.logistics.get_dealer_historical_data(dealer_name)
-            if not historical:
-                return {}
-            
-            current = historical[-1] if historical else {}
-            previous = historical[-2] if len(historical) > 1 else {}
-            
-            return {
-                "current_period": current,
-                "previous_period": previous,
-                "growth_percent": self._calculate_growth_percent(current, previous),
-                "trend": self._determine_trend(current, previous),
-                "data_points": len(historical)
-            }
-            
-        except Exception as e:
-            logger.error(f"Dealer trend calculation failed: {e}")
-            return {}
-    
-    def _get_warehouse_trend(self, warehouse_name: str) -> Dict[str, Any]:
-        """Get warehouse trend analysis."""
-        try:
-            historical = self.logistics.get_warehouse_historical_data(warehouse_name)
-            if not historical:
-                return {}
-            
-            current = historical[-1] if historical else {}
-            previous = historical[-2] if len(historical) > 1 else {}
-            
-            return {
-                "current_period": current,
-                "previous_period": previous,
-                "growth_percent": self._calculate_growth_percent(current, previous),
-                "trend": self._determine_trend(current, previous),
-                "data_points": len(historical)
-            }
-            
-        except Exception as e:
-            logger.error(f"Warehouse trend calculation failed: {e}")
-            return {}
-    
-    def _get_city_trend(self, city_name: str) -> Dict[str, Any]:
-        """Get city trend analysis."""
-        try:
-            historical = self.logistics.get_city_historical_data(city_name)
-            if not historical:
-                return {}
-            
-            current = historical[-1] if historical else {}
-            previous = historical[-2] if len(historical) > 1 else {}
-            
-            return {
-                "current_period": current,
-                "previous_period": previous,
-                "growth_percent": self._calculate_growth_percent(current, previous),
-                "trend": self._determine_trend(current, previous),
-                "data_points": len(historical)
-            }
-            
-        except Exception as e:
-            logger.error(f"City trend calculation failed: {e}")
-            return {}
-    
-    # ==========================================================
-    # PRIVATE METHODS - NETWORK KPIs
+    # PRIVATE METHODS
     # ==========================================================
     
     def _calculate_network_kpis(self, all_kpis: Dict[str, Any]) -> Dict[str, Any]:
@@ -1075,7 +1105,6 @@ class AnalyticsService:
                 "count": 0
             }
             
-            # Aggregate all KPIs
             for key, kpi in all_kpis.items():
                 if isinstance(kpi, dict):
                     totals["total_dns"] += kpi.get("total_dns", 0)
@@ -1087,7 +1116,6 @@ class AnalyticsService:
                     totals["total_pod_aging"] += kpi.get("avg_pod_aging", 0)
                     totals["count"] += 1
             
-            # Calculate averages
             count = totals["count"] or 1
             avg_delivery_aging = totals["total_delivery_aging"] / count
             avg_pod_aging = totals["total_pod_aging"] / count
@@ -1125,73 +1153,65 @@ class AnalyticsService:
         
         return round(sum(values) / len(values), 1)
     
-    # ==========================================================
-    # PRIVATE METHODS - RISK ASSESSMENT
-    # ==========================================================
-    
     def _assess_risk(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Assess risk for a single entity."""
-        return self.calculate_risk_score(data)
-    
-    def _assess_global_risk(self, insights: Dict[str, Any]) -> Dict[str, Any]:
-        """Assess global risk from insights."""
-        risk_factors = []
         risk_score = 0
+        risk_factors = []
         
-        if insights.get("pending_pgi", 0) > 50:
-            risk_factors.append("High PGI backlog")
+        delivery_rate = data.get("delivery_rate", 100)
+        if delivery_rate < 70:
+            risk_factors.append(f"Low delivery rate: {delivery_rate}%")
             risk_score += 30
+        elif delivery_rate < 85:
+            risk_factors.append(f"Moderate delivery rate: {delivery_rate}%")
+            risk_score += 15
         
-        if insights.get("pending_pod", 0) > 100:
-            risk_factors.append("High POD backlog")
+        pod_rate = data.get("pod_rate", 100)
+        if pod_rate < 70:
+            risk_factors.append(f"Low POD rate: {pod_rate}%")
             risk_score += 30
+        elif pod_rate < 85:
+            risk_factors.append(f"Moderate POD rate: {pod_rate}%")
+            risk_score += 15
         
-        if insights.get("avg_delivery_aging", 0) > 10:
-            risk_factors.append("High delivery aging")
+        avg_aging = data.get("avg_delivery_aging", 0)
+        if avg_aging > 15:
+            risk_factors.append(f"High delivery aging: {avg_aging} days")
             risk_score += 20
-        
-        if insights.get("avg_pod_aging", 0) > 10:
-            risk_factors.append("High POD aging")
-            risk_score += 20
+        elif avg_aging > 7:
+            risk_factors.append(f"Moderate delivery aging: {avg_aging} days")
+            risk_score += 10
         
         risk_score = min(risk_score, 100)
-        risk_status = self.schema.get_risk_status(risk_score)
-        risk_emoji = self.schema.get_risk_emoji(risk_status)
+        risk_status = self.schema.get_risk_status(risk_score) if hasattr(self.schema, 'get_risk_status') else "low"
+        risk_emoji = self.schema.get_risk_emoji(risk_status) if hasattr(self.schema, 'get_risk_emoji') else "🟢"
         
         return {
             "risk_score": risk_score,
             "risk_status": risk_status,
             "risk_emoji": risk_emoji,
             "risk_factors": risk_factors,
-            "risk_count": len(risk_factors),
-            "generated_at": datetime.now().isoformat()
+            "risk_count": len(risk_factors)
         }
     
     def _assess_warehouse_risk(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Assess risk for warehouse."""
-        return self.calculate_risk_score(data)
+        return self._assess_risk(data)
     
     def _assess_city_risk(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Assess risk for city."""
-        return self.calculate_risk_score(data)
-    
-    # ==========================================================
-    # PRIVATE METHODS - PERFORMANCE SCORING
-    # ==========================================================
+        return self._assess_risk(data)
     
     def _calculate_performance_score(self, data: Dict[str, Any]) -> int:
         """Calculate performance score (0-100)."""
         score = 0
         
-        # Delivery rate (max 30 points)
         delivery_rate = data.get("delivery_rate", 0)
         score += min(delivery_rate * 0.3, 30)
         
-        # POD rate (max 30 points)
         pod_rate = data.get("pod_rate", 0)
         score += min(pod_rate * 0.3, 30)
         
-        # Delivery aging (max 20 points)
         avg_aging = data.get("avg_delivery_aging", 0)
         if avg_aging <= 3:
             score += 20
@@ -1202,7 +1222,6 @@ class AnalyticsService:
         else:
             score += 5
         
-        # Volume (max 20 points)
         total_dns = data.get("total_dns", 0)
         if total_dns > 100:
             score += 20
@@ -1219,15 +1238,12 @@ class AnalyticsService:
         """Calculate warehouse performance score."""
         score = 0
         
-        # PGI rate (max 30 points)
         pgi_rate = data.get("pgi_rate", 0)
         score += min(pgi_rate * 0.3, 30)
         
-        # POD rate (max 30 points)
         pod_rate = data.get("pod_rate", 0)
         score += min(pod_rate * 0.3, 30)
         
-        # Pending (max 20 points)
         pending = data.get("pending_delivery", 0)
         if pending == 0:
             score += 20
@@ -1238,7 +1254,6 @@ class AnalyticsService:
         else:
             score += 5
         
-        # Volume (max 20 points)
         total_dns = data.get("total_dns", 0)
         if total_dns > 100:
             score += 20
@@ -1255,15 +1270,12 @@ class AnalyticsService:
         """Calculate city performance score."""
         score = 0
         
-        # Delivery rate (max 30 points)
         delivery_rate = data.get("delivery_rate", 0)
         score += min(delivery_rate * 0.3, 30)
         
-        # POD rate (max 30 points)
         pod_rate = data.get("pod_rate", 0)
         score += min(pod_rate * 0.3, 30)
         
-        # Pending (max 20 points)
         pending = data.get("pending_dns", 0)
         if pending == 0:
             score += 20
@@ -1274,7 +1286,6 @@ class AnalyticsService:
         else:
             score += 5
         
-        # Volume (max 20 points)
         total_dns = data.get("total_dns", 0)
         if total_dns > 100:
             score += 20
@@ -1300,21 +1311,136 @@ class AnalyticsService:
         else:
             return "CRITICAL"
     
-    def _calculate_performance_gap(self, dealer_data: Dict[str, Any], network: Dict[str, Any]) -> str:
-        """Calculate performance gap description."""
-        dealer_rate = dealer_data.get("delivery_rate", 0)
-        network_rate = network.get("avg_delivery_rate", 0)
-        
-        gap = dealer_rate - network_rate
-        
-        if gap > 10:
-            return "EXCEEDS NETWORK AVERAGE"
-        elif gap > 0:
-            return "ABOVE NETWORK AVERAGE"
-        elif gap > -10:
-            return "AT NETWORK AVERAGE"
-        else:
-            return "BELOW NETWORK AVERAGE"
+    def _get_dealer_benchmark(self, dealer_name: str, dealer_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Calculate dealer benchmark against network."""
+        try:
+            network = self.get_network_kpis()
+            if "error" in network:
+                return {}
+            
+            return {
+                "dealer_revenue": dealer_data.get("total_revenue", 0),
+                "network_avg_revenue": network.get("avg_revenue", 0),
+                "revenue_gap": dealer_data.get("total_revenue", 0) - network.get("avg_revenue", 0),
+                "dealer_units": dealer_data.get("total_units", 0),
+                "network_avg_units": network.get("avg_units", 0),
+                "units_gap": dealer_data.get("total_units", 0) - network.get("avg_units", 0),
+                "dealer_delivery_rate": dealer_data.get("delivery_rate", 0),
+                "network_delivery_rate": network.get("avg_delivery_rate", 0),
+                "delivery_rate_gap": dealer_data.get("delivery_rate", 0) - network.get("avg_delivery_rate", 0)
+            }
+        except Exception as e:
+            logger.error(f"Dealer benchmark calculation failed: {e}")
+            return {}
+    
+    def _get_warehouse_benchmark(self, warehouse_name: str) -> Dict[str, Any]:
+        """Calculate warehouse benchmark against network."""
+        try:
+            network = self.get_network_kpis()
+            if "error" in network:
+                return {}
+            
+            warehouse_data = self.logistics.get_warehouse_dashboard_data(warehouse_name)
+            if not warehouse_data:
+                return {}
+            
+            return {
+                "warehouse_pgi_rate": warehouse_data.get("pgi_rate", 0),
+                "network_avg_pgi_rate": network.get("avg_pgi_rate", 0),
+                "pgi_rate_gap": warehouse_data.get("pgi_rate", 0) - network.get("avg_pgi_rate", 0),
+                "warehouse_pod_rate": warehouse_data.get("pod_rate", 0),
+                "network_avg_pod_rate": network.get("avg_pod_rate", 0),
+                "pod_rate_gap": warehouse_data.get("pod_rate", 0) - network.get("avg_pod_rate", 0)
+            }
+        except Exception as e:
+            logger.error(f"Warehouse benchmark calculation failed: {e}")
+            return {}
+    
+    def _get_city_benchmark(self, city_name: str) -> Dict[str, Any]:
+        """Calculate city benchmark against network."""
+        try:
+            network = self.get_network_kpis()
+            if "error" in network:
+                return {}
+            
+            city_data = self.logistics.get_city_dashboard_data(city_name)
+            if not city_data:
+                return {}
+            
+            return {
+                "city_delivery_rate": city_data.get("delivery_rate", 0),
+                "network_avg_delivery_rate": network.get("avg_delivery_rate", 0),
+                "delivery_rate_gap": city_data.get("delivery_rate", 0) - network.get("avg_delivery_rate", 0),
+                "city_pod_rate": city_data.get("pod_rate", 0),
+                "network_avg_pod_rate": network.get("avg_pod_rate", 0),
+                "pod_rate_gap": city_data.get("pod_rate", 0) - network.get("avg_pod_rate", 0)
+            }
+        except Exception as e:
+            logger.error(f"City benchmark calculation failed: {e}")
+            return {}
+    
+    def _get_dealer_trend(self, dealer_name: str) -> Dict[str, Any]:
+        """Get dealer trend analysis."""
+        try:
+            historical = self.logistics.get_dealer_historical_data(dealer_name)
+            if not historical:
+                return {}
+            
+            current = historical[-1] if historical else {}
+            previous = historical[-2] if len(historical) > 1 else {}
+            
+            return {
+                "current_period": current,
+                "previous_period": previous,
+                "growth_percent": self._calculate_growth_percent(current, previous),
+                "trend": self._determine_trend(current, previous),
+                "data_points": len(historical)
+            }
+        except Exception as e:
+            logger.error(f"Dealer trend calculation failed: {e}")
+            return {}
+    
+    def _get_warehouse_trend(self, warehouse_name: str) -> Dict[str, Any]:
+        """Get warehouse trend analysis."""
+        try:
+            historical = self.logistics.get_warehouse_historical_data(warehouse_name)
+            if not historical:
+                return {}
+            
+            current = historical[-1] if historical else {}
+            previous = historical[-2] if len(historical) > 1 else {}
+            
+            return {
+                "current_period": current,
+                "previous_period": previous,
+                "growth_percent": self._calculate_growth_percent(current, previous),
+                "trend": self._determine_trend(current, previous),
+                "data_points": len(historical)
+            }
+        except Exception as e:
+            logger.error(f"Warehouse trend calculation failed: {e}")
+            return {}
+    
+    def _get_city_trend(self, city_name: str) -> Dict[str, Any]:
+        """Get city trend analysis."""
+        try:
+            historical = self.logistics.get_city_historical_data(city_name)
+            if not historical:
+                return {}
+            
+            current = historical[-1] if historical else {}
+            previous = historical[-2] if len(historical) > 1 else {}
+            
+            return {
+                "current_period": current,
+                "previous_period": previous,
+                "growth_percent": self._calculate_growth_percent(current, previous),
+                "trend": self._determine_trend(current, previous),
+                "data_points": len(historical)
+            }
+        except Exception as e:
+            logger.error(f"City trend calculation failed: {e}")
+            return {}
     
     def _calculate_growth_percent(self, current: Dict[str, Any], previous: Dict[str, Any]) -> float:
         """Calculate growth percentage."""
@@ -1340,459 +1466,6 @@ class AnalyticsService:
             return "DOWN"
         else:
             return "STRONG_DOWN"
-    
-    # ==========================================================
-    # PRIVATE METHODS - ROOT CAUSE HELPERS
-    # ==========================================================
-    
-    def _get_warehouses_with_high_pending_pgi(self) -> List[str]:
-        """Get warehouses with high pending PGI."""
-        try:
-            warehouses = self.logistics.get_all_warehouse_names()
-            result = []
-            for wh in warehouses:
-                data = self.logistics.get_warehouse_dashboard_data(wh)
-                if data and data.get("pending_delivery", 0) > 20:
-                    result.append(wh)
-            return result
-        except:
-            return []
-    
-    def _get_dealers_with_high_pending_pod(self) -> List[str]:
-        """Get dealers with high pending POD."""
-        try:
-            dealers = self.logistics.get_all_dealer_names()
-            result = []
-            for dealer in dealers:
-                data = self.logistics.get_dealer_dashboard_data(dealer)
-                if data and data.get("pending_pod", 0) > 10:
-                    result.append(dealer)
-            return result
-        except:
-            return []
-    
-    def _get_cities_with_high_pending_pod(self) -> List[str]:
-        """Get cities with high pending POD."""
-        try:
-            cities = self.logistics.get_all_city_names()
-            result = []
-            for city in cities:
-                data = self.logistics.get_city_dashboard_data(city)
-                if data and data.get("pending_pod", 0) > 10:
-                    result.append(city)
-            return result
-        except:
-            return []
-    
-    def _get_dealers_with_high_aging(self) -> List[str]:
-        """Get dealers with high delivery aging."""
-        try:
-            dealers = self.logistics.get_all_dealer_names()
-            result = []
-            for dealer in dealers:
-                data = self.logistics.get_dealer_dashboard_data(dealer)
-                if data and data.get("avg_delivery_aging", 0) > 10:
-                    result.append(dealer)
-            return result
-        except:
-            return []
-    
-    def _get_warehouses_with_high_aging(self) -> List[str]:
-        """Get warehouses with high delivery aging."""
-        try:
-            warehouses = self.logistics.get_all_warehouse_names()
-            result = []
-            for wh in warehouses:
-                data = self.logistics.get_warehouse_dashboard_data(wh)
-                if data and data.get("avg_delivery_aging", 0) > 10:
-                    result.append(wh)
-            return result
-        except:
-            return []
-    
-    def _get_dealers_with_high_pod_aging(self) -> List[str]:
-        """Get dealers with high POD aging."""
-        try:
-            dealers = self.logistics.get_all_dealer_names()
-            result = []
-            for dealer in dealers:
-                data = self.logistics.get_dealer_dashboard_data(dealer)
-                if data and data.get("avg_pod_aging", 0) > 10:
-                    result.append(dealer)
-            return result
-        except:
-            return []
-    
-    def _identify_root_causes(self, issues: List[Dict[str, Any]]) -> List[str]:
-        """Identify root causes from issues."""
-        root_causes = []
-        
-        for issue in issues:
-            if "PGI backlog" in issue.get("issue", ""):
-                root_causes.append("Warehouse capacity constraints")
-                root_causes.append("Insufficient staffing for PGI processing")
-            if "POD backlog" in issue.get("issue", ""):
-                root_causes.append("Slow POD collection process")
-                root_causes.append("Inadequate customer follow-up")
-            if "delivery aging" in issue.get("issue", ""):
-                root_causes.append("Transportation delays")
-                root_causes.append("Route optimization issues")
-        
-        # Remove duplicates
-        return list(set(root_causes))
-    
-    def _generate_root_cause_recommendations(self, issues: List[Dict[str, Any]]) -> List[str]:
-        """Generate recommendations from root cause analysis."""
-        recommendations = []
-        
-        for issue in issues:
-            if "PGI backlog" in issue.get("issue", ""):
-                recommendations.append("Increase PGI processing capacity")
-                recommendations.append("Prioritize high-priority shipments")
-            if "POD backlog" in issue.get("issue", ""):
-                recommendations.append("Accelerate POD collection team")
-                recommendations.append("Implement POD automation")
-            if "delivery aging" in issue.get("issue", ""):
-                recommendations.append("Review delivery routes")
-                recommendations.append("Improve warehouse-to-customer transit")
-        
-        # Add general recommendations
-        if not recommendations:
-            recommendations.append("Continue monitoring operations")
-            recommendations.append("Maintain current SLA compliance")
-        
-        # Remove duplicates and limit
-        return list(set(recommendations))[:5]
-    
-    # ==========================================================
-    # PRIVATE METHODS - EXECUTIVE INSIGHTS
-    # ==========================================================
-    
-    def _generate_executive_insights(self, insights: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate executive insights from data."""
-        return {
-            "top_risks": self._identify_top_risks(insights),
-            "top_opportunities": self._identify_top_opportunities(insights),
-            "best_dealer": insights.get("best_dealer", {}),
-            "worst_dealer": insights.get("worst_dealer", {}),
-            "best_warehouse": insights.get("best_warehouse", {}),
-            "worst_warehouse": insights.get("worst_warehouse", {}),
-            "critical_deliveries": insights.get("critical_deliveries", [])[:5],
-            "recommendations": self._generate_executive_recommendations(insights)
-        }
-    
-    def _identify_top_risks(self, insights: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Identify top risks from insights."""
-        risks = []
-        
-        if insights.get("pending_pgi", 0) > 50:
-            risks.append({
-                "risk": "High PGI backlog",
-                "severity": "critical",
-                "impact": "Delayed dispatches"
-            })
-        
-        if insights.get("pending_pod", 0) > 100:
-            risks.append({
-                "risk": "High POD backlog",
-                "severity": "critical",
-                "impact": "Revenue recognition delay"
-            })
-        
-        if insights.get("avg_delivery_aging", 0) > 10:
-            risks.append({
-                "risk": "High delivery aging",
-                "severity": "high",
-                "impact": "Customer satisfaction impact"
-            })
-        
-        if insights.get("worst_warehouse"):
-            risks.append({
-                "risk": f"Underperforming warehouse: {insights['worst_warehouse']}",
-                "severity": "high",
-                "impact": "Operational inefficiency"
-            })
-        
-        return risks[:5]
-    
-    def _identify_top_opportunities(self, insights: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Identify top opportunities from insights."""
-        opportunities = []
-        
-        if insights.get("best_dealer"):
-            opportunities.append({
-                "opportunity": f"Learn from {insights['best_dealer']}",
-                "potential": "High",
-                "action": "Benchmark best practices"
-            })
-        
-        if insights.get("pending_pod", 0) > 50:
-            opportunities.append({
-                "opportunity": "POD collection improvement",
-                "potential": "High",
-                "action": "Implement automated POD collection"
-            })
-        
-        if insights.get("best_warehouse"):
-            opportunities.append({
-                "opportunity": f"Scale {insights['best_warehouse']} processes",
-                "potential": "Medium",
-                "action": "Standardize successful processes"
-            })
-        
-        return opportunities[:3]
-    
-    def _generate_executive_recommendations(self, insights: Dict[str, Any]) -> List[str]:
-        """Generate executive recommendations."""
-        recommendations = []
-        
-        if insights.get("pending_pgi", 0) > 50:
-            recommendations.append("🚨 Expedite PGI processing immediately")
-        
-        if insights.get("pending_pod", 0) > 100:
-            recommendations.append("📎 Prioritize POD collection team")
-        
-        if insights.get("avg_delivery_aging", 0) > 10:
-            recommendations.append(f"⏰ Review delivery process - aging at {insights['avg_delivery_aging']} days")
-        
-        if insights.get("worst_warehouse"):
-            recommendations.append(f"🏭 Focus on {insights['worst_warehouse']} warehouse improvement")
-        
-        if insights.get("best_dealer"):
-            recommendations.append(f"🌟 Study best practices from {insights['best_dealer']}")
-        
-        if not recommendations:
-            recommendations.append("✅ Operations stable - continue monitoring")
-        
-        return recommendations
-    
-    # ==========================================================
-    # PRIVATE METHODS - CONTROL TOWER
-    # ==========================================================
-    
-    def _generate_control_tower_alerts(self, network: Dict[str, Any], critical: List) -> List[Dict[str, Any]]:
-        """Generate control tower alerts."""
-        alerts = []
-        
-        if "error" not in network:
-            # Pending PGI alert
-            pending_pgi = network.get("pending_pgi", 0)
-            if pending_pgi > 50:
-                alerts.append({
-                    "type": "HIGH_PENDING_PGI",
-                    "severity": "critical",
-                    "message": f"{pending_pgi} deliveries pending PGI processing",
-                    "timestamp": datetime.now().isoformat()
-                })
-            elif pending_pgi > 20:
-                alerts.append({
-                    "type": "MODERATE_PENDING_PGI",
-                    "severity": "high",
-                    "message": f"{pending_pgi} deliveries pending PGI processing",
-                    "timestamp": datetime.now().isoformat()
-                })
-            
-            # Pending POD alert
-            pending_pod = network.get("pending_pod", 0)
-            if pending_pod > 100:
-                alerts.append({
-                    "type": "HIGH_PENDING_POD",
-                    "severity": "critical",
-                    "message": f"{pending_pod} deliveries pending POD confirmation",
-                    "timestamp": datetime.now().isoformat()
-                })
-            elif pending_pod > 50:
-                alerts.append({
-                    "type": "MODERATE_PENDING_POD",
-                    "severity": "high",
-                    "message": f"{pending_pod} deliveries pending POD confirmation",
-                    "timestamp": datetime.now().isoformat()
-                })
-            
-            # Delivery aging alert
-            avg_aging = network.get("avg_delivery_aging", 0)
-            if avg_aging > 15:
-                alerts.append({
-                    "type": "HIGH_DELIVERY_AGING",
-                    "severity": "critical",
-                    "message": f"Average delivery aging: {avg_aging} days",
-                    "timestamp": datetime.now().isoformat()
-                })
-            elif avg_aging > 10:
-                alerts.append({
-                    "type": "MODERATE_DELIVERY_AGING",
-                    "severity": "high",
-                    "message": f"Average delivery aging: {avg_aging} days",
-                    "timestamp": datetime.now().isoformat()
-                })
-        
-        # Critical deliveries alert
-        if critical and len(critical) > 5:
-            alerts.append({
-                "type": "CRITICAL_DELIVERIES",
-                "severity": "critical",
-                "message": f"{len(critical)} critical deliveries requiring immediate attention",
-                "timestamp": datetime.now().isoformat()
-            })
-        
-        return alerts
-    
-    # ==========================================================
-    # PRIVATE METHODS - RANKINGS
-    # ==========================================================
-    
-    def _get_top_dealers_by_delivery_rate(self, limit: int) -> List[Dict]:
-        """Get top dealers by delivery rate."""
-        try:
-            dealers = self.logistics.get_all_dealer_names()
-            results = []
-            
-            for dealer in dealers:
-                data = self.logistics.get_dealer_dashboard_data(dealer)
-                if data:
-                    results.append({
-                        "dealer_name": dealer,
-                        "delivery_rate": data.get("delivery_rate", 0),
-                        "total_dns": data.get("total_dns", 0)
-                    })
-            
-            results.sort(key=lambda x: x["delivery_rate"], reverse=True)
-            return results[:limit]
-            
-        except Exception as e:
-            logger.error(f"Top dealers by delivery rate failed: {e}")
-            return []
-    
-    def _get_top_dealers_by_pod_rate(self, limit: int) -> List[Dict]:
-        """Get top dealers by POD rate."""
-        try:
-            dealers = self.logistics.get_all_dealer_names()
-            results = []
-            
-            for dealer in dealers:
-                data = self.logistics.get_dealer_dashboard_data(dealer)
-                if data:
-                    results.append({
-                        "dealer_name": dealer,
-                        "pod_rate": data.get("pod_rate", 0),
-                        "total_dns": data.get("total_dns", 0)
-                    })
-            
-            results.sort(key=lambda x: x["pod_rate"], reverse=True)
-            return results[:limit]
-            
-        except Exception as e:
-            logger.error(f"Top dealers by POD rate failed: {e}")
-            return []
-    
-    def _get_bottom_dealers(self, metric: str, limit: int) -> List[Dict]:
-        """Get bottom dealers by metric."""
-        try:
-            dealers = self.logistics.get_all_dealer_names()
-            results = []
-            
-            for dealer in dealers:
-                data = self.logistics.get_dealer_dashboard_data(dealer)
-                if data:
-                    if metric == "delivery_rate":
-                        results.append({
-                            "dealer_name": dealer,
-                            "value": data.get("delivery_rate", 0),
-                            "total_dns": data.get("total_dns", 0)
-                        })
-                    elif metric == "pod_rate":
-                        results.append({
-                            "dealer_name": dealer,
-                            "value": data.get("pod_rate", 0),
-                            "total_dns": data.get("total_dns", 0)
-                        })
-                    elif metric == "revenue":
-                        results.append({
-                            "dealer_name": dealer,
-                            "value": data.get("total_revenue", 0),
-                            "total_dns": data.get("total_dns", 0)
-                        })
-                    elif metric == "units":
-                        results.append({
-                            "dealer_name": dealer,
-                            "value": data.get("total_units", 0),
-                            "total_dns": data.get("total_dns", 0)
-                        })
-            
-            results.sort(key=lambda x: x["value"])
-            return results[:limit]
-            
-        except Exception as e:
-            logger.error(f"Bottom dealers failed: {e}")
-            return []
-    
-    def _get_top_cities(self, metric: str, limit: int) -> List[Dict]:
-        """Get top cities by metric."""
-        try:
-            cities = self.logistics.get_all_city_names()
-            results = []
-            
-            for city in cities:
-                data = self.logistics.get_city_dashboard_data(city)
-                if data:
-                    if metric == "revenue":
-                        results.append({
-                            "city_name": city,
-                            "value": data.get("total_revenue", 0),
-                            "total_dns": data.get("total_dns", 0)
-                        })
-                    elif metric == "units":
-                        results.append({
-                            "city_name": city,
-                            "value": data.get("total_units", 0),
-                            "total_dns": data.get("total_dns", 0)
-                        })
-                    elif metric == "delivery_rate":
-                        results.append({
-                            "city_name": city,
-                            "value": data.get("delivery_rate", 0),
-                            "total_dns": data.get("total_dns", 0)
-                        })
-            
-            results.sort(key=lambda x: x["value"], reverse=True)
-            return results[:limit]
-            
-        except Exception as e:
-            logger.error(f"Top cities failed: {e}")
-            return []
-    
-    def _get_bottom_cities(self, metric: str, limit: int) -> List[Dict]:
-        """Get bottom cities by metric."""
-        try:
-            cities = self.logistics.get_all_city_names()
-            results = []
-            
-            for city in cities:
-                data = self.logistics.get_city_dashboard_data(city)
-                if data:
-                    if metric == "delivery_rate":
-                        results.append({
-                            "city_name": city,
-                            "value": data.get("delivery_rate", 0),
-                            "total_dns": data.get("total_dns", 0)
-                        })
-                    elif metric == "pod_rate":
-                        results.append({
-                            "city_name": city,
-                            "value": data.get("pod_rate", 0),
-                            "total_dns": data.get("total_dns", 0)
-                        })
-            
-            results.sort(key=lambda x: x["value"])
-            return results[:limit]
-            
-        except Exception as e:
-            logger.error(f"Bottom cities failed: {e}")
-            return []
-    
-    # ==========================================================
-    # PRIVATE METHODS - RECOMMENDATIONS
-    # ==========================================================
     
     def _generate_dealer_recommendations(self, dashboard: Dict[str, Any]) -> List[str]:
         """Generate dealer-specific recommendations."""
@@ -1820,23 +1493,28 @@ class AnalyticsService:
             recommendations.append("✅ Dealer performance is stable - continue monitoring")
         
         return recommendations
-    
-    def _get_quality_status(self, score: int) -> str:
-        """Get quality status from score."""
-        if score >= 90:
-            return "EXCELLENT"
-        elif score >= 75:
-            return "GOOD"
-        elif score >= 60:
-            return "FAIR"
-        else:
-            return "POOR"
 
 
 # ==========================================================
 # FACTORY FUNCTION
 # ==========================================================
 
+_analytics_service = None
+
+
 def get_analytics_service() -> AnalyticsService:
     """Factory function for AnalyticsService singleton."""
-    return AnalyticsService()
+    global _analytics_service
+    if _analytics_service is None:
+        _analytics_service = AnalyticsService()
+    return _analytics_service
+
+
+# ==========================================================
+# EXPORTS
+# ==========================================================
+
+__all__ = [
+    'AnalyticsService',
+    'get_analytics_service'
+]
