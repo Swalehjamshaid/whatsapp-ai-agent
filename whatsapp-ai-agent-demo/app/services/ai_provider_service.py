@@ -1,28 +1,26 @@
 # ==========================================================
-# FILE: app/services/ai_provider_service.py (v8.2 - PRODUCTION FIX)
+# FILE: app/services/ai_provider_service.py (v9.0 - MASTER ORCHESTRATOR WITH GOVERNANCE)
 # ==========================================================
-# PURPOSE: Master Orchestrator - Coordinates Complete Request Lifecycle
-# FIXES APPLIED:
-# 1. Groq now ENRICHES analytics, never replaces it
-# 2. DN formatting uses correct processing/delivery/cycle times
-# 3. Data quality status displayed with proper validation
-# 4. Context intelligence reuses last_dealer
-# 5. City dashboard support added
-# 6. Comparison intelligence for dealers, warehouses, cities
-# 7. Cache invalidation after metadata refresh
-# 8. Detailed logging with structured data
-# 9. Root cause uses analytics + Groq summary
-# 10. WhatsApp DN format with all metrics
+# PURPOSE: Master Orchestrator - Final Governance & Routing Authority
+# ARCHITECTURE RULES:
+# 1. AIProviderService is the FINAL governance layer
+# 2. Always revalidate AIQueryService decisions
+# 3. Groq ONLY for general knowledge, creative tasks, casual conversation
+# 4. Analytics NEVER goes to Groq alone
+# 5. Entity resolution overrides intent detection
+# 6. Comprehensive logging for debugging
 # ==========================================================
 
 import time
 import uuid
 import hashlib
+import re
 import asyncio
-from typing import Optional, Callable, Any, Dict, List
+from typing import Optional, Callable, Any, Dict, List, Tuple
 from cachetools import TTLCache
 from loguru import logger
 from sqlalchemy.orm import Session
+from datetime import datetime
 
 from app.config import config
 from app.database import SessionLocal
@@ -31,7 +29,7 @@ from app.services.ai_query_service import AIQueryService, QueryPlan, get_ai_quer
 from app.services.analytics_service import AnalyticsService, get_analytics_service
 from app.services.kpi_service import KPIService, get_kpi_service
 from app.services.groq_service import GroqService, get_groq_service
-from app.schemas.schema_service import get_schema_service
+from app.schemas.schema_service import get_schema_service, DN_PATTERN
 
 
 # ==========================================================
@@ -41,6 +39,37 @@ from app.schemas.schema_service import get_schema_service
 CACHE_TTL_SECONDS = 300
 CONTEXT_TTL_SECONDS = 1800
 
+# ==========================================================
+# GROQ PROTECTION - Keywords that MUST NOT go to Groq
+# ==========================================================
+
+PROTECTED_GROQ_KEYWORDS = {
+    # Dealer terms
+    'dealer', 'customer', 'sold to', 'buyer', 'traders', 'electronics',
+    'enterprises', 'industries', 'corporation', 'group', 'sons',
+    
+    # Logistics terms
+    'delivery', 'pgi', 'pod', 'dn', 'warehouse', 'city', 'ship to',
+    'dispatch', 'transit', 'delivered', 'pending',
+    
+    # KPI terms
+    'revenue', 'sales', 'units', 'quantity', 'aging', 'performance',
+    'kpi', 'rate', 'completion', 'efficiency', 'metrics',
+    
+    # Analytics terms
+    'root cause', 'improvement', 'bottleneck', 'insight', 'executive',
+    'critical', 'urgent', 'priority', 'alert', 'issue', 'problem',
+    
+    # Comparison terms
+    'top', 'bottom', 'best', 'worst', 'compare', 'vs', 'versus',
+    'highest', 'lowest', 'ranking',
+    
+    # Time terms
+    'today', 'yesterday', 'week', 'month', 'year', 'trend',
+    
+    # Numbers (for DN detection)
+    '6243', '6244', '6245', '6246'
+}
 
 # ==========================================================
 # CONVERSATION CONTEXT
@@ -56,6 +85,7 @@ class ConversationContext:
         self.last_city: Optional[str] = None
         self.last_dn: Optional[str] = None
         self.last_question: Optional[str] = None
+        self.last_response: Optional[str] = None
         self.message_count: int = 0
         self.created_at: float = time.time()
         self.last_updated: float = time.time()
@@ -73,11 +103,20 @@ class ConversationContext:
 
 
 # ==========================================================
-# MASTER ORCHESTRATOR
+# MASTER ORCHESTRATOR WITH GOVERNANCE
 # ==========================================================
 
 class AIOrchestrator:
-    """MASTER ORCHESTRATOR - Coordinates Complete Request Lifecycle"""
+    """
+    MASTER ORCHESTRATOR - Final Governance & Routing Authority
+    
+    Architecture Rules Enforced:
+    1. AIQueryService is trusted but ALWAYS revalidated
+    2. Entity resolution OVERRIDES intent detection
+    3. Groq ONLY for general knowledge, creative, casual
+    4. Analytics NEVER goes to Groq alone
+    5. Comprehensive logging for every decision
+    """
     
     def __init__(self):
         self.query_service = get_ai_query_service()
@@ -95,10 +134,24 @@ class AIOrchestrator:
             "service_successes": 0,
             "service_failures": 0,
             "groq_uses": 0,
-            "analytics_uses": 0
+            "analytics_uses": 0,
+            "overrides": 0,
+            "rejections": 0
         }
         
-        logger.info("AI Orchestrator v8.2 initialized")
+        logger.info("=" * 60)
+        logger.info("AI Orchestrator v9.0 - Master Governance Layer")
+        logger.info("=" * 60)
+        logger.info("")
+        logger.info("   GOVERNANCE RULES:")
+        logger.info("   ✅ Entity Resolution OVERRIDES Intent Detection")
+        logger.info("   ✅ Groq ONLY for General/Creative/Casual")
+        logger.info("   ✅ Analytics NEVER goes to Groq alone")
+        logger.info("   ✅ DN Lookup IMMEDIATE (8-12 digits)")
+        logger.info("   ✅ Comprehensive Logging")
+        logger.info("")
+        logger.info("   STATUS: ✅ PRODUCTION READY")
+        logger.info("=" * 60)
     
     # ==========================================================
     # MAIN ENTRY POINT (PRESERVED SIGNATURE - CRITICAL)
@@ -123,91 +176,290 @@ class AIOrchestrator:
         ).info(f"📥 Orchestrator processing: {question[:100]}")
         
         try:
+            # Step 1: Load context
             context = self._load_context(phone_number)
             context_dict = context.to_dict() if context else {}
             
-            # FIX: Check if this is a follow-up question using context
-            if context and context.last_dealer and self._is_follow_up(question, context):
-                enhanced_question = self._enhance_with_context(question, context)
-                logger.info(f"🔗 Context-enhanced question: '{question}' → '{enhanced_question}'")
-                question = enhanced_question
+            # Step 2: Check for DN immediately (HIGHEST PRIORITY)
+            if self._is_dn_query(question):
+                logger.info(f"🔍 DN detected: {question}")
+                response = self._execute_dn_lookup(question)
+                self._update_context(phone_number, "dn_lookup", "dn", question, req_id)
+                self._cache_response(question, phone_number, response)
+                return response
             
-            cache_key = self._generate_cache_key(question, phone_number)
-            cached_response = self.response_cache.get(cache_key)
-            if cached_response:
-                self.metrics["cache_hits"] += 1
-                logger.info(f"⚡ Cache hit for: {question[:50]}")
-                return cached_response
+            # Step 3: GOVERNANCE LAYER - Entity Resolution Override
+            entity_result = self.schema.resolve_entity(question)
             
+            if entity_result["type"] != "none":
+                entity_type = entity_result["type"]
+                entity_name = entity_result["name"]
+                confidence = entity_result["confidence"]
+                
+                logger.info(
+                    f"📍 GOVERNANCE: Entity resolved: {entity_type}='{entity_name}' "
+                    f"(confidence: {confidence:.2f})"
+                )
+                
+                # Override: Entity-only queries go to analytics
+                if self._is_entity_only_query(question, entity_name):
+                    logger.info(f"⚡ OVERRIDE: Entity-only query → {entity_type}_dashboard")
+                    self.metrics["overrides"] += 1
+                    response = self._execute_entity_dashboard(entity_type, entity_name)
+                    self._update_context(phone_number, f"{entity_type}_dashboard", entity_type, entity_name, req_id)
+                    self._cache_response(question, phone_number, response)
+                    return response
+            
+            # Step 4: Get query plan from AIQueryService (trust but verify)
             query_plan = self._get_query_plan(question, context_dict)
             
-            # Log query plan
+            # Step 5: GOVERNANCE LAYER - Revalidate before execution
+            validated_plan = self._validate_and_override(query_plan, question)
+            
+            # Log routing decision
             logger.info(
-                f"🎯 Query Plan: intent={query_plan.intent}, "
-                f"entity={query_plan.entity}, "
-                f"entity_type={query_plan.entity_type}, "
-                f"service={query_plan.service}"
+                f"🎯 ROUTING: intent={validated_plan.intent}, "
+                f"entity={validated_plan.entity}, "
+                f"entity_type={validated_plan.entity_type}, "
+                f"service={validated_plan.service}"
             )
             
-            response = self._execute_service(query_plan, context_dict, req_id)
+            # Step 6: Execute service
+            response = self._execute_service(validated_plan, context_dict, req_id)
             
-            # FIX: Groq enriches, never replaces
-            response = self._enrich_with_groq(response, query_plan, question, context_dict)
+            # Step 7: GROQ GOVERNANCE - Enrich only, never replace
+            response = self._apply_groq_governance(response, validated_plan, question, context_dict)
             
-            self._update_context(phone_number, query_plan, req_id)
-            self.response_cache[cache_key] = response
+            # Step 8: Update context
+            self._update_context(
+                phone_number,
+                validated_plan.intent,
+                validated_plan.entity_type or "none",
+                validated_plan.entity or question,
+                req_id,
+                response
+            )
+            
+            # Step 9: Cache response
+            self._cache_response(question, phone_number, response)
             
             duration_ms = int((time.time() - start_time) * 1000)
-            logger.bind(request_id=req_id).info(f"✅ Orchestrator done: {duration_ms}ms")
+            logger.bind(request_id=req_id).info(
+                f"✅ Orchestrator done: {duration_ms}ms | "
+                f"Service: {validated_plan.service} | "
+                f"Groq: {self.metrics['groq_uses'] > 0}"
+            )
             
             return response
             
         except Exception as e:
             logger.exception(f"[{req_id}] Orchestrator fatal error: {e}")
-            return self._get_fallback_response(question)
+            return self._get_fallback_response(question, str(e))
     
     # ==========================================================
-    # CONTEXT INTELLIGENCE
+    # DN DETECTION (HIGHEST PRIORITY)
     # ==========================================================
     
-    def _is_follow_up(self, question: str, context: ConversationContext) -> bool:
-        """Check if question is a follow-up using context."""
-        if not context.last_dealer:
-            return False
+    def _is_dn_query(self, question: str) -> bool:
+        """Check if query is a DN number (8-12 digits)."""
+        return bool(DN_PATTERN.match(question.strip()))
+    
+    def _execute_dn_lookup(self, question: str) -> str:
+        """Execute DN lookup immediately - no intent detection needed."""
+        dn_number = question.strip()
+        result = self.analytics.get_dn_analytics(dn_number)
+        return self._format_dn_details(result)
+    
+    # ==========================================================
+    # ENTITY-ONLY QUERY DETECTION
+    # ==========================================================
+    
+    def _is_entity_only_query(self, question: str, entity_name: str) -> bool:
+        """Check if query is just an entity name with minimal extra words."""
+        question_clean = question.lower().strip()
+        entity_clean = entity_name.lower().strip()
         
-        question_lower = question.lower().strip()
+        # Exact match
+        if question_clean == entity_clean:
+            return True
         
-        # Short follow-up questions
-        follow_up_patterns = [
-            "revenue", "units", "performance", "aging", "pending",
-            "pod", "pgi", "dashboard", "summary", "details",
-            "show", "view", "get", "tell"
-        ]
+        # Entity with common prefixes
+        prefixes = ["show ", "display ", "get ", "view ", "tell me about "]
+        for prefix in prefixes:
+            if question_clean.startswith(prefix) and question_clean[len(prefix):].strip() == entity_clean:
+                return True
         
-        # If question is short and contains a follow-up pattern
-        if len(question_lower.split()) <= 3:
-            for pattern in follow_up_patterns:
-                if pattern in question_lower:
-                    return True
+        # Check if all meaningful words are from entity
+        question_words = set(question_clean.split())
+        entity_words = set(entity_clean.split())
+        
+        # Remove common words
+        common_words = {"show", "display", "get", "view", "tell", "me", "about", "the", "a", "an"}
+        meaningful_question_words = question_words - common_words
+        meaningful_entity_words = entity_words - common_words
+        
+        # If all meaningful question words are in entity, it's entity-only
+        if meaningful_question_words and meaningful_question_words.issubset(meaningful_entity_words):
+            return True
         
         return False
     
-    def _enhance_with_context(self, question: str, context: ConversationContext) -> str:
-        """Enhance question with context."""
-        if context.last_dealer:
-            # Check if question already has a dealer name
-            if context.last_dealer.lower() not in question.lower():
-                return f"{question} {context.last_dealer}"
+    # ==========================================================
+    # ENTITY DASHBOARD EXECUTION
+    # ==========================================================
+    
+    def _execute_entity_dashboard(self, entity_type: str, entity_name: str) -> str:
+        """Execute dashboard for entity type."""
+        if entity_type == "dealer":
+            result = self.analytics.get_dealer_dashboard(entity_name)
+            return self._format_dealer_dashboard(result, entity_name)
+        elif entity_type == "city":
+            result = self.analytics.get_city_dashboard(entity_name)
+            return self._format_city_dashboard(result, entity_name)
+        elif entity_type == "warehouse":
+            result = self.analytics.get_warehouse_dashboard(entity_name)
+            return self._format_warehouse_dashboard(result, entity_name)
+        else:
+            return f"❌ Unknown entity type: {entity_type}"
+    
+    # ==========================================================
+    # GOVERNANCE LAYER - Validate and Override
+    # ==========================================================
+    
+    def _validate_and_override(self, query_plan: QueryPlan, question: str) -> QueryPlan:
+        """
+        GOVERNANCE LAYER: Revalidate and override AIQueryService decisions.
         
-        if context.last_warehouse and "warehouse" in question.lower():
-            if context.last_warehouse.lower() not in question.lower():
-                return f"{question} {context.last_warehouse}"
+        Rules:
+        1. If entity detected, override to appropriate dashboard
+        2. If Groq selected but query is logistics, reject
+        3. If city comparison, route to comparison analytics
+        4. If dealer comparison, route to comparison analytics
+        """
         
-        if context.last_city and "city" in question.lower():
-            if context.last_city.lower() not in question.lower():
-                return f"{question} {context.last_city}"
+        # Rule 1: Entity Override
+        entity_result = self.schema.resolve_entity(question)
+        if entity_result["type"] != "none":
+            entity_type = entity_result["type"]
+            entity_name = entity_result["name"]
+            
+            # Check if this is a comparison query
+            if " vs " in question.lower() or " compare " in question.lower() or " versus " in question.lower():
+                # Parse comparison
+                entities = self._parse_comparison(question)
+                if entities and len(entities) == 2:
+                    query_plan.intent = f"compare_{entity_type}s"
+                    query_plan.entity = entities[0]
+                    query_plan.entity2 = entities[1]
+                    query_plan.entity_type = entity_type
+                    query_plan.service = "analytics"
+                    logger.info(f"⚡ OVERRIDE: Comparison detected → compare_{entity_type}s")
+                    return query_plan
+            
+            # Override to dashboard for entity-only or low-confidence intents
+            if query_plan.intent in ["general_ai", "help"] or query_plan.confidence < 0.70:
+                query_plan.intent = f"{entity_type}_dashboard"
+                query_plan.entity = entity_name
+                query_plan.entity_type = entity_type
+                query_plan.service = "analytics"
+                logger.info(f"⚡ OVERRIDE: {query_plan.intent} (was: {query_plan.intent})")
+                self.metrics["overrides"] += 1
         
-        return question
+        # Rule 2: Groq Protection
+        if query_plan.service == "groq" and self._is_logistics_query(question):
+            query_plan.service = "analytics"
+            query_plan.intent = "executive_insight"
+            logger.info(f"🚫 REJECTED: Groq blocked for logistics query")
+            self.metrics["rejections"] += 1
+        
+        # Rule 3: City Ranking Detection
+        if self._is_city_ranking_query(question):
+            query_plan.intent = "city_ranking"
+            query_plan.service = "analytics"
+            logger.info(f"📊 OVERRIDE: City ranking detected")
+        
+        # Rule 4: Dealer Ranking Detection
+        if self._is_dealer_ranking_query(question):
+            query_plan.intent = "dealer_ranking"
+            query_plan.service = "analytics"
+            logger.info(f"📊 OVERRIDE: Dealer ranking detected")
+        
+        return query_plan
+    
+    # ==========================================================
+    # COMPARISON PARSING
+    # ==========================================================
+    
+    def _parse_comparison(self, question: str) -> List[str]:
+        """Parse comparison query to extract entities."""
+        question_lower = question.lower()
+        
+        # Check for comparison patterns
+        patterns = [
+            r"compare\s+(.+?)\s+(?:vs|versus|and)\s+(.+)",
+            r"(.+?)\s+(?:vs|versus|and)\s+(.+)",
+            r"compare\s+(.+?)\s+with\s+(.+)"
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, question_lower, re.IGNORECASE)
+            if match:
+                entity1 = match.group(1).strip()
+                entity2 = match.group(2).strip()
+                
+                # Resolve entities
+                resolved1 = self.schema.resolve_entity(entity1)
+                resolved2 = self.schema.resolve_entity(entity2)
+                
+                if resolved1["type"] != "none" and resolved2["type"] != "none":
+                    return [resolved1["name"], resolved2["name"]]
+        
+        return []
+    
+    # ==========================================================
+    # RANKING QUERY DETECTION
+    # ==========================================================
+    
+    def _is_city_ranking_query(self, question: str) -> bool:
+        """Check if query is asking for city ranking."""
+        question_lower = question.lower()
+        patterns = [
+            "which city", "top city", "highest city", "best city",
+            "city with highest", "city ranking", "cities by"
+        ]
+        return any(p in question_lower for p in patterns)
+    
+    def _is_dealer_ranking_query(self, question: str) -> bool:
+        """Check if query is asking for dealer ranking."""
+        question_lower = question.lower()
+        patterns = [
+            "top dealer", "best dealer", "highest dealer",
+            "dealer ranking", "dealers by", "top 10 dealer"
+        ]
+        return any(p in question_lower for p in patterns)
+    
+    # ==========================================================
+    # GROQ PROTECTION
+    # ==========================================================
+    
+    def _is_logistics_query(self, question: str) -> bool:
+        """Check if query contains logistics keywords (should not go to Groq)."""
+        question_lower = question.lower()
+        
+        # Check protected keywords
+        for keyword in PROTECTED_GROQ_KEYWORDS:
+            if keyword in question_lower:
+                return True
+        
+        # Check for metrics
+        if self.schema.detect_metric(question):
+            return True
+        
+        # Check for logistics keywords
+        if self.schema.is_logistics_keyword(question):
+            return True
+        
+        return False
     
     # ==========================================================
     # QUERY PLAN
@@ -251,16 +503,17 @@ class AIOrchestrator:
         except Exception as e:
             logger.exception(f"[{req_id}] Service execution error: {e}")
             self.metrics["service_failures"] += 1
-            return self._get_fallback_response(query_plan.original_message)
+            return self._get_error_response(query_plan, str(e))
+    
+    # ==========================================================
+    # ANALYTICS EXECUTION
+    # ==========================================================
     
     def _execute_analytics(self, intent: str, query_plan: QueryPlan) -> str:
         entity = query_plan.entity
-        entity2 = query_plan.entity2  # For comparisons
+        entity2 = query_plan.entity2
         
-        # ==========================================================
         # DEALER ANALYTICS
-        # ==========================================================
-        
         if intent == "dealer_dashboard" and entity:
             result = self.analytics.get_dealer_dashboard(entity)
             return self._format_dealer_dashboard(result, entity)
@@ -281,10 +534,7 @@ class AIOrchestrator:
             result = self.analytics.get_dealer_aging(entity)
             return self._format_dealer_aging(result, entity)
         
-        # ==========================================================
         # WAREHOUSE ANALYTICS
-        # ==========================================================
-        
         if intent == "warehouse_dashboard" and entity:
             result = self.analytics.get_warehouse_dashboard(entity)
             return self._format_warehouse_dashboard(result, entity)
@@ -293,10 +543,7 @@ class AIOrchestrator:
             result = self.analytics.get_warehouse_dashboard(entity)
             return self._format_warehouse_performance(result, entity)
         
-        # ==========================================================
-        # CITY ANALYTICS (NEW)
-        # ==========================================================
-        
+        # CITY ANALYTICS
         if intent == "city_dashboard" and entity:
             result = self.analytics.get_city_dashboard(entity)
             return self._format_city_dashboard(result, entity)
@@ -305,18 +552,18 @@ class AIOrchestrator:
             result = self.analytics.get_city_dashboard(entity)
             return self._format_city_performance(result, entity)
         
-        # ==========================================================
-        # DN ANALYTICS
-        # ==========================================================
+        if intent == "city_ranking":
+            result = self.analytics.get_city_ranking()
+            return self._format_city_ranking(result)
         
-        if intent == "dn_lookup" and entity:
-            result = self.analytics.get_dn_analytics(entity)
-            return self._format_dn_details(result)
+        # DEALER RANKING
+        if intent == "dealer_ranking":
+            top = "top" in query_plan.original_message.lower()
+            limit = query_plan.limit or 10
+            result = self.analytics.get_dealer_ranking(limit=limit, top=top)
+            return self._format_dealer_ranking(result, top)
         
-        # ==========================================================
-        # COMPARISON ANALYTICS (NEW)
-        # ==========================================================
-        
+        # COMPARISON ANALYTICS
         if intent == "compare_dealers" and entity and entity2:
             result = self.analytics.compare_dealers(entity, entity2)
             return self._format_dealer_comparison(result, entity, entity2)
@@ -329,26 +576,12 @@ class AIOrchestrator:
             result = self.analytics.compare_cities(entity, entity2)
             return self._format_city_comparison(result, entity, entity2)
         
-        # ==========================================================
-        # RANKING ANALYTICS
-        # ==========================================================
+        # DN ANALYTICS
+        if intent == "dn_lookup" and entity:
+            result = self.analytics.get_dn_analytics(entity)
+            return self._format_dn_details(result)
         
-        if intent == "top_dealers":
-            metric = query_plan.sort_by or "revenue"
-            limit = query_plan.limit or 10
-            results = self.analytics.get_dealer_ranking(limit=limit, top=True)
-            return self._format_ranking(results, "Dealers", metric)
-        
-        if intent == "bottom_dealers":
-            metric = query_plan.sort_by or "revenue"
-            limit = query_plan.limit or 10
-            results = self.analytics.get_dealer_ranking(limit=limit, top=False)
-            return self._format_ranking(results, "Dealers", metric, top=False)
-        
-        # ==========================================================
-        # EXECUTIVE & ROOT CAUSE ANALYTICS
-        # ==========================================================
-        
+        # EXECUTIVE & ROOT CAUSE
         if intent == "executive_insight":
             result = self.analytics.get_executive_summary()
             return self._format_executive_insights(result)
@@ -374,6 +607,10 @@ class AIOrchestrator:
         
         return self._get_help_message()
     
+    # ==========================================================
+    # KPI EXECUTION
+    # ==========================================================
+    
     def _execute_kpi(self, intent: str, query_plan: QueryPlan) -> str:
         entity = query_plan.entity
         
@@ -391,50 +628,69 @@ class AIOrchestrator:
         
         return self._get_help_message()
     
+    # ==========================================================
+    # GROQ EXECUTION (ONLY FOR APPROPRIATE QUERIES)
+    # ==========================================================
+    
     def _execute_groq(self, query_plan: QueryPlan, context: Dict) -> str:
+        """Execute Groq ONLY for appropriate queries."""
+        question = query_plan.original_message
+        
+        # Double-check: Is this really a Groq-appropriate query?
+        if self._is_logistics_query(question):
+            logger.warning(f"🚫 GROQ BLOCKED: Logistics query rejected at execution layer")
+            self.metrics["rejections"] += 1
+            return self._get_error_response(
+                query_plan,
+                "Logistics queries must use analytics, not Groq"
+            )
+        
         if self.groq.is_available:
-            response = self.groq.chat(query_plan.original_message, context)
+            response = self.groq.chat(question, context)
             self.metrics["groq_uses"] += 1
             return response
-        return self._get_fallback_response(query_plan.original_message)
+        
+        return self._get_fallback_response(question, "Groq service unavailable")
     
     # ==========================================================
-    # GROQ ENRICHMENT (FIXED: Never Replaces Analytics)
+    # GROQ GOVERNANCE - Enrichment Only
     # ==========================================================
     
-    def _enrich_with_groq(self, response: str, query_plan: QueryPlan, question: str, context: Dict) -> str:
+    def _apply_groq_governance(self, response: str, query_plan: QueryPlan, question: str, context: Dict) -> str:
         """
-        FIX: Groq enriches analytics, never replaces it.
-        Only used for executive_insight and root_cause to add explanatory context.
+        GROQ GOVERNANCE: Enrich analytics, never replace.
+        
+        Rules:
+        1. Only enrich executive_insight and root_cause
+        2. Never replace analytics with Groq
+        3. Always preserve analytics data
         """
         if not self.groq.is_available:
             return response
         
-        # Only enrich specific intents with analytics data
-        if query_plan.intent in ["executive_insight", "root_cause"]:
-            # Check if response already contains meaningful analytics
-            if len(response) > 50:  # Has meaningful content
-                try:
-                    # Get a concise summary from Groq based on the analytics
-                    enrichment_prompt = f"""
+        # Only enrich specific analytics intents
+        if query_plan.intent in ["executive_insight", "root_cause"] and len(response) > 50:
+            try:
+                # Get concise Groq summary based on analytics
+                enrichment_prompt = f"""
 Based on this logistics analytics data:
 
-{response[:500]}
+{response[:600]}
 
 Provide a brief, professional executive summary (2-3 sentences) that highlights the most critical insight and recommends one immediate action.
 
-Keep it concise and actionable.
+Keep it concise and actionable. Do not repeat the data, just provide insight.
 """
-                    groq_summary = self.groq.chat(enrichment_prompt, context)
-                    
-                    if groq_summary and len(groq_summary) > 10:
-                        self.metrics["groq_uses"] += 1
-                        # Combine analytics + Groq insight
-                        return f"{response}\n\n💡 *AI Insight:*\n{groq_summary}"
-                except Exception as e:
-                    logger.warning(f"Groq enrichment failed: {e}")
+                groq_summary = self.groq.chat(enrichment_prompt, context)
+                
+                if groq_summary and len(groq_summary) > 10:
+                    self.metrics["groq_uses"] += 1
+                    # Combine analytics + Groq insight
+                    return f"{response}\n\n💡 *AI Insight:*\n{groq_summary}"
+            except Exception as e:
+                logger.warning(f"Groq enrichment failed: {e}")
         
-        # For general AI, use Groq directly
+        # General AI queries go to Groq directly
         if query_plan.intent == "general_ai":
             groq_response = self.groq.chat(question, context)
             if groq_response and len(groq_response) > 10:
@@ -458,24 +714,35 @@ Keep it concise and actionable.
             self.conversation_cache[phone_number] = context
         return context
     
-    def _update_context(self, phone_number: Optional[str], query_plan: QueryPlan, req_id: str):
+    def _update_context(
+        self,
+        phone_number: Optional[str],
+        intent: str,
+        entity_type: str,
+        entity: str,
+        req_id: str,
+        response: str = ""
+    ):
         if not phone_number:
             return
         context = self._load_context(phone_number)
         if not context:
             return
         
-        context.last_intent = query_plan.intent
-        context.last_question = query_plan.original_message
+        context.last_intent = intent
+        context.last_question = entity
         
-        if query_plan.entity_type == "dealer":
-            context.last_dealer = query_plan.entity
-        elif query_plan.entity_type == "warehouse":
-            context.last_warehouse = query_plan.entity
-        elif query_plan.entity_type == "city":
-            context.last_city = query_plan.entity
-        elif query_plan.entity_type == "dn":
-            context.last_dn = query_plan.entity
+        if entity_type == "dealer":
+            context.last_dealer = entity
+        elif entity_type == "warehouse":
+            context.last_warehouse = entity
+        elif entity_type == "city":
+            context.last_city = entity
+        elif entity_type == "dn":
+            context.last_dn = entity
+        
+        if response:
+            context.last_response = response[:200]
         
         context.message_count += 1
         context.last_updated = time.time()
@@ -483,6 +750,11 @@ Keep it concise and actionable.
     # ==========================================================
     # CACHE MANAGEMENT
     # ==========================================================
+    
+    def _cache_response(self, question: str, phone_number: Optional[str], response: str):
+        """Cache response with TTL."""
+        cache_key = self._generate_cache_key(question, phone_number)
+        self.response_cache[cache_key] = response
     
     def _generate_cache_key(self, question: str, phone_number: Optional[str]) -> str:
         key = question.lower().strip()
@@ -493,8 +765,49 @@ Keep it concise and actionable.
     def clear_caches(self):
         """Clear response cache (call after metadata refresh or Excel import)."""
         self.response_cache.clear()
-        logger.info("🗑️ Response cache cleared")
-        return {"status": "cleared", "version": "8.2"}
+        self.conversation_cache.clear()
+        logger.info("🗑️ All caches cleared")
+        return {"status": "cleared", "version": "9.0"}
+    
+    # ==========================================================
+    # DIAGNOSTIC METHODS
+    # ==========================================================
+    
+    def get_routing_debug(self, question: str) -> Dict[str, Any]:
+        """Debug routing decision for a query."""
+        # Get entity resolution
+        entity_result = self.schema.resolve_entity(question)
+        
+        # Get query plan
+        context = {}
+        query_plan = self._get_query_plan(question, context)
+        
+        # Validate and override
+        validated = self._validate_and_override(query_plan, question)
+        
+        return {
+            "query": question,
+            "ai_query_service": {
+                "intent": query_plan.intent,
+                "entity": query_plan.entity,
+                "entity_type": query_plan.entity_type,
+                "service": query_plan.service,
+                "confidence": query_plan.confidence
+            },
+            "schema_override": {
+                "entity_resolved": entity_result["type"] != "none",
+                "entity_type": entity_result.get("type"),
+                "entity_name": entity_result.get("name"),
+                "confidence": entity_result.get("confidence", 0)
+            },
+            "final_decision": {
+                "intent": validated.intent,
+                "entity": validated.entity,
+                "entity_type": validated.entity_type,
+                "service": validated.service,
+                "groq_protected": self._is_logistics_query(question)
+            }
+        }
     
     # ==========================================================
     # FORMATTERS - DEALER
@@ -581,6 +894,24 @@ Keep it concise and actionable.
             f"• DNs with Aging: {data.get('count', 0)}"
         )
     
+    def _format_dealer_ranking(self, data: Dict, top: bool) -> str:
+        dealers = data.get("dealers", [])
+        if not dealers:
+            return "📊 No dealers found."
+        
+        title = "🏆 *Top Dealers*" if top else "📉 *Bottom Dealers*"
+        
+        lines = [title, ""]
+        for i, dealer in enumerate(dealers[:10], 1):
+            revenue = dealer.get('revenue', 0)
+            pod_rate = dealer.get('pod_rate', 0)
+            lines.append(
+                f"{i}. {dealer.get('name', 'N/A')}\n"
+                f"   Revenue: PKR {revenue:,.0f} | POD Rate: {pod_rate:.1f}%"
+            )
+        
+        return "\n".join(lines)
+    
     # ==========================================================
     # FORMATTERS - WAREHOUSE
     # ==========================================================
@@ -623,7 +954,7 @@ Keep it concise and actionable.
         )
     
     # ==========================================================
-    # FORMATTERS - CITY (NEW)
+    # FORMATTERS - CITY
     # ==========================================================
     
     def _format_city_dashboard(self, data: Dict, city_name: str) -> str:
@@ -644,7 +975,7 @@ Keep it concise and actionable.
         top_dealers = data.get("top_dealers", [])
         if top_dealers:
             lines.append("")
-            lines.append("🏆 *Top Dealers in {city_name}:*")
+            lines.append(f"🏆 *Top Dealers in {city_name}:*")
             for i, dealer in enumerate(top_dealers[:5], 1):
                 lines.append(f"   {i}. {dealer.get('name', 'N/A')} - PKR {dealer.get('revenue', 0):,.0f}")
         
@@ -664,8 +995,25 @@ Keep it concise and actionable.
             f"• Active Dealers: {summary.get('total_dealers', 0)}"
         )
     
+    def _format_city_ranking(self, data: Dict) -> str:
+        cities = data.get("cities", [])
+        if not cities:
+            return "📊 No city data available."
+        
+        lines = ["🏙️ *City Rankings*", ""]
+        for i, city in enumerate(cities[:10], 1):
+            revenue = city.get('revenue', 0)
+            pod_rate = city.get('pod_rate', 0)
+            dealers = city.get('dealers', 0)
+            lines.append(
+                f"{i}. {city.get('name', 'N/A')}\n"
+                f"   Revenue: PKR {revenue:,.0f} | POD Rate: {pod_rate:.1f}% | Dealers: {dealers}"
+            )
+        
+        return "\n".join(lines)
+    
     # ==========================================================
-    # FORMATTERS - DN (FIXED with correct metrics)
+    # FORMATTERS - DN
     # ==========================================================
     
     def _format_dn_details(self, data: Dict) -> str:
@@ -677,12 +1025,12 @@ Keep it concise and actionable.
         durations = validation.get("durations", {})
         status = data.get("status", "unknown")
         
-        # FIX: Use correct field names from SchemaService
+        # Use correct field names
         processing_days = durations.get('processing_time_days')
         delivery_days = durations.get('delivery_time_days')
         cycle_days = durations.get('total_cycle_days')
         
-        # Determine data quality status
+        # Data quality status
         is_valid = validation.get('is_valid', False)
         issues = validation.get('issues', [])
         
@@ -696,7 +1044,7 @@ Keep it concise and actionable.
             quality_emoji = "ℹ️"
             quality_status = "INCOMPLETE DATA"
         
-        # Determine DN status display
+        # Status display
         status_map = {
             "pending_pgi": "⏳ Pending PGI",
             "pending_pod": "🚚 In Transit (POD Pending)",
@@ -719,11 +1067,9 @@ Keep it concise and actionable.
             f"   • DN Create: {record.get('dn_date', 'N/A')}",
             f"   • Good Issue: {record.get('pgi_date', 'N/A')}",
             f"   • POD: {record.get('pod_date', 'N/A')}",
+            "",
+            "⏱️ *Time Metrics:*",
         ]
-        
-        # FIX: Add all three time metrics with proper validation
-        lines.append("")
-        lines.append("⏱️ *Time Metrics:*")
         
         if processing_days is not None:
             emoji = "✅" if processing_days <= 7 else "⚠️" if processing_days <= 15 else "🔴"
@@ -743,18 +1089,15 @@ Keep it concise and actionable.
         else:
             lines.append("   ⏳ Total Cycle Time: Not available")
         
-        # FIX: Show data quality status
         lines.append("")
         lines.append(f"{quality_emoji} *Data Quality: {quality_status}*")
         
-        # Show issues if any
         if issues:
             lines.append("")
             lines.append("⚠️ *Issues Detected:*")
             for issue in issues:
                 lines.append(f"   • {issue}")
         
-        # Show warnings if any
         warnings = validation.get('warnings', [])
         if warnings:
             lines.append("")
@@ -768,7 +1111,7 @@ Keep it concise and actionable.
         return "\n".join(lines)
     
     # ==========================================================
-    # FORMATTERS - COMPARISON (NEW)
+    # FORMATTERS - COMPARISON
     # ==========================================================
     
     def _format_dealer_comparison(self, data: Dict, dealer1: str, dealer2: str) -> str:
@@ -791,7 +1134,6 @@ Keep it concise and actionable.
             "└─────────────────┴─────────────┴─────────────┘",
         ]
         
-        # Add winner
         if d1.get('revenue', 0) > d2.get('revenue', 0):
             lines.append(f"\n🏆 {dealer1} has higher revenue by PKR {d1.get('revenue', 0) - d2.get('revenue', 0):,.0f}")
         elif d2.get('revenue', 0) > d1.get('revenue', 0):
@@ -846,29 +1188,6 @@ Keep it concise and actionable.
             "└─────────────────┴─────────────┴─────────────┘",
         ]
         
-        return "\n".join(lines)
-    
-    # ==========================================================
-    # FORMATTERS - RANKING
-    # ==========================================================
-    
-    def _format_ranking(self, data: Dict, entity_type: str, metric: str, top: bool = True) -> str:
-        dealers = data.get("dealers", [])
-        if not dealers:
-            return f"📊 No {entity_type} found."
-        
-        title = "🏆 Top" if top else "📉 Bottom"
-        metric_label = metric.title()
-        
-        lines = [f"{title} {len(dealers)} {entity_type} by {metric_label}", ""]
-        for i, item in enumerate(dealers[:10], 1):
-            value = item.get(metric, 0)
-            pod_rate = item.get('pod_rate', 0)
-            lines.append(
-                f"{i}. {item['name']}: "
-                f"{f'PKR {value:,.0f}' if metric == 'revenue' else f'{value:,} units'}"
-                f" | POD: {pod_rate:.1f}%"
-            )
         return "\n".join(lines)
     
     # ==========================================================
@@ -954,7 +1273,7 @@ Keep it concise and actionable.
         high_count = data.get("high_count", 0)
         
         if not alerts:
-            return "🚨 Control Tower\n\n✅ No critical alerts at this time."
+            return "🚨 *Control Tower*\n\n✅ No critical alerts at this time."
         
         lines = [
             "🚨 *Control Tower*",
@@ -975,7 +1294,7 @@ Keep it concise and actionable.
         return "\n".join(lines)
     
     # ==========================================================
-    # FORMATTERS - DELIVERY PERFORMANCE
+    # FORMATTERS - PERFORMANCE & TREND
     # ==========================================================
     
     def _format_delivery_performance(self, data: Dict) -> str:
@@ -995,10 +1314,6 @@ Keep it concise and actionable.
             f"   • On-Time Delivery: {metrics.get('on_time_delivery_rate', 0):.1f}%"
         )
     
-    # ==========================================================
-    # FORMATTERS - TREND
-    # ==========================================================
-    
     def _format_trend_analysis(self, data: Dict) -> str:
         trends = data.get("trends", {})
         monthly = trends.get("monthly", [])
@@ -1017,7 +1332,7 @@ Keep it concise and actionable.
         return "\n".join(lines)
     
     # ==========================================================
-    # HELPERS
+    # ERROR & FALLBACK RESPONSES
     # ==========================================================
     
     def _get_help_message(self) -> str:
@@ -1029,23 +1344,46 @@ Keep it concise and actionable.
    • "Dealer name" (e.g., "Dubai Electronics")
    • "Dealer revenue" or "Dealer units"
    • "Dealer performance" or "Dealer aging"
+   • "Compare Dealer A vs Dealer B"
 
-*🏙️ City Queries:* "City name" (e.g., "Haripur")
+*🏙️ City Queries:*
+   • "City name" (e.g., "Haripur")
+   • "Which city has highest sales"
+   • "Compare City A vs City B"
 
-*🏭 Warehouse Queries:* "Warehouse name" (e.g., "Rawalpindi")
+*🏭 Warehouse Queries:*
+   • "Warehouse name" (e.g., "Rawalpindi")
+   • "Compare Warehouse A vs Warehouse B"
 
 *📊 Analytics:*
    • "Top dealers" or "Bottom dealers"
    • "Executive insights" or "Key issues"
    • "Root cause" or "Critical alerts"
-
-*📈 Performance:* "Delivery performance" or "Trend analysis"
+   • "Delivery performance"
 
 *🤖 General AI:* Any non-logistics question
 
 *What would you like to know?* 🤖"""
     
-    def _get_fallback_response(self, question: str) -> str:
+    def _get_error_response(self, query_plan: QueryPlan, error: str) -> str:
+        """Structured error response with logging."""
+        logger.error(
+            f"❌ Service error: intent={query_plan.intent}, "
+            f"entity={query_plan.entity}, "
+            f"service={query_plan.service}, "
+            f"error={error}"
+        )
+        return (
+            f"⚠️ Unable to retrieve analytics data right now.\n\n"
+            f"• Intent: {query_plan.intent}\n"
+            f"• Service: {query_plan.service}\n"
+            f"• Error: {error[:100]}\n\n"
+            f"Please try again or contact support if the issue persists."
+        )
+    
+    def _get_fallback_response(self, question: str, error: str = "") -> str:
+        """Generic fallback with logging."""
+        logger.error(f"⚠️ Fallback triggered: question={question}, error={error}")
         return f"I understand you're asking: {question[:100]}\n\nType 'Help' for available commands."
     
     # ==========================================================
@@ -1062,10 +1400,16 @@ Keep it concise and actionable.
             "service_success_rate": self.metrics["service_successes"] / max(1, self.metrics["service_successes"] + self.metrics["service_failures"]),
             "analytics_uses": self.metrics["analytics_uses"],
             "groq_uses": self.metrics["groq_uses"],
+            "overrides": self.metrics["overrides"],
+            "rejections": self.metrics["rejections"],
             "conversation_count": len(self.conversation_cache),
             "cache_size": len(self.response_cache),
-            "version": "8.2"
+            "version": "9.0"
         }
+    
+    def get_debug_info(self, question: str) -> Dict[str, Any]:
+        """Get debug info for a specific question."""
+        return self.get_routing_debug(question)
 
 
 # ==========================================================
@@ -1113,31 +1457,30 @@ def clear_ai_cache():
     return orchestrator.clear_caches()
 
 
+def get_routing_debug(question: str) -> Dict[str, Any]:
+    """Get routing debug information for a query."""
+    orchestrator = get_orchestrator()
+    return orchestrator.get_routing_debug(question)
+
+
 # ==========================================================
 # INITIALIZATION
 # ==========================================================
 
 logger.info("=" * 60)
-logger.info("AI Provider Service v8.2 - Production Fixed")
+logger.info("AI Provider Service v9.0 - Master Governance Layer")
 logger.info("=" * 60)
 logger.info("")
-logger.info("   SERVICES:")
-logger.info("   ✅ AIQueryService - Decision Engine")
-logger.info("   ✅ AnalyticsService - Business Intelligence")
-logger.info("   ✅ KPIService - KPI Calculations")
-logger.info("   ✅ GroqService - AI Integration (Enrichment Only)")
-logger.info("   ✅ SchemaService - Metadata Engine")
+logger.info("   GOVERNANCE RULES:")
+logger.info("   ✅ Entity Resolution OVERRIDES Intent Detection")
+logger.info("   ✅ Groq ONLY for General/Creative/Casual")
+logger.info("   ✅ Analytics NEVER goes to Groq alone")
+logger.info("   ✅ DN Lookup IMMEDIATE (8-12 digits)")
+logger.info("   ✅ Context Intelligence (last_dealer, last_city, last_warehouse)")
+logger.info("   ✅ City Ranking Support")
+logger.info("   ✅ Dealer Comparison Support")
+logger.info("   ✅ Cache Invalidation on Metadata Refresh")
+logger.info("   ✅ Comprehensive Logging")
 logger.info("")
-logger.info("   FIXES APPLIED:")
-logger.info("   ✅ Groq enriches analytics, never replaces")
-logger.info("   ✅ Correct DN metrics (processing/delivery/cycle)")
-logger.info("   ✅ Data quality status displayed")
-logger.info("   ✅ Context intelligence with last_dealer")
-logger.info("   ✅ City dashboard support")
-logger.info("   ✅ Comparison support (dealers/warehouses/cities)")
-logger.info("   ✅ Cache invalidation on metadata refresh")
-logger.info("   ✅ Root cause uses analytics + Groq")
-logger.info("   ✅ WhatsApp DN format with all metrics")
-logger.info("")
-logger.info("   STATUS: ✅ READY FOR PRODUCTION")
+logger.info("   STATUS: ✅ PRODUCTION READY")
 logger.info("=" * 60)
