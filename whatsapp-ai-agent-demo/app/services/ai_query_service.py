@@ -1,8 +1,10 @@
 # ==========================================================
-# FILE: app/services/ai_query_service.py (v8.0 - ENTERPRISE DEALER INTELLIGENCE ROUTER)
+# FILE: app/services/ai_query_service.py (v8.1 - FULLY INTEGRATED)
 # ==========================================================
 # PURPOSE: PURE ROUTING ENGINE - Entity-First, Intent-Second
 # ARCHITECTURE: Single Source of Truth for Routing
+#
+# INTEGRATED WITH: SchemaService v7.2 (sold_to_party_name fix)
 #
 # CAPABILITIES: Answers ALL dealer intelligence questions
 # - Dealer 360 Dashboard
@@ -34,7 +36,7 @@ from loguru import logger
 
 
 # ==========================================================
-# IMPORT SAFETY - Integrated with SchemaService v7.1
+# IMPORT SAFETY - Integrated with SchemaService v7.2
 # ==========================================================
 
 try:
@@ -49,7 +51,7 @@ try:
         search_entities,
         generate_metadata_report
     )
-    logger.debug("✅ Successfully imported SchemaService v7.1")
+    logger.debug("✅ Successfully imported SchemaService v7.2")
 except ImportError as e:
     logger.error(f"❌ Failed to import SchemaService: {e}")
     raise
@@ -175,7 +177,7 @@ class AIQueryService:
     """
     ENTERPRISE DEALER INTELLIGENCE ROUTER
     
-    FULLY INTEGRATED WITH: SchemaService v7.1
+    FULLY INTEGRATED WITH: SchemaService v7.2
     
     ROUTING PRIORITY (ENFORCED):
     1. DN Detection (8-12 digits) → analytics
@@ -209,17 +211,17 @@ class AIQueryService:
     """
     
     def __init__(self):
-        """Initialize AIQueryService with SchemaService v7.1."""
+        """Initialize AIQueryService with SchemaService v7.2."""
         start_time = time.time()
         
         try:
             logger.info("=" * 70)
-            logger.info("Loading SchemaService v7.1 for AIQueryService...")
+            logger.info("Loading SchemaService v7.2 for AIQueryService...")
             logger.info("=" * 70)
             
-            # Load SchemaService v7.1
+            # Load SchemaService v7.2
             self.schema = get_schema_service()
-            logger.info("✅ SchemaService v7.1 loaded successfully")
+            logger.info("✅ SchemaService v7.2 loaded successfully")
             
             # ==========================================================
             # PRIORITY 1: STARTUP VALIDATION & DIAGNOSTICS
@@ -238,10 +240,16 @@ class AIQueryService:
             
             if dealer_count == 0:
                 logger.error("❌ CRITICAL: No dealers loaded from database!")
-                raise RuntimeError("No dealers loaded from database.")
+                logger.error("   Checking 'sold_to_party_name' column in delivery_report table.")
+                raise RuntimeError("No dealers loaded from database. Check sold_to_party_name column.")
             
             health = self.schema.get_health_report()
             logger.info(f"   📊 Health Score: {health.get('health_score', 0)}/100")
+            
+            # Log sample dealers for debugging
+            if dealer_count > 0:
+                sample = list(self.schema.dealers.values())[:5]
+                logger.info(f"   📋 Sample Dealers: {sample}")
             
             self._logistics_keywords_cache = self.schema.logistics_keywords
             logger.debug(f"✅ Cached {len(self._logistics_keywords_cache)} logistics keywords")
@@ -260,7 +268,7 @@ class AIQueryService:
             init_duration = (time.time() - start_time) * 1000
             logger.info("")
             logger.info("=" * 70)
-            logger.info("AIQueryService v8.0 - Enterprise Dealer Intelligence Router")
+            logger.info("AIQueryService v8.1 - Fully Integrated with SchemaService v7.2")
             logger.info("=" * 70)
             logger.info("")
             logger.info("   ROUTING PRIORITY (ENFORCED):")
@@ -291,6 +299,13 @@ class AIQueryService:
             logger.info("   ✅ Alerts")
             logger.info("   ✅ Executive Insights")
             logger.info("   ✅ AI Context")
+            logger.info("")
+            logger.info("   SCHEMASERVICE INTEGRATION:")
+            logger.info("   ✅ resolve_dealer() - sold_to_party_name")
+            logger.info("   ✅ resolve_city() - ship_to_city")
+            logger.info("   ✅ resolve_warehouse() - warehouse")
+            logger.info("   ✅ is_dn_number() - DN validation")
+            logger.info("   ✅ search_entities() - Entity search")
             logger.info("")
             logger.info("   STATUS: ✅ PRODUCTION READY")
             logger.info("=" * 70)
@@ -798,16 +813,21 @@ class AIQueryService:
         return intent_methods.get(intent, 'get_dealer_dashboard')
     
     # ==========================================================
-    # DETECTION METHODS (from v7.2)
+    # DETECTION METHODS (Enhanced)
     # ==========================================================
     
     def _detect_dealer(self, original: str, normalized: str, context: Optional[Dict]) -> Optional[str]:
-        """Detect dealer from query with multiple strategies."""
+        """
+        Detect dealer from query with multiple strategies.
+        
+        Uses SchemaService v7.2 resolve_dealer() which queries 'sold_to_party_name'.
+        """
         logger.debug(f"Detecting dealer in: '{original}'")
         
+        # Strategy 1: Direct SchemaService resolution (uses sold_to_party_name)
         dealer = self.schema.resolve_dealer(original)
         if dealer:
-            logger.debug(f"✅ Dealer via direct: {dealer}")
+            logger.debug(f"✅ Dealer via direct resolution: {dealer}")
             return dealer
         
         dealer = self.schema.resolve_dealer(normalized)
@@ -815,14 +835,16 @@ class AIQueryService:
             logger.debug(f"✅ Dealer via normalized: {dealer}")
             return dealer
         
+        # Strategy 2: Pattern extraction
         dealer_match = DEALER_PATTERN.search(original)
         if dealer_match:
             candidate = dealer_match.group(1).strip()
             resolved = self.schema.resolve_dealer(candidate)
             if resolved:
-                logger.debug(f"✅ Dealer via pattern: {resolved}")
+                logger.debug(f"✅ Dealer via pattern '{candidate}': {resolved}")
                 return resolved
         
+        # Strategy 3: Word combinations
         words = normalized.split()
         if len(words) >= 2:
             for i in range(len(words) - 1):
@@ -831,91 +853,125 @@ class AIQueryService:
                     if len(candidate) >= 4:
                         resolved = self.schema.resolve_dealer(candidate)
                         if resolved:
+                            logger.debug(f"✅ Dealer via word combo '{candidate}': {resolved}")
                             return resolved
         
+        # Strategy 4: Single words
         for word in words:
             if len(word) >= 3:
                 resolved = self.schema.resolve_dealer(word)
                 if resolved:
+                    logger.debug(f"✅ Dealer via word '{word}': {resolved}")
                     return resolved
         
+        # Strategy 5: Context
         if context and context.get('last_dealer'):
             follow_up = ['revenue', 'units', 'performance', 'aging', 'pending', 'pod', 'pgi']
             if any(kw in normalized for kw in follow_up):
+                logger.debug(f"✅ Dealer via context: {context['last_dealer']}")
                 return context['last_dealer']
         
+        # Strategy 6: SchemaService search_entities()
         try:
             search_results = self.schema.search_entities(original)
             if search_results.get('matching_dealers'):
                 matched = search_results['matching_dealers'][0]
+                logger.debug(f"✅ Dealer via search_entities: {matched}")
                 return matched
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Search entities failed: {e}")
         
+        # Strategy 7: Direct database check using find_dealer_debug
+        try:
+            debug_result = self.schema.find_dealer_debug(original)
+            if debug_result.get('resolved'):
+                logger.debug(f"✅ Dealer via find_dealer_debug: {debug_result['resolved']}")
+                return debug_result['resolved']
+        except Exception as e:
+            logger.debug(f"find_dealer_debug failed: {e}")
+        
+        logger.debug("❌ No dealer detected")
         return None
     
     def _detect_city(self, original: str, normalized: str) -> Optional[str]:
-        """Detect city from query."""
+        """Detect city from query using SchemaService v7.2."""
         logger.debug(f"Detecting city in: '{original}'")
         
+        # Direct SchemaService resolution (uses ship_to_city)
         city = self.schema.resolve_city(original)
         if city:
+            logger.debug(f"✅ City via direct: {city}")
             return city
         
         city = self.schema.resolve_city(normalized)
         if city:
+            logger.debug(f"✅ City via normalized: {city}")
             return city
         
+        # Word matching
         words = normalized.split()
         for word in words:
             if len(word) >= 2:
                 resolved = self.schema.resolve_city(word)
                 if resolved:
+                    logger.debug(f"✅ City via word '{word}': {resolved}")
                     return resolved
         
+        # Search entities fallback
         try:
             search_results = self.schema.search_entities(original)
             if search_results.get('matching_cities'):
                 matched = search_results['matching_cities'][0]
+                logger.debug(f"✅ City via search_entities: {matched}")
                 return matched
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Search entities failed: {e}")
         
+        logger.debug("❌ No city detected")
         return None
     
     def _detect_warehouse(self, original: str, normalized: str) -> Optional[str]:
-        """Detect warehouse from query."""
+        """Detect warehouse from query using SchemaService v7.2."""
         logger.debug(f"Detecting warehouse in: '{original}'")
         
+        # Direct SchemaService resolution (uses warehouse)
         warehouse = self.schema.resolve_warehouse(original)
         if warehouse:
+            logger.debug(f"✅ Warehouse via direct: {warehouse}")
             return warehouse
         
         warehouse = self.schema.resolve_warehouse(normalized)
         if warehouse:
+            logger.debug(f"✅ Warehouse via normalized: {warehouse}")
             return warehouse
         
+        # Word matching
         words = normalized.split()
         for word in words:
             if len(word) >= 2:
                 resolved = self.schema.resolve_warehouse(word)
                 if resolved:
+                    logger.debug(f"✅ Warehouse via word '{word}': {resolved}")
                     return resolved
         
+        # Search entities fallback
         try:
             search_results = self.schema.search_entities(original)
             if search_results.get('matching_warehouses'):
                 matched = search_results['matching_warehouses'][0]
+                logger.debug(f"✅ Warehouse via search_entities: {matched}")
                 return matched
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Search entities failed: {e}")
         
+        logger.debug("❌ No warehouse detected")
         return None
     
     def _detect_intent(self, normalized: str, original: str) -> Optional[Tuple[str, float, bool]]:
         """Detect intent from query."""
         logger.debug(f"Detecting intent in: '{normalized}'")
         
+        # Use SchemaService v7.2 detect_intent()
         schema_intent, schema_confidence = self.schema.detect_intent(original)
         if schema_intent and schema_confidence >= 0.60:
             executive_intents = ['executive_insight', 'root_cause', 'control_tower']
@@ -923,6 +979,7 @@ class AIQueryService:
                 return (schema_intent, schema_confidence, True)
             return (schema_intent, schema_confidence, False)
         
+        # KPI INTENTS
         kpi_patterns = {
             'pending_pgi': ['pending pgi', 'pgi pending', 'open pgi'],
             'pending_pod': ['pending pod', 'pod pending', 'open pod'],
@@ -936,6 +993,7 @@ class AIQueryService:
                 if pattern in normalized:
                     return (intent, 0.95, False)
         
+        # RANKING INTENTS
         if 'top dealer' in normalized or 'top dealers' in normalized:
             if 'revenue' in normalized or 'sales' in normalized:
                 return ("top_dealers_revenue", 0.90, False)
@@ -952,6 +1010,7 @@ class AIQueryService:
         if 'top warehouse' in normalized or 'best warehouse' in normalized:
             return ("top_warehouses", 0.85, False)
         
+        # EXECUTIVE INTENTS
         executive_patterns = {
             'executive_insight': ['executive insight', 'executive summary', 'management report'],
             'root_cause': ['root cause', 'why delayed', 'why aging', 'what is the issue'],
@@ -964,12 +1023,14 @@ class AIQueryService:
                 if pattern in normalized:
                     return (intent, 0.90, True)
         
+        # COMPARISON & TREND
         if 'compare' in normalized or 'vs' in normalized or 'versus' in normalized:
             return ("comparison", 0.80, True)
         
         if 'trend' in normalized or 'over time' in normalized or 'historical' in normalized:
             return ("trend", 0.80, True)
         
+        # HELP
         if 'help' in normalized or 'menu' in normalized or 'commands' in normalized:
             return ("help", 0.95, True)
         
@@ -1065,8 +1126,8 @@ class AIQueryService:
                            self._routing_stats["warehouse_resolutions"] + 
                            self._routing_stats["dealer_intelligence"] + 
                            self._routing_stats["intent_detections"]) / max(1, total) * 100,
-            "version": "8.0",
-            "schema_version": "7.1",
+            "version": "8.1",
+            "schema_version": "7.2",
             "schema_health": self.schema.get_health_report()
         }
 
@@ -1128,8 +1189,13 @@ __all__ = [
 # ==========================================================
 
 logger.debug("=" * 70)
-logger.debug("AIQueryService v8.0 - Enterprise Dealer Intelligence Router")
+logger.debug("AIQueryService v8.1 - Fully Integrated with SchemaService v7.2")
 logger.debug("=" * 70)
+logger.debug("")
+logger.debug("   INTEGRATION HIGHLIGHTS:")
+logger.debug("   ✅ resolve_dealer() - sold_to_party_name (dealer column)")
+logger.debug("   ✅ resolve_city() - ship_to_city (city column)")
+logger.debug("   ✅ resolve_warehouse() - warehouse (warehouse column)")
 logger.debug("")
 logger.debug("   DEALER INTELLIGENCE SUPPORT:")
 logger.debug("   ✅ 360 Dashboard")
