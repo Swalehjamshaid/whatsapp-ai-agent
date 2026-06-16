@@ -1,29 +1,16 @@
 # ==========================================================
-# FILE: app/services/ai_query_service.py (v7.1 - FULLY INTEGRATED)
+# FILE: app/services/ai_query_service.py (v7.2 - PRODUCTION FIX)
 # ==========================================================
 # PURPOSE: PURE ROUTING ENGINE - Entity-First, Intent-Second
 # ARCHITECTURE: Single Source of Truth for Routing
 #
-# INTEGRATED WITH: SchemaService v7.1
-# - Uses all SchemaService methods
-# - Uses SchemaService's dealer/city/warehouse resolution
-# - Uses SchemaService's DN detection
-# - Uses SchemaService's intent detection
-# - Uses SchemaService's metric detection
-# - Uses SchemaService's logistics keyword detection
-#
-# ROUTING PRIORITY (ENFORCED):
-# 1. DN Detection (8-12 digits) → analytics
-# 2. Dealer Resolution → analytics
-# 3. City Resolution → analytics
-# 4. Warehouse Resolution → analytics
-# 5. Intent Detection → analytics/kpi/groq
-# 6. Groq (LAST RESORT) → groq
-# 7. Help → help
-#
-# GROQ GOVERNANCE:
-# Groq ONLY when all routing fails
-# Groq NEVER for DN/Dealer/City/Warehouse/Intent
+# FIXES APPLIED:
+# 1. ✅ Startup Validation - Checks metadata on initialization
+# 2. ✅ Router Diagnostics - Full logging of all detection attempts
+# 3. ✅ Executive Routing - Analytics first, then Groq enrichment
+# 4. ✅ Startup Logging - Shows loaded entities count
+# 5. ✅ Metadata Endpoint Support - get_schema_stats()
+# 6. ✅ Entity Debug Support - debug_entity() method
 # ==========================================================
 
 import re
@@ -149,7 +136,7 @@ class AIQueryService:
     GROQ GOVERNANCE:
     - Groq ONLY when all routing fails
     - Groq NEVER for DN/Dealer/City/Warehouse/Intent
-    - Help menu ONLY for explicit help queries
+    - Executive intents use analytics data + Groq enrichment (NOT Groq alone)
     
     SCHEMASERVICE INTEGRATION:
     - Uses schema.resolve_dealer() for dealer resolution
@@ -182,12 +169,47 @@ class AIQueryService:
             self.schema = get_schema_service()
             logger.info("✅ SchemaService v7.1 loaded successfully")
             
-            # Log SchemaService health
+            # ==========================================================
+            # PRIORITY 1: STARTUP VALIDATION & DIAGNOSTICS
+            # ==========================================================
+            
+            # Log loaded entities count
+            dealer_count = len(self.schema.dealers)
+            city_count = len(self.schema.cities)
+            warehouse_count = len(self.schema.warehouses)
+            
+            logger.info("")
+            logger.info("📊 *METADATA LOAD STATUS:*")
+            logger.info(f"   🏪 Dealers: {dealer_count}")
+            logger.info(f"   🏙️ Cities: {city_count}")
+            logger.info(f"   🏭 Warehouses: {warehouse_count}")
+            logger.info("")
+            
+            # Startup Validation - Check if metadata loaded
+            if dealer_count == 0:
+                logger.error("❌ CRITICAL: No dealers loaded from database!")
+                logger.error("   Check SchemaService connection to database.")
+                logger.error("   Check that DeliveryReport table has data.")
+                logger.error("   Check column names: customer_name, ship_to_city, warehouse")
+                
+                # In production, raise error if no metadata
+                raise RuntimeError(
+                    "No dealers loaded from database. "
+                    "Please check database connection and data import."
+                )
+            
+            if city_count == 0:
+                logger.warning("⚠️ No cities loaded from database")
+                logger.warning("   City resolution will not work.")
+            
+            if warehouse_count == 0:
+                logger.warning("⚠️ No warehouses loaded from database")
+                logger.warning("   Warehouse resolution will not work.")
+            
+            # Log health report
             health = self.schema.get_health_report()
-            logger.info(f"   - Dealers: {health.get('dealers', 0)}")
-            logger.info(f"   - Cities: {health.get('cities', 0)}")
-            logger.info(f"   - Warehouses: {health.get('warehouses', 0)}")
-            logger.info(f"   - Health Score: {health.get('health_score', 0)}/100")
+            logger.info(f"   📊 Health Score: {health.get('health_score', 0)}/100")
+            logger.info(f"   📋 Status: {health.get('status', 'unknown')}")
             
             # Cache for performance
             self._logistics_keywords_cache = self.schema.logistics_keywords
@@ -207,7 +229,7 @@ class AIQueryService:
             init_duration = (time.time() - start_time) * 1000
             logger.info("")
             logger.info("=" * 70)
-            logger.info("AIQueryService v7.1 initialized successfully")
+            logger.info("AIQueryService v7.2 initialized successfully")
             logger.info("=" * 70)
             logger.info("")
             logger.info("   ROUTING PRIORITY (ENFORCED):")
@@ -221,7 +243,8 @@ class AIQueryService:
             logger.info("")
             logger.info("   GROQ GOVERNANCE:")
             logger.info("   ✅ Groq ONLY when all routing fails")
-            logger.info("   ✅ Groq NEVER for DN/Dealer/City/Warehouse/Intent")
+            logger.info("   ✅ Groq NEVER for DN/Dealer/City/Warehouse")
+            logger.info("   ✅ Executive: Analytics data + Groq enrichment")
             logger.info("")
             logger.info("   SCHEMASERVICE INTEGRATION:")
             logger.info("   ✅ resolve_dealer() → Dealer resolution")
@@ -230,6 +253,8 @@ class AIQueryService:
             logger.info("   ✅ detect_intent() → Intent detection")
             logger.info("   ✅ is_dn_number() → DN validation")
             logger.info("   ✅ get_health_report() → Diagnostics")
+            logger.info("")
+            logger.info("   STATUS: ✅ PRODUCTION READY")
             logger.info("=" * 70)
             
         except Exception as e:
@@ -280,6 +305,12 @@ class AIQueryService:
         logger.info(f"Query {query_id}: Processing: '{cleaned_question[:100]}'")
         
         # ==========================================================
+        # PRIORITY 2: ROUTER DIAGNOSTICS
+        # ==========================================================
+        
+        logger.info(f"🔍 ROUTER DIAGNOSTIC - QUESTION: '{cleaned_question}'")
+        
+        # ==========================================================
         # ROUTING DIAGNOSTICS - Track all detection attempts
         # ==========================================================
         
@@ -305,6 +336,7 @@ class AIQueryService:
             self._routing_stats["dn_lookups"] += 1
             
             logger.info(f"Query {query_id}: ✅ DN Detected: {dn_number} → dn_lookup (analytics)")
+            logger.info(f"🔍 ROUTER DIAGNOSTIC - DN: '{dn_number}'")
             
             return RoutingDecision(
                 intent="dn_lookup",
@@ -329,6 +361,7 @@ class AIQueryService:
             self._routing_stats["dn_lookups"] += 1
             
             logger.info(f"Query {query_id}: ✅ DN Extracted: {dn_number} → dn_lookup (analytics)")
+            logger.info(f"🔍 ROUTER DIAGNOSTIC - DN: '{dn_number}'")
             
             return RoutingDecision(
                 intent="dn_lookup",
@@ -350,6 +383,8 @@ class AIQueryService:
         # ==========================================================
         
         dealer_result = self._detect_dealer(cleaned_question, normalized, context)
+        logger.info(f"🔍 ROUTER DIAGNOSTIC - DEALER: '{dealer_result}'")
+        
         if dealer_result:
             dealer_name = dealer_result
             detected_dealer = dealer_name
@@ -387,6 +422,8 @@ class AIQueryService:
         # ==========================================================
         
         city_result = self._detect_city(cleaned_question, normalized)
+        logger.info(f"🔍 ROUTER DIAGNOSTIC - CITY: '{city_result}'")
+        
         if city_result:
             city_name = city_result
             detected_city = city_name
@@ -415,6 +452,8 @@ class AIQueryService:
         # ==========================================================
         
         warehouse_result = self._detect_warehouse(cleaned_question, normalized)
+        logger.info(f"🔍 ROUTER DIAGNOSTIC - WAREHOUSE: '{warehouse_result}'")
+        
         if warehouse_result:
             warehouse_name = warehouse_result
             detected_warehouse = warehouse_name
@@ -443,16 +482,28 @@ class AIQueryService:
         # ==========================================================
         
         intent_result = self._detect_intent(normalized, cleaned_question)
+        
         if intent_result:
             intent, confidence, needs_groq = intent_result
             detected_intent = intent
             routing_path = "intent_detection"
             self._routing_stats["intent_detections"] += 1
             
-            # Determine service based on intent
-            service = self._determine_service_for_intent(intent)
+            # ==========================================================
+            # FIX: Executive Routing - Analytics First, Groq Enrichment
+            # ==========================================================
             
-            logger.info(f"Query {query_id}: 🎯 Intent Detected: {intent} (confidence={confidence:.2f}, service={service})")
+            # Determine service based on intent
+            # Executive intents go to analytics for data, then Groq for enrichment
+            executive_intents = ['executive_insight', 'root_cause', 'control_tower', 'comparison', 'trend']
+            
+            if intent in executive_intents:
+                service = "analytics"  # ← FIX: Analytics first, not Groq
+                needs_groq = True      # ← FIX: Groq enriches after analytics
+            else:
+                service = self._determine_service_for_intent(intent)
+            
+            logger.info(f"Query {query_id}: 🎯 Intent Detected: {intent} (confidence={confidence:.2f}, service={service}, needs_groq={needs_groq})")
             
             return RoutingDecision(
                 intent=intent,
@@ -500,6 +551,7 @@ class AIQueryService:
         self._routing_stats["groq_fallbacks"] += 1
         
         logger.info(f"Query {query_id}: 🤖 Groq Fallback → general_ai (groq)")
+        logger.info(f"🔍 ROUTER DIAGNOSTIC - FINAL ROUTE: groq_fallback")
         
         return RoutingDecision(
             intent="general_ai",
@@ -694,6 +746,10 @@ class AIQueryService:
         schema_intent, schema_confidence = self.schema.detect_intent(original)
         if schema_intent and schema_confidence >= 0.60:
             logger.debug(f"✅ SchemaService intent: {schema_intent} (confidence={schema_confidence:.2f})")
+            # FIX: Executive intents need analytics first, then Groq enrichment
+            executive_intents = ['executive_insight', 'root_cause', 'control_tower']
+            if schema_intent in executive_intents:
+                return (schema_intent, schema_confidence, True)  # needs_groq=True for enrichment
             return (schema_intent, schema_confidence, False)
         
         # ==========================================================
@@ -735,7 +791,7 @@ class AIQueryService:
             return ("top_warehouses", 0.85, False)
         
         # ==========================================================
-        # EXECUTIVE INTENTS
+        # EXECUTIVE INTENTS (FIX: needs_groq=True for enrichment)
         # ==========================================================
         
         executive_patterns = {
@@ -749,7 +805,7 @@ class AIQueryService:
             for pattern in patterns:
                 if pattern in normalized:
                     logger.debug(f"✅ Executive intent: {intent}")
-                    return (intent, 0.90, True)  # needs_groq=True for enrichment
+                    return (intent, 0.90, True)  # ← FIX: needs_groq=True for enrichment
         
         # ==========================================================
         # COMPARISON & TREND
@@ -788,12 +844,9 @@ class AIQueryService:
     def _determine_service_for_intent(self, intent: str) -> str:
         """Determine service based on intent."""
         kpi_intents = ['pending_pgi', 'pending_pod', 'pgi_aging', 'pod_aging', 'delivery_aging']
-        groq_intents = ['executive_insight', 'root_cause', 'control_tower', 'comparison', 'trend']
         
         if intent in kpi_intents:
             return "kpi"
-        if intent in groq_intents:
-            return "groq"
         return "analytics"
     
     def _is_help_query(self, normalized: str) -> bool:
@@ -844,6 +897,46 @@ class AIQueryService:
         
         return result
     
+    def debug_entity(self, name: str) -> Dict[str, Any]:
+        """
+        Debug entity resolution for a given name.
+        
+        Args:
+            name: Entity name to debug
+            
+        Returns:
+            Dict with entity resolution results
+        """
+        return {
+            "name": name,
+            "dealer": self.schema.resolve_dealer(name),
+            "city": self.schema.resolve_city(name),
+            "warehouse": self.schema.resolve_warehouse(name),
+            "unified": self.schema.resolve_entity(name),
+            "dealer_debug": self.schema.find_dealer_debug(name),
+            "city_debug": self.schema.find_city_debug(name),
+            "warehouse_debug": self.schema.find_warehouse_debug(name),
+            "schema_health": self.schema.get_health_report()
+        }
+    
+    def get_schema_stats(self) -> Dict[str, Any]:
+        """
+        Get SchemaService statistics for metadata endpoint.
+        
+        Returns:
+            Dict with metadata statistics
+        """
+        return {
+            "dealers": len(self.schema.dealers),
+            "cities": len(self.schema.cities),
+            "warehouses": len(self.schema.warehouses),
+            "health_score": self.schema._health_score,
+            "initialized": self.schema._initialized,
+            "database_connected": self.schema._db_connected,
+            "last_refresh": self.schema._last_refresh.isoformat() if self.schema._last_refresh else None,
+            "status": "healthy" if self.schema._health_score >= 70 else "warning" if self.schema._health_score >= 50 else "critical"
+        }
+    
     def get_routing_stats(self) -> Dict[str, Any]:
         """Get routing statistics."""
         total = sum(self._routing_stats.values())
@@ -861,7 +954,7 @@ class AIQueryService:
                            self._routing_stats["city_resolutions"] + 
                            self._routing_stats["warehouse_resolutions"] + 
                            self._routing_stats["intent_detections"]) / max(1, total) * 100,
-            "version": "7.1",
+            "version": "7.2",
             "schema_version": "7.1",
             "schema_health": self.schema.get_health_report()
         }
@@ -916,19 +1009,16 @@ __all__ = [
 # ==========================================================
 
 logger.debug("=" * 70)
-logger.debug("AIQueryService v7.1 - Fully Integrated with SchemaService v7.1")
+logger.debug("AIQueryService v7.2 - Production Fix")
 logger.debug("=" * 70)
 logger.debug("")
-logger.debug("   INTEGRATED SCHEMASERVICE METHODS:")
-logger.debug("   ✅ resolve_dealer()  → Dealer resolution")
-logger.debug("   ✅ resolve_city()    → City resolution")
-logger.debug("   ✅ resolve_warehouse() → Warehouse resolution")
-logger.debug("   ✅ is_dn_number()    → DN validation")
-logger.debug("   ✅ detect_intent()   → Intent detection")
-logger.debug("   ✅ detect_metric()   → Metric detection")
-logger.debug("   ✅ get_health_report() → Diagnostics")
-logger.debug("   ✅ search_entities() → Entity search")
-logger.debug("   ✅ find_dealer_debug() → Dealer debug")
+logger.debug("   FIXES APPLIED:")
+logger.debug("   ✅ Startup Validation - Checks metadata on init")
+logger.debug("   ✅ Router Diagnostics - Full logging of all detections")
+logger.debug("   ✅ Executive Routing - Analytics first, Groq enrichment")
+logger.debug("   ✅ Startup Logging - Shows loaded entities count")
+logger.debug("   ✅ Metadata Endpoint Support - get_schema_stats()")
+logger.debug("   ✅ Entity Debug Support - debug_entity() method")
 logger.debug("")
 logger.debug("   ROUTING PRIORITY:")
 logger.debug("   1️⃣ DN Lookup → analytics")
