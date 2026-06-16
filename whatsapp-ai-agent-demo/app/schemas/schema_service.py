@@ -1,5 +1,5 @@
 # ==========================================================
-# FILE: app/schemas/schema_service.py (v7.2 - POSTGRESQL INTEGRATION FIX)
+# FILE: app/schemas/schema_service.py (v7.2 - FIXED: sold_to_party_name)
 # ==========================================================
 # FIXES APPLIED:
 # 1. Enhanced dealer alias generation with SequenceMatcher
@@ -12,11 +12,9 @@
 # 8. ADDED: find_entity_debug() - Unified entity debug
 # 9. ADDED: get_all_entities() - Get all entities by type
 # 10. ADDED: search_entities() - Search across all entities
-# 11. FIXED: PostgreSQL column name mapping for 'customer_name'
-# 12. FIXED: PostgreSQL column name mapping for 'ship_to_city'
-# 13. FIXED: PostgreSQL column name mapping for 'warehouse'
-# 14. ADDED: Auto-detect column names from PostgreSQL
-# 15. ADDED: Fallback column name resolution
+# 11. FIXED: Uses correct column name 'sold_to_party_name' for dealers
+# 12. FIXED: Uses 'ship_to_city' for cities
+# 13. FIXED: Uses 'warehouse' for warehouses
 # ==========================================================
 
 from typing import Dict, List, Optional, Tuple, Set, Any
@@ -27,7 +25,6 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 import json
-from sqlalchemy import inspect
 
 # ==========================================================
 # LOGGING SETUP
@@ -60,7 +57,6 @@ class DeliveryMetrics:
     def validate_dates(self, dn_date: Optional[datetime], pgi_date: Optional[datetime], pod_date: Optional[datetime]) -> Dict[str, Any]:
         """
         Validate date consistency and identify data quality issues.
-        FIX: Correct sequence validation and no negative durations.
         """
         issues = []
         is_valid = True
@@ -108,7 +104,6 @@ class DeliveryMetrics:
         # Calculate durations ONLY if sequence is valid
         durations = {}
         if is_valid and dn_date and pgi_date and pod_date:
-            # FIX: Correct calculations with absolute values to prevent negatives
             processing_days = (pgi_date - dn_date).days
             delivery_days = (pod_date - pgi_date).days
             cycle_days = (pod_date - dn_date).days
@@ -175,122 +170,89 @@ class DeliveryMetrics:
 # ==========================================================
 
 INTENT_KEYWORDS: Dict[str, List[Tuple[str, int]]] = {
-    # ==========================================================
     # DN INTELLIGENCE (HIGHEST PRIORITY)
-    # ==========================================================
-    
     "dn_lookup": [
         ("dn", 10), ("delivery note", 10), ("track dn", 10),
         ("track delivery", 10), ("check dn", 9), ("dn status", 9)
     ],
     
-    # ==========================================================
     # DEALER INTELLIGENCE
-    # ==========================================================
-    
     "dealer_dashboard": [
         ("dealer", 9), ("show dealer", 10), ("dealer dashboard", 9),
         ("dealer summary", 9), ("dealer details", 9)
     ],
-    
     "dealer_revenue": [
         ("revenue", 8), ("sales", 8), ("total revenue", 9),
         ("total sales", 9), ("dealer revenue", 10), ("dealer sales", 10)
     ],
-    
     "dealer_units": [
         ("units", 8), ("quantity", 8), ("total units", 9),
         ("dealer units", 10), ("dealer quantity", 10)
     ],
-    
     "dealer_performance": [
         ("performance", 8), ("kpi", 8), ("dealer performance", 10),
         ("dealer kpi", 10), ("performance metrics", 9)
     ],
-    
     "dealer_aging": [
         ("aging", 8), ("delay", 8), ("pending", 7),
         ("dealer aging", 10), ("dealer delay", 10), ("oldest", 8)
     ],
     
-    # ==========================================================
     # WAREHOUSE INTELLIGENCE
-    # ==========================================================
-    
     "warehouse_dashboard": [
         ("warehouse", 9), ("show warehouse", 10), ("warehouse summary", 9),
         ("warehouse details", 9), ("warehouse status", 9)
     ],
-    
     "warehouse_performance": [
         ("warehouse performance", 10), ("warehouse kpi", 10),
         ("warehouse metrics", 9), ("warehouse efficiency", 9)
     ],
     
-    # ==========================================================
     # CITY INTELLIGENCE
-    # ==========================================================
-    
     "city_dashboard": [
         ("city", 9), ("show city", 10), ("city summary", 9),
         ("city details", 9), ("city status", 9)
     ],
-    
     "city_performance": [
         ("city performance", 10), ("city kpi", 10),
         ("city metrics", 9), ("city efficiency", 9)
     ],
     
-    # ==========================================================
     # PENDING & AGING INTELLIGENCE
-    # ==========================================================
-    
     "pending_pgi": [
         ("pending pgi", 10), ("pgi pending", 10), ("open pgi", 8),
         ("pgi not done", 9), ("pending good issue", 9)
     ],
-    
     "pending_pod": [
         ("pending pod", 10), ("pod pending", 10), ("open pod", 8),
         ("pod not done", 9), ("pending delivery", 9)
     ],
-    
     "pgi_aging": [
         ("pgi aging", 10), ("aging pgi", 10), ("pgi delay", 8),
         ("good issue aging", 9), ("pgi overdue", 9)
     ],
-    
     "pod_aging": [
         ("pod aging", 10), ("aging pod", 10), ("pod delay", 8),
         ("delivery aging", 9), ("pod overdue", 9)
     ],
     
-    # ==========================================================
     # RANKING INTELLIGENCE
-    # ==========================================================
-    
     "top_dealers": [
         ("top dealer", 10), ("best dealer", 9), ("top performing", 8),
         ("top 10 dealers", 10), ("highest dealer", 9), ("top performers", 9)
     ],
-    
     "bottom_dealers": [
         ("bottom dealer", 10), ("worst dealer", 9), ("poor performing", 8),
         ("bottom 10 dealers", 10), ("lowest dealer", 9), ("worst performers", 9)
     ],
-    
     "top_warehouses": [
         ("top warehouse", 10), ("best warehouse", 9), ("top performing warehouse", 10)
     ],
-    
     "top_cities": [
         ("top city", 10), ("best city", 9), ("top performing city", 10)
     ],
     
-    # ==========================================================
     # ROOT CAUSE INTELLIGENCE (HIGH PRIORITY FOR ANALYTICS)
-    # ==========================================================
-    
     "root_cause": [
         ("root cause", 10), ("what is the key issue", 10), 
         ("why delayed", 10), ("why aging", 10), ("key issue", 9),
@@ -299,55 +261,40 @@ INTENT_KEYWORDS: Dict[str, List[Tuple[str, int]]] = {
         ("bring improvement", 10), ("critical issue", 9)
     ],
     
-    # ==========================================================
     # EXECUTIVE INTELLIGENCE
-    # ==========================================================
-    
     "executive_insight": [
         ("executive insight", 10), ("executive summary", 10),
         ("bottleneck", 9), ("critical issues", 9),
         ("top issues", 9), ("urgent matters", 9)
     ],
-    
     "control_tower": [
         ("control tower", 10), ("critical", 8), ("urgent", 8),
         ("priority", 8), ("alert", 7), ("command center", 9)
     ],
     
-    # ==========================================================
     # DELIVERY PERFORMANCE INTELLIGENCE
-    # ==========================================================
-    
     "delivery_performance": [
         ("delivery performance", 10), ("delivery kpi", 10),
         ("delivery metrics", 9), ("delivery efficiency", 9),
         ("on time delivery", 9), ("delivery rate", 9)
     ],
     
-    # ==========================================================
     # TREND & COMPARISON INTELLIGENCE
-    # ==========================================================
-    
     "trend": [
         ("trend", 8), ("month over month", 9), ("trends", 9),
         ("over time", 8), ("historical", 8), ("performance trend", 10)
     ],
-    
     "comparison": [
         ("compare", 8), ("vs", 7), ("versus", 7),
         ("comparison", 8), ("between", 7), ("compare dealers", 10),
         ("compare warehouses", 10), ("compare cities", 10)
     ],
     
-    # ==========================================================
     # HELP & GENERAL (LOWEST PRIORITY)
-    # ==========================================================
-    
     "help": [
         ("help", 10), ("menu", 8), ("commands", 8),
         ("what can you do", 10), ("available commands", 10)
     ],
-    
     "general_ai": [
         ("hello", 5), ("hi", 5), ("hey", 5), ("how are you", 6),
         ("good morning", 5), ("good evening", 5)
@@ -359,38 +306,21 @@ INTENT_KEYWORDS: Dict[str, List[Tuple[str, int]]] = {
 # ==========================================================
 
 METRIC_KEYWORDS: Dict[str, List[str]] = {
-    # Revenue metrics
     "revenue": ["revenue", "sales", "amount", "total revenue", "total sales", "sales amount"],
-    
-    # Unit metrics
     "units": ["units", "quantity", "qty", "total units", "unit count", "number of units"],
-    
-    # DN metrics
     "dn_count": ["dns", "delivery notes", "orders", "total dns", "order count"],
-    
-    # Pending metrics
     "pending_pod": ["pending pod", "pod pending", "pod not done", "open pod"],
     "pending_delivery": ["pending delivery", "delivery pending", "pending pgi", "undelivered"],
-    
-    # Aging metrics
     "delivery_aging": ["delivery aging", "pgi aging", "delivery delay", "pgi delay"],
     "pod_aging": ["pod aging", "pod delay", "pod latency", "aging pod"],
-    
-    # Rate metrics
     "pod_rate": ["pod rate", "pod percentage", "pod completion", "pod ratio"],
     "pgi_rate": ["pgi rate", "pgi percentage", "pgi completion", "pgi ratio"],
     "delivery_rate": ["delivery rate", "delivery percentage", "delivery completion", "on-time delivery"],
-    
-    # Performance metrics
     "success_rate": ["success rate", "success percentage", "completion rate"],
     "failure_rate": ["failure rate", "failure percentage", "error rate"],
-    
-    # Time metrics
     "avg_delivery_time": ["avg delivery time", "average delivery", "mean delivery", "average delivery time"],
     "processing_time": ["processing time", "pgi time", "good issue time"],
     "total_cycle_time": ["cycle time", "total cycle", "total time"],
-    
-    # Summary metrics
     "total_deliveries": ["total deliveries", "total dispatched", "total sent"],
     "total_revenue": ["total revenue", "total sales", "overall revenue"],
     "total_units": ["total units", "total quantity", "overall units"],
@@ -401,42 +331,21 @@ METRIC_KEYWORDS: Dict[str, List[str]] = {
 # ==========================================================
 
 LOGISTICS_KEYWORDS: Set[str] = {
-    # Status words
     'pending', 'delivered', 'in_transit', 'dispatched', 'shipped', 'received',
-    
-    # Process words
     'pgi', 'pod', 'aging', 'delivery', 'revenue', 'units', 'performance',
-    
-    # Alert words
     'critical', 'alert', 'urgent', 'priority', 'control', 'tower',
-    
-    # Query words
     'help', 'menu', 'status', 'what', 'how', 'why', 'when', 'where',
     'who', 'which', 'can', 'could', 'would', 'should', 'is', 'are',
-    
-    # Action words
     'show', 'display', 'get', 'tell', 'view', 'list', 'fetch', 'find',
-    
-    # Business words
     'warehouse', 'summary', 'report', 'kpi', 'dashboard', 'insight',
     'issue', 'problem', 'bottleneck', 'root', 'cause', 'reason',
     'dealer', 'customer', 'city', 'stock', 'inventory', 'sales',
-    
-    # Transit words
     'transit', 'delivered', 'rate', 'completion', 'dn', 'order',
-    
-    # Comparison words
     'compare', 'versus', 'vs', 'between', 'against',
-    
-    # Time words
     'today', 'yesterday', 'week', 'month', 'year', 'last', 'this',
     'current', 'day', 'week', 'month', 'year', 'all',
-    
-    # Quantifiers
     'top', 'bottom', 'best', 'worst', 'highest', 'lowest', 'average',
     'total', 'all', 'some', 'most', 'least', 'more', 'less', 'much',
-    
-    # Numbers
     'first', 'second', 'third', 'fourth', 'fifth', 'tenth',
     'one', 'two', 'three', 'four', 'five', 'ten',
 }
@@ -503,19 +412,14 @@ STATUS_DEFINITIONS: Dict[str, Dict[str, str]] = {
 }
 
 # ==========================================================
-# POSTGRESQL-INTEGRATED DELIVERY REPOSITORY
+# EMBEDDED REPOSITORY - FIXED: Uses correct column names
 # ==========================================================
 
 class DeliveryRepository:
-    """
-    Embedded repository for Delivery Report database operations.
-    FIXED: PostgreSQL column name auto-detection.
-    """
+    """Embedded repository for Delivery Report database operations."""
     
     def __init__(self, db_session=None):
         self._session = db_session
-        self._column_cache = {}
-        self._detected_columns = False
     
     def _get_session(self):
         """Get database session."""
@@ -528,67 +432,12 @@ class DeliveryRepository:
                 raise RuntimeError("Database session not available")
         return self._session
     
-    def _detect_columns(self):
-        """Auto-detect column names from PostgreSQL."""
-        if self._detected_columns:
-            return
-        
-        try:
-            session = self._get_session()
-            inspector = inspect(session.bind)
-            columns = [col['name'] for col in inspector.get_columns('delivery_report')]
-            
-            logger.info(f"🔍 Detected PostgreSQL columns: {columns[:10]}...")
-            
-            # Detect dealer column
-            dealer_col = None
-            for col in ['customer_name', 'sold_to_party_name', 'dealer_name', 'customer']:
-                if col in columns:
-                    dealer_col = col
-                    break
-            
-            # Detect city column
-            city_col = None
-            for col in ['ship_to_city', 'city', 'dealer_city', 'city_name']:
-                if col in columns:
-                    city_col = col
-                    break
-            
-            # Detect warehouse column
-            warehouse_col = None
-            for col in ['warehouse', 'warehouse_name', 'warehouse_location']:
-                if col in columns:
-                    warehouse_col = col
-                    break
-            
-            self._column_cache = {
-                'dealer_col': dealer_col or 'customer_name',
-                'city_col': city_col or 'ship_to_city',
-                'warehouse_col': warehouse_col or 'warehouse'
-            }
-            
-            self._detected_columns = True
-            
-            logger.info(f"✅ Column mapping: dealer='{self._column_cache['dealer_col']}', "
-                       f"city='{self._column_cache['city_col']}', "
-                       f"warehouse='{self._column_cache['warehouse_col']}'")
-            
-        except Exception as e:
-            logger.warning(f"⚠️ Could not detect columns, using defaults: {e}")
-            self._column_cache = {
-                'dealer_col': 'customer_name',
-                'city_col': 'ship_to_city',
-                'warehouse_col': 'warehouse'
-            }
-            self._detected_columns = True
-    
-    def get_column_name(self, column_type: str) -> str:
-        """Get actual column name from PostgreSQL."""
-        self._detect_columns()
-        return self._column_cache.get(f'{column_type}_col', column_type)
-    
     def get_distinct_customers(self) -> List[Dict[str, Any]]:
-        """Get all unique customer/dealer names from delivery reports."""
+        """
+        Get all unique customer/dealer names from delivery reports.
+        
+        FIXED: Uses correct column name 'sold_to_party_name'
+        """
         try:
             session = self._get_session()
             
@@ -598,28 +447,19 @@ class DeliveryRepository:
                 logger.error("❌ Cannot import DeliveryReport model")
                 return []
             
-            # FIXED: Use detected column name
-            dealer_col = self.get_column_name('dealer')
-            
-            # Get column attribute
-            if hasattr(DeliveryReport, dealer_col):
-                col_attr = getattr(DeliveryReport, dealer_col)
-            else:
-                logger.error(f"❌ Column '{dealer_col}' not found in DeliveryReport")
-                return []
-            
+            # ✅ FIXED: Use 'sold_to_party_name' as dealer column
             results = session.query(
-                col_attr.label('customer_name')
+                DeliveryReport.sold_to_party_name.label('customer_name')
             ).filter(
-                col_attr.isnot(None)
+                DeliveryReport.sold_to_party_name.isnot(None)
             ).filter(
-                col_attr != ''
+                DeliveryReport.sold_to_party_name != ''
             ).distinct().order_by(
-                col_attr
+                DeliveryReport.sold_to_party_name
             ).all()
             
             dealers = [{"customer_name": r[0]} for r in results if r[0]]
-            logger.info(f"✅ Loaded {len(dealers)} distinct customers from column '{dealer_col}'")
+            logger.info(f"✅ Loaded {len(dealers)} distinct customers from 'sold_to_party_name'")
             return dealers
             
         except Exception as e:
@@ -627,7 +467,11 @@ class DeliveryRepository:
             return []
     
     def get_distinct_cities(self) -> List[Dict[str, Any]]:
-        """Get all unique ship-to cities from delivery reports."""
+        """
+        Get all unique ship-to cities from delivery reports.
+        
+        FIXED: Uses correct column name 'ship_to_city'
+        """
         try:
             session = self._get_session()
             
@@ -637,27 +481,19 @@ class DeliveryRepository:
                 logger.error("❌ Cannot import DeliveryReport model")
                 return []
             
-            # FIXED: Use detected column name
-            city_col = self.get_column_name('city')
-            
-            if hasattr(DeliveryReport, city_col):
-                col_attr = getattr(DeliveryReport, city_col)
-            else:
-                logger.error(f"❌ Column '{city_col}' not found in DeliveryReport")
-                return []
-            
+            # ✅ FIXED: Use 'ship_to_city' as city column
             results = session.query(
-                col_attr.label('city')
+                DeliveryReport.ship_to_city.label('city')
             ).filter(
-                col_attr.isnot(None)
+                DeliveryReport.ship_to_city.isnot(None)
             ).filter(
-                col_attr != ''
+                DeliveryReport.ship_to_city != ''
             ).distinct().order_by(
-                col_attr
+                DeliveryReport.ship_to_city
             ).all()
             
             cities = [{"city": r[0]} for r in results if r[0]]
-            logger.info(f"✅ Loaded {len(cities)} distinct cities from column '{city_col}'")
+            logger.info(f"✅ Loaded {len(cities)} distinct cities from 'ship_to_city'")
             return cities
             
         except Exception as e:
@@ -665,7 +501,11 @@ class DeliveryRepository:
             return []
     
     def get_distinct_warehouses(self) -> List[Dict[str, Any]]:
-        """Get all unique warehouses from delivery reports."""
+        """
+        Get all unique warehouses from delivery reports.
+        
+        FIXED: Uses correct column name 'warehouse'
+        """
         try:
             session = self._get_session()
             
@@ -675,27 +515,19 @@ class DeliveryRepository:
                 logger.error("❌ Cannot import DeliveryReport model")
                 return []
             
-            # FIXED: Use detected column name
-            warehouse_col = self.get_column_name('warehouse')
-            
-            if hasattr(DeliveryReport, warehouse_col):
-                col_attr = getattr(DeliveryReport, warehouse_col)
-            else:
-                logger.error(f"❌ Column '{warehouse_col}' not found in DeliveryReport")
-                return []
-            
+            # ✅ FIXED: Use 'warehouse' as warehouse column
             results = session.query(
-                col_attr.label('warehouse')
+                DeliveryReport.warehouse.label('warehouse')
             ).filter(
-                col_attr.isnot(None)
+                DeliveryReport.warehouse.isnot(None)
             ).filter(
-                col_attr != ''
+                DeliveryReport.warehouse != ''
             ).distinct().order_by(
-                col_attr
+                DeliveryReport.warehouse
             ).all()
             
             warehouses = [{"warehouse": r[0]} for r in results if r[0]]
-            logger.info(f"✅ Loaded {len(warehouses)} distinct warehouses from column '{warehouse_col}'")
+            logger.info(f"✅ Loaded {len(warehouses)} distinct warehouses from 'warehouse'")
             return warehouses
             
         except Exception as e:
@@ -709,7 +541,7 @@ class DeliveryRepository:
 class SchemaService:
     """
     Central Metadata Intelligence Engine for Logistics Analytics.
-    FIXED: PostgreSQL column auto-detection and enhanced dealer resolution.
+    FIXED: Enhanced dealer resolution with SequenceMatcher and debug capabilities.
     """
     
     def __init__(self):
@@ -772,13 +604,12 @@ class SchemaService:
         self.refresh_metadata()
     
     # ==========================================================
-    # REFRESH METADATA (FIXED)
+    # REFRESH METADATA
     # ==========================================================
     
     def refresh_metadata(self) -> Dict[str, Any]:
         """
         Reload all metadata from database.
-        FIXED: Proper column name detection for PostgreSQL.
         
         Returns:
             Dict with load statistics
@@ -796,7 +627,7 @@ class SchemaService:
                 self.dealers = self._build_dealer_map(dealer_names)
                 self._dealer_search_index = self._build_search_index(self.dealers)
                 self._dealer_list = list(self.dealers.values())
-                logger.info(f"  ✅ Loaded {len(self.dealers)} dealers")
+                logger.info(f"  ✅ Loaded {len(self.dealers)} dealers from 'sold_to_party_name'")
                 
                 # Log sample dealers for debugging
                 if len(self.dealers) > 0:
@@ -809,7 +640,7 @@ class SchemaService:
                 self.cities = self._build_city_map(city_names)
                 self._city_search_index = self._build_search_index(self.cities)
                 self._city_list = list(self.cities.values())
-                logger.info(f"  ✅ Loaded {len(self.cities)} cities")
+                logger.info(f"  ✅ Loaded {len(self.cities)} cities from 'ship_to_city'")
                 
                 # Load warehouses
                 warehouses_data = repo.get_distinct_warehouses()
@@ -817,7 +648,7 @@ class SchemaService:
                 self.warehouses = self._build_warehouse_map(warehouse_names)
                 self._warehouse_search_index = self._build_search_index(self.warehouses)
                 self._warehouse_list = list(self.warehouses.values())
-                logger.info(f"  ✅ Loaded {len(self.warehouses)} warehouses")
+                logger.info(f"  ✅ Loaded {len(self.warehouses)} warehouses from 'warehouse'")
                 
                 # Set state
                 self._last_refresh = datetime.now()
@@ -901,6 +732,9 @@ class SchemaService:
         """
         Build dealer lookup map with intelligent aliases.
         FIXED: Enhanced alias generation for better recognition.
+        
+        Examples:
+            "Rafi Electronics Oghi" → rafi, electronics, oghi, rafi electronics, etc.
         """
         dealer_map = {}
         
@@ -1548,7 +1382,7 @@ class SchemaService:
         if len(self.dealers) == 0:
             raise RuntimeError(
                 "No dealers loaded from database. "
-                "Check customer_name column in delivery_report table."
+                "Check sold_to_party_name column in delivery_report table."
             )
         
         if len(self.cities) == 0:
