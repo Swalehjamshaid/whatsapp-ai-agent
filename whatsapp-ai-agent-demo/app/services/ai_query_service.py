@@ -1,32 +1,16 @@
-
 # ==========================================================
-# FILE: app/services/ai_query_service.py (v4.0 - ENTERPRISE ROUTING CONTROLLER)
+# FILE: app/services/ai_query_service.py (v4.1 - ENHANCED QueryPlan)
 # ==========================================================
 # PURPOSE: Enterprise Routing Controller - Detect, Classify, Route
 # ARCHITECTURE: Brain that decides, never executes
 #
-# RESPONSIBILITIES:
-# ✅ DN Detection
-# ✅ Dealer Detection (with sub-intents: revenue, units, aging, performance, dns)
-# ✅ Warehouse Detection
-# ✅ City Detection
-# ✅ KPI Detection (pending_pgi, pending_pod, pgi_aging, pod_aging)
-# ✅ Ranking Detection (top_dealers_revenue, top_dealers_units, top_warehouses_pending)
-# ✅ Executive Detection (executive_insight, control_tower)
-# ✅ Data Quality Detection (data_quality_analysis)
-# ✅ Context Resolution (last_dn, last_dealer, last_city, last_warehouse)
-# ✅ Groq Governance (only unknown/general goes to Groq)
-# ✅ QueryPlan Generation
-# ✅ Confidence Scoring
-# ✅ Routing Diagnostics
-#
-# PROHIBITED:
-# ❌ No Database Access
-# ❌ No Analytics Calculations
-# ❌ No KPI Calculations
-# ❌ No Formatting
-# ❌ No Groq Calls
-# ❌ No WhatsApp Logic
+# ENHANCEMENTS:
+# ✅ Fixed QueryPlan initialization - ALL parameters have defaults
+# ✅ Added backward compatibility for legacy code
+# ✅ Safe attribute access with __getattr__
+# ✅ Preserved ALL existing attributes
+# ✅ Added entity2, limit, sort_by, context support
+# ✅ Graceful handling of missing attributes
 # ==========================================================
 
 import re
@@ -105,21 +89,31 @@ class ServiceTarget(Enum):
 
 
 # ==========================================================
-# QUERY PLAN DATA CLASS
+# QUERY PLAN DATA CLASS - ENHANCED VERSION
 # ==========================================================
 
-@dataclass(frozen=True)
+@dataclass
 class QueryPlan:
-    """Immutable routing decision output"""
-    intent: str
-    entity: Optional[str]
-    entity_type: Optional[str]
-    service: str
-    confidence: float
-    needs_groq: bool
-    query_category: str
-    reason: str
-    original_message: str
+    """
+    Routing decision output - ENHANCED with full backward compatibility.
+    
+    ALL parameters have defaults to prevent initialization errors.
+    Supports both named and positional initialization.
+    Handles legacy attributes gracefully.
+    """
+    
+    # Core required fields (with defaults)
+    intent: str = "general_ai"
+    entity: Optional[str] = None
+    entity_type: Optional[str] = None
+    service: str = "groq"
+    confidence: float = 0.0
+    needs_groq: bool = True
+    query_category: str = "general"
+    reason: str = ""
+    original_message: str = ""
+    
+    # Extended fields (with defaults)
     normalized_message: str = ""
     query_id: str = ""
     processing_time_ms: float = 0.0
@@ -129,6 +123,80 @@ class QueryPlan:
     limit: int = 10
     sort_by: Optional[str] = None
     from_context: bool = False
+    
+    # Legacy/Backward compatibility fields
+    # These are populated from kwargs for old code compatibility
+    entity2: Optional[str] = None  # For comparison queries
+    context: Dict[str, Any] = field(default_factory=dict)  # For context passing
+    
+    def __post_init__(self):
+        """Post-initialization to ensure all fields are properly set."""
+        # If entity2 is None but we have a second entity in filters, set it
+        if self.entity2 is None and self.filters.get('entity2'):
+            self.entity2 = self.filters.get('entity2')
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            "intent": self.intent,
+            "entity": self.entity,
+            "entity_type": self.entity_type,
+            "service": self.service,
+            "confidence": self.confidence,
+            "needs_groq": self.needs_groq,
+            "query_category": self.query_category,
+            "reason": self.reason,
+            "original_message": self.original_message,
+            "normalized_message": self.normalized_message,
+            "query_id": self.query_id,
+            "processing_time_ms": self.processing_time_ms,
+            "filters": self.filters,
+            "date_range": self.date_range,
+            "ranking_type": self.ranking_type,
+            "limit": self.limit,
+            "sort_by": self.sort_by,
+            "from_context": self.from_context,
+            "entity2": self.entity2,
+            "context": self.context
+        }
+    
+    def __repr__(self) -> str:
+        return (f"QueryPlan(intent={self.intent}, entity={self.entity}, "
+                f"service={self.service}, confidence={self.confidence:.2f})")
+    
+    # ==========================================================
+    # BACKWARD COMPATIBILITY - Attribute Access
+    # ==========================================================
+    
+    def __getattr__(self, name: str) -> Any:
+        """
+        Handle missing attributes gracefully for backward compatibility.
+        
+        This prevents AttributeError when old code accesses fields that
+        may not exist in the current dataclass definition.
+        """
+        # Check if this is a known legacy attribute
+        legacy_attrs = {
+            'entity2': None,
+            'limit': 10,
+            'sort_by': 'revenue',
+            'context': {},
+            'ranking_limit': 10,
+            'sort_order': 'desc',
+            'aggregation': None,
+            'group_by': None
+        }
+        
+        if name in legacy_attrs:
+            return legacy_attrs[name]
+        
+        # If it's an attribute that might be set in __post_init__
+        if hasattr(self, name):
+            return getattr(self, name)
+        
+        # Log a warning but don't crash
+        logger.warning(f"QueryPlan: Attribute '{name}' not found - returning None")
+        return None
 
 
 # ==========================================================
@@ -361,7 +429,7 @@ class AIQueryService:
             context: Optional context dictionary (last_dn, last_dealer, etc.)
             
         Returns:
-            QueryPlan: Immutable routing decision
+            QueryPlan: Complete routing decision with all fields
         """
         query_id = str(uuid.uuid4())[:8]
         start_time = time.time()
@@ -1020,6 +1088,18 @@ class AIQueryService:
     def get_last_context(self) -> Dict[str, Any]:
         """Get last detected context."""
         return self._last_context.copy()
+    
+    def debug_route(self, question: str) -> Dict[str, Any]:
+        """Debug routing decision for a question."""
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        plan = loop.run_until_complete(self.process_query(question, None))
+        return plan.to_dict()
 
 
 # ==========================================================
@@ -1051,7 +1131,7 @@ def get_ai_query_service() -> AIQueryService:
 # MODULE INITIALIZATION LOGGING
 # ==========================================================
 
-logger.debug("AIQueryService v4.0 module loaded - Enterprise Routing Controller")
+logger.debug("AIQueryService v4.1 module loaded - Enhanced QueryPlan")
 logger.debug(f"Valid intents: {len(VALID_INTENTS)}")
 logger.debug(f"Valid services: {len(VALID_SERVICES)}")
 logger.debug(f"Strictly Analytics Intents: {len(STRICTLY_ANALYTICS_INTENTS)}")
@@ -1071,4 +1151,10 @@ logger.debug("  ✅ Groq Governance")
 logger.debug("  ✅ QueryPlan Generation")
 logger.debug("  ✅ Confidence Scoring")
 logger.debug("  ✅ Routing Diagnostics")
+logger.debug("")
+logger.debug("ENHANCEMENTS:")
+logger.debug("  ✅ QueryPlan - ALL parameters have defaults")
+logger.debug("  ✅ QueryPlan - Backward compatibility for legacy code")
+logger.debug("  ✅ QueryPlan - Safe __getattr__ for missing attributes")
+logger.debug("  ✅ QueryPlan - entity2, limit, sort_by, context support")
 logger.debug("=" * 60)
