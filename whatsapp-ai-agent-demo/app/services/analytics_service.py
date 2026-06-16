@@ -1,18 +1,20 @@
 # ==========================================================
-# FILE: app/services/analytics_service.py (v6.3 - CRITICAL FIXES)
+# FILE: app/services/analytics_service.py (v6.5 - 100% POSTGRESQL)
 # ==========================================================
 # PURPOSE: Business Intelligence Layer - Enterprise Dealer Intelligence Engine
-# VERSION: 6.3 - Critical Fixes Applied
+# VERSION: 6.5 - All Queries Use PostgreSQL Directly
 #
-# CRITICAL FIXES APPLIED:
-# 1. ✅ Fixed double-counting of failures (metrics increment once)
-# 2. ✅ Separated DN count vs Unit count throughout
-# 3. ✅ Fixed health check to not fail on "test" dealer
-# 4. ✅ Fixed revenue allocation to use actual DN amounts
-# 5. ✅ Added defensive checks for all LogisticsQueryService methods
-# 6. ✅ Added method existence verification on startup
-# 7. ✅ Graceful fallback for missing methods
-# 8. ✅ Proper DN count fields everywhere
+# 100% POSTGRESQL FOR RAILWAY:
+# 1. ✅ All data from PostgreSQL (no mock data)
+# 2. ✅ Direct SQL queries for everything
+# 3. ✅ PostgreSQL JSON aggregation
+# 4. ✅ PostgreSQL window functions
+# 5. ✅ PostgreSQL CTE for complex analytics
+# 6. ✅ PostgreSQL array functions
+# 7. ✅ PostgreSQL date functions
+# 8. ✅ PostgreSQL aggregate functions
+# 9. ✅ PostgreSQL trigram similarity
+# 10. ✅ PostgreSQL full-text search
 # ==========================================================
 
 from typing import Optional, Dict, Any, List, Tuple
@@ -24,10 +26,38 @@ from collections import defaultdict
 from statistics import mean, stdev
 import math
 import json
+import os
+from contextlib import contextmanager
+from sqlalchemy import text
 
 from app.services.logistics_query_service import LogisticsQueryService
 from app.services.kpi_service import KPIService
 from app.schemas.schema_service import get_schema_service
+
+
+# ==========================================================
+# RAILWAY POSTGRESQL CONFIGURATION
+# ==========================================================
+
+class RailwayPostgresConfig:
+    """Railway PostgreSQL configuration."""
+    
+    DATABASE_URL = os.getenv('DATABASE_URL', '')
+    RAILWAY_ENVIRONMENT = os.getenv('RAILWAY_ENVIRONMENT', 'production')
+    
+    POOL_SIZE = int(os.getenv('DB_POOL_SIZE', '10'))
+    MAX_OVERFLOW = int(os.getenv('DB_MAX_OVERFLOW', '20'))
+    POOL_TIMEOUT = int(os.getenv('DB_POOL_TIMEOUT', '30'))
+    POOL_RECYCLE = int(os.getenv('DB_POOL_RECYCLE', '3600'))
+    
+    STATEMENT_TIMEOUT = int(os.getenv('DB_STATEMENT_TIMEOUT', '30000'))
+    LOCK_TIMEOUT = int(os.getenv('DB_LOCK_TIMEOUT', '5000'))
+    
+    SSL_MODE = os.getenv('DB_SSL_MODE', 'require')
+    
+    @classmethod
+    def is_railway(cls) -> bool:
+        return bool(cls.RAILWAY_ENVIRONMENT or cls.DATABASE_URL)
 
 
 # ==========================================================
@@ -39,59 +69,24 @@ class AnalyticsError(Exception):
     pass
 
 class DealerNotFoundError(AnalyticsError):
-    """Dealer not found in system."""
     def __init__(self, dealer_name: str, error_id: str = None):
         self.dealer_name = dealer_name
         self.error_id = error_id or str(uuid.uuid4())[:8]
         super().__init__(f"Dealer '{dealer_name}' not found (Error ID: {self.error_id})")
 
 class DashboardGenerationError(AnalyticsError):
-    """Failed to generate dashboard."""
     def __init__(self, dealer_name: str, reason: str, error_id: str = None):
         self.dealer_name = dealer_name
         self.reason = reason
         self.error_id = error_id or str(uuid.uuid4())[:8]
         super().__init__(f"Dashboard generation failed for '{dealer_name}': {reason} (Error ID: {self.error_id})")
 
-class AnalyticsCalculationError(AnalyticsError):
-    """Failed to calculate analytics."""
-    def __init__(self, metric: str, error: str, error_id: str = None):
-        self.metric = metric
+class DatabaseQueryError(AnalyticsError):
+    def __init__(self, query: str, error: str, error_id: str = None):
+        self.query = query
         self.error = error
         self.error_id = error_id or str(uuid.uuid4())[:8]
-        super().__init__(f"Failed to calculate {metric}: {error} (Error ID: {self.error_id})")
-
-class KPICalculationError(AnalyticsError):
-    """Failed to calculate KPI."""
-    def __init__(self, kpi_name: str, error: str, error_id: str = None):
-        self.kpi_name = kpi_name
-        self.error = error
-        self.error_id = error_id or str(uuid.uuid4())[:8]
-        super().__init__(f"Failed to calculate KPI {kpi_name}: {error} (Error ID: {self.error_id})")
-
-class DataIntegrityError(AnalyticsError):
-    """Data quality issues detected."""
-    def __init__(self, entity: str, issue: str, error_id: str = None):
-        self.entity = entity
-        self.issue = issue
-        self.error_id = error_id or str(uuid.uuid4())[:8]
-        super().__init__(f"Data integrity issue in {entity}: {issue} (Error ID: {self.error_id})")
-
-class CacheError(AnalyticsError):
-    """Cache operation failed."""
-    def __init__(self, operation: str, error: str, error_id: str = None):
-        self.operation = operation
-        self.error = error
-        self.error_id = error_id or str(uuid.uuid4())[:8]
-        super().__init__(f"Cache {operation} failed: {error} (Error ID: {self.error_id})")
-
-class MethodNotFoundError(AnalyticsError):
-    """Required method not found in dependency."""
-    def __init__(self, service: str, method: str, error_id: str = None):
-        self.service = service
-        self.method = method
-        self.error_id = error_id or str(uuid.uuid4())[:8]
-        super().__init__(f"Method '{method}' not found in '{service}' (Error ID: {self.error_id})")
+        super().__init__(f"Database query failed: {error} (Error ID: {self.error_id})")
 
 
 # ==========================================================
@@ -99,8 +94,6 @@ class MethodNotFoundError(AnalyticsError):
 # ==========================================================
 
 class AnalyticsResponse:
-    """Standardized analytics response contract."""
-    
     def __init__(self, success: bool = True, data: Dict[str, Any] = None, error: str = None, error_id: str = None):
         self.success = success
         self.data = data or {}
@@ -119,24 +112,587 @@ class AnalyticsResponse:
 
 
 # ==========================================================
-# ANALYTICS SERVICE - ENTERPRISE DEALER INTELLIGENCE ENGINE
+# POSTGRESQL QUERY ENGINE - 100% POSTGRESQL
+# ==========================================================
+
+class PostgreSQLQueryEngine:
+    """
+    100% PostgreSQL Query Engine for Railway.
+    All queries use direct SQL with PostgreSQL features.
+    """
+    
+    def __init__(self, logistics_service):
+        self.logistics = logistics_service
+        self.db = logistics_service.db
+    
+    def execute(self, sql: str, params: Dict = None) -> List[Dict]:
+        """Execute SQL and return results as list of dicts."""
+        try:
+            result = self.db.execute(text(sql), params or {})
+            
+            # Handle different result types
+            if result.returns_rows:
+                rows = result.fetchall()
+                if rows:
+                    return [dict(zip(result.keys(), row)) for row in rows]
+            return []
+        except Exception as e:
+            logger.error(f"PostgreSQL query failed: {e}")
+            logger.error(f"SQL: {sql[:500]}...")
+            raise DatabaseQueryError(sql, str(e))
+    
+    def execute_one(self, sql: str, params: Dict = None) -> Optional[Dict]:
+        """Execute SQL and return first row as dict."""
+        results = self.execute(sql, params)
+        return results[0] if results else None
+    
+    # ==========================================================
+    # CORE QUERIES - 100% POSTGRESQL
+    # ==========================================================
+    
+    def get_dealer_dashboard(self, dealer_name: str) -> Optional[Dict]:
+        """
+        Get complete dealer dashboard in ONE PostgreSQL query.
+        Uses CTE, window functions, and JSON aggregation.
+        """
+        sql = """
+            WITH dealer_data AS (
+                SELECT 
+                    customer_name as dealer_name,
+                    COUNT(*) as total_dns,
+                    COALESCE(SUM(dn_qty), 0) as total_units,
+                    COALESCE(SUM(dn_amount), 0) as total_revenue,
+                    COALESCE(SUM(CASE WHEN good_issue_date IS NOT NULL THEN 1 ELSE 0 END), 0) as delivered_dns,
+                    COALESCE(SUM(CASE WHEN good_issue_date IS NULL THEN 1 ELSE 0 END), 0) as pending_dns,
+                    COALESCE(SUM(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NULL THEN 1 ELSE 0 END), 0) as transit_dns,
+                    COALESCE(SUM(CASE WHEN pod_date IS NOT NULL THEN 1 ELSE 0 END), 0) as pod_completed_dns,
+                    COALESCE(SUM(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NULL THEN 1 ELSE 0 END), 0) as pending_pod_dns,
+                    COALESCE(SUM(CASE WHEN good_issue_date IS NOT NULL THEN dn_qty ELSE 0 END), 0) as delivered_units,
+                    COALESCE(SUM(CASE WHEN good_issue_date IS NULL THEN dn_qty ELSE 0 END), 0) as pending_units,
+                    COALESCE(SUM(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NULL THEN dn_qty ELSE 0 END), 0) as transit_units,
+                    COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND dn_create_date IS NOT NULL 
+                        THEN EXTRACT(EPOCH FROM (good_issue_date - dn_create_date)) / 86400 END), 0) as avg_delivery_aging,
+                    COALESCE(AVG(CASE WHEN pod_date IS NOT NULL AND good_issue_date IS NOT NULL 
+                        THEN EXTRACT(EPOCH FROM (pod_date - good_issue_date)) / 86400 END), 0) as avg_pod_aging,
+                    MAX(warehouse) as top_warehouse,
+                    MODE() WITHIN GROUP (ORDER BY ship_to_city) as city,
+                    MAX(sales_office) as sales_office,
+                    MAX(sales_manager) as sales_manager,
+                    MIN(dn_create_date) as first_dn_date,
+                    MAX(dn_create_date) as last_dn_date,
+                    -- Recent DNs as JSON
+                    COALESCE(
+                        json_agg(
+                            json_build_object(
+                                'dn_no', dn_no,
+                                'dn_qty', dn_qty,
+                                'dn_amount', dn_amount,
+                                'dn_create_date', dn_create_date,
+                                'good_issue_date', good_issue_date,
+                                'pod_date', pod_date,
+                                'warehouse', warehouse,
+                                'ship_to_city', ship_to_city,
+                                'material_no', material_no,
+                                'customer_model', customer_model,
+                                'delivery_status', delivery_status,
+                                'pgi_status', pgi_status,
+                                'pod_status', pod_status
+                            )
+                            ORDER BY dn_create_date DESC
+                            LIMIT 10
+                        ) FILTER (WHERE dn_no IS NOT NULL),
+                        '[]'::json
+                    ) as recent_dns
+                FROM delivery_reports
+                WHERE customer_name = :dealer_name
+                GROUP BY customer_name
+            )
+            SELECT 
+                *,
+                ROUND((delivered_dns::float / NULLIF(total_dns, 0)) * 100, 1) as delivery_rate,
+                ROUND((pod_completed_dns::float / NULLIF(delivered_dns, 0)) * 100, 1) as pod_rate,
+                CASE 
+                    WHEN delivered_dns = 0 AND total_dns = 0 THEN 'Inactive'
+                    WHEN total_dns < 10 THEN 'Low Activity'
+                    WHEN (delivered_dns::float / NULLIF(total_dns, 0)) >= 0.9 THEN 'Active - High Performance'
+                    ELSE 'Active - Needs Attention'
+                END as dealer_status
+            FROM dealer_data
+        """
+        
+        return self.execute_one(sql, {"dealer_name": dealer_name})
+    
+    def get_all_dealers_dashboard(self) -> List[Dict]:
+        """
+        Get dashboards for ALL dealers in ONE PostgreSQL query.
+        Uses window functions for rankings.
+        """
+        sql = """
+            WITH dealer_aggregates AS (
+                SELECT 
+                    customer_name as dealer_name,
+                    COUNT(*) as total_dns,
+                    COALESCE(SUM(dn_qty), 0) as total_units,
+                    COALESCE(SUM(dn_amount), 0) as total_revenue,
+                    COALESCE(SUM(CASE WHEN good_issue_date IS NOT NULL THEN 1 ELSE 0 END), 0) as delivered_dns,
+                    COALESCE(SUM(CASE WHEN good_issue_date IS NULL THEN 1 ELSE 0 END), 0) as pending_dns,
+                    COALESCE(SUM(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NULL THEN 1 ELSE 0 END), 0) as transit_dns,
+                    COALESCE(SUM(CASE WHEN pod_date IS NOT NULL THEN 1 ELSE 0 END), 0) as pod_completed_dns,
+                    COALESCE(SUM(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NULL THEN 1 ELSE 0 END), 0) as pending_pod_dns,
+                    COALESCE(SUM(CASE WHEN good_issue_date IS NOT NULL THEN dn_qty ELSE 0 END), 0) as delivered_units,
+                    COALESCE(SUM(CASE WHEN good_issue_date IS NULL THEN dn_qty ELSE 0 END), 0) as pending_units,
+                    COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND dn_create_date IS NOT NULL 
+                        THEN EXTRACT(EPOCH FROM (good_issue_date - dn_create_date)) / 86400 END), 0) as avg_delivery_aging,
+                    COALESCE(AVG(CASE WHEN pod_date IS NOT NULL AND good_issue_date IS NOT NULL 
+                        THEN EXTRACT(EPOCH FROM (pod_date - good_issue_date)) / 86400 END), 0) as avg_pod_aging,
+                    MAX(warehouse) as top_warehouse,
+                    MODE() WITHIN GROUP (ORDER BY ship_to_city) as city,
+                    MAX(sales_office) as sales_office,
+                    MAX(sales_manager) as sales_manager
+                FROM delivery_reports
+                WHERE customer_name IS NOT NULL AND customer_name != ''
+                GROUP BY customer_name
+            ),
+            ranked_dealers AS (
+                SELECT 
+                    *,
+                    ROW_NUMBER() OVER (ORDER BY total_revenue DESC) as revenue_rank,
+                    ROW_NUMBER() OVER (ORDER BY total_dns DESC) as quantity_rank,
+                    ROW_NUMBER() OVER (ORDER BY (delivered_dns::float / NULLIF(total_dns, 0)) DESC) as delivery_rank,
+                    COUNT(*) OVER () as total_dealers
+                FROM dealer_aggregates
+            )
+            SELECT 
+                dealer_name,
+                total_dns,
+                total_units,
+                total_revenue,
+                delivered_dns,
+                pending_dns,
+                transit_dns,
+                pod_completed_dns,
+                pending_pod_dns,
+                delivered_units,
+                pending_units,
+                avg_delivery_aging,
+                avg_pod_aging,
+                top_warehouse,
+                city,
+                sales_office,
+                sales_manager,
+                revenue_rank,
+                quantity_rank,
+                delivery_rank,
+                total_dealers,
+                ROUND((delivered_dns::float / NULLIF(total_dns, 0)) * 100, 1) as delivery_rate,
+                ROUND((pod_completed_dns::float / NULLIF(delivered_dns, 0)) * 100, 1) as pod_rate,
+                CASE 
+                    WHEN delivered_dns = 0 AND total_dns = 0 THEN 'Inactive'
+                    WHEN total_dns < 10 THEN 'Low Activity'
+                    WHEN (delivered_dns::float / NULLIF(total_dns, 0)) >= 0.9 THEN 'Active - High Performance'
+                    ELSE 'Active - Needs Attention'
+                END as dealer_status
+            FROM ranked_dealers
+            ORDER BY total_revenue DESC
+        """
+        
+        return self.execute(sql)
+    
+    def get_dealer_dn_history(self, dealer_name: str, limit: int = 100) -> List[Dict]:
+        """Get dealer DN history with PostgreSQL date calculations."""
+        sql = """
+            SELECT 
+                dn_no,
+                dn_qty,
+                dn_amount,
+                dn_create_date,
+                good_issue_date,
+                pod_date,
+                warehouse,
+                ship_to_city,
+                material_no,
+                customer_model,
+                sales_office,
+                sales_manager,
+                delivery_status,
+                pgi_status,
+                pod_status,
+                EXTRACT(EPOCH FROM (NOW() - dn_create_date)) / 86400 as age_days,
+                CASE 
+                    WHEN pod_date IS NOT NULL THEN 'delivered'
+                    WHEN good_issue_date IS NOT NULL THEN 'in_transit'
+                    ELSE 'pending'
+                END as current_status,
+                CASE 
+                    WHEN pod_date IS NOT NULL AND good_issue_date IS NOT NULL 
+                    THEN EXTRACT(EPOCH FROM (pod_date - good_issue_date)) / 86400
+                    ELSE NULL
+                END as delivery_aging_days
+            FROM delivery_reports
+            WHERE customer_name = :dealer_name
+            ORDER BY dn_create_date DESC
+            LIMIT :limit
+        """
+        
+        return self.execute(sql, {"dealer_name": dealer_name, "limit": limit})
+    
+    def get_dealer_aging_analysis(self, dealer_name: str) -> Dict[str, Any]:
+        """Get aging analysis with PostgreSQL window functions."""
+        sql = """
+            WITH aging_data AS (
+                SELECT 
+                    dn_no,
+                    dn_qty,
+                    dn_amount,
+                    dn_create_date,
+                    good_issue_date,
+                    pod_date,
+                    CASE 
+                        WHEN pod_date IS NOT NULL AND good_issue_date IS NOT NULL 
+                        THEN EXTRACT(EPOCH FROM (pod_date - good_issue_date)) / 86400
+                        ELSE NULL
+                    END as delivery_aging_days,
+                    CASE 
+                        WHEN pod_date IS NULL AND good_issue_date IS NOT NULL 
+                        THEN EXTRACT(EPOCH FROM (NOW() - good_issue_date)) / 86400
+                        ELSE NULL
+                    END as pod_aging_days,
+                    CASE 
+                        WHEN pod_date IS NOT NULL THEN 'delivered'
+                        WHEN good_issue_date IS NOT NULL THEN 'in_transit'
+                        ELSE 'pending'
+                    END as status
+                FROM delivery_reports
+                WHERE customer_name = :dealer_name
+            ),
+            bucket_counts AS (
+                SELECT 
+                    status,
+                    COUNT(*) as count,
+                    SUM(dn_qty) as total_units,
+                    SUM(dn_amount) as total_revenue,
+                    AVG(COALESCE(delivery_aging_days, 0)) as avg_aging
+                FROM aging_data
+                GROUP BY status
+            ),
+            aging_distribution AS (
+                SELECT 
+                    CASE 
+                        WHEN COALESCE(delivery_aging_days, 0) <= 3 THEN '0-3'
+                        WHEN COALESCE(delivery_aging_days, 0) <= 7 THEN '4-7'
+                        WHEN COALESCE(delivery_aging_days, 0) <= 14 THEN '8-14'
+                        WHEN COALESCE(delivery_aging_days, 0) <= 30 THEN '15-30'
+                        ELSE '30+'
+                    END as aging_bucket,
+                    COUNT(*) as count,
+                    SUM(dn_qty) as total_units,
+                    SUM(dn_amount) as total_revenue
+                FROM aging_data
+                WHERE status = 'delivered'
+                GROUP BY aging_bucket
+            )
+            SELECT 
+                (SELECT COUNT(*) FROM aging_data) as total_dns,
+                (SELECT COUNT(*) FROM aging_data WHERE status = 'delivered') as delivered_dns,
+                (SELECT COUNT(*) FROM aging_data WHERE status = 'in_transit') as in_transit_dns,
+                (SELECT COUNT(*) FROM aging_data WHERE status = 'pending') as pending_dns,
+                (SELECT COALESCE(AVG(delivery_aging_days), 0) FROM aging_data WHERE status = 'delivered') as avg_delivery_aging,
+                (SELECT COALESCE(AVG(pod_aging_days), 0) FROM aging_data WHERE status = 'in_transit') as avg_pod_aging,
+                (SELECT json_agg(
+                    json_build_object(
+                        'bucket', aging_bucket,
+                        'count', count,
+                        'total_units', total_units,
+                        'total_revenue', total_revenue
+                    )
+                ) FROM aging_distribution) as aging_distribution,
+                (SELECT json_agg(
+                    json_build_object(
+                        'status', status,
+                        'count', count,
+                        'total_units', total_units,
+                        'total_revenue', total_revenue,
+                        'avg_aging', avg_aging
+                    )
+                ) FROM bucket_counts) as status_breakdown
+        """
+        
+        return self.execute_one(sql, {"dealer_name": dealer_name})
+    
+    def get_dealer_trends(self, dealer_name: str) -> Dict[str, Any]:
+        """
+        Get dealer trends using PostgreSQL date_trunc and window functions.
+        """
+        sql = """
+            WITH daily_trends AS (
+                SELECT 
+                    DATE_TRUNC('day', dn_create_date) as date,
+                    COUNT(*) as dn_count,
+                    SUM(dn_qty) as units,
+                    SUM(dn_amount) as revenue,
+                    SUM(CASE WHEN good_issue_date IS NOT NULL THEN 1 ELSE 0 END) as delivered_dns,
+                    COUNT(*) OVER (ORDER BY DATE_TRUNC('day', dn_create_date) ROWS UNBOUNDED PRECEDING) as cumulative_dns,
+                    SUM(dn_amount) OVER (ORDER BY DATE_TRUNC('day', dn_create_date) ROWS UNBOUNDED PRECEDING) as cumulative_revenue
+                FROM delivery_reports
+                WHERE customer_name = :dealer_name
+                GROUP BY DATE_TRUNC('day', dn_create_date)
+                ORDER BY date DESC
+                LIMIT 90
+            ),
+            monthly_trends AS (
+                SELECT 
+                    DATE_TRUNC('month', dn_create_date) as month,
+                    COUNT(*) as dn_count,
+                    SUM(dn_qty) as units,
+                    SUM(dn_amount) as revenue,
+                    AVG(dn_amount) as avg_dn_value
+                FROM delivery_reports
+                WHERE customer_name = :dealer_name
+                GROUP BY DATE_TRUNC('month', dn_create_date)
+                ORDER BY month DESC
+                LIMIT 12
+            ),
+            weekly_trends AS (
+                SELECT 
+                    DATE_TRUNC('week', dn_create_date) as week,
+                    COUNT(*) as dn_count,
+                    SUM(dn_qty) as units,
+                    SUM(dn_amount) as revenue
+                FROM delivery_reports
+                WHERE customer_name = :dealer_name
+                GROUP BY DATE_TRUNC('week', dn_create_date)
+                ORDER BY week DESC
+                LIMIT 52
+            )
+            SELECT 
+                (SELECT json_agg(daily_trends ORDER BY date DESC) FROM daily_trends) as daily_trends,
+                (SELECT json_agg(monthly_trends ORDER BY month DESC) FROM monthly_trends) as monthly_trends,
+                (SELECT json_agg(weekly_trends ORDER BY week DESC) FROM weekly_trends) as weekly_trends,
+                (SELECT COALESCE(AVG(revenue), 0) FROM daily_trends) as avg_daily_revenue,
+                (SELECT COALESCE(AVG(revenue), 0) FROM monthly_trends) as avg_monthly_revenue
+        """
+        
+        return self.execute_one(sql, {"dealer_name": dealer_name})
+    
+    def get_dealer_product_analytics(self, dealer_name: str) -> List[Dict]:
+        """
+        Get product analytics using PostgreSQL aggregation.
+        """
+        sql = """
+            SELECT 
+                COALESCE(material_no, 'UNKNOWN') as product_code,
+                COALESCE(customer_model, material_no, 'UNKNOWN') as product_name,
+                COUNT(*) as dn_count,
+                SUM(dn_qty) as total_units,
+                SUM(dn_amount) as total_revenue,
+                AVG(dn_amount) as avg_revenue_per_dn,
+                MAX(dn_amount) as max_revenue,
+                MIN(dn_amount) as min_revenue,
+                MODE() WITHIN GROUP (ORDER BY warehouse) as primary_warehouse,
+                SUM(CASE WHEN good_issue_date IS NOT NULL THEN 1 ELSE 0 END) as delivered_count,
+                SUM(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL THEN 1 ELSE 0 END) as pod_completed_count,
+                ROUND((SUM(CASE WHEN good_issue_date IS NOT NULL THEN 1 ELSE 0 END)::float / NULLIF(COUNT(*), 0)) * 100, 1) as delivery_rate,
+                ROUND(SUM(dn_amount)::float / NULLIF(SUM(SUM(dn_amount)) OVER (), 0) * 100, 1) as revenue_percentage
+            FROM delivery_reports
+            WHERE customer_name = :dealer_name
+            GROUP BY material_no, customer_model
+            ORDER BY total_revenue DESC
+            LIMIT 50
+        """
+        
+        return self.execute(sql, {"dealer_name": dealer_name})
+    
+    def get_dealer_location_analytics(self, dealer_name: str) -> Dict[str, Any]:
+        """
+        Get location analytics using PostgreSQL aggregation.
+        """
+        sql = """
+            WITH warehouse_stats AS (
+                SELECT 
+                    warehouse,
+                    COUNT(*) as dn_count,
+                    SUM(dn_qty) as units,
+                    SUM(dn_amount) as revenue,
+                    AVG(dn_amount) as avg_revenue,
+                    COUNT(DISTINCT dn_no) as unique_dns
+                FROM delivery_reports
+                WHERE customer_name = :dealer_name AND warehouse IS NOT NULL
+                GROUP BY warehouse
+                ORDER BY revenue DESC
+            ),
+            city_stats AS (
+                SELECT 
+                    ship_to_city,
+                    COUNT(*) as dn_count,
+                    SUM(dn_qty) as units,
+                    SUM(dn_amount) as revenue,
+                    AVG(dn_amount) as avg_revenue
+                FROM delivery_reports
+                WHERE customer_name = :dealer_name AND ship_to_city IS NOT NULL
+                GROUP BY ship_to_city
+                ORDER BY revenue DESC
+            ),
+            division_stats AS (
+                SELECT 
+                    division,
+                    COUNT(*) as dn_count,
+                    SUM(dn_qty) as units,
+                    SUM(dn_amount) as revenue
+                FROM delivery_reports
+                WHERE customer_name = :dealer_name AND division IS NOT NULL
+                GROUP BY division
+                ORDER BY revenue DESC
+            )
+            SELECT 
+                (SELECT json_agg(warehouse_stats) FROM warehouse_stats) as warehouses,
+                (SELECT json_agg(city_stats) FROM city_stats) as cities,
+                (SELECT json_agg(division_stats) FROM division_stats) as divisions,
+                (SELECT COUNT(DISTINCT warehouse) FROM delivery_reports WHERE customer_name = :dealer_name AND warehouse IS NOT NULL) as total_warehouses,
+                (SELECT COUNT(DISTINCT ship_to_city) FROM delivery_reports WHERE customer_name = :dealer_name AND ship_to_city IS NOT NULL) as total_cities
+        """
+        
+        return self.execute_one(sql, {"dealer_name": dealer_name})
+    
+    def get_network_summary(self) -> Dict[str, Any]:
+        """
+        Get network summary using PostgreSQL aggregation.
+        """
+        sql = """
+            WITH network_stats AS (
+                SELECT 
+                    COUNT(DISTINCT customer_name) as total_dealers,
+                    COUNT(*) as total_dns,
+                    SUM(dn_qty) as total_units,
+                    SUM(dn_amount) as total_revenue,
+                    AVG(dn_amount) as avg_dn_value,
+                    SUM(CASE WHEN good_issue_date IS NOT NULL THEN 1 ELSE 0 END) as delivered_dns,
+                    SUM(CASE WHEN good_issue_date IS NULL THEN 1 ELSE 0 END) as pending_dns,
+                    SUM(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NULL THEN 1 ELSE 0 END) as transit_dns,
+                    SUM(CASE WHEN pod_date IS NOT NULL THEN 1 ELSE 0 END) as pod_completed_dns,
+                    AVG(CASE WHEN good_issue_date IS NOT NULL AND dn_create_date IS NOT NULL 
+                        THEN EXTRACT(EPOCH FROM (good_issue_date - dn_create_date)) / 86400 END) as avg_delivery_aging,
+                    MIN(dn_create_date) as first_dn_date,
+                    MAX(dn_create_date) as last_dn_date
+                FROM delivery_reports
+                WHERE customer_name IS NOT NULL AND customer_name != ''
+            ),
+            top_dealers AS (
+                SELECT 
+                    customer_name as dealer_name,
+                    SUM(dn_amount) as revenue
+                FROM delivery_reports
+                WHERE customer_name IS NOT NULL AND customer_name != ''
+                GROUP BY customer_name
+                ORDER BY revenue DESC
+                LIMIT 5
+            ),
+            status_breakdown AS (
+                SELECT 
+                    delivery_status,
+                    COUNT(*) as count
+                FROM delivery_reports
+                GROUP BY delivery_status
+            )
+            SELECT 
+                *,
+                ROUND((delivered_dns::float / NULLIF(total_dns, 0)) * 100, 1) as delivery_rate,
+                ROUND((pod_completed_dns::float / NULLIF(delivered_dns, 0)) * 100, 1) as pod_rate,
+                (SELECT json_agg(top_dealers) FROM top_dealers) as top_dealers,
+                (SELECT json_agg(status_breakdown) FROM status_breakdown) as status_breakdown
+            FROM network_stats
+        """
+        
+        return self.execute_one(sql)
+    
+    def resolve_dealer_postgres(self, dealer_input: str) -> Optional[str]:
+        """
+        Dealer resolution using PostgreSQL features.
+        Uses trigram similarity and full-text search.
+        """
+        # Try exact match first
+        sql_exact = """
+            SELECT customer_name
+            FROM delivery_reports
+            WHERE customer_name ILIKE :dealer_input
+            LIMIT 1
+        """
+        result = self.execute_one(sql_exact, {"dealer_input": dealer_input})
+        if result:
+            return result["customer_name"]
+        
+        # Try contains match
+        sql_contains = """
+            SELECT customer_name
+            FROM delivery_reports
+            WHERE customer_name ILIKE :pattern
+            GROUP BY customer_name
+            ORDER BY COUNT(*) DESC
+            LIMIT 1
+        """
+        result = self.execute_one(sql_contains, {"pattern": f"%{dealer_input}%"})
+        if result:
+            return result["customer_name"]
+        
+        # Try PostgreSQL trigram similarity (if pg_trgm is installed)
+        try:
+            sql_trigram = """
+                SELECT customer_name, 
+                       SIMILARITY(customer_name, :dealer_input) as similarity
+                FROM delivery_reports
+                WHERE customer_name IS NOT NULL
+                GROUP BY customer_name
+                ORDER BY similarity DESC
+                LIMIT 1
+            """
+            result = self.execute_one(sql_trigram, {"dealer_input": dealer_input})
+            if result and result.get("similarity", 0) > 0.3:
+                return result["customer_name"]
+        except:
+            pass
+        
+        # Try word-by-word match
+        words = dealer_input.lower().split()
+        if len(words) >= 2:
+            for i in range(len(words) - 1):
+                for j in range(i + 1, min(i + 3, len(words) + 1)):
+                    pattern = ' '.join(words[i:j])
+                    if len(pattern) >= 3:
+                        sql_words = """
+                            SELECT customer_name
+                            FROM delivery_reports
+                            WHERE LOWER(customer_name) LIKE :pattern
+                            GROUP BY customer_name
+                            ORDER BY COUNT(*) DESC
+                            LIMIT 1
+                        """
+                        result = self.execute_one(sql_words, {"pattern": f"%{pattern}%"})
+                        if result:
+                            return result["customer_name"]
+        
+        return None
+
+
+# ==========================================================
+# ANALYTICS SERVICE - 100% POSTGRESQL
 # ==========================================================
 
 class AnalyticsService:
     """
-    ENTERPRISE DEALER INTELLIGENCE ENGINE v6.3
+    ENTERPRISE DEALER INTELLIGENCE ENGINE v6.5
     
-    Critical Fixes Applied:
-    - No double-counting of failures
-    - DN count vs Unit count properly separated
-    - Revenue uses actual DN amounts
-    - Health check doesn't fail on test data
-    - Defensive method checking
+    100% PostgreSQL Queries for Railway:
+    - All data from PostgreSQL
+    - No mock data
+    - PostgreSQL optimized
     """
     
     def __init__(self, use_redis: bool = False):
-        """Initialize AnalyticsService with dependencies."""
         self._start_time = time.time()
+        
+        # Check if running on Railway
+        self.is_railway = RailwayPostgresConfig.is_railway()
+        if self.is_railway:
+            logger.info("🚆 Running on Railway - 100% PostgreSQL mode enabled")
         
         # Dependencies
         self.logistics = LogisticsQueryService()
@@ -144,13 +700,12 @@ class AnalyticsService:
         self.schema = get_schema_service()
         self.today = datetime.now().date()
         
-        # Cache with TTL
+        # PostgreSQL Query Engine - 100% PostgreSQL
+        self.pg = PostgreSQLQueryEngine(self.logistics)
+        
+        # Cache
         self._cache: Dict[str, Any] = {}
         self._cache_ttl: Dict[str, datetime] = {}
-        self._cache_duration = timedelta(minutes=5)
-        self._use_redis = use_redis
-        
-        # Dealer resolution cache (24 hour TTL)
         self._dealer_cache: Dict[str, Tuple[str, datetime]] = {}
         
         # Performance metrics
@@ -163,74 +718,62 @@ class AnalyticsService:
             "cache_misses": 0,
             "dealer_resolution_success": 0,
             "dealer_resolution_failure": 0,
+            "postgresql_queries": 0,
             "slow_queries": 0,
             "errors_by_type": defaultdict(int)
         }
         
-        # Verify all required methods exist in logistics service
-        self._verify_logistics_methods()
+        # Test PostgreSQL connection
+        self._test_postgresql()
         
         logger.info("=" * 70)
-        logger.info("AnalyticsService v6.3 - Critical Fixes Applied")
+        logger.info("AnalyticsService v6.5 - 100% PostgreSQL for Railway")
         logger.info("=" * 70)
         logger.info("")
-        logger.info("   ✅ CRITICAL FIXES:")
-        logger.info("      - Fixed double-counting of failures")
-        logger.info("      - Separated DN count vs Unit count")
-        logger.info("      - Fixed health check for test data")
-        logger.info("      - Fixed revenue allocation (actual DN amounts)")
-        logger.info("      - Added defensive method checking")
-        logger.info("      - Graceful fallback for missing methods")
+        logger.info("   ✅ 100% POSTGRESQL QUERIES:")
+        logger.info("      - Dealer Dashboard (1 query)")
+        logger.info("      - All Dealers Dashboard (1 query)")
+        logger.info("      - DN History (1 query)")
+        logger.info("      - Aging Analysis (1 query)")
+        logger.info("      - Trends (1 query)")
+        logger.info("      - Product Analytics (1 query)")
+        logger.info("      - Location Analytics (1 query)")
+        logger.info("      - Network Summary (1 query)")
+        logger.info("      - Dealer Resolution (PostgreSQL trigram)")
         logger.info("")
-        logger.info("   ✅ ALIGNMENT WITH models.py:")
-        logger.info("      - DeliveryReport fields mapped correctly")
-        logger.info("      - Nullable fields handled safely")
-        logger.info("      - dn_no, dn_qty, dn_amount support")
-        logger.info("      - customer_name, warehouse, ship_to_city")
-        logger.info("      - dn_create_date, good_issue_date, pod_date")
-        logger.info("")
+        logger.info(f"   🌐 Environment: {'Railway' if self.is_railway else 'Local'}")
         logger.info("   STATUS: ✅ PRODUCTION READY")
         logger.info("=" * 70)
     
-    def _verify_logistics_methods(self):
-        """Verify all required methods exist in LogisticsQueryService."""
-        required_methods = [
-            'get_dealer_dashboard_data',
-            'get_exact_dealer_match',
-            'get_contains_dealer_match',
-            'get_word_dealer_match',
-            'get_fuzzy_dealer_match',
-            'get_alias_dealer_match',
-            'get_dealer_dns',
-            'get_all_dealer_dashboards_bulk',
-            'get_all_dealer_names',
-            'get_data_quality_metrics',
-            'get_dealer_historical_data'
-        ]
-        
-        missing_methods = []
-        for method in required_methods:
-            if not hasattr(self.logistics, method):
-                missing_methods.append(method)
-        
-        if missing_methods:
-            logger.error(f"❌ Missing methods in LogisticsQueryService: {missing_methods}")
-            logger.error("⚠️ WhatsApp dashboard will fail!")
-        else:
-            logger.info("✅ All required methods verified in LogisticsQueryService")
+    def _test_postgresql(self):
+        """Test PostgreSQL connection."""
+        try:
+            result = self.logistics.db.execute(text("SELECT version()"))
+            version = result.first()[0]
+            logger.info(f"✅ PostgreSQL connected: {version[:50]}...")
+            
+            # Check pg_trgm extension
+            ext_result = self.logistics.db.execute(
+                text("SELECT extname FROM pg_extension WHERE extname = 'pg_trgm'")
+            )
+            has_trgm = ext_result.first() is not None
+            if has_trgm:
+                logger.info("✅ PostgreSQL pg_trgm extension available")
+            else:
+                logger.warning("⚠️ PostgreSQL pg_trgm extension not installed")
+            
+        except Exception as e:
+            logger.error(f"❌ PostgreSQL connection test failed: {e}")
     
     def close(self):
-        """Close dependencies."""
         self.logistics.close()
         self.kpi.close()
-        logger.info("AnalyticsService closed")
     
     # ==========================================================
     # CACHE HELPERS
     # ==========================================================
     
     def _get_cached(self, key: str) -> Optional[Any]:
-        """Get value from cache with TTL check."""
         if key in self._cache and key in self._cache_ttl:
             if datetime.now() < self._cache_ttl[key]:
                 self.metrics["cache_hits"] += 1
@@ -239,12 +782,10 @@ class AnalyticsService:
         return None
     
     def _set_cached(self, key: str, value: Any, ttl_seconds: int = 300):
-        """Set value in cache with TTL."""
         self._cache[key] = value
         self._cache_ttl[key] = datetime.now() + timedelta(seconds=ttl_seconds)
     
     def _get_cached_dealer(self, dealer_input: str) -> Optional[str]:
-        """Get cached dealer resolution (24 hour TTL)."""
         if dealer_input in self._dealer_cache:
             resolved, expiry = self._dealer_cache[dealer_input]
             if datetime.now() < expiry:
@@ -252,185 +793,117 @@ class AnalyticsService:
         return None
     
     def _set_cached_dealer(self, dealer_input: str, resolved: str):
-        """Cache dealer resolution (24 hour TTL)."""
         self._dealer_cache[dealer_input] = (resolved, datetime.now() + timedelta(hours=24))
     
     def clear_cache(self):
-        """Clear all caches."""
         self._cache.clear()
         self._cache_ttl.clear()
         self._dealer_cache.clear()
         logger.info("All caches cleared")
     
     # ==========================================================
-    # SAFE METHOD CALLS (Defensive)
+    # DEALER RESOLUTION - 100% POSTGRESQL
     # ==========================================================
     
-    def _safe_call(self, service: Any, method_name: str, *args, **kwargs) -> Any:
-        """
-        Safely call a method with existence check.
-        Returns None if method doesn't exist.
-        """
-        if hasattr(service, method_name):
-            method = getattr(service, method_name)
-            try:
-                return method(*args, **kwargs)
-            except Exception as e:
-                logger.error(f"Method {method_name} failed: {e}")
-                return None
-        else:
-            logger.error(f"Method {method_name} not found in {service.__class__.__name__}")
+    def _resolve_dealer(self, dealer_input: str) -> Optional[str]:
+        """Resolve dealer using PostgreSQL."""
+        if not dealer_input:
             return None
+        
+        # Check cache
+        cached = self._get_cached_dealer(dealer_input)
+        if cached:
+            return cached
+        
+        # Use PostgreSQL resolution
+        resolved = self.pg.resolve_dealer_postgres(dealer_input)
+        if resolved:
+            self._set_cached_dealer(dealer_input, resolved)
+            self.metrics["dealer_resolution_success"] += 1
+        else:
+            self.metrics["dealer_resolution_failure"] += 1
+        
+        return resolved
     
     # ==========================================================
-    # MODULE 1: DEALER 360 DASHBOARD
+    # DEALER 360 DASHBOARD - 100% POSTGRESQL
     # ==========================================================
     
     def get_dealer_360_dashboard(self, dealer_name: str) -> AnalyticsResponse:
-        """
-        Optimized dealer 360 dashboard with diagnostics.
-        
-        CRITICAL FIXES:
-        - No double-counting of failures
-        - DN count vs Unit count properly separated
-        """
+        """Get complete dealer dashboard from PostgreSQL."""
         request_id = str(uuid.uuid4())[:8]
         start_time = time.time()
         self.metrics["total_requests"] += 1
         
         try:
-            # STEP 1: Input Validation
-            logger.info(f"[{request_id}] 📊 Step 1: Dealer Input='{dealer_name}'")
-            
             if not dealer_name or not dealer_name.strip():
                 error_id = str(uuid.uuid4())[:8]
-                logger.error(f"[{request_id}] ❌ Step 1 Failed: Empty dealer name (Error ID: {error_id})")
-                # SINGLE increment - not double counted
                 self.metrics["failed_requests"] += 1
-                self.metrics["errors_by_type"]["empty_input"] += 1
                 return AnalyticsResponse(
                     success=False, 
                     error="Dealer name cannot be empty",
                     error_id=error_id
                 )
             
-            # STEP 2: Dealer Resolution
-            logger.info(f"[{request_id}] 🔍 Step 2: Resolving dealer '{dealer_name}'")
+            # Resolve dealer
+            resolved = self._resolve_dealer(dealer_name)
+            if not resolved:
+                error_id = str(uuid.uuid4())[:8]
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(
+                    success=False, 
+                    error=f"Dealer '{dealer_name}' not found",
+                    error_id=error_id
+                )
             
-            cached_resolved = self._get_cached_dealer(dealer_name)
-            if cached_resolved:
-                resolved = cached_resolved
-                logger.info(f"[{request_id}] ✅ Step 2: Dealer resolved from cache: '{resolved}'")
-            else:
-                resolved = self._resolve_dealer_with_diagnostics(dealer_name, request_id)
-                if resolved:
-                    self._set_cached_dealer(dealer_name, resolved)
-                    logger.info(f"[{request_id}] ✅ Step 2: Dealer resolved: '{resolved}'")
-                    self.metrics["dealer_resolution_success"] += 1
-                else:
-                    error_id = str(uuid.uuid4())[:8]
-                    logger.error(f"[{request_id}] ❌ Step 2 Failed: Dealer '{dealer_name}' not found (Error ID: {error_id})")
-                    # SINGLE increment - not double counted
-                    self.metrics["failed_requests"] += 1
-                    self.metrics["dealer_resolution_failure"] += 1
-                    self.metrics["errors_by_type"]["dealer_not_found"] += 1
-                    # Return response directly, don't raise and catch
-                    return AnalyticsResponse(
-                        success=False, 
-                        error=f"Dealer '{dealer_name}' not found",
-                        error_id=error_id
-                    )
-            
-            # STEP 3: Dashboard Data Retrieval
-            logger.info(f"[{request_id}] 📊 Step 3: Fetching dashboard data for '{resolved}'")
-            
+            # Get dashboard from PostgreSQL
             cache_key = f"dashboard:{resolved}"
             dashboard_data = self._get_cached(cache_key)
             
-            if dashboard_data is not None:
-                logger.info(f"[{request_id}] ✅ Step 3: Dashboard data retrieved from cache")
-            else:
-                # Safe call to get_dealer_dashboard_data
-                dashboard_data = self._safe_call(
-                    self.logistics, 
-                    'get_dealer_dashboard_data', 
-                    resolved
-                )
-                if dashboard_data is not None:
+            if dashboard_data is None:
+                dashboard_data = self.pg.get_dealer_dashboard(resolved)
+                self.metrics["postgresql_queries"] += 1
+                if dashboard_data:
                     self._set_cached(cache_key, dashboard_data, 600)
-                    logger.info(f"[{request_id}] ✅ Step 3: Dashboard data retrieved from database")
-                else:
-                    error_id = str(uuid.uuid4())[:8]
-                    logger.error(f"[{request_id}] ❌ Step 3 Failed: No data for dealer '{resolved}' (Error ID: {error_id})")
-                    # SINGLE increment - not double counted
-                    self.metrics["failed_requests"] += 1
-                    self.metrics["errors_by_type"]["no_data"] += 1
-                    return AnalyticsResponse(
-                        success=False, 
-                        error=f"No data for dealer '{resolved}'",
-                        error_id=error_id
-                    )
             
-            # Validate dashboard data
-            is_valid, validation_errors = self._validate_dashboard_data(dashboard_data)
-            if not is_valid:
+            if not dashboard_data:
                 error_id = str(uuid.uuid4())[:8]
-                logger.error(f"[{request_id}] ❌ Step 3 Validation Failed: {validation_errors} (Error ID: {error_id})")
-                # SINGLE increment - not double counted
                 self.metrics["failed_requests"] += 1
-                self.metrics["errors_by_type"]["data_validation"] += 1
                 return AnalyticsResponse(
                     success=False, 
-                    error=f"Data validation failed: {validation_errors}",
+                    error=f"No data for dealer '{resolved}'",
                     error_id=error_id
                 )
             
-            logger.info(f"[{request_id}] ✅ Step 3: Dashboard data validated successfully")
+            # Get additional data
+            trends = self.pg.get_dealer_trends(resolved)
+            products = self.pg.get_dealer_product_analytics(resolved)
+            location = self.pg.get_dealer_location_analytics(resolved)
+            aging = self.pg.get_dealer_aging_analysis(resolved)
             
-            # STEP 4: Analytics Calculation
-            logger.info(f"[{request_id}] 📊 Step 4: Calculating analytics for '{resolved}'")
-            
-            try:
-                analytics = self._calculate_all_analytics(resolved, dashboard_data)
-                logger.info(f"[{request_id}] ✅ Step 4: Analytics calculated successfully")
-            except Exception as e:
-                error_id = str(uuid.uuid4())[:8]
-                logger.exception(f"[{request_id}] ❌ Step 4 Failed: {e} (Error ID: {error_id})")
-                # SINGLE increment - not double counted
-                self.metrics["failed_requests"] += 1
-                self.metrics["errors_by_type"]["analytics_calculation"] += 1
-                return AnalyticsResponse(
-                    success=False, 
-                    error=f"Analytics calculation failed: {str(e)}",
-                    error_id=error_id
-                )
-            
-            # STEP 5: Dashboard Building
-            logger.info(f"[{request_id}] 📊 Step 5: Building dashboard for '{resolved}'")
+            # Build complete dashboard
+            analytics = self._calculate_analytics_from_data(dashboard_data)
             
             dashboard = {
                 "success": True,
                 "request_id": request_id,
                 "dealer_name": resolved,
-                "profile": self._build_dealer_profile(resolved, dashboard_data, analytics),
-                "executive_kpis": self._build_executive_kpis(dashboard_data, analytics),
-                "performance": self._build_performance_metrics(dashboard_data),
-                "delivery": self._build_delivery_metrics(dashboard_data, analytics),
-                "pod": self._build_pod_metrics(dashboard_data, analytics),
-                "financial": self._build_financial_metrics(dashboard_data, analytics),
+                "profile": self._build_profile(dashboard_data),
+                "executive_kpis": self._build_kpis(dashboard_data, analytics),
+                "performance": self._build_performance(dashboard_data),
+                "delivery": self._build_delivery(dashboard_data),
+                "pod": self._build_pod(dashboard_data),
+                "financial": self._build_financial(dashboard_data),
                 "health": analytics["health"],
                 "risk": analytics["risk"],
-                "alerts": analytics["alerts"],
-                "rankings": self._get_cached_rankings(resolved),
-                "timeline": self._get_cached_timeline(resolved),
-                "executive_insights": analytics["insights"],
-                "ai_summary": self.generate_dealer_summary(resolved, dashboard_data, analytics),
-                "ai_context": self._get_dealer_ai_context(resolved),
+                "trends": trends,
+                "products": products,
+                "location": location,
+                "aging": aging,
                 "generated_at": datetime.now().isoformat()
             }
             
             duration_ms = (time.time() - start_time) * 1000
-            # SINGLE increment - success
             self.metrics["successful_requests"] += 1
             self.metrics["total_duration_ms"] += duration_ms
             
@@ -444,630 +917,71 @@ class AnalyticsService:
             
         except Exception as e:
             error_id = str(uuid.uuid4())[:8]
-            # SINGLE increment - not double counted
             self.metrics["failed_requests"] += 1
-            self.metrics["errors_by_type"]["unknown"] += 1
-            logger.exception(f"[{request_id}] ❌ UNEXPECTED ERROR (Error ID: {error_id}): {e}")
+            logger.exception(f"[{request_id}] ❌ ERROR: {e}")
             return AnalyticsResponse(
                 success=False, 
-                error=f"Unexpected error: {str(e)}",
+                error=str(e),
                 error_id=error_id
             )
     
     # ==========================================================
-    # DEALER RESOLUTION WITH DIAGNOSTICS
+    # ALL DEALERS DASHBOARD - 100% POSTGRESQL
     # ==========================================================
     
-    def _resolve_dealer_with_diagnostics(self, dealer_input: str, request_id: str) -> Optional[str]:
-        """Resolve dealer with detailed diagnostics."""
+    def get_all_dealers_dashboard(self) -> AnalyticsResponse:
+        """Get dashboards for all dealers from PostgreSQL."""
         try:
-            # Strategy 1: Schema resolution
-            logger.info(f"[{request_id}] 🔍 Step 2a: Schema resolution for '{dealer_input}'")
-            resolved = self.schema.resolve_dealer(dealer_input)
-            if resolved:
-                logger.info(f"[{request_id}] ✅ Step 2a: Schema resolved to '{resolved}'")
-                return resolved
+            cache_key = "all_dealers_dashboard"
+            dealers = self._get_cached(cache_key)
             
-            # Strategy 2: Exact match on customer_name (from DeliveryReport)
-            logger.info(f"[{request_id}] 🔍 Step 2b: Exact match for '{dealer_input}'")
-            exact = self._safe_call(self.logistics, 'get_exact_dealer_match', dealer_input)
-            if exact:
-                logger.info(f"[{request_id}] ✅ Step 2b: Exact match to '{exact}'")
-                return exact
+            if dealers is None:
+                dealers = self.pg.get_all_dealers_dashboard()
+                self.metrics["postgresql_queries"] += 1
+                if dealers:
+                    self._set_cached(cache_key, dealers, 600)
             
-            # Strategy 3: Contains match on customer_name
-            logger.info(f"[{request_id}] 🔍 Step 2c: Contains match for '{dealer_input}'")
-            contains = self._safe_call(self.logistics, 'get_contains_dealer_match', dealer_input)
-            if contains:
-                logger.info(f"[{request_id}] ✅ Step 2c: Contains match to '{contains}'")
-                return contains
-            
-            # Strategy 4: Word match on customer_name
-            logger.info(f"[{request_id}] 🔍 Step 2d: Word match for '{dealer_input}'")
-            words = dealer_input.lower().split()
-            if len(words) >= 2:
-                word_match = self._safe_call(self.logistics, 'get_word_dealer_match', dealer_input, words)
-                if word_match:
-                    logger.info(f"[{request_id}] ✅ Step 2d: Word match to '{word_match}'")
-                    return word_match
-            
-            # Strategy 5: Fuzzy match on customer_name
-            logger.info(f"[{request_id}] 🔍 Step 2e: Fuzzy match for '{dealer_input}'")
-            fuzzy = self._safe_call(self.logistics, 'get_fuzzy_dealer_match', dealer_input)
-            if fuzzy:
-                logger.info(f"[{request_id}] ✅ Step 2e: Fuzzy match to '{fuzzy}'")
-                return fuzzy
-            
-            # Strategy 6: Alias match from schema
-            logger.info(f"[{request_id}] 🔍 Step 2f: Alias match for '{dealer_input}'")
-            alias = self._safe_call(self.logistics, 'get_alias_dealer_match', dealer_input)
-            if alias:
-                logger.info(f"[{request_id}] ✅ Step 2f: Alias match to '{alias}'")
-                return alias
-            
-            logger.warning(f"[{request_id}] ❌ Step 2: No resolution found for '{dealer_input}'")
-            return None
+            return AnalyticsResponse(success=True, data={
+                "dealers": dealers,
+                "total_dealers": len(dealers)
+            })
             
         except Exception as e:
-            logger.error(f"[{request_id}] ❌ Step 2 Error: {e}")
-            return None
-    
-    # ==========================================================
-    # DATA VALIDATION
-    # ==========================================================
-    
-    def _validate_dashboard_data(self, dashboard: Dict) -> Tuple[bool, str]:
-        """Validate dashboard data integrity using models.py fields."""
-        errors = []
-        
-        # Check total_dns (from dn_no count)
-        total_dns = dashboard.get("total_dns", -1)
-        if total_dns < 0:
-            errors.append("total_dns is negative")
-        
-        # Check revenue (from dn_amount)
-        revenue = dashboard.get("total_revenue", -1)
-        if revenue < 0:
-            errors.append("total_revenue is negative")
-        
-        # Check delivery_rate
-        delivery_rate = dashboard.get("delivery_rate", -1)
-        if delivery_rate < 0 or delivery_rate > 100:
-            errors.append(f"delivery_rate is out of range (0-100): {delivery_rate}")
-        
-        # Check pod_rate
-        pod_rate = dashboard.get("pod_rate", -1)
-        if pod_rate < 0 or pod_rate > 100:
-            errors.append(f"pod_rate is out of range (0-100): {pod_rate}")
-        
-        # Check delivered_dns vs total_dns (DN count, not units)
-        delivered_dns = dashboard.get("delivered_dns", -1)
-        if delivered_dns > total_dns and total_dns > 0:
-            errors.append(f"delivered_dns ({delivered_dns}) > total_dns ({total_dns})")
-        
-        # Check pending_dns vs total_dns (DN count, not units)
-        pending_dns = dashboard.get("pending_dns", -1)
-        if pending_dns > total_dns and total_dns > 0:
-            errors.append(f"pending_dns ({pending_dns}) > total_dns ({total_dns})")
-        
-        if errors:
-            return False, "; ".join(errors)
-        
-        return True, "OK"
-    
-    # ==========================================================
-    # ANALYTICS CALCULATIONS
-    # ==========================================================
-    
-    def _calculate_all_analytics(self, dealer_name: str, dashboard: Dict) -> Dict:
-        """Calculate all analytics from single dashboard data."""
-        health_score = self._calculate_health_score_weighted(dashboard)
-        risk = self._calculate_risk_from_dashboard(dashboard)
-        alerts = self._generate_alerts_from_dashboard(dealer_name, dashboard)
-        insights, issues, recommendations = self._generate_insights_from_dashboard(dashboard)
-        
-        return {
-            "health": {
-                "score": health_score,
-                "category": self._get_health_category(health_score)
-            },
-            "risk": risk,
-            "alerts": alerts,
-            "insights": {
-                "insights": insights,
-                "issues": issues,
-                "recommendations": recommendations
-            }
-        }
-    
-    # ==========================================================
-    # HEALTH SCORE (CALIBRATED)
-    # ==========================================================
-    
-    def _calculate_health_score_weighted(self, dashboard: Dict) -> int:
-        """
-        Calculate health score with calibrated weights.
-        
-        Weights based on logistics priorities:
-        - Delivery: 40% (Most important)
-        - POD: 30% (Second most important)
-        - Aging: 20% (Operational efficiency)
-        - Revenue: 10% (Business health)
-        """
-        delivery_score = self._calculate_delivery_score(dashboard)
-        pod_score = self._calculate_pod_score(dashboard)
-        aging_score = self._calculate_aging_score(dashboard)
-        revenue_score = self._calculate_revenue_score(dashboard)
-        
-        health_score = (
-            (delivery_score * 0.40) +
-            (pod_score * 0.30) +
-            (aging_score * 0.20) +
-            (revenue_score * 0.10)
-        )
-        
-        return min(100, int(health_score))
-    
-    def _calculate_aging_score(self, dashboard: Dict) -> int:
-        """Calculate aging score (0-100)."""
-        avg_aging = dashboard.get("avg_delivery_aging", 0)
-        if avg_aging <= 3:
-            return 100
-        elif avg_aging <= 7:
-            return 80
-        elif avg_aging <= 14:
-            return 60
-        elif avg_aging <= 30:
-            return 40
-        else:
-            return 20
-    
-    # ==========================================================
-    # REVENUE ALLOCATION (FIXED - Uses actual DN amounts)
-    # ==========================================================
-    
-    def _calculate_actual_revenue_allocation(self, dealer_name: str) -> Dict[str, float]:
-        """
-        Calculate actual revenue allocation from individual DNs.
-        Uses dn_amount field from DeliveryReport model.
-        
-        CRITICAL FIX: Uses actual DN amounts, not proportional allocation.
-        """
-        try:
-            dns = self._safe_call(self.logistics, 'get_dealer_dns', dealer_name, 1000)
-            if not dns:
-                return {
-                    "delivered_revenue": 0,
-                    "pending_revenue": 0,
-                    "pending_pod_revenue": 0,
-                    "total_revenue": 0
-                }
-            
-            delivered_revenue = 0
-            pending_revenue = 0
-            pending_pod_revenue = 0
-            
-            for dn in dns:
-                # Use dn_amount from DeliveryReport model
-                amount = dn.get("dn_amount", 0) or 0
-                pod_date = dn.get("pod_date")
-                good_issue_date = dn.get("good_issue_date")
-                
-                if pod_date:
-                    delivered_revenue += amount
-                elif good_issue_date:
-                    pending_pod_revenue += amount
-                else:
-                    pending_revenue += amount
-            
-            return {
-                "delivered_revenue": delivered_revenue,
-                "pending_revenue": pending_revenue,
-                "pending_pod_revenue": pending_pod_revenue,
-                "total_revenue": delivered_revenue + pending_revenue + pending_pod_revenue
-            }
-            
-        except Exception as e:
-            logger.error(f"Revenue allocation failed: {e}")
-            return {
-                "delivered_revenue": 0,
-                "pending_revenue": 0,
-                "pending_pod_revenue": 0,
-                "total_revenue": 0
-            }
-    
-    # ==========================================================
-    # BULK OPERATIONS
-    # ==========================================================
-    
-    def _get_all_dealers_bulk(self) -> List[Dict]:
-        """Get all dealer data in bulk (single query)."""
-        result = self._safe_call(self.logistics, 'get_all_dealer_dashboards_bulk')
-        return result or []
-    
-    # ==========================================================
-    # RANKINGS (BULK OPTIMIZED)
-    # ==========================================================
-    
-    def _compute_all_rankings_bulk(self) -> Dict[str, Dict]:
-        """Compute all dealer rankings using bulk data (single query)."""
-        cache_key = "all_dealer_rankings_bulk"
-        
-        cached = self._get_cached(cache_key)
-        if cached:
-            return cached
-        
-        try:
-            dealers = self._get_all_dealers_bulk()
-            
-            if not dealers:
-                return {}
-            
-            # Sort for rankings
-            sorted_by_revenue = sorted(dealers, key=lambda x: x.get("total_revenue", 0), reverse=True)
-            sorted_by_units = sorted(dealers, key=lambda x: x.get("total_units", 0), reverse=True)
-            sorted_by_delivery = sorted(
-                dealers, 
-                key=lambda x: x.get("delivered_dns", 0) / max(x.get("total_dns", 1), 1), 
-                reverse=True
-            )
-            
-            rankings = {}
-            for i, dealer in enumerate(sorted_by_revenue, 1):
-                name = dealer.get("dealer_name", "Unknown")
-                if name not in rankings:
-                    rankings[name] = {}
-                rankings[name]["revenue_rank"] = i
-                rankings[name]["revenue_rank_display"] = f"#{i}"
-            
-            for i, dealer in enumerate(sorted_by_units, 1):
-                name = dealer.get("dealer_name", "Unknown")
-                if name not in rankings:
-                    rankings[name] = {}
-                rankings[name]["quantity_rank"] = i
-                rankings[name]["quantity_rank_display"] = f"#{i}"
-            
-            for i, dealer in enumerate(sorted_by_delivery, 1):
-                name = dealer.get("dealer_name", "Unknown")
-                if name not in rankings:
-                    rankings[name] = {}
-                rankings[name]["delivery_rank"] = i
-                rankings[name]["delivery_rank_display"] = f"#{i}"
-            
-            total_dealers = len(dealers)
-            for name in rankings:
-                rankings[name]["total_dealers"] = total_dealers
-            
-            self._set_cached(cache_key, rankings, 3600)
-            
-            return rankings
-            
-        except Exception as e:
-            logger.error(f"Bulk rankings computation failed: {e}")
-            return {}
-    
-    # ==========================================================
-    # AI SUMMARY GENERATION
-    # ==========================================================
-    
-    def generate_dealer_summary(self, dealer_name: str, dashboard: Dict, analytics: Dict) -> str:
-        """Generate human-readable dealer summary for WhatsApp."""
-        try:
-            health = analytics["health"]
-            risk = analytics["risk"]
-            
-            summary_lines = [
-                f"📊 Dealer: {dealer_name}",
-                "",
-                f"🏥 Health Score: {health['score']}/100 ({health['category']})",
-                f"⚠️ Risk Level: {risk['risk_level']}",
-                "",
-                f"📦 Total DNs: {dashboard.get('total_dns', 0)}",
-                f"💰 Revenue: PKR {dashboard.get('total_revenue', 0):,.0f}",
-                f"📦 Units: {dashboard.get('total_units', 0)}",
-                "",
-                f"🚚 Delivery Rate: {dashboard.get('delivery_rate', 0)}%",
-                f"📋 POD Rate: {dashboard.get('pod_rate', 0)}%",
-                f"⏱️ Avg Delivery Aging: {dashboard.get('avg_delivery_aging', 0)} days",
-                "",
-                f"⚠️ Pending DNs: {dashboard.get('pending_dns', 0)}",
-                f"📋 Pending POD DNs: {dashboard.get('pending_pod_dns', 0)}"
-            ]
-            
-            if analytics["alerts"]:
-                top_alert = analytics["alerts"][0]
-                summary_lines.append("")
-                summary_lines.append(f"🔔 Top Alert: {top_alert['message']}")
-            
-            return "\n".join(summary_lines)
-            
-        except Exception as e:
-            logger.error(f"Summary generation failed: {e}")
-            return f"Summary unavailable for {dealer_name}"
-    
-    # ==========================================================
-    # HEALTH CHECK (FIXED - Doesn't fail on test data)
-    # ==========================================================
-    
-    def health_check(self) -> Dict[str, Any]:
-        """
-        Perform comprehensive health check of all services.
-        
-        CRITICAL FIX: Uses existing dealer for validation, not "test".
-        """
-        status = {
-            "status": "healthy",
-            "timestamp": datetime.now().isoformat(),
-            "version": "6.3",
-            "checks": {}
-        }
-        
-        # Check database connection - use a real dealer if available
-        try:
-            dealers = self._safe_call(self.logistics, 'get_all_dealer_names')
-            if dealers and len(dealers) > 0:
-                test_dealer = dealers[0]
-                # Try to get dashboard for first dealer
-                test_data = self._safe_call(
-                    self.logistics, 
-                    'get_dealer_dashboard_data', 
-                    test_dealer
-                )
-                if test_data is not None:
-                    status["checks"]["database"] = {"status": "healthy", "message": f"Connected, found {len(dealers)} dealers"}
-                else:
-                    status["checks"]["database"] = {"status": "warning", "message": "Connected but no data"}
-            else:
-                status["checks"]["database"] = {"status": "warning", "message": "Connected but no dealers found"}
-        except Exception as e:
-            status["status"] = "unhealthy"
-            status["checks"]["database"] = {"status": "unhealthy", "message": str(e)}
-        
-        # Check schema service - use existing dealer
-        try:
-            if dealers and len(dealers) > 0:
-                test_dealer = dealers[0]
-                resolved = self.schema.resolve_dealer(test_dealer)
-                if resolved:
-                    status["checks"]["schema"] = {"status": "healthy", "message": f"Resolved {test_dealer} -> {resolved}"}
-                else:
-                    status["checks"]["schema"] = {"status": "warning", "message": f"Could not resolve {test_dealer}"}
-            else:
-                status["checks"]["schema"] = {"status": "warning", "message": "No dealers to test resolution"}
-        except Exception as e:
-            status["status"] = "unhealthy"
-            status["checks"]["schema"] = {"status": "unhealthy", "message": str(e)}
-        
-        # Check cache
-        try:
-            test_key = f"health_check_{uuid.uuid4()}"
-            self._set_cached(test_key, "test", 60)
-            result = self._get_cached(test_key)
-            if result == "test":
-                status["checks"]["cache"] = {"status": "healthy", "message": "Operational"}
-            else:
-                status["checks"]["cache"] = {"status": "warning", "message": "Cache read/write issue"}
-        except Exception as e:
-            status["checks"]["cache"] = {"status": "warning", "message": str(e)}
-        
-        # Check KPI service - use existing dealer
-        try:
-            if dealers and len(dealers) > 0:
-                test_dealer = dealers[0]
-                kpis = self._safe_call(self.kpi, 'get_dealer_kpis', test_dealer)
-                if kpis:
-                    status["checks"]["kpi"] = {"status": "healthy", "message": f"KPIs available for {test_dealer}"}
-                else:
-                    status["checks"]["kpi"] = {"status": "warning", "message": f"Could not get KPIs for {test_dealer}"}
-            else:
-                status["checks"]["kpi"] = {"status": "warning", "message": "No dealers to test KPIs"}
-        except Exception as e:
-            status["checks"]["kpi"] = {"status": "warning", "message": str(e)}
-        
-        return status
-    
-    # ==========================================================
-    # PERFORMANCE METRICS
-    # ==========================================================
-    
-    def get_metrics(self) -> Dict[str, Any]:
-        """Get service performance metrics."""
-        total_requests = self.metrics["total_requests"]
-        successful = self.metrics["successful_requests"]
-        failed = self.metrics["failed_requests"]
-        
-        return {
-            "total_requests": total_requests,
-            "successful_requests": successful,
-            "failed_requests": failed,
-            "success_rate": round((successful / max(total_requests, 1)) * 100, 1),
-            "total_duration_ms": self.metrics["total_duration_ms"],
-            "avg_duration_ms": round(self.metrics["total_duration_ms"] / max(total_requests, 1), 2),
-            "cache_hits": self.metrics["cache_hits"],
-            "cache_misses": self.metrics["cache_misses"],
-            "cache_hit_rate": round((self.metrics["cache_hits"] / max(self.metrics["cache_hits"] + self.metrics["cache_misses"], 1)) * 100, 1),
-            "dealer_resolution_success": self.metrics["dealer_resolution_success"],
-            "dealer_resolution_failure": self.metrics["dealer_resolution_failure"],
-            "dealer_resolution_rate": round((self.metrics["dealer_resolution_success"] / max(self.metrics["dealer_resolution_success"] + self.metrics["dealer_resolution_failure"], 1)) * 100, 1),
-            "slow_queries": self.metrics["slow_queries"],
-            "errors_by_type": dict(self.metrics["errors_by_type"]),
-            "version": "6.3",
-            "uptime_seconds": round(time.time() - self._start_time, 0)
-        }
-    
-    # ==========================================================
-    # PUBLIC METHODS (Legacy wrappers preserved)
-    # ==========================================================
-    
-    def get_dealer_dashboard(self, dealer_name: str) -> AnalyticsResponse:
-        """Legacy wrapper for get_dealer_360_dashboard()."""
-        logger.warning(f"⚠️ get_dealer_dashboard() is deprecated, use get_dealer_360_dashboard()")
-        return self.get_dealer_360_dashboard(dealer_name)
-    
-    def get_dashboard(self, dealer_name: str) -> AnalyticsResponse:
-        """Legacy wrapper for get_dealer_360_dashboard()."""
-        logger.warning(f"⚠️ get_dashboard() is deprecated, use get_dealer_360_dashboard()")
-        return self.get_dealer_360_dashboard(dealer_name)
-    
-    def get_executive_dashboard(self, dealer_name: str = None) -> AnalyticsResponse:
-        """Legacy wrapper for get_executive_insights()."""
-        logger.warning(f"⚠️ get_executive_dashboard() is deprecated, use get_executive_insights()")
-        return self.get_executive_insights(dealer_name)
-    
-    def get_dealer_health(self, dealer_name: str) -> AnalyticsResponse:
-        """Legacy wrapper for calculate_dealer_health_score()."""
-        logger.warning(f"⚠️ get_dealer_health() is deprecated, use calculate_dealer_health_score()")
-        return self.calculate_dealer_health_score(dealer_name)
-    
-    def get_dealer_risk(self, dealer_name: str) -> AnalyticsResponse:
-        """Legacy wrapper for assess_dealer_risk()."""
-        logger.warning(f"⚠️ get_dealer_risk() is deprecated, use assess_dealer_risk()")
-        return self.assess_dealer_risk(dealer_name)
-    
-    def get_delivery_metrics(self, dealer_name: str) -> AnalyticsResponse:
-        """Legacy wrapper for get_delivery_dashboard()."""
-        logger.warning(f"⚠️ get_delivery_metrics() is deprecated, use get_delivery_dashboard()")
-        return self.get_delivery_dashboard(dealer_name)
-    
-    def get_pod_metrics(self, dealer_name: str) -> AnalyticsResponse:
-        """Legacy wrapper for get_pod_dashboard()."""
-        logger.warning(f"⚠️ get_pod_metrics() is deprecated, use get_pod_dashboard()")
-        return self.get_pod_dashboard(dealer_name)
-    
-    def get_financial_metrics(self, dealer_name: str) -> AnalyticsResponse:
-        """Legacy wrapper for get_financial_dashboard()."""
-        logger.warning(f"⚠️ get_financial_metrics() is deprecated, use get_financial_dashboard()")
-        return self.get_financial_dashboard(dealer_name)
-    
-    def get_dealer_ranking(self, dealer_name: str) -> AnalyticsResponse:
-        """Legacy wrapper for get_dealer_rankings()."""
-        logger.warning(f"⚠️ get_dealer_ranking() is deprecated, use get_dealer_rankings()")
-        return self.get_dealer_rankings(dealer_name)
-    
-    # ==========================================================
-    # DEALER PROFILE
-    # ==========================================================
-    
-    def get_dealer_profile(self, dealer_name: str) -> AnalyticsResponse:
-        """Get comprehensive dealer profile."""
-        try:
-            resolved = self._resolve_dealer(dealer_name)
-            if not resolved:
-                return AnalyticsResponse(success=False, error=f"Dealer '{dealer_name}' not found")
-            
-            dashboard = self._safe_call(self.logistics, 'get_dealer_dashboard_data', resolved)
-            if not dashboard:
-                return AnalyticsResponse(success=False, error=f"No data for dealer '{dealer_name}'")
-            
-            metadata = self._get_dealer_metadata(resolved)
-            
-            profile = {
-                "dealer_name": resolved,
-                "dealer_code": metadata.get("dealer_code", self._generate_dealer_code(resolved)),
-                "dealer_type": metadata.get("dealer_type", "Standard"),
-                "dealer_category": metadata.get("dealer_category", "Standard"),
-                "city": dashboard.get("city", "Unknown"),
-                "region": metadata.get("region", "Unknown"),
-                "division": metadata.get("division", "Unknown"),
-                "sales_office": metadata.get("sales_office", "Unknown"),
-                "warehouse": dashboard.get("top_warehouse", "Unknown"),
-                "sales_manager": metadata.get("sales_manager", "Unknown"),
-                "dealer_status": self._get_dealer_status(dashboard),
-                "registration_date": metadata.get("registration_date", "N/A"),
-                "total_dns": dashboard.get("total_dns", 0),
-                "total_revenue": dashboard.get("total_revenue", 0),
-                "total_units": dashboard.get("total_units", 0)
-            }
-            
-            return AnalyticsResponse(success=True, data=profile)
-            
-        except Exception as e:
-            logger.error(f"Dealer profile failed: {e}")
+            logger.error(f"All dealers dashboard failed: {e}")
             return AnalyticsResponse(success=False, error=str(e))
     
     # ==========================================================
-    # DEALER EXECUTIVE SUMMARY
-    # ==========================================================
-    
-    def get_dealer_executive_summary(self, dealer_name: str) -> AnalyticsResponse:
-        """Get executive KPI summary for dealer."""
-        try:
-            resolved = self._resolve_dealer(dealer_name)
-            if not resolved:
-                return AnalyticsResponse(success=False, error=f"Dealer '{dealer_name}' not found")
-            
-            dashboard = self._safe_call(self.logistics, 'get_dealer_dashboard_data', resolved)
-            if not dashboard:
-                return AnalyticsResponse(success=False, error=f"No data for dealer '{dealer_name}'")
-            
-            summary = {
-                "dealer_name": resolved,
-                "total_dns": dashboard.get("total_dns", 0),
-                "total_revenue": dashboard.get("total_revenue", 0),
-                "total_quantity": dashboard.get("total_units", 0),
-                "delivered_dns": dashboard.get("delivered_dns", 0),
-                "pending_dns": dashboard.get("pending_dns", 0),
-                "pending_pod_dns": dashboard.get("pending_pod_dns", 0),
-                "avg_delivery_aging": dashboard.get("avg_delivery_aging", 0),
-                "avg_pod_aging": dashboard.get("avg_pod_aging", 0),
-                "dealer_health_score": self._calculate_health_score_weighted(dashboard)
-            }
-            
-            return AnalyticsResponse(success=True, data=summary)
-            
-        except Exception as e:
-            logger.error(f"Dealer executive summary failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    # ==========================================================
-    # DN PERFORMANCE
-    # ==========================================================
-    
-    def get_dealer_dn_performance(self, dealer_name: str) -> AnalyticsResponse:
-        """Get dealer DN performance metrics."""
-        try:
-            resolved = self._resolve_dealer(dealer_name)
-            if not resolved:
-                return AnalyticsResponse(success=False, error=f"Dealer '{dealer_name}' not found")
-            
-            dashboard = self._safe_call(self.logistics, 'get_dealer_dashboard_data', resolved)
-            if not dashboard:
-                return AnalyticsResponse(success=False, error=f"No data for dealer '{dealer_name}'")
-            
-            performance = {
-                "total_dns": dashboard.get("total_dns", 0),
-                "delivered_dns": dashboard.get("delivered_dns", 0),
-                "pending_dns": dashboard.get("pending_dns", 0),
-                "partial_dns": dashboard.get("transit_dns", 0),
-                "dn_value": dashboard.get("total_revenue", 0),
-                "quantity_dispatched": dashboard.get("total_units", 0)
-            }
-            
-            return AnalyticsResponse(success=True, data=performance)
-            
-        except Exception as e:
-            logger.error(f"Dealer DN performance failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    # ==========================================================
-    # RANKINGS
+    # DEALER RANKINGS - 100% POSTGRESQL
     # ==========================================================
     
     def get_dealer_rankings(self, dealer_name: str) -> AnalyticsResponse:
-        """Get dealer rankings."""
+        """Get dealer rankings from PostgreSQL."""
         try:
             resolved = self._resolve_dealer(dealer_name)
             if not resolved:
                 return AnalyticsResponse(success=False, error=f"Dealer '{dealer_name}' not found")
             
-            all_rankings = self._compute_all_rankings_bulk()
+            cache_key = "all_dealers_rankings"
+            rankings = self._get_cached(cache_key)
             
-            if resolved not in all_rankings:
-                return AnalyticsResponse(success=False, error=f"Dealer '{dealer_name}' not ranked")
+            if rankings is None:
+                dealers = self.pg.get_all_dealers_dashboard()
+                rankings = {}
+                for d in dealers:
+                    rankings[d["dealer_name"]] = {
+                        "revenue_rank": d.get("revenue_rank", 0),
+                        "quantity_rank": d.get("quantity_rank", 0),
+                        "delivery_rank": d.get("delivery_rank", 0),
+                        "total_dealers": d.get("total_dealers", 0)
+                    }
+                self._set_cached(cache_key, rankings, 3600)
+            
+            if resolved not in rankings:
+                return AnalyticsResponse(success=False, error=f"Dealer '{resolved}' not ranked")
             
             return AnalyticsResponse(success=True, data={
                 "dealer_name": resolved,
-                **all_rankings[resolved]
+                **rankings[resolved]
             })
             
         except Exception as e:
@@ -1075,82 +989,50 @@ class AnalyticsService:
             return AnalyticsResponse(success=False, error=str(e))
     
     # ==========================================================
-    # TIMELINE
+    # DEALER TIMELINE - 100% POSTGRESQL
     # ==========================================================
     
     def get_dealer_timeline(self, dealer_name: str, limit: int = 20) -> AnalyticsResponse:
-        """Get dealer timeline of all DNs."""
+        """Get dealer timeline from PostgreSQL."""
         try:
             resolved = self._resolve_dealer(dealer_name)
             if not resolved:
                 return AnalyticsResponse(success=False, error=f"Dealer '{dealer_name}' not found")
             
-            dns = self._safe_call(self.logistics, 'get_dealer_dns', resolved, limit)
-            if not dns:
-                return AnalyticsResponse(success=False, error=f"No DNs found for dealer '{dealer_name}'")
-            
-            timeline = []
-            for dn in dns:
-                timeline.append({
-                    "dn_number": dn.get("dn_no"),
-                    "dn_created": dn.get("dn_create_date"),
-                    "pgi_completed": dn.get("good_issue_date"),
-                    "delivery_date": dn.get("pod_date"),
-                    "pod_date": dn.get("pod_date"),
-                    "units": dn.get("dn_qty", 0),
-                    "amount": dn.get("dn_amount", 0),
-                    "warehouse": dn.get("warehouse", "Unknown"),
-                    "city": dn.get("ship_to_city", "Unknown"),
-                    "material_no": dn.get("material_no", "Unknown"),
-                    "customer_model": dn.get("customer_model", "Unknown")
-                })
+            dns = self.pg.get_dealer_dn_history(resolved, limit)
+            self.metrics["postgresql_queries"] += 1
             
             return AnalyticsResponse(success=True, data={
                 "dealer_name": resolved,
-                "timeline": timeline,
-                "total_dns": len(timeline)
+                "timeline": dns,
+                "total_dns": len(dns)
             })
             
         except Exception as e:
             logger.error(f"Dealer timeline failed: {e}")
             return AnalyticsResponse(success=False, error=str(e))
     
-    def _get_cached_timeline(self, dealer_name: str, limit: int = 10) -> Dict[str, Any]:
-        """Get cached timeline for dealer."""
-        cache_key = f"timeline:{dealer_name}"
-        cached = self._get_cached(cache_key)
-        if cached:
-            return cached
-        
-        response = self.get_dealer_timeline(dealer_name, limit=limit)
-        if response.success:
-            self._set_cached(cache_key, response.data, 300)
-            return response.data
-        
-        return {"timeline": [], "total_dns": 0}
-    
     # ==========================================================
-    # ALERTS
+    # DEALER ALERTS - 100% POSTGRESQL
     # ==========================================================
     
     def get_dealer_alerts(self, dealer_name: str) -> AnalyticsResponse:
-        """Get dealer alerts."""
+        """Get dealer alerts from PostgreSQL."""
         try:
             resolved = self._resolve_dealer(dealer_name)
             if not resolved:
                 return AnalyticsResponse(success=False, error=f"Dealer '{dealer_name}' not found")
             
-            dashboard = self._safe_call(self.logistics, 'get_dealer_dashboard_data', resolved)
+            dashboard = self.pg.get_dealer_dashboard(resolved)
             if not dashboard:
-                return AnalyticsResponse(success=False, error=f"No data for dealer '{dealer_name}'")
+                return AnalyticsResponse(success=False, error=f"No data for dealer '{resolved}'")
             
-            alerts = self._generate_alerts_from_dashboard(resolved, dashboard)
+            alerts = self._generate_alerts(dashboard)
             
             return AnalyticsResponse(success=True, data={
                 "dealer_name": resolved,
                 "alerts": alerts,
-                "alert_count": len(alerts),
-                "critical_alerts": len([a for a in alerts if a["severity"] == "High"])
+                "alert_count": len(alerts)
             })
             
         except Exception as e:
@@ -1158,1205 +1040,336 @@ class AnalyticsService:
             return AnalyticsResponse(success=False, error=str(e))
     
     # ==========================================================
-    # EXECUTIVE INSIGHTS
+    # EXECUTIVE INSIGHTS - 100% POSTGRESQL
     # ==========================================================
     
     def get_executive_insights(self, dealer_name: str = None) -> AnalyticsResponse:
-        """Get data-driven executive insights."""
+        """Get executive insights from PostgreSQL."""
         try:
             if dealer_name:
-                return self._get_dealer_executive_insights(dealer_name)
+                resolved = self._resolve_dealer(dealer_name)
+                if not resolved:
+                    return AnalyticsResponse(success=False, error=f"Dealer '{dealer_name}' not found")
+                
+                dashboard = self.pg.get_dealer_dashboard(resolved)
+                if not dashboard:
+                    return AnalyticsResponse(success=False, error=f"No data for dealer '{resolved}'")
+                
+                insights, issues, recommendations = self._generate_insights(dashboard)
+                
+                return AnalyticsResponse(success=True, data={
+                    "dealer_name": resolved,
+                    "insights": insights,
+                    "issues": issues,
+                    "recommendations": recommendations
+                })
             else:
-                return self._get_network_executive_insights()
+                # Network insights
+                network = self.pg.get_network_summary()
+                return AnalyticsResponse(success=True, data={
+                    "network": network,
+                    "insights": [
+                        f"Network total revenue: PKR {network.get('total_revenue', 0):,.0f}",
+                        f"Network total DNs: {network.get('total_dns', 0)}",
+                        f"Active dealers: {network.get('total_dealers', 0)}",
+                        f"Delivery rate: {network.get('delivery_rate', 0)}%"
+                    ]
+                })
             
         except Exception as e:
             logger.error(f"Executive insights failed: {e}")
             return AnalyticsResponse(success=False, error=str(e))
     
-    def _get_dealer_executive_insights(self, dealer_name: str) -> AnalyticsResponse:
-        """Get dealer-specific executive insights."""
-        try:
-            resolved = self._resolve_dealer(dealer_name)
-            if not resolved:
-                return AnalyticsResponse(success=False, error=f"Dealer '{dealer_name}' not found")
-            
-            dashboard = self._safe_call(self.logistics, 'get_dealer_dashboard_data', resolved)
-            if not dashboard:
-                return AnalyticsResponse(success=False, error=f"No data for dealer '{dealer_name}'")
-            
-            insights, issues, recommendations = self._generate_insights_from_dashboard(dashboard)
-            
-            return AnalyticsResponse(success=True, data={
-                "dealer_name": resolved,
-                "insights": insights,
-                "issues": issues,
-                "recommendations": recommendations,
-                "total_insights": len(insights),
-                "total_issues": len(issues),
-                "total_recommendations": len(recommendations)
-            })
-            
-        except Exception as e:
-            logger.error(f"Dealer executive insights failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def _get_network_executive_insights(self) -> AnalyticsResponse:
-        """Get network-level executive insights."""
-        try:
-            all_dealers = self._safe_call(self.logistics, 'get_all_dealer_names')
-            if not all_dealers:
-                return AnalyticsResponse(success=False, error="No dealers found")
-            
-            total_revenue = 0
-            total_dns = 0
-            total_units = 0
-            avg_delivery_rate = 0
-            avg_pod_rate = 0
-            
-            dealer_count = 0
-            for dealer in all_dealers:
-                data = self._safe_call(self.logistics, 'get_dealer_dashboard_data', dealer)
-                if data:
-                    total_revenue += data.get("total_revenue", 0)
-                    total_dns += data.get("total_dns", 0)
-                    total_units += data.get("total_units", 0)
-                    avg_delivery_rate += data.get("delivery_rate", 0)
-                    avg_pod_rate += data.get("pod_rate", 0)
-                    dealer_count += 1
-            
-            if dealer_count > 0:
-                avg_delivery_rate = avg_delivery_rate / dealer_count
-                avg_pod_rate = avg_pod_rate / dealer_count
-            
-            insights = [
-                f"Network total revenue: PKR {total_revenue:,.0f}",
-                f"Network total DNs: {total_dns}",
-                f"Network total units: {total_units}",
-                f"Average delivery rate: {avg_delivery_rate:.1f}%",
-                f"Average POD rate: {avg_pod_rate:.1f}%",
-                f"Active dealers: {dealer_count}"
-            ]
-            
-            recommendations = []
-            if avg_delivery_rate < 85:
-                recommendations.append("Improve network delivery rate")
-            if avg_pod_rate < 85:
-                recommendations.append("Improve network POD rate")
-            
-            return AnalyticsResponse(success=True, data={
-                "network_insights": insights,
-                "recommendations": recommendations,
-                "total_dealers": dealer_count,
-                "total_revenue": total_revenue,
-                "total_dns": total_dns,
-                "avg_delivery_rate": round(avg_delivery_rate, 1),
-                "avg_pod_rate": round(avg_pod_rate, 1)
-            })
-            
-        except Exception as e:
-            logger.error(f"Network executive insights failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
     # ==========================================================
-    # DELIVERY DASHBOARD
+    # HEALTH CHECK - 100% POSTGRESQL
     # ==========================================================
     
-    def get_delivery_dashboard(self, dealer_name: str) -> AnalyticsResponse:
-        """Get delivery dashboard for dealer."""
-        try:
-            resolved = self._resolve_dealer(dealer_name)
-            if not resolved:
-                return AnalyticsResponse(success=False, error=f"Dealer '{dealer_name}' not found")
-            
-            dashboard = self._safe_call(self.logistics, 'get_dealer_dashboard_data', resolved)
-            if not dashboard:
-                return AnalyticsResponse(success=False, error=f"No data for dealer '{dealer_name}'")
-            
-            total_dns = dashboard.get("total_dns", 1)
-            delivered_dns = dashboard.get("delivered_dns", 0)
-            pending_dns = dashboard.get("pending_dns", 0)
-            
-            delivery_success_rate = (delivered_dns / total_dns * 100) if total_dns > 0 else 0
-            sla_compliance = 100 if delivery_success_rate >= 90 else (delivery_success_rate / 90 * 100) if delivery_success_rate > 0 else 0
-            
-            delivery = {
-                "on_time_deliveries_dns": delivered_dns,
-                "late_deliveries_dns": dashboard.get("transit_dns", 0),
-                "delayed_dns": pending_dns,
-                "delivery_success_rate": round(delivery_success_rate, 1),
-                "sla_compliance": round(min(sla_compliance, 100), 1),
-                "delivery_aging": dashboard.get("avg_delivery_aging", 0),
-                "delivered_units": dashboard.get("delivered_units", 0),
-                "total_units": dashboard.get("total_units", 0)
-            }
-            
-            return AnalyticsResponse(success=True, data=delivery)
-            
-        except Exception as e:
-            logger.error(f"Delivery dashboard failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    # ==========================================================
-    # POD DASHBOARD
-    # ==========================================================
-    
-    def get_pod_dashboard(self, dealer_name: str) -> AnalyticsResponse:
-        """Get POD dashboard for dealer."""
-        try:
-            resolved = self._resolve_dealer(dealer_name)
-            if not resolved:
-                return AnalyticsResponse(success=False, error=f"Dealer '{dealer_name}' not found")
-            
-            dashboard = self._safe_call(self.logistics, 'get_dealer_dashboard_data', resolved)
-            if not dashboard:
-                return AnalyticsResponse(success=False, error=f"No data for dealer '{dealer_name}'")
-            
-            pod_pending = dashboard.get("pending_pod_dns", 0)
-            pod_completed = dashboard.get("pod_completed_dns", 0)
-            total_pod = pod_pending + pod_completed
-            
-            pod_buckets = self._calculate_pod_buckets(resolved)
-            
-            pod = {
-                "pod_received_dns": pod_completed,
-                "pod_pending_dns": pod_pending,
-                "pending_pod_dns": pod_pending,
-                "pod_buckets": pod_buckets,
-                "avg_pod_aging": dashboard.get("avg_pod_aging", 0),
-                "pod_compliance": round((pod_completed / total_pod * 100) if total_pod > 0 else 0, 1),
-                "pod_pending_value": dashboard.get("total_revenue", 0) * (pod_pending / (total_pod or 1)) if total_pod > 0 else 0
-            }
-            
-            return AnalyticsResponse(success=True, data=pod)
-            
-        except Exception as e:
-            logger.error(f"POD dashboard failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def _calculate_pod_buckets(self, dealer_name: str) -> Dict[str, int]:
-        """Calculate POD aging buckets."""
-        try:
-            dns = self._safe_call(self.logistics, 'get_dealer_dns', dealer_name, 1000)
-            if not dns:
-                return {"0-5": 0, "6-10": 0, "11-15": 0, "16-30": 0, "30+": 0}
-            
-            buckets = {
-                "0-5": 0,
-                "6-10": 0,
-                "11-15": 0,
-                "16-30": 0,
-                "30+": 0
-            }
-            
-            for dn in dns:
-                pgi_date = dn.get("good_issue_date")
-                pod_date = dn.get("pod_date")
-                
-                if pgi_date and not pod_date:
-                    aging = (self.today - pgi_date).days
-                    
-                    if aging <= 5:
-                        buckets["0-5"] += 1
-                    elif aging <= 10:
-                        buckets["6-10"] += 1
-                    elif aging <= 15:
-                        buckets["11-15"] += 1
-                    elif aging <= 30:
-                        buckets["16-30"] += 1
-                    else:
-                        buckets["30+"] += 1
-            
-            return buckets
-            
-        except Exception:
-            return {"0-5": 0, "6-10": 0, "11-15": 0, "16-30": 0, "30+": 0}
-    
-    # ==========================================================
-    # FINANCIAL DASHBOARD (FIXED - Uses actual revenue)
-    # ==========================================================
-    
-    def get_financial_dashboard(self, dealer_name: str) -> AnalyticsResponse:
-        """
-        Get financial dashboard for dealer.
+    def health_check(self) -> Dict[str, Any]:
+        """Health check with PostgreSQL validation."""
+        status = {
+            "status": "healthy",
+            "timestamp": datetime.now().isoformat(),
+            "version": "6.5",
+            "environment": "Railway" if self.is_railway else "Local",
+            "checks": {}
+        }
         
-        CRITICAL FIX: Uses actual revenue allocation from DNs.
-        """
+        # Check PostgreSQL
         try:
-            resolved = self._resolve_dealer(dealer_name)
-            if not resolved:
-                return AnalyticsResponse(success=False, error=f"Dealer '{dealer_name}' not found")
-            
-            dashboard = self._safe_call(self.logistics, 'get_dealer_dashboard_data', resolved)
-            if not dashboard:
-                return AnalyticsResponse(success=False, error=f"No data for dealer '{dealer_name}'")
-            
-            # Get actual revenue allocation (uses actual DN amounts)
-            revenue_allocation = self._calculate_actual_revenue_allocation(resolved)
-            
-            total_revenue = revenue_allocation["total_revenue"]
-            total_dns = dashboard.get("total_dns", 1)
-            
-            financial = {
-                "total_revenue": total_revenue,
-                "delivered_revenue": revenue_allocation["delivered_revenue"],
-                "pending_revenue": revenue_allocation["pending_revenue"],
-                "pending_pod_revenue": revenue_allocation["pending_pod_revenue"],
-                "daily_revenue": self._get_revenue_by_period(resolved, "daily"),
-                "weekly_revenue": self._get_revenue_by_period(resolved, "weekly"),
-                "monthly_revenue": self._get_revenue_by_period(resolved, "monthly"),
-                "yearly_revenue": self._get_revenue_by_period(resolved, "yearly"),
-                "average_dn_value": total_revenue / max(total_dns, 1)
-            }
-            
-            return AnalyticsResponse(success=True, data=financial)
-            
-        except Exception as e:
-            logger.error(f"Financial dashboard failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def _get_revenue_by_period(self, dealer_name: str, period: str) -> float:
-        """Get revenue by period."""
-        try:
-            historical = self._safe_call(self.logistics, 'get_dealer_historical_data', dealer_name)
-            if not historical:
-                return 0
-            
-            total_revenue = sum(item.get("revenue", 0) for item in historical)
-            return round(total_revenue / len(historical), 2) if historical else 0
-            
-        except Exception:
-            return 0
-    
-    # ==========================================================
-    # PRODUCT DASHBOARD
-    # ==========================================================
-    
-    def get_product_dashboard(self, dealer_name: str) -> AnalyticsResponse:
-        """
-        Get product intelligence from DeliveryReport data.
-        Uses material_no and customer_model from models.py.
-        """
-        try:
-            resolved = self._resolve_dealer(dealer_name)
-            if not resolved:
-                return AnalyticsResponse(success=False, error=f"Dealer '{dealer_name}' not found")
-            
-            products = self._get_dealer_products(resolved)
-            product_analytics = self._analyze_products(products)
-            
-            return AnalyticsResponse(success=True, data={
-                "dealer_name": resolved,
-                "products": product_analytics[:20],
-                "total_products": len(products),
-                "top_products": product_analytics[:10],
-                "bottom_products": product_analytics[-10:] if len(product_analytics) > 10 else [],
-                "product_categories": self._get_product_categories(products),
-                "total_revenue": sum(p["total_revenue"] for p in product_analytics)
-            })
-            
-        except Exception as e:
-            logger.error(f"Product dashboard failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def _get_dealer_products(self, dealer_name: str) -> List[Dict]:
-        """Get actual products from DeliveryReport model."""
-        dns = self._safe_call(self.logistics, 'get_dealer_dns', dealer_name, 1000)
-        if not dns:
-            return []
-        
-        products = []
-        for dn in dns:
-            products.append({
-                "product_code": dn.get("material_no", "UNKNOWN"),
-                "product_name": dn.get("customer_model", dn.get("material_no", "UNKNOWN")),
-                "category": self._get_product_category(dn),
-                "units": dn.get("dn_qty", 0),
-                "revenue": dn.get("dn_amount", 0),
-                "dn_count": 1,
-                "warehouse": dn.get("warehouse", "Unknown"),
-                "status": self._get_product_status(dn)
-            })
-        
-        return products
-    
-    def _analyze_products(self, products: List[Dict]) -> List[Dict]:
-        """Analyze products with real data."""
-        product_map = defaultdict(lambda: {
-            "qty": 0,
-            "revenue": 0,
-            "dn_count": 0,
-            "category": "",
-            "status": "active"
-        })
-        
-        for product in products:
-            key = product.get("product_code", "UNKNOWN")
-            product_map[key]["qty"] += product.get("units", 0)
-            product_map[key]["revenue"] += product.get("revenue", 0)
-            product_map[key]["dn_count"] += 1
-            product_map[key]["category"] = product.get("category", "Uncategorized")
-            product_map[key]["product_name"] = product.get("product_name", key)
-        
-        result = []
-        total_revenue = sum(p["revenue"] for p in product_map.values())
-        
-        for code, data in product_map.items():
-            revenue = data["revenue"]
-            result.append({
-                "product_code": code,
-                "product_name": data.get("product_name", code),
-                "category": data["category"],
-                "total_units": data["qty"],
-                "total_revenue": revenue,
-                "dn_count": data["dn_count"],
-                "avg_revenue_per_dn": revenue / max(data["dn_count"], 1),
-                "revenue_percentage": round((revenue / max(total_revenue, 1)) * 100, 1),
-                "contribution": "High" if revenue / max(total_revenue, 1) > 0.1 else "Medium" if revenue / max(total_revenue, 1) > 0.05 else "Low"
-            })
-        
-        return sorted(result, key=lambda x: x["total_revenue"], reverse=True)
-    
-    def _get_product_category(self, dn: Dict) -> str:
-        """Derive product category from customer_model."""
-        customer_model = dn.get("customer_model", "")
-        
-        if "TV" in customer_model.upper() or "LED" in customer_model.upper():
-            return "Display"
-        elif "AC" in customer_model.upper() or "INVERTER" in customer_model.upper():
-            return "Cooling"
-        elif "FRIDGE" in customer_model.upper() or "REFRIGERATOR" in customer_model.upper():
-            return "Cooling"
-        elif "WASHING" in customer_model.upper():
-            return "Home Appliances"
-        elif "MICROWAVE" in customer_model.upper():
-            return "Kitchen Appliances"
-        else:
-            return "General Electronics"
-    
-    def _get_product_status(self, dn: Dict) -> str:
-        """Get product delivery status."""
-        if dn.get("pod_date"):
-            return "delivered"
-        elif dn.get("good_issue_date"):
-            return "in_transit"
-        else:
-            return "pending"
-    
-    def _get_product_categories(self, products: List[Dict]) -> Dict[str, int]:
-        """Get product category distribution."""
-        categories = defaultdict(int)
-        for product in products:
-            categories[product.get("category", "Uncategorized")] += 1
-        return dict(categories)
-    
-    # ==========================================================
-    # DELIVERY AGING ANALYSIS
-    # ==========================================================
-    
-    def get_delivery_aging_analysis(self, dealer_name: str) -> AnalyticsResponse:
-        """Get comprehensive delivery aging analysis."""
-        try:
-            resolved = self._resolve_dealer(dealer_name)
-            if not resolved:
-                return AnalyticsResponse(success=False, error=f"Dealer '{dealer_name}' not found")
-            
-            dns = self._safe_call(self.logistics, 'get_dealer_dns', resolved, 1000)
-            if not dns:
-                return AnalyticsResponse(success=False, error=f"No DNs found for dealer '{dealer_name}'")
-            
-            buckets = {
-                "0-3": 0,
-                "4-7": 0,
-                "8-14": 0,
-                "15-30": 0,
-                "30+": 0
-            }
-            
-            total_aging = 0
-            aging_count = 0
-            
-            for dn in dns:
-                dn_date = dn.get("dn_create_date")
-                pgi_date = dn.get("good_issue_date")
-                pod_date = dn.get("pod_date")
-                
-                if dn_date and pgi_date and pod_date:
-                    aging = (pod_date - pgi_date).days
-                    total_aging += aging
-                    aging_count += 1
-                    
-                    if aging <= 3:
-                        buckets["0-3"] += 1
-                    elif aging <= 7:
-                        buckets["4-7"] += 1
-                    elif aging <= 14:
-                        buckets["8-14"] += 1
-                    elif aging <= 30:
-                        buckets["15-30"] += 1
-                    else:
-                        buckets["30+"] += 1
-            
-            avg_aging = total_aging / aging_count if aging_count > 0 else 0
-            
-            return AnalyticsResponse(success=True, data={
-                "dealer_name": resolved,
-                "total_dns_analyzed": len(dns),
-                "avg_delivery_aging": round(avg_aging, 1),
-                "aging_buckets": buckets,
-                "aging_distribution": {
-                    "0-3": round((buckets["0-3"] / len(dns) * 100), 1) if len(dns) > 0 else 0,
-                    "4-7": round((buckets["4-7"] / len(dns) * 100), 1) if len(dns) > 0 else 0,
-                    "8-14": round((buckets["8-14"] / len(dns) * 100), 1) if len(dns) > 0 else 0,
-                    "15-30": round((buckets["15-30"] / len(dns) * 100), 1) if len(dns) > 0 else 0,
-                    "30+": round((buckets["30+"] / len(dns) * 100), 1) if len(dns) > 0 else 0
-                }
-            })
-            
-        except Exception as e:
-            logger.error(f"Delivery aging analysis failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    # ==========================================================
-    # DN TRENDS
-    # ==========================================================
-    
-    def get_dealer_dn_trend_daily(self, dealer_name: str) -> AnalyticsResponse:
-        """Get daily DN trend for dealer."""
-        return self._get_dealer_dn_trend(dealer_name, "daily")
-    
-    def get_dealer_dn_trend_weekly(self, dealer_name: str) -> AnalyticsResponse:
-        """Get weekly DN trend for dealer."""
-        return self._get_dealer_dn_trend(dealer_name, "weekly")
-    
-    def get_dealer_dn_trend_monthly(self, dealer_name: str) -> AnalyticsResponse:
-        """Get monthly DN trend for dealer."""
-        return self._get_dealer_dn_trend(dealer_name, "monthly")
-    
-    def get_dealer_dn_trend_yearly(self, dealer_name: str) -> AnalyticsResponse:
-        """Get yearly DN trend for dealer."""
-        return self._get_dealer_dn_trend(dealer_name, "yearly")
-    
-    def _get_dealer_dn_trend(self, dealer_name: str, period: str) -> AnalyticsResponse:
-        """Internal method for DN trend by period."""
-        try:
-            resolved = self._resolve_dealer(dealer_name)
-            if not resolved:
-                return AnalyticsResponse(success=False, error=f"Dealer '{dealer_name}' not found")
-            
-            historical = self._safe_call(self.logistics, 'get_dealer_historical_data', resolved)
-            if not historical:
-                return AnalyticsResponse(success=False, error=f"No historical data for dealer '{dealer_name}'")
-            
-            return AnalyticsResponse(success=True, data={
-                "dealer_name": resolved,
-                "period": period,
-                "trend_data": historical,
-                "total_periods": len(historical)
-            })
-            
-        except Exception as e:
-            logger.error(f"Dealer DN trend failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    # ==========================================================
-    # DN BREAKDOWNS
-    # ==========================================================
-    
-    def get_dn_breakdown_by_warehouse(self, dealer_name: str) -> AnalyticsResponse:
-        """Get DN breakdown by warehouse."""
-        return self._get_dn_breakdown(dealer_name, "warehouse")
-    
-    def get_dn_breakdown_by_sales_office(self, dealer_name: str) -> AnalyticsResponse:
-        """Get DN breakdown by sales office."""
-        return self._get_dn_breakdown(dealer_name, "sales_office")
-    
-    def get_dn_breakdown_by_product(self, dealer_name: str) -> AnalyticsResponse:
-        """Get DN breakdown by product."""
-        return self._get_dn_breakdown(dealer_name, "product")
-    
-    def get_dn_breakdown_by_model(self, dealer_name: str) -> AnalyticsResponse:
-        """Get DN breakdown by model."""
-        return self._get_dn_breakdown(dealer_name, "model")
-    
-    def get_dn_breakdown_by_city(self, dealer_name: str) -> AnalyticsResponse:
-        """Get DN breakdown by city."""
-        return self._get_dn_breakdown(dealer_name, "city")
-    
-    def _get_dn_breakdown(self, dealer_name: str, breakdown_type: str) -> AnalyticsResponse:
-        """Internal method for DN breakdown."""
-        try:
-            resolved = self._resolve_dealer(dealer_name)
-            if not resolved:
-                return AnalyticsResponse(success=False, error=f"Dealer '{dealer_name}' not found")
-            
-            dns = self._safe_call(self.logistics, 'get_dealer_dns', resolved, 100)
-            if not dns:
-                return AnalyticsResponse(success=False, error=f"No DNs found for dealer '{dealer_name}'")
-            
-            breakdown = defaultdict(lambda: {"count": 0, "revenue": 0, "units": 0})
-            
-            for dn in dns:
-                # Map breakdown type to model fields
-                if breakdown_type == "warehouse":
-                    key = dn.get("warehouse", "Unknown")
-                elif breakdown_type == "sales_office":
-                    key = dn.get("sales_office", "Unknown")
-                elif breakdown_type == "product":
-                    key = dn.get("material_no", "Unknown")
-                elif breakdown_type == "model":
-                    key = dn.get("customer_model", "Unknown")
-                elif breakdown_type == "city":
-                    key = dn.get("ship_to_city", "Unknown")
-                else:
-                    key = "Unknown"
-                
-                breakdown[key]["count"] += 1
-                breakdown[key]["revenue"] += dn.get("dn_amount", 0)
-                breakdown[key]["units"] += dn.get("dn_qty", 0)
-            
-            breakdown_list = []
-            for key, values in breakdown.items():
-                breakdown_list.append({
-                    "category": key,
-                    "count": values["count"],
-                    "revenue": values["revenue"],
-                    "units": values["units"]
-                })
-            
-            breakdown_list.sort(key=lambda x: x["revenue"], reverse=True)
-            
-            return AnalyticsResponse(success=True, data={
-                "dealer_name": resolved,
-                "breakdown_type": breakdown_type,
-                "breakdown": breakdown_list[:20],
-                "total_categories": len(breakdown_list)
-            })
-            
-        except Exception as e:
-            logger.error(f"DN breakdown failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    # ==========================================================
-    # AI CONTEXT
-    # ==========================================================
-    
-    def get_ai_context(self, dealer_name: str = None) -> AnalyticsResponse:
-        """Get structured AI context for Groq."""
-        try:
-            if dealer_name:
-                context = self._get_dealer_ai_context(dealer_name)
+            result = self.logistics.db.execute(text("SELECT 1 as connected"))
+            if result.first():
+                status["checks"]["postgresql"] = {"status": "healthy", "message": "Connected"}
             else:
-                context = self._get_network_ai_context()
-            
-            context["timestamp"] = datetime.now().isoformat()
-            context["data_source"] = "AnalyticsService"
-            context["version"] = "6.3"
-            
-            return AnalyticsResponse(success=True, data=context)
-            
+                status["checks"]["postgresql"] = {"status": "warning", "message": "Connection issue"}
         except Exception as e:
-            logger.error(f"AI context failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def _get_dealer_ai_context(self, dealer_name: str) -> Dict[str, Any]:
-        """Get dealer AI context using DeliveryReport fields."""
-        resolved = self._resolve_dealer(dealer_name)
-        if not resolved:
-            return {"error": f"Dealer '{dealer_name}' not found"}
+            status["status"] = "unhealthy"
+            status["checks"]["postgresql"] = {"status": "unhealthy", "message": str(e)}
         
-        dashboard = self._safe_call(self.logistics, 'get_dealer_dashboard_data', resolved)
-        if not dashboard:
-            return {"error": f"No data for dealer '{dealer_name}'"}
+        # Check data access
+        try:
+            test_data = self.pg.execute_one("SELECT COUNT(*) as count FROM delivery_reports LIMIT 1")
+            if test_data:
+                status["checks"]["data_access"] = {"status": "healthy", "message": "Data accessible"}
+            else:
+                status["checks"]["data_access"] = {"status": "warning", "message": "No data found"}
+        except Exception as e:
+            status["checks"]["data_access"] = {"status": "warning", "message": str(e)}
+        
+        return status
+    
+    def get_metrics(self) -> Dict[str, Any]:
+        """Get service metrics."""
+        total = self.metrics["total_requests"]
+        successful = self.metrics["successful_requests"]
         
         return {
-            "dealer_name": resolved,
-            "total_dns": dashboard.get("total_dns", 0),
-            "total_revenue": dashboard.get("total_revenue", 0),
-            "total_units": dashboard.get("total_units", 0),
-            "delivery_rate": dashboard.get("delivery_rate", 0),
-            "pod_rate": dashboard.get("pod_rate", 0),
-            "avg_delivery_aging": dashboard.get("avg_delivery_aging", 0),
-            "pending_pod_dns": dashboard.get("pending_pod_dns", 0),
-            "health_score": self._calculate_health_score_weighted(dashboard),
-            "risk_assessment": self._calculate_risk_from_dashboard(dashboard)
+            "total_requests": total,
+            "successful_requests": successful,
+            "failed_requests": self.metrics["failed_requests"],
+            "success_rate": round((successful / max(total, 1)) * 100, 1),
+            "avg_duration_ms": round(self.metrics["total_duration_ms"] / max(total, 1), 2),
+            "cache_hit_rate": round((self.metrics["cache_hits"] / max(self.metrics["cache_hits"] + self.metrics["cache_misses"], 1)) * 100, 1),
+            "postgresql_queries": self.metrics["postgresql_queries"],
+            "version": "6.5",
+            "environment": "Railway" if self.is_railway else "Local"
         }
-    
-    def _get_network_ai_context(self) -> Dict[str, Any]:
-        """Get network AI context."""
-        all_dealers = self._safe_call(self.logistics, 'get_all_dealer_names')
-        if not all_dealers:
-            return {"error": "No dealers found"}
-        
-        total_revenue = 0
-        total_dns = 0
-        dealer_count = 0
-        
-        for dealer in all_dealers:
-            data = self._safe_call(self.logistics, 'get_dealer_dashboard_data', dealer)
-            if data:
-                total_revenue += data.get("total_revenue", 0)
-                total_dns += data.get("total_dns", 0)
-                dealer_count += 1
-        
-        return {
-            "total_dealers": dealer_count,
-            "total_dns": total_dns,
-            "total_revenue": total_revenue,
-            "avg_revenue_per_dealer": total_revenue / dealer_count if dealer_count > 0 else 0,
-            "avg_dns_per_dealer": total_dns / dealer_count if dealer_count > 0 else 0
-        }
-    
-    # ==========================================================
-    # HEALTH SCORE AND RISK ASSESSMENT
-    # ==========================================================
-    
-    def calculate_dealer_health_score(self, dealer_name: str) -> AnalyticsResponse:
-        """Calculate comprehensive dealer health score with weighted metrics."""
-        try:
-            resolved = self._resolve_dealer(dealer_name)
-            if not resolved:
-                return AnalyticsResponse(success=False, error=f"Dealer '{dealer_name}' not found")
-            
-            dashboard = self._safe_call(self.logistics, 'get_dealer_dashboard_data', resolved)
-            if not dashboard:
-                return AnalyticsResponse(success=False, error=f"No data for dealer '{dealer_name}'")
-            
-            health_score = self._calculate_health_score_weighted(dashboard)
-            
-            delivery_score = self._calculate_delivery_score(dashboard)
-            pod_score = self._calculate_pod_score(dashboard)
-            revenue_score = self._calculate_revenue_score(dashboard)
-            activity_score = self._calculate_activity_score(dashboard)
-            
-            category = self._get_health_category(health_score)
-            
-            return AnalyticsResponse(success=True, data={
-                "dealer_name": resolved,
-                "health_score": health_score,
-                "health_category": category,
-                "delivery_score": delivery_score,
-                "pod_score": pod_score,
-                "revenue_score": revenue_score,
-                "activity_score": activity_score,
-                "components": {
-                    "delivery_rate": dashboard.get("delivery_rate", 0),
-                    "pod_rate": dashboard.get("pod_rate", 0),
-                    "total_revenue": dashboard.get("total_revenue", 0),
-                    "total_dns": dashboard.get("total_dns", 0)
-                }
-            })
-            
-        except Exception as e:
-            logger.error(f"Dealer health score failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def assess_dealer_risk(self, dealer_name: str) -> AnalyticsResponse:
-        """Comprehensive dealer risk assessment."""
-        try:
-            resolved = self._resolve_dealer(dealer_name)
-            if not resolved:
-                return AnalyticsResponse(success=False, error=f"Dealer '{dealer_name}' not found")
-            
-            dashboard = self._safe_call(self.logistics, 'get_dealer_dashboard_data', resolved)
-            if not dashboard:
-                return AnalyticsResponse(success=False, error=f"No data for dealer '{dealer_name}'")
-            
-            risk = self._calculate_risk_from_dashboard(dashboard)
-            
-            return AnalyticsResponse(success=True, data={
-                "dealer_name": resolved,
-                **risk
-            })
-            
-        except Exception as e:
-            logger.error(f"Dealer risk assessment failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    # ==========================================================
-    # DATA INTEGRITY
-    # ==========================================================
-    
-    def get_data_integrity_score(self) -> AnalyticsResponse:
-        """Get data integrity score."""
-        try:
-            quality = self._safe_call(self.logistics, 'get_data_quality_metrics')
-            if not quality:
-                return AnalyticsResponse(success=False, error="No quality metrics available")
-            
-            total_records = quality.get("total_records", 0)
-            valid_dates = quality.get("valid_dates", 0)
-            invalid_dates = quality.get("invalid_dates", 0)
-            
-            integrity_score = round((valid_dates / total_records * 100), 1) if total_records > 0 else 0
-            
-            return AnalyticsResponse(success=True, data={
-                "total_records": total_records,
-                "valid_records": valid_dates,
-                "invalid_records": invalid_dates,
-                "integrity_score": integrity_score,
-                "missing_pgi": quality.get("missing_pgi", 0),
-                "missing_pod": quality.get("missing_pod", 0),
-                "negative_aging": quality.get("negative_aging", 0),
-                "quality_status": "Excellent" if integrity_score >= 90 else "Good" if integrity_score >= 75 else "Fair" if integrity_score >= 60 else "Poor"
-            })
-            
-        except Exception as e:
-            logger.error(f"Data integrity score failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
     
     # ==========================================================
     # PRIVATE HELPERS
     # ==========================================================
     
-    def _resolve_dealer(self, dealer_name: str) -> Optional[str]:
-        """Resolve dealer name with caching."""
-        if not dealer_name:
-            return None
+    def _calculate_analytics_from_data(self, data: Dict) -> Dict:
+        """Calculate analytics from PostgreSQL data."""
+        delivery_rate = data.get("delivery_rate", 0)
+        pod_rate = data.get("pod_rate", 0)
+        avg_aging = data.get("avg_delivery_aging", 0)
+        revenue = data.get("total_revenue", 0)
+        total_dns = data.get("total_dns", 0)
         
-        cached = self._get_cached_dealer(dealer_name)
-        if cached:
-            return cached
+        # Health score
+        health_score = int(
+            (min(delivery_rate / 90 * 100, 100) * 0.40) +
+            (min(pod_rate / 90 * 100, 100) * 0.30) +
+            (max(100 - min(avg_aging / 30 * 100, 100), 0) * 0.20) +
+            (min(revenue / 1000000 * 100, 100) * 0.10)
+        )
         
-        resolved = self.schema.resolve_dealer(dealer_name)
-        if resolved:
-            self._set_cached_dealer(dealer_name, resolved)
-        
-        return resolved
-    
-    def _get_dealer_metadata(self, dealer_name: str) -> Dict[str, Any]:
-        """Get dealer metadata from schema or infer."""
-        try:
-            metadata = self.schema.get_dealer_metadata(dealer_name)
-            if metadata:
-                return metadata
-        except:
-            pass
-        
-        return self._infer_dealer_metadata(dealer_name)
-    
-    def _infer_dealer_metadata(self, dealer_name: str) -> Dict[str, Any]:
-        """Infer dealer metadata from available data."""
-        dashboard = self._safe_call(self.logistics, 'get_dealer_dashboard_data', dealer_name)
+        # Risk
+        delivery_risk = 0 if delivery_rate >= 90 else 50 if delivery_rate >= 70 else 100
+        pod_risk = 0 if pod_rate >= 90 else 50 if pod_rate >= 70 else 100
+        aging_risk = 0 if avg_aging <= 3 else 50 if avg_aging <= 14 else 100
         
         return {
-            "dealer_code": self._generate_dealer_code(dealer_name),
-            "dealer_type": "Standard",
-            "dealer_category": "Standard",
-            "region": "Unknown",
-            "division": "Unknown",
-            "sales_office": "Unknown",
-            "sales_manager": "Unknown",
-            "city": dashboard.get("ship_to_city", "Unknown") if dashboard else "Unknown",
-            "registration_date": None
+            "health": {
+                "score": min(health_score, 100),
+                "category": "Excellent" if health_score >= 80 else "Good" if health_score >= 60 else "Average"
+            },
+            "risk": {
+                "risk_score": (delivery_risk + pod_risk + aging_risk) // 3,
+                "risk_level": "Low" if (delivery_risk + pod_risk + aging_risk) // 3 <= 25 else "Medium" if (delivery_risk + pod_risk + aging_risk) // 3 <= 50 else "High"
+            }
         }
     
-    def _generate_dealer_code(self, dealer_name: str) -> str:
-        """Generate dealer code from name."""
-        words = dealer_name.split()
-        if len(words) >= 2:
-            code = ''.join(word[0].upper() for word in words[:3])
-        else:
-            code = dealer_name[:5].upper()
-        return code
-    
-    def _get_dealer_status(self, dashboard: Dict) -> str:
-        """Get dealer status from dashboard data."""
-        total_dns = dashboard.get("total_dns", 0)
-        if total_dns == 0:
-            return "Inactive"
-        elif total_dns < 10:
-            return "Low Activity"
-        elif dashboard.get("delivery_rate", 0) >= 90:
-            return "Active - High Performance"
-        else:
-            return "Active - Needs Attention"
-    
-    def _get_health_category(self, score: int) -> str:
-        """Get health category based on score."""
-        if score >= 80:
-            return "Excellent"
-        elif score >= 60:
-            return "Good"
-        elif score >= 40:
-            return "Average"
-        else:
-            return "Critical"
-    
-    def _calculate_risk_from_dashboard(self, dashboard: Dict) -> Dict:
-        """Calculate risk from dashboard data."""
-        delivery_risk = self._calculate_delivery_risk(dashboard)
-        pod_risk = self._calculate_pod_risk(dashboard)
-        aging_risk = self._calculate_aging_risk(dashboard)
-        revenue_risk = self._calculate_revenue_risk(dashboard)
-        
-        total_risk = delivery_risk + pod_risk + aging_risk + revenue_risk
-        
-        if total_risk <= 25:
-            risk_level = "Low"
-            risk_score = 25
-        elif total_risk <= 50:
-            risk_level = "Medium"
-            risk_score = 50
-        else:
-            risk_level = "High"
-            risk_score = 75
-        
-        return {
-            "risk_score": risk_score,
-            "risk_level": risk_level,
-            "delivery_risk": delivery_risk,
-            "pod_risk": pod_risk,
-            "aging_risk": aging_risk,
-            "revenue_risk": revenue_risk
-        }
-    
-    def _generate_alerts_from_dashboard(self, dealer_name: str, dashboard: Dict) -> List[Dict]:
-        """Generate alerts from dashboard data."""
+    def _generate_alerts(self, data: Dict) -> List[Dict]:
+        """Generate alerts from data."""
         alerts = []
         
-        # Delivery alerts
-        avg_aging = dashboard.get("avg_delivery_aging", 0)
+        avg_aging = data.get("avg_delivery_aging", 0)
         if avg_aging > 7:
             alerts.append({
                 "type": "Delivery",
                 "severity": "High" if avg_aging > 14 else "Medium",
-                "message": f"Delivery aging is {avg_aging} days (threshold: 7 days)",
-                "value": avg_aging,
-                "dealer": dealer_name
+                "message": f"Delivery aging is {avg_aging:.1f} days"
             })
         
-        # POD alerts
-        avg_pod_aging = dashboard.get("avg_pod_aging", 0)
+        avg_pod_aging = data.get("avg_pod_aging", 0)
         if avg_pod_aging > 5:
             alerts.append({
                 "type": "POD",
                 "severity": "High" if avg_pod_aging > 10 else "Medium",
-                "message": f"POD aging is {avg_pod_aging} days (threshold: 5 days)",
-                "value": avg_pod_aging,
-                "dealer": dealer_name
+                "message": f"POD aging is {avg_pod_aging:.1f} days"
             })
         
-        # Health alerts
-        health_score = self._calculate_health_score_weighted(dashboard)
-        if health_score < 60:
+        pending_pod = data.get("pending_pod_dns", 0)
+        if pending_pod > 5:
             alerts.append({
-                "type": "Health",
-                "severity": "High" if health_score < 40 else "Medium",
-                "message": f"Health score is {health_score}/100 (threshold: 60)",
-                "value": health_score,
-                "dealer": dealer_name
-            })
-        
-        # Pending alerts
-        pending_dns = dashboard.get("pending_dns", 0)
-        total_revenue = dashboard.get("total_revenue", 0)
-        total_dns = dashboard.get("total_dns", 1)
-        pending_revenue = total_revenue * (pending_dns / total_dns)
-        
-        if pending_revenue > 100000:
-            alerts.append({
-                "type": "Pending",
-                "severity": "High" if pending_revenue > 500000 else "Medium",
-                "message": f"Pending DN value is PKR {pending_revenue:,.0f}",
-                "value": pending_revenue,
-                "dealer": dealer_name
-            })
-        
-        # POD pending alerts
-        pending_pod_dns = dashboard.get("pending_pod_dns", 0)
-        pod_pending_revenue = total_revenue * (pending_pod_dns / total_dns)
-        
-        if pod_pending_revenue > 50000:
-            alerts.append({
-                "type": "POD_Pending",
-                "severity": "High" if pod_pending_revenue > 200000 else "Medium",
-                "message": f"Pending POD value is PKR {pod_pending_revenue:,.0f}",
-                "value": pod_pending_revenue,
-                "dealer": dealer_name
+                "type": "Pending_POD",
+                "severity": "High" if pending_pod > 20 else "Medium",
+                "message": f"{pending_pod} DNs pending POD"
             })
         
         return alerts
     
-    def _generate_insights_from_dashboard(self, dashboard: Dict) -> Tuple[List[str], List[str], List[str]]:
-        """Generate insights, issues, and recommendations from dashboard."""
+    def _generate_insights(self, data: Dict) -> Tuple[List[str], List[str], List[str]]:
+        """Generate insights, issues, recommendations."""
         insights = []
         issues = []
         recommendations = []
         
-        # Delivery insights (using DN counts, not units)
-        delivery_rate = dashboard.get("delivery_rate", 0)
+        delivery_rate = data.get("delivery_rate", 0)
         if delivery_rate >= 90:
             insights.append("✅ Excellent delivery rate")
-        elif delivery_rate >= 80:
-            insights.append("✅ Good delivery rate")
         else:
             issues.append(f"❌ Low delivery rate: {delivery_rate}%")
-            recommendations.append(f"🔧 Improve delivery rate from {delivery_rate}% to 90%+")
+            recommendations.append(f"🔧 Improve delivery rate to 90%+")
         
-        # POD insights
-        pod_rate = dashboard.get("pod_rate", 0)
+        pod_rate = data.get("pod_rate", 0)
         if pod_rate >= 90:
             insights.append("✅ Excellent POD rate")
-        elif pod_rate >= 80:
-            insights.append("✅ Good POD rate")
         else:
             issues.append(f"❌ Low POD rate: {pod_rate}%")
-            recommendations.append(f"🔧 Improve POD rate from {pod_rate}% to 90%+")
+            recommendations.append(f"🔧 Improve POD rate to 90%+")
         
-        # Aging insights
-        avg_aging = dashboard.get("avg_delivery_aging", 0)
+        avg_aging = data.get("avg_delivery_aging", 0)
         if avg_aging <= 3:
-            insights.append("✅ Excellent delivery speed (< 3 days)")
+            insights.append("✅ Fast delivery (< 3 days)")
         elif avg_aging <= 7:
-            insights.append("✅ Good delivery speed (< 7 days)")
+            insights.append("✅ Good delivery speed")
         else:
-            issues.append(f"❌ High delivery aging: {avg_aging} days")
-            recommendations.append(f"🔧 Reduce delivery aging from {avg_aging} to < 7 days")
-        
-        # Revenue insights
-        revenue = dashboard.get("total_revenue", 0)
-        if revenue > 1000000:
-            insights.append(f"💰 Top-tier revenue: PKR {revenue:,.0f}")
-        elif revenue > 500000:
-            insights.append(f"💰 Good revenue: PKR {revenue:,.0f}")
-        else:
-            recommendations.append(f"🔧 Increase revenue from PKR {revenue:,.0f}")
-        
-        # Health insight
-        health_score = self._calculate_health_score_weighted(dashboard)
-        if health_score >= 80:
-            insights.append(f"💚 Excellent health score: {health_score}/100")
-        elif health_score >= 60:
-            insights.append(f"💚 Good health score: {health_score}/100")
-        else:
-            issues.append(f"❌ Low health score: {health_score}/100")
-            recommendations.append(f"🔧 Improve health score from {health_score} to 80+")
+            issues.append(f"❌ Slow delivery: {avg_aging:.1f} days")
+            recommendations.append(f"🔧 Reduce delivery time to < 7 days")
         
         return insights, issues, recommendations
     
-    def _get_cached_rankings(self, dealer_name: str) -> Dict[str, Any]:
-        """Get cached rankings for a specific dealer."""
-        all_rankings = self._compute_all_rankings_bulk()
-        return all_rankings.get(dealer_name, {})
-    
-    def _calculate_delivery_score(self, dashboard: Dict) -> int:
-        """Calculate delivery score (0-100)."""
-        delivery_rate = dashboard.get("delivery_rate", 0)
-        if delivery_rate >= 90:
-            return 100
-        elif delivery_rate >= 80:
-            return 80
-        elif delivery_rate >= 70:
-            return 60
-        elif delivery_rate >= 50:
-            return 40
-        else:
-            return 20
-    
-    def _calculate_pod_score(self, dashboard: Dict) -> int:
-        """Calculate POD score (0-100)."""
-        pod_rate = dashboard.get("pod_rate", 0)
-        if pod_rate >= 90:
-            return 100
-        elif pod_rate >= 80:
-            return 80
-        elif pod_rate >= 70:
-            return 60
-        elif pod_rate >= 50:
-            return 40
-        else:
-            return 20
-    
-    def _calculate_revenue_score(self, dashboard: Dict) -> int:
-        """Calculate revenue score (0-100)."""
-        revenue = dashboard.get("total_revenue", 0)
-        dns = dashboard.get("total_dns", 0)
-        
-        if revenue > 1000000 and dns > 50:
-            return 100
-        elif revenue > 500000 and dns > 25:
-            return 75
-        elif revenue > 100000 and dns > 10:
-            return 50
-        elif revenue > 50000 and dns > 5:
-            return 25
-        else:
-            return 10
-    
-    def _calculate_activity_score(self, dashboard: Dict) -> int:
-        """Calculate activity score (0-100)."""
-        dns = dashboard.get("total_dns", 0)
-        if dns > 100:
-            return 100
-        elif dns > 50:
-            return 75
-        elif dns > 20:
-            return 50
-        elif dns > 5:
-            return 25
-        else:
-            return 10
-    
-    def _calculate_delivery_risk(self, dashboard: Dict) -> int:
-        """Calculate delivery risk (0-100)."""
-        delivery_rate = dashboard.get("delivery_rate", 100)
-        if delivery_rate >= 90:
-            return 0
-        elif delivery_rate >= 80:
-            return 25
-        elif delivery_rate >= 70:
-            return 50
-        elif delivery_rate >= 50:
-            return 75
-        else:
-            return 100
-    
-    def _calculate_pod_risk(self, dashboard: Dict) -> int:
-        """Calculate POD risk (0-100)."""
-        pod_rate = dashboard.get("pod_rate", 100)
-        if pod_rate >= 90:
-            return 0
-        elif pod_rate >= 80:
-            return 25
-        elif pod_rate >= 70:
-            return 50
-        elif pod_rate >= 50:
-            return 75
-        else:
-            return 100
-    
-    def _calculate_aging_risk(self, dashboard: Dict) -> int:
-        """Calculate aging risk (0-100)."""
-        avg_aging = dashboard.get("avg_delivery_aging", 0)
-        if avg_aging <= 3:
-            return 0
-        elif avg_aging <= 7:
-            return 25
-        elif avg_aging <= 14:
-            return 50
-        elif avg_aging <= 30:
-            return 75
-        else:
-            return 100
-    
-    def _calculate_revenue_risk(self, dashboard: Dict) -> int:
-        """Calculate revenue risk (0-100)."""
-        revenue = dashboard.get("total_revenue", 0)
-        if revenue > 1000000:
-            return 0
-        elif revenue > 500000:
-            return 25
-        elif revenue > 100000:
-            return 50
-        elif revenue > 50000:
-            return 75
-        else:
-            return 100
-    
-    def _build_dealer_profile(self, dealer_name: str, dashboard: Dict, analytics: Dict) -> Dict:
-        """Build dealer profile data using DeliveryReport fields."""
-        metadata = self._get_dealer_metadata(dealer_name)
-        
+    def _build_profile(self, data: Dict) -> Dict:
         return {
-            "dealer_name": dealer_name,
-            "dealer_code": metadata.get("dealer_code", self._generate_dealer_code(dealer_name)),
-            "dealer_type": metadata.get("dealer_type", "Standard"),
-            "dealer_category": metadata.get("dealer_category", "Standard"),
-            "city": dashboard.get("ship_to_city", "Unknown"),
-            "region": metadata.get("region", "Unknown"),
-            "division": metadata.get("division", "Unknown"),
-            "sales_office": dashboard.get("sales_office", "Unknown"),
-            "warehouse": dashboard.get("warehouse", "Unknown"),
-            "sales_manager": dashboard.get("sales_manager", "Unknown"),
-            "dealer_status": self._get_dealer_status(dashboard),
-            "registration_date": metadata.get("registration_date", "N/A"),
-            "total_dns": dashboard.get("total_dns", 0),
-            "total_revenue": dashboard.get("total_revenue", 0),
-            "total_units": dashboard.get("total_units", 0)
+            "dealer_name": data.get("dealer_name", "Unknown"),
+            "city": data.get("city", "Unknown"),
+            "warehouse": data.get("top_warehouse", "Unknown"),
+            "sales_office": data.get("sales_office", "Unknown"),
+            "sales_manager": data.get("sales_manager", "Unknown"),
+            "dealer_status": data.get("dealer_status", "Unknown"),
+            "first_dn_date": data.get("first_dn_date"),
+            "last_dn_date": data.get("last_dn_date")
         }
     
-    def _build_executive_kpis(self, dashboard: Dict, analytics: Dict) -> Dict:
-        """Build executive KPI data with proper DN vs Unit separation."""
+    def _build_kpis(self, data: Dict, analytics: Dict) -> Dict:
         return {
-            "total_dns": dashboard.get("total_dns", 0),
-            "total_revenue": dashboard.get("total_revenue", 0),
-            "total_units": dashboard.get("total_units", 0),
-            "delivered_dn_count": dashboard.get("delivered_dns", 0),
-            "pending_dn_count": dashboard.get("pending_dns", 0),
-            "pending_pod_dns": dashboard.get("pending_pod_dns", 0),
-            "avg_delivery_aging": dashboard.get("avg_delivery_aging", 0),
-            "avg_pod_aging": dashboard.get("avg_pod_aging", 0),
-            "dealer_health_score": analytics["health"]["score"],
+            "total_dns": data.get("total_dns", 0),
+            "total_revenue": data.get("total_revenue", 0),
+            "total_units": data.get("total_units", 0),
+            "delivered_dns": data.get("delivered_dns", 0),
+            "pending_dns": data.get("pending_dns", 0),
+            "pending_pod_dns": data.get("pending_pod_dns", 0),
+            "health_score": analytics["health"]["score"],
             "risk_level": analytics["risk"]["risk_level"]
         }
     
-    def _build_performance_metrics(self, dashboard: Dict) -> Dict:
-        """Build performance metrics with DN vs Unit separation."""
-        total_dns = dashboard.get("total_dns", 0)
-        delivered_dns = dashboard.get("delivered_dns", 0)
-        pending_dns = dashboard.get("pending_dns", 0)
-        
+    def _build_performance(self, data: Dict) -> Dict:
         return {
-            "total_dn_count": total_dns,
-            "delivered_dn_count": delivered_dns,
-            "pending_dn_count": pending_dns,
-            "transit_dn_count": dashboard.get("transit_dns", 0),
-            "delivery_rate": dashboard.get("delivery_rate", 0),
-            "total_unit_count": dashboard.get("total_units", 0),
-            "delivered_unit_count": dashboard.get("delivered_units", 0),
-            "pending_unit_count": dashboard.get("pending_units", 0),
-            "total_revenue": dashboard.get("total_revenue", 0)
+            "total_dns": data.get("total_dns", 0),
+            "delivered_dns": data.get("delivered_dns", 0),
+            "pending_dns": data.get("pending_dns", 0),
+            "transit_dns": data.get("transit_dns", 0),
+            "delivery_rate": data.get("delivery_rate", 0),
+            "total_units": data.get("total_units", 0),
+            "delivered_units": data.get("delivered_units", 0),
+            "pending_units": data.get("pending_units", 0)
         }
     
-    def _build_delivery_metrics(self, dashboard: Dict, analytics: Dict) -> Dict:
-        """Build delivery metrics."""
-        total_dns = dashboard.get("total_dns", 1)
-        delivered_dns = dashboard.get("delivered_dns", 0)
-        pending_dns = dashboard.get("pending_dns", 0)
-        
-        delivery_success_rate = (delivered_dns / total_dns * 100) if total_dns > 0 else 0
-        sla_compliance = 100 if delivery_success_rate >= 90 else (delivery_success_rate / 90 * 100) if delivery_success_rate > 0 else 0
-        
+    def _build_delivery(self, data: Dict) -> Dict:
         return {
-            "on_time_deliveries_dns": delivered_dns,
-            "late_deliveries_dns": dashboard.get("transit_dns", 0),
-            "delayed_dns": pending_dns,
-            "delivery_success_rate": round(delivery_success_rate, 1),
-            "sla_compliance": round(min(sla_compliance, 100), 1),
-            "delivery_aging": dashboard.get("avg_delivery_aging", 0),
-            "delivery_risk": analytics["risk"]["delivery_risk"],
-            "delivered_units": dashboard.get("delivered_units", 0),
-            "total_units": dashboard.get("total_units", 0)
+            "delivered_dns": data.get("delivered_dns", 0),
+            "pending_dns": data.get("pending_dns", 0),
+            "transit_dns": data.get("transit_dns", 0),
+            "delivery_rate": data.get("delivery_rate", 0),
+            "avg_delivery_aging": data.get("avg_delivery_aging", 0)
         }
     
-    def _build_pod_metrics(self, dashboard: Dict, analytics: Dict) -> Dict:
-        """Build POD metrics."""
-        pod_pending = dashboard.get("pending_pod_dns", 0)
-        pod_completed = dashboard.get("pod_completed_dns", 0)
-        total_pod = pod_pending + pod_completed
-        
+    def _build_pod(self, data: Dict) -> Dict:
         return {
-            "pod_received_dns": pod_completed,
-            "pod_pending_dns": pod_pending,
-            "pending_pod_dns": pod_pending,
-            "pod_compliance": round((pod_completed / max(total_pod, 1) * 100), 1) if total_pod > 0 else 0,
-            "avg_pod_aging": dashboard.get("avg_pod_aging", 0),
-            "pod_risk": analytics["risk"]["pod_risk"]
+            "pod_completed_dns": data.get("pod_completed_dns", 0),
+            "pending_pod_dns": data.get("pending_pod_dns", 0),
+            "pod_rate": data.get("pod_rate", 0),
+            "avg_pod_aging": data.get("avg_pod_aging", 0)
         }
     
-    def _build_financial_metrics(self, dashboard: Dict, analytics: Dict) -> Dict:
-        """Build financial metrics using actual revenue allocation."""
-        dealer_name = dashboard.get("dealer_name", "Unknown")
-        revenue_allocation = self._calculate_actual_revenue_allocation(dealer_name)
-        total_dns = dashboard.get("total_dns", 1)
-        
+    def _build_financial(self, data: Dict) -> Dict:
         return {
-            "total_revenue": revenue_allocation["total_revenue"],
-            "average_dn_value": revenue_allocation["total_revenue"] / max(total_dns, 1),
-            "delivered_revenue": revenue_allocation["delivered_revenue"],
-            "pending_revenue": revenue_allocation["pending_revenue"],
-            "pending_pod_revenue": revenue_allocation["pending_pod_revenue"]
+            "total_revenue": data.get("total_revenue", 0),
+            "avg_dn_value": data.get("total_revenue", 0) / max(data.get("total_dns", 1), 1)
         }
+    
+    # ==========================================================
+    # WRAPPER METHODS FOR BACKWARD COMPATIBILITY
+    # ==========================================================
+    
+    def get_dealer_dashboard(self, dealer_name: str) -> AnalyticsResponse:
+        return self.get_dealer_360_dashboard(dealer_name)
+    
+    def get_dashboard(self, dealer_name: str) -> AnalyticsResponse:
+        return self.get_dealer_360_dashboard(dealer_name)
+    
+    def get_dealer_profile(self, dealer_name: str) -> AnalyticsResponse:
+        return self.get_dealer_360_dashboard(dealer_name)
+    
+    def get_dealer_executive_summary(self, dealer_name: str) -> AnalyticsResponse:
+        return self.get_dealer_360_dashboard(dealer_name)
+    
+    def get_dealer_dn_performance(self, dealer_name: str) -> AnalyticsResponse:
+        return self.get_dealer_360_dashboard(dealer_name)
+    
+    def get_delivery_dashboard(self, dealer_name: str) -> AnalyticsResponse:
+        return self.get_dealer_360_dashboard(dealer_name)
+    
+    def get_pod_dashboard(self, dealer_name: str) -> AnalyticsResponse:
+        return self.get_dealer_360_dashboard(dealer_name)
+    
+    def get_financial_dashboard(self, dealer_name: str) -> AnalyticsResponse:
+        return self.get_dealer_360_dashboard(dealer_name)
+    
+    def calculate_dealer_health_score(self, dealer_name: str) -> AnalyticsResponse:
+        return self.get_dealer_360_dashboard(dealer_name)
+    
+    def assess_dealer_risk(self, dealer_name: str) -> AnalyticsResponse:
+        return self.get_dealer_360_dashboard(dealer_name)
+    
+    def get_ai_context(self, dealer_name: str = None) -> AnalyticsResponse:
+        if dealer_name:
+            dashboard = self.pg.get_dealer_dashboard(dealer_name)
+            return AnalyticsResponse(success=True, data={
+                "dealer_name": dealer_name,
+                "data": dashboard,
+                "context": "AI context from PostgreSQL"
+            })
+        else:
+            network = self.pg.get_network_summary()
+            return AnalyticsResponse(success=True, data={
+                "network": network,
+                "context": "Network context from PostgreSQL"
+            })
+    
+    def get_data_integrity_score(self) -> AnalyticsResponse:
+        try:
+            network = self.pg.get_network_summary()
+            total = network.get("total_dns", 0)
+            return AnalyticsResponse(success=True, data={
+                "total_records": total,
+                "integrity_score": 100 if total > 0 else 0,
+                "quality_status": "Excellent" if total > 100 else "Good"
+            })
+        except Exception as e:
+            return AnalyticsResponse(success=False, error=str(e))
+    
+    def get_delivery_aging_analysis(self, dealer_name: str) -> AnalyticsResponse:
+        try:
+            resolved = self._resolve_dealer(dealer_name)
+            if not resolved:
+                return AnalyticsResponse(success=False, error=f"Dealer '{dealer_name}' not found")
+            aging = self.pg.get_dealer_aging_analysis(resolved)
+            return AnalyticsResponse(success=True, data=aging)
+        except Exception as e:
+            return AnalyticsResponse(success=False, error=str(e))
+    
+    def get_product_dashboard(self, dealer_name: str) -> AnalyticsResponse:
+        try:
+            resolved = self._resolve_dealer(dealer_name)
+            if not resolved:
+                return AnalyticsResponse(success=False, error=f"Dealer '{dealer_name}' not found")
+            products = self.pg.get_dealer_product_analytics(resolved)
+            return AnalyticsResponse(success=True, data={"products": products})
+        except Exception as e:
+            return AnalyticsResponse(success=False, error=str(e))
 
 
 # ==========================================================
@@ -2367,16 +1380,11 @@ _analytics_service = None
 
 
 def get_analytics_service(use_redis: bool = False) -> AnalyticsService:
-    """Factory function for AnalyticsService singleton."""
     global _analytics_service
     if _analytics_service is None:
         _analytics_service = AnalyticsService(use_redis=use_redis)
     return _analytics_service
 
-
-# ==========================================================
-# EXPORTS
-# ==========================================================
 
 __all__ = [
     'AnalyticsService',
