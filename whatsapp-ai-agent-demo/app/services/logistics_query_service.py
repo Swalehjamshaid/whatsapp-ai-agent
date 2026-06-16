@@ -12,6 +12,7 @@
 # 6. ✅ Dependency Injection ready
 # 7. ✅ Interface Segregation (clean interfaces)
 # 8. ✅ SOLID Principles fully applied
+# 9. ✅ ALIGNED WITH models.py (all nullable fields handled safely)
 # ==========================================================
 
 from datetime import datetime, date, timedelta
@@ -208,6 +209,11 @@ class LogisticsQueryService:
     - Liskov: All cache providers interchangeable
     - Interface Segregation: Clean cache interface
     - Dependency Injection: Cache provider injected
+    
+    ALIGNED WITH models.py:
+    - All DeliveryReport fields are nullable-safe
+    - Handles None values gracefully with COALESCE and defaults
+    - Uses CAST for datatype safety with dn_no
     """
     
     def __init__(self, db: Optional[Session] = None, cache_provider: Optional[CacheProvider] = None):
@@ -250,6 +256,7 @@ class LogisticsQueryService:
         logger.info("   ✅ SQL Aggregation (no Python loops)")
         logger.info("   ✅ Dependency Injection ready")
         logger.info("   ✅ SOLID Principles applied")
+        logger.info("   ✅ Aligned with models.py (nullable-safe)")
         logger.info("")
         logger.info("   STATUS: ✅ ENTERPRISE READY")
         logger.info("=" * 60)
@@ -604,6 +611,7 @@ class LogisticsQueryService:
         Get DN details with robust, datatype-safe search.
         
         CRITICAL FIX: Uses CAST and LIKE for datatype safety.
+        ALIGNED WITH models.py: Handles nullable fields safely.
         """
         request_id = str(uuid.uuid4())[:8]
         start_time = time.time()
@@ -689,10 +697,15 @@ class LogisticsQueryService:
             )
     
     def _format_dn_record(self, record) -> Dict[str, Any]:
-        """Format DN record with Python date calculations (NO DATEDIFF)."""
+        """
+        Format DN record with Python date calculations (NO DATEDIFF).
+        
+        ALIGNED WITH models.py: All fields are nullable-safe.
+        """
         delivery_aging = None
         pod_aging = None
         
+        # Safe date calculations with None checks
         if record.dn_create_date and record.good_issue_date:
             if record.good_issue_date >= record.dn_create_date:
                 delivery_aging = (record.good_issue_date - record.dn_create_date).days
@@ -705,6 +718,7 @@ class LogisticsQueryService:
         elif record.good_issue_date:
             pod_aging = (self.today - record.good_issue_date).days
         
+        # Safe status determination
         if record.pod_date:
             status = "delivered"
         elif record.good_issue_date:
@@ -737,6 +751,7 @@ class LogisticsQueryService:
         Get comprehensive dealer dashboard data with SQL Aggregation.
         
         CRITICAL FIX: Uses SQL COUNT, SUM, AVG, MAX - NO Python loops over 50,000 records!
+        ALIGNED WITH models.py: All fields are nullable-safe with COALESCE.
         """
         request_id = str(uuid.uuid4())[:8]
         start_time = time.time()
@@ -749,7 +764,7 @@ class LogisticsQueryService:
             # Step 1: Resolve dealer (raises DealerNotFoundError)
             resolved_name, confidence, strategy = self.resolve_dealer_name(dealer_name)
             
-            # Step 2: SQL Aggregation (NO Python loops!)
+            # Step 2: SQL Aggregation with COALESCE for nullable safety
             sql = text("""
                 SELECT 
                     COUNT(*) as total_dns,
@@ -776,7 +791,7 @@ class LogisticsQueryService:
                 self.metrics["dashboard_generations_failure"] += 1
                 raise DashboardGenerationError(resolved_name, "No records found")
             
-            # Get oldest pending (individual record)
+            # Get oldest pending (individual record) - handles None safely
             oldest_sql = text("""
                 SELECT dn_no, dn_create_date 
                 FROM """ + self.table_name + """
@@ -786,7 +801,7 @@ class LogisticsQueryService:
             """)
             oldest = self.db.execute(oldest_sql, {"dealer_name": resolved_name}).first()
             
-            # Step 3: Build dashboard from aggregated results
+            # Step 3: Build dashboard from aggregated results with safe defaults
             total_dns = result.total_dns or 1
             delivered_units = result.delivered_units or 0
             pod_completed = result.pod_completed or 0
