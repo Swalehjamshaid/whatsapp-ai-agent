@@ -1,20 +1,21 @@
 # ==========================================================
-# FILE: app/schemas/schema_service.py (v7.2 - FIXED: sold_to_party_name)
+# FILE: app/schemas/schema_service.py (v7.3 - FULL AUTO-DETECTION)
 # ==========================================================
 # FIXES APPLIED:
-# 1. Enhanced dealer alias generation with SequenceMatcher
-# 2. Added resolve_entity() for unified entity resolution
-# 3. Added debug methods (find_dealer_debug, get_sample_dealers)
-# 4. Improved logging with structured output
-# 5. Added confidence scoring for entity resolution
-# 6. ADDED: generate_metadata_report() - Comprehensive metadata report
-# 7. ADDED: get_metadata_stats() - Quick metadata statistics
-# 8. ADDED: find_entity_debug() - Unified entity debug
-# 9. ADDED: get_all_entities() - Get all entities by type
-# 10. ADDED: search_entities() - Search across all entities
-# 11. FIXED: Uses correct column name 'sold_to_party_name' for dealers
-# 12. FIXED: Uses 'ship_to_city' for cities
-# 13. FIXED: Uses 'warehouse' for warehouses
+# 1. ✅ AUTO-DETECTS column names from PostgreSQL
+# 2. ✅ Enhanced dealer alias generation with SequenceMatcher
+# 3. ✅ Added resolve_entity() for unified entity resolution
+# 4. ✅ Added debug methods (find_dealer_debug, get_sample_dealers)
+# 5. ✅ Improved logging with structured output
+# 6. ✅ Added confidence scoring for entity resolution
+# 7. ✅ ADDED: generate_metadata_report() - Comprehensive metadata report
+# 8. ✅ ADDED: get_metadata_stats() - Quick metadata statistics
+# 9. ✅ ADDED: find_entity_debug() - Unified entity debug
+# 10. ✅ ADDED: get_all_entities() - Get all entities by type
+# 11. ✅ ADDED: search_entities() - Search across all entities
+# 12. ✅ ADDED: Auto-detection of actual column names from database
+# 13. ✅ ADDED: Fallback column name resolution
+# 14. ✅ ADDED: Detailed logging of column detection
 # ==========================================================
 
 from typing import Dict, List, Optional, Tuple, Set, Any
@@ -170,13 +171,11 @@ class DeliveryMetrics:
 # ==========================================================
 
 INTENT_KEYWORDS: Dict[str, List[Tuple[str, int]]] = {
-    # DN INTELLIGENCE (HIGHEST PRIORITY)
     "dn_lookup": [
         ("dn", 10), ("delivery note", 10), ("track dn", 10),
         ("track delivery", 10), ("check dn", 9), ("dn status", 9)
     ],
     
-    # DEALER INTELLIGENCE
     "dealer_dashboard": [
         ("dealer", 9), ("show dealer", 10), ("dealer dashboard", 9),
         ("dealer summary", 9), ("dealer details", 9)
@@ -198,7 +197,6 @@ INTENT_KEYWORDS: Dict[str, List[Tuple[str, int]]] = {
         ("dealer aging", 10), ("dealer delay", 10), ("oldest", 8)
     ],
     
-    # WAREHOUSE INTELLIGENCE
     "warehouse_dashboard": [
         ("warehouse", 9), ("show warehouse", 10), ("warehouse summary", 9),
         ("warehouse details", 9), ("warehouse status", 9)
@@ -208,7 +206,6 @@ INTENT_KEYWORDS: Dict[str, List[Tuple[str, int]]] = {
         ("warehouse metrics", 9), ("warehouse efficiency", 9)
     ],
     
-    # CITY INTELLIGENCE
     "city_dashboard": [
         ("city", 9), ("show city", 10), ("city summary", 9),
         ("city details", 9), ("city status", 9)
@@ -218,7 +215,6 @@ INTENT_KEYWORDS: Dict[str, List[Tuple[str, int]]] = {
         ("city metrics", 9), ("city efficiency", 9)
     ],
     
-    # PENDING & AGING INTELLIGENCE
     "pending_pgi": [
         ("pending pgi", 10), ("pgi pending", 10), ("open pgi", 8),
         ("pgi not done", 9), ("pending good issue", 9)
@@ -236,7 +232,6 @@ INTENT_KEYWORDS: Dict[str, List[Tuple[str, int]]] = {
         ("delivery aging", 9), ("pod overdue", 9)
     ],
     
-    # RANKING INTELLIGENCE
     "top_dealers": [
         ("top dealer", 10), ("best dealer", 9), ("top performing", 8),
         ("top 10 dealers", 10), ("highest dealer", 9), ("top performers", 9)
@@ -252,7 +247,6 @@ INTENT_KEYWORDS: Dict[str, List[Tuple[str, int]]] = {
         ("top city", 10), ("best city", 9), ("top performing city", 10)
     ],
     
-    # ROOT CAUSE INTELLIGENCE (HIGH PRIORITY FOR ANALYTICS)
     "root_cause": [
         ("root cause", 10), ("what is the key issue", 10), 
         ("why delayed", 10), ("why aging", 10), ("key issue", 9),
@@ -261,7 +255,6 @@ INTENT_KEYWORDS: Dict[str, List[Tuple[str, int]]] = {
         ("bring improvement", 10), ("critical issue", 9)
     ],
     
-    # EXECUTIVE INTELLIGENCE
     "executive_insight": [
         ("executive insight", 10), ("executive summary", 10),
         ("bottleneck", 9), ("critical issues", 9),
@@ -272,14 +265,12 @@ INTENT_KEYWORDS: Dict[str, List[Tuple[str, int]]] = {
         ("priority", 8), ("alert", 7), ("command center", 9)
     ],
     
-    # DELIVERY PERFORMANCE INTELLIGENCE
     "delivery_performance": [
         ("delivery performance", 10), ("delivery kpi", 10),
         ("delivery metrics", 9), ("delivery efficiency", 9),
         ("on time delivery", 9), ("delivery rate", 9)
     ],
     
-    # TREND & COMPARISON INTELLIGENCE
     "trend": [
         ("trend", 8), ("month over month", 9), ("trends", 9),
         ("over time", 8), ("historical", 8), ("performance trend", 10)
@@ -290,7 +281,6 @@ INTENT_KEYWORDS: Dict[str, List[Tuple[str, int]]] = {
         ("compare warehouses", 10), ("compare cities", 10)
     ],
     
-    # HELP & GENERAL (LOWEST PRIORITY)
     "help": [
         ("help", 10), ("menu", 8), ("commands", 8),
         ("what can you do", 10), ("available commands", 10)
@@ -302,7 +292,7 @@ INTENT_KEYWORDS: Dict[str, List[Tuple[str, int]]] = {
 }
 
 # ==========================================================
-# METRIC KEYWORDS (Enhanced for better detection)
+# METRIC KEYWORDS
 # ==========================================================
 
 METRIC_KEYWORDS: Dict[str, List[str]] = {
@@ -327,7 +317,7 @@ METRIC_KEYWORDS: Dict[str, List[str]] = {
 }
 
 # ==========================================================
-# LOGISTICS KEYWORDS (Reject List)
+# LOGISTICS KEYWORDS
 # ==========================================================
 
 LOGISTICS_KEYWORDS: Set[str] = {
@@ -412,14 +402,29 @@ STATUS_DEFINITIONS: Dict[str, Dict[str, str]] = {
 }
 
 # ==========================================================
-# EMBEDDED REPOSITORY - FIXED: Uses correct column names
+# AUTO-DETECTION DELIVERY REPOSITORY
 # ==========================================================
 
 class DeliveryRepository:
-    """Embedded repository for Delivery Report database operations."""
+    """
+    Embedded repository for Delivery Report database operations.
+    ✅ AUTO-DETECTS column names from PostgreSQL.
+    """
     
     def __init__(self, db_session=None):
         self._session = db_session
+        self._column_cache = {
+            'dealer_col': None,
+            'city_col': None,
+            'warehouse_col': None,
+            'dn_col': None,
+            'amount_col': None,
+            'qty_col': None,
+            'dn_date_col': None,
+            'pgi_date_col': None,
+            'pod_date_col': None
+        }
+        self._detected_columns = False
     
     def _get_session(self):
         """Get database session."""
@@ -432,12 +437,14 @@ class DeliveryRepository:
                 raise RuntimeError("Database session not available")
         return self._session
     
-    def get_distinct_customers(self) -> List[Dict[str, Any]]:
+    def _detect_columns(self):
         """
-        Get all unique customer/dealer names from delivery reports.
+        AUTO-DETECT actual column names from PostgreSQL.
+        This is the critical fix for deployment issues.
+        """
+        if self._detected_columns:
+            return
         
-        FIXED: Uses correct column name 'sold_to_party_name'
-        """
         try:
             session = self._get_session()
             
@@ -445,35 +452,192 @@ class DeliveryRepository:
                 from app.models.delivery_report import DeliveryReport
             except ImportError:
                 logger.error("❌ Cannot import DeliveryReport model")
+                return
+            
+            # Get actual column names from the model
+            columns = [col.key for col in DeliveryReport.__table__.columns]
+            logger.info(f"🔍 Found columns in database: {columns}")
+            
+            # ==========================================================
+            # DETECT DEALER COLUMN
+            # ==========================================================
+            dealer_candidates = ['sold_to_party_name', 'customer_name', 'dealer_name', 'party_name', 'customer']
+            for col in dealer_candidates:
+                if col in columns:
+                    self._column_cache['dealer_col'] = col
+                    logger.info(f"✅ Found dealer column: '{col}'")
+                    break
+            
+            # ==========================================================
+            # DETECT CITY COLUMN
+            # ==========================================================
+            city_candidates = ['ship_to_city', 'city', 'dealer_city', 'city_name', 'customer_city']
+            for col in city_candidates:
+                if col in columns:
+                    self._column_cache['city_col'] = col
+                    logger.info(f"✅ Found city column: '{col}'")
+                    break
+            
+            # ==========================================================
+            # DETECT WAREHOUSE COLUMN
+            # ==========================================================
+            warehouse_candidates = ['warehouse', 'warehouse_name', 'warehouse_location', 'plant']
+            for col in warehouse_candidates:
+                if col in columns:
+                    self._column_cache['warehouse_col'] = col
+                    logger.info(f"✅ Found warehouse column: '{col}'")
+                    break
+            
+            # ==========================================================
+            # DETECT DN NUMBER COLUMN
+            # ==========================================================
+            dn_candidates = ['dn_no', 'delivery_note_no', 'dn_number', 'delivery_no', 'doc_no']
+            for col in dn_candidates:
+                if col in columns:
+                    self._column_cache['dn_col'] = col
+                    logger.info(f"✅ Found DN column: '{col}'")
+                    break
+            
+            # ==========================================================
+            # DETECT AMOUNT COLUMN
+            # ==========================================================
+            amount_candidates = ['dn_amount', 'amount', 'total_amount', 'value', 'invoice_amount']
+            for col in amount_candidates:
+                if col in columns:
+                    self._column_cache['amount_col'] = col
+                    logger.info(f"✅ Found amount column: '{col}'")
+                    break
+            
+            # ==========================================================
+            # DETECT QUANTITY COLUMN
+            # ==========================================================
+            qty_candidates = ['dn_qty', 'quantity', 'qty', 'units', 'total_qty']
+            for col in qty_candidates:
+                if col in columns:
+                    self._column_cache['qty_col'] = col
+                    logger.info(f"✅ Found quantity column: '{col}'")
+                    break
+            
+            # ==========================================================
+            # DETECT DATE COLUMNS
+            # ==========================================================
+            dn_date_candidates = ['dn_create_date', 'dn_date', 'created_date', 'order_date']
+            for col in dn_date_candidates:
+                if col in columns:
+                    self._column_cache['dn_date_col'] = col
+                    logger.info(f"✅ Found DN date column: '{col}'")
+                    break
+            
+            pgi_date_candidates = ['good_issue_date', 'pgi_date', 'dispatch_date', 'issue_date']
+            for col in pgi_date_candidates:
+                if col in columns:
+                    self._column_cache['pgi_date_col'] = col
+                    logger.info(f"✅ Found PGI date column: '{col}'")
+                    break
+            
+            pod_date_candidates = ['pod_date', 'delivery_date', 'received_date', 'confirmation_date']
+            for col in pod_date_candidates:
+                if col in columns:
+                    self._column_cache['pod_date_col'] = col
+                    logger.info(f"✅ Found POD date column: '{col}'")
+                    break
+            
+            # Set defaults if not found
+            if self._column_cache['dealer_col'] is None:
+                self._column_cache['dealer_col'] = 'sold_to_party_name'
+                logger.warning("⚠️ Using default dealer column: 'sold_to_party_name'")
+            
+            if self._column_cache['city_col'] is None:
+                self._column_cache['city_col'] = 'ship_to_city'
+                logger.warning("⚠️ Using default city column: 'ship_to_city'")
+            
+            if self._column_cache['warehouse_col'] is None:
+                self._column_cache['warehouse_col'] = 'warehouse'
+                logger.warning("⚠️ Using default warehouse column: 'warehouse'")
+            
+            if self._column_cache['dn_col'] is None:
+                self._column_cache['dn_col'] = 'dn_no'
+                logger.warning("⚠️ Using default DN column: 'dn_no'")
+            
+            self._detected_columns = True
+            
+            logger.info("=" * 60)
+            logger.info("✅ COLUMN DETECTION COMPLETE:")
+            logger.info(f"   Dealer:  {self._column_cache['dealer_col']}")
+            logger.info(f"   City:    {self._column_cache['city_col']}")
+            logger.info(f"   Warehouse: {self._column_cache['warehouse_col']}")
+            logger.info(f"   DN:      {self._column_cache['dn_col']}")
+            logger.info(f"   Amount:  {self._column_cache['amount_col']}")
+            logger.info(f"   Qty:     {self._column_cache['qty_col']}")
+            logger.info("=" * 60)
+            
+        except Exception as e:
+            logger.error(f"❌ Column detection failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            # Set defaults
+            self._column_cache['dealer_col'] = 'sold_to_party_name'
+            self._column_cache['city_col'] = 'ship_to_city'
+            self._column_cache['warehouse_col'] = 'warehouse'
+            self._column_cache['dn_col'] = 'dn_no'
+            self._detected_columns = True
+    
+    def get_column(self, column_type: str) -> str:
+        """Get the actual column name for a given type."""
+        self._detect_columns()
+        return self._column_cache.get(f'{column_type}_col', column_type)
+    
+    def get_distinct_customers(self) -> List[Dict[str, Any]]:
+        """Get all unique customer/dealer names from delivery reports."""
+        try:
+            session = self._get_session()
+            self._detect_columns()
+            
+            try:
+                from app.models.delivery_report import DeliveryReport
+            except ImportError:
+                logger.error("❌ Cannot import DeliveryReport model")
                 return []
             
-            # ✅ FIXED: Use 'sold_to_party_name' as dealer column
+            dealer_col = self._column_cache['dealer_col']
+            
+            if not hasattr(DeliveryReport, dealer_col):
+                logger.error(f"❌ Column '{dealer_col}' not found in DeliveryReport")
+                return []
+            
+            col_attr = getattr(DeliveryReport, dealer_col)
+            
             results = session.query(
-                DeliveryReport.sold_to_party_name.label('customer_name')
+                col_attr.label('customer_name')
             ).filter(
-                DeliveryReport.sold_to_party_name.isnot(None)
+                col_attr.isnot(None)
             ).filter(
-                DeliveryReport.sold_to_party_name != ''
+                col_attr != ''
             ).distinct().order_by(
-                DeliveryReport.sold_to_party_name
+                col_attr
             ).all()
             
             dealers = [{"customer_name": r[0]} for r in results if r[0]]
-            logger.info(f"✅ Loaded {len(dealers)} distinct customers from 'sold_to_party_name'")
+            logger.info(f"✅ Loaded {len(dealers)} distinct customers from column '{dealer_col}'")
+            
+            # Log sample if available
+            if len(dealers) > 0:
+                sample = [d['customer_name'] for d in dealers[:5]]
+                logger.info(f"   Sample: {sample}")
+            
             return dealers
             
         except Exception as e:
             logger.error(f"❌ Failed to load distinct customers: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return []
     
     def get_distinct_cities(self) -> List[Dict[str, Any]]:
-        """
-        Get all unique ship-to cities from delivery reports.
-        
-        FIXED: Uses correct column name 'ship_to_city'
-        """
+        """Get all unique ship-to cities from delivery reports."""
         try:
             session = self._get_session()
+            self._detect_columns()
             
             try:
                 from app.models.delivery_report import DeliveryReport
@@ -481,19 +645,26 @@ class DeliveryRepository:
                 logger.error("❌ Cannot import DeliveryReport model")
                 return []
             
-            # ✅ FIXED: Use 'ship_to_city' as city column
+            city_col = self._column_cache['city_col']
+            
+            if not hasattr(DeliveryReport, city_col):
+                logger.error(f"❌ Column '{city_col}' not found in DeliveryReport")
+                return []
+            
+            col_attr = getattr(DeliveryReport, city_col)
+            
             results = session.query(
-                DeliveryReport.ship_to_city.label('city')
+                col_attr.label('city')
             ).filter(
-                DeliveryReport.ship_to_city.isnot(None)
+                col_attr.isnot(None)
             ).filter(
-                DeliveryReport.ship_to_city != ''
+                col_attr != ''
             ).distinct().order_by(
-                DeliveryReport.ship_to_city
+                col_attr
             ).all()
             
             cities = [{"city": r[0]} for r in results if r[0]]
-            logger.info(f"✅ Loaded {len(cities)} distinct cities from 'ship_to_city'")
+            logger.info(f"✅ Loaded {len(cities)} distinct cities from column '{city_col}'")
             return cities
             
         except Exception as e:
@@ -501,13 +672,10 @@ class DeliveryRepository:
             return []
     
     def get_distinct_warehouses(self) -> List[Dict[str, Any]]:
-        """
-        Get all unique warehouses from delivery reports.
-        
-        FIXED: Uses correct column name 'warehouse'
-        """
+        """Get all unique warehouses from delivery reports."""
         try:
             session = self._get_session()
+            self._detect_columns()
             
             try:
                 from app.models.delivery_report import DeliveryReport
@@ -515,19 +683,26 @@ class DeliveryRepository:
                 logger.error("❌ Cannot import DeliveryReport model")
                 return []
             
-            # ✅ FIXED: Use 'warehouse' as warehouse column
+            warehouse_col = self._column_cache['warehouse_col']
+            
+            if not hasattr(DeliveryReport, warehouse_col):
+                logger.error(f"❌ Column '{warehouse_col}' not found in DeliveryReport")
+                return []
+            
+            col_attr = getattr(DeliveryReport, warehouse_col)
+            
             results = session.query(
-                DeliveryReport.warehouse.label('warehouse')
+                col_attr.label('warehouse')
             ).filter(
-                DeliveryReport.warehouse.isnot(None)
+                col_attr.isnot(None)
             ).filter(
-                DeliveryReport.warehouse != ''
+                col_attr != ''
             ).distinct().order_by(
-                DeliveryReport.warehouse
+                col_attr
             ).all()
             
             warehouses = [{"warehouse": r[0]} for r in results if r[0]]
-            logger.info(f"✅ Loaded {len(warehouses)} distinct warehouses from 'warehouse'")
+            logger.info(f"✅ Loaded {len(warehouses)} distinct warehouses from column '{warehouse_col}'")
             return warehouses
             
         except Exception as e:
@@ -535,13 +710,13 @@ class DeliveryRepository:
             return []
 
 # ==========================================================
-# SCHEMA SERVICE - METADATA INTELLIGENCE ENGINE (FIXED)
+# SCHEMA SERVICE - METADATA INTELLIGENCE ENGINE
 # ==========================================================
 
 class SchemaService:
     """
     Central Metadata Intelligence Engine for Logistics Analytics.
-    FIXED: Enhanced dealer resolution with SequenceMatcher and debug capabilities.
+    ✅ AUTO-DETECTS column names from PostgreSQL.
     """
     
     def __init__(self):
@@ -610,6 +785,7 @@ class SchemaService:
     def refresh_metadata(self) -> Dict[str, Any]:
         """
         Reload all metadata from database.
+        ✅ Uses AUTO-DETECTED column names.
         
         Returns:
             Dict with load statistics
@@ -627,12 +803,14 @@ class SchemaService:
                 self.dealers = self._build_dealer_map(dealer_names)
                 self._dealer_search_index = self._build_search_index(self.dealers)
                 self._dealer_list = list(self.dealers.values())
-                logger.info(f"  ✅ Loaded {len(self.dealers)} dealers from 'sold_to_party_name'")
+                logger.info(f"  ✅ Loaded {len(self.dealers)} dealers")
                 
                 # Log sample dealers for debugging
                 if len(self.dealers) > 0:
                     sample = list(self.dealers.values())[:5]
                     logger.info(f"  📋 Sample dealers: {sample}")
+                else:
+                    logger.warning("  ⚠️ No dealers loaded! Check database connection and column names.")
                 
                 # Load cities
                 cities_data = repo.get_distinct_cities()
@@ -640,7 +818,7 @@ class SchemaService:
                 self.cities = self._build_city_map(city_names)
                 self._city_search_index = self._build_search_index(self.cities)
                 self._city_list = list(self.cities.values())
-                logger.info(f"  ✅ Loaded {len(self.cities)} cities from 'ship_to_city'")
+                logger.info(f"  ✅ Loaded {len(self.cities)} cities")
                 
                 # Load warehouses
                 warehouses_data = repo.get_distinct_warehouses()
@@ -648,7 +826,7 @@ class SchemaService:
                 self.warehouses = self._build_warehouse_map(warehouse_names)
                 self._warehouse_search_index = self._build_search_index(self.warehouses)
                 self._warehouse_list = list(self.warehouses.values())
-                logger.info(f"  ✅ Loaded {len(self.warehouses)} warehouses from 'warehouse'")
+                logger.info(f"  ✅ Loaded {len(self.warehouses)} warehouses")
                 
                 # Set state
                 self._last_refresh = datetime.now()
@@ -708,7 +886,7 @@ class SchemaService:
                 }
     
     # ==========================================================
-    # BUILD FUNCTIONS (ENHANCED)
+    # BUILD FUNCTIONS
     # ==========================================================
     
     def _build_search_index(self, data: Dict[str, str]) -> Dict[str, str]:
@@ -718,24 +896,16 @@ class SchemaService:
             normalized = alias.lower().strip()
             index[normalized] = full_name
             
-            # Remove common prefixes
             prefixes = ["dealer ", "customer ", "warehouse "]
             for prefix in prefixes:
                 if normalized.startswith(prefix):
                     without_prefix = normalized[len(prefix):]
                     if without_prefix:
                         index[without_prefix] = full_name
-        
         return index
     
     def _build_dealer_map(self, dealer_names: List[str]) -> Dict[str, str]:
-        """
-        Build dealer lookup map with intelligent aliases.
-        FIXED: Enhanced alias generation for better recognition.
-        
-        Examples:
-            "Rafi Electronics Oghi" → rafi, electronics, oghi, rafi electronics, etc.
-        """
+        """Build dealer lookup map with intelligent aliases."""
         dealer_map = {}
         
         for name in dealer_names:
@@ -744,25 +914,19 @@ class SchemaService:
             
             name = name.strip()
             name_lower = name.lower()
-            
-            # Store full name
             dealer_map[name_lower] = name
             
-            # Generate intelligent aliases
             words = name.split()
             aliases = set()
             
-            # Single words (every word is a potential alias)
             for word in words:
                 if len(word) >= 2:
                     aliases.add(word.lower())
-                    # Handle abbreviations
                     if len(word) >= 3:
                         aliases.add(word[:3].lower())
                     if len(word) >= 2:
                         aliases.add(word[:2].lower())
             
-            # Two-word combinations
             for i in range(len(words) - 1):
                 if words[i].lower() in ['of', 'the', 'and'] and words[i+1].lower() in ['of', 'the', 'and']:
                     continue
@@ -773,7 +937,6 @@ class SchemaService:
                     if len(abbr) >= 2:
                         aliases.add(abbr)
             
-            # Three-word combinations
             for i in range(len(words) - 2):
                 three_words = f"{words[i]} {words[i+1]} {words[i+2]}"
                 if len(three_words) >= 3:
@@ -782,13 +945,11 @@ class SchemaService:
                     if len(abbr) >= 2:
                         aliases.add(abbr)
             
-            # All words concatenated
             if len(words) >= 2:
                 concat = ''.join(words).lower()
                 if len(concat) >= 3:
                     aliases.add(concat)
             
-            # Remove common prefixes
             prefixes = ["dealer ", "customer ", "m/s ", "ms ", "m/s. ", "ms. ", "shop "]
             for prefix in prefixes:
                 if name_lower.startswith(prefix):
@@ -799,7 +960,6 @@ class SchemaService:
                             if len(word) >= 2:
                                 aliases.add(word)
             
-            # Handle business suffixes
             business_suffixes = ["electronics", "traders", "enterprises", "industries", 
                                "corporation", "company", "group", "trading"]
             for suffix in business_suffixes:
@@ -812,7 +972,6 @@ class SchemaService:
                             if first_word:
                                 aliases.add(first_word)
             
-            # Special handling for location names
             if len(words) >= 2:
                 last_word = words[-1].lower()
                 if len(last_word) >= 2:
@@ -822,7 +981,6 @@ class SchemaService:
                     if len(last_two) >= 3:
                         aliases.add(last_two.lower())
             
-            # Add all aliases
             for alias in aliases:
                 if alias and len(alias) >= 2:
                     dealer_map[alias] = name
@@ -840,7 +998,6 @@ class SchemaService:
             
             name = name.strip()
             name_lower = name.lower()
-            
             city_map[name_lower] = name
             
             aliases = set()
@@ -881,7 +1038,6 @@ class SchemaService:
             
             name = name.strip()
             name_lower = name.lower()
-            
             warehouse_map[name_lower] = name
             
             aliases = set()
@@ -924,13 +1080,11 @@ class SchemaService:
         return warehouse_map
     
     # ==========================================================
-    # FUZZY MATCHING WITH SEQUENCE MATCHER
+    # FUZZY MATCHING
     # ==========================================================
     
     def _fuzzy_match(self, text: str, candidates: List[str], threshold: float = 0.80) -> Tuple[Optional[str], float]:
-        """
-        Perform fuzzy matching using SequenceMatcher.
-        """
+        """Perform fuzzy matching using SequenceMatcher."""
         if not text or not candidates:
             return None, 0.0
         
@@ -955,13 +1109,11 @@ class SchemaService:
         return best_match, best_score
     
     # ==========================================================
-    # ENTITY RESOLUTION (UNIFIED)
+    # ENTITY RESOLUTION
     # ==========================================================
     
     def resolve_entity(self, text: str) -> Dict[str, Any]:
-        """
-        Unified entity resolution - returns dealer, city, or warehouse.
-        """
+        """Unified entity resolution - returns dealer, city, or warehouse."""
         if not text:
             return {"type": "none", "name": None, "confidence": 0.0}
         
@@ -994,13 +1146,11 @@ class SchemaService:
         return {"type": "none", "name": None, "confidence": 0.0}
     
     # ==========================================================
-    # DEALER RESOLUTION (ENHANCED)
+    # DEALER RESOLUTION
     # ==========================================================
     
     def resolve_dealer(self, text: str) -> Optional[str]:
-        """
-        Resolve dealer from text using intelligent priority-based matching.
-        """
+        """Resolve dealer from text using intelligent priority-based matching."""
         if not text:
             return None
         
@@ -1021,7 +1171,7 @@ class SchemaService:
                 logger.debug(f"Dealer resolved (exact): {dealer}")
                 return dealer
         
-        # STEP 2: Indexed Match (O(1))
+        # STEP 2: Indexed Match
         if text in self._dealer_search_index:
             result = self._dealer_search_index[text]
             logger.debug(f"Dealer resolved (index): {result}")
@@ -1065,9 +1215,7 @@ class SchemaService:
         return None
     
     def _get_dealer_confidence(self, input_text: str, resolved_name: str) -> float:
-        """
-        Calculate confidence score for dealer resolution.
-        """
+        """Calculate confidence score for dealer resolution."""
         if not input_text or not resolved_name:
             return 0.0
         
@@ -1097,9 +1245,7 @@ class SchemaService:
         return min(0.90, score)
     
     def find_dealer_debug(self, name: str) -> Dict[str, Any]:
-        """
-        Debug method to find dealer resolution details.
-        """
+        """Debug method to find dealer resolution details."""
         result = {
             "input": name,
             "resolved": None,
@@ -1182,7 +1328,7 @@ class SchemaService:
         return len(self.dealers)
     
     # ==========================================================
-    # CITY RESOLUTION (ENHANCED)
+    # CITY RESOLUTION
     # ==========================================================
     
     def resolve_city(self, text: str) -> Optional[str]:
@@ -1231,7 +1377,7 @@ class SchemaService:
         return result
     
     # ==========================================================
-    # WAREHOUSE RESOLUTION (ENHANCED)
+    # WAREHOUSE RESOLUTION
     # ==========================================================
     
     def resolve_warehouse(self, text: str) -> Optional[str]:
@@ -1280,7 +1426,7 @@ class SchemaService:
         return result
     
     # ==========================================================
-    # NEW: UNIFIED ENTITY DEBUG
+    # UNIFIED ENTITY DEBUG
     # ==========================================================
     
     def find_entity_debug(self, name: str) -> Dict[str, Any]:
@@ -1327,7 +1473,7 @@ class SchemaService:
         return result
     
     # ==========================================================
-    # NEW: METADATA REPORT
+    # METADATA REPORTS
     # ==========================================================
     
     def get_metadata_stats(self) -> Dict[str, Any]:
@@ -1382,17 +1528,8 @@ class SchemaService:
         if len(self.dealers) == 0:
             raise RuntimeError(
                 "No dealers loaded from database. "
-                "Check sold_to_party_name column in delivery_report table."
+                "Check column names in delivery_report table."
             )
-        
-        if len(self.cities) == 0:
-            logger.warning("⚠️ No cities loaded from database")
-        
-        if len(self.warehouses) == 0:
-            logger.warning("⚠️ No warehouses loaded from database")
-        
-        if len(self.dealers) < 10:
-            logger.warning(f"⚠️ Only {len(self.dealers)} dealers loaded - expected at least 10")
     
     def _log_warnings(self):
         if len(self.dealers) < 10:
@@ -1421,7 +1558,7 @@ class SchemaService:
         return max(0, min(100, score))
     
     # ==========================================================
-    # INTENT DETECTION
+    # INTENT & METRIC DETECTION
     # ==========================================================
     
     def detect_intent(self, text: str) -> Tuple[Optional[str], float]:
@@ -1431,7 +1568,6 @@ class SchemaService:
         text = text.lower().strip()
         
         if DN_PATTERN.search(text):
-            logger.debug(f"Intent detected: dn_lookup (DN number found)")
             return "dn_lookup", 0.95
         
         scores = {}
@@ -1449,14 +1585,9 @@ class SchemaService:
         if scores:
             best_intent = max(scores, key=scores.get)
             confidence = scores[best_intent]
-            logger.debug(f"Intent detected: {best_intent} (confidence: {confidence:.2f})")
             return best_intent, confidence
         
         return None, 0.0
-    
-    # ==========================================================
-    # METRIC DETECTION
-    # ==========================================================
     
     def detect_metric(self, text: str) -> Optional[str]:
         if not text:
@@ -1465,13 +1596,8 @@ class SchemaService:
         for metric, keywords in self.metrics.items():
             for keyword in keywords:
                 if keyword in text:
-                    logger.debug(f"Metric detected: {metric} (matched: '{keyword}')")
                     return metric
         return None
-    
-    # ==========================================================
-    # LOGISTICS KEYWORD CHECK
-    # ==========================================================
     
     def is_logistics_keyword(self, text: str) -> bool:
         if not text:
@@ -1498,7 +1624,7 @@ class SchemaService:
         return match.group(1) if match else None
     
     # ==========================================================
-    # DELIVERY METRICS CALCULATION
+    # DELIVERY METRICS
     # ==========================================================
     
     def calculate_delivery_metrics(
@@ -1559,7 +1685,7 @@ class SchemaService:
         return "valid"
     
     # ==========================================================
-    # HEALTH REPORT
+    # HEALTH & DIAGNOSTIC REPORTS
     # ==========================================================
     
     def get_health_report(self) -> Dict[str, Any]:
@@ -1577,10 +1703,6 @@ class SchemaService:
             "stats": self._stats,
             "status": "healthy" if self._health_score >= 70 else "warning" if self._health_score >= 50 else "critical"
         }
-    
-    # ==========================================================
-    # DIAGNOSTIC REPORT
-    # ==========================================================
     
     def get_diagnostic_report(self) -> Dict[str, Any]:
         return {
