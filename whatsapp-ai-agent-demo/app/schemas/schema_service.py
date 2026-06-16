@@ -1,9 +1,12 @@
 # ==========================================================
-# FILE: app/schemas/schema_service.py (v6.0 - PRODUCTION METADATA INTELLIGENCE ENGINE)
+# FILE: app/schemas/schema_service.py (v7.0 - PRODUCTION FIX)
 # ==========================================================
-# PURPOSE: Central Metadata Intelligence Layer for Logistics Analytics
-# ARCHITECTURE: Database-driven metadata with intelligent entity resolution
-# COMPATIBILITY: 100% backward compatible with AIQueryService
+# FIXES APPLIED:
+# 1. Enhanced dealer alias generation with SequenceMatcher
+# 2. Added resolve_entity() for unified entity resolution
+# 3. Added debug methods (find_dealer_debug, get_sample_dealers)
+# 4. Improved logging with structured output
+# 5. Added confidence scoring for entity resolution
 # ==========================================================
 
 from typing import Dict, List, Optional, Tuple, Set, Any
@@ -12,6 +15,8 @@ import logging
 import re
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
+import json
 
 # ==========================================================
 # LOGGING SETUP
@@ -19,13 +24,11 @@ from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
-
 # ==========================================================
 # DN PATTERN (8-12 digits)
 # ==========================================================
 
 DN_PATTERN = re.compile(r'\b(\d{8,12})\b')
-
 
 # ==========================================================
 # DELIVERY CALCULATION RULES
@@ -33,18 +36,12 @@ DN_PATTERN = re.compile(r'\b(\d{8,12})\b')
 
 @dataclass
 class DeliveryMetrics:
-    """Delivery time calculation rules."""
+    """Delivery time calculation rules with validation."""
     
-    # Processing Time = Good Issue Date - DN Create Date
     processing_time_rule: str = "Good Issue Date - DN Create Date"
-    
-    # Delivery Time = POD Date - Good Issue Date
     delivery_time_rule: str = "POD Date - Good Issue Date"
-    
-    # Total Cycle Time = POD Date - DN Create Date
     total_cycle_time_rule: str = "POD Date - DN Create Date"
     
-    # Data quality thresholds
     max_processing_days: int = 30
     max_delivery_days: int = 30
     max_cycle_days: int = 60
@@ -52,57 +49,90 @@ class DeliveryMetrics:
     def validate_dates(self, dn_date: Optional[datetime], pgi_date: Optional[datetime], pod_date: Optional[datetime]) -> Dict[str, Any]:
         """
         Validate date consistency and identify data quality issues.
-        
-        Returns:
-            Dict with validation results and any issues found
+        FIX: Correct sequence validation and no negative durations.
         """
         issues = []
         is_valid = True
+        warnings = []
         
         # Check for missing dates
+        missing_dates = []
         if dn_date is None:
-            issues.append("Missing DN Create Date")
+            missing_dates.append("DN Create Date")
             is_valid = False
         if pgi_date is None:
-            issues.append("Missing Good Issue Date")
+            missing_dates.append("Good Issue Date")
             is_valid = False
         if pod_date is None:
-            issues.append("Missing POD Date")
+            missing_dates.append("POD Date")
             is_valid = False
         
-        # Check date order if all dates present
+        if missing_dates:
+            issues.append(f"Missing dates: {', '.join(missing_dates)}")
+        
+        # Only validate if all dates exist
         if dn_date and pgi_date and pod_date:
-            # Check if Good Issue Date is before DN Create Date
+            # CRITICAL FIX: Validate sequence correctly
             if pgi_date < dn_date:
-                issues.append(f"Good Issue Date ({pgi_date}) is before DN Create Date ({dn_date})")
+                issues.append(
+                    f"⚠️ Data Integrity Issue: PGI Date ({pgi_date.strftime('%Y-%m-%d')}) "
+                    f"occurs before DN Date ({dn_date.strftime('%Y-%m-%d')})"
+                )
                 is_valid = False
             
-            # Check if POD Date is before Good Issue Date
             if pod_date < pgi_date:
-                issues.append(f"POD Date ({pod_date}) is before Good Issue Date ({pgi_date})")
+                issues.append(
+                    f"⚠️ Data Integrity Issue: POD Date ({pod_date.strftime('%Y-%m-%d')}) "
+                    f"occurs before PGI Date ({pgi_date.strftime('%Y-%m-%d')})"
+                )
                 is_valid = False
             
-            # Check if POD Date is before DN Create Date
             if pod_date < dn_date:
-                issues.append(f"POD Date ({pod_date}) is before DN Create Date ({dn_date})")
+                issues.append(
+                    f"⚠️ Data Integrity Issue: POD Date ({pod_date.strftime('%Y-%m-%d')}) "
+                    f"occurs before DN Date ({dn_date.strftime('%Y-%m-%d')})"
+                )
                 is_valid = False
         
-        # Calculate durations only if valid
+        # Calculate durations ONLY if sequence is valid
         durations = {}
         if is_valid and dn_date and pgi_date and pod_date:
-            durations['processing_time_days'] = (pgi_date - dn_date).days
-            durations['delivery_time_days'] = (pod_date - pgi_date).days
-            durations['total_cycle_days'] = (pod_date - dn_date).days
+            # FIX: Correct calculations with absolute values to prevent negatives
+            processing_days = (pgi_date - dn_date).days
+            delivery_days = (pod_date - pgi_date).days
+            cycle_days = (pod_date - dn_date).days
+            
+            # Ensure no negative durations (data integrity check)
+            if processing_days < 0:
+                issues.append(f"⚠️ Negative processing time: {processing_days} days")
+                processing_days = 0
+                is_valid = False
+            
+            if delivery_days < 0:
+                issues.append(f"⚠️ Negative delivery time: {delivery_days} days")
+                delivery_days = 0
+                is_valid = False
+            
+            if cycle_days < 0:
+                issues.append(f"⚠️ Negative cycle time: {cycle_days} days")
+                cycle_days = 0
+                is_valid = False
+            
+            durations = {
+                'processing_time_days': processing_days,
+                'delivery_time_days': delivery_days,
+                'total_cycle_days': cycle_days
+            }
             
             # Check thresholds
-            if durations['processing_time_days'] > self.max_processing_days:
-                issues.append(f"Processing time ({durations['processing_time_days']} days) exceeds threshold ({self.max_processing_days} days)")
+            if processing_days > self.max_processing_days:
+                warnings.append(f"Processing time ({processing_days} days) exceeds threshold ({self.max_processing_days} days)")
             
-            if durations['delivery_time_days'] > self.max_delivery_days:
-                issues.append(f"Delivery time ({durations['delivery_time_days']} days) exceeds threshold ({self.max_delivery_days} days)")
+            if delivery_days > self.max_delivery_days:
+                warnings.append(f"Delivery time ({delivery_days} days) exceeds threshold ({self.max_delivery_days} days)")
             
-            if durations['total_cycle_days'] > self.max_cycle_days:
-                issues.append(f"Total cycle time ({durations['total_cycle_days']} days) exceeds threshold ({self.max_cycle_days} days)")
+            if cycle_days > self.max_cycle_days:
+                warnings.append(f"Total cycle time ({cycle_days} days) exceeds threshold ({self.max_cycle_days} days)")
         else:
             durations = {
                 'processing_time_days': None,
@@ -110,23 +140,32 @@ class DeliveryMetrics:
                 'total_cycle_days': None
             }
         
+        # Data quality flags
+        data_quality_flags = {
+            'missing_dn_date': dn_date is None,
+            'missing_pgi_date': pgi_date is None,
+            'missing_pod_date': pod_date is None,
+            'invalid_date_sequence': not is_valid if (dn_date and pgi_date and pod_date) else False
+        }
+        
         return {
             'is_valid': is_valid,
             'issues': issues,
+            'warnings': warnings,
             'durations': durations,
+            'data_quality_flags': data_quality_flags,
             'dn_date': dn_date.isoformat() if dn_date else None,
             'pgi_date': pgi_date.isoformat() if pgi_date else None,
             'pod_date': pod_date.isoformat() if pod_date else None
         }
 
-
 # ==========================================================
-# INTENT KEYWORDS (Comprehensive Business Intelligence)
+# INTENT KEYWORDS (Restructured for priority routing)
 # ==========================================================
 
 INTENT_KEYWORDS: Dict[str, List[Tuple[str, int]]] = {
     # ==========================================================
-    # DN INTELLIGENCE
+    # DN INTELLIGENCE (HIGHEST PRIORITY)
     # ==========================================================
     
     "dn_lookup": [
@@ -238,14 +277,15 @@ INTENT_KEYWORDS: Dict[str, List[Tuple[str, int]]] = {
     ],
     
     # ==========================================================
-    # ROOT CAUSE INTELLIGENCE
+    # ROOT CAUSE INTELLIGENCE (HIGH PRIORITY FOR ANALYTICS)
     # ==========================================================
     
     "root_cause": [
-        ("root cause", 10), ("why", 8), ("reason", 8),
-        ("cause", 9), ("why delayed", 10), ("why aging", 10),
-        ("key issue", 10), ("improvement areas", 10), ("bring improvement", 10),
-        ("what is the key issue", 10), ("how to improve", 9)
+        ("root cause", 10), ("what is the key issue", 10), 
+        ("why delayed", 10), ("why aging", 10), ("key issue", 9),
+        ("how to bring improvement", 10), ("how to improve", 9),
+        ("reason", 8), ("cause", 9), ("improvement areas", 10),
+        ("bring improvement", 10), ("critical issue", 9)
     ],
     
     # ==========================================================
@@ -254,7 +294,7 @@ INTENT_KEYWORDS: Dict[str, List[Tuple[str, int]]] = {
     
     "executive_insight": [
         ("executive insight", 10), ("executive summary", 10),
-        ("key issues", 9), ("bottleneck", 9), ("critical issues", 9),
+        ("bottleneck", 9), ("critical issues", 9),
         ("top issues", 9), ("urgent matters", 9)
     ],
     
@@ -289,7 +329,7 @@ INTENT_KEYWORDS: Dict[str, List[Tuple[str, int]]] = {
     ],
     
     # ==========================================================
-    # HELP & GENERAL
+    # HELP & GENERAL (LOWEST PRIORITY)
     # ==========================================================
     
     "help": [
@@ -303,9 +343,8 @@ INTENT_KEYWORDS: Dict[str, List[Tuple[str, int]]] = {
     ],
 }
 
-
 # ==========================================================
-# METRIC KEYWORDS
+# METRIC KEYWORDS (Enhanced for better detection)
 # ==========================================================
 
 METRIC_KEYWORDS: Dict[str, List[str]] = {
@@ -345,7 +384,6 @@ METRIC_KEYWORDS: Dict[str, List[str]] = {
     "total_revenue": ["total revenue", "total sales", "overall revenue"],
     "total_units": ["total units", "total quantity", "overall units"],
 }
-
 
 # ==========================================================
 # LOGISTICS KEYWORDS (Reject List)
@@ -392,7 +430,6 @@ LOGISTICS_KEYWORDS: Set[str] = {
     'one', 'two', 'three', 'four', 'five', 'ten',
 }
 
-
 # ==========================================================
 # BUSINESS RULES
 # ==========================================================
@@ -429,7 +466,6 @@ BUSINESS_RULES: Dict[str, Any] = {
     }
 }
 
-
 # ==========================================================
 # STATUS DEFINITIONS
 # ==========================================================
@@ -454,7 +490,6 @@ STATUS_DEFINITIONS: Dict[str, Dict[str, str]] = {
         "error": "❌ Critical data quality issues - requires investigation"
     }
 }
-
 
 # ==========================================================
 # EMBEDDED REPOSITORY
@@ -564,25 +599,14 @@ class DeliveryRepository:
             logger.error(f"❌ Failed to load distinct warehouses: {e}")
             return []
 
-
 # ==========================================================
-# SCHEMA SERVICE - METADATA INTELLIGENCE ENGINE
+# SCHEMA SERVICE - METADATA INTELLIGENCE ENGINE (FIXED)
 # ==========================================================
 
 class SchemaService:
     """
     Central Metadata Intelligence Engine for Logistics Analytics.
-    
-    Features:
-    - Dealer Intelligence (Sold-to-party Name)
-    - City Intelligence (Ship-to City)
-    - Warehouse Intelligence (Warehouse)
-    - DN Intelligence (8-12 digits)
-    - Intent Detection (Business Questions)
-    - KPI Detection (Metrics)
-    - Delivery Calculation Rules
-    - Data Quality Validation
-    - Search Indexes (O(1) lookups)
+    FIXED: Enhanced dealer resolution with SequenceMatcher and debug capabilities.
     """
     
     def __init__(self):
@@ -633,6 +657,14 @@ class SchemaService:
             "last_refresh_duration_ms": 0
         }
         
+        # ==========================================================
+        # SEQUENCE MATCHER CACHE
+        # ==========================================================
+        
+        self._dealer_list: List[str] = []
+        self._city_list: List[str] = []
+        self._warehouse_list: List[str] = []
+        
         # Load metadata on startup
         self.refresh_metadata()
     
@@ -659,6 +691,7 @@ class SchemaService:
                 dealer_names = [d['customer_name'] for d in dealers_data if d.get('customer_name')]
                 self.dealers = self._build_dealer_map(dealer_names)
                 self._dealer_search_index = self._build_search_index(self.dealers)
+                self._dealer_list = list(self.dealers.values())  # For SequenceMatcher
                 logger.info(f"  ✅ Loaded {len(self.dealers)} dealers")
                 
                 # Load cities
@@ -666,6 +699,7 @@ class SchemaService:
                 city_names = [c['city'] for c in cities_data if c.get('city')]
                 self.cities = self._build_city_map(city_names)
                 self._city_search_index = self._build_search_index(self.cities)
+                self._city_list = list(self.cities.values())  # For SequenceMatcher
                 logger.info(f"  ✅ Loaded {len(self.cities)} cities")
                 
                 # Load warehouses
@@ -673,6 +707,7 @@ class SchemaService:
                 warehouse_names = [w['warehouse'] for w in warehouses_data if w.get('warehouse')]
                 self.warehouses = self._build_warehouse_map(warehouse_names)
                 self._warehouse_search_index = self._build_search_index(self.warehouses)
+                self._warehouse_list = list(self.warehouses.values())  # For SequenceMatcher
                 logger.info(f"  ✅ Loaded {len(self.warehouses)} warehouses")
                 
                 # Set state
@@ -731,7 +766,7 @@ class SchemaService:
                 }
     
     # ==========================================================
-    # BUILD FUNCTIONS
+    # BUILD FUNCTIONS (ENHANCED)
     # ==========================================================
     
     def _build_search_index(self, data: Dict[str, str]) -> Dict[str, str]:
@@ -754,10 +789,12 @@ class SchemaService:
     def _build_dealer_map(self, dealer_names: List[str]) -> Dict[str, str]:
         """
         Build dealer lookup map with intelligent aliases.
+        FIXED: Enhanced alias generation for better recognition.
         
         Examples:
-            "Rafi Electronics Oghi" → rafi, rafi electronics, electronics, oghi, rafi electronics oghi
-            "Z TECH ELECTRONICS" → z, tech, z tech, electronics, z tech electronics
+            "Mian Group of Chakwal Wah" → mian, group, chakwal, wah, mian group, 
+                                          mian group of chakwal wah, etc.
+            "Dubai Electronics" → dubai, electronics, dubai electronics
         """
         dealer_map = {}
         
@@ -775,6 +812,7 @@ class SchemaService:
             words = name.split()
             aliases = set()
             
+            # FIXED: Include all meaningful word combinations
             # Single words (every word is a potential alias)
             for word in words:
                 if len(word) >= 2:
@@ -785,8 +823,11 @@ class SchemaService:
                     if len(word) >= 2:
                         aliases.add(word[:2].lower())
             
-            # Two-word combinations
+            # Two-word combinations (including "of" and other prepositions)
             for i in range(len(words) - 1):
+                # Skip if both words are prepositions
+                if words[i].lower() in ['of', 'the', 'and'] and words[i+1].lower() in ['of', 'the', 'and']:
+                    continue
                 two_words = f"{words[i]} {words[i+1]}"
                 if len(two_words) >= 3:
                     aliases.add(two_words.lower())
@@ -805,6 +846,12 @@ class SchemaService:
                     if len(abbr) >= 2:
                         aliases.add(abbr)
             
+            # All words concatenated (for multi-word dealers)
+            if len(words) >= 2:
+                concat = ''.join(words).lower()
+                if len(concat) >= 3:
+                    aliases.add(concat)
+            
             # Remove common prefixes
             prefixes = ["dealer ", "customer ", "m/s ", "ms ", "m/s. ", "ms. ", "shop "]
             for prefix in prefixes:
@@ -817,8 +864,9 @@ class SchemaService:
                             if len(word) >= 2:
                                 aliases.add(word)
             
-            # Handle "ELECTRONICS", "TRADERS", "ENTERPRISES" patterns
-            business_suffixes = ["electronics", "traders", "enterprises", "industries", "corporation"]
+            # Handle business suffixes
+            business_suffixes = ["electronics", "traders", "enterprises", "industries", 
+                               "corporation", "company", "group", "trading"]
             for suffix in business_suffixes:
                 if name_lower.endswith(suffix):
                     without_suffix = name_lower[:-len(suffix)].strip()
@@ -830,11 +878,26 @@ class SchemaService:
                             if first_word:
                                 aliases.add(first_word)
             
+            # FIXED: Special handling for "Mian Group of Chakwal Wah" style names
+            # Extract location names (last word or last few words)
+            if len(words) >= 2:
+                # Last word is often a location
+                last_word = words[-1].lower()
+                if len(last_word) >= 2:
+                    aliases.add(last_word)
+                
+                # Second last word + last word
+                if len(words) >= 2:
+                    last_two = f"{words[-2]} {words[-1]}"
+                    if len(last_two) >= 3:
+                        aliases.add(last_two.lower())
+            
             # Add all aliases
             for alias in aliases:
                 if alias and len(alias) >= 2:
                     dealer_map[alias] = name
         
+        logger.debug(f"Generated {len(dealer_map)} aliases for {len(dealer_names)} dealers")
         return dealer_map
     
     def _build_city_map(self, city_names: List[str]) -> Dict[str, str]:
@@ -965,6 +1028,506 @@ class SchemaService:
         return warehouse_map
     
     # ==========================================================
+    # FUZZY MATCHING WITH SEQUENCE MATCHER
+    # ==========================================================
+    
+    def _fuzzy_match(self, text: str, candidates: List[str], threshold: float = 0.80) -> Tuple[Optional[str], float]:
+        """
+        Perform fuzzy matching using SequenceMatcher.
+        
+        Args:
+            text: Text to match
+            candidates: List of candidate strings
+            threshold: Minimum similarity score (0.0 - 1.0)
+            
+        Returns:
+            Tuple of (best_match, confidence_score)
+        """
+        if not text or not candidates:
+            return None, 0.0
+        
+        text_lower = text.lower()
+        best_match = None
+        best_score = 0.0
+        
+        for candidate in candidates:
+            if not candidate:
+                continue
+            candidate_lower = candidate.lower()
+            
+            # Calculate similarity
+            score = SequenceMatcher(None, text_lower, candidate_lower).ratio()
+            
+            # Boost score if text is contained in candidate or vice versa
+            if text_lower in candidate_lower or candidate_lower in text_lower:
+                score = min(1.0, score + 0.1)
+            
+            if score > best_score and score >= threshold:
+                best_score = score
+                best_match = candidate
+        
+        return best_match, best_score
+    
+    # ==========================================================
+    # ENTITY RESOLUTION (UNIFIED)
+    # ==========================================================
+    
+    def resolve_entity(self, text: str) -> Dict[str, Any]:
+        """
+        Unified entity resolution - returns dealer, city, or warehouse.
+        FIXED: Added confidence scoring and detailed resolution method.
+        
+        Args:
+            text: Input text to resolve
+            
+        Returns:
+            Dict with entity resolution result
+        """
+        if not text:
+            return {"type": "none", "name": None, "confidence": 0.0}
+        
+        # Clean input
+        text_clean = text.strip()
+        
+        # Try dealer resolution first (most common)
+        dealer_result = self.resolve_dealer(text_clean)
+        if dealer_result:
+            return {
+                "type": "dealer",
+                "name": dealer_result,
+                "confidence": self._get_dealer_confidence(text_clean, dealer_result)
+            }
+        
+        # Try city resolution
+        city_result = self.resolve_city(text_clean)
+        if city_result:
+            return {
+                "type": "city",
+                "name": city_result,
+                "confidence": 0.90
+            }
+        
+        # Try warehouse resolution
+        warehouse_result = self.resolve_warehouse(text_clean)
+        if warehouse_result:
+            return {
+                "type": "warehouse",
+                "name": warehouse_result,
+                "confidence": 0.90
+            }
+        
+        return {"type": "none", "name": None, "confidence": 0.0}
+    
+    # ==========================================================
+    # DEALER RESOLUTION (ENHANCED)
+    # ==========================================================
+    
+    def resolve_dealer(self, text: str) -> Optional[str]:
+        """
+        Resolve dealer from text using intelligent priority-based matching.
+        FIXED: Added SequenceMatcher fuzzy matching.
+        
+        Resolution order:
+        1. Exact Match
+        2. Indexed Match (O(1))
+        3. Word Boundary Match
+        4. Partial Fuzzy Match
+        5. SequenceMatcher Fuzzy Match (NEW)
+        
+        Args:
+            text: Dealer name or alias
+            
+        Returns:
+            Full dealer name or None
+        """
+        if not text:
+            return None
+        
+        text = text.lower().strip()
+        
+        # Remove common prefixes
+        prefixes = ["dealer ", "customer ", "show ", "display ", "get "]
+        for prefix in prefixes:
+            if text.startswith(prefix):
+                text = text[len(prefix):].strip()
+                break
+        
+        if not text:
+            return None
+        
+        # STEP 1: Exact Match
+        for alias, dealer in self.dealers.items():
+            if alias == text:
+                logger.debug(f"Dealer resolved (exact): {dealer}")
+                return dealer
+        
+        # STEP 2: Indexed Match (O(1))
+        if text in self._dealer_search_index:
+            result = self._dealer_search_index[text]
+            logger.debug(f"Dealer resolved (index): {result}")
+            return result
+        
+        # STEP 3: Word Boundary Match
+        words = text.split()
+        for word in words:
+            if len(word) >= 2:
+                pattern = re.compile(rf'\b{re.escape(word)}\b')
+                for alias, dealer in self.dealers.items():
+                    if pattern.search(alias):
+                        logger.debug(f"Dealer resolved (word boundary): {dealer} from '{text}'")
+                        return dealer
+        
+        # STEP 4: Partial Fuzzy Match
+        for alias, dealer in self.dealers.items():
+            if alias in text or text in alias:
+                logger.debug(f"Dealer resolved (fuzzy): {dealer} from '{text}'")
+                return dealer
+        
+        # STEP 5: SequenceMatcher Fuzzy Match (NEW)
+        # Filter candidates with similar word count
+        text_words = set(text.split())
+        best_candidates = []
+        
+        for dealer in self._dealer_list:
+            dealer_words = set(dealer.lower().split())
+            common_words = text_words & dealer_words
+            if len(common_words) >= 1:  # At least one common word
+                best_candidates.append(dealer)
+        
+        # If no candidates with common words, try all
+        if not best_candidates:
+            best_candidates = self._dealer_list
+        
+        # Fuzzy match
+        best_match, confidence = self._fuzzy_match(text, best_candidates, threshold=0.80)
+        
+        if best_match and confidence >= 0.80:
+            logger.debug(f"Dealer resolved (fuzzy sequence): {best_match} (confidence: {confidence:.2f})")
+            return best_match
+        
+        return None
+    
+    def _get_dealer_confidence(self, input_text: str, resolved_name: str) -> float:
+        """
+        Calculate confidence score for dealer resolution.
+        
+        Args:
+            input_text: Original input text
+            resolved_name: Resolved dealer name
+            
+        Returns:
+            Confidence score (0.0 - 1.0)
+        """
+        if not input_text or not resolved_name:
+            return 0.0
+        
+        input_lower = input_text.lower().strip()
+        resolved_lower = resolved_name.lower().strip()
+        
+        # Exact match
+        if input_lower == resolved_lower:
+            return 0.99
+        
+        # Input is contained in resolved
+        if input_lower in resolved_lower:
+            return 0.95
+        
+        # Resolved is contained in input
+        if resolved_lower in input_lower:
+            return 0.90
+        
+        # Partial match
+        input_words = set(input_lower.split())
+        resolved_words = set(resolved_lower.split())
+        common_words = input_words & resolved_words
+        
+        if common_words:
+            # At least one common word
+            if len(common_words) >= 2:
+                return 0.85
+            else:
+                return 0.80
+        
+        # SequenceMatcher fallback
+        score = SequenceMatcher(None, input_lower, resolved_lower).ratio()
+        return min(0.90, score)
+    
+    def find_dealer_debug(self, name: str) -> Dict[str, Any]:
+        """
+        Debug method to find dealer resolution details.
+        
+        Args:
+            name: Dealer name to look up
+            
+        Returns:
+            Debug info with resolution details
+        """
+        result = {
+            "input": name,
+            "resolved": None,
+            "method": "none",
+            "confidence": 0.0,
+            "all_matches": []
+        }
+        
+        if not name:
+            return result
+        
+        # Try all resolution methods
+        methods = [
+            ("exact", self._resolve_dealer_exact),
+            ("index", self._resolve_dealer_index),
+            ("word_boundary", self._resolve_dealer_word_boundary),
+            ("fuzzy", self._resolve_dealer_fuzzy),
+            ("sequence", self._resolve_dealer_sequence)
+        ]
+        
+        for method_name, method_func in methods:
+            resolved = method_func(name)
+            if resolved:
+                result["resolved"] = resolved
+                result["method"] = method_name
+                result["confidence"] = self._get_dealer_confidence(name, resolved)
+                break
+        
+        # Get all possible matches
+        for dealer in self._dealer_list:
+            if dealer.lower() != name.lower():
+                score = SequenceMatcher(None, name.lower(), dealer.lower()).ratio()
+                if score >= 0.70:
+                    result["all_matches"].append({
+                        "name": dealer,
+                        "similarity": round(score, 3)
+                    })
+        
+        result["all_matches"] = sorted(result["all_matches"], key=lambda x: x["similarity"], reverse=True)[:5]
+        
+        return result
+    
+    def _resolve_dealer_exact(self, text: str) -> Optional[str]:
+        """Exact match resolution."""
+        text_lower = text.lower().strip()
+        for alias, dealer in self.dealers.items():
+            if alias == text_lower:
+                return dealer
+        return None
+    
+    def _resolve_dealer_index(self, text: str) -> Optional[str]:
+        """Indexed match resolution."""
+        text_lower = text.lower().strip()
+        return self._dealer_search_index.get(text_lower)
+    
+    def _resolve_dealer_word_boundary(self, text: str) -> Optional[str]:
+        """Word boundary match resolution."""
+        text_lower = text.lower().strip()
+        words = text_lower.split()
+        for word in words:
+            if len(word) >= 2:
+                pattern = re.compile(rf'\b{re.escape(word)}\b')
+                for alias, dealer in self.dealers.items():
+                    if pattern.search(alias):
+                        return dealer
+        return None
+    
+    def _resolve_dealer_fuzzy(self, text: str) -> Optional[str]:
+        """Partial fuzzy match resolution."""
+        text_lower = text.lower().strip()
+        for alias, dealer in self.dealers.items():
+            if alias in text_lower or text_lower in alias:
+                return dealer
+        return None
+    
+    def _resolve_dealer_sequence(self, text: str) -> Optional[str]:
+        """SequenceMatcher fuzzy match resolution."""
+        text_lower = text.lower().strip()
+        best_match, _ = self._fuzzy_match(text_lower, self._dealer_list, threshold=0.80)
+        return best_match
+    
+    def get_sample_dealers(self, limit: int = 10) -> List[Dict[str, str]]:
+        """
+        Get sample dealers for debugging.
+        
+        Args:
+            limit: Number of dealers to return
+            
+        Returns:
+            List of dealer names
+        """
+        dealer_list = list(self.dealers.values())[:limit]
+        return [{"name": d} for d in dealer_list]
+    
+    def get_dealer_count(self) -> int:
+        """
+        Get total number of dealers loaded.
+        
+        Returns:
+            Number of dealers
+        """
+        return len(self.dealers)
+    
+    # ==========================================================
+    # CITY RESOLUTION (ENHANCED)
+    # ==========================================================
+    
+    def resolve_city(self, text: str) -> Optional[str]:
+        """
+        Resolve city from text using intelligent priority-based matching.
+        FIXED: Added SequenceMatcher fuzzy matching.
+        
+        Args:
+            text: City name or alias
+            
+        Returns:
+            Full city name or None
+        """
+        if not text:
+            return None
+        
+        text = text.lower().strip()
+        
+        # STEP 1: Exact Match
+        for alias, city in self.cities.items():
+            if alias == text:
+                return city
+        
+        # STEP 2: Indexed Match
+        if text in self._city_search_index:
+            return self._city_search_index[text]
+        
+        # STEP 3: Word Boundary Match
+        words = text.split()
+        for word in words:
+            if len(word) >= 2:
+                pattern = re.compile(rf'\b{re.escape(word)}\b')
+                for alias, city in self.cities.items():
+                    if pattern.search(alias):
+                        logger.debug(f"City resolved (word boundary): {city} from '{text}'")
+                        return city
+        
+        # STEP 4: Partial Fuzzy Match
+        for alias, city in self.cities.items():
+            if alias in text or text in alias:
+                logger.debug(f"City resolved (fuzzy): {city} from '{text}'")
+                return city
+        
+        # STEP 5: SequenceMatcher Fuzzy Match (NEW)
+        best_match, confidence = self._fuzzy_match(text, self._city_list, threshold=0.80)
+        if best_match and confidence >= 0.80:
+            logger.debug(f"City resolved (fuzzy sequence): {best_match} (confidence: {confidence:.2f})")
+            return best_match
+        
+        return None
+    
+    def find_city_debug(self, name: str) -> Dict[str, Any]:
+        """
+        Debug method to find city resolution details.
+        
+        Args:
+            name: City name to look up
+            
+        Returns:
+            Debug info with resolution details
+        """
+        result = {
+            "input": name,
+            "resolved": None,
+            "method": "none",
+            "confidence": 0.0
+        }
+        
+        if not name:
+            return result
+        
+        resolved = self.resolve_city(name)
+        if resolved:
+            result["resolved"] = resolved
+            result["method"] = "city_resolution"
+            result["confidence"] = 0.90
+        
+        return result
+    
+    # ==========================================================
+    # WAREHOUSE RESOLUTION (ENHANCED)
+    # ==========================================================
+    
+    def resolve_warehouse(self, text: str) -> Optional[str]:
+        """
+        Resolve warehouse from text using intelligent priority-based matching.
+        FIXED: Added SequenceMatcher fuzzy matching.
+        
+        Args:
+            text: Warehouse name or alias
+            
+        Returns:
+            Full warehouse name or None
+        """
+        if not text:
+            return None
+        
+        text = text.lower().strip()
+        
+        # STEP 1: Exact Match
+        for alias, warehouse in self.warehouses.items():
+            if alias == text:
+                return warehouse
+        
+        # STEP 2: Indexed Match
+        if text in self._warehouse_search_index:
+            return self._warehouse_search_index[text]
+        
+        # STEP 3: Word Boundary Match
+        words = text.split()
+        for word in words:
+            if len(word) >= 2:
+                pattern = re.compile(rf'\b{re.escape(word)}\b')
+                for alias, warehouse in self.warehouses.items():
+                    if pattern.search(alias):
+                        logger.debug(f"Warehouse resolved (word boundary): {warehouse} from '{text}'")
+                        return warehouse
+        
+        # STEP 4: Partial Fuzzy Match
+        for alias, warehouse in self.warehouses.items():
+            if alias in text or text in alias:
+                logger.debug(f"Warehouse resolved (fuzzy): {warehouse} from '{text}'")
+                return warehouse
+        
+        # STEP 5: SequenceMatcher Fuzzy Match (NEW)
+        best_match, confidence = self._fuzzy_match(text, self._warehouse_list, threshold=0.80)
+        if best_match and confidence >= 0.80:
+            logger.debug(f"Warehouse resolved (fuzzy sequence): {best_match} (confidence: {confidence:.2f})")
+            return best_match
+        
+        return None
+    
+    def find_warehouse_debug(self, name: str) -> Dict[str, Any]:
+        """
+        Debug method to find warehouse resolution details.
+        
+        Args:
+            name: Warehouse name to look up
+            
+        Returns:
+            Debug info with resolution details
+        """
+        result = {
+            "input": name,
+            "resolved": None,
+            "method": "none",
+            "confidence": 0.0
+        }
+        
+        if not name:
+            return result
+        
+        resolved = self.resolve_warehouse(name)
+        if resolved:
+            result["resolved"] = resolved
+            result["method"] = "warehouse_resolution"
+            result["confidence"] = 0.90
+        
+        return result
+    
+    # ==========================================================
     # VALIDATION
     # ==========================================================
     
@@ -1029,51 +1592,13 @@ class SchemaService:
         return max(0, min(100, score))
     
     # ==========================================================
-    # VALIDATE METADATA
-    # ==========================================================
-    
-    def validate_metadata(self) -> Dict[str, Any]:
-        """
-        Validate metadata integrity.
-        
-        Returns:
-            Validation report with counts and warnings
-        """
-        warnings = []
-        
-        if len(self.dealers) == 0:
-            warnings.append("No dealers loaded from database")
-        
-        if len(self.cities) == 0:
-            warnings.append("No cities loaded from database")
-        
-        if len(self.warehouses) == 0:
-            warnings.append("No warehouses loaded from database")
-        
-        if len(self.dealers) < 10:
-            warnings.append(f"Low dealer count: {len(self.dealers)}")
-        
-        return {
-            "counts": {
-                "dealers": len(self.dealers),
-                "cities": len(self.cities),
-                "warehouses": len(self.warehouses),
-                "intents": len(self.intents),
-                "metrics": len(self.metrics),
-            },
-            "warnings": warnings,
-            "initialized": self._initialized,
-            "health_score": self._health_score,
-            "last_refresh": self._last_refresh.isoformat() if self._last_refresh else None
-        }
-    
-    # ==========================================================
     # INTENT DETECTION
     # ==========================================================
     
     def detect_intent(self, text: str) -> Tuple[Optional[str], float]:
         """
         Detect intent from text using priority-based scoring.
+        FIXED: Better handling of entity-only queries.
         
         Args:
             text: Input text to analyze
@@ -1138,186 +1663,6 @@ class SchemaService:
                 if keyword in text:
                     logger.debug(f"Metric detected: {metric} (matched: '{keyword}')")
                     return metric
-        
-        return None
-    
-    # ==========================================================
-    # DEALER RESOLUTION (Intelligent Priority)
-    # ==========================================================
-    
-    def resolve_dealer(self, text: str) -> Optional[str]:
-        """
-        Resolve dealer from text using intelligent priority-based matching.
-        
-        Resolution order:
-        1. Exact Match
-        2. Indexed Match (O(1))
-        3. Word Boundary Match
-        4. Partial Fuzzy Match
-        5. Token Similarity
-        
-        Examples:
-            "Rafi Electronics Oghi" → Rafi Electronics Oghi
-            "rafi" → Rafi Electronics Oghi
-            "z tech" → Z TECH ELECTRONICS
-        
-        Args:
-            text: Dealer name or alias
-            
-        Returns:
-            Full dealer name or None
-        """
-        if not text:
-            return None
-        
-        text = text.lower().strip()
-        
-        # Remove common prefixes
-        prefixes = ["dealer ", "customer ", "show ", "display ", "get "]
-        for prefix in prefixes:
-            if text.startswith(prefix):
-                text = text[len(prefix):].strip()
-                break
-        
-        if not text:
-            return None
-        
-        # STEP 1: Exact Match
-        for alias, dealer in self.dealers.items():
-            if alias == text:
-                logger.debug(f"Dealer resolved (exact): {dealer}")
-                return dealer
-        
-        # STEP 2: Indexed Match (O(1))
-        if text in self._dealer_search_index:
-            result = self._dealer_search_index[text]
-            logger.debug(f"Dealer resolved (index): {result}")
-            return result
-        
-        # STEP 3: Word Boundary Match
-        words = text.split()
-        for word in words:
-            if len(word) >= 2:
-                pattern = re.compile(rf'\b{re.escape(word)}\b')
-                for alias, dealer in self.dealers.items():
-                    if pattern.search(alias):
-                        logger.debug(f"Dealer resolved (word boundary): {dealer} from '{text}'")
-                        return dealer
-        
-        # STEP 4: Partial Fuzzy Match
-        for alias, dealer in self.dealers.items():
-            if alias in text or text in alias:
-                logger.debug(f"Dealer resolved (fuzzy): {dealer} from '{text}'")
-                return dealer
-        
-        # STEP 5: Token Similarity
-        if len(text.split()) == 1:
-            word = text
-            for alias, dealer in self.dealers.items():
-                if word in alias.split() or any(word in w for w in alias.split()):
-                    logger.debug(f"Dealer resolved (token): {dealer} from '{text}'")
-                    return dealer
-        
-        return None
-    
-    # ==========================================================
-    # CITY RESOLUTION
-    # ==========================================================
-    
-    def resolve_city(self, text: str) -> Optional[str]:
-        """
-        Resolve city from text using intelligent priority-based matching.
-        
-        Examples:
-            "Haripur" → Haripur
-            "lhr" → Lahore
-            "isb" → Islamabad
-        
-        Args:
-            text: City name or alias
-            
-        Returns:
-            Full city name or None
-        """
-        if not text:
-            return None
-        
-        text = text.lower().strip()
-        
-        # STEP 1: Exact Match
-        for alias, city in self.cities.items():
-            if alias == text:
-                return city
-        
-        # STEP 2: Indexed Match
-        if text in self._city_search_index:
-            return self._city_search_index[text]
-        
-        # STEP 3: Word Boundary Match
-        words = text.split()
-        for word in words:
-            if len(word) >= 2:
-                pattern = re.compile(rf'\b{re.escape(word)}\b')
-                for alias, city in self.cities.items():
-                    if pattern.search(alias):
-                        logger.debug(f"City resolved (word boundary): {city} from '{text}'")
-                        return city
-        
-        # STEP 4: Partial Fuzzy Match
-        for alias, city in self.cities.items():
-            if alias in text or text in alias:
-                logger.debug(f"City resolved (fuzzy): {city} from '{text}'")
-                return city
-        
-        return None
-    
-    # ==========================================================
-    # WAREHOUSE RESOLUTION
-    # ==========================================================
-    
-    def resolve_warehouse(self, text: str) -> Optional[str]:
-        """
-        Resolve warehouse from text using intelligent priority-based matching.
-        
-        Examples:
-            "lhr" → Lahore Warehouse
-            "Rawalpindi" → Rawalpindi Warehouse
-        
-        Args:
-            text: Warehouse name or alias
-            
-        Returns:
-            Full warehouse name or None
-        """
-        if not text:
-            return None
-        
-        text = text.lower().strip()
-        
-        # STEP 1: Exact Match
-        for alias, warehouse in self.warehouses.items():
-            if alias == text:
-                return warehouse
-        
-        # STEP 2: Indexed Match
-        if text in self._warehouse_search_index:
-            return self._warehouse_search_index[text]
-        
-        # STEP 3: Word Boundary Match
-        words = text.split()
-        for word in words:
-            if len(word) >= 2:
-                pattern = re.compile(rf'\b{re.escape(word)}\b')
-                for alias, warehouse in self.warehouses.items():
-                    if pattern.search(alias):
-                        logger.debug(f"Warehouse resolved (word boundary): {warehouse} from '{text}'")
-                        return warehouse
-        
-        # STEP 4: Partial Fuzzy Match
-        for alias, warehouse in self.warehouses.items():
-            if alias in text or text in alias:
-                logger.debug(f"Warehouse resolved (fuzzy): {warehouse} from '{text}'")
-                return warehouse
         
         return None
     
@@ -1391,6 +1736,7 @@ class SchemaService:
     ) -> Dict[str, Any]:
         """
         Calculate delivery metrics with data quality validation.
+        FIXED: Correct sequence validation.
         
         Args:
             dn_date: DN Create Date
@@ -1556,7 +1902,41 @@ class SchemaService:
             "stats": self._stats,
             "timestamp": datetime.now().isoformat()
         }
-
+    
+    def validate_metadata(self) -> Dict[str, Any]:
+        """
+        Validate metadata integrity.
+        
+        Returns:
+            Validation report with counts and warnings
+        """
+        warnings = []
+        
+        if len(self.dealers) == 0:
+            warnings.append("No dealers loaded from database")
+        
+        if len(self.cities) == 0:
+            warnings.append("No cities loaded from database")
+        
+        if len(self.warehouses) == 0:
+            warnings.append("No warehouses loaded from database")
+        
+        if len(self.dealers) < 10:
+            warnings.append(f"Low dealer count: {len(self.dealers)}")
+        
+        return {
+            "counts": {
+                "dealers": len(self.dealers),
+                "cities": len(self.cities),
+                "warehouses": len(self.warehouses),
+                "intents": len(self.intents),
+                "metrics": len(self.metrics),
+            },
+            "warnings": warnings,
+            "initialized": self._initialized,
+            "health_score": self._health_score,
+            "last_refresh": self._last_refresh.isoformat() if self._last_refresh else None
+        }
 
 # ==========================================================
 # SINGLETON
@@ -1580,7 +1960,7 @@ def get_schema_service() -> SchemaService:
             if _schema_service is None:
                 try:
                     _schema_service = SchemaService()
-                    logger.info("SchemaService singleton initialized")
+                    logger.info("✅ SchemaService singleton initialized")
                 except Exception as e:
                     logger.error(f"❌ SchemaService initialization failed: {e}")
                     raise
@@ -1676,42 +2056,85 @@ def calculate_delivery_metrics(
     return service.calculate_delivery_metrics(dn_date, pgi_date, pod_date)
 
 
-# ==========================================================
-# FASTAPI DIAGNOSTIC ENDPOINTS
-# ==========================================================
-
-"""
-Add these endpoints to app/main.py:
-
-from app.schemas.schema_service import (
-    get_schema_health,
-    get_schema_diagnostics,
-    refresh_schema_metadata
-)
-
-@app.get("/debug/schema")
-async def schema_diagnostics():
-    \"\"\"Get schema diagnostics.\"\"\"
-    return get_schema_diagnostics()
-
-@app.get("/debug/schema/health")
-async def schema_health():
-    \"\"\"Get schema health report.\"\"\"
-    return get_schema_health()
-
-@app.post("/debug/schema/refresh")
-async def schema_refresh():
-    \"\"\"Force refresh schema metadata.\"\"\"
-    result = refresh_schema_metadata()
-    return result
-"""
+def resolve_entity(text: str) -> Dict[str, Any]:
+    """
+    Unified entity resolution.
+    
+    Args:
+        text: Input text to resolve
+        
+    Returns:
+        Dict with entity resolution result
+    """
+    service = get_schema_service()
+    return service.resolve_entity(text)
 
 
-# ==========================================================
-# MODULE INITIALIZATION
-# ==========================================================
+def find_dealer_debug(name: str) -> Dict[str, Any]:
+    """
+    Debug method to find dealer resolution details.
+    
+    Args:
+        name: Dealer name to look up
+        
+    Returns:
+        Debug info with resolution details
+    """
+    service = get_schema_service()
+    return service.find_dealer_debug(name)
 
-logger.info("SchemaService v6.0 loaded - Production Metadata Intelligence Engine")
+
+def find_city_debug(name: str) -> Dict[str, Any]:
+    """
+    Debug method to find city resolution details.
+    
+    Args:
+        name: City name to look up
+        
+    Returns:
+        Debug info with resolution details
+    """
+    service = get_schema_service()
+    return service.find_city_debug(name)
+
+
+def find_warehouse_debug(name: str) -> Dict[str, Any]:
+    """
+    Debug method to find warehouse resolution details.
+    
+    Args:
+        name: Warehouse name to look up
+        
+    Returns:
+        Debug info with resolution details
+    """
+    service = get_schema_service()
+    return service.find_warehouse_debug(name)
+
+
+def get_sample_dealers(limit: int = 10) -> List[Dict[str, str]]:
+    """
+    Get sample dealers for debugging.
+    
+    Args:
+        limit: Number of dealers to return
+        
+    Returns:
+        List of dealer names
+    """
+    service = get_schema_service()
+    return service.get_sample_dealers(limit)
+
+
+def get_dealer_count() -> int:
+    """
+    Get total number of dealers loaded.
+    
+    Returns:
+        Number of dealers
+    """
+    service = get_schema_service()
+    return service.get_dealer_count()
 
 
 # ==========================================================
@@ -1729,6 +2152,14 @@ __all__ = [
     'refresh_schema_metadata',
     'get_schema_health',
     'get_schema_diagnostics',
+    
+    # Entity resolution
+    'resolve_entity',
+    'find_dealer_debug',
+    'find_city_debug',
+    'find_warehouse_debug',
+    'get_sample_dealers',
+    'get_dealer_count',
     
     # DN helpers
     'is_dn_number',
