@@ -1,1326 +1,750 @@
 # ==========================================================
-# FILE: app/services/ai_provider_service.py (v12.2 - FIXED IMPORTS)
+# FILE: app/services/ai_query_service.py (v7.0 - ENTITY-FIRST ROUTING)
 # ==========================================================
-# PURPOSE: Master Orchestrator - FINAL AUTHORITY & GOVERNANCE LAYER
+# PURPOSE: PURE ROUTING ENGINE - Entity-First, Intent-Second
+# ARCHITECTURE: Single Source of Truth for Routing
 #
-# FIXES APPLIED:
-# 1. Removed QueryPlan import (no longer exists)
-# 2. Updated to work with RoutingDecision from ai_query_service
-# 3. Fixed safe attribute extraction
-# 4. Added timeout handling
-# 5. Enhanced error handling
+# ROUTING PRIORITY (ENFORCED):
+# 1. DN Detection (8-12 digits) → analytics
+# 2. Dealer Resolution → analytics
+# 3. City Resolution → analytics
+# 4. Warehouse Resolution → analytics
+# 5. Intent Detection → analytics/kpi/groq
+# 6. Groq (LAST RESORT) → groq
+# 7. Help → help
+#
+# GROQ GOVERNANCE:
+# Groq ONLY when all routing fails
+# Groq NEVER for DN/Dealer/City/Warehouse/Intent
 # ==========================================================
 
+import re
+import threading
 import time
 import uuid
-import hashlib
-import re
-import asyncio
-import concurrent.futures
-from typing import Optional, Callable, Any, Dict, List, Tuple
-from cachetools import TTLCache
+from typing import Optional, Dict, Any, List, Tuple
+from dataclasses import dataclass, field
 from loguru import logger
-from sqlalchemy.orm import Session
-from datetime import datetime
 
-from app.config import config
-from app.database import SessionLocal
 
 # ==========================================================
-# FIXED IMPORTS - QueryPlan replaced with RoutingDecision
+# IMPORT SAFETY
 # ==========================================================
-
-try:
-    from app.services.ai_query_service import AIQueryService, get_ai_query_service
-    # QueryPlan has been replaced with RoutingDecision in the new version
-    logger.debug("✅ AIQueryService imported successfully (using RoutingDecision)")
-except ImportError as e:
-    logger.error(f"❌ Failed to import AIQueryService: {e}")
-    raise
-
-try:
-    from app.services.analytics_service import AnalyticsService, get_analytics_service
-    logger.debug("✅ AnalyticsService imported successfully")
-except ImportError as e:
-    logger.error(f"❌ Failed to import AnalyticsService: {e}")
-    raise
-
-try:
-    from app.services.kpi_service import KPIService, get_kpi_service
-    logger.debug("✅ KPIService imported successfully")
-except ImportError as e:
-    logger.error(f"❌ Failed to import KPIService: {e}")
-    raise
-
-try:
-    from app.services.groq_service import GroqService, get_groq_service
-    logger.debug("✅ GroqService imported successfully")
-except ImportError as e:
-    logger.error(f"❌ Failed to import GroqService: {e}")
-    raise
 
 try:
     from app.schemas.schema_service import get_schema_service, DN_PATTERN
-    logger.debug("✅ SchemaService imported successfully")
+    logger.debug("Successfully imported get_schema_service")
 except ImportError as e:
-    logger.error(f"❌ Failed to import SchemaService: {e}")
+    logger.error(f"Failed to import get_schema_service: {e}")
     raise
 
-try:
-    from app.services.whatsapp_service import get_whatsapp_service
-    logger.debug("✅ WhatsAppService imported successfully")
-except ImportError as e:
-    logger.error(f"❌ Failed to import WhatsAppService: {e}")
-    raise
 
 # ==========================================================
-# LAZY IMPORT FUNCTIONS (Fallback)
+# COMPILED REGEX PATTERNS
 # ==========================================================
 
-def _get_ai_query_service():
-    from app.services.ai_query_service import get_ai_query_service
-    return get_ai_query_service()
+# Dealer Extraction Pattern
+DEALER_PATTERN = re.compile(r'(?:dealer|show|display|get|view|tell me about)\s+([a-z0-9\s&\-\.]+)', re.IGNORECASE)
 
-def _get_analytics_service():
-    from app.services.analytics_service import get_analytics_service
-    return get_analytics_service()
+# Ranking Limit Pattern
+RANKING_LIMIT_PATTERN = re.compile(r'(?:top|bottom)\s+(\d+)', re.IGNORECASE)
 
-def _get_kpi_service():
-    from app.services.kpi_service import get_kpi_service
-    return get_kpi_service()
-
-def _get_groq_service():
-    from app.services.groq_service import get_groq_service
-    return get_groq_service()
-
-def _get_schema_service():
-    from app.schemas.schema_service import get_schema_service, DN_PATTERN
-    return get_schema_service(), DN_PATTERN
-
-def _get_whatsapp_service():
-    from app.services.whatsapp_service import get_whatsapp_service
-    return get_whatsapp_service()
+# Whitespace Normalization
+WHITESPACE_PATTERN = re.compile(r'\s+')
+SPECIAL_CHARS_PATTERN = re.compile(r'[^\w\s\-&.]')
 
 
 # ==========================================================
-# CONFIGURATION
+# ROUTING DECISION CLASS
 # ==========================================================
 
-CACHE_TTL_SECONDS = 300
-CONTEXT_TTL_SECONDS = 1800
-DN_PATTERN = re.compile(r'\b(\d{8,12})\b')
-
-
-# ==========================================================
-# GROQ PROTECTION - COMPREHENSIVE BLOCK LIST
-# ==========================================================
-
-GROQ_BLOCKED_PATTERNS = {
-    'dealer', 'customer', 'sold to', 'buyer', 'traders', 'electronics',
-    'enterprises', 'industries', 'corporation', 'group', 'sons',
-    'delivery', 'pgi', 'pod', 'dn', 'warehouse', 'ship to',
-    'dispatch', 'transit', 'delivered', 'pending', 'order',
-    'revenue', 'sales', 'units', 'quantity', 'aging', 'performance',
-    'kpi', 'rate', 'completion', 'efficiency', 'metrics', 'target',
-    'root cause', 'improvement', 'bottleneck', 'insight', 'executive',
-    'critical', 'urgent', 'priority', 'alert', 'issue', 'problem',
-    'key issue', 'bring improvement', 'why delayed', 'what is the key',
-    'top', 'bottom', 'best', 'worst', 'compare', 'vs', 'versus',
-    'highest', 'lowest', 'ranking', 'rank',
-    'today', 'yesterday', 'week', 'month', 'year', 'trend', 'historical',
-    'show', 'display', 'get', 'view', 'list', 'fetch', 'find', 'tell',
-}
-
-
-# ==========================================================
-# CONVERSATION CONTEXT
-# ==========================================================
-
-class ConversationContext:
-    def __init__(self, phone_number: str):
-        self.phone_number = phone_number
-        self.last_intent: Optional[str] = None
-        self.last_entity: Optional[str] = None
-        self.last_dealer: Optional[str] = None
-        self.last_warehouse: Optional[str] = None
-        self.last_city: Optional[str] = None
-        self.last_dn: Optional[str] = None
-        self.last_question: Optional[str] = None
-        self.last_response: Optional[str] = None
-        self.message_count: int = 0
-        self.created_at: float = time.time()
-        self.last_updated: float = time.time()
+@dataclass
+class RoutingDecision:
+    """
+    Standardized routing decision output.
+    
+    This is the SINGLE SOURCE OF TRUTH for all routing decisions.
+    """
+    intent: str
+    entity: Optional[str] = None
+    entity_type: Optional[str] = None
+    service: str = "analytics"
+    confidence: float = 0.0
+    needs_groq: bool = False
+    reason: str = ""
+    original_message: str = ""
+    
+    # Diagnostic fields
+    detected_dn: Optional[str] = None
+    detected_dealer: Optional[str] = None
+    detected_city: Optional[str] = None
+    detected_warehouse: Optional[str] = None
+    detected_intent: Optional[str] = None
+    routing_path: str = ""
     
     def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
         return {
-            "last_dealer": self.last_dealer,
-            "last_warehouse": self.last_warehouse,
-            "last_city": self.last_city,
-            "last_dn": self.last_dn,
-            "last_intent": self.last_intent,
-            "phone_number": self.phone_number,
-            "last_question": self.last_question
+            "intent": self.intent,
+            "entity": self.entity,
+            "entity_type": self.entity_type,
+            "service": self.service,
+            "confidence": self.confidence,
+            "needs_groq": self.needs_groq,
+            "reason": self.reason,
+            "original_message": self.original_message,
+            "detected_dn": self.detected_dn,
+            "detected_dealer": self.detected_dealer,
+            "detected_city": self.detected_city,
+            "detected_warehouse": self.detected_warehouse,
+            "detected_intent": self.detected_intent,
+            "routing_path": self.routing_path
         }
+    
+    def __repr__(self) -> str:
+        return (f"RoutingDecision(intent={self.intent}, entity={self.entity}, "
+                f"service={self.service}, confidence={self.confidence:.2f}, "
+                f"path={self.routing_path})")
 
 
 # ==========================================================
-# MASTER ORCHESTRATOR
+# AI QUERY SERVICE - ENTITY-FIRST ROUTING ENGINE
 # ==========================================================
 
-class AIOrchestrator:
+class AIQueryService:
     """
-    MASTER ORCHESTRATOR - FINAL AUTHORITY & GOVERNANCE LAYER
+    ENTITY-FIRST ROUTING ENGINE - Single Source of Truth for Routing
+    
+    ROUTING PRIORITY (ENFORCED):
+    1. DN Detection (8-12 digits) → analytics
+    2. Dealer Resolution → analytics
+    3. City Resolution → analytics
+    4. Warehouse Resolution → analytics
+    5. Intent Detection → analytics/kpi/groq
+    6. Groq (LAST RESORT) → groq
+    7. Help → help
+    
+    GROQ GOVERNANCE:
+    - Groq ONLY when all routing fails
+    - Groq NEVER for DN/Dealer/City/Warehouse/Intent
+    - Help menu ONLY for explicit help queries
+    
+    This service ONLY does routing. It does NOT:
+    - Execute database queries
+    - Calculate analytics
+    - Call Groq directly
+    - Format responses
+    - Send WhatsApp messages
     """
     
     def __init__(self):
-        self._query_service = None
-        self._analytics = None
-        self._kpi = None
-        self._groq = None
-        self._schema = None
-        self._whatsapp = None
-        self._dn_pattern = DN_PATTERN
+        """Initialize AIQueryService with SchemaService."""
+        start_time = time.time()
         
-        self.response_cache = TTLCache(maxsize=500, ttl=CACHE_TTL_SECONDS)
-        self.conversation_cache: Dict[str, ConversationContext] = {}
+        try:
+            logger.info("Loading SchemaService for AIQueryService...")
+            self.schema = get_schema_service()
+            logger.info("SchemaService loaded successfully")
+            
+            # Cache for performance
+            self._logistics_keywords_cache = self.schema.logistics_keywords
+            logger.debug(f"Cached {len(self._logistics_keywords_cache)} logistics keywords")
+            
+            # Routing statistics
+            self._routing_stats = {
+                "dn_lookups": 0,
+                "dealer_resolutions": 0,
+                "city_resolutions": 0,
+                "warehouse_resolutions": 0,
+                "intent_detections": 0,
+                "groq_fallbacks": 0,
+                "help_requests": 0
+            }
+            
+            init_duration = (time.time() - start_time) * 1000
+            logger.info(f"AIQueryService initialized in {init_duration:.2f}ms")
+            logger.info("=" * 60)
+            logger.info("ROUTING PRIORITY (ENFORCED):")
+            logger.info("  1️⃣ DN Lookup → analytics")
+            logger.info("  2️⃣ Dealer Resolution → analytics")
+            logger.info("  3️⃣ City Resolution → analytics")
+            logger.info("  4️⃣ Warehouse Resolution → analytics")
+            logger.info("  5️⃣ Intent Detection → analytics/kpi/groq")
+            logger.info("  6️⃣ Groq (LAST RESORT) → groq")
+            logger.info("  7️⃣ Help → help")
+            logger.info("=" * 60)
+            logger.info("GROQ GOVERNANCE:")
+            logger.info("  ✅ Groq ONLY when all routing fails")
+            logger.info("  ✅ Groq NEVER for DN/Dealer/City/Warehouse/Intent")
+            logger.info("=" * 60)
+            
+        except Exception as e:
+            logger.exception(f"Failed to initialize AIQueryService: {str(e)}")
+            raise RuntimeError(f"AIQueryService initialization failed: {str(e)}") from e
+    
+    # ==========================================================
+    # MAIN ROUTING METHOD
+    # ==========================================================
+    
+    async def process_query(self, question: Optional[str], context: Optional[Dict] = None) -> RoutingDecision:
+        """
+        Process query and return routing decision.
         
-        self.metrics = {
-            "total_requests": 0,
-            "cache_hits": 0,
-            "cache_misses": 0,
-            "dn_lookups": 0,
-            "dealer_queries": 0,
-            "city_queries": 0,
-            "warehouse_queries": 0,
-            "kpi_queries": 0,
-            "executive_queries": 0,
-            "groq_uses": 0,
-            "analytics_success": 0,
-            "analytics_failure": 0,
-            "routing_overrides": 0,
-            "timeouts": 0,
-            "errors": 0
+        ROUTING PRIORITY (ENFORCED):
+        1. DN Detection (8-12 digits) → analytics
+        2. Dealer Resolution → analytics
+        3. City Resolution → analytics
+        4. Warehouse Resolution → analytics
+        5. Intent Detection → analytics/kpi/groq
+        6. Groq (LAST RESORT) → groq
+        7. Help → help
+        
+        Args:
+            question: User's query text
+            context: Optional context dictionary
+            
+        Returns:
+            RoutingDecision: Standardized routing decision
+        """
+        query_id = str(uuid.uuid4())[:8]
+        start_time = time.time()
+        
+        # Input validation
+        if not question or not question.strip():
+            return RoutingDecision(
+                intent="help",
+                service="help",
+                confidence=0.0,
+                reason="Empty query",
+                original_message=question or "",
+                routing_path="empty_query"
+            )
+        
+        cleaned_question = question.strip()
+        normalized = self._normalize(cleaned_question)
+        
+        logger.info(f"Query {query_id}: Processing: '{cleaned_question[:100]}'")
+        
+        # ==========================================================
+        # ROUTING DIAGNOSTICS - Track all detection attempts
+        # ==========================================================
+        
+        detected_dn = None
+        detected_dealer = None
+        detected_city = None
+        detected_warehouse = None
+        detected_intent = None
+        routing_path = ""
+        
+        # ==========================================================
+        # PRIORITY 1: DN DETECTION (Highest Priority)
+        # ==========================================================
+        
+        dn_match = DN_PATTERN.search(cleaned_question)
+        if dn_match:
+            dn_number = dn_match.group(1)
+            detected_dn = dn_number
+            routing_path = "dn_lookup"
+            self._routing_stats["dn_lookups"] += 1
+            
+            logger.info(f"Query {query_id}: ✅ DN Detected: {dn_number} → dn_lookup (analytics)")
+            
+            return RoutingDecision(
+                intent="dn_lookup",
+                entity=dn_number,
+                entity_type="dn",
+                service="analytics",
+                confidence=1.0,
+                needs_groq=False,
+                reason=f"DN number detected: {dn_number}",
+                original_message=cleaned_question,
+                detected_dn=dn_number,
+                routing_path=routing_path
+            )
+        
+        # ==========================================================
+        # PRIORITY 2: DEALER RESOLUTION
+        # ==========================================================
+        
+        dealer_result = self._detect_dealer(cleaned_question, normalized, context)
+        if dealer_result:
+            dealer_name = dealer_result
+            detected_dealer = dealer_name
+            routing_path = "dealer_resolution"
+            self._routing_stats["dealer_resolutions"] += 1
+            intent = self._determine_dealer_intent(normalized)
+            
+            logger.info(f"Query {query_id}: ✅ Dealer Detected: '{dealer_name}' → {intent} (analytics)")
+            
+            return RoutingDecision(
+                intent=intent,
+                entity=dealer_name,
+                entity_type="dealer",
+                service="analytics",
+                confidence=0.95,
+                needs_groq=False,
+                reason=f"Dealer resolved: {dealer_name}",
+                original_message=cleaned_question,
+                detected_dealer=dealer_name,
+                routing_path=routing_path
+            )
+        
+        # ==========================================================
+        # PRIORITY 3: CITY RESOLUTION
+        # ==========================================================
+        
+        city_result = self._detect_city(cleaned_question, normalized)
+        if city_result:
+            city_name = city_result
+            detected_city = city_name
+            routing_path = "city_resolution"
+            self._routing_stats["city_resolutions"] += 1
+            
+            logger.info(f"Query {query_id}: ✅ City Detected: '{city_name}' → city_dashboard (analytics)")
+            
+            return RoutingDecision(
+                intent="city_dashboard",
+                entity=city_name,
+                entity_type="city",
+                service="analytics",
+                confidence=0.95,
+                needs_groq=False,
+                reason=f"City resolved: {city_name}",
+                original_message=cleaned_question,
+                detected_city=city_name,
+                routing_path=routing_path
+            )
+        
+        # ==========================================================
+        # PRIORITY 4: WAREHOUSE RESOLUTION
+        # ==========================================================
+        
+        warehouse_result = self._detect_warehouse(cleaned_question, normalized)
+        if warehouse_result:
+            warehouse_name = warehouse_result
+            detected_warehouse = warehouse_name
+            routing_path = "warehouse_resolution"
+            self._routing_stats["warehouse_resolutions"] += 1
+            
+            logger.info(f"Query {query_id}: ✅ Warehouse Detected: '{warehouse_name}' → warehouse_dashboard (analytics)")
+            
+            return RoutingDecision(
+                intent="warehouse_dashboard",
+                entity=warehouse_name,
+                entity_type="warehouse",
+                service="analytics",
+                confidence=0.95,
+                needs_groq=False,
+                reason=f"Warehouse resolved: {warehouse_name}",
+                original_message=cleaned_question,
+                detected_warehouse=warehouse_name,
+                routing_path=routing_path
+            )
+        
+        # ==========================================================
+        # PRIORITY 5: INTENT DETECTION
+        # ==========================================================
+        
+        intent_result = self._detect_intent(normalized, cleaned_question)
+        if intent_result:
+            intent, confidence, needs_groq = intent_result
+            detected_intent = intent
+            routing_path = "intent_detection"
+            self._routing_stats["intent_detections"] += 1
+            
+            # Determine service based on intent
+            service = self._determine_service_for_intent(intent)
+            
+            logger.info(f"Query {query_id}: 🎯 Intent Detected: {intent} (confidence={confidence:.2f}, service={service})")
+            
+            return RoutingDecision(
+                intent=intent,
+                entity=None,
+                entity_type=None,
+                service=service,
+                confidence=confidence,
+                needs_groq=needs_groq,
+                reason=f"Intent detected: {intent}",
+                original_message=cleaned_question,
+                detected_intent=intent,
+                routing_path=routing_path
+            )
+        
+        # ==========================================================
+        # PRIORITY 6: HELP DETECTION (Explicit Help)
+        # ==========================================================
+        
+        if self._is_help_query(normalized):
+            routing_path = "help"
+            self._routing_stats["help_requests"] += 1
+            
+            logger.info(f"Query {query_id}: ❓ Help Detected → help")
+            
+            return RoutingDecision(
+                intent="help",
+                entity=None,
+                entity_type=None,
+                service="help",
+                confidence=0.95,
+                needs_groq=True,
+                reason="Help request",
+                original_message=cleaned_question,
+                routing_path=routing_path
+            )
+        
+        # ==========================================================
+        # PRIORITY 7: GROQ (LAST RESORT)
+        # ==========================================================
+        
+        routing_path = "groq_fallback"
+        self._routing_stats["groq_fallbacks"] += 1
+        
+        logger.info(f"Query {query_id}: 🤖 Groq Fallback → general_ai (groq)")
+        
+        return RoutingDecision(
+            intent="general_ai",
+            entity=None,
+            entity_type=None,
+            service="groq",
+            confidence=0.30,
+            needs_groq=True,
+            reason="No specific pattern matched - using Groq",
+            original_message=cleaned_question,
+            routing_path=routing_path
+        )
+    
+    # ==========================================================
+    # DETECTION METHODS
+    # ==========================================================
+    
+    def _detect_dealer(self, original: str, normalized: str, context: Optional[Dict]) -> Optional[str]:
+        """
+        Detect dealer from query with multiple strategies.
+        
+        Strategies:
+        1. Direct SchemaService resolution
+        2. Pattern-based extraction
+        3. Word combinations
+        4. Single word matching
+        5. Context-based
+        """
+        logger.debug(f"Detecting dealer in: '{original}'")
+        
+        # Strategy 1: Direct resolution
+        dealer = self.schema.resolve_dealer(original)
+        if dealer:
+            logger.debug(f"✅ Dealer via direct resolution: {dealer}")
+            return dealer
+        
+        dealer = self.schema.resolve_dealer(normalized)
+        if dealer:
+            logger.debug(f"✅ Dealer via normalized: {dealer}")
+            return dealer
+        
+        # Strategy 2: Pattern extraction
+        dealer_match = DEALER_PATTERN.search(original)
+        if dealer_match:
+            candidate = dealer_match.group(1).strip()
+            resolved = self.schema.resolve_dealer(candidate)
+            if resolved:
+                logger.debug(f"✅ Dealer via pattern '{candidate}': {resolved}")
+                return resolved
+        
+        # Strategy 3: Word combinations
+        words = normalized.split()
+        if len(words) >= 2:
+            for i in range(len(words) - 1):
+                for j in range(i + 1, min(i + 4, len(words) + 1)):
+                    candidate = ' '.join(words[i:j])
+                    if len(candidate) >= 4:
+                        resolved = self.schema.resolve_dealer(candidate)
+                        if resolved:
+                            logger.debug(f"✅ Dealer via word combo '{candidate}': {resolved}")
+                            return resolved
+        
+        # Strategy 4: Single words
+        for word in words:
+            if len(word) >= 3:
+                resolved = self.schema.resolve_dealer(word)
+                if resolved:
+                    logger.debug(f"✅ Dealer via word '{word}': {resolved}")
+                    return resolved
+        
+        # Strategy 5: Context
+        if context and context.get('last_dealer'):
+            follow_up = ['revenue', 'units', 'performance', 'aging', 'pending', 'pod', 'pgi']
+            if any(kw in normalized for kw in follow_up):
+                logger.debug(f"✅ Dealer via context: {context['last_dealer']}")
+                return context['last_dealer']
+        
+        logger.debug("❌ No dealer detected")
+        return None
+    
+    def _detect_city(self, original: str, normalized: str) -> Optional[str]:
+        """Detect city from query."""
+        logger.debug(f"Detecting city in: '{original}'")
+        
+        # Direct resolution
+        city = self.schema.resolve_city(original)
+        if city:
+            logger.debug(f"✅ City via direct: {city}")
+            return city
+        
+        city = self.schema.resolve_city(normalized)
+        if city:
+            logger.debug(f"✅ City via normalized: {city}")
+            return city
+        
+        # Word matching
+        words = normalized.split()
+        for word in words:
+            if len(word) >= 2:
+                resolved = self.schema.resolve_city(word)
+                if resolved:
+                    logger.debug(f"✅ City via word '{word}': {resolved}")
+                    return resolved
+        
+        logger.debug("❌ No city detected")
+        return None
+    
+    def _detect_warehouse(self, original: str, normalized: str) -> Optional[str]:
+        """Detect warehouse from query."""
+        logger.debug(f"Detecting warehouse in: '{original}'")
+        
+        # Direct resolution
+        warehouse = self.schema.resolve_warehouse(original)
+        if warehouse:
+            logger.debug(f"✅ Warehouse via direct: {warehouse}")
+            return warehouse
+        
+        warehouse = self.schema.resolve_warehouse(normalized)
+        if warehouse:
+            logger.debug(f"✅ Warehouse via normalized: {warehouse}")
+            return warehouse
+        
+        # Word matching
+        words = normalized.split()
+        for word in words:
+            if len(word) >= 2:
+                resolved = self.schema.resolve_warehouse(word)
+                if resolved:
+                    logger.debug(f"✅ Warehouse via word '{word}': {resolved}")
+                    return resolved
+        
+        logger.debug("❌ No warehouse detected")
+        return None
+    
+    def _detect_intent(self, normalized: str, original: str) -> Optional[Tuple[str, float, bool]]:
+        """
+        Detect intent from query.
+        
+        Returns:
+            Tuple of (intent, confidence, needs_groq)
+        """
+        logger.debug(f"Detecting intent in: '{normalized}'")
+        
+        # ==========================================================
+        # KPI INTENTS
+        # ==========================================================
+        
+        kpi_patterns = {
+            'pending_pgi': ['pending pgi', 'pgi pending', 'open pgi', 'pgi not done'],
+            'pending_pod': ['pending pod', 'pod pending', 'open pod', 'pod not done'],
+            'pgi_aging': ['pgi aging', 'aging pgi', 'pgi delay', 'pgi overdue'],
+            'pod_aging': ['pod aging', 'aging pod', 'pod delay', 'pod overdue'],
+            'delivery_aging': ['delivery aging', 'aging delivery', 'delivery delay']
         }
         
-        logger.info("=" * 70)
-        logger.info("AI Orchestrator v12.2 - Fixed Imports")
-        logger.info("=" * 70)
-        logger.info("")
-        logger.info("   FIXES APPLIED:")
-        logger.info("   ✅ Removed QueryPlan import (no longer exists)")
-        logger.info("   ✅ Updated to work with RoutingDecision")
-        logger.info("   ✅ Safe attribute extraction")
-        logger.info("   ✅ Timeout handling (30 seconds)")
-        logger.info("   ✅ Enhanced error handling")
-        logger.info("")
-        logger.info("   STATUS: ✅ PRODUCTION READY")
-        logger.info("=" * 70)
-    
-    # ==========================================================
-    # LAZY PROPERTIES
-    # ==========================================================
-    
-    @property
-    def query_service(self):
-        if self._query_service is None:
-            self._query_service = _get_ai_query_service()
-        return self._query_service
-    
-    @property
-    def analytics(self):
-        if self._analytics is None:
-            self._analytics = _get_analytics_service()
-        return self._analytics
-    
-    @property
-    def kpi(self):
-        if self._kpi is None:
-            self._kpi = _get_kpi_service()
-        return self._kpi
-    
-    @property
-    def groq(self):
-        if self._groq is None:
-            self._groq = _get_groq_service()
-        return self._groq
-    
-    @property
-    def schema(self):
-        if self._schema is None:
-            self._schema, _ = _get_schema_service()
-        return self._schema
-    
-    @property
-    def whatsapp(self):
-        if self._whatsapp is None:
-            self._whatsapp = _get_whatsapp_service()
-        return self._whatsapp
-    
-    # ==========================================================
-    # MAIN ENTRY POINT (PRESERVED SIGNATURE)
-    # ==========================================================
-    
-    def process_whatsapp_query(
-        self,
-        question: str,
-        session_factory: Optional[Callable[[], Session]] = None,
-        phone_number: Optional[str] = None,
-        user_id: Optional[str] = None,
-        request_id: Optional[str] = None
-    ) -> str:
-        """Process query with timeout and error handling."""
-        start_time = time.time()
-        req_id = request_id or str(uuid.uuid4())[:8]
+        for intent, patterns in kpi_patterns.items():
+            for pattern in patterns:
+                if pattern in normalized:
+                    logger.debug(f"✅ KPI intent: {intent}")
+                    return (intent, 0.95, False)
         
-        self.metrics["total_requests"] += 1
+        # ==========================================================
+        # RANKING INTENTS
+        # ==========================================================
         
-        logger.bind(
-            request_id=req_id,
-            phone=phone_number[:4] + "****" if phone_number else None
-        ).info(f"📥 Processing: {question[:100]}")
+        if 'top dealer' in normalized or 'top dealers' in normalized:
+            if 'revenue' in normalized or 'sales' in normalized:
+                return ("top_dealers_revenue", 0.90, False)
+            if 'unit' in normalized or 'quantity' in normalized:
+                return ("top_dealers_units", 0.90, False)
+            return ("top_dealers", 0.85, False)
         
-        try:
-            # Run with timeout in a separate thread
-            try:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                    future = executor.submit(
-                        self._process_sync,
-                        question,
-                        phone_number,
-                        req_id
-                    )
-                    # 30 second timeout
-                    response = future.result(timeout=30)
-                    
-                    duration_ms = int((time.time() - start_time) * 1000)
-                    logger.bind(request_id=req_id).info(
-                        f"✅ Done: {duration_ms}ms | Response length: {len(response)}"
-                    )
-                    return response
-                    
-            except concurrent.futures.TimeoutError:
-                self.metrics["timeouts"] += 1
-                logger.error(f"[{req_id}] Request timed out after 30 seconds")
-                return (
-                    f"⏳ *Request Timed Out*\n\n"
-                    f"Your query is taking too long to process.\n"
-                    f"Please try again or simplify your question.\n\n"
-                    f"Reference: `{req_id}`"
-                )
-                
-        except Exception as e:
-            self.metrics["errors"] += 1
-            error_id = str(uuid.uuid4())[:8]
-            logger.exception(f"[{req_id}] FATAL ERROR [{error_id}]: {e}")
-            return self._get_error_response(question, e, error_id, req_id)
+        if 'bottom dealer' in normalized or 'worst dealer' in normalized:
+            return ("bottom_dealers", 0.85, False)
+        
+        if 'top city' in normalized or 'best city' in normalized:
+            return ("top_cities", 0.85, False)
+        
+        if 'top warehouse' in normalized or 'best warehouse' in normalized:
+            return ("top_warehouses", 0.85, False)
+        
+        # ==========================================================
+        # EXECUTIVE INTENTS
+        # ==========================================================
+        
+        executive_patterns = {
+            'executive_insight': ['executive insight', 'executive summary', 'management report'],
+            'root_cause': ['root cause', 'why delayed', 'why aging', 'what is the issue'],
+            'control_tower': ['control tower', 'critical alert', 'critical delivery'],
+            'delivery_performance': ['delivery performance', 'delivery kpi', 'delivery rate']
+        }
+        
+        for intent, patterns in executive_patterns.items():
+            for pattern in patterns:
+                if pattern in normalized:
+                    logger.debug(f"✅ Executive intent: {intent}")
+                    return (intent, 0.90, True)  # needs_groq=True for enrichment
+        
+        # ==========================================================
+        # COMPARISON & TREND
+        # ==========================================================
+        
+        if 'compare' in normalized or 'vs' in normalized or 'versus' in normalized:
+            return ("comparison", 0.80, True)
+        
+        if 'trend' in normalized or 'over time' in normalized or 'historical' in normalized:
+            return ("trend", 0.80, True)
+        
+        # ==========================================================
+        # HELPER INTENT
+        # ==========================================================
+        
+        if 'help' in normalized or 'menu' in normalized or 'commands' in normalized:
+            return ("help", 0.95, True)
+        
+        logger.debug("❌ No intent detected")
+        return None
+    
+    def _determine_dealer_intent(self, normalized: str) -> str:
+        """Determine dealer intent based on query."""
+        if 'dns' in normalized or 'orders' in normalized:
+            return "dealer_dns"
+        if 'revenue' in normalized or 'sales' in normalized:
+            return "dealer_revenue"
+        if 'units' in normalized or 'quantity' in normalized:
+            return "dealer_units"
+        if 'performance' in normalized or 'kpi' in normalized:
+            return "dealer_performance"
+        if 'aging' in normalized or 'delay' in normalized or 'pending' in normalized:
+            return "dealer_aging"
+        return "dealer_dashboard"
+    
+    def _determine_service_for_intent(self, intent: str) -> str:
+        """Determine service based on intent."""
+        kpi_intents = ['pending_pgi', 'pending_pod', 'pgi_aging', 'pod_aging', 'delivery_aging']
+        groq_intents = ['executive_insight', 'root_cause', 'control_tower', 'comparison', 'trend']
+        
+        if intent in kpi_intents:
+            return "kpi"
+        if intent in groq_intents:
+            return "groq"
+        return "analytics"
+    
+    def _is_help_query(self, normalized: str) -> bool:
+        """Check if query is a help request."""
+        patterns = ['help', 'menu', 'commands', 'what can you do', 'available commands']
+        return any(pattern in normalized for pattern in patterns)
+    
+    def _normalize(self, text: str) -> str:
+        """Normalize text for processing."""
+        if not text:
+            return ""
+        
+        normalized = text.lower()
+        normalized = WHITESPACE_PATTERN.sub(' ', normalized)
+        normalized = SPECIAL_CHARS_PATTERN.sub('', normalized)
+        return normalized.strip()
     
     # ==========================================================
-    # SYNC PROCESSING (Runs in ThreadPool)
+    # DIAGNOSTIC METHODS
     # ==========================================================
     
-    def _process_sync(self, question: str, phone_number: Optional[str], req_id: str) -> str:
-        """Synchronous processing method."""
-        try:
-            # Load context
-            context = self._load_context(phone_number)
-            context_dict = context.to_dict() if context else {}
-            
-            # Check cache
-            cached_response = self._get_cached_response(question, phone_number)
-            if cached_response:
-                self.metrics["cache_hits"] += 1
-                return cached_response
-            
-            self.metrics["cache_misses"] += 1
-            
-            # ==========================================================
-            # DN LOOKUP (Highest Priority)
-            # ==========================================================
-            
-            if self._is_dn_query(question):
-                logger.info(f"🔍 DN Lookup: {question}")
-                self.metrics["dn_lookups"] += 1
-                response = self._execute_dn_lookup(question)
-                self._update_context(phone_number, "dn_lookup", "dn", question, req_id)
-                self._cache_response(question, phone_number, response)
-                return response
-            
-            # ==========================================================
-            # ENTITY RESOLUTION
-            # ==========================================================
-            
-            entity_result = self.schema.resolve_entity(question)
-            
-            if entity_result["type"] != "none":
-                entity_type = entity_result["type"]
-                entity_name = entity_result["name"]
-                confidence = entity_result["confidence"]
-                
-                logger.info(
-                    f"📍 Entity Resolved: {entity_type}='{entity_name}' "
-                    f"(confidence: {confidence:.2f})"
-                )
-                
-                if self._is_entity_only_query(question, entity_name):
-                    logger.info(f"⚡ Entity-Only: {entity_type}_dashboard")
-                    self.metrics["routing_overrides"] += 1
-                    response = self._execute_entity_dashboard(entity_type, entity_name)
-                    self._update_context(phone_number, f"{entity_type}_dashboard", entity_type, entity_name, req_id)
-                    self._cache_response(question, phone_number, response)
-                    return response
-            
-            # ==========================================================
-            # INTENT DETECTION (Using RoutingDecision)
-            # ==========================================================
-            
-            routing_decision = self._get_routing_decision(question, context_dict)
-            
-            # Extract from RoutingDecision (safe)
-            intent = getattr(routing_decision, "intent", "help")
-            entity = getattr(routing_decision, "entity", None)
-            entity_type = getattr(routing_decision, "entity_type", None)
-            service = getattr(routing_decision, "service", "help")
-            confidence = getattr(routing_decision, "confidence", 0.0)
-            needs_groq = getattr(routing_decision, "needs_groq", False)
-            reason = getattr(routing_decision, "reason", "")
-            
-            logger.info(
-                f"🎯 ROUTING: intent={intent}, "
-                f"entity={entity}, "
-                f"service={service}"
-            )
-            
-            # Override if needed
-            if entity_result["type"] != "none" and service != "analytics":
-                service = "analytics"
-                intent = f"{entity_result['type']}_dashboard"
-                entity = entity_result["name"]
-                entity_type = entity_result["type"]
-                logger.info(f"⚡ OVERRIDE: {intent}")
-                self.metrics["routing_overrides"] += 1
-            
-            # Execute service
-            response = self._execute_service_by_routing(
-                intent, entity, entity_type, service, context_dict, req_id
-            )
-            
-            # Groq enrichment
-            if needs_groq and service != "groq":
-                response = self._enrich_with_groq(response, intent, question, context_dict)
-            
-            self._update_context(
-                phone_number,
-                intent,
-                entity_type or "none",
-                entity or question,
-                req_id,
-                response
-            )
-            self._cache_response(question, phone_number, response)
-            
-            return response
-            
-        except Exception as e:
-            logger.exception(f"Sync processing error: {e}")
-            raise
-    
-    # ==========================================================
-    # ROUTING DECISION
-    # ==========================================================
-    
-    def _get_routing_decision(self, question: str, context: Dict) -> Any:
-        """Get routing decision from AIQueryService."""
+    def debug_route(self, question: str) -> Dict[str, Any]:
+        """Debug routing decision for a question."""
+        import asyncio
         try:
             loop = asyncio.get_event_loop()
         except RuntimeError:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
         
-        try:
-            if asyncio.iscoroutinefunction(self.query_service.process_query):
-                return loop.run_until_complete(
-                    self.query_service.process_query(question, context)
-                )
-            return self.query_service.process_query(question, context)
-        except Exception as e:
-            logger.error(f"Routing decision failed: {e}")
-            from types import SimpleNamespace
-            return SimpleNamespace(
-                intent="help",
-                entity=None,
-                entity_type=None,
-                service="help",
-                confidence=0.0,
-                needs_groq=False,
-                reason=f"Routing error: {str(e)[:50]}",
-                original_message=question
-            )
-    
-    # ==========================================================
-    # SERVICE EXECUTION
-    # ==========================================================
-    
-    def _execute_service_by_routing(
-        self,
-        intent: str,
-        entity: Optional[str],
-        entity_type: Optional[str],
-        service: str,
-        context: Dict,
-        req_id: str
-    ) -> str:
-        """Execute service based on routing decision."""
-        try:
-            if service == "analytics":
-                return self._execute_analytics(intent, entity)
-            elif service == "kpi":
-                return self._execute_kpi(intent, entity)
-            elif service == "groq":
-                return self._execute_groq(intent, context)
-            else:
-                return self._get_help_message()
-        except Exception as e:
-            self.metrics["analytics_failure"] += 1
-            error_id = str(uuid.uuid4())[:8]
-            logger.error(f"Service execution error [{error_id}]: {e}")
-            return self._get_service_error_response(intent, entity, service, e, error_id)
-    
-    # ==========================================================
-    # DN LOOKUP
-    # ==========================================================
-    
-    def _is_dn_query(self, question: str) -> bool:
-        """Check if query is a DN number (8-12 digits)."""
-        cleaned = question.strip()
-        return bool(self._dn_pattern.fullmatch(cleaned.replace(" ", "")))
-    
-    def _execute_dn_lookup(self, question: str) -> str:
-        """Execute DN lookup with enhanced error handling."""
-        dn_number = question.strip()
+        decision = loop.run_until_complete(self.process_query(question, None))
         
-        try:
-            result = self.analytics.get_dn_analytics(dn_number)
-            self.metrics["analytics_success"] += 1
-            
-            if not result.get("found", False):
-                return f"❌ DN {dn_number} not found in system. Please verify the number and try again."
-            
-            return self._format_dn_details(result)
-            
-        except Exception as e:
-            self.metrics["analytics_failure"] += 1
-            logger.error(f"DN lookup failed for {dn_number}: {e}")
-            return f"❌ Unable to retrieve DN {dn_number}. Please verify the number and try again."
-    
-    # ==========================================================
-    # ENTITY DASHBOARD
-    # ==========================================================
-    
-    def _execute_entity_dashboard(self, entity_type: str, entity_name: str) -> str:
-        """Execute dashboard for entity type with error handling."""
-        try:
-            if entity_type == "dealer":
-                self.metrics["dealer_queries"] += 1
-                result = self.analytics.get_dealer_dashboard(entity_name)
-                if not result or result.get("error"):
-                    return f"🏪 *{entity_name} - No Data Found*\n\n" \
-                           f"⚠️ No delivery data found for this dealer."
-                return self._format_dealer_dashboard(result, entity_name)
-                
-            elif entity_type == "city":
-                self.metrics["city_queries"] += 1
-                result = self.analytics.get_city_dashboard(entity_name)
-                if not result or result.get("error"):
-                    return f"🏙️ *{entity_name} - No Data Found*\n\n" \
-                           f"⚠️ No delivery data found for this city."
-                return self._format_city_dashboard(result, entity_name)
-                
-            elif entity_type == "warehouse":
-                self.metrics["warehouse_queries"] += 1
-                result = self.analytics.get_warehouse_dashboard(entity_name)
-                if not result or result.get("error"):
-                    return f"🏭 *{entity_name} - No Data Found*\n\n" \
-                           f"⚠️ No delivery data found for this warehouse."
-                return self._format_warehouse_dashboard(result, entity_name)
-                
-            else:
-                return f"❌ Unknown entity type: {entity_type}"
-                
-        except Exception as e:
-            self.metrics["analytics_failure"] += 1
-            logger.error(f"Dashboard failed for {entity_name}: {e}")
-            return f"❌ Unable to retrieve dashboard for {entity_name}. Please try again."
-    
-    # ==========================================================
-    # ANALYTICS EXECUTION
-    # ==========================================================
-    
-    def _execute_analytics(self, intent: str, entity: Optional[str]) -> str:
-        """Execute analytics with method validation."""
+        # Return detailed diagnostic
+        result = decision.to_dict()
         
-        # DEALER ANALYTICS
-        if intent == "dealer_dashboard" and entity:
-            if not hasattr(self.analytics, 'get_dealer_dashboard'):
-                return self._get_method_error("get_dealer_dashboard", "AnalyticsService")
-            result = self.analytics.get_dealer_dashboard(entity)
-            return self._format_dealer_dashboard(result, entity)
-        
-        if intent == "dealer_revenue" and entity:
-            if not hasattr(self.analytics, 'get_dealer_revenue'):
-                return self._get_method_error("get_dealer_revenue", "AnalyticsService")
-            result = self.analytics.get_dealer_revenue(entity)
-            return self._format_dealer_revenue(result, entity)
-        
-        if intent == "dealer_units" and entity:
-            if not hasattr(self.analytics, 'get_dealer_units'):
-                return self._get_method_error("get_dealer_units", "AnalyticsService")
-            result = self.analytics.get_dealer_units(entity)
-            return self._format_dealer_units(result, entity)
-        
-        if intent == "dealer_performance" and entity:
-            if not hasattr(self.analytics, 'get_dealer_performance'):
-                return self._get_method_error("get_dealer_performance", "AnalyticsService")
-            result = self.analytics.get_dealer_performance(entity)
-            return self._format_dealer_performance(result, entity)
-        
-        if intent == "dealer_aging" and entity:
-            if not hasattr(self.analytics, 'get_dealer_aging'):
-                return self._get_method_error("get_dealer_aging", "AnalyticsService")
-            result = self.analytics.get_dealer_aging(entity)
-            return self._format_dealer_aging(result, entity)
-        
-        # WAREHOUSE ANALYTICS
-        if intent == "warehouse_dashboard" and entity:
-            if not hasattr(self.analytics, 'get_warehouse_dashboard'):
-                return self._get_method_error("get_warehouse_dashboard", "AnalyticsService")
-            result = self.analytics.get_warehouse_dashboard(entity)
-            return self._format_warehouse_dashboard(result, entity)
-        
-        # CITY ANALYTICS
-        if intent == "city_dashboard" and entity:
-            if not hasattr(self.analytics, 'get_city_dashboard'):
-                return self._get_method_error("get_city_dashboard", "AnalyticsService")
-            result = self.analytics.get_city_dashboard(entity)
-            return self._format_city_dashboard(result, entity)
-        
-        # EXECUTIVE & ROOT CAUSE
-        if intent == "executive_insight":
-            if not hasattr(self.analytics, 'get_executive_summary'):
-                return self._get_method_error("get_executive_summary", "AnalyticsService")
-            result = self.analytics.get_executive_summary()
-            return self._format_executive_insights(result)
-        
-        if intent == "root_cause":
-            if not hasattr(self.analytics, 'get_root_cause_insights'):
-                return self._get_method_error("get_root_cause_insights", "AnalyticsService")
-            result = self.analytics.get_root_cause_insights()
-            return self._format_root_cause(result)
-        
-        if intent == "control_tower":
-            if not hasattr(self.analytics, 'get_control_tower_alerts'):
-                return self._get_method_error("get_control_tower_alerts", "AnalyticsService")
-            result = self.analytics.get_control_tower_alerts()
-            return self._format_control_tower(result)
-        
-        if intent == "help":
-            return self._get_help_message()
-        
-        return self._get_help_message()
-    
-    # ==========================================================
-    # KPI EXECUTION
-    # ==========================================================
-    
-    def _execute_kpi(self, intent: str, entity: Optional[str]) -> str:
-        """Execute KPI queries."""
-        try:
-            if intent == "pending_pgi":
-                kpi = self.kpi.get_pending_pgi(entity)
-                if entity:
-                    return f"⏳ *PGI Pending for {entity}:* {kpi.get('pending_pgi', 0)}"
-                return f"⏳ *Total PGI Pending:* {kpi.get('pending_pgi', 0)}"
-            
-            if intent == "pending_pod":
-                kpi = self.kpi.get_pending_pod(entity)
-                if entity:
-                    return f"📎 *POD Pending for {entity}:* {kpi.get('pending_pod', 0)}"
-                return f"📎 *Total POD Pending:* {kpi.get('pending_pod', 0)}"
-            
-            return self._get_help_message()
-        except Exception as e:
-            logger.error(f"KPI execution failed: {e}")
-            return f"⚠️ Unable to retrieve KPI data. Please try again."
-    
-    # ==========================================================
-    # GROQ EXECUTION
-    # ==========================================================
-    
-    def _execute_groq(self, intent: str, context: Dict) -> str:
-        """Execute Groq for general AI queries."""
-        if self._is_logistics_query(intent):
-            return self._get_groq_blocked_response()
-        
-        if hasattr(self.groq, 'is_available') and self.groq.is_available:
-            try:
-                response = self.groq.chat(intent, context)
-                self.metrics["groq_uses"] += 1
-                return response
-            except Exception as e:
-                logger.error(f"Groq execution failed: {e}")
-                return "⚠️ AI service is temporarily unavailable. Please try again later."
-        
-        return "⚠️ AI service is not available. Please try again later."
-    
-    def _enrich_with_groq(self, response: str, intent: str, question: str, context: Dict) -> str:
-        """Enrich analytics with Groq insight."""
-        if not hasattr(self.groq, 'is_available') or not self.groq.is_available:
-            return response
-        
-        if intent in ["executive_insight", "root_cause"] and len(response) > 50:
-            if "0" in response and "No" in response:
-                return response
-            
-            try:
-                enrichment_prompt = f"""
-Based on this logistics analytics data:
-
-{response[:600]}
-
-Provide a brief, professional executive summary (2-3 sentences) that highlights the most critical insight and recommends one immediate action.
-
-Keep it concise and actionable. Do not repeat the data, just provide insight.
-"""
-                groq_summary = self.groq.chat(enrichment_prompt, context)
-                
-                if groq_summary and len(groq_summary) > 10:
-                    self.metrics["groq_uses"] += 1
-                    return f"{response}\n\n💡 *AI Insight:*\n{groq_summary}"
-            except Exception as e:
-                logger.warning(f"Groq enrichment failed: {e}")
-        
-        return response
-    
-    # ==========================================================
-    # FORMATTERS - DEALER
-    # ==========================================================
-    
-    def _format_dealer_dashboard(self, data: Dict, dealer_name: str) -> str:
-        if not data or "error" in data:
-            return f"❌ No data found for {dealer_name}"
-        
-        summary = data.get("summary", {})
-        aging = data.get("aging", {})
-        performance = data.get("performance", {})
-        
-        if summary.get("total_dns", 0) == 0:
-            return f"🏪 *{dealer_name} - No Deliveries Found*\n\n" \
-                   f"⚠️ No delivery data found for this dealer."
-        
-        lines = [
-            f"🏪 *{dealer_name} - Dashboard*",
-            "",
-            f"📄 *Total DNs:* {summary.get('total_dns', 0):,}",
-            f"📦 *Total Units:* {summary.get('total_units', 0):,}",
-            f"💰 *Revenue:* PKR {summary.get('total_revenue', 0):,.0f}",
-            "",
-            f"📊 *Delivery Status:*",
-            f"   ✅ Delivered: {summary.get('delivered', 0)}",
-            f"   🚚 In Transit: {summary.get('in_transit', 0)}",
-            f"   ⏳ Pending PGI: {aging.get('pending_pgi', 0)}",
-            f"   📎 Pending POD: {aging.get('pending_pod', 0)}",
-            "",
-            f"📈 *Performance:*",
-            f"   📦 Delivery Rate: {summary.get('pod_rate', 0):.1f}%",
-            f"   📎 POD Rate: {summary.get('pod_rate', 0):.1f}%",
-            f"   ⏰ Avg Delivery Aging: {aging.get('avg_delivery_aging', 0):.1f} days",
-        ]
-        
-        risk_status = performance.get('risk_status', 'low')
-        risk_emoji = self.schema.get_risk_emoji(risk_status) if hasattr(self.schema, 'get_risk_emoji') else "🟢"
-        lines.append(f"   {risk_emoji} Risk Status: {risk_status.upper()}")
-        
-        return "\n".join(lines)
-    
-    def _format_dealer_revenue(self, data: Dict, dealer_name: str) -> str:
-        if not data:
-            return f"❌ No revenue data for {dealer_name}"
-        return (
-            f"💰 *Revenue for {dealer_name}*\n\n"
-            f"• Total Revenue: PKR {data.get('total_revenue', 0):,.0f}\n"
-            f"• Number of DNs: {data.get('count', 0)}\n"
-            f"• Average per DN: PKR {data.get('avg_revenue', 0):,.0f}"
-        )
-    
-    def _format_dealer_units(self, data: Dict, dealer_name: str) -> str:
-        if not data:
-            return f"❌ No units data for {dealer_name}"
-        return (
-            f"📦 *Units for {dealer_name}*\n\n"
-            f"• Total Units: {data.get('total_units', 0):,}\n"
-            f"• Number of DNs: {data.get('count', 0)}\n"
-            f"• Average per DN: {data.get('avg_units', 0):.1f}"
-        )
-    
-    def _format_dealer_performance(self, data: Dict, dealer_name: str) -> str:
-        if not data:
-            return f"❌ No performance data for {dealer_name}"
-        lines = [
-            f"📊 *Performance: {dealer_name}*",
-            "",
-            f"📦 Delivery Rate: {data.get('delivery_rate', 0):.1f}%",
-            f"📎 POD Rate: {data.get('pod_rate', 0):.1f}%",
-            f"⏳ Pending PGI: {data.get('pending_pgi', 0)}",
-            f"📎 Pending POD: {data.get('pending_pod', 0)}",
-            f"⏰ Avg Aging: {data.get('avg_aging', 0):.1f} days",
-        ]
-        return "\n".join(lines)
-    
-    def _format_dealer_aging(self, data: Dict, dealer_name: str) -> str:
-        if not data:
-            return f"❌ No aging data for {dealer_name}"
-        return (
-            f"⏱️ *Aging for {dealer_name}*\n\n"
-            f"• Average Aging: {data.get('avg_aging', 0):.1f} days\n"
-            f"• Maximum Aging: {data.get('max_aging', 0)} days\n"
-            f"• DNs with Aging: {data.get('count', 0)}"
-        )
-    
-    # ==========================================================
-    # FORMATTERS - WAREHOUSE & CITY
-    # ==========================================================
-    
-    def _format_warehouse_dashboard(self, data: Dict, warehouse_name: str) -> str:
-        if not data or "error" in data:
-            return f"❌ No data found for {warehouse_name}"
-        
-        summary = data.get("summary", {})
-        
-        if summary.get("total_dns", 0) == 0:
-            return f"🏭 *{warehouse_name} - No Deliveries Found*\n\n" \
-                   f"⚠️ No delivery data found for this warehouse."
-        
-        lines = [
-            f"🏭 *{warehouse_name} - Dashboard*",
-            "",
-            f"📄 *Total DNs:* {summary.get('total_dns', 0):,}",
-            f"📦 *Total Units:* {summary.get('total_units', 0):,}",
-            f"💰 *Revenue:* PKR {summary.get('total_revenue', 0):,.0f}",
-            f"📎 *POD Rate:* {summary.get('pod_rate', 0):.1f}%",
-        ]
-        
-        top_dealers = data.get("top_dealers", [])
-        if top_dealers:
-            lines.append("")
-            lines.append("🏆 *Top Dealers:*")
-            for i, dealer in enumerate(top_dealers[:5], 1):
-                lines.append(f"   {i}. {dealer.get('name', 'N/A')} - PKR {dealer.get('revenue', 0):,.0f}")
-        
-        return "\n".join(lines)
-    
-    def _format_city_dashboard(self, data: Dict, city_name: str) -> str:
-        if not data or "error" in data:
-            return f"❌ No data found for {city_name}"
-        
-        summary = data.get("summary", {})
-        
-        if summary.get("total_dns", 0) == 0:
-            return f"🏙️ *{city_name} - No Deliveries Found*\n\n" \
-                   f"⚠️ No delivery data found for this city."
-        
-        lines = [
-            f"🏙️ *{city_name} - Dashboard*",
-            "",
-            f"📄 *Total DNs:* {summary.get('total_dns', 0):,}",
-            f"💰 *Revenue:* PKR {summary.get('total_revenue', 0):,.0f}",
-            f"🏪 *Active Dealers:* {summary.get('total_dealers', 0)}",
-            f"📎 *POD Rate:* {summary.get('pod_rate', 0):.1f}%",
-        ]
-        
-        top_dealers = data.get("top_dealers", [])
-        if top_dealers:
-            lines.append("")
-            lines.append(f"🏆 *Top Dealers in {city_name}:*")
-            for i, dealer in enumerate(top_dealers[:5], 1):
-                lines.append(f"   {i}. {dealer.get('name', 'N/A')} - PKR {dealer.get('revenue', 0):,.0f}")
-        
-        return "\n".join(lines)
-    
-    # ==========================================================
-    # FORMATTERS - DN
-    # ==========================================================
-    
-    def _format_dn_details(self, data: Dict) -> str:
-        if not data or not data.get("found"):
-            return "❌ DN not found."
-        
-        record = data.get("record", {})
-        validation = data.get("validation", {})
-        durations = validation.get("durations", {})
-        status = data.get("status", "unknown")
-        
-        processing_days = durations.get('processing_time_days')
-        delivery_days = durations.get('delivery_time_days')
-        cycle_days = durations.get('total_cycle_days')
-        
-        is_valid = validation.get('is_valid', False)
-        issues = validation.get('issues', [])
-        
-        if is_valid and not issues:
-            quality_emoji = "✅"
-            quality_status = "VALID - All dates in correct order"
-        elif issues:
-            quality_emoji = "⚠️"
-            quality_status = "DATA INTEGRITY ISSUE DETECTED"
-        else:
-            quality_emoji = "ℹ️"
-            quality_status = "INCOMPLETE DATA"
-        
-        status_map = {
-            "pending_pgi": "⏳ Pending PGI",
-            "pending_pod": "🚚 In Transit (POD Pending)",
-            "delivered": "✅ Delivered",
-            "unknown": "❓ Status Unknown"
+        # Add additional debug info
+        result["debug"] = {
+            "dealer_check": self.schema.resolve_dealer(question),
+            "city_check": self.schema.resolve_city(question),
+            "warehouse_check": self.schema.resolve_warehouse(question),
+            "dn_check": bool(DN_PATTERN.search(question)),
+            "normalized": self._normalize(question)
         }
-        status_display = status_map.get(status, "❓ Unknown")
         
-        lines = [
-            "📄 *DN Details*",
-            f"• DN: {record.get('dn_number', 'N/A')}",
-            f"• Dealer: {record.get('sold_to_party_name', 'N/A')}",
-            f"• City: {record.get('ship_to_city', 'N/A')}",
-            f"• Warehouse: {record.get('warehouse', 'N/A')}",
-            "",
-            f"📦 *Units:* {record.get('units', 0)}",
-            f"💰 *Amount:* PKR {record.get('amount', 0):,.0f}",
-            "",
-            f"📅 *Dates:*",
-            f"   • DN Create: {record.get('dn_date', 'N/A')}",
-            f"   • Good Issue: {record.get('pgi_date', 'N/A')}",
-            f"   • POD: {record.get('pod_date', 'N/A')}",
-            "",
-            "⏱️ *Time Metrics:*",
-        ]
-        
-        if processing_days is not None:
-            emoji = "✅" if processing_days <= 7 else "⚠️" if processing_days <= 15 else "🔴"
-            lines.append(f"   {emoji} Processing Time: {processing_days} days")
-        else:
-            lines.append("   ⏳ Processing Time: Not available")
-        
-        if delivery_days is not None:
-            emoji = "✅" if delivery_days <= 7 else "⚠️" if delivery_days <= 15 else "🔴"
-            lines.append(f"   {emoji} Delivery Time: {delivery_days} days")
-        else:
-            lines.append("   ⏳ Delivery Time: Not available")
-        
-        if cycle_days is not None:
-            emoji = "✅" if cycle_days <= 14 else "⚠️" if cycle_days <= 21 else "🔴"
-            lines.append(f"   {emoji} Total Cycle Time: {cycle_days} days")
-        else:
-            lines.append("   ⏳ Total Cycle Time: Not available")
-        
-        lines.append("")
-        lines.append(f"{quality_emoji} *Data Quality: {quality_status}*")
-        
-        if issues:
-            lines.append("")
-            lines.append("⚠️ *Issues Detected:*")
-            for issue in issues:
-                lines.append(f"   • {issue}")
-        
-        warnings = validation.get('warnings', [])
-        if warnings:
-            lines.append("")
-            lines.append("📋 *Warnings:*")
-            for warning in warnings:
-                lines.append(f"   • {warning}")
-        
-        lines.append("")
-        lines.append(f"📊 *Status:* {status_display}")
-        
-        return "\n".join(lines)
+        return result
     
-    # ==========================================================
-    # FORMATTERS - EXECUTIVE & ROOT CAUSE
-    # ==========================================================
-    
-    def _format_executive_insights(self, data: Dict) -> str:
-        if not data:
-            return "📊 No executive insights available."
-        
-        if data.get("error"):
-            return f"⚠️ {data['error']}"
-        
-        summary = data.get("summary", {})
-        top_issues = data.get("top_issues", [])
-        recommendations = data.get("recommendations", [])
-        
-        if summary.get("total_dns", 0) == 0:
-            return "📊 *Executive Insights*\n\n" \
-                   "📈 *Overview:*\n" \
-                   "   • No deliveries found in the system.\n\n" \
-                   "⚠️ *Critical Issues:*\n" \
-                   "   • No data available for analysis.\n\n" \
-                   "💡 *Recommended Actions:*\n" \
-                   "   • Please ensure data is imported into the system."
-        
-        lines = [
-            "🚨 *Executive Insights*",
-            "",
-            f"📈 *Overview:*",
-            f"   • Total DNs: {summary.get('total_dns', 0):,}",
-            f"   • Total Revenue: PKR {summary.get('total_revenue', 0):,.0f}",
-            f"   • Overall POD Rate: {summary.get('overall_pod_rate', 0):.1f}%",
-            f"   • Active Dealers: {summary.get('active_dealers', 0)}",
-            "",
-            "⚠️ *Critical Issues:*",
-        ]
-        
-        if top_issues:
-            for issue in top_issues:
-                lines.append(f"   • {issue}")
-        else:
-            lines.append("   ✅ No critical issues detected.")
-        
-        if recommendations:
-            lines.append("")
-            lines.append("💡 *Recommended Actions:*")
-            for rec in recommendations:
-                lines.append(f"   • {rec}")
-        
-        return "\n".join(lines)
-    
-    def _format_root_cause(self, data: Dict) -> str:
-        if not data:
-            return "🔍 No root cause analysis available."
-        
-        if data.get("error"):
-            return f"⚠️ {data['error']}"
-        
-        issues = data.get("key_issues", [])
-        recommendations = data.get("recommendations", [])
-        metrics = data.get("metrics", {})
-        
-        if metrics.get("total_dns", 0) == 0:
-            return "🔍 *Root Cause Analysis*\n\n" \
-                   "📊 *Key Metrics:*\n" \
-                   "   • No deliveries found in the system.\n\n" \
-                   "⚠️ *Key Issues Identified:*\n" \
-                   "   • No data available for analysis.\n\n" \
-                   "💡 *Data-Driven Recommendations:*\n" \
-                   "   • Please ensure data is imported into the system."
-        
-        lines = [
-            "🔍 *Root Cause Analysis*",
-            "",
-            f"📊 *Key Metrics:*",
-            f"   • Total DNs: {metrics.get('total_dns', 0)}",
-            f"   • Avg Processing: {metrics.get('avg_processing_days', 0):.1f} days",
-            f"   • Avg Delivery: {metrics.get('avg_delivery_days', 0):.1f} days",
-            f"   • POD Rate: {metrics.get('pod_rate', 0):.1f}%",
-            f"   • Pending POD: {metrics.get('pending_pod', 0)}",
-            "",
-            "⚠️ *Key Issues Identified:*",
-        ]
-        
-        if issues:
-            for issue in issues:
-                lines.append(f"   • {issue}")
-        else:
-            lines.append("   ✅ No critical issues identified.")
-        
-        if recommendations:
-            lines.append("")
-            lines.append("💡 *Data-Driven Recommendations:*")
-            for rec in recommendations:
-                lines.append(f"   • {rec}")
-        
-        return "\n".join(lines)
-    
-    def _format_control_tower(self, data: Dict) -> str:
-        if not data:
-            return "🚨 *Control Tower*\n\nNo data available."
-        
-        alerts = data.get("alerts", [])
-        critical_count = data.get("critical_count", 0)
-        high_count = data.get("high_count", 0)
-        
-        if not alerts and critical_count == 0 and high_count == 0:
-            return "🚨 *Control Tower*\n\n✅ No critical alerts at this time."
-        
-        lines = [
-            "🚨 *Control Tower*",
-            "",
-            f"🔴 Critical: {critical_count}",
-            f"🟠 High: {high_count}",
-            "",
-        ]
-        
-        for alert in alerts[:10]:
-            risk_emoji = "🔴" if alert.get('risk_status') == "critical" else "🟠"
-            lines.append(f"{risk_emoji} {alert.get('type', 'Alert')}: {alert.get('dealer', 'N/A')} - {alert.get('description', '')}")
-        
-        return "\n".join(lines)
-    
-    # ==========================================================
-    # HELPER METHODS
-    # ==========================================================
-    
-    def _is_entity_only_query(self, question: str, entity_name: str) -> bool:
-        """Check if query is just an entity name."""
-        question_clean = question.lower().strip()
-        entity_clean = entity_name.lower().strip()
-        
-        if question_clean == entity_clean:
-            return True
-        
-        prefixes = ["show ", "display ", "get ", "view ", "tell me about ", "what about "]
-        for prefix in prefixes:
-            if question_clean.startswith(prefix) and question_clean[len(prefix):].strip() == entity_clean:
-                return True
-        
-        return False
-    
-    def _is_logistics_query(self, question: str) -> bool:
-        """Check if query contains logistics keywords."""
-        question_lower = question.lower()
-        for pattern in GROQ_BLOCKED_PATTERNS:
-            if pattern in question_lower:
-                return True
-        return False
-    
-    def _get_method_error(self, method: str, service: str) -> str:
-        error_id = str(uuid.uuid4())[:8]
-        logger.error(f"Method missing: {service}.{method} (Error: {error_id})")
-        return (
-            f"⚠️ *Service Error*\n\n"
-            f"• Service: {service}\n"
-            f"• Method: {method}\n"
-            f"• Error Reference: `{error_id}`\n\n"
-            f"Please contact support with this reference ID."
-        )
-    
-    def _get_error_response(self, question: str, error: Exception, error_id: str, request_id: str) -> str:
-        error_msg = str(error)[:100]
-        return (
-            f"⚠️ *Unable to process your request*\n\n"
-            f"• Error Reference: `{error_id}`\n"
-            f"• Request ID: `{request_id}`\n"
-            f"• Error: {error_msg}\n\n"
-            f"Please try again or contact support with the reference ID."
-        )
-    
-    def _get_service_error_response(self, intent: str, entity: Optional[str], service: str, error: Exception, error_id: str) -> str:
-        error_msg = str(error)[:100]
-        return (
-            f"⚠️ *Unable to retrieve analytics data*\n\n"
-            f"• Intent: {intent}\n"
-            f"• Entity: {entity or 'N/A'}\n"
-            f"• Service: {service}\n"
-            f"• Error Reference: `{error_id}`\n"
-            f"• Error: {error_msg}\n\n"
-            f"Please try again or contact support."
-        )
-    
-    def _get_groq_blocked_response(self) -> str:
-        return (
-            "⚠️ *Logistics queries are handled by analytics, not AI.*\n\n"
-            "Please try one of these:\n"
-            "• A specific dealer name\n"
-            "• A DN number (8-12 digits)\n"
-            "• 'Top dealers' or 'Top cities'\n"
-            "• 'Key issues' or 'Executive insights'\n\n"
-            "Type 'Help' for all available commands."
-        )
-    
-    def _get_help_message(self) -> str:
-        return """📋 *AI Logistics Assistant - Help*
-
-*🔍 DN Tracking:* Send any 8-12 digit DN number
-
-*🏪 Dealer Queries:*
-   • "Dealer name" (e.g., "Dubai Electronics")
-   • "Dealer revenue" or "Dealer units"
-   • "Dealer performance" or "Dealer aging"
-
-*🏙️ City Queries:*
-   • "City name" (e.g., "Haripur")
-
-*🏭 Warehouse Queries:*
-   • "Warehouse name" (e.g., "Rawalpindi")
-
-*📊 Analytics:*
-   • "Top dealers" or "Executive insights"
-   • "Key issues" or "Critical alerts"
-
-*🤖 General AI:* Any non-logistics question
-
-*What would you like to know?* 🤖"""
-    
-    # ==========================================================
-    # CONTEXT & CACHE
-    # ==========================================================
-    
-    def _load_context(self, phone_number: Optional[str]) -> Optional[ConversationContext]:
-        if not phone_number:
-            return None
-        if phone_number not in self.conversation_cache:
-            self.conversation_cache[phone_number] = ConversationContext(phone_number)
-        context = self.conversation_cache[phone_number]
-        if time.time() - context.last_updated > CONTEXT_TTL_SECONDS:
-            context = ConversationContext(phone_number)
-            self.conversation_cache[phone_number] = context
-        return context
-    
-    def _update_context(self, phone_number: Optional[str], intent: str, entity_type: str, entity: str, req_id: str, response: str = ""):
-        if not phone_number:
-            return
-        context = self._load_context(phone_number)
-        if not context:
-            return
-        context.last_intent = intent
-        context.last_question = entity
-        if entity_type == "dealer":
-            context.last_dealer = entity
-        elif entity_type == "warehouse":
-            context.last_warehouse = entity
-        elif entity_type == "city":
-            context.last_city = entity
-        elif entity_type == "dn":
-            context.last_dn = entity
-        if response:
-            context.last_response = response[:200]
-        context.message_count += 1
-        context.last_updated = time.time()
-    
-    def _get_cached_response(self, question: str, phone_number: Optional[str]) -> Optional[str]:
-        cache_key = self._generate_cache_key(question, phone_number)
-        return self.response_cache.get(cache_key)
-    
-    def _cache_response(self, question: str, phone_number: Optional[str], response: str):
-        cache_key = self._generate_cache_key(question, phone_number)
-        self.response_cache[cache_key] = response
-    
-    def _generate_cache_key(self, question: str, phone_number: Optional[str]) -> str:
-        key = question.lower().strip()
-        if phone_number:
-            key = f"{phone_number}:{key}"
-        return hashlib.md5(key.encode()).hexdigest()
-    
-    def clear_caches(self):
-        self.response_cache.clear()
-        self.conversation_cache.clear()
-        logger.info("🗑️ All caches cleared")
-        return {"status": "cleared", "version": "12.2"}
-    
-    # ==========================================================
-    # METRICS
-    # ==========================================================
-    
-    def get_metrics(self) -> Dict[str, Any]:
+    def get_routing_stats(self) -> Dict[str, Any]:
+        """Get routing statistics."""
+        total = sum(self._routing_stats.values())
         return {
-            "total_requests": self.metrics["total_requests"],
-            "cache_hits": self.metrics["cache_hits"],
-            "cache_misses": self.metrics["cache_misses"],
-            "cache_hit_rate": self.metrics["cache_hits"] / max(1, self.metrics["cache_hits"] + self.metrics["cache_misses"]),
-            "dn_lookups": self.metrics["dn_lookups"],
-            "dealer_queries": self.metrics["dealer_queries"],
-            "city_queries": self.metrics["city_queries"],
-            "warehouse_queries": self.metrics["warehouse_queries"],
-            "kpi_queries": self.metrics["kpi_queries"],
-            "executive_queries": self.metrics["executive_queries"],
-            "groq_uses": self.metrics["groq_uses"],
-            "analytics_success": self.metrics["analytics_success"],
-            "analytics_failure": self.metrics["analytics_failure"],
-            "routing_overrides": self.metrics["routing_overrides"],
-            "timeouts": self.metrics["timeouts"],
-            "errors": self.metrics["errors"],
-            "conversation_count": len(self.conversation_cache),
-            "cache_size": len(self.response_cache),
-            "version": "12.2"
+            "total_routing_attempts": total,
+            "dn_lookups": self._routing_stats["dn_lookups"],
+            "dealer_resolutions": self._routing_stats["dealer_resolutions"],
+            "city_resolutions": self._routing_stats["city_resolutions"],
+            "warehouse_resolutions": self._routing_stats["warehouse_resolutions"],
+            "intent_detections": self._routing_stats["intent_detections"],
+            "groq_fallbacks": self._routing_stats["groq_fallbacks"],
+            "help_requests": self._routing_stats["help_requests"],
+            "success_rate": (self._routing_stats["dn_lookups"] + 
+                           self._routing_stats["dealer_resolutions"] + 
+                           self._routing_stats["city_resolutions"] + 
+                           self._routing_stats["warehouse_resolutions"] + 
+                           self._routing_stats["intent_detections"]) / max(1, total) * 100,
+            "version": "7.0"
         }
+
+
+# ==========================================================
+# THREAD-SAFE SINGLETON
+# ==========================================================
+
+_ai_query_service = None
+_service_lock = threading.Lock()
+
+
+def get_ai_query_service() -> AIQueryService:
+    """Thread-safe singleton getter for AIQueryService."""
+    global _ai_query_service
     
-    def get_routing_debug(self, question: str) -> Dict[str, Any]:
-        context = {}
-        routing = self._get_routing_decision(question, context)
-        return {
-            "question": question,
-            "routing_decision": {
-                "intent": getattr(routing, "intent", "unknown"),
-                "entity": getattr(routing, "entity", None),
-                "entity_type": getattr(routing, "entity_type", None),
-                "service": getattr(routing, "service", "unknown"),
-                "confidence": getattr(routing, "confidence", 0.0),
-                "needs_groq": getattr(routing, "needs_groq", False),
-                "reason": getattr(routing, "reason", "")
-            },
-            "timestamp": time.time()
-        }
+    if _ai_query_service is None:
+        with _service_lock:
+            if _ai_query_service is None:
+                try:
+                    _ai_query_service = AIQueryService()
+                    logger.info("AIQueryService singleton initialized successfully")
+                except Exception as e:
+                    logger.exception(f"AIQueryService singleton initialization failed: {e}")
+                    raise
+    
+    return _ai_query_service
 
 
 # ==========================================================
-# SINGLETON
+# MODULE INITIALIZATION
 # ==========================================================
 
-_orchestrator = None
-
-def get_orchestrator() -> AIOrchestrator:
-    global _orchestrator
-    if _orchestrator is None:
-        _orchestrator = AIOrchestrator()
-    return _orchestrator
-
-
-# ==========================================================
-# WRAPPER FUNCTIONS (PRESERVED SIGNATURES - CRITICAL)
-# ==========================================================
-
-def process_whatsapp_query(
-    question: str,
-    session_factory: Optional[Callable[[], Session]] = None,
-    phone_number: Optional[str] = None,
-    user_id: Optional[str] = None,
-    request_id: Optional[str] = None
-) -> str:
-    orchestrator = get_orchestrator()
-    return orchestrator.process_whatsapp_query(
-        question=question,
-        session_factory=session_factory,
-        phone_number=phone_number,
-        user_id=user_id,
-        request_id=request_id
-    )
-
-
-def get_ai_service_metrics() -> Dict[str, Any]:
-    orchestrator = get_orchestrator()
-    return orchestrator.get_metrics()
-
-
-def clear_ai_cache():
-    orchestrator = get_orchestrator()
-    return orchestrator.clear_caches()
-
-
-def get_routing_debug(question: str) -> Dict[str, Any]:
-    orchestrator = get_orchestrator()
-    return orchestrator.get_routing_debug(question)
-
-
-# ==========================================================
-# INITIALIZATION
-# ==========================================================
-
-logger.info("=" * 70)
-logger.info("AI Provider Service v12.2 - Fixed Imports")
-logger.info("=" * 70)
-logger.info("")
-logger.info("   FIXES:")
-logger.info("   ✅ Removed QueryPlan import (no longer exists)")
-logger.info("   ✅ Updated to work with RoutingDecision")
-logger.info("   ✅ Safe attribute extraction")
-logger.info("   ✅ Timeout handling (30 seconds)")
-logger.info("   ✅ Enhanced error handling")
-logger.info("")
-logger.info("   STATUS: ✅ PRODUCTION READY")
-logger.info("=" * 70)
+logger.debug("AIQueryService v7.0 - Entity-First Routing Engine")
+logger.debug("=" * 60)
+logger.debug("ROUTING PRIORITY:")
+logger.debug("  1️⃣ DN Lookup → analytics")
+logger.debug("  2️⃣ Dealer Resolution → analytics")
+logger.debug("  3️⃣ City Resolution → analytics")
+logger.debug("  4️⃣ Warehouse Resolution → analytics")
+logger.debug("  5️⃣ Intent Detection → analytics/kpi/groq")
+logger.debug("  6️⃣ Groq (LAST RESORT) → groq")
+logger.debug("  7️⃣ Help → help")
+logger.debug("=" * 60)
