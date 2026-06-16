@@ -1,5 +1,5 @@
 # ==========================================================
-# FILE: app/schemas/schema_service.py (v7.0 - PRODUCTION FIX)
+# FILE: app/schemas/schema_service.py (v7.1 - FULLY ALIGNED)
 # ==========================================================
 # FIXES APPLIED:
 # 1. Enhanced dealer alias generation with SequenceMatcher
@@ -7,6 +7,11 @@
 # 3. Added debug methods (find_dealer_debug, get_sample_dealers)
 # 4. Improved logging with structured output
 # 5. Added confidence scoring for entity resolution
+# 6. ADDED: generate_metadata_report() - Comprehensive metadata report
+# 7. ADDED: get_metadata_stats() - Quick metadata statistics
+# 8. ADDED: find_entity_debug() - Unified entity debug
+# 9. ADDED: get_all_entities() - Get all entities by type
+# 10. ADDED: search_entities() - Search across all entities
 # ==========================================================
 
 from typing import Dict, List, Optional, Tuple, Set, Any
@@ -1528,6 +1533,147 @@ class SchemaService:
         return result
     
     # ==========================================================
+    # NEW: UNIFIED ENTITY DEBUG
+    # ==========================================================
+    
+    def find_entity_debug(self, name: str) -> Dict[str, Any]:
+        """
+        Debug method to find any entity (dealer, city, or warehouse).
+        
+        Args:
+            name: Entity name to look up
+            
+        Returns:
+            Debug info with resolution details
+        """
+        result = {
+            "input": name,
+            "dealer": self.find_dealer_debug(name),
+            "city": self.find_city_debug(name),
+            "warehouse": self.find_warehouse_debug(name),
+            "unified": self.resolve_entity(name)
+        }
+        return result
+    
+    def get_all_entities(self, entity_type: str = "all") -> Dict[str, Any]:
+        """
+        Get all entities by type.
+        
+        Args:
+            entity_type: 'dealers', 'cities', 'warehouses', or 'all'
+            
+        Returns:
+            Dict with entity lists
+        """
+        result = {}
+        
+        if entity_type in ["dealers", "all"]:
+            result["dealers"] = list(self.dealers.values())
+        
+        if entity_type in ["cities", "all"]:
+            result["cities"] = list(self.cities.values())
+        
+        if entity_type in ["warehouses", "all"]:
+            result["warehouses"] = list(self.warehouses.values())
+        
+        return result
+    
+    def search_entities(self, query: str) -> Dict[str, Any]:
+        """
+        Search across all entities.
+        
+        Args:
+            query: Search query
+            
+        Returns:
+            Dict with matching entities
+        """
+        query_lower = query.lower().strip()
+        result = {
+            "query": query,
+            "matching_dealers": [],
+            "matching_cities": [],
+            "matching_warehouses": []
+        }
+        
+        # Search dealers
+        for name in self.dealers.values():
+            if query_lower in name.lower():
+                result["matching_dealers"].append(name)
+        
+        # Search cities
+        for name in self.cities.values():
+            if query_lower in name.lower():
+                result["matching_cities"].append(name)
+        
+        # Search warehouses
+        for name in self.warehouses.values():
+            if query_lower in name.lower():
+                result["matching_warehouses"].append(name)
+        
+        return result
+    
+    # ==========================================================
+    # NEW: METADATA REPORT
+    # ==========================================================
+    
+    def get_metadata_stats(self) -> Dict[str, Any]:
+        """
+        Get quick metadata statistics.
+        
+        Returns:
+            Dict with basic statistics
+        """
+        return {
+            "dealers": len(self.dealers),
+            "cities": len(self.cities),
+            "warehouses": len(self.warehouses),
+            "intents": len(self.intents),
+            "metrics": len(self.metrics),
+            "health_score": self._health_score,
+            "initialized": self._initialized,
+            "last_refresh": self._last_refresh.isoformat() if self._last_refresh else None
+        }
+    
+    def generate_metadata_report(self) -> Dict[str, Any]:
+        """
+        Generate a comprehensive metadata report.
+        
+        Returns:
+            Dict with complete metadata report
+        """
+        return {
+            "status": "healthy" if self._health_score >= 70 else "warning" if self._health_score >= 50 else "critical",
+            "health_score": self._health_score,
+            "initialized": self._initialized,
+            "database_connected": self._db_connected,
+            "last_refresh": self._last_refresh.isoformat() if self._last_refresh else None,
+            "load_error": self._load_error,
+            "counts": {
+                "dealers": len(self.dealers),
+                "cities": len(self.cities),
+                "warehouses": len(self.warehouses),
+                "intents": len(self.intents),
+                "metrics": len(self.metrics),
+                "logistics_keywords": len(self.logistics_keywords),
+                "business_rules": len(self.rules),
+                "status_definitions": len(self.statuses)
+            },
+            "search_index_sizes": {
+                "dealers": len(self._dealer_search_index),
+                "cities": len(self._city_search_index),
+                "warehouses": len(self._warehouse_search_index)
+            },
+            "stats": self._stats,
+            "sample_data": {
+                "dealers": list(self.dealers.values())[:5],
+                "cities": list(self.cities.values())[:5],
+                "warehouses": list(self.warehouses.values())[:5]
+            },
+            "generated_at": datetime.now().isoformat()
+        }
+    
+    # ==========================================================
     # VALIDATION
     # ==========================================================
     
@@ -2008,6 +2154,28 @@ def get_schema_diagnostics() -> Dict[str, Any]:
     return service.get_diagnostic_report()
 
 
+def generate_metadata_report() -> Dict[str, Any]:
+    """
+    Generate a comprehensive metadata report.
+    
+    Returns:
+        Dict with complete metadata report
+    """
+    service = get_schema_service()
+    return service.generate_metadata_report()
+
+
+def get_metadata_stats() -> Dict[str, Any]:
+    """
+    Get quick metadata statistics.
+    
+    Returns:
+        Dict with basic statistics
+    """
+    service = get_schema_service()
+    return service.get_metadata_stats()
+
+
 def is_dn_number(text: str) -> bool:
     """
     Check if text is a valid DN number (8-12 digits).
@@ -2112,6 +2280,48 @@ def find_warehouse_debug(name: str) -> Dict[str, Any]:
     return service.find_warehouse_debug(name)
 
 
+def find_entity_debug(name: str) -> Dict[str, Any]:
+    """
+    Debug method to find any entity (dealer, city, or warehouse).
+    
+    Args:
+        name: Entity name to look up
+        
+    Returns:
+        Debug info with resolution details
+    """
+    service = get_schema_service()
+    return service.find_entity_debug(name)
+
+
+def get_all_entities(entity_type: str = "all") -> Dict[str, Any]:
+    """
+    Get all entities by type.
+    
+    Args:
+        entity_type: 'dealers', 'cities', 'warehouses', or 'all'
+        
+    Returns:
+        Dict with entity lists
+    """
+    service = get_schema_service()
+    return service.get_all_entities(entity_type)
+
+
+def search_entities(query: str) -> Dict[str, Any]:
+    """
+    Search across all entities.
+    
+    Args:
+        query: Search query
+        
+    Returns:
+        Dict with matching entities
+    """
+    service = get_schema_service()
+    return service.search_entities(query)
+
+
 def get_sample_dealers(limit: int = 10) -> List[Dict[str, str]]:
     """
     Get sample dealers for debugging.
@@ -2152,12 +2362,17 @@ __all__ = [
     'refresh_schema_metadata',
     'get_schema_health',
     'get_schema_diagnostics',
+    'generate_metadata_report',  # ✅ NEW
+    'get_metadata_stats',        # ✅ NEW
     
     # Entity resolution
     'resolve_entity',
     'find_dealer_debug',
     'find_city_debug',
     'find_warehouse_debug',
+    'find_entity_debug',         # ✅ NEW
+    'get_all_entities',          # ✅ NEW
+    'search_entities',           # ✅ NEW
     'get_sample_dealers',
     'get_dealer_count',
     
