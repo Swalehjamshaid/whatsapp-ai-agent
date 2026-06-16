@@ -1,11 +1,21 @@
 # ==========================================================
-# FILE: app/schemas/schema_service.py (v1.0 - METADATA LAYER)
+# FILE: app/schemas/schema_service.py (v1.1 - METADATA LAYER)
 # ==========================================================
 # PURPOSE: Business Metadata Engine - Single Source of Truth
+# CHANGES: Thread-safe singleton, startup validation, diagnostics
 # ==========================================================
 
 from typing import Dict, List, Optional, Set, Any
 from dataclasses import dataclass, field
+import threading
+import logging
+
+
+# ==========================================================
+# LOGGING SETUP
+# ==========================================================
+
+logger = logging.getLogger(__name__)
 
 
 # ==========================================================
@@ -185,6 +195,9 @@ class SchemaService:
         self.statuses = STATUS_DEFINITIONS
         self.rules = BUSINESS_RULES
         self.logistics_keywords = LOGISTICS_KEYWORDS
+        
+        # Run validation on initialization
+        self._validate_metadata()
     
     def resolve_dealer(self, dealer_input: str) -> Optional[str]:
         if not dealer_input:
@@ -256,16 +269,177 @@ class SchemaService:
     
     def get_rule(self, rule_name: str) -> Optional[Any]:
         return self.rules.get(rule_name)
+    
+    def _validate_metadata(self) -> Dict[str, Any]:
+        """Validate metadata integrity and return diagnostic report."""
+        report = {
+            "status": "valid",
+            "issues": [],
+            "counts": {
+                "dealers": len(self.dealers),
+                "warehouses": len(self.warehouses),
+                "cities": len(self.cities),
+                "intents": len(self.intents),
+                "metrics": len(self.metrics)
+            }
+        }
+        
+        # Check for duplicates in intent keywords
+        all_intent_keywords = []
+        for intent, keywords in self.intents.items():
+            for keyword in keywords:
+                if keyword in all_intent_keywords:
+                    report["issues"].append(f"Duplicate keyword '{keyword}' in intent: {intent}")
+                all_intent_keywords.append(keyword)
+        
+        # Check for duplicates in metric keywords
+        all_metric_keywords = []
+        for metric, keywords in self.metrics.items():
+            for keyword in keywords:
+                if keyword in all_metric_keywords:
+                    report["issues"].append(f"Duplicate keyword '{keyword}' in metric: {metric}")
+                all_metric_keywords.append(keyword)
+        
+        # Check for dealer alias conflicts
+        all_dealer_aliases = []
+        for alias, full_name in self.dealers.items():
+            if alias in all_dealer_aliases:
+                report["issues"].append(f"Duplicate dealer alias '{alias}' maps to: {full_name}")
+            all_dealer_aliases.append(alias)
+        
+        if report["issues"]:
+            report["status"] = "warning"
+            logger.warning(f"Metadata validation found {len(report['issues'])} issues")
+            for issue in report["issues"]:
+                logger.warning(f"  - {issue}")
+        else:
+            logger.info("Metadata validation passed - all data consistent")
+        
+        return report
+    
+    def validate_metadata(self) -> Dict[str, Any]:
+        """Public method to get metadata validation report."""
+        return self._validate_metadata()
+    
+    def get_metadata_report(self) -> Dict[str, Any]:
+        """Generate comprehensive metadata validation report."""
+        report = {
+            "metadata": {
+                "dealers": list(self.dealers.keys()),
+                "warehouses": list(self.warehouses.keys()),
+                "cities": list(self.cities.keys()),
+                "intents": list(self.intents.keys()),
+                "metrics": list(self.metrics.keys())
+            },
+            "duplicates": {
+                "intent_keywords": [],
+                "metric_keywords": [],
+                "dealer_aliases": []
+            },
+            "business_rules": self.rules,
+            "statuses": self.statuses,
+            "stats": {
+                "total_dealers": len(self.dealers),
+                "total_warehouses": len(self.warehouses),
+                "total_cities": len(self.cities),
+                "total_intents": len(self.intents),
+                "total_metrics": len(self.metrics),
+                "total_logistics_keywords": len(self.logistics_keywords)
+            }
+        }
+        
+        # Detect duplicate intent keywords
+        seen_keywords = set()
+        for intent, keywords in self.intents.items():
+            for keyword in keywords:
+                if keyword in seen_keywords:
+                    report["duplicates"]["intent_keywords"].append({
+                        "keyword": keyword,
+                        "intent": intent
+                    })
+                seen_keywords.add(keyword)
+        
+        # Detect duplicate metric keywords
+        seen_keywords = set()
+        for metric, keywords in self.metrics.items():
+            for keyword in keywords:
+                if keyword in seen_keywords:
+                    report["duplicates"]["metric_keywords"].append({
+                        "keyword": keyword,
+                        "metric": metric
+                    })
+                seen_keywords.add(keyword)
+        
+        # Detect duplicate dealer aliases
+        seen_aliases = set()
+        for alias in self.dealers.keys():
+            if alias in seen_aliases:
+                report["duplicates"]["dealer_aliases"].append({
+                    "alias": alias
+                })
+            seen_aliases.add(alias)
+        
+        return report
 
 
 # ==========================================================
-# SINGLETON
+# THREAD-SAFE SINGLETON
 # ==========================================================
 
 _schema_service = None
+_schema_lock = threading.Lock()
+
 
 def get_schema_service() -> SchemaService:
+    """Thread-safe singleton getter for SchemaService.
+    
+    Returns:
+        SchemaService: The singleton instance of SchemaService
+        
+    Note:
+        This implementation uses double-checked locking for thread safety
+        while maintaining backward compatibility with existing code.
+    """
     global _schema_service
+    
     if _schema_service is None:
-        _schema_service = SchemaService()
+        with _schema_lock:
+            if _schema_service is None:
+                _schema_service = SchemaService()
+                logger.info("SchemaService initialized successfully")
+                
+                # Log metadata statistics
+                report = _schema_service._validate_metadata()
+                logger.info(f"Metadata loaded: {report['counts']}")
+                
+                if report["status"] == "warning":
+                    logger.warning(f"Metadata validation warnings: {len(report['issues'])} issues found")
+    
     return _schema_service
+
+
+# ==========================================================
+# HELPER FUNCTIONS
+# ==========================================================
+
+def generate_metadata_report() -> Dict[str, Any]:
+    """Generate comprehensive metadata validation report.
+    
+    Returns:
+        Dict[str, Any]: Complete metadata validation report
+        
+    Example:
+        >>> report = generate_metadata_report()
+        >>> print(report['stats']['total_dealers'])
+        25
+    """
+    service = get_schema_service()
+    return service.get_metadata_report()
+
+
+# ==========================================================
+# MODULE INITIALIZATION LOGGING
+# ==========================================================
+
+# Log module loading (only when imported)
+logger.debug("Schema service module loaded")
