@@ -1,5 +1,5 @@
 # ==========================================================
-# FILE: app/schemas/schema_service.py (v7.1 - FULLY ALIGNED)
+# FILE: app/schemas/schema_service.py (v7.2 - POSTGRESQL INTEGRATION FIX)
 # ==========================================================
 # FIXES APPLIED:
 # 1. Enhanced dealer alias generation with SequenceMatcher
@@ -12,6 +12,11 @@
 # 8. ADDED: find_entity_debug() - Unified entity debug
 # 9. ADDED: get_all_entities() - Get all entities by type
 # 10. ADDED: search_entities() - Search across all entities
+# 11. FIXED: PostgreSQL column name mapping for 'customer_name'
+# 12. FIXED: PostgreSQL column name mapping for 'ship_to_city'
+# 13. FIXED: PostgreSQL column name mapping for 'warehouse'
+# 14. ADDED: Auto-detect column names from PostgreSQL
+# 15. ADDED: Fallback column name resolution
 # ==========================================================
 
 from typing import Dict, List, Optional, Tuple, Set, Any
@@ -22,6 +27,7 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 import json
+from sqlalchemy import inspect
 
 # ==========================================================
 # LOGGING SETUP
@@ -497,14 +503,19 @@ STATUS_DEFINITIONS: Dict[str, Dict[str, str]] = {
 }
 
 # ==========================================================
-# EMBEDDED REPOSITORY
+# POSTGRESQL-INTEGRATED DELIVERY REPOSITORY
 # ==========================================================
 
 class DeliveryRepository:
-    """Embedded repository for Delivery Report database operations."""
+    """
+    Embedded repository for Delivery Report database operations.
+    FIXED: PostgreSQL column name auto-detection.
+    """
     
     def __init__(self, db_session=None):
         self._session = db_session
+        self._column_cache = {}
+        self._detected_columns = False
     
     def _get_session(self):
         """Get database session."""
@@ -517,6 +528,65 @@ class DeliveryRepository:
                 raise RuntimeError("Database session not available")
         return self._session
     
+    def _detect_columns(self):
+        """Auto-detect column names from PostgreSQL."""
+        if self._detected_columns:
+            return
+        
+        try:
+            session = self._get_session()
+            inspector = inspect(session.bind)
+            columns = [col['name'] for col in inspector.get_columns('delivery_report')]
+            
+            logger.info(f"🔍 Detected PostgreSQL columns: {columns[:10]}...")
+            
+            # Detect dealer column
+            dealer_col = None
+            for col in ['customer_name', 'sold_to_party_name', 'dealer_name', 'customer']:
+                if col in columns:
+                    dealer_col = col
+                    break
+            
+            # Detect city column
+            city_col = None
+            for col in ['ship_to_city', 'city', 'dealer_city', 'city_name']:
+                if col in columns:
+                    city_col = col
+                    break
+            
+            # Detect warehouse column
+            warehouse_col = None
+            for col in ['warehouse', 'warehouse_name', 'warehouse_location']:
+                if col in columns:
+                    warehouse_col = col
+                    break
+            
+            self._column_cache = {
+                'dealer_col': dealer_col or 'customer_name',
+                'city_col': city_col or 'ship_to_city',
+                'warehouse_col': warehouse_col or 'warehouse'
+            }
+            
+            self._detected_columns = True
+            
+            logger.info(f"✅ Column mapping: dealer='{self._column_cache['dealer_col']}', "
+                       f"city='{self._column_cache['city_col']}', "
+                       f"warehouse='{self._column_cache['warehouse_col']}'")
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Could not detect columns, using defaults: {e}")
+            self._column_cache = {
+                'dealer_col': 'customer_name',
+                'city_col': 'ship_to_city',
+                'warehouse_col': 'warehouse'
+            }
+            self._detected_columns = True
+    
+    def get_column_name(self, column_type: str) -> str:
+        """Get actual column name from PostgreSQL."""
+        self._detect_columns()
+        return self._column_cache.get(f'{column_type}_col', column_type)
+    
     def get_distinct_customers(self) -> List[Dict[str, Any]]:
         """Get all unique customer/dealer names from delivery reports."""
         try:
@@ -528,18 +598,28 @@ class DeliveryRepository:
                 logger.error("❌ Cannot import DeliveryReport model")
                 return []
             
+            # FIXED: Use detected column name
+            dealer_col = self.get_column_name('dealer')
+            
+            # Get column attribute
+            if hasattr(DeliveryReport, dealer_col):
+                col_attr = getattr(DeliveryReport, dealer_col)
+            else:
+                logger.error(f"❌ Column '{dealer_col}' not found in DeliveryReport")
+                return []
+            
             results = session.query(
-                DeliveryReport.sold_to_party_name.label('customer_name')
+                col_attr.label('customer_name')
             ).filter(
-                DeliveryReport.sold_to_party_name.isnot(None)
+                col_attr.isnot(None)
             ).filter(
-                DeliveryReport.sold_to_party_name != ''
+                col_attr != ''
             ).distinct().order_by(
-                DeliveryReport.sold_to_party_name
+                col_attr
             ).all()
             
             dealers = [{"customer_name": r[0]} for r in results if r[0]]
-            logger.info(f"✅ Loaded {len(dealers)} distinct customers")
+            logger.info(f"✅ Loaded {len(dealers)} distinct customers from column '{dealer_col}'")
             return dealers
             
         except Exception as e:
@@ -557,18 +637,27 @@ class DeliveryRepository:
                 logger.error("❌ Cannot import DeliveryReport model")
                 return []
             
+            # FIXED: Use detected column name
+            city_col = self.get_column_name('city')
+            
+            if hasattr(DeliveryReport, city_col):
+                col_attr = getattr(DeliveryReport, city_col)
+            else:
+                logger.error(f"❌ Column '{city_col}' not found in DeliveryReport")
+                return []
+            
             results = session.query(
-                DeliveryReport.ship_to_city.label('city')
+                col_attr.label('city')
             ).filter(
-                DeliveryReport.ship_to_city.isnot(None)
+                col_attr.isnot(None)
             ).filter(
-                DeliveryReport.ship_to_city != ''
+                col_attr != ''
             ).distinct().order_by(
-                DeliveryReport.ship_to_city
+                col_attr
             ).all()
             
             cities = [{"city": r[0]} for r in results if r[0]]
-            logger.info(f"✅ Loaded {len(cities)} distinct cities")
+            logger.info(f"✅ Loaded {len(cities)} distinct cities from column '{city_col}'")
             return cities
             
         except Exception as e:
@@ -586,18 +675,27 @@ class DeliveryRepository:
                 logger.error("❌ Cannot import DeliveryReport model")
                 return []
             
+            # FIXED: Use detected column name
+            warehouse_col = self.get_column_name('warehouse')
+            
+            if hasattr(DeliveryReport, warehouse_col):
+                col_attr = getattr(DeliveryReport, warehouse_col)
+            else:
+                logger.error(f"❌ Column '{warehouse_col}' not found in DeliveryReport")
+                return []
+            
             results = session.query(
-                DeliveryReport.warehouse.label('warehouse')
+                col_attr.label('warehouse')
             ).filter(
-                DeliveryReport.warehouse.isnot(None)
+                col_attr.isnot(None)
             ).filter(
-                DeliveryReport.warehouse != ''
+                col_attr != ''
             ).distinct().order_by(
-                DeliveryReport.warehouse
+                col_attr
             ).all()
             
             warehouses = [{"warehouse": r[0]} for r in results if r[0]]
-            logger.info(f"✅ Loaded {len(warehouses)} distinct warehouses")
+            logger.info(f"✅ Loaded {len(warehouses)} distinct warehouses from column '{warehouse_col}'")
             return warehouses
             
         except Exception as e:
@@ -611,7 +709,7 @@ class DeliveryRepository:
 class SchemaService:
     """
     Central Metadata Intelligence Engine for Logistics Analytics.
-    FIXED: Enhanced dealer resolution with SequenceMatcher and debug capabilities.
+    FIXED: PostgreSQL column auto-detection and enhanced dealer resolution.
     """
     
     def __init__(self):
@@ -674,12 +772,13 @@ class SchemaService:
         self.refresh_metadata()
     
     # ==========================================================
-    # REFRESH METADATA
+    # REFRESH METADATA (FIXED)
     # ==========================================================
     
     def refresh_metadata(self) -> Dict[str, Any]:
         """
         Reload all metadata from database.
+        FIXED: Proper column name detection for PostgreSQL.
         
         Returns:
             Dict with load statistics
@@ -696,15 +795,20 @@ class SchemaService:
                 dealer_names = [d['customer_name'] for d in dealers_data if d.get('customer_name')]
                 self.dealers = self._build_dealer_map(dealer_names)
                 self._dealer_search_index = self._build_search_index(self.dealers)
-                self._dealer_list = list(self.dealers.values())  # For SequenceMatcher
+                self._dealer_list = list(self.dealers.values())
                 logger.info(f"  ✅ Loaded {len(self.dealers)} dealers")
+                
+                # Log sample dealers for debugging
+                if len(self.dealers) > 0:
+                    sample = list(self.dealers.values())[:5]
+                    logger.info(f"  📋 Sample dealers: {sample}")
                 
                 # Load cities
                 cities_data = repo.get_distinct_cities()
                 city_names = [c['city'] for c in cities_data if c.get('city')]
                 self.cities = self._build_city_map(city_names)
                 self._city_search_index = self._build_search_index(self.cities)
-                self._city_list = list(self.cities.values())  # For SequenceMatcher
+                self._city_list = list(self.cities.values())
                 logger.info(f"  ✅ Loaded {len(self.cities)} cities")
                 
                 # Load warehouses
@@ -712,7 +816,7 @@ class SchemaService:
                 warehouse_names = [w['warehouse'] for w in warehouses_data if w.get('warehouse')]
                 self.warehouses = self._build_warehouse_map(warehouse_names)
                 self._warehouse_search_index = self._build_search_index(self.warehouses)
-                self._warehouse_list = list(self.warehouses.values())  # For SequenceMatcher
+                self._warehouse_list = list(self.warehouses.values())
                 logger.info(f"  ✅ Loaded {len(self.warehouses)} warehouses")
                 
                 # Set state
@@ -760,6 +864,8 @@ class SchemaService:
                 self._load_error = str(e)
                 self._db_connected = False
                 logger.error(f"❌ Failed to refresh metadata: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
                 
                 return {
                     "status": "failed",
@@ -795,11 +901,6 @@ class SchemaService:
         """
         Build dealer lookup map with intelligent aliases.
         FIXED: Enhanced alias generation for better recognition.
-        
-        Examples:
-            "Mian Group of Chakwal Wah" → mian, group, chakwal, wah, mian group, 
-                                          mian group of chakwal wah, etc.
-            "Dubai Electronics" → dubai, electronics, dubai electronics
         """
         dealer_map = {}
         
@@ -817,7 +918,6 @@ class SchemaService:
             words = name.split()
             aliases = set()
             
-            # FIXED: Include all meaningful word combinations
             # Single words (every word is a potential alias)
             for word in words:
                 if len(word) >= 2:
@@ -828,15 +928,13 @@ class SchemaService:
                     if len(word) >= 2:
                         aliases.add(word[:2].lower())
             
-            # Two-word combinations (including "of" and other prepositions)
+            # Two-word combinations
             for i in range(len(words) - 1):
-                # Skip if both words are prepositions
                 if words[i].lower() in ['of', 'the', 'and'] and words[i+1].lower() in ['of', 'the', 'and']:
                     continue
                 two_words = f"{words[i]} {words[i+1]}"
                 if len(two_words) >= 3:
                     aliases.add(two_words.lower())
-                    # Abbreviation of two words
                     abbr = f"{words[i][0]}{words[i+1][0]}".lower()
                     if len(abbr) >= 2:
                         aliases.add(abbr)
@@ -846,12 +944,11 @@ class SchemaService:
                 three_words = f"{words[i]} {words[i+1]} {words[i+2]}"
                 if len(three_words) >= 3:
                     aliases.add(three_words.lower())
-                    # Abbreviation of three words
                     abbr = f"{words[i][0]}{words[i+1][0]}{words[i+2][0]}".lower()
                     if len(abbr) >= 2:
                         aliases.add(abbr)
             
-            # All words concatenated (for multi-word dealers)
+            # All words concatenated
             if len(words) >= 2:
                 concat = ''.join(words).lower()
                 if len(concat) >= 3:
@@ -864,7 +961,6 @@ class SchemaService:
                     without_prefix = name_lower[len(prefix):]
                     if without_prefix:
                         aliases.add(without_prefix)
-                        # Also add words from without_prefix
                         for word in without_prefix.split():
                             if len(word) >= 2:
                                 aliases.add(word)
@@ -877,21 +973,16 @@ class SchemaService:
                     without_suffix = name_lower[:-len(suffix)].strip()
                     if without_suffix:
                         aliases.add(without_suffix)
-                        # Add first word of without_suffix
                         if without_suffix:
                             first_word = without_suffix.split()[0]
                             if first_word:
                                 aliases.add(first_word)
             
-            # FIXED: Special handling for "Mian Group of Chakwal Wah" style names
-            # Extract location names (last word or last few words)
+            # Special handling for location names
             if len(words) >= 2:
-                # Last word is often a location
                 last_word = words[-1].lower()
                 if len(last_word) >= 2:
                     aliases.add(last_word)
-                
-                # Second last word + last word
                 if len(words) >= 2:
                     last_two = f"{words[-2]} {words[-1]}"
                     if len(last_two) >= 3:
@@ -916,42 +1007,23 @@ class SchemaService:
             name = name.strip()
             name_lower = name.lower()
             
-            # Store full name
             city_map[name_lower] = name
             
-            # Generate aliases
             aliases = set()
             
-            # First 3 letters
             if len(name) >= 3:
                 aliases.add(name[:3].lower())
-            
-            # First 2 letters
             if len(name) >= 2:
                 aliases.add(name[:2].lower())
             
-            # Common city abbreviations
             common_abbr = {
-                "lahore": "lhr",
-                "karachi": "khi",
-                "islamabad": "isb",
-                "rawalpindi": "rwp",
-                "multan": "mux",
-                "faisalabad": "fsd",
-                "peshawar": "pwr",
-                "quetta": "qta",
-                "hyderabad": "hyd",
-                "gujranwala": "guj",
-                "sialkot": "skt",
-                "bahawalpur": "bwp",
-                "haripur": "hrp",
-                "pindigheb": "pdg",
-                "abbottabad": "abb",
-                "mingora": "mng",
-                "dera": "der",
-                "sahiwal": "shw",
-                "okara": "okr",
-                "sheikhupura": "shp"
+                "lahore": "lhr", "karachi": "khi", "islamabad": "isb",
+                "rawalpindi": "rwp", "multan": "mux", "faisalabad": "fsd",
+                "peshawar": "pwr", "quetta": "qta", "hyderabad": "hyd",
+                "gujranwala": "guj", "sialkot": "skt", "bahawalpur": "bwp",
+                "haripur": "hrp", "pindigheb": "pdg", "abbottabad": "abb",
+                "mingora": "mng", "dera": "der", "sahiwal": "shw",
+                "okara": "okr", "sheikhupura": "shp"
             }
             
             for full, abbr in common_abbr.items():
@@ -959,7 +1031,6 @@ class SchemaService:
                     aliases.add(abbr)
                     break
             
-            # Add all aliases
             for alias in aliases:
                 if alias and len(alias) >= 2:
                     city_map[alias] = name
@@ -977,47 +1048,34 @@ class SchemaService:
             name = name.strip()
             name_lower = name.lower()
             
-            # Store full name
             warehouse_map[name_lower] = name
             
-            # Generate aliases
             aliases = set()
             
-            # Remove "warehouse" suffix
             if name_lower.endswith(" warehouse"):
                 without_suffix = name_lower[:-10].strip()
                 if without_suffix:
                     aliases.add(without_suffix)
-                    # First word of without_suffix
                     first_word = without_suffix.split()[0]
                     if first_word:
                         aliases.add(first_word)
             
-            # All words as aliases
             words = name.split()
             for word in words:
                 if len(word) >= 2:
                     aliases.add(word.lower())
             
-            # First word
             if words:
                 aliases.add(words[0].lower())
             
-            # First two words
             if len(words) >= 2:
                 two_words = f"{words[0]} {words[1]}"
                 aliases.add(two_words.lower())
             
-            # Common abbreviations
             common_abbr = {
-                "lahore": "lhr",
-                "karachi": "khi",
-                "islamabad": "isb",
-                "rawalpindi": "rwp",
-                "multan": "mux",
-                "faisalabad": "fsd",
-                "peshawar": "pwr",
-                "quetta": "qta",
+                "lahore": "lhr", "karachi": "khi", "islamabad": "isb",
+                "rawalpindi": "rwp", "multan": "mux", "faisalabad": "fsd",
+                "peshawar": "pwr", "quetta": "qta",
             }
             
             for full, abbr in common_abbr.items():
@@ -1025,7 +1083,6 @@ class SchemaService:
                     aliases.add(abbr)
                     break
             
-            # Add all aliases
             for alias in aliases:
                 if alias and len(alias) >= 2:
                     warehouse_map[alias] = name
@@ -1039,14 +1096,6 @@ class SchemaService:
     def _fuzzy_match(self, text: str, candidates: List[str], threshold: float = 0.80) -> Tuple[Optional[str], float]:
         """
         Perform fuzzy matching using SequenceMatcher.
-        
-        Args:
-            text: Text to match
-            candidates: List of candidate strings
-            threshold: Minimum similarity score (0.0 - 1.0)
-            
-        Returns:
-            Tuple of (best_match, confidence_score)
         """
         if not text or not candidates:
             return None, 0.0
@@ -1060,10 +1109,8 @@ class SchemaService:
                 continue
             candidate_lower = candidate.lower()
             
-            # Calculate similarity
             score = SequenceMatcher(None, text_lower, candidate_lower).ratio()
             
-            # Boost score if text is contained in candidate or vice versa
             if text_lower in candidate_lower or candidate_lower in text_lower:
                 score = min(1.0, score + 0.1)
             
@@ -1080,21 +1127,12 @@ class SchemaService:
     def resolve_entity(self, text: str) -> Dict[str, Any]:
         """
         Unified entity resolution - returns dealer, city, or warehouse.
-        FIXED: Added confidence scoring and detailed resolution method.
-        
-        Args:
-            text: Input text to resolve
-            
-        Returns:
-            Dict with entity resolution result
         """
         if not text:
             return {"type": "none", "name": None, "confidence": 0.0}
         
-        # Clean input
         text_clean = text.strip()
         
-        # Try dealer resolution first (most common)
         dealer_result = self.resolve_dealer(text_clean)
         if dealer_result:
             return {
@@ -1103,7 +1141,6 @@ class SchemaService:
                 "confidence": self._get_dealer_confidence(text_clean, dealer_result)
             }
         
-        # Try city resolution
         city_result = self.resolve_city(text_clean)
         if city_result:
             return {
@@ -1112,7 +1149,6 @@ class SchemaService:
                 "confidence": 0.90
             }
         
-        # Try warehouse resolution
         warehouse_result = self.resolve_warehouse(text_clean)
         if warehouse_result:
             return {
@@ -1130,27 +1166,12 @@ class SchemaService:
     def resolve_dealer(self, text: str) -> Optional[str]:
         """
         Resolve dealer from text using intelligent priority-based matching.
-        FIXED: Added SequenceMatcher fuzzy matching.
-        
-        Resolution order:
-        1. Exact Match
-        2. Indexed Match (O(1))
-        3. Word Boundary Match
-        4. Partial Fuzzy Match
-        5. SequenceMatcher Fuzzy Match (NEW)
-        
-        Args:
-            text: Dealer name or alias
-            
-        Returns:
-            Full dealer name or None
         """
         if not text:
             return None
         
         text = text.lower().strip()
         
-        # Remove common prefixes
         prefixes = ["dealer ", "customer ", "show ", "display ", "get "]
         for prefix in prefixes:
             if text.startswith(prefix):
@@ -1188,22 +1209,19 @@ class SchemaService:
                 logger.debug(f"Dealer resolved (fuzzy): {dealer} from '{text}'")
                 return dealer
         
-        # STEP 5: SequenceMatcher Fuzzy Match (NEW)
-        # Filter candidates with similar word count
+        # STEP 5: SequenceMatcher Fuzzy Match
         text_words = set(text.split())
         best_candidates = []
         
         for dealer in self._dealer_list:
             dealer_words = set(dealer.lower().split())
             common_words = text_words & dealer_words
-            if len(common_words) >= 1:  # At least one common word
+            if len(common_words) >= 1:
                 best_candidates.append(dealer)
         
-        # If no candidates with common words, try all
         if not best_candidates:
             best_candidates = self._dealer_list
         
-        # Fuzzy match
         best_match, confidence = self._fuzzy_match(text, best_candidates, threshold=0.80)
         
         if best_match and confidence >= 0.80:
@@ -1215,13 +1233,6 @@ class SchemaService:
     def _get_dealer_confidence(self, input_text: str, resolved_name: str) -> float:
         """
         Calculate confidence score for dealer resolution.
-        
-        Args:
-            input_text: Original input text
-            resolved_name: Resolved dealer name
-            
-        Returns:
-            Confidence score (0.0 - 1.0)
         """
         if not input_text or not resolved_name:
             return 0.0
@@ -1229,43 +1240,31 @@ class SchemaService:
         input_lower = input_text.lower().strip()
         resolved_lower = resolved_name.lower().strip()
         
-        # Exact match
         if input_lower == resolved_lower:
             return 0.99
         
-        # Input is contained in resolved
         if input_lower in resolved_lower:
             return 0.95
         
-        # Resolved is contained in input
         if resolved_lower in input_lower:
             return 0.90
         
-        # Partial match
         input_words = set(input_lower.split())
         resolved_words = set(resolved_lower.split())
         common_words = input_words & resolved_words
         
         if common_words:
-            # At least one common word
             if len(common_words) >= 2:
                 return 0.85
             else:
                 return 0.80
         
-        # SequenceMatcher fallback
         score = SequenceMatcher(None, input_lower, resolved_lower).ratio()
         return min(0.90, score)
     
     def find_dealer_debug(self, name: str) -> Dict[str, Any]:
         """
         Debug method to find dealer resolution details.
-        
-        Args:
-            name: Dealer name to look up
-            
-        Returns:
-            Debug info with resolution details
         """
         result = {
             "input": name,
@@ -1278,7 +1277,6 @@ class SchemaService:
         if not name:
             return result
         
-        # Try all resolution methods
         methods = [
             ("exact", self._resolve_dealer_exact),
             ("index", self._resolve_dealer_index),
@@ -1295,7 +1293,6 @@ class SchemaService:
                 result["confidence"] = self._get_dealer_confidence(name, resolved)
                 break
         
-        # Get all possible matches
         for dealer in self._dealer_list:
             if dealer.lower() != name.lower():
                 score = SequenceMatcher(None, name.lower(), dealer.lower()).ratio()
@@ -1310,7 +1307,6 @@ class SchemaService:
         return result
     
     def _resolve_dealer_exact(self, text: str) -> Optional[str]:
-        """Exact match resolution."""
         text_lower = text.lower().strip()
         for alias, dealer in self.dealers.items():
             if alias == text_lower:
@@ -1318,12 +1314,10 @@ class SchemaService:
         return None
     
     def _resolve_dealer_index(self, text: str) -> Optional[str]:
-        """Indexed match resolution."""
         text_lower = text.lower().strip()
         return self._dealer_search_index.get(text_lower)
     
     def _resolve_dealer_word_boundary(self, text: str) -> Optional[str]:
-        """Word boundary match resolution."""
         text_lower = text.lower().strip()
         words = text_lower.split()
         for word in words:
@@ -1335,7 +1329,6 @@ class SchemaService:
         return None
     
     def _resolve_dealer_fuzzy(self, text: str) -> Optional[str]:
-        """Partial fuzzy match resolution."""
         text_lower = text.lower().strip()
         for alias, dealer in self.dealers.items():
             if alias in text_lower or text_lower in alias:
@@ -1343,31 +1336,15 @@ class SchemaService:
         return None
     
     def _resolve_dealer_sequence(self, text: str) -> Optional[str]:
-        """SequenceMatcher fuzzy match resolution."""
         text_lower = text.lower().strip()
         best_match, _ = self._fuzzy_match(text_lower, self._dealer_list, threshold=0.80)
         return best_match
     
     def get_sample_dealers(self, limit: int = 10) -> List[Dict[str, str]]:
-        """
-        Get sample dealers for debugging.
-        
-        Args:
-            limit: Number of dealers to return
-            
-        Returns:
-            List of dealer names
-        """
         dealer_list = list(self.dealers.values())[:limit]
         return [{"name": d} for d in dealer_list]
     
     def get_dealer_count(self) -> int:
-        """
-        Get total number of dealers loaded.
-        
-        Returns:
-            Number of dealers
-        """
         return len(self.dealers)
     
     # ==========================================================
@@ -1375,31 +1352,18 @@ class SchemaService:
     # ==========================================================
     
     def resolve_city(self, text: str) -> Optional[str]:
-        """
-        Resolve city from text using intelligent priority-based matching.
-        FIXED: Added SequenceMatcher fuzzy matching.
-        
-        Args:
-            text: City name or alias
-            
-        Returns:
-            Full city name or None
-        """
         if not text:
             return None
         
         text = text.lower().strip()
         
-        # STEP 1: Exact Match
         for alias, city in self.cities.items():
             if alias == text:
                 return city
         
-        # STEP 2: Indexed Match
         if text in self._city_search_index:
             return self._city_search_index[text]
         
-        # STEP 3: Word Boundary Match
         words = text.split()
         for word in words:
             if len(word) >= 2:
@@ -1409,13 +1373,11 @@ class SchemaService:
                         logger.debug(f"City resolved (word boundary): {city} from '{text}'")
                         return city
         
-        # STEP 4: Partial Fuzzy Match
         for alias, city in self.cities.items():
             if alias in text or text in alias:
                 logger.debug(f"City resolved (fuzzy): {city} from '{text}'")
                 return city
         
-        # STEP 5: SequenceMatcher Fuzzy Match (NEW)
         best_match, confidence = self._fuzzy_match(text, self._city_list, threshold=0.80)
         if best_match and confidence >= 0.80:
             logger.debug(f"City resolved (fuzzy sequence): {best_match} (confidence: {confidence:.2f})")
@@ -1424,31 +1386,14 @@ class SchemaService:
         return None
     
     def find_city_debug(self, name: str) -> Dict[str, Any]:
-        """
-        Debug method to find city resolution details.
-        
-        Args:
-            name: City name to look up
-            
-        Returns:
-            Debug info with resolution details
-        """
-        result = {
-            "input": name,
-            "resolved": None,
-            "method": "none",
-            "confidence": 0.0
-        }
-        
+        result = {"input": name, "resolved": None, "method": "none", "confidence": 0.0}
         if not name:
             return result
-        
         resolved = self.resolve_city(name)
         if resolved:
             result["resolved"] = resolved
             result["method"] = "city_resolution"
             result["confidence"] = 0.90
-        
         return result
     
     # ==========================================================
@@ -1456,31 +1401,18 @@ class SchemaService:
     # ==========================================================
     
     def resolve_warehouse(self, text: str) -> Optional[str]:
-        """
-        Resolve warehouse from text using intelligent priority-based matching.
-        FIXED: Added SequenceMatcher fuzzy matching.
-        
-        Args:
-            text: Warehouse name or alias
-            
-        Returns:
-            Full warehouse name or None
-        """
         if not text:
             return None
         
         text = text.lower().strip()
         
-        # STEP 1: Exact Match
         for alias, warehouse in self.warehouses.items():
             if alias == text:
                 return warehouse
         
-        # STEP 2: Indexed Match
         if text in self._warehouse_search_index:
             return self._warehouse_search_index[text]
         
-        # STEP 3: Word Boundary Match
         words = text.split()
         for word in words:
             if len(word) >= 2:
@@ -1490,13 +1422,11 @@ class SchemaService:
                         logger.debug(f"Warehouse resolved (word boundary): {warehouse} from '{text}'")
                         return warehouse
         
-        # STEP 4: Partial Fuzzy Match
         for alias, warehouse in self.warehouses.items():
             if alias in text or text in alias:
                 logger.debug(f"Warehouse resolved (fuzzy): {warehouse} from '{text}'")
                 return warehouse
         
-        # STEP 5: SequenceMatcher Fuzzy Match (NEW)
         best_match, confidence = self._fuzzy_match(text, self._warehouse_list, threshold=0.80)
         if best_match and confidence >= 0.80:
             logger.debug(f"Warehouse resolved (fuzzy sequence): {best_match} (confidence: {confidence:.2f})")
@@ -1505,31 +1435,14 @@ class SchemaService:
         return None
     
     def find_warehouse_debug(self, name: str) -> Dict[str, Any]:
-        """
-        Debug method to find warehouse resolution details.
-        
-        Args:
-            name: Warehouse name to look up
-            
-        Returns:
-            Debug info with resolution details
-        """
-        result = {
-            "input": name,
-            "resolved": None,
-            "method": "none",
-            "confidence": 0.0
-        }
-        
+        result = {"input": name, "resolved": None, "method": "none", "confidence": 0.0}
         if not name:
             return result
-        
         resolved = self.resolve_warehouse(name)
         if resolved:
             result["resolved"] = resolved
             result["method"] = "warehouse_resolution"
             result["confidence"] = 0.90
-        
         return result
     
     # ==========================================================
@@ -1537,15 +1450,6 @@ class SchemaService:
     # ==========================================================
     
     def find_entity_debug(self, name: str) -> Dict[str, Any]:
-        """
-        Debug method to find any entity (dealer, city, or warehouse).
-        
-        Args:
-            name: Entity name to look up
-            
-        Returns:
-            Debug info with resolution details
-        """
         result = {
             "input": name,
             "dealer": self.find_dealer_debug(name),
@@ -1556,38 +1460,16 @@ class SchemaService:
         return result
     
     def get_all_entities(self, entity_type: str = "all") -> Dict[str, Any]:
-        """
-        Get all entities by type.
-        
-        Args:
-            entity_type: 'dealers', 'cities', 'warehouses', or 'all'
-            
-        Returns:
-            Dict with entity lists
-        """
         result = {}
-        
         if entity_type in ["dealers", "all"]:
             result["dealers"] = list(self.dealers.values())
-        
         if entity_type in ["cities", "all"]:
             result["cities"] = list(self.cities.values())
-        
         if entity_type in ["warehouses", "all"]:
             result["warehouses"] = list(self.warehouses.values())
-        
         return result
     
     def search_entities(self, query: str) -> Dict[str, Any]:
-        """
-        Search across all entities.
-        
-        Args:
-            query: Search query
-            
-        Returns:
-            Dict with matching entities
-        """
         query_lower = query.lower().strip()
         result = {
             "query": query,
@@ -1596,17 +1478,14 @@ class SchemaService:
             "matching_warehouses": []
         }
         
-        # Search dealers
         for name in self.dealers.values():
             if query_lower in name.lower():
                 result["matching_dealers"].append(name)
         
-        # Search cities
         for name in self.cities.values():
             if query_lower in name.lower():
                 result["matching_cities"].append(name)
         
-        # Search warehouses
         for name in self.warehouses.values():
             if query_lower in name.lower():
                 result["matching_warehouses"].append(name)
@@ -1618,12 +1497,6 @@ class SchemaService:
     # ==========================================================
     
     def get_metadata_stats(self) -> Dict[str, Any]:
-        """
-        Get quick metadata statistics.
-        
-        Returns:
-            Dict with basic statistics
-        """
         return {
             "dealers": len(self.dealers),
             "cities": len(self.cities),
@@ -1636,12 +1509,6 @@ class SchemaService:
         }
     
     def generate_metadata_report(self) -> Dict[str, Any]:
-        """
-        Generate a comprehensive metadata report.
-        
-        Returns:
-            Dict with complete metadata report
-        """
         return {
             "status": "healthy" if self._health_score >= 70 else "warning" if self._health_score >= 50 else "critical",
             "health_score": self._health_score,
@@ -1678,63 +1545,45 @@ class SchemaService:
     # ==========================================================
     
     def _validate_or_raise(self):
-        """Validate metadata and raise if critical data missing."""
         if len(self.dealers) == 0:
             raise RuntimeError(
                 "No dealers loaded from database. "
-                "Check sold_to_party_name column in delivery_report table."
+                "Check customer_name column in delivery_report table."
             )
         
         if len(self.cities) == 0:
-            raise RuntimeError(
-                "No cities loaded from database. "
-                "Check ship_to_city column in delivery_report table."
-            )
+            logger.warning("⚠️ No cities loaded from database")
         
         if len(self.warehouses) == 0:
-            raise RuntimeError(
-                "No warehouses loaded from database. "
-                "Check warehouse column in delivery_report table."
-            )
+            logger.warning("⚠️ No warehouses loaded from database")
         
         if len(self.dealers) < 10:
             logger.warning(f"⚠️ Only {len(self.dealers)} dealers loaded - expected at least 10")
     
     def _log_warnings(self):
-        """Log warnings if metadata counts are suspicious."""
         if len(self.dealers) < 10:
             logger.warning(f"⚠️ Dealer count low: {len(self.dealers)} - check data import")
-        
         if len(self.cities) < 5:
             logger.warning(f"⚠️ City count low: {len(self.cities)} - check data import")
-        
         if len(self.warehouses) < 3:
             logger.warning(f"⚠️ Warehouse count low: {len(self.warehouses)} - check data import")
     
     def _calculate_health_score(self) -> int:
-        """Calculate health score (0-100)."""
         score = 100
-        
-        # Dealer score
         if len(self.dealers) == 0:
             score -= 40
         elif len(self.dealers) < 10:
             score -= 20
         elif len(self.dealers) < 50:
             score -= 10
-        
-        # City score
         if len(self.cities) == 0:
             score -= 30
         elif len(self.cities) < 5:
             score -= 15
-        
-        # Warehouse score
         if len(self.warehouses) == 0:
             score -= 30
         elif len(self.warehouses) < 3:
             score -= 15
-        
         return max(0, min(100, score))
     
     # ==========================================================
@@ -1742,37 +1591,23 @@ class SchemaService:
     # ==========================================================
     
     def detect_intent(self, text: str) -> Tuple[Optional[str], float]:
-        """
-        Detect intent from text using priority-based scoring.
-        FIXED: Better handling of entity-only queries.
-        
-        Args:
-            text: Input text to analyze
-            
-        Returns:
-            Tuple of (intent_name, confidence_score)
-        """
         if not text:
             return None, 0.0
         
         text = text.lower().strip()
         
-        # Check for DN first
         if DN_PATTERN.search(text):
             logger.debug(f"Intent detected: dn_lookup (DN number found)")
             return "dn_lookup", 0.95
         
         scores = {}
-        
         for intent, keywords in self.intents.items():
             total_score = 0
             matched_keywords = 0
-            
             for keyword, priority in keywords:
                 if keyword in text:
                     total_score += priority
                     matched_keywords += 1
-            
             if matched_keywords > 0:
                 confidence = min(0.95, 0.5 + (total_score / 20))
                 scores[intent] = confidence
@@ -1790,26 +1625,14 @@ class SchemaService:
     # ==========================================================
     
     def detect_metric(self, text: str) -> Optional[str]:
-        """
-        Detect metric from text.
-        
-        Args:
-            text: Input text to analyze
-            
-        Returns:
-            Metric name or None
-        """
         if not text:
             return None
-        
         text = text.lower().strip()
-        
         for metric, keywords in self.metrics.items():
             for keyword in keywords:
                 if keyword in text:
                     logger.debug(f"Metric detected: {metric} (matched: '{keyword}')")
                     return metric
-        
         return None
     
     # ==========================================================
@@ -1817,24 +1640,12 @@ class SchemaService:
     # ==========================================================
     
     def is_logistics_keyword(self, text: str) -> bool:
-        """
-        Check if text contains logistics keywords.
-        
-        Args:
-            text: Input text to check
-            
-        Returns:
-            True if text contains logistics keywords
-        """
         if not text:
             return False
-        
         text = text.lower().strip()
-        
         for keyword in self.logistics_keywords:
             if keyword in text:
                 return True
-        
         return False
     
     # ==========================================================
@@ -1842,29 +1653,11 @@ class SchemaService:
     # ==========================================================
     
     def is_dn_number(self, text: str) -> bool:
-        """
-        Check if text is a valid DN number (8-12 digits).
-        
-        Args:
-            text: Input text to check
-            
-        Returns:
-            True if text matches DN pattern
-        """
         if not text:
             return False
         return bool(DN_PATTERN.match(text.strip()))
     
     def extract_dn_number(self, text: str) -> Optional[str]:
-        """
-        Extract DN number from text.
-        
-        Args:
-            text: Input text
-            
-        Returns:
-            DN number or None
-        """
         if not text:
             return None
         match = DN_PATTERN.search(text)
@@ -1880,27 +1673,9 @@ class SchemaService:
         pgi_date: Optional[datetime],
         pod_date: Optional[datetime]
     ) -> Dict[str, Any]:
-        """
-        Calculate delivery metrics with data quality validation.
-        FIXED: Correct sequence validation.
-        
-        Args:
-            dn_date: DN Create Date
-            pgi_date: Good Issue Date
-            pod_date: POD Date
-            
-        Returns:
-            Dict with validation results and calculated metrics
-        """
         return self.delivery_metrics.validate_dates(dn_date, pgi_date, pod_date)
     
     def get_delivery_metrics_definition(self) -> Dict[str, Any]:
-        """
-        Get delivery metrics calculation rules.
-        
-        Returns:
-            Dict with rule definitions
-        """
         return {
             "processing_time": {
                 "rule": self.delivery_metrics.processing_time_rule,
@@ -1924,15 +1699,6 @@ class SchemaService:
     # ==========================================================
     
     def get_risk_status(self, score: float) -> str:
-        """
-        Get risk status based on score.
-        
-        Args:
-            score: Numeric score (0-100)
-            
-        Returns:
-            Risk status string
-        """
         if score < 50:
             return "critical"
         elif score < 70:
@@ -1942,52 +1708,16 @@ class SchemaService:
         return "low"
     
     def get_risk_emoji(self, status: str) -> str:
-        """
-        Get emoji for risk status.
-        
-        Args:
-            status: Risk status
-            
-        Returns:
-            Emoji string
-        """
         emojis = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}
         return emojis.get(status, "⚪")
     
     def get_dn_status(self, status_key: str) -> str:
-        """
-        Get delivery note status description.
-        
-        Args:
-            status_key: Status key
-            
-        Returns:
-            Status description
-        """
         return self.statuses.get("dn_status", {}).get(status_key, "❓ Unknown")
     
     def get_rule(self, rule_name: str) -> Optional[Any]:
-        """
-        Get business rule by name.
-        
-        Args:
-            rule_name: Rule name
-            
-        Returns:
-            Business rule configuration
-        """
         return self.rules.get(rule_name)
     
     def get_data_quality_status(self, validation_result: Dict[str, Any]) -> str:
-        """
-        Get data quality status from validation result.
-        
-        Args:
-            validation_result: Result from calculate_delivery_metrics
-            
-        Returns:
-            Data quality status string
-        """
         if not validation_result.get("is_valid", False):
             return "error"
         elif validation_result.get("issues", []):
@@ -1999,12 +1729,6 @@ class SchemaService:
     # ==========================================================
     
     def get_health_report(self) -> Dict[str, Any]:
-        """
-        Get comprehensive health report.
-        
-        Returns:
-            Health report with counts, score, and status
-        """
         return {
             "dealers": len(self.dealers),
             "cities": len(self.cities),
@@ -2025,12 +1749,6 @@ class SchemaService:
     # ==========================================================
     
     def get_diagnostic_report(self) -> Dict[str, Any]:
-        """
-        Get diagnostic report for /debug/schema endpoint.
-        
-        Returns:
-            Diagnostic report with all metadata
-        """
         return {
             "dealers": len(self.dealers),
             "cities": len(self.cities),
@@ -2050,26 +1768,15 @@ class SchemaService:
         }
     
     def validate_metadata(self) -> Dict[str, Any]:
-        """
-        Validate metadata integrity.
-        
-        Returns:
-            Validation report with counts and warnings
-        """
         warnings = []
-        
         if len(self.dealers) == 0:
             warnings.append("No dealers loaded from database")
-        
         if len(self.cities) == 0:
             warnings.append("No cities loaded from database")
-        
         if len(self.warehouses) == 0:
             warnings.append("No warehouses loaded from database")
-        
         if len(self.dealers) < 10:
             warnings.append(f"Low dealer count: {len(self.dealers)}")
-        
         return {
             "counts": {
                 "dealers": len(self.dealers),
@@ -2093,12 +1800,7 @@ _schema_lock = Lock()
 
 
 def get_schema_service() -> SchemaService:
-    """
-    Thread-safe singleton getter for SchemaService.
-    
-    Returns:
-        SchemaService: Singleton instance with database-loaded metadata
-    """
+    """Thread-safe singleton getter for SchemaService."""
     global _schema_service
     
     if _schema_service is None:
@@ -2119,87 +1821,36 @@ def get_schema_service() -> SchemaService:
 # ==========================================================
 
 def refresh_schema_metadata() -> Dict[str, Any]:
-    """
-    Force refresh of schema metadata from database.
-    Call this after Excel import or on demand.
-    
-    Returns:
-        Dict: Refresh results
-    """
     service = get_schema_service()
     return service.refresh_metadata()
 
 
 def get_schema_health() -> Dict[str, Any]:
-    """
-    Get schema health report.
-    Use for /debug/schema/health endpoint.
-    
-    Returns:
-        Dict: Health report
-    """
     service = get_schema_service()
     return service.get_health_report()
 
 
 def get_schema_diagnostics() -> Dict[str, Any]:
-    """
-    Get schema diagnostics.
-    Use for /debug/schema endpoint.
-    
-    Returns:
-        Dict: Diagnostic report
-    """
     service = get_schema_service()
     return service.get_diagnostic_report()
 
 
 def generate_metadata_report() -> Dict[str, Any]:
-    """
-    Generate a comprehensive metadata report.
-    
-    Returns:
-        Dict with complete metadata report
-    """
     service = get_schema_service()
     return service.generate_metadata_report()
 
 
 def get_metadata_stats() -> Dict[str, Any]:
-    """
-    Get quick metadata statistics.
-    
-    Returns:
-        Dict with basic statistics
-    """
     service = get_schema_service()
     return service.get_metadata_stats()
 
 
 def is_dn_number(text: str) -> bool:
-    """
-    Check if text is a valid DN number (8-12 digits).
-    
-    Args:
-        text: Input text
-        
-    Returns:
-        True if text matches DN pattern
-    """
     service = get_schema_service()
     return service.is_dn_number(text)
 
 
 def extract_dn_number(text: str) -> Optional[str]:
-    """
-    Extract DN number from text.
-    
-    Args:
-        text: Input text
-        
-    Returns:
-        DN number or None
-    """
     service = get_schema_service()
     return service.extract_dn_number(text)
 
@@ -2209,140 +1860,51 @@ def calculate_delivery_metrics(
     pgi_date: Optional[datetime],
     pod_date: Optional[datetime]
 ) -> Dict[str, Any]:
-    """
-    Calculate delivery metrics with data quality validation.
-    
-    Args:
-        dn_date: DN Create Date
-        pgi_date: Good Issue Date
-        pod_date: POD Date
-        
-    Returns:
-        Dict with validation results and calculated metrics
-    """
     service = get_schema_service()
     return service.calculate_delivery_metrics(dn_date, pgi_date, pod_date)
 
 
 def resolve_entity(text: str) -> Dict[str, Any]:
-    """
-    Unified entity resolution.
-    
-    Args:
-        text: Input text to resolve
-        
-    Returns:
-        Dict with entity resolution result
-    """
     service = get_schema_service()
     return service.resolve_entity(text)
 
 
 def find_dealer_debug(name: str) -> Dict[str, Any]:
-    """
-    Debug method to find dealer resolution details.
-    
-    Args:
-        name: Dealer name to look up
-        
-    Returns:
-        Debug info with resolution details
-    """
     service = get_schema_service()
     return service.find_dealer_debug(name)
 
 
 def find_city_debug(name: str) -> Dict[str, Any]:
-    """
-    Debug method to find city resolution details.
-    
-    Args:
-        name: City name to look up
-        
-    Returns:
-        Debug info with resolution details
-    """
     service = get_schema_service()
     return service.find_city_debug(name)
 
 
 def find_warehouse_debug(name: str) -> Dict[str, Any]:
-    """
-    Debug method to find warehouse resolution details.
-    
-    Args:
-        name: Warehouse name to look up
-        
-    Returns:
-        Debug info with resolution details
-    """
     service = get_schema_service()
     return service.find_warehouse_debug(name)
 
 
 def find_entity_debug(name: str) -> Dict[str, Any]:
-    """
-    Debug method to find any entity (dealer, city, or warehouse).
-    
-    Args:
-        name: Entity name to look up
-        
-    Returns:
-        Debug info with resolution details
-    """
     service = get_schema_service()
     return service.find_entity_debug(name)
 
 
 def get_all_entities(entity_type: str = "all") -> Dict[str, Any]:
-    """
-    Get all entities by type.
-    
-    Args:
-        entity_type: 'dealers', 'cities', 'warehouses', or 'all'
-        
-    Returns:
-        Dict with entity lists
-    """
     service = get_schema_service()
     return service.get_all_entities(entity_type)
 
 
 def search_entities(query: str) -> Dict[str, Any]:
-    """
-    Search across all entities.
-    
-    Args:
-        query: Search query
-        
-    Returns:
-        Dict with matching entities
-    """
     service = get_schema_service()
     return service.search_entities(query)
 
 
 def get_sample_dealers(limit: int = 10) -> List[Dict[str, str]]:
-    """
-    Get sample dealers for debugging.
-    
-    Args:
-        limit: Number of dealers to return
-        
-    Returns:
-        List of dealer names
-    """
     service = get_schema_service()
     return service.get_sample_dealers(limit)
 
 
 def get_dealer_count() -> int:
-    """
-    Get total number of dealers loaded.
-    
-    Returns:
-        Number of dealers
-    """
     service = get_schema_service()
     return service.get_dealer_count()
 
@@ -2352,38 +1914,27 @@ def get_dealer_count() -> int:
 # ==========================================================
 
 __all__ = [
-    # Main classes
     'SchemaService',
     'DeliveryMetrics',
     'DeliveryRepository',
-    
-    # Singleton helpers
     'get_schema_service',
     'refresh_schema_metadata',
     'get_schema_health',
     'get_schema_diagnostics',
-    'generate_metadata_report',  # ✅ NEW
-    'get_metadata_stats',        # ✅ NEW
-    
-    # Entity resolution
+    'generate_metadata_report',
+    'get_metadata_stats',
     'resolve_entity',
     'find_dealer_debug',
     'find_city_debug',
     'find_warehouse_debug',
-    'find_entity_debug',         # ✅ NEW
-    'get_all_entities',          # ✅ NEW
-    'search_entities',           # ✅ NEW
+    'find_entity_debug',
+    'get_all_entities',
+    'search_entities',
     'get_sample_dealers',
     'get_dealer_count',
-    
-    # DN helpers
     'is_dn_number',
     'extract_dn_number',
-    
-    # Delivery metrics
     'calculate_delivery_metrics',
-    
-    # Constants
     'DN_PATTERN',
     'INTENT_KEYWORDS',
     'METRIC_KEYWORDS',
