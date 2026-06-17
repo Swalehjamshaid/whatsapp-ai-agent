@@ -1,21 +1,17 @@
 # ==========================================================
-# FILE: app/services/analytics_service.py (v10.0 - FULLY ALIGNED)
+# FILE: app/services/analytics_service.py (v10.1 - FIXED AGING)
 # ==========================================================
 # PURPOSE: PRIMARY ANALYTICS ENGINE - Direct PostgreSQL Integration
-# VERSION: 10.0 - Fully Aligned with ai_provider_service.py v14.0
+# VERSION: 10.1 - Fixed Aging Calculations in _format_dn_record()
 #
 # CRITICAL FIXES:
-# 1. ✅ SQLAlchemy CASE syntax for 2.x compatibility
-# 2. ✅ Revenue ranking using column references
-# 3. ✅ City search with wildcards (%)
-# 4. ✅ Warehouse search with wildcards (%)
-# 5. ✅ Executive insights uses pgi_rate
-# 6. ✅ Added get_root_cause_insights() method
-# 7. ✅ Added get_control_tower_alerts() method
-# 8. ✅ Added get_trend_analysis() method
-# 9. ✅ Added compare_dealers(), compare_warehouses(), compare_cities()
-# 10. ✅ Added get_dealer_revenue(), get_dealer_units(), get_dealer_performance(), get_dealer_aging()
-# 11. ✅ All methods return AnalyticsResponse
+# 1. ✅ Fixed _format_dn_record() to calculate PGI, POD, Total, Transit Aging
+# 2. ✅ SQLAlchemy CASE syntax for 2.x compatibility
+# 3. ✅ Revenue ranking using column references
+# 4. ✅ City search with wildcards (%)
+# 5. ✅ Warehouse search with wildcards (%)
+# 6. ✅ Executive insights uses pgi_rate
+# 7. ✅ All methods return AnalyticsResponse
 # ==========================================================
 
 from typing import Optional, Dict, Any, List, Tuple
@@ -235,26 +231,34 @@ class AnalyticsRepository:
             return None
         dealer_input = dealer_input.strip()
         try:
+            # 1. Exact match on customer_name
             record = self.db.query(DeliveryReport).filter(
                 func.lower(DeliveryReport.customer_name) == func.lower(dealer_input)
             ).first()
             if record:
                 return record.customer_name
+            
+            # 2. Contains match on customer_name
             record = self.db.query(DeliveryReport).filter(
                 DeliveryReport.customer_name.ilike(f"%{dealer_input}%")
             ).first()
             if record:
                 return record.customer_name
+            
+            # 3. Dealer_code match
             record = self.db.query(DeliveryReport).filter(
                 DeliveryReport.dealer_code.ilike(dealer_input)
             ).first()
             if record:
                 return record.customer_name
+            
+            # 4. Customer_code match
             record = self.db.query(DeliveryReport).filter(
                 DeliveryReport.customer_code.ilike(dealer_input)
             ).first()
             if record:
                 return record.customer_name
+            
             return None
         except Exception as e:
             logger.error(f"Resolve dealer failed: {e}")
@@ -816,13 +820,12 @@ class AnalyticsService:
         }
         self._test_postgresql()
         logger.info("=" * 70)
-        logger.info("AnalyticsService v10.0 - FULLY ALIGNED")
+        logger.info("AnalyticsService v10.1 - FIXED AGING CALCULATION")
         logger.info("=" * 70)
+        logger.info("   ✅ Fixed _format_dn_record() aging calculations")
+        logger.info("   ✅ PGI, POD, Total, Transit Aging now calculated")
         logger.info("   ✅ All methods return AnalyticsResponse")
         logger.info("   ✅ customer_name = Dealer = Sold-To Party")
-        logger.info("   ✅ DN Count = COUNT(DISTINCT dn_no)")
-        logger.info("   ✅ Units = SUM(dn_qty)")
-        logger.info("   ✅ Revenue = SUM(dn_amount)")
         logger.info("   STATUS: ✅ PRODUCTION READY")
         logger.info("=" * 70)
     
@@ -883,6 +886,10 @@ class AnalyticsService:
     def _normalize_dn(self, dn: str) -> Optional[str]:
         return self.repo.normalize_dn(dn)
     
+    # ==========================================================
+    # DN ANALYTICS - WITH FIXED AGING CALCULATION
+    # ==========================================================
+    
     def get_dn_analytics(self, dn_number: str) -> AnalyticsResponse:
         request_id = str(uuid.uuid4())[:8]
         start_time = time.time()
@@ -903,9 +910,19 @@ class AnalyticsService:
                 self.metrics["failed_requests"] += 1
                 self.metrics["dn_lookups_failure"] += 1
                 return AnalyticsResponse(success=False, error=f"DN {dn_number} not found in database", error_id=str(uuid.uuid4())[:8])
+            
+            # FIXED: Calculate aging in _format_dn_record
             formatted = self._format_dn_record(record)
             validation = self._validate_dn_dates(record)
-            data = {"record": formatted, "validation": validation, "status": self._determine_dn_status(record), "found": True, "request_id": request_id, "duration_ms": (time.time() - start_time) * 1000}
+            
+            data = {
+                "record": formatted,
+                "validation": validation,
+                "status": self._determine_dn_status(record),
+                "found": True,
+                "request_id": request_id,
+                "duration_ms": (time.time() - start_time) * 1000
+            }
             self.metrics["successful_requests"] += 1
             self.metrics["dn_lookups_success"] += 1
             self.metrics["total_duration_ms"] += (time.time() - start_time) * 1000
@@ -918,26 +935,90 @@ class AnalyticsService:
             logger.error(f"[{request_id}] DN_LOOKUP_FAILED=exception")
             return AnalyticsResponse(success=False, error=str(e), error_id=error_id)
     
+    # ==========================================================
+    # FIXED: _format_dn_record() WITH AGING CALCULATIONS
+    # ==========================================================
+    
     def _format_dn_record(self, record: DeliveryReport) -> Dict[str, Any]:
+        """
+        Format DN record with FULL aging calculations.
+        
+        FIXED: Now calculates PGI, POD, Total, and Transit Aging properly.
+        """
+        
+        # ==========================================================
+        # AGING CALCULATIONS - FIXED
+        # ==========================================================
+        
+        pgi_aging_days = None
+        pod_aging_days = None
+        total_aging_days = None
+        transit_aging_days = None
+        
+        # PGI Aging: Good Issue Date - DN Create Date
+        if record.dn_create_date and record.good_issue_date:
+            if record.good_issue_date >= record.dn_create_date:
+                pgi_aging_days = (record.good_issue_date - record.dn_create_date).days
+            else:
+                # Negative aging - data quality issue (PGI before DN Create)
+                pgi_aging_days = (record.good_issue_date - record.dn_create_date).days
+        
+        # POD Aging: POD Date - Good Issue Date
+        if record.good_issue_date and record.pod_date:
+            if record.pod_date >= record.good_issue_date:
+                pod_aging_days = (record.pod_date - record.good_issue_date).days
+            else:
+                # Negative aging - data quality issue (POD before PGI)
+                pod_aging_days = (record.pod_date - record.good_issue_date).days
+        
+        # Total Aging: POD Date - DN Create Date
+        if record.dn_create_date and record.pod_date:
+            if record.pod_date >= record.dn_create_date:
+                total_aging_days = (record.pod_date - record.dn_create_date).days
+            else:
+                # Negative aging - data quality issue (POD before DN Create)
+                total_aging_days = (record.pod_date - record.dn_create_date).days
+        
+        # Transit Aging: Current Date - PGI Date (if POD not received)
+        if record.good_issue_date and not record.pod_date:
+            transit_aging_days = (datetime.now().date() - record.good_issue_date).days
+        
         return {
+            # Core identification
             "dn_number": record.dn_no,
             "customer_name": record.customer_name,
             "dealer_code": record.dealer_code or "",
             "customer_code": record.customer_code or "",
+            
+            # Location
             "division": record.division or "",
             "warehouse": record.warehouse,
             "warehouse_code": record.warehouse_code or "",
             "delivery_location": record.delivery_location or "",
             "ship_to_city": record.ship_to_city,
+            
+            # Sales
             "sales_office": record.sales_office,
             "sales_manager": record.sales_manager,
+            
+            # Product
             "material_no": record.material_no,
             "customer_model": record.customer_model,
             "units": int(record.dn_qty) if record.dn_qty else 0,
             "amount": float(record.dn_amount) if record.dn_amount else 0,
+            
+            # Dates
             "dn_create_date": record.dn_create_date.isoformat() if record.dn_create_date else None,
             "good_issue_date": record.good_issue_date.isoformat() if record.good_issue_date else None,
             "pod_date": record.pod_date.isoformat() if record.pod_date else None,
+            
+            # FIXED: Aging calculations
+            "pgi_aging_days": pgi_aging_days,
+            "pod_aging_days": pod_aging_days,
+            "total_aging_days": total_aging_days,
+            "transit_aging_days": transit_aging_days,
+            
+            # Status
             "delivery_status": record.delivery_status,
             "pgi_status": record.pgi_status,
             "pod_status": record.pod_status,
@@ -946,10 +1027,19 @@ class AnalyticsService:
         }
     
     def _validate_dn_dates(self, record: DeliveryReport) -> Dict[str, Any]:
-        validation = {"is_valid": True, "issues": [], "warnings": [], "durations": {}, "pending_flag": record.pending_flag or False}
+        """Validate DN dates for data quality."""
+        validation = {
+            "is_valid": True,
+            "issues": [],
+            "warnings": [],
+            "durations": {},
+            "pending_flag": record.pending_flag or False
+        }
+        
         dn_date = record.dn_create_date
         pgi_date = record.good_issue_date
         pod_date = record.pod_date
+        
         missing = []
         if not dn_date:
             missing.append("DN Create Date")
@@ -958,8 +1048,11 @@ class AnalyticsService:
             missing.append("PGI Date")
         if not pod_date:
             missing.append("POD Date")
+        
         if missing:
             validation["issues"].append(f"Missing dates: {', '.join(missing)}")
+        
+        # PGI Aging validation
         if dn_date and pgi_date:
             processing_days = (pgi_date - dn_date).days
             if processing_days < 0:
@@ -970,6 +1063,8 @@ class AnalyticsService:
                 validation["durations"]["processing_time_days"] = processing_days
         else:
             validation["durations"]["processing_time_days"] = None
+        
+        # POD Aging validation
         if pgi_date and pod_date:
             delivery_days = (pod_date - pgi_date).days
             if delivery_days < 0:
@@ -980,6 +1075,8 @@ class AnalyticsService:
                 validation["durations"]["delivery_time_days"] = delivery_days
         else:
             validation["durations"]["delivery_time_days"] = None
+        
+        # Total Aging validation
         if dn_date and pod_date:
             cycle_days = (pod_date - dn_date).days
             if cycle_days < 0:
@@ -990,6 +1087,7 @@ class AnalyticsService:
                 validation["durations"]["total_cycle_days"] = cycle_days
         else:
             validation["durations"]["total_cycle_days"] = None
+        
         return validation
     
     def _determine_dn_status(self, record: DeliveryReport) -> str:
@@ -1000,6 +1098,10 @@ class AnalyticsService:
         elif record.dn_create_date:
             return "pending_pgi"
         return "unknown"
+    
+    # ==========================================================
+    # ALL OTHER METHODS (Unchanged - Keeping existing code)
+    # ==========================================================
     
     def verify_dn_exists(self, dn_no: str) -> AnalyticsResponse:
         try:
@@ -1358,7 +1460,7 @@ class AnalyticsService:
             return AnalyticsResponse(success=False, error=str(e), error_id=str(uuid.uuid4())[:8])
     
     def health_check(self) -> Dict[str, Any]:
-        status = {"status": "healthy", "timestamp": datetime.now().isoformat(), "version": "10.0", "environment": "Railway" if self.is_railway else "Local", "checks": {}}
+        status = {"status": "healthy", "timestamp": datetime.now().isoformat(), "version": "10.1", "environment": "Railway" if self.is_railway else "Local", "checks": {}}
         try:
             db_health = self.repo.debug_database()
             if db_health.get("connected"):
@@ -1383,7 +1485,7 @@ class AnalyticsService:
             "dn_lookups": self.metrics["dn_lookups"], "dn_lookups_success": self.metrics["dn_lookups_success"],
             "dn_lookups_failure": self.metrics["dn_lookups_failure"],
             "dn_lookups_success_rate": round((self.metrics["dn_lookups_success"] / max(self.metrics["dn_lookups"], 1)) * 100, 1),
-            "version": "10.0", "environment": "Railway" if self.is_railway else "Local"
+            "version": "10.1", "environment": "Railway" if self.is_railway else "Local"
         }
 
 
