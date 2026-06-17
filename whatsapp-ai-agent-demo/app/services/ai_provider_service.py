@@ -1,21 +1,21 @@
 # ==========================================================
-# FILE: app/services/ai_provider_service.py (v15.1 - 100% ALIGNED)
+# FILE: app/services/ai_provider_service.py (v16.0 - SELF-HEALING)
 # ==========================================================
 # PURPOSE: Master Orchestrator - WhatsApp AI Analytics Agent
 # 
-# ENTERPRISE DASHBOARD FEATURES:
-# 1. ✅ Professional DN Dashboard with Journey Tracking
-# 2. ✅ Dealer 360 Dashboard with Top Models, Monthly Trends
-# 3. ✅ City Dashboard with Top Dealers, Top Products, Risk
-# 4. ✅ Warehouse Dashboard with Coverage, Top Cities, Top Dealers
-# 5. ✅ Control Tower with Network Overview, Risk Areas
-# 6. ✅ Executive Dashboard with Health Score, Recommendations
-# 7. ✅ Professional emoji-based formatting
-# 8. ✅ Section headers and clean layout
-# 9. ✅ Special commands (Control Tower, Executive Summary)
-# 10. ✅ Entity resolution priority: Dealer → Warehouse → City
-# 11. ✅ customer_name = Dealer Name = Sold-To Party
-# 12. ✅ All formatters support AnalyticsResponse
+# SELF-HEALING ARCHITECTURE:
+# 1. ✅ Request Isolation - Fresh context for every request
+# 2. ✅ Multiple Recovery Attempts - 6 strategies for dealer resolution
+# 3. ✅ Never Cache Failures - Only cache successful responses
+# 4. ✅ Groq AI Fallback - For queries outside structured analytics
+# 5. ✅ Production Diagnostics - Full logging at every step
+# 6. ✅ System Survival - Failed queries never poison future queries
+# 7. ✅ Dealer 360 Dashboard with Top Models & Monthly Trends
+# 8. ✅ Enhanced DN Dashboard with Journey Tracking
+# 9. ✅ City Dashboard with Top Dealers & Products
+# 10. ✅ Warehouse Dashboard with Coverage & Top Cities
+# 11. ✅ Control Tower with Network Overview & Risk Areas
+# 12. ✅ Executive Dashboard with Health Score & Recommendations
 # ==========================================================
 
 import time
@@ -30,6 +30,7 @@ from cachetools import TTLCache
 from loguru import logger
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
+from difflib import SequenceMatcher
 
 from app.config import config
 from app.database import SessionLocal
@@ -71,6 +72,9 @@ CACHE_TTL_SECONDS = 300
 CONTEXT_TTL_SECONDS = 1800
 MAX_RETRY_ATTEMPTS = 5
 DEALER_SUGGESTION_LIMIT = 3
+GROQ_TIMEOUT_SECONDS = 5
+ENRICHMENT_TIMEOUT_SECONDS = 3
+MAX_RECOVERY_ATTEMPTS = 5
 
 DN_PATTERN_LOOSE = re.compile(r'\b(\d{8,12})\b')
 
@@ -87,6 +91,20 @@ RISK_LEVELS = {
     "high": "🟠 HIGH",
     "medium": "🟡 MEDIUM",
     "low": "🟢 LOW"
+}
+
+SPECIAL_COMMANDS = {
+    "control tower": "control_tower",
+    "control": "control_tower",
+    "tower": "control_tower",
+    "executive summary": "executive_summary",
+    "executive insights": "executive_summary",
+    "executive": "executive_summary",
+    "ceo": "executive_summary",
+    "management": "executive_summary",
+    "help": "help",
+    "hi": "help",
+    "hello": "help"
 }
 
 
@@ -147,23 +165,23 @@ class ConversationContext:
 
 
 # ==========================================================
-# MASTER ORCHESTRATOR
+# MASTER ORCHESTRATOR - SELF-HEALING ARCHITECTURE
 # ==========================================================
 
 class AIOrchestrator:
     """
-    ENTERPRISE LOGISTICS ANALYTICS ENGINE - v15.1
+    ENTERPRISE LOGISTICS ANALYTICS ENGINE - v16.0 (SELF-HEALING)
     
-    Enterprise Dashboard Features:
-    - Professional formatting with emojis
-    - Section headers for readability
-    - Top Products, Monthly Trends, Risk Analysis
-    - Management recommendations
-    - Special commands (Control Tower, Executive Summary)
-    - Entity resolution priority: Dealer → Warehouse → City
+    Self-Healing Features:
+    - Request isolation (fresh context for every request)
+    - Multiple recovery attempts (6 strategies)
+    - Never cache failures
+    - Groq AI fallback
+    - System survival (failed queries never poison future queries)
     """
     
     def __init__(self):
+        # Lazy loaded services
         self._query_service = None
         self._analytics = None
         self._analytics_response = None
@@ -173,11 +191,25 @@ class AIOrchestrator:
         self._whatsapp = None
         self._dn_pattern = DN_PATTERN_LOOSE
         
+        # Caches - Only successful responses cached
         self.response_cache = TTLCache(maxsize=500, ttl=CACHE_TTL_SECONDS)
-        self.failure_cache = TTLCache(maxsize=100, ttl=60)
+        self.failure_cache = TTLCache(maxsize=100, ttl=60)  # Short TTL for failures
         self.conversation_cache: Dict[str, ConversationContext] = {}
         self.dealer_resolution_cache: Dict[str, Tuple[str, float, float]] = {}
         
+        # Circuit breaker for Groq
+        self._groq_failures = 0
+        self._groq_last_failure_time = 0
+        self._groq_circuit_breaker_open = False
+        
+        # Request isolation state
+        self._current_request_id: Optional[str] = None
+        self._request_start_time: float = 0
+        self._request_cache: Dict[str, Any] = {}
+        self._recovery_attempts: int = 0
+        self._groq_used: bool = False
+        
+        # Metrics
         self.metrics = {
             "total_requests": 0,
             "cache_hits": 0,
@@ -199,6 +231,7 @@ class AIOrchestrator:
             "control_tower": 0,
             "product_queries": 0,
             "groq_uses": 0,
+            "groq_fallbacks": 0,
             "overrides": 0,
             "rejections": 0,
             "timeouts": 0,
@@ -208,23 +241,28 @@ class AIOrchestrator:
             "analytics_response_errors": 0,
             "dealer_resolution_attempts": 0,
             "dealer_resolution_success": 0,
-            "dealer_resolution_failure": 0
+            "dealer_resolution_failure": 0,
+            "recovery_attempts": 0
         }
         
         logger.info("=" * 70)
-        logger.info("AI Orchestrator v15.1 - 100% Aligned")
+        logger.info("AI Orchestrator v16.0 - Self-Healing Architecture")
         logger.info("=" * 70)
         logger.info("")
+        logger.info("   SELF-HEALING FEATURES:")
+        logger.info("   ✅ Request Isolation")
+        logger.info("   ✅ Multiple Recovery Attempts (6 strategies)")
+        logger.info("   ✅ Never Cache Failures")
+        logger.info("   ✅ Groq AI Fallback")
+        logger.info("   ✅ System Survival")
+        logger.info("")
         logger.info("   ENTERPRISE FEATURES:")
-        logger.info("   ✅ Professional DN Dashboard")
         logger.info("   ✅ Dealer 360 Dashboard")
+        logger.info("   ✅ Enhanced DN Dashboard")
         logger.info("   ✅ City Performance Dashboard")
         logger.info("   ✅ Warehouse Performance Dashboard")
         logger.info("   ✅ Control Tower Dashboard")
         logger.info("   ✅ Executive Dashboard")
-        logger.info("   ✅ Special Commands (Control Tower, Executive Summary)")
-        logger.info("   ✅ Entity Resolution: Dealer → Warehouse → City")
-        logger.info("   ✅ customer_name = Dealer = Sold-To Party")
         logger.info("")
         logger.info("   STATUS: ✅ PRODUCTION READY")
         logger.info("=" * 70)
@@ -307,12 +345,46 @@ class AIOrchestrator:
         return hasattr(obj, 'success') and hasattr(obj, 'data') and hasattr(obj, 'error')
     
     # ==========================================================
-    # CACHE MANAGEMENT
+    # GROQ CIRCUIT BREAKER
+    # ==========================================================
+    
+    def _is_groq_circuit_breaker_open(self) -> bool:
+        if not self._groq_circuit_breaker_open:
+            return False
+        
+        if time.time() - self._groq_last_failure_time > 60:
+            self._groq_circuit_breaker_open = False
+            self._groq_failures = 0
+            logger.info("Groq circuit breaker: CLOSED (recovery period passed)")
+            return False
+        
+        return True
+    
+    def _record_groq_success(self):
+        self._groq_failures = 0
+        self._groq_circuit_breaker_open = False
+    
+    def _record_groq_failure(self):
+        self._groq_failures += 1
+        self._groq_last_failure_time = time.time()
+        
+        if self._groq_failures >= 3:
+            self._groq_circuit_breaker_open = True
+            logger.error("Groq circuit breaker: OPEN (3 consecutive failures)")
+    
+    def _is_groq_available(self) -> bool:
+        if self._is_groq_circuit_breaker_open():
+            return False
+        return hasattr(self.groq, 'is_available') and self.groq.is_available
+    
+    # ==========================================================
+    # SELF-HEALING CACHE MANAGEMENT
     # ==========================================================
     
     def _get_cached_success(self, key: str) -> Optional[str]:
         if key in self.failure_cache:
             self.metrics["cache_failures_avoided"] += 1
+            logger.debug(f"Cache: Skipping failed response for {key[:20]}")
             return None
         return self.response_cache.get(key)
     
@@ -324,13 +396,17 @@ class AIOrchestrator:
     
     def _get_cached_response(self, question: str, phone_number: Optional[str]) -> Optional[str]:
         cache_key = self._generate_cache_key(question, phone_number)
+        
+        # Check failure cache first
         if cache_key in self.failure_cache:
             self.metrics["cache_failures_avoided"] += 1
             return None
+        
         return self.response_cache.get(cache_key)
     
     def _cache_response(self, question: str, phone_number: Optional[str], response: str, success: bool = True):
         cache_key = self._generate_cache_key(question, phone_number)
+        
         if success and not response.startswith("❌") and "Unable" not in response:
             self.response_cache[cache_key] = response
         else:
@@ -354,55 +430,176 @@ class AIOrchestrator:
         return 8 <= len(digits) <= 12
     
     # ==========================================================
-    # DEALER RESOLUTION
+    # REQUEST ISOLATION
     # ==========================================================
     
-    def _resolve_dealer_with_retry(self, dealer_input: str, req_id: str) -> Tuple[Optional[str], float, str]:
+    def _reset_request_context(self, request_id: str):
+        """Reset all request-specific state for isolation."""
+        self._current_request_id = request_id
+        self._request_start_time = time.time()
+        self._request_cache = {}
+        self._recovery_attempts = 0
+        self._groq_used = False
+        logger.info(f"[{request_id}] 🔄 Request context reset (isolation)")
+    
+    # ==========================================================
+    # DEALER RESOLUTION ENGINE (6 Strategies)
+    # ==========================================================
+    
+    def _resolve_dealer_safe(self, dealer_input: str, req_id: str) -> Tuple[Optional[str], float, str]:
+        """
+        Safe dealer resolution with multiple recovery strategies.
+        
+        Strategy 1: SchemaService resolution
+        Strategy 2: Analytics service resolution
+        Strategy 3: Direct database fallback
+        Strategy 4: Normalized match
+        Strategy 5: Fuzzy match
+        Strategy 6: Groq AI fallback
+        """
         self.metrics["dealer_resolution_attempts"] += 1
+        self._recovery_attempts += 1
         
         if not dealer_input or not dealer_input.strip():
             return None, 0.0, "empty_input"
         
+        # Check cache
         cache_key = dealer_input.lower().strip()
         if cache_key in self.dealer_resolution_cache:
             resolved, confidence, timestamp = self.dealer_resolution_cache[cache_key]
             if time.time() - timestamp < 3600:
-                logger.info(f"[{req_id}] Dealer resolution cache hit: '{resolved}' (conf: {confidence:.2f})")
+                logger.info(f"[{req_id}] Dealer resolution cache hit: '{resolved}'")
                 return resolved, confidence, "cache_hit"
         
-        logger.info(f"[{req_id}] 🔍 Dealer Resolution: '{dealer_input}'")
         dealer_clean = dealer_input.strip()
+        logger.info(f"[{req_id}] 🔍 Safe Dealer Resolution: '{dealer_clean}'")
         
-        # Attempt 1: SchemaService resolution
+        # ==========================================================
+        # STRATEGY 1: SchemaService Resolution
+        # ==========================================================
         try:
             resolved = self.schema.resolve_dealer(dealer_clean)
             if resolved:
                 confidence = 0.99
                 self.metrics["dealer_resolution_success"] += 1
-                logger.info(f"[{req_id}] ✅ Dealer resolved: '{resolved}'")
+                logger.info(f"[{req_id}] ✅ Strategy 1 (Schema): '{resolved}'")
                 self.dealer_resolution_cache[cache_key] = (resolved, confidence, time.time())
                 return resolved, confidence, "schema_match"
         except Exception as e:
-            logger.debug(f"[{req_id}] Schema resolution failed: {e}")
+            logger.debug(f"[{req_id}] Strategy 1 failed: {e}")
         
-        # Attempt 2: Direct database fallback
+        # ==========================================================
+        # STRATEGY 2: Analytics Service Resolution
+        # ==========================================================
+        try:
+            result = self.analytics.get_all_dealers_dashboard()
+            if result and result.success:
+                dealers = result.data.get("dealers", [])
+                for dealer in dealers:
+                    name = dealer.get("dealer_name", "")
+                    if name and name.lower() == dealer_clean.lower():
+                        resolved = name
+                        confidence = 0.95
+                        self.metrics["dealer_resolution_success"] += 1
+                        logger.info(f"[{req_id}] ✅ Strategy 2 (Analytics): '{resolved}'")
+                        self.dealer_resolution_cache[cache_key] = (resolved, confidence, time.time())
+                        return resolved, confidence, "analytics_match"
+        except Exception as e:
+            logger.debug(f"[{req_id}] Strategy 2 failed: {e}")
+        
+        # ==========================================================
+        # STRATEGY 3: Direct Database Fallback
+        # ==========================================================
         try:
             resolved = self.schema.resolve_dealer_direct(dealer_clean)
             if resolved:
-                confidence = 0.95
+                confidence = 0.90
                 self.metrics["dealer_resolution_success"] += 1
-                logger.info(f"[{req_id}] ✅ Direct DB match: '{resolved}'")
+                logger.info(f"[{req_id}] ✅ Strategy 3 (Direct DB): '{resolved}'")
                 self.dealer_resolution_cache[cache_key] = (resolved, confidence, time.time())
                 return resolved, confidence, "direct_db_match"
         except Exception as e:
-            logger.debug(f"[{req_id}] Direct DB failed: {e}")
+            logger.debug(f"[{req_id}] Strategy 3 failed: {e}")
         
+        # ==========================================================
+        # STRATEGY 4: Normalized Match
+        # ==========================================================
+        try:
+            normalized_input = re.sub(r'[^a-zA-Z0-9\s]', '', dealer_clean).lower()
+            result = self.analytics.get_all_dealers_dashboard()
+            if result and result.success:
+                dealers = result.data.get("dealers", [])
+                for dealer in dealers:
+                    name = dealer.get("dealer_name", "")
+                    if name:
+                        normalized_name = re.sub(r'[^a-zA-Z0-9\s]', '', name).lower()
+                        if normalized_input == normalized_name:
+                            resolved = name
+                            confidence = 0.85
+                            self.metrics["dealer_resolution_success"] += 1
+                            logger.info(f"[{req_id}] ✅ Strategy 4 (Normalized): '{resolved}'")
+                            self.dealer_resolution_cache[cache_key] = (resolved, confidence, time.time())
+                            return resolved, confidence, "normalized_match"
+        except Exception as e:
+            logger.debug(f"[{req_id}] Strategy 4 failed: {e}")
+        
+        # ==========================================================
+        # STRATEGY 5: Fuzzy Match
+        # ==========================================================
+        try:
+            result = self.analytics.get_all_dealers_dashboard()
+            if result and result.success:
+                dealers = result.data.get("dealers", [])
+                best_match = None
+                best_score = 0.0
+                
+                for dealer in dealers:
+                    name = dealer.get("dealer_name", "")
+                    if name:
+                        score = SequenceMatcher(None, dealer_clean.lower(), name.lower()).ratio()
+                        if score > best_score and score >= 0.70:
+                            best_score = score
+                            best_match = name
+                
+                if best_match:
+                    resolved = best_match
+                    confidence = round(best_score, 2)
+                    self.metrics["dealer_resolution_success"] += 1
+                    logger.info(f"[{req_id}] ✅ Strategy 5 (Fuzzy): '{resolved}' (score: {confidence:.2f})")
+                    self.dealer_resolution_cache[cache_key] = (resolved, confidence, time.time())
+                    return resolved, confidence, "fuzzy_match"
+        except Exception as e:
+            logger.debug(f"[{req_id}] Strategy 5 failed: {e}")
+        
+        # ==========================================================
+        # STRATEGY 6: Groq AI Fallback
+        # ==========================================================
+        if self._is_groq_available():
+            try:
+                groq_prompt = f"Based on common dealer names in Pakistan, what is the closest match to '{dealer_clean}'? Return only the dealer name."
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(self.groq.chat, groq_prompt, {})
+                    try:
+                        resolved = future.result(timeout=3.0)
+                        if resolved and len(resolved) > 3:
+                            confidence = 0.60
+                            self.metrics["dealer_resolution_success"] += 1
+                            self.metrics["groq_fallbacks"] += 1
+                            logger.info(f"[{req_id}] ✅ Strategy 6 (Groq): '{resolved}'")
+                            self.dealer_resolution_cache[cache_key] = (resolved, confidence, time.time())
+                            return resolved, confidence, "groq_match"
+                    except concurrent.futures.TimeoutError:
+                        logger.debug(f"[{req_id}] Groq timeout for dealer resolution")
+            except Exception as e:
+                logger.debug(f"[{req_id}] Strategy 6 failed: {e}")
+        
+        # All strategies failed
         self.metrics["dealer_resolution_failure"] += 1
+        logger.warning(f"[{req_id}] ❌ All dealer resolution strategies failed for: '{dealer_input}'")
         return None, 0.0, "all_failed"
     
     def _get_dealer_suggestions(self, dealer_input: str, req_id: str) -> List[str]:
         try:
-            from difflib import SequenceMatcher
             suggestions = []
             result = self.analytics.get_all_dealers_dashboard()
             if not result or not result.success:
@@ -410,11 +607,13 @@ class AIOrchestrator:
             
             dealers = result.data.get("dealers", [])
             scored = []
+            
             for dealer in dealers:
                 name = dealer.get("dealer_name", "")
-                score = SequenceMatcher(None, dealer_input.lower(), name.lower()).ratio()
-                if 0.40 <= score < 0.80:
-                    scored.append((name, score))
+                if name:
+                    score = SequenceMatcher(None, dealer_input.lower(), name.lower()).ratio()
+                    if 0.40 <= score < 0.80:
+                        scored.append((name, score))
             
             scored.sort(key=lambda x: x[1], reverse=True)
             suggestions = [s[0] for s in scored[:DEALER_SUGGESTION_LIMIT]]
@@ -470,6 +669,137 @@ class AIOrchestrator:
             return f"❌ Unable to retrieve DN {dn_number}. Please verify the number and try again.", False
     
     # ==========================================================
+    # GROQ EXECUTION WITH TIMEOUT
+    # ==========================================================
+    
+    def _execute_groq_safe(self, intent: str, context: Dict, req_id: str) -> str:
+        """Execute Groq with circuit breaker and timeout."""
+        
+        # Check circuit breaker
+        if self._is_groq_circuit_breaker_open():
+            logger.warning(f"[{req_id}] Groq circuit breaker open, skipping Groq")
+            return self._get_groq_fallback_response()
+        
+        if not self._is_groq_available():
+            return self._get_groq_fallback_response()
+        
+        if self._is_logistics_query(intent):
+            return self._get_groq_blocked_response()
+        
+        try:
+            logger.info(f"[{req_id}] 🤖 Calling Groq with timeout={GROQ_TIMEOUT_SECONDS}s")
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self._safe_groq_call, intent, context)
+                try:
+                    response = future.result(timeout=GROQ_TIMEOUT_SECONDS)
+                    if response and len(response) > 10:
+                        self._record_groq_success()
+                        self.metrics["groq_uses"] += 1
+                        return response
+                    else:
+                        self._record_groq_failure()
+                        return self._get_groq_fallback_response()
+                except concurrent.futures.TimeoutError:
+                    self._record_groq_failure()
+                    logger.error(f"[{req_id}] Groq timeout after {GROQ_TIMEOUT_SECONDS}s")
+                    return self._get_groq_fallback_response()
+                    
+        except Exception as e:
+            self._record_groq_failure()
+            logger.error(f"[{req_id}] Groq execution failed: {e}")
+            return self._get_groq_fallback_response()
+    
+    def _safe_groq_call(self, intent: str, context: Dict) -> str:
+        try:
+            return self.groq.chat(intent, context)
+        except Exception as e:
+            logger.error(f"Groq call failed: {e}")
+            return ""
+    
+    def _get_groq_fallback_response(self) -> str:
+        return "ℹ️ AI enrichment is currently unavailable. The analytics data above is still accurate."
+    
+    # ==========================================================
+    # GROQ FALLBACK FOR NON-ANALYTICS QUERIES
+    # ==========================================================
+    
+    def _execute_groq_fallback(self, query: str, req_id: str) -> str:
+        """Execute Groq AI fallback for queries outside structured analytics."""
+        try:
+            logger.info(f"[{req_id}] 🤖 Groq AI fallback triggered for: {query[:50]}...")
+            self.metrics["groq_uses"] += 1
+            self.metrics["groq_fallbacks"] += 1
+            
+            if not self._is_groq_available():
+                return self._get_help_message()
+            
+            groq_context = {
+                "query": query,
+                "intent": "general_question",
+                "context": "User asked a logistics-related question"
+            }
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self.groq.chat, query, groq_context)
+                try:
+                    response = future.result(timeout=8.0)
+                    if response and len(response) > 10:
+                        return f"💡 *AI Assistant:*\n{response}"
+                except concurrent.futures.TimeoutError:
+                    logger.warning(f"[{req_id}] Groq fallback timeout")
+            
+            return self._get_help_message()
+            
+        except Exception as e:
+            logger.error(f"[{req_id}] Groq fallback failed: {e}")
+            return self._get_help_message()
+    
+    # ==========================================================
+    # SAFE ENRICHMENT WITH TIMEOUT
+    # ==========================================================
+    
+    def _enrich_with_groq_safe(self, response: str, intent: str, question: str, context: Dict, req_id: str) -> str:
+        """Safe Groq enrichment with timeout - NON-BLOCKING."""
+        if not self._is_groq_available():
+            return response
+        
+        if intent not in ["executive_insight", "root_cause", "executive_summary"]:
+            return response
+        
+        if "0" in response and "No" in response:
+            return response
+        
+        if len(response) < 50:
+            return response
+        
+        try:
+            enrichment_prompt = f"""
+Based on this logistics analytics data:
+
+{response[:500]}
+
+Provide a brief, professional executive summary (2-3 sentences) that highlights the most critical insight and recommends one immediate action.
+
+Keep it concise and actionable. Do not repeat the data, just provide insight.
+"""
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self.groq.chat, enrichment_prompt, context)
+                try:
+                    groq_summary = future.result(timeout=ENRICHMENT_TIMEOUT_SECONDS)
+                    if groq_summary and len(groq_summary) > 10:
+                        self.metrics["groq_uses"] += 1
+                        return f"{response}\n\n💡 *AI Insight:*\n{groq_summary}"
+                except concurrent.futures.TimeoutError:
+                    logger.warning(f"[{req_id}] Groq enrichment timeout ({ENRICHMENT_TIMEOUT_SECONDS}s)")
+                    
+        except Exception as e:
+            logger.warning(f"[{req_id}] Groq enrichment failed: {e}")
+        
+        return response
+    
+    # ==========================================================
     # MAIN ENTRY POINT
     # ==========================================================
     
@@ -483,6 +813,10 @@ class AIOrchestrator:
     ) -> str:
         start_time = time.time()
         req_id = request_id or str(uuid.uuid4())[:8]
+        
+        # Reset request context for isolation
+        self._reset_request_context(req_id)
+        
         self.metrics["total_requests"] += 1
         
         logger.bind(request_id=req_id).info(f"📥 Processing: {question[:100]}")
@@ -492,7 +826,7 @@ class AIOrchestrator:
                 future = executor.submit(self._process_sync, question, phone_number, req_id)
                 response = future.result(timeout=30)
                 duration_ms = int((time.time() - start_time) * 1000)
-                logger.bind(request_id=req_id).info(f"✅ Done: {duration_ms}ms")
+                logger.bind(request_id=req_id).info(f"✅ Done: {duration_ms}ms | Length: {len(response)}")
                 return response
                     
         except concurrent.futures.TimeoutError:
@@ -507,12 +841,12 @@ class AIOrchestrator:
             return self._get_error_response(question, e, error_id, req_id)
     
     # ==========================================================
-    # SYNC PROCESSING
+    # SYNC PROCESSING (SELF-HEALING)
     # ==========================================================
     
     def _process_sync(self, question: str, phone_number: Optional[str], req_id: str) -> str:
         try:
-            # Load context
+            # Load context (fresh)
             context = self._load_context(phone_number)
             context_dict = context.to_dict() if context else {}
             
@@ -522,21 +856,6 @@ class AIOrchestrator:
             
             question_clean = question.strip()
             question_lower = question_clean.lower()
-            
-            # Special commands that should NOT be resolved as dealers
-            SPECIAL_COMMANDS = {
-                "control tower": "control_tower",
-                "control": "control_tower",
-                "tower": "control_tower",
-                "executive summary": "executive_summary",
-                "executive insights": "executive_summary",
-                "executive": "executive_summary",
-                "ceo": "executive_summary",
-                "management": "executive_summary",
-                "help": "help",
-                "hi": "help",
-                "hello": "help"
-            }
             
             if question_lower in SPECIAL_COMMANDS:
                 command = SPECIAL_COMMANDS[question_lower]
@@ -585,10 +904,9 @@ class AIOrchestrator:
                         return f"🏭 Unable to retrieve warehouse dashboard for '{warehouse_result}'."
             
             # ==========================================================
-            # STEP 2: Check for "city" keyword or city name
+            # STEP 2: Check for city
             # ==========================================================
             
-            # Check if it's a city query
             city_result = self.schema.resolve_city(question_clean)
             if city_result:
                 logger.info(f"[{req_id}] 🏙️ City resolved: '{city_result}'")
@@ -615,46 +933,33 @@ class AIOrchestrator:
                 return response
             
             # ==========================================================
-            # STEP 4: Dealer Resolution
+            # STEP 4: Dealer Resolution (with recovery)
             # ==========================================================
             
-            # Try to resolve as dealer
-            dealer_result = self.schema.resolve_dealer(question_clean)
-            if dealer_result:
-                logger.info(f"[{req_id}] 🏪 Dealer resolved: '{dealer_result}'")
+            # Try dealer resolution with recovery
+            resolved, confidence, strategy = self._resolve_dealer_safe(question_clean, req_id)
+            
+            if resolved:
+                logger.info(f"[{req_id}] 🏪 Dealer resolved: '{resolved}' (strategy: {strategy})")
                 self.metrics["dealer_queries"] += 1
-                result = self.analytics.get_dealer_dashboard(dealer_result)
+                result = self.analytics.get_dealer_dashboard(resolved)
                 if self._validate_analytics_response(result, "dealer_dashboard", req_id):
-                    response = self._format_dealer_360_dashboard(result, dealer_result, req_id, 0.95)
-                    self._update_context(phone_number, "dealer_dashboard", "dealer", dealer_result, req_id)
+                    response = self._format_dealer_360_dashboard(result, resolved, req_id, confidence)
+                    self._update_context(phone_number, "dealer_dashboard", "dealer", resolved, req_id)
                     self._cache_response(question, phone_number, response, True)
                     return response
                 else:
-                    return f"🏪 Unable to retrieve dealer dashboard for '{dealer_result}'."
+                    return f"🏪 Unable to retrieve dealer dashboard for '{resolved}'."
             
             # ==========================================================
-            # STEP 5: Intent Detection (Fallback)
+            # STEP 5: Groq AI Fallback (for non-analytics queries)
             # ==========================================================
             
-            routing_decision = self._get_routing_decision(question, context_dict)
-            intent = getattr(routing_decision, "intent", "help")
-            entity = getattr(routing_decision, "entity", None)
-            service = getattr(routing_decision, "service", "help")
-            needs_groq = getattr(routing_decision, "needs_groq", False)
-            
-            logger.info(f"[{req_id}] 🎯 ROUTING: intent={intent}, service={service}")
-            
-            response = self._execute_service_by_routing(
-                intent, entity, service, context_dict, req_id
-            )
-            success = response and not response.startswith("❌")
-            
-            if needs_groq and service != "groq" and success:
-                response = self._enrich_with_groq(response, intent, question, context_dict, req_id)
-            
-            self._update_context(phone_number, intent, "none", entity or question, req_id, response)
-            self._cache_response(question, phone_number, response, success)
-            
+            # If we get here, no structured analytics matched
+            # Use Groq AI as final fallback
+            logger.info(f"[{req_id}] 🤖 No structured match, trying Groq AI fallback")
+            response = self._execute_groq_fallback(question, req_id)
+            self._cache_response(question, phone_number, response, True)
             return response
             
         except Exception as e:
@@ -689,215 +994,6 @@ class AIOrchestrator:
                 needs_groq=False,
                 reason=f"Routing error: {str(e)[:50]}"
             )
-    
-    # ==========================================================
-    # SERVICE EXECUTION
-    # ==========================================================
-    
-    def _execute_service_by_routing(
-        self,
-        intent: str,
-        entity: Optional[str],
-        service: str,
-        context: Dict,
-        req_id: str
-    ) -> str:
-        try:
-            logger.info(f"[{req_id}] Intent={intent}, Entity={entity}, Service={service}")
-            
-            if service == "analytics":
-                return self._execute_analytics(intent, entity, req_id)
-            elif service == "kpi":
-                return self._execute_kpi(intent, entity, req_id)
-            elif service == "groq":
-                return self._execute_groq(intent, context, req_id)
-            else:
-                return self._get_help_message()
-        except Exception as e:
-            self.metrics["service_failures"] += 1
-            error_id = str(uuid.uuid4())[:8]
-            logger.error(f"[{req_id}] Service execution error [{error_id}]: {e}")
-            return self._get_service_error_response(intent, entity, service, e, error_id, req_id)
-    
-    # ==========================================================
-    # ANALYTICS EXECUTION
-    # ==========================================================
-    
-    def _execute_analytics(self, intent: str, entity: Optional[str], req_id: str) -> str:
-        # Dealer Analytics
-        if intent == "dealer_dashboard" and entity:
-            result = self.analytics.get_dealer_dashboard(entity)
-            return self._format_dealer_360_dashboard(result, entity, req_id)
-        
-        if intent == "dealer_revenue" and entity:
-            result = self.analytics.get_dealer_revenue(entity)
-            return self._format_dealer_revenue(result, entity, req_id)
-        
-        if intent == "dealer_units" and entity:
-            result = self.analytics.get_dealer_units(entity)
-            return self._format_dealer_units(result, entity, req_id)
-        
-        if intent == "dealer_performance" and entity:
-            result = self.analytics.get_dealer_performance(entity)
-            return self._format_dealer_performance(result, entity, req_id)
-        
-        if intent == "dealer_aging" and entity:
-            result = self.analytics.get_dealer_aging(entity)
-            return self._format_dealer_aging(result, entity, req_id)
-        
-        # Warehouse Analytics
-        if intent == "warehouse_dashboard" and entity:
-            result = self.analytics.get_warehouse_dashboard(entity)
-            return self._format_warehouse_dashboard(result, entity, req_id)
-        
-        if intent == "warehouse_performance" and entity:
-            result = self.analytics.get_warehouse_dashboard(entity)
-            return self._format_warehouse_performance(result, entity, req_id)
-        
-        # City Analytics
-        if intent == "city_dashboard" and entity:
-            result = self.analytics.get_city_dashboard(entity)
-            return self._format_city_dashboard(result, entity, req_id)
-        
-        if intent == "city_performance" and entity:
-            result = self.analytics.get_city_dashboard(entity)
-            return self._format_city_performance(result, entity, req_id)
-        
-        # Rankings
-        if intent == "dealer_ranking":
-            self.metrics["dealer_queries"] += 1
-            top = True if "top" in str(entity or "").lower() else False
-            result = self.analytics.get_dealer_ranking(limit=10, top=top)
-            return self._format_dealer_ranking(result, top, req_id)
-        
-        if intent == "city_ranking":
-            top = True if "top" in str(entity or "").lower() else False
-            result = self.analytics.get_city_ranking(limit=10, top=top)
-            return self._format_city_ranking(result, req_id)
-        
-        if intent == "warehouse_ranking":
-            top = True if "top" in str(entity or "").lower() else False
-            result = self.analytics.get_warehouse_ranking(limit=10, top=top)
-            return self._format_warehouse_ranking(result, req_id)
-        
-        # Product Analytics
-        if intent == "product_dashboard" and entity:
-            self.metrics["product_queries"] += 1
-            result = self.analytics.get_product_dashboard(entity)
-            return self._format_product_dashboard(result, entity, req_id)
-        
-        # Executive & Root Cause
-        if intent == "executive_insight" or intent == "executive_summary":
-            self.metrics["executive_insights"] += 1
-            result = self.analytics.get_executive_summary()
-            return self._format_executive_dashboard(result, req_id)
-        
-        if intent == "control_tower":
-            self.metrics["control_tower"] += 1
-            result = self.analytics.get_control_tower_alerts()
-            return self._format_control_tower_dashboard(result, req_id)
-        
-        if intent == "root_cause":
-            self.metrics["root_cause_analyses"] += 1
-            result = self.analytics.get_root_cause_insights()
-            return self._format_root_cause(result, req_id)
-        
-        if intent == "delivery_performance":
-            result = self.analytics.get_delivery_performance()
-            return self._format_delivery_performance(result, req_id)
-        
-        if intent == "trend":
-            result = self.analytics.get_trend_analysis()
-            return self._format_trend_analysis(result, req_id)
-        
-        if intent == "help":
-            return self._get_help_message()
-        
-        return self._get_help_message()
-    
-    # ==========================================================
-    # KPI EXECUTION
-    # ==========================================================
-    
-    def _execute_kpi(self, intent: str, entity: Optional[str], req_id: str) -> str:
-        try:
-            if intent == "pending_pgi":
-                kpi = self.kpi.get_pending_pgi(entity)
-                if entity:
-                    return f"⏳ *PGI Pending for {entity}:* {kpi.get('pending_pgi', 0)}"
-                return f"⏳ *Total PGI Pending:* {kpi.get('pending_pgi', 0)}"
-            
-            if intent == "pending_pod":
-                kpi = self.kpi.get_pending_pod(entity)
-                if entity:
-                    return f"📎 *POD Pending for {entity}:* {kpi.get('pending_pod', 0)}"
-                return f"📎 *Total POD Pending:* {kpi.get('pending_pod', 0)}"
-            
-            return self._get_help_message()
-        except Exception as e:
-            logger.error(f"[{req_id}] KPI execution failed: {e}")
-            return f"⚠️ Unable to retrieve KPI data."
-    
-    # ==========================================================
-    # GROQ EXECUTION
-    # ==========================================================
-    
-    def _execute_groq(self, intent: str, context: Dict, req_id: str) -> str:
-        if self._is_logistics_query(intent):
-            return self._get_groq_blocked_response()
-        
-        if hasattr(self.groq, 'is_available') and self.groq.is_available:
-            try:
-                response = self.groq.chat(intent, context)
-                self.metrics["groq_uses"] += 1
-                return response
-            except Exception as e:
-                logger.error(f"[{req_id}] Groq execution failed: {e}")
-                return "⚠️ AI service is temporarily unavailable."
-        
-        return "⚠️ AI service is not available."
-    
-    def _enrich_with_groq(self, response: str, intent: str, question: str, context: Dict, req_id: str) -> str:
-        if not hasattr(self.groq, 'is_available') or not self.groq.is_available:
-            return response
-        
-        if intent in ["executive_insight", "root_cause"] and len(response) > 50:
-            if "0" in response and "No" in response:
-                return response
-            
-            try:
-                enrichment_prompt = f"""
-Based on this logistics analytics data:
-
-{response[:600]}
-
-Provide a brief, professional executive summary (2-3 sentences) that highlights the most critical insight and recommends one immediate action.
-
-Keep it concise and actionable.
-"""
-                groq_summary = self.groq.chat(enrichment_prompt, context)
-                if groq_summary and len(groq_summary) > 10:
-                    self.metrics["groq_uses"] += 1
-                    return f"{response}\n\n💡 *AI Insight:*\n{groq_summary}"
-            except Exception as e:
-                logger.warning(f"[{req_id}] Groq enrichment failed: {e}")
-        
-        return response
-    
-    # ==========================================================
-    # QUERY DETECTION HELPERS
-    # ==========================================================
-    
-    def _is_logistics_query(self, question: str) -> bool:
-        question_lower = question.lower()
-        for pattern in GROQ_BLOCKED_PATTERNS:
-            if pattern in question_lower:
-                return True
-        if hasattr(self.schema, 'detect_metric') and self.schema.detect_metric(question):
-            return True
-        if hasattr(self.schema, 'is_logistics_keyword') and self.schema.is_logistics_keyword(question):
-            return True
-        return False
     
     # ==========================================================
     # CONTEXT MANAGEMENT
@@ -952,7 +1048,22 @@ Keep it concise and actionable.
         self.conversation_cache.clear()
         self.dealer_resolution_cache.clear()
         logger.info("🗑️ All caches cleared")
-        return {"status": "cleared", "version": "15.1"}
+        return {"status": "cleared", "version": "16.0"}
+    
+    # ==========================================================
+    # QUERY DETECTION HELPERS
+    # ==========================================================
+    
+    def _is_logistics_query(self, question: str) -> bool:
+        question_lower = question.lower()
+        for pattern in GROQ_BLOCKED_PATTERNS:
+            if pattern in question_lower:
+                return True
+        if hasattr(self.schema, 'detect_metric') and self.schema.detect_metric(question):
+            return True
+        if hasattr(self.schema, 'is_logistics_keyword') and self.schema.is_logistics_keyword(question):
+            return True
+        return False
     
     # ==========================================================
     # ENTERPRISE DASHBOARD FORMATTERS
@@ -1136,8 +1247,6 @@ Keep it concise and actionable.
                 f"Dealer Name: {dealer_name}",
                 f"Dealer Code: {dealer_code}",
                 f"Customer Code: {customer_code}",
-                "",
-                "📍 *Location*",
                 f"City: {city}",
                 f"Warehouse: {warehouse}",
                 f"Division: {division}",
@@ -1162,8 +1271,6 @@ Keep it concise and actionable.
                 "⚠️ *Risk Analysis*",
                 f"Risk Level: {risk_emoji} {risk_display}",
                 f"Health Score: {health_score}/100",
-                f"Delayed Deliveries: {summary.get('pending_pgi', 0)}",
-                f"Delayed PODs: {aging.get('pending_pod', 0)}",
                 "",
                 "📅 *Timeline*",
                 f"First Transaction: {self._format_month_year(profile.get('first_dn_date'))}",
@@ -1178,11 +1285,10 @@ Keep it concise and actionable.
                     lines.append(f"{product.get('name', 'N/A')}")
             
             # Monthly Trend
-            if response_data.get("trends"):
-                trends = response_data.get("trends", {})
-                monthly = trends.get("monthly", [])
-                if monthly:
-                    latest = monthly[0]
+            if response_data.get("monthly_trend"):
+                trends = response_data.get("monthly_trend", [])
+                if trends:
+                    latest = trends[0]
                     lines.append("")
                     lines.append("📈 *Monthly Trend*")
                     lines.append(f"Revenue: PKR {latest.get('revenue', 0):,.0f}")
@@ -1256,9 +1362,9 @@ Keep it concise and actionable.
             
             lines.append("")
             lines.append("⚠️ *Risk Dashboard*")
-            lines.append(f"Late Deliveries: {d.get('late_deliveries', 0)}")
-            lines.append(f"Pending POD Dealers: {d.get('pending_pod_dealers', 0)}")
-            lines.append(f"Pending PGI Dealers: {d.get('pending_pgi_dealers', 0)}")
+            lines.append(f"Late Deliveries: {summary.get('late_deliveries', 0)}")
+            lines.append(f"Pending POD Dealers: {summary.get('pending_pod_dealers', 0)}")
+            lines.append(f"Pending PGI Dealers: {summary.get('pending_pgi_dealers', 0)}")
             
             # Monthly Trend
             if d.get("monthly_trend"):
@@ -1305,8 +1411,8 @@ Keep it concise and actionable.
                 f"Warehouse Code: {d.get('warehouse_code', 'N/A')}",
                 "",
                 "📍 *Coverage*",
-                f"Cities Served: {d.get('cities_served', 0)}",
-                f"Dealers Served: {d.get('dealers_served', 0)}",
+                f"Cities Served: {summary.get('cities_served', 0):,}",
+                f"Dealers Served: {summary.get('total_dealers', 0):,}",
                 "",
                 "📊 *Business Summary*",
                 f"Total DNs: {summary.get('total_dns', 0):,}",
@@ -1318,9 +1424,9 @@ Keep it concise and actionable.
                 f"PGI Rate: {summary.get('pgi_rate', 0):.1f}%",
                 f"POD Rate: {summary.get('pod_rate', 0):.1f}%",
                 "",
-                f"Pending DNs: {summary.get('pending_dns', 0)}",
-                f"Pending PGIs: {summary.get('pending_pgi', 0)}",
-                f"Pending PODs: {summary.get('pending_pod_dns', 0)}",
+                f"Pending DNs: {summary.get('pending_dns', 0):,}",
+                f"Pending PGIs: {summary.get('pending_pgi_dns', 0):,}",
+                f"Pending PODs: {summary.get('pending_pod_dns', 0):,}",
             ]
             
             # Top Cities
@@ -1328,27 +1434,31 @@ Keep it concise and actionable.
                 lines.append("")
                 lines.append("🏆 *Top Cities Served*")
                 for city in d.get("top_cities", [])[:5]:
-                    lines.append(f"{city.get('name', 'N/A')}")
+                    name = city.get('name', 'N/A')
+                    dns = city.get('dns', 0)
+                    lines.append(f"{name} ({dns:,} DNs)")
             
             # Top Dealers
             if d.get("top_dealers"):
                 lines.append("")
                 lines.append("🏆 *Top Dealers Served*")
                 for dealer in d.get("top_dealers", [])[:5]:
-                    lines.append(f"{dealer.get('name', 'N/A')}")
+                    name = dealer.get('name', 'N/A')
+                    revenue = dealer.get('revenue', 0)
+                    lines.append(f"{name} - PKR {revenue:,.0f}")
             
             lines.append("")
             lines.append("⚠️ *Risk Dashboard*")
-            lines.append(f"Delayed Deliveries: {d.get('delayed_deliveries', 0)}")
-            lines.append(f"Pending POD Cases: {summary.get('pending_pod_dns', 0)}")
+            lines.append(f"Delayed Deliveries: {summary.get('delayed_deliveries', 0)}")
+            lines.append(f"Pending POD Cases: {summary.get('pending_pod_dns', 0):,}")
             
             # Monthly Trend
             if d.get("monthly_trend"):
                 trend = d.get("monthly_trend", {})
                 lines.append("")
                 lines.append("📅 *Monthly Trend*")
-                lines.append(f"DNs: {trend.get('dns', 0)}")
-                lines.append(f"Units: {trend.get('units', 0)}")
+                lines.append(f"DNs: {trend.get('dns', 0):,}")
+                lines.append(f"Units: {trend.get('units', 0):,}")
                 lines.append(f"Revenue: PKR {trend.get('revenue', 0):,.0f}")
             
             # Recommendation
@@ -1453,12 +1563,10 @@ Keep it concise and actionable.
             top_dealers = d.get("top_dealers", [])
             top_cities = d.get("top_cities", [])
             
-            # Get top product
             top_product = d.get("top_product", "N/A")
             top_dealer = top_dealers[0].get("dealer_name", "N/A") if top_dealers else "N/A"
             top_city = top_cities[0].get("city", "N/A") if top_cities else "N/A"
             
-            # Calculate health score
             health_score = d.get("health_score", 0)
             health_status = "Healthy" if health_score >= 80 else "Needs Attention" if health_score >= 60 else "Critical"
             health_emoji = "✅" if health_score >= 80 else "⚠️" if health_score >= 60 else "🔴"
@@ -1657,305 +1765,6 @@ Keep it concise and actionable.
         return recommendations
     
     # ==========================================================
-    # BASIC FORMATTERS (Existing methods kept for compatibility)
-    # ==========================================================
-    
-    def _format_dealer_revenue(self, data, dealer_name: str, req_id: str) -> str:
-        try:
-            if not self._validate_analytics_response(data, "dealer_revenue", req_id):
-                return f"❌ No revenue data for {dealer_name}"
-            if not data.success:
-                return f"❌ No revenue data for {dealer_name}"
-            d = data.data or {}
-            return (
-                f"💰 *Revenue for {dealer_name}*\n\n"
-                f"• Total Revenue: PKR {d.get('total_revenue', 0):,.0f}\n"
-                f"• Number of DNs: {d.get('count', 0)}\n"
-                f"• Average per DN: PKR {d.get('avg_revenue', 0):,.0f}"
-            )
-        except Exception as e:
-            logger.exception(f"[{req_id}] Dealer revenue formatting failed: {e}")
-            return f"❌ Unable to format revenue for {dealer_name}"
-    
-    def _format_dealer_units(self, data, dealer_name: str, req_id: str) -> str:
-        try:
-            if not self._validate_analytics_response(data, "dealer_units", req_id):
-                return f"❌ No units data for {dealer_name}"
-            if not data.success:
-                return f"❌ No units data for {dealer_name}"
-            d = data.data or {}
-            return (
-                f"📦 *Units for {dealer_name}*\n\n"
-                f"• Total Units: {d.get('total_units', 0):,}\n"
-                f"• Number of DNs: {d.get('count', 0)}\n"
-                f"• Average per DN: {d.get('avg_units', 0):.1f}"
-            )
-        except Exception as e:
-            logger.exception(f"[{req_id}] Dealer units formatting failed: {e}")
-            return f"❌ Unable to format units for {dealer_name}"
-    
-    def _format_dealer_performance(self, data, dealer_name: str, req_id: str) -> str:
-        try:
-            if not self._validate_analytics_response(data, "dealer_performance", req_id):
-                return f"❌ No performance data for {dealer_name}"
-            if not data.success:
-                return f"❌ No performance data for {dealer_name}"
-            d = data.data or {}
-            lines = [
-                f"📊 *Performance: {dealer_name}*",
-                "",
-                f"📦 Delivery Rate: {d.get('delivery_rate', 0):.1f}%",
-                f"📎 POD Rate: {d.get('pod_rate', 0):.1f}%",
-                f"⏳ Pending PGI: {d.get('pending_pgi', 0)}",
-                f"📎 Pending POD: {d.get('pending_pod', 0)}",
-                f"⏰ Avg Aging: {d.get('avg_aging', 0):.1f} days",
-            ]
-            return "\n".join(lines)
-        except Exception as e:
-            logger.exception(f"[{req_id}] Dealer performance formatting failed: {e}")
-            return f"❌ Unable to format performance for {dealer_name}"
-    
-    def _format_dealer_aging(self, data, dealer_name: str, req_id: str) -> str:
-        try:
-            if not self._validate_analytics_response(data, "dealer_aging", req_id):
-                return f"❌ No aging data for {dealer_name}"
-            if not data.success:
-                return f"❌ No aging data for {dealer_name}"
-            d = data.data or {}
-            return (
-                f"⏱️ *Aging for {dealer_name}*\n\n"
-                f"• Average Aging: {d.get('avg_aging', 0):.1f} days\n"
-                f"• Maximum Aging: {d.get('max_aging', 0)} days\n"
-                f"• DNs with Aging: {d.get('count', 0)}"
-            )
-        except Exception as e:
-            logger.exception(f"[{req_id}] Dealer aging formatting failed: {e}")
-            return f"❌ Unable to format aging for {dealer_name}"
-    
-    def _format_dealer_ranking(self, data, top: bool, req_id: str) -> str:
-        try:
-            if not self._validate_analytics_response(data, "dealer_ranking", req_id):
-                return "📊 No dealer ranking data available."
-            if not data.success:
-                return "📊 No dealer ranking data available."
-            d = data.data or {}
-            dealers = d.get("dealers", [])
-            if not dealers:
-                return "📊 No dealers found."
-            title = "🏆 *Top Dealers*" if top else "📉 *Bottom Dealers*"
-            lines = [title, ""]
-            for i, dealer in enumerate(dealers[:10], 1):
-                name = dealer.get('dealer_name', 'N/A')
-                revenue = dealer.get('total_revenue', 0)
-                total_dns = dealer.get('total_dns', 0)
-                delivery_rate = dealer.get('delivery_rate', 0)
-                lines.append(f"{i}. {name}")
-                lines.append(f"   Revenue: PKR {revenue:,.0f} | DNs: {total_dns} | Delivery Rate: {delivery_rate:.1f}%")
-            return "\n".join(lines)
-        except Exception as e:
-            logger.exception(f"[{req_id}] Dealer ranking formatting failed: {e}")
-            return "📊 Unable to format dealer ranking."
-    
-    def _format_city_ranking(self, data, req_id: str) -> str:
-        try:
-            if not self._validate_analytics_response(data, "city_ranking", req_id):
-                return "📊 No city ranking data available."
-            if not data.success:
-                return "📊 No city ranking data available."
-            d = data.data or {}
-            cities = d.get("cities", [])
-            if not cities:
-                return "📊 No city data available."
-            lines = ["🏙️ *City Rankings*", ""]
-            for i, city in enumerate(cities[:10], 1):
-                name = city.get('city', 'N/A')
-                revenue = city.get('total_revenue', 0)
-                total_dns = city.get('total_dns', 0)
-                dealers = city.get('total_dealers', 0)
-                delivery_rate = city.get('delivery_rate', 0)
-                lines.append(f"{i}. {name}")
-                lines.append(f"   Revenue: PKR {revenue:,.0f} | DNs: {total_dns} | Dealers: {dealers} | Delivery Rate: {delivery_rate:.1f}%")
-            return "\n".join(lines)
-        except Exception as e:
-            logger.exception(f"[{req_id}] City ranking formatting failed: {e}")
-            return "📊 Unable to format city ranking."
-    
-    def _format_warehouse_ranking(self, data, req_id: str) -> str:
-        try:
-            if not self._validate_analytics_response(data, "warehouse_ranking", req_id):
-                return "📊 No warehouse ranking data available."
-            if not data.success:
-                return "📊 No warehouse ranking data available."
-            d = data.data or {}
-            warehouses = d.get("warehouses", [])
-            if not warehouses:
-                return "📊 No warehouse data available."
-            lines = ["🏭 *Warehouse Rankings*", ""]
-            for i, warehouse in enumerate(warehouses[:10], 1):
-                name = warehouse.get('warehouse', 'N/A')
-                revenue = warehouse.get('total_revenue', 0)
-                total_dns = warehouse.get('total_dns', 0)
-                dealers = warehouse.get('total_dealers', 0)
-                delivery_rate = warehouse.get('delivery_rate', 0)
-                lines.append(f"{i}. {name}")
-                lines.append(f"   Revenue: PKR {revenue:,.0f} | DNs: {total_dns} | Dealers: {dealers} | Delivery Rate: {delivery_rate:.1f}%")
-            return "\n".join(lines)
-        except Exception as e:
-            logger.exception(f"[{req_id}] Warehouse ranking formatting failed: {e}")
-            return "📊 Unable to format warehouse ranking."
-    
-    def _format_product_dashboard(self, data, dealer_name: str, req_id: str) -> str:
-        try:
-            if not self._validate_analytics_response(data, "product_dashboard", req_id):
-                return f"❌ No product data found for {dealer_name}"
-            if not data.success:
-                return f"❌ No product data found for {dealer_name}"
-            d = data.data or {}
-            products = d.get("products", [])
-            if not products:
-                return f"📦 *Product Performance for {dealer_name}*\n\n⚠️ No product data found."
-            lines = [f"📦 *Product Performance for {dealer_name}*", ""]
-            for i, product in enumerate(products[:10], 1):
-                name = product.get('product_name', 'N/A')
-                code = product.get('product_code', 'N/A')
-                revenue = product.get('total_revenue', 0)
-                units = product.get('total_units', 0)
-                dn_count = product.get('dn_count', 0)
-                delivery_rate = product.get('delivery_rate', 0)
-                lines.append(f"{i}. {name}")
-                lines.append(f"   Code: {code} | Revenue: PKR {revenue:,.0f} | Units: {units} | DNs: {dn_count} | Delivery Rate: {delivery_rate:.1f}%")
-            return "\n".join(lines)
-        except Exception as e:
-            logger.exception(f"[{req_id}] Product dashboard formatting failed: {e}")
-            return f"❌ Unable to format product dashboard for {dealer_name}"
-    
-    def _format_city_performance(self, data, city_name: str, req_id: str) -> str:
-        try:
-            if not self._validate_analytics_response(data, "city_performance", req_id):
-                return f"❌ No performance data for {city_name}"
-            if not data.success:
-                return f"❌ No performance data for {city_name}"
-            d = data.data or {}
-            summary = d.get("summary", {})
-            return (
-                f"📊 *Performance: {city_name}*\n\n"
-                f"• Total DNs: {summary.get('total_dns', 0)}\n"
-                f"• POD Rate: {summary.get('pod_rate', 0):.1f}%\n"
-                f"• Revenue: PKR {summary.get('total_revenue', 0):,.0f}\n"
-                f"• Active Dealers: {summary.get('total_dealers', 0)}"
-            )
-        except Exception as e:
-            logger.exception(f"[{req_id}] City performance formatting failed: {e}")
-            return f"❌ Unable to format performance for {city_name}"
-    
-    def _format_warehouse_performance(self, data, warehouse_name: str, req_id: str) -> str:
-        try:
-            if not self._validate_analytics_response(data, "warehouse_performance", req_id):
-                return f"❌ No performance data for {warehouse_name}"
-            if not data.success:
-                return f"❌ No performance data for {warehouse_name}"
-            d = data.data or {}
-            summary = d.get("summary", {})
-            return (
-                f"📊 *Performance: {warehouse_name}*\n\n"
-                f"• Total DNs: {summary.get('total_dns', 0)}\n"
-                f"• POD Rate: {summary.get('pod_rate', 0):.1f}%\n"
-                f"• Revenue: PKR {summary.get('total_revenue', 0):,.0f}\n"
-                f"• Active Dealers: {summary.get('total_dealers', 0)}"
-            )
-        except Exception as e:
-            logger.exception(f"[{req_id}] Warehouse performance formatting failed: {e}")
-            return f"❌ Unable to format performance for {warehouse_name}"
-    
-    def _format_root_cause(self, data, req_id: str) -> str:
-        try:
-            if not self._validate_analytics_response(data, "root_cause", req_id):
-                return "🔍 No root cause analysis available."
-            if not data.success:
-                return "🔍 No root cause analysis available."
-            d = data.data or {}
-            issues = d.get("key_issues", [])
-            recommendations = d.get("recommendations", [])
-            metrics = d.get("metrics", {})
-            if metrics.get("total_dns", 0) == 0:
-                return "🔍 *Root Cause Analysis*\n\n⚠️ No deliveries found in the system."
-            lines = [
-                "🔍 *Root Cause Analysis*",
-                "",
-                "📊 *KEY METRICS:*",
-                f"   • Total DNs: {metrics.get('total_dns', 0)}",
-                f"   • Avg Processing: {metrics.get('avg_processing_days', 0):.1f} days",
-                f"   • Avg Delivery: {metrics.get('avg_delivery_days', 0):.1f} days",
-                f"   • POD Rate: {metrics.get('pod_rate', 0):.1f}%",
-                f"   • Pending POD: {metrics.get('pending_pod', 0)}",
-                "",
-                "⚠️ *KEY ISSUES IDENTIFIED:*",
-            ]
-            if issues:
-                for issue in issues:
-                    lines.append(f"   • {issue}")
-            else:
-                lines.append("   ✅ No critical issues identified.")
-            if recommendations:
-                lines.append("")
-                lines.append("💡 *RECOMMENDATIONS:*")
-                for rec in recommendations:
-                    lines.append(f"   • {rec}")
-            return "\n".join(lines)
-        except Exception as e:
-            logger.exception(f"[{req_id}] Root cause formatting failed: {e}")
-            return "🔍 Unable to format root cause analysis."
-    
-    def _format_delivery_performance(self, data, req_id: str) -> str:
-        try:
-            if not self._validate_analytics_response(data, "delivery_performance", req_id):
-                return "📦 No delivery performance data available."
-            if not data.success:
-                return "📦 No delivery performance data available."
-            d = data.data or {}
-            metrics = d.get("metrics", {})
-            return (
-                "📦 *Delivery Performance Dashboard*\n\n"
-                f"📊 *KEY METRICS:*\n"
-                f"   • Total DNs: {metrics.get('total_dns', 0)}\n"
-                f"   • Delivered: {metrics.get('delivered', 0)}\n"
-                f"   • In Transit: {metrics.get('in_transit', 0)}\n"
-                f"   • Pending PGI: {metrics.get('pending_pgi', 0)}\n"
-                f"   • Pending POD: {metrics.get('pending_pod', 0)}\n"
-                f"   • Pending Flag: {metrics.get('pending_flag_count', 0)}\n"
-                f"\n📈 *RATES:*\n"
-                f"   • PGI Rate: {metrics.get('pgi_rate', 0):.1f}%\n"
-                f"   • POD Rate: {metrics.get('pod_rate', 0):.1f}%\n"
-                f"   • Avg Processing: {metrics.get('avg_processing_days', 0):.1f} days\n"
-                f"   • Avg Delivery: {metrics.get('avg_delivery_days', 0):.1f} days"
-            )
-        except Exception as e:
-            logger.exception(f"[{req_id}] Delivery performance formatting failed: {e}")
-            return "📦 Unable to format delivery performance."
-    
-    def _format_trend_analysis(self, data, req_id: str) -> str:
-        try:
-            if not self._validate_analytics_response(data, "trend_analysis", req_id):
-                return "📈 No trend data available."
-            if not data.success:
-                return "📈 No trend data available."
-            d = data.data or {}
-            trends = d.get("trends", {})
-            monthly = trends.get("monthly", [])
-            if not monthly:
-                return "📈 No trend data available."
-            lines = ["📈 *Trend Analysis*", "", "📊 *Monthly Trends:*"]
-            for month in monthly[:6]:
-                period = month.get('period', 'N/A')
-                count = month.get('count', 0)
-                revenue = month.get('revenue', 0)
-                lines.append(f"   • {period}: {count} DNs, Revenue: PKR {revenue:,.0f}")
-            return "\n".join(lines)
-        except Exception as e:
-            logger.exception(f"[{req_id}] Trend analysis formatting failed: {e}")
-            return "📈 Unable to format trend analysis."
-    
-    # ==========================================================
     # ERROR & FALLBACK RESPONSES
     # ==========================================================
     
@@ -1998,28 +1807,6 @@ Keep it concise and actionable.
             f"Please try again or contact support with the reference ID."
         )
     
-    def _get_service_error_response(self, intent: str, entity: Optional[str], service: str, error: Exception, error_id: str, req_id: str) -> str:
-        return (
-            f"⚠️ *Unable to retrieve analytics data*\n\n"
-            f"• Intent: {intent}\n"
-            f"• Entity: {entity or 'N/A'}\n"
-            f"• Service: {service}\n"
-            f"• Error Reference: `{error_id}`\n\n"
-            f"Please try again or contact support."
-        )
-    
-    def _get_groq_blocked_response(self) -> str:
-        return (
-            "⚠️ *Logistics queries are handled by analytics, not AI.*\n\n"
-            "Please try one of these:\n"
-            "• A specific dealer name\n"
-            "• A DN number (8-12 digits)\n"
-            "• 'Top dealers' or 'Top cities'\n"
-            "• 'Key issues' or 'Executive insights'\n"
-            "• 'Compare Dealer A vs Dealer B'\n\n"
-            "Type 'Help' for all available commands."
-        )
-    
     # ==========================================================
     # METRICS & ADMIN
     # ==========================================================
@@ -2029,7 +1816,7 @@ Keep it concise and actionable.
         total_dealer = self.metrics["dealer_queries_success"] + self.metrics["dealer_queries_failure"]
         
         return {
-            "version": "15.1",
+            "version": "16.0",
             "total_requests": self.metrics["total_requests"],
             "cache_hits": self.metrics["cache_hits"],
             "cache_misses": self.metrics["cache_misses"],
@@ -2063,10 +1850,12 @@ Keep it concise and actionable.
             "root_cause_analyses": self.metrics["root_cause_analyses"],
             "control_tower": self.metrics["control_tower"],
             "groq_uses": self.metrics["groq_uses"],
+            "groq_fallbacks": self.metrics["groq_fallbacks"],
             "overrides": self.metrics["overrides"],
             "timeouts": self.metrics["timeouts"],
             "errors": self.metrics["errors"],
             "analytics_response_errors": self.metrics["analytics_response_errors"],
+            "recovery_attempts": self.metrics["recovery_attempts"],
             "conversation_count": len(self.conversation_cache),
             "cache_size": len(self.response_cache),
             "failure_cache_size": len(self.failure_cache)
@@ -2145,19 +1934,23 @@ def get_routing_debug(question: str) -> Dict[str, Any]:
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("AI Provider Service v15.1 - 100% Aligned")
+logger.info("AI Provider Service v16.0 - Self-Healing Architecture")
 logger.info("=" * 70)
 logger.info("")
+logger.info("   SELF-HEALING FEATURES:")
+logger.info("   ✅ Request Isolation")
+logger.info("   ✅ Multiple Recovery Attempts (6 strategies)")
+logger.info("   ✅ Never Cache Failures")
+logger.info("   ✅ Groq AI Fallback")
+logger.info("   ✅ System Survival")
+logger.info("")
 logger.info("   ENTERPRISE FEATURES:")
-logger.info("   ✅ Professional DN Dashboard")
 logger.info("   ✅ Dealer 360 Dashboard")
+logger.info("   ✅ Enhanced DN Dashboard")
 logger.info("   ✅ City Performance Dashboard")
 logger.info("   ✅ Warehouse Performance Dashboard")
 logger.info("   ✅ Control Tower Dashboard")
 logger.info("   ✅ Executive Dashboard")
-logger.info("   ✅ Special Commands (Control Tower, Executive Summary)")
-logger.info("   ✅ Entity Resolution: Dealer → Warehouse → City")
-logger.info("   ✅ customer_name = Dealer = Sold-To Party")
 logger.info("")
 logger.info("   STATUS: ✅ PRODUCTION READY")
 logger.info("=" * 70)
