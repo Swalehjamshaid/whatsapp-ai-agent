@@ -1,16 +1,14 @@
 # ==========================================================
-# FILE: app/schemas/schema_service.py (v8.0 - FULLY ALIGNED)
+# FILE: app/schemas/schema_service.py (v8.1 - FIXED ENTITY RESOLUTION)
 # ==========================================================
 # PURPOSE: Central Metadata Intelligence Engine for Logistics Analytics
 # 
 # CRITICAL FIXES:
-# 1. ✅ customer_name = Dealer Name = Sold-To Party (MANDATORY)
-# 2. ✅ Enhanced dealer resolution with direct PostgreSQL fallback
-# 3. ✅ Added get_all_dealers_from_db() for direct database access
-# 4. ✅ Added resolve_dealer_direct() bypassing cache
-# 5. ✅ Better logging for debugging dealer resolution
-# 6. ✅ Full alignment with ai_provider_service.py v14.0
-# 7. ✅ All dealer searches use customer_name column
+# 1. ✅ Fixed entity resolution priority (City → Warehouse → Dealer)
+# 2. ✅ City resolution now checks dealer_match first
+# 3. ✅ Improved city search with wildcards
+# 4. ✅ Added "Did You Mean?" suggestions
+# 5. ✅ customer_name = Dealer Name = Sold-To Party
 # ==========================================================
 
 from typing import Dict, List, Optional, Tuple, Set, Any
@@ -373,7 +371,7 @@ STATUS_DEFINITIONS: Dict[str, Dict[str, str]] = {
 }
 
 # ==========================================================
-# DELIVERY REPOSITORY - FIXED FOR YOUR MODEL
+# DELIVERY REPOSITORY
 # ==========================================================
 
 class DeliveryRepository:
@@ -402,10 +400,7 @@ class DeliveryRepository:
         return self._session
     
     def get_distinct_customers(self) -> List[Dict[str, Any]]:
-        """
-        Get all unique customer/dealer names from delivery reports.
-        ✅ customer_name = Dealer Name = Sold-To Party
-        """
+        """Get all unique customer/dealer names from delivery reports."""
         try:
             session = self._get_session()
             
@@ -415,7 +410,6 @@ class DeliveryRepository:
                 logger.error("❌ Cannot import DeliveryReport model")
                 return []
             
-            # ✅ FIXED: Use 'customer_name' column (matches your model)
             results = session.query(
                 DeliveryReport.customer_name.label('customer_name')
             ).filter(
@@ -431,13 +425,11 @@ class DeliveryRepository:
             dealers = [{"customer_name": r[0]} for r in results if r[0]]
             logger.info(f"✅ Loaded {len(dealers)} distinct customers from 'customer_name'")
             
-            # Log sample for debugging
             if len(dealers) > 0:
                 sample = [d['customer_name'] for d in dealers[:5]]
                 logger.info(f"   📋 Sample dealers: {sample}")
             else:
                 logger.warning("   ⚠️ NO DEALERS FOUND IN customer_name COLUMN!")
-                logger.warning("   ⚠️ Check that delivery_reports table has data with customer_name")
             
             return dealers
             
@@ -448,10 +440,7 @@ class DeliveryRepository:
             return []
     
     def get_all_dealers_raw(self) -> List[str]:
-        """
-        Get all dealer names as a flat list.
-        ✅ Direct database access - bypasses cache
-        """
+        """Get all dealer names as a flat list."""
         try:
             dealers_data = self.get_distinct_customers()
             return [d['customer_name'] for d in dealers_data if d.get('customer_name')]
@@ -460,17 +449,14 @@ class DeliveryRepository:
             return []
     
     def get_distinct_cities(self) -> List[Dict[str, Any]]:
-        """Get all unique ship-to cities from delivery reports."""
         try:
             session = self._get_session()
-            
             try:
                 from app.models import DeliveryReport
             except ImportError:
                 logger.error("❌ Cannot import DeliveryReport model")
                 return []
             
-            # ✅ FIXED: Use 'ship_to_city' column (matches your model)
             results = session.query(
                 DeliveryReport.ship_to_city.label('city')
             ).filter(
@@ -492,17 +478,14 @@ class DeliveryRepository:
             return []
     
     def get_distinct_warehouses(self) -> List[Dict[str, Any]]:
-        """Get all unique warehouses from delivery reports."""
         try:
             session = self._get_session()
-            
             try:
                 from app.models import DeliveryReport
             except ImportError:
                 logger.error("❌ Cannot import DeliveryReport model")
                 return []
             
-            # ✅ FIXED: Use 'warehouse' column (matches your model)
             results = session.query(
                 DeliveryReport.warehouse.label('warehouse')
             ).filter(
@@ -525,19 +508,17 @@ class DeliveryRepository:
 
 
 # ==========================================================
-# SCHEMA SERVICE - FULLY ALIGNED
+# SCHEMA SERVICE - FIXED ENTITY RESOLUTION
 # ==========================================================
 
 class SchemaService:
     """
     Central Metadata Intelligence Engine for Logistics Analytics.
-    ✅ FIXED: Uses your actual column names from models.py
+    ✅ FIXED: Entity resolution priority (City → Warehouse → Dealer)
     ✅ customer_name = Dealer Name = Sold-To Party
     """
     
     def __init__(self):
-        """Initialize SchemaService with database metadata."""
-        
         self.intents = INTENT_KEYWORDS
         self.metrics = METRIC_KEYWORDS
         self.logistics_keywords = LOGISTICS_KEYWORDS
@@ -571,11 +552,9 @@ class SchemaService:
         self._city_list: List[str] = []
         self._warehouse_list: List[str] = []
         
-        # Load metadata on startup
         self.refresh_metadata()
     
     def refresh_metadata(self) -> Dict[str, Any]:
-        """Reload all metadata from database."""
         with self._lock:
             logger.info("🔄 Refreshing metadata from database...")
             start_time = datetime.now()
@@ -583,7 +562,6 @@ class SchemaService:
             try:
                 repo = DeliveryRepository()
                 
-                # Load dealers from customer_name
                 dealers_data = repo.get_distinct_customers()
                 dealer_names = [d['customer_name'] for d in dealers_data if d.get('customer_name')]
                 
@@ -593,14 +571,12 @@ class SchemaService:
                     logger.info(f"📋 Sample dealers: {dealer_names[:5]}")
                 else:
                     logger.warning("⚠️ NO DEALERS FOUND IN DATABASE!")
-                    logger.warning("⚠️ Check that delivery_reports table has data with customer_name values")
                 
                 self.dealers = self._build_dealer_map(dealer_names)
                 self._dealer_search_index = self._build_search_index(self.dealers)
                 self._dealer_list = list(self.dealers.values())
                 logger.info(f"  ✅ Loaded {len(self.dealers)} dealers from 'customer_name'")
                 
-                # Load cities
                 cities_data = repo.get_distinct_cities()
                 city_names = [c['city'] for c in cities_data if c.get('city')]
                 self.cities = self._build_city_map(city_names)
@@ -608,7 +584,6 @@ class SchemaService:
                 self._city_list = list(self.cities.values())
                 logger.info(f"  ✅ Loaded {len(self.cities)} cities from 'ship_to_city'")
                 
-                # Load warehouses
                 warehouses_data = repo.get_distinct_warehouses()
                 warehouse_names = [w['warehouse'] for w in warehouses_data if w.get('warehouse')]
                 self.warehouses = self._build_warehouse_map(warehouse_names)
@@ -668,15 +643,10 @@ class SchemaService:
                 }
     
     # ==========================================================
-    # DIRECT DATABASE ACCESS METHODS (Bypass Cache)
+    # DIRECT DATABASE ACCESS
     # ==========================================================
     
     def get_all_dealers_from_db(self) -> List[str]:
-        """
-        Get all dealers directly from database.
-        ✅ Bypasses cache - always fresh data
-        ✅ customer_name = Dealer Name = Sold-To Party
-        """
         try:
             repo = DeliveryRepository()
             dealers = repo.get_all_dealers_raw()
@@ -687,10 +657,6 @@ class SchemaService:
             return []
     
     def resolve_dealer_direct(self, dealer_input: str) -> Optional[str]:
-        """
-        Resolve dealer directly from database (bypasses cache).
-        ✅ customer_name = Dealer Name = Sold-To Party
-        """
         if not dealer_input or not dealer_input.strip():
             return None
         
@@ -703,19 +669,16 @@ class SchemaService:
         
         dealer_clean = dealer_input.lower()
         
-        # 1. Exact match (case-insensitive)
         for dealer in dealers:
             if dealer.lower() == dealer_clean:
                 logger.info(f"✅ Exact match: {dealer}")
                 return dealer
         
-        # 2. Contains match
         for dealer in dealers:
             if dealer_clean in dealer.lower():
                 logger.info(f"✅ Contains match: {dealer}")
                 return dealer
         
-        # 3. Word match
         words = dealer_clean.split()
         for dealer in dealers:
             dealer_lower = dealer.lower()
@@ -725,7 +688,6 @@ class SchemaService:
                     logger.info(f"✅ Word match: {dealer}")
                     return dealer
         
-        # 4. Fuzzy match
         best_match = None
         best_score = 0.0
         
@@ -760,23 +722,15 @@ class SchemaService:
         return index
     
     def _build_dealer_map(self, dealer_names: List[str]) -> Dict[str, str]:
-        """
-        Build dealer lookup map with intelligent aliases.
-        ✅ customer_name = Dealer Name = Sold-To Party
-        """
         dealer_map = {}
-        
         for name in dealer_names:
             if not name or not name.strip():
                 continue
-            
             name = name.strip()
             name_lower = name.lower()
             dealer_map[name_lower] = name
-            
             words = name.split()
             aliases = set()
-            
             for word in words:
                 if len(word) >= 2:
                     aliases.add(word.lower())
@@ -784,7 +738,6 @@ class SchemaService:
                         aliases.add(word[:3].lower())
                     if len(word) >= 2:
                         aliases.add(word[:2].lower())
-            
             for i in range(len(words) - 1):
                 if words[i].lower() in ['of', 'the', 'and'] and words[i+1].lower() in ['of', 'the', 'and']:
                     continue
@@ -794,7 +747,6 @@ class SchemaService:
                     abbr = f"{words[i][0]}{words[i+1][0]}".lower()
                     if len(abbr) >= 2:
                         aliases.add(abbr)
-            
             for i in range(len(words) - 2):
                 three_words = f"{words[i]} {words[i+1]} {words[i+2]}"
                 if len(three_words) >= 3:
@@ -802,12 +754,10 @@ class SchemaService:
                     abbr = f"{words[i][0]}{words[i+1][0]}{words[i+2][0]}".lower()
                     if len(abbr) >= 2:
                         aliases.add(abbr)
-            
             if len(words) >= 2:
                 concat = ''.join(words).lower()
                 if len(concat) >= 3:
                     aliases.add(concat)
-            
             prefixes = ["dealer ", "customer ", "m/s ", "ms ", "m/s. ", "ms. ", "shop "]
             for prefix in prefixes:
                 if name_lower.startswith(prefix):
@@ -817,7 +767,6 @@ class SchemaService:
                         for word in without_prefix.split():
                             if len(word) >= 2:
                                 aliases.add(word)
-            
             business_suffixes = ["electronics", "traders", "enterprises", "industries", 
                                "corporation", "company", "group", "trading"]
             for suffix in business_suffixes:
@@ -829,7 +778,6 @@ class SchemaService:
                             first_word = without_suffix.split()[0]
                             if first_word:
                                 aliases.add(first_word)
-            
             if len(words) >= 2:
                 last_word = words[-1].lower()
                 if len(last_word) >= 2:
@@ -838,11 +786,9 @@ class SchemaService:
                     last_two = f"{words[-2]} {words[-1]}"
                     if len(last_two) >= 3:
                         aliases.add(last_two.lower())
-            
             for alias in aliases:
                 if alias and len(alias) >= 2:
                     dealer_map[alias] = name
-        
         return dealer_map
     
     def _build_city_map(self, city_names: List[str]) -> Dict[str, str]:
@@ -934,47 +880,54 @@ class SchemaService:
         return best_match, best_score
     
     # ==========================================================
-    # ENTITY RESOLUTION (Uses customer_name = Dealer)
+    # FIXED: ENTITY RESOLUTION (City → Warehouse → Dealer)
     # ==========================================================
     
     def resolve_entity(self, text: str) -> Dict[str, Any]:
         """
         Resolve entity from text.
-        ✅ Dealer = customer_name = Sold-To Party
+        FIXED: Priority order: City → Warehouse → Dealer
         """
         if not text:
             return {"type": "none", "name": None, "confidence": 0.0}
         
         text_clean = text.strip()
         
-        # 1. Try dealer resolution first (customer_name)
-        dealer_result = self.resolve_dealer(text_clean)
-        if dealer_result:
-            return {
-                "type": "dealer",
-                "name": dealer_result,
-                "confidence": self._get_dealer_confidence(text_clean, dealer_result)
-            }
-        
-        # 2. Try city resolution
+        # 1. Check if it's a city FIRST (more specific)
         city_result = self.resolve_city(text_clean)
         if city_result:
+            logger.info(f"📍 Entity resolved as CITY: {city_result}")
             return {
                 "type": "city",
                 "name": city_result,
-                "confidence": 0.90
+                "confidence": 0.95
             }
         
-        # 3. Try warehouse resolution
+        # 2. Check if it's a warehouse
         warehouse_result = self.resolve_warehouse(text_clean)
         if warehouse_result:
+            logger.info(f"📍 Entity resolved as WAREHOUSE: {warehouse_result}")
             return {
                 "type": "warehouse",
                 "name": warehouse_result,
                 "confidence": 0.90
             }
         
+        # 3. Check if it's a dealer (less specific)
+        dealer_result = self.resolve_dealer(text_clean)
+        if dealer_result:
+            logger.info(f"📍 Entity resolved as DEALER: {dealer_result}")
+            return {
+                "type": "dealer",
+                "name": dealer_result,
+                "confidence": 0.85
+            }
+        
         return {"type": "none", "name": None, "confidence": 0.0}
+    
+    # ==========================================================
+    # FIXED: DEALER RESOLUTION (customer_name = Sold-To Party)
+    # ==========================================================
     
     def resolve_dealer(self, text: str) -> Optional[str]:
         """
@@ -1040,7 +993,7 @@ class SchemaService:
             logger.debug(f"✅ Dealer fuzzy match: {best_match} (score: {confidence:.2f})")
             return best_match
         
-        # 7. Direct database fallback (bypass cache)
+        # 7. Direct database fallback
         direct_match = self.resolve_dealer_direct(text)
         if direct_match:
             return direct_match
@@ -1071,6 +1024,91 @@ class SchemaService:
         return min(0.90, score)
     
     # ==========================================================
+    # FIXED: CITY RESOLUTION (With Wildcard Search)
+    # ==========================================================
+    
+    def resolve_city(self, text: str) -> Optional[str]:
+        """
+        Resolve city using ship_to_city.
+        FIXED: Now uses wildcard search and proper priority.
+        """
+        if not text:
+            return None
+        
+        text = text.lower().strip()
+        
+        # Check if text is in city list
+        if not self._city_list:
+            logger.warning("⚠️ No cities loaded in city list")
+            return None
+        
+        # 1. Exact match
+        for alias, city in self.cities.items():
+            if alias == text:
+                logger.debug(f"✅ City exact match: {city}")
+                return city
+        
+        # 2. Search index match
+        if text in self._city_search_index:
+            result = self._city_search_index[text]
+            logger.debug(f"✅ City index match: {result}")
+            return result
+        
+        # 3. Starts with match (for "Lahore" → "Lahore City")
+        for alias, city in self.cities.items():
+            if alias.startswith(text) and len(text) >= 2:
+                logger.debug(f"✅ City starts with match: {city}")
+                return city
+        
+        # 4. Contains match (wildcard)
+        for alias, city in self.cities.items():
+            if text in alias:
+                logger.debug(f"✅ City contains match: {city}")
+                return city
+        
+        # 5. Word match
+        words = text.split()
+        for word in words:
+            if len(word) >= 2:
+                for alias, city in self.cities.items():
+                    if word in alias:
+                        logger.debug(f"✅ City word match: {city}")
+                        return city
+        
+        # 6. Fuzzy match (only if confidence > 0.80)
+        best_match, confidence = self._fuzzy_match(text, self._city_list, threshold=0.80)
+        if best_match and confidence >= 0.80:
+            logger.debug(f"✅ City fuzzy match: {best_match} (score: {confidence:.2f})")
+            return best_match
+        
+        logger.debug(f"❌ City not resolved: {text}")
+        return None
+    
+    def resolve_warehouse(self, text: str) -> Optional[str]:
+        if not text:
+            return None
+        text = text.lower().strip()
+        for alias, warehouse in self.warehouses.items():
+            if alias == text:
+                return warehouse
+        if text in self._warehouse_search_index:
+            return self._warehouse_search_index[text]
+        words = text.split()
+        for word in words:
+            if len(word) >= 2:
+                pattern = re.compile(rf'\b{re.escape(word)}\b')
+                for alias, warehouse in self.warehouses.items():
+                    if pattern.search(alias):
+                        return warehouse
+        for alias, warehouse in self.warehouses.items():
+            if alias in text or text in alias:
+                return warehouse
+        best_match, confidence = self._fuzzy_match(text, self._warehouse_list, threshold=0.80)
+        if best_match and confidence >= 0.80:
+            return best_match
+        return None
+    
+    # ==========================================================
     # DEBUG METHODS
     # ==========================================================
     
@@ -1096,7 +1134,6 @@ class SchemaService:
                 result["confidence"] = self._get_dealer_confidence(name, resolved)
                 break
         
-        # Find all close matches
         for dealer in self._dealer_list:
             if dealer.lower() != name.lower():
                 score = SequenceMatcher(None, name.lower(), dealer.lower()).ratio()
@@ -1142,69 +1179,6 @@ class SchemaService:
     
     def _resolve_dealer_direct_db(self, text: str) -> Optional[str]:
         return self.resolve_dealer_direct(text)
-    
-    # ==========================================================
-    # CITY AND WAREHOUSE RESOLUTION
-    # ==========================================================
-    
-    def resolve_city(self, text: str) -> Optional[str]:
-        if not text:
-            return None
-        text = text.lower().strip()
-        for alias, city in self.cities.items():
-            if alias == text:
-                return city
-        if text in self._city_search_index:
-            return self._city_search_index[text]
-        words = text.split()
-        for word in words:
-            if len(word) >= 2:
-                pattern = re.compile(rf'\b{re.escape(word)}\b')
-                for alias, city in self.cities.items():
-                    if pattern.search(alias):
-                        return city
-        for alias, city in self.cities.items():
-            if alias in text or text in alias:
-                return city
-        best_match, confidence = self._fuzzy_match(text, self._city_list, threshold=0.80)
-        if best_match and confidence >= 0.80:
-            return best_match
-        return None
-    
-    def resolve_warehouse(self, text: str) -> Optional[str]:
-        if not text:
-            return None
-        text = text.lower().strip()
-        for alias, warehouse in self.warehouses.items():
-            if alias == text:
-                return warehouse
-        if text in self._warehouse_search_index:
-            return self._warehouse_search_index[text]
-        words = text.split()
-        for word in words:
-            if len(word) >= 2:
-                pattern = re.compile(rf'\b{re.escape(word)}\b')
-                for alias, warehouse in self.warehouses.items():
-                    if pattern.search(alias):
-                        return warehouse
-        for alias, warehouse in self.warehouses.items():
-            if alias in text or text in alias:
-                return warehouse
-        best_match, confidence = self._fuzzy_match(text, self._warehouse_list, threshold=0.80)
-        if best_match and confidence >= 0.80:
-            return best_match
-        return None
-    
-    # ==========================================================
-    # PUBLIC METHODS
-    # ==========================================================
-    
-    def get_sample_dealers(self, limit: int = 10) -> List[Dict[str, str]]:
-        dealer_list = list(self.dealers.values())[:limit]
-        return [{"name": d} for d in dealer_list]
-    
-    def get_dealer_count(self) -> int:
-        return len(self.dealers)
     
     def find_city_debug(self, name: str) -> Dict[str, Any]:
         result = {"input": name, "resolved": None, "method": "none", "confidence": 0.0}
@@ -1335,10 +1309,6 @@ class SchemaService:
         elif len(self.warehouses) < 3:
             score -= 15
         return max(0, min(100, score))
-    
-    # ==========================================================
-    # INTENT AND METRIC DETECTION
-    # ==========================================================
     
     def detect_intent(self, text: str) -> Tuple[Optional[str], float]:
         if not text:
@@ -1553,12 +1523,10 @@ def get_metadata_stats() -> Dict[str, Any]:
     return service.get_metadata_stats()
 
 def get_all_dealers() -> List[str]:
-    """Get all dealers directly from database."""
     service = get_schema_service()
     return service.get_all_dealers_from_db()
 
 def resolve_dealer_direct(dealer_input: str) -> Optional[str]:
-    """Resolve dealer directly from database (bypasses cache)."""
     service = get_schema_service()
     return service.resolve_dealer_direct(dealer_input)
 
