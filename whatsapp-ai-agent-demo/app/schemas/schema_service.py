@@ -1,13 +1,13 @@
 # ==========================================================
-# FILE: app/schemas/schema_service.py (v8.1 - FIXED ENTITY RESOLUTION)
+# FILE: app/schemas/schema_service.py (v8.2 - FIXED ENTITY RESOLUTION)
 # ==========================================================
 # PURPOSE: Central Metadata Intelligence Engine for Logistics Analytics
 # 
 # CRITICAL FIXES:
-# 1. ✅ Fixed entity resolution priority (City → Warehouse → Dealer)
-# 2. ✅ City resolution now checks dealer_match first
-# 3. ✅ Improved city search with wildcards
-# 4. ✅ Added "Did You Mean?" suggestions
+# 1. ✅ Fixed entity resolution priority (Dealer → Warehouse → City)
+# 2. ✅ Added special command detection (Control Tower, Executive Summary)
+# 3. ✅ Check for "warehouse" keyword before city resolution
+# 4. ✅ Improved dealer confidence scoring
 # 5. ✅ customer_name = Dealer Name = Sold-To Party
 # ==========================================================
 
@@ -27,6 +27,24 @@ logger = logging.getLogger(__name__)
 # ==========================================================
 
 DN_PATTERN = re.compile(r'\b(\d{8,12})\b')
+
+# ==========================================================
+# SPECIAL COMMANDS
+# ==========================================================
+
+SPECIAL_COMMANDS = {
+    "control tower": "control_tower",
+    "control": "control_tower",
+    "tower": "control_tower",
+    "executive summary": "executive_summary",
+    "executive insights": "executive_summary",
+    "executive": "executive_summary",
+    "ceo": "executive_summary",
+    "management": "executive_summary",
+    "help": "help",
+    "hi": "help",
+    "hello": "help"
+}
 
 # ==========================================================
 # DELIVERY CALCULATION RULES
@@ -144,6 +162,7 @@ class DeliveryMetrics:
             'pgi_date': pgi_date.isoformat() if pgi_date else None,
             'pod_date': pod_date.isoformat() if pod_date else None
         }
+
 
 # ==========================================================
 # INTENT KEYWORDS
@@ -375,21 +394,12 @@ STATUS_DEFINITIONS: Dict[str, Dict[str, str]] = {
 # ==========================================================
 
 class DeliveryRepository:
-    """
-    Embedded repository for Delivery Report database operations.
-    ✅ FIXED: Uses your actual column names from models.py
-    - Table: delivery_reports (with 's')
-    - Dealer: customer_name (not sold_to_party_name)
-    - DN: dn_no (correct)
-    - City: ship_to_city (correct)
-    - Warehouse: warehouse (correct)
-    """
+    """Embedded repository for Delivery Report database operations."""
     
     def __init__(self, db_session=None):
         self._session = db_session
     
     def _get_session(self):
-        """Get database session."""
         if self._session is None:
             try:
                 from app.database import get_db
@@ -400,15 +410,9 @@ class DeliveryRepository:
         return self._session
     
     def get_distinct_customers(self) -> List[Dict[str, Any]]:
-        """Get all unique customer/dealer names from delivery reports."""
         try:
             session = self._get_session()
-            
-            try:
-                from app.models import DeliveryReport
-            except ImportError:
-                logger.error("❌ Cannot import DeliveryReport model")
-                return []
+            from app.models import DeliveryReport
             
             results = session.query(
                 DeliveryReport.customer_name.label('customer_name')
@@ -440,7 +444,6 @@ class DeliveryRepository:
             return []
     
     def get_all_dealers_raw(self) -> List[str]:
-        """Get all dealer names as a flat list."""
         try:
             dealers_data = self.get_distinct_customers()
             return [d['customer_name'] for d in dealers_data if d.get('customer_name')]
@@ -451,11 +454,7 @@ class DeliveryRepository:
     def get_distinct_cities(self) -> List[Dict[str, Any]]:
         try:
             session = self._get_session()
-            try:
-                from app.models import DeliveryReport
-            except ImportError:
-                logger.error("❌ Cannot import DeliveryReport model")
-                return []
+            from app.models import DeliveryReport
             
             results = session.query(
                 DeliveryReport.ship_to_city.label('city')
@@ -480,11 +479,7 @@ class DeliveryRepository:
     def get_distinct_warehouses(self) -> List[Dict[str, Any]]:
         try:
             session = self._get_session()
-            try:
-                from app.models import DeliveryReport
-            except ImportError:
-                logger.error("❌ Cannot import DeliveryReport model")
-                return []
+            from app.models import DeliveryReport
             
             results = session.query(
                 DeliveryReport.warehouse.label('warehouse')
@@ -514,7 +509,7 @@ class DeliveryRepository:
 class SchemaService:
     """
     Central Metadata Intelligence Engine for Logistics Analytics.
-    ✅ FIXED: Entity resolution priority (City → Warehouse → Dealer)
+    ✅ FIXED: Entity resolution priority (Dealer → Warehouse → City)
     ✅ customer_name = Dealer Name = Sold-To Party
     """
     
@@ -880,60 +875,61 @@ class SchemaService:
         return best_match, best_score
     
     # ==========================================================
-    # FIXED: ENTITY RESOLUTION (City → Warehouse → Dealer)
+    # FIXED: ENTITY RESOLUTION (Dealer → Warehouse → City)
     # ==========================================================
     
     def resolve_entity(self, text: str) -> Dict[str, Any]:
         """
         Resolve entity from text.
-        FIXED: Priority order: City → Warehouse → Dealer
+        FIXED: Priority: Dealer → Warehouse → City
         """
         if not text:
             return {"type": "none", "name": None, "confidence": 0.0}
         
         text_clean = text.strip()
+        text_lower = text_clean.lower()
         
-        # 1. Check if it's a city FIRST (more specific)
+        # 1. Check for special commands
+        if text_lower in SPECIAL_COMMANDS:
+            return {"type": "command", "name": text_lower, "confidence": 1.0}
+        
+        # 2. Check for "warehouse" keyword (handle warehouse queries)
+        if "warehouse" in text_lower:
+            warehouse_result = self.resolve_warehouse(text_clean)
+            if warehouse_result:
+                return {
+                    "type": "warehouse",
+                    "name": warehouse_result,
+                    "confidence": 0.95
+                }
+        
+        # 3. Check if it's a dealer FIRST (most specific)
+        dealer_result = self.resolve_dealer(text_clean)
+        if dealer_result:
+            confidence = self._get_dealer_confidence(text_clean, dealer_result)
+            if confidence >= 0.70:
+                return {
+                    "type": "dealer",
+                    "name": dealer_result,
+                    "confidence": confidence
+                }
+        
+        # 4. Check if it's a city
         city_result = self.resolve_city(text_clean)
         if city_result:
-            logger.info(f"📍 Entity resolved as CITY: {city_result}")
             return {
                 "type": "city",
                 "name": city_result,
-                "confidence": 0.95
-            }
-        
-        # 2. Check if it's a warehouse
-        warehouse_result = self.resolve_warehouse(text_clean)
-        if warehouse_result:
-            logger.info(f"📍 Entity resolved as WAREHOUSE: {warehouse_result}")
-            return {
-                "type": "warehouse",
-                "name": warehouse_result,
                 "confidence": 0.90
-            }
-        
-        # 3. Check if it's a dealer (less specific)
-        dealer_result = self.resolve_dealer(text_clean)
-        if dealer_result:
-            logger.info(f"📍 Entity resolved as DEALER: {dealer_result}")
-            return {
-                "type": "dealer",
-                "name": dealer_result,
-                "confidence": 0.85
             }
         
         return {"type": "none", "name": None, "confidence": 0.0}
     
     # ==========================================================
-    # FIXED: DEALER RESOLUTION (customer_name = Sold-To Party)
+    # DEALER RESOLUTION (customer_name = Sold-To Party)
     # ==========================================================
     
     def resolve_dealer(self, text: str) -> Optional[str]:
-        """
-        Resolve dealer using customer_name.
-        ✅ customer_name = Dealer Name = Sold-To Party
-        """
         if not text:
             return None
         
@@ -1024,20 +1020,15 @@ class SchemaService:
         return min(0.90, score)
     
     # ==========================================================
-    # FIXED: CITY RESOLUTION (With Wildcard Search)
+    # CITY RESOLUTION
     # ==========================================================
     
     def resolve_city(self, text: str) -> Optional[str]:
-        """
-        Resolve city using ship_to_city.
-        FIXED: Now uses wildcard search and proper priority.
-        """
         if not text:
             return None
         
         text = text.lower().strip()
         
-        # Check if text is in city list
         if not self._city_list:
             logger.warning("⚠️ No cities loaded in city list")
             return None
@@ -1054,19 +1045,13 @@ class SchemaService:
             logger.debug(f"✅ City index match: {result}")
             return result
         
-        # 3. Starts with match (for "Lahore" → "Lahore City")
-        for alias, city in self.cities.items():
-            if alias.startswith(text) and len(text) >= 2:
-                logger.debug(f"✅ City starts with match: {city}")
-                return city
-        
-        # 4. Contains match (wildcard)
+        # 3. Contains match (wildcard)
         for alias, city in self.cities.items():
             if text in alias:
                 logger.debug(f"✅ City contains match: {city}")
                 return city
         
-        # 5. Word match
+        # 4. Word match
         words = text.split()
         for word in words:
             if len(word) >= 2:
@@ -1075,7 +1060,7 @@ class SchemaService:
                         logger.debug(f"✅ City word match: {city}")
                         return city
         
-        # 6. Fuzzy match (only if confidence > 0.80)
+        # 5. Fuzzy match
         best_match, confidence = self._fuzzy_match(text, self._city_list, threshold=0.80)
         if best_match and confidence >= 0.80:
             logger.debug(f"✅ City fuzzy match: {best_match} (score: {confidence:.2f})")
@@ -1088,24 +1073,30 @@ class SchemaService:
         if not text:
             return None
         text = text.lower().strip()
-        for alias, warehouse in self.warehouses.items():
-            if alias == text:
-                return warehouse
-        if text in self._warehouse_search_index:
-            return self._warehouse_search_index[text]
-        words = text.split()
-        for word in words:
-            if len(word) >= 2:
-                pattern = re.compile(rf'\b{re.escape(word)}\b')
-                for alias, warehouse in self.warehouses.items():
-                    if pattern.search(alias):
-                        return warehouse
-        for alias, warehouse in self.warehouses.items():
-            if alias in text or text in alias:
-                return warehouse
+        
+        # Check if text contains "warehouse" keyword
+        if "warehouse" not in text:
+            # Try both with and without "warehouse" suffix
+            candidates = [text, f"{text} warehouse"]
+        else:
+            candidates = [text]
+        
+        for candidate in candidates:
+            # 1. Exact match
+            for alias, warehouse in self.warehouses.items():
+                if alias == candidate:
+                    return warehouse
+            
+            # 2. Contains match
+            for alias, warehouse in self.warehouses.items():
+                if candidate in alias or alias in candidate:
+                    return warehouse
+        
+        # 3. Fuzzy match
         best_match, confidence = self._fuzzy_match(text, self._warehouse_list, threshold=0.80)
         if best_match and confidence >= 0.80:
             return best_match
+        
         return None
     
     # ==========================================================
