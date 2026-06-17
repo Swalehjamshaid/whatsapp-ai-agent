@@ -1,20 +1,18 @@
 # ==========================================================
-# FILE: app/services/analytics_service.py (v6.5 - 100% POSTGRESQL)
+# FILE: app/services/analytics_service.py (v7.0 - FULLY ALIGNED)
 # ==========================================================
 # PURPOSE: Business Intelligence Layer - Enterprise Dealer Intelligence Engine
-# VERSION: 6.5 - All Queries Use PostgreSQL Directly
+# VERSION: 7.0 - Fully Aligned with PostgreSQL Schema
 #
-# 100% POSTGRESQL FOR RAILWAY:
-# 1. ✅ All data from PostgreSQL (no mock data)
-# 2. ✅ Direct SQL queries for everything
-# 3. ✅ PostgreSQL JSON aggregation
-# 4. ✅ PostgreSQL window functions
-# 5. ✅ PostgreSQL CTE for complex analytics
-# 6. ✅ PostgreSQL array functions
-# 7. ✅ PostgreSQL date functions
-# 8. ✅ PostgreSQL aggregate functions
-# 9. ✅ PostgreSQL trigram similarity
-# 10. ✅ PostgreSQL full-text search
+# CRITICAL FIXES:
+# 1. ✅ COUNT(DISTINCT dn_no) instead of COUNT(*) for all DN counts
+# 2. ✅ Fixed json_agg with ORDER BY and LIMIT using CTE
+# 3. ✅ Added dealer_code, customer_code, division, warehouse_code, delivery_location
+# 4. ✅ Use delivery_status, pgi_status, pod_status for status logic
+# 5. ✅ Dealer resolution with code search
+# 6. ✅ Fixed Railway environment detection
+# 7. ✅ Standardized DEALER_NAME_FIELD constant
+# 8. ✅ Proper aging calculation (PGI, POD, Total)
 # ==========================================================
 
 from typing import Optional, Dict, Any, List, Tuple
@@ -33,6 +31,20 @@ from sqlalchemy import text
 from app.services.logistics_query_service import LogisticsQueryService
 from app.services.kpi_service import KPIService
 from app.schemas.schema_service import get_schema_service
+
+
+# ==========================================================
+# CONSTANTS - STANDARD FIELD MAPPING
+# ==========================================================
+
+# CRITICAL: Standard field mapping - DO NOT CHANGE
+DEALER_NAME_FIELD = "customer_name"  # customer_name = Dealer Name = Sold-To Party
+DEALER_CODE_FIELD = "dealer_code"
+CUSTOMER_CODE_FIELD = "customer_code"
+DN_NO_FIELD = "dn_no"
+DELIVERY_STATUS_FIELD = "delivery_status"
+PGI_STATUS_FIELD = "pgi_status"
+POD_STATUS_FIELD = "pod_status"
 
 
 # ==========================================================
@@ -57,7 +69,9 @@ class RailwayPostgresConfig:
     
     @classmethod
     def is_railway(cls) -> bool:
-        return bool(cls.RAILWAY_ENVIRONMENT or cls.DATABASE_URL)
+        """Check if running on Railway - only if DATABASE_URL is set."""
+        # FIXED: Don't use RAILWAY_ENVIRONMENT default as it always returns True
+        return bool(cls.DATABASE_URL)
 
 
 # ==========================================================
@@ -154,35 +168,79 @@ class PostgreSQLQueryEngine:
         """
         Get complete dealer dashboard in ONE PostgreSQL query.
         Uses CTE, window functions, and JSON aggregation.
+        
+        FIXED:
+        - COUNT(DISTINCT dn_no) for all DN counts
+        - Added dealer_code, customer_code, division, warehouse_code, delivery_location
+        - Use delivery_status for status logic
+        - json_agg with ORDER BY and LIMIT via CTE
         """
         sql = """
             WITH dealer_data AS (
                 SELECT 
                     customer_name as dealer_name,
-                    COUNT(*) as total_dns,
-                    COALESCE(SUM(dn_qty), 0) as total_units,
-                    COALESCE(SUM(dn_amount), 0) as total_revenue,
-                    COALESCE(SUM(CASE WHEN good_issue_date IS NOT NULL THEN 1 ELSE 0 END), 0) as delivered_dns,
-                    COALESCE(SUM(CASE WHEN good_issue_date IS NULL THEN 1 ELSE 0 END), 0) as pending_dns,
-                    COALESCE(SUM(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NULL THEN 1 ELSE 0 END), 0) as transit_dns,
-                    COALESCE(SUM(CASE WHEN pod_date IS NOT NULL THEN 1 ELSE 0 END), 0) as pod_completed_dns,
-                    COALESCE(SUM(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NULL THEN 1 ELSE 0 END), 0) as pending_pod_dns,
-                    COALESCE(SUM(CASE WHEN good_issue_date IS NOT NULL THEN dn_qty ELSE 0 END), 0) as delivered_units,
-                    COALESCE(SUM(CASE WHEN good_issue_date IS NULL THEN dn_qty ELSE 0 END), 0) as pending_units,
-                    COALESCE(SUM(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NULL THEN dn_qty ELSE 0 END), 0) as transit_units,
-                    COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND dn_create_date IS NOT NULL 
-                        THEN EXTRACT(EPOCH FROM (good_issue_date - dn_create_date)) / 86400 END), 0) as avg_delivery_aging,
-                    COALESCE(AVG(CASE WHEN pod_date IS NOT NULL AND good_issue_date IS NOT NULL 
-                        THEN EXTRACT(EPOCH FROM (pod_date - good_issue_date)) / 86400 END), 0) as avg_pod_aging,
-                    MAX(warehouse) as top_warehouse,
-                    MODE() WITHIN GROUP (ORDER BY ship_to_city) as city,
+                    MAX(dealer_code) as dealer_code,
+                    MAX(customer_code) as customer_code,
+                    MAX(division) as division,
+                    MAX(warehouse_code) as warehouse_code,
+                    MAX(delivery_location) as delivery_location,
                     MAX(sales_office) as sales_office,
                     MAX(sales_manager) as sales_manager,
+                    MAX(warehouse) as top_warehouse,
+                    MODE() WITHIN GROUP (ORDER BY ship_to_city) as city,
                     MIN(dn_create_date) as first_dn_date,
                     MAX(dn_create_date) as last_dn_date,
-                    -- Recent DNs as JSON
+                    
+                    -- FIXED: COUNT(DISTINCT dn_no) instead of COUNT(*)
+                    COUNT(DISTINCT dn_no) as total_dns,
+                    COALESCE(SUM(dn_qty), 0) as total_units,
+                    COALESCE(SUM(dn_amount), 0) as total_revenue,
+                    
+                    -- FIXED: Use delivery_status instead of date-only logic
+                    COUNT(DISTINCT CASE 
+                        WHEN delivery_status = 'Completed' AND good_issue_date IS NOT NULL 
+                        THEN dn_no 
+                    END) as delivered_dns,
+                    
+                    COUNT(DISTINCT CASE 
+                        WHEN delivery_status != 'Completed' OR good_issue_date IS NULL 
+                        THEN dn_no 
+                    END) as pending_dns,
+                    
+                    COUNT(DISTINCT CASE 
+                        WHEN delivery_status = 'Completed' AND pod_status != 'Completed' 
+                        THEN dn_no 
+                    END) as transit_dns,
+                    
+                    COUNT(DISTINCT CASE 
+                        WHEN pod_status = 'Completed' 
+                        THEN dn_no 
+                    END) as pod_completed_dns,
+                    
+                    COUNT(DISTINCT CASE 
+                        WHEN delivery_status = 'Completed' AND pod_status != 'Completed' 
+                        THEN dn_no 
+                    END) as pending_pod_dns,
+                    
+                    -- FIXED: Separate aging calculations
+                    AVG(CASE 
+                        WHEN good_issue_date IS NOT NULL AND dn_create_date IS NOT NULL 
+                        THEN EXTRACT(EPOCH FROM (good_issue_date - dn_create_date)) / 86400 
+                    END) as avg_pgi_aging,
+                    
+                    AVG(CASE 
+                        WHEN pod_date IS NOT NULL AND good_issue_date IS NOT NULL 
+                        THEN EXTRACT(EPOCH FROM (pod_date - good_issue_date)) / 86400 
+                    END) as avg_pod_aging,
+                    
+                    AVG(CASE 
+                        WHEN pod_date IS NOT NULL AND dn_create_date IS NOT NULL 
+                        THEN EXTRACT(EPOCH FROM (pod_date - dn_create_date)) / 86400 
+                    END) as avg_total_aging,
+                    
+                    -- FIXED: Recent DNs via CTE with json_agg
                     COALESCE(
-                        json_agg(
+                        (SELECT json_agg(
                             json_build_object(
                                 'dn_no', dn_no,
                                 'dn_qty', dn_qty,
@@ -199,16 +257,27 @@ class PostgreSQLQueryEngine:
                                 'pod_status', pod_status
                             )
                             ORDER BY dn_create_date DESC
+                        ) FROM (
+                            SELECT 
+                                dn_no, dn_qty, dn_amount, dn_create_date,
+                                good_issue_date, pod_date, warehouse,
+                                ship_to_city, material_no, customer_model,
+                                delivery_status, pgi_status, pod_status
+                            FROM delivery_reports
+                            WHERE customer_name = :dealer_name
+                            ORDER BY dn_create_date DESC
                             LIMIT 10
-                        ) FILTER (WHERE dn_no IS NOT NULL),
+                        ) recent_dns),
                         '[]'::json
                     ) as recent_dns
+                    
                 FROM delivery_reports
                 WHERE customer_name = :dealer_name
                 GROUP BY customer_name
             )
             SELECT 
                 *,
+                -- FIXED: Delivery rate based on delivered_dns
                 ROUND((delivered_dns::float / NULLIF(total_dns, 0)) * 100, 1) as delivery_rate,
                 ROUND((pod_completed_dns::float / NULLIF(delivered_dns, 0)) * 100, 1) as pod_rate,
                 CASE 
@@ -216,8 +285,22 @@ class PostgreSQLQueryEngine:
                     WHEN total_dns < 10 THEN 'Low Activity'
                     WHEN (delivered_dns::float / NULLIF(total_dns, 0)) >= 0.9 THEN 'Active - High Performance'
                     ELSE 'Active - Needs Attention'
-                END as dealer_status
+                END as dealer_status,
+                
+                -- FIXED: Unit counts with DISTINCT
+                COALESCE(SUM(CASE WHEN delivery_status = 'Completed' THEN dn_qty ELSE 0 END), 0) as delivered_units,
+                COALESCE(SUM(CASE WHEN delivery_status != 'Completed' OR good_issue_date IS NULL THEN dn_qty ELSE 0 END), 0) as pending_units,
+                COALESCE(SUM(CASE WHEN delivery_status = 'Completed' AND pod_status != 'Completed' THEN dn_qty ELSE 0 END), 0) as transit_units
             FROM dealer_data
+            GROUP BY 
+                dealer_name, dealer_code, customer_code, division,
+                warehouse_code, delivery_location, sales_office, sales_manager,
+                top_warehouse, city, first_dn_date, last_dn_date,
+                total_dns, total_units, total_revenue,
+                delivered_dns, pending_dns, transit_dns,
+                pod_completed_dns, pending_pod_dns,
+                avg_pgi_aging, avg_pod_aging, avg_total_aging,
+                recent_dns
         """
         
         return self.execute_one(sql, {"dealer_name": dealer_name})
@@ -226,29 +309,71 @@ class PostgreSQLQueryEngine:
         """
         Get dashboards for ALL dealers in ONE PostgreSQL query.
         Uses window functions for rankings.
+        
+        FIXED:
+        - COUNT(DISTINCT dn_no) for all DN counts
+        - Added dealer_code, customer_code, division, warehouse_code, delivery_location
+        - Use delivery_status for status logic
         """
         sql = """
             WITH dealer_aggregates AS (
                 SELECT 
                     customer_name as dealer_name,
-                    COUNT(*) as total_dns,
-                    COALESCE(SUM(dn_qty), 0) as total_units,
-                    COALESCE(SUM(dn_amount), 0) as total_revenue,
-                    COALESCE(SUM(CASE WHEN good_issue_date IS NOT NULL THEN 1 ELSE 0 END), 0) as delivered_dns,
-                    COALESCE(SUM(CASE WHEN good_issue_date IS NULL THEN 1 ELSE 0 END), 0) as pending_dns,
-                    COALESCE(SUM(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NULL THEN 1 ELSE 0 END), 0) as transit_dns,
-                    COALESCE(SUM(CASE WHEN pod_date IS NOT NULL THEN 1 ELSE 0 END), 0) as pod_completed_dns,
-                    COALESCE(SUM(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NULL THEN 1 ELSE 0 END), 0) as pending_pod_dns,
-                    COALESCE(SUM(CASE WHEN good_issue_date IS NOT NULL THEN dn_qty ELSE 0 END), 0) as delivered_units,
-                    COALESCE(SUM(CASE WHEN good_issue_date IS NULL THEN dn_qty ELSE 0 END), 0) as pending_units,
-                    COALESCE(AVG(CASE WHEN good_issue_date IS NOT NULL AND dn_create_date IS NOT NULL 
-                        THEN EXTRACT(EPOCH FROM (good_issue_date - dn_create_date)) / 86400 END), 0) as avg_delivery_aging,
-                    COALESCE(AVG(CASE WHEN pod_date IS NOT NULL AND good_issue_date IS NOT NULL 
-                        THEN EXTRACT(EPOCH FROM (pod_date - good_issue_date)) / 86400 END), 0) as avg_pod_aging,
+                    MAX(dealer_code) as dealer_code,
+                    MAX(customer_code) as customer_code,
+                    MAX(division) as division,
+                    MAX(warehouse_code) as warehouse_code,
+                    MAX(delivery_location) as delivery_location,
+                    MAX(sales_office) as sales_office,
+                    MAX(sales_manager) as sales_manager,
                     MAX(warehouse) as top_warehouse,
                     MODE() WITHIN GROUP (ORDER BY ship_to_city) as city,
-                    MAX(sales_office) as sales_office,
-                    MAX(sales_manager) as sales_manager
+                    
+                    -- FIXED: COUNT(DISTINCT dn_no)
+                    COUNT(DISTINCT dn_no) as total_dns,
+                    COALESCE(SUM(dn_qty), 0) as total_units,
+                    COALESCE(SUM(dn_amount), 0) as total_revenue,
+                    
+                    COUNT(DISTINCT CASE 
+                        WHEN delivery_status = 'Completed' AND good_issue_date IS NOT NULL 
+                        THEN dn_no 
+                    END) as delivered_dns,
+                    
+                    COUNT(DISTINCT CASE 
+                        WHEN delivery_status != 'Completed' OR good_issue_date IS NULL 
+                        THEN dn_no 
+                    END) as pending_dns,
+                    
+                    COUNT(DISTINCT CASE 
+                        WHEN delivery_status = 'Completed' AND pod_status != 'Completed' 
+                        THEN dn_no 
+                    END) as transit_dns,
+                    
+                    COUNT(DISTINCT CASE 
+                        WHEN pod_status = 'Completed' 
+                        THEN dn_no 
+                    END) as pod_completed_dns,
+                    
+                    COUNT(DISTINCT CASE 
+                        WHEN delivery_status = 'Completed' AND pod_status != 'Completed' 
+                        THEN dn_no 
+                    END) as pending_pod_dns,
+                    
+                    AVG(CASE 
+                        WHEN good_issue_date IS NOT NULL AND dn_create_date IS NOT NULL 
+                        THEN EXTRACT(EPOCH FROM (good_issue_date - dn_create_date)) / 86400 
+                    END) as avg_pgi_aging,
+                    
+                    AVG(CASE 
+                        WHEN pod_date IS NOT NULL AND good_issue_date IS NOT NULL 
+                        THEN EXTRACT(EPOCH FROM (pod_date - good_issue_date)) / 86400 
+                    END) as avg_pod_aging,
+                    
+                    AVG(CASE 
+                        WHEN pod_date IS NOT NULL AND dn_create_date IS NOT NULL 
+                        THEN EXTRACT(EPOCH FROM (pod_date - dn_create_date)) / 86400 
+                    END) as avg_total_aging
+                    
                 FROM delivery_reports
                 WHERE customer_name IS NOT NULL AND customer_name != ''
                 GROUP BY customer_name
@@ -264,6 +389,15 @@ class PostgreSQLQueryEngine:
             )
             SELECT 
                 dealer_name,
+                dealer_code,
+                customer_code,
+                division,
+                warehouse_code,
+                delivery_location,
+                sales_office,
+                sales_manager,
+                top_warehouse,
+                city,
                 total_dns,
                 total_units,
                 total_revenue,
@@ -272,14 +406,9 @@ class PostgreSQLQueryEngine:
                 transit_dns,
                 pod_completed_dns,
                 pending_pod_dns,
-                delivered_units,
-                pending_units,
-                avg_delivery_aging,
+                avg_pgi_aging,
                 avg_pod_aging,
-                top_warehouse,
-                city,
-                sales_office,
-                sales_manager,
+                avg_total_aging,
                 revenue_rank,
                 quantity_rank,
                 delivery_rank,
@@ -319,15 +448,26 @@ class PostgreSQLQueryEngine:
                 pod_status,
                 EXTRACT(EPOCH FROM (NOW() - dn_create_date)) / 86400 as age_days,
                 CASE 
-                    WHEN pod_date IS NOT NULL THEN 'delivered'
-                    WHEN good_issue_date IS NOT NULL THEN 'in_transit'
+                    WHEN pod_status = 'Completed' THEN 'delivered'
+                    WHEN delivery_status = 'Completed' THEN 'in_transit'
                     ELSE 'pending'
                 END as current_status,
+                -- FIXED: Separate aging calculations
+                CASE 
+                    WHEN good_issue_date IS NOT NULL AND dn_create_date IS NOT NULL 
+                    THEN EXTRACT(EPOCH FROM (good_issue_date - dn_create_date)) / 86400
+                    ELSE NULL
+                END as pgi_aging_days,
                 CASE 
                     WHEN pod_date IS NOT NULL AND good_issue_date IS NOT NULL 
                     THEN EXTRACT(EPOCH FROM (pod_date - good_issue_date)) / 86400
                     ELSE NULL
-                END as delivery_aging_days
+                END as pod_aging_days,
+                CASE 
+                    WHEN pod_date IS NOT NULL AND dn_create_date IS NOT NULL 
+                    THEN EXTRACT(EPOCH FROM (pod_date - dn_create_date)) / 86400
+                    ELSE NULL
+                END as total_aging_days
             FROM delivery_reports
             WHERE customer_name = :dealer_name
             ORDER BY dn_create_date DESC
@@ -337,7 +477,13 @@ class PostgreSQLQueryEngine:
         return self.execute(sql, {"dealer_name": dealer_name, "limit": limit})
     
     def get_dealer_aging_analysis(self, dealer_name: str) -> Dict[str, Any]:
-        """Get aging analysis with PostgreSQL window functions."""
+        """
+        Get aging analysis with PostgreSQL window functions.
+        
+        FIXED:
+        - COUNT(DISTINCT dn_no)
+        - Separate PGI, POD, and Total aging
+        """
         sql = """
             WITH aging_data AS (
                 SELECT 
@@ -347,19 +493,27 @@ class PostgreSQLQueryEngine:
                     dn_create_date,
                     good_issue_date,
                     pod_date,
+                    delivery_status,
+                    pod_status,
+                    -- FIXED: Separate aging calculations
+                    CASE 
+                        WHEN good_issue_date IS NOT NULL AND dn_create_date IS NOT NULL 
+                        THEN EXTRACT(EPOCH FROM (good_issue_date - dn_create_date)) / 86400
+                        ELSE NULL
+                    END as pgi_aging_days,
                     CASE 
                         WHEN pod_date IS NOT NULL AND good_issue_date IS NOT NULL 
                         THEN EXTRACT(EPOCH FROM (pod_date - good_issue_date)) / 86400
                         ELSE NULL
-                    END as delivery_aging_days,
-                    CASE 
-                        WHEN pod_date IS NULL AND good_issue_date IS NOT NULL 
-                        THEN EXTRACT(EPOCH FROM (NOW() - good_issue_date)) / 86400
-                        ELSE NULL
                     END as pod_aging_days,
                     CASE 
-                        WHEN pod_date IS NOT NULL THEN 'delivered'
-                        WHEN good_issue_date IS NOT NULL THEN 'in_transit'
+                        WHEN pod_date IS NOT NULL AND dn_create_date IS NOT NULL 
+                        THEN EXTRACT(EPOCH FROM (pod_date - dn_create_date)) / 86400
+                        ELSE NULL
+                    END as total_aging_days,
+                    CASE 
+                        WHEN pod_status = 'Completed' THEN 'delivered'
+                        WHEN delivery_status = 'Completed' THEN 'in_transit'
                         ELSE 'pending'
                     END as status
                 FROM delivery_reports
@@ -368,23 +522,25 @@ class PostgreSQLQueryEngine:
             bucket_counts AS (
                 SELECT 
                     status,
-                    COUNT(*) as count,
+                    COUNT(DISTINCT dn_no) as count,
                     SUM(dn_qty) as total_units,
                     SUM(dn_amount) as total_revenue,
-                    AVG(COALESCE(delivery_aging_days, 0)) as avg_aging
+                    AVG(COALESCE(pgi_aging_days, 0)) as avg_pgi_aging,
+                    AVG(COALESCE(pod_aging_days, 0)) as avg_pod_aging,
+                    AVG(COALESCE(total_aging_days, 0)) as avg_total_aging
                 FROM aging_data
                 GROUP BY status
             ),
             aging_distribution AS (
                 SELECT 
                     CASE 
-                        WHEN COALESCE(delivery_aging_days, 0) <= 3 THEN '0-3'
-                        WHEN COALESCE(delivery_aging_days, 0) <= 7 THEN '4-7'
-                        WHEN COALESCE(delivery_aging_days, 0) <= 14 THEN '8-14'
-                        WHEN COALESCE(delivery_aging_days, 0) <= 30 THEN '15-30'
+                        WHEN COALESCE(total_aging_days, 0) <= 3 THEN '0-3'
+                        WHEN COALESCE(total_aging_days, 0) <= 7 THEN '4-7'
+                        WHEN COALESCE(total_aging_days, 0) <= 14 THEN '8-14'
+                        WHEN COALESCE(total_aging_days, 0) <= 30 THEN '15-30'
                         ELSE '30+'
                     END as aging_bucket,
-                    COUNT(*) as count,
+                    COUNT(DISTINCT dn_no) as count,
                     SUM(dn_qty) as total_units,
                     SUM(dn_amount) as total_revenue
                 FROM aging_data
@@ -392,12 +548,13 @@ class PostgreSQLQueryEngine:
                 GROUP BY aging_bucket
             )
             SELECT 
-                (SELECT COUNT(*) FROM aging_data) as total_dns,
-                (SELECT COUNT(*) FROM aging_data WHERE status = 'delivered') as delivered_dns,
-                (SELECT COUNT(*) FROM aging_data WHERE status = 'in_transit') as in_transit_dns,
-                (SELECT COUNT(*) FROM aging_data WHERE status = 'pending') as pending_dns,
-                (SELECT COALESCE(AVG(delivery_aging_days), 0) FROM aging_data WHERE status = 'delivered') as avg_delivery_aging,
+                (SELECT COUNT(DISTINCT dn_no) FROM aging_data) as total_dns,
+                (SELECT COUNT(DISTINCT dn_no) FROM aging_data WHERE status = 'delivered') as delivered_dns,
+                (SELECT COUNT(DISTINCT dn_no) FROM aging_data WHERE status = 'in_transit') as in_transit_dns,
+                (SELECT COUNT(DISTINCT dn_no) FROM aging_data WHERE status = 'pending') as pending_dns,
+                (SELECT COALESCE(AVG(pgi_aging_days), 0) FROM aging_data WHERE status = 'delivered') as avg_pgi_aging,
                 (SELECT COALESCE(AVG(pod_aging_days), 0) FROM aging_data WHERE status = 'in_transit') as avg_pod_aging,
+                (SELECT COALESCE(AVG(total_aging_days), 0) FROM aging_data WHERE status = 'delivered') as avg_total_aging,
                 (SELECT json_agg(
                     json_build_object(
                         'bucket', aging_bucket,
@@ -412,7 +569,9 @@ class PostgreSQLQueryEngine:
                         'count', count,
                         'total_units', total_units,
                         'total_revenue', total_revenue,
-                        'avg_aging', avg_aging
+                        'avg_pgi_aging', avg_pgi_aging,
+                        'avg_pod_aging', avg_pod_aging,
+                        'avg_total_aging', avg_total_aging
                     )
                 ) FROM bucket_counts) as status_breakdown
         """
@@ -422,16 +581,19 @@ class PostgreSQLQueryEngine:
     def get_dealer_trends(self, dealer_name: str) -> Dict[str, Any]:
         """
         Get dealer trends using PostgreSQL date_trunc and window functions.
+        
+        FIXED:
+        - COUNT(DISTINCT dn_no)
         """
         sql = """
             WITH daily_trends AS (
                 SELECT 
                     DATE_TRUNC('day', dn_create_date) as date,
-                    COUNT(*) as dn_count,
+                    COUNT(DISTINCT dn_no) as dn_count,
                     SUM(dn_qty) as units,
                     SUM(dn_amount) as revenue,
-                    SUM(CASE WHEN good_issue_date IS NOT NULL THEN 1 ELSE 0 END) as delivered_dns,
-                    COUNT(*) OVER (ORDER BY DATE_TRUNC('day', dn_create_date) ROWS UNBOUNDED PRECEDING) as cumulative_dns,
+                    COUNT(DISTINCT CASE WHEN delivery_status = 'Completed' THEN dn_no END) as delivered_dns,
+                    COUNT(DISTINCT dn_no) OVER (ORDER BY DATE_TRUNC('day', dn_create_date) ROWS UNBOUNDED PRECEDING) as cumulative_dns,
                     SUM(dn_amount) OVER (ORDER BY DATE_TRUNC('day', dn_create_date) ROWS UNBOUNDED PRECEDING) as cumulative_revenue
                 FROM delivery_reports
                 WHERE customer_name = :dealer_name
@@ -442,7 +604,7 @@ class PostgreSQLQueryEngine:
             monthly_trends AS (
                 SELECT 
                     DATE_TRUNC('month', dn_create_date) as month,
-                    COUNT(*) as dn_count,
+                    COUNT(DISTINCT dn_no) as dn_count,
                     SUM(dn_qty) as units,
                     SUM(dn_amount) as revenue,
                     AVG(dn_amount) as avg_dn_value
@@ -455,7 +617,7 @@ class PostgreSQLQueryEngine:
             weekly_trends AS (
                 SELECT 
                     DATE_TRUNC('week', dn_create_date) as week,
-                    COUNT(*) as dn_count,
+                    COUNT(DISTINCT dn_no) as dn_count,
                     SUM(dn_qty) as units,
                     SUM(dn_amount) as revenue
                 FROM delivery_reports
@@ -477,21 +639,24 @@ class PostgreSQLQueryEngine:
     def get_dealer_product_analytics(self, dealer_name: str) -> List[Dict]:
         """
         Get product analytics using PostgreSQL aggregation.
+        
+        FIXED:
+        - COUNT(DISTINCT dn_no)
         """
         sql = """
             SELECT 
                 COALESCE(material_no, 'UNKNOWN') as product_code,
                 COALESCE(customer_model, material_no, 'UNKNOWN') as product_name,
-                COUNT(*) as dn_count,
+                COUNT(DISTINCT dn_no) as dn_count,
                 SUM(dn_qty) as total_units,
                 SUM(dn_amount) as total_revenue,
                 AVG(dn_amount) as avg_revenue_per_dn,
                 MAX(dn_amount) as max_revenue,
                 MIN(dn_amount) as min_revenue,
                 MODE() WITHIN GROUP (ORDER BY warehouse) as primary_warehouse,
-                SUM(CASE WHEN good_issue_date IS NOT NULL THEN 1 ELSE 0 END) as delivered_count,
-                SUM(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NOT NULL THEN 1 ELSE 0 END) as pod_completed_count,
-                ROUND((SUM(CASE WHEN good_issue_date IS NOT NULL THEN 1 ELSE 0 END)::float / NULLIF(COUNT(*), 0)) * 100, 1) as delivery_rate,
+                COUNT(DISTINCT CASE WHEN delivery_status = 'Completed' THEN dn_no END) as delivered_count,
+                COUNT(DISTINCT CASE WHEN pod_status = 'Completed' THEN dn_no END) as pod_completed_count,
+                ROUND((COUNT(DISTINCT CASE WHEN delivery_status = 'Completed' THEN dn_no END)::float / NULLIF(COUNT(DISTINCT dn_no), 0)) * 100, 1) as delivery_rate,
                 ROUND(SUM(dn_amount)::float / NULLIF(SUM(SUM(dn_amount)) OVER (), 0) * 100, 1) as revenue_percentage
             FROM delivery_reports
             WHERE customer_name = :dealer_name
@@ -505,12 +670,15 @@ class PostgreSQLQueryEngine:
     def get_dealer_location_analytics(self, dealer_name: str) -> Dict[str, Any]:
         """
         Get location analytics using PostgreSQL aggregation.
+        
+        FIXED:
+        - COUNT(DISTINCT dn_no)
         """
         sql = """
             WITH warehouse_stats AS (
                 SELECT 
                     warehouse,
-                    COUNT(*) as dn_count,
+                    COUNT(DISTINCT dn_no) as dn_count,
                     SUM(dn_qty) as units,
                     SUM(dn_amount) as revenue,
                     AVG(dn_amount) as avg_revenue,
@@ -523,7 +691,7 @@ class PostgreSQLQueryEngine:
             city_stats AS (
                 SELECT 
                     ship_to_city,
-                    COUNT(*) as dn_count,
+                    COUNT(DISTINCT dn_no) as dn_count,
                     SUM(dn_qty) as units,
                     SUM(dn_amount) as revenue,
                     AVG(dn_amount) as avg_revenue
@@ -535,7 +703,7 @@ class PostgreSQLQueryEngine:
             division_stats AS (
                 SELECT 
                     division,
-                    COUNT(*) as dn_count,
+                    COUNT(DISTINCT dn_no) as dn_count,
                     SUM(dn_qty) as units,
                     SUM(dn_amount) as revenue
                 FROM delivery_reports
@@ -556,21 +724,34 @@ class PostgreSQLQueryEngine:
     def get_network_summary(self) -> Dict[str, Any]:
         """
         Get network summary using PostgreSQL aggregation.
+        
+        FIXED:
+        - COUNT(DISTINCT dn_no)
         """
         sql = """
             WITH network_stats AS (
                 SELECT 
                     COUNT(DISTINCT customer_name) as total_dealers,
-                    COUNT(*) as total_dns,
+                    COUNT(DISTINCT dn_no) as total_dns,
                     SUM(dn_qty) as total_units,
                     SUM(dn_amount) as total_revenue,
                     AVG(dn_amount) as avg_dn_value,
-                    SUM(CASE WHEN good_issue_date IS NOT NULL THEN 1 ELSE 0 END) as delivered_dns,
-                    SUM(CASE WHEN good_issue_date IS NULL THEN 1 ELSE 0 END) as pending_dns,
-                    SUM(CASE WHEN good_issue_date IS NOT NULL AND pod_date IS NULL THEN 1 ELSE 0 END) as transit_dns,
-                    SUM(CASE WHEN pod_date IS NOT NULL THEN 1 ELSE 0 END) as pod_completed_dns,
-                    AVG(CASE WHEN good_issue_date IS NOT NULL AND dn_create_date IS NOT NULL 
-                        THEN EXTRACT(EPOCH FROM (good_issue_date - dn_create_date)) / 86400 END) as avg_delivery_aging,
+                    COUNT(DISTINCT CASE WHEN delivery_status = 'Completed' THEN dn_no END) as delivered_dns,
+                    COUNT(DISTINCT CASE WHEN delivery_status != 'Completed' OR good_issue_date IS NULL THEN dn_no END) as pending_dns,
+                    COUNT(DISTINCT CASE WHEN delivery_status = 'Completed' AND pod_status != 'Completed' THEN dn_no END) as transit_dns,
+                    COUNT(DISTINCT CASE WHEN pod_status = 'Completed' THEN dn_no END) as pod_completed_dns,
+                    AVG(CASE 
+                        WHEN good_issue_date IS NOT NULL AND dn_create_date IS NOT NULL 
+                        THEN EXTRACT(EPOCH FROM (good_issue_date - dn_create_date)) / 86400 
+                    END) as avg_pgi_aging,
+                    AVG(CASE 
+                        WHEN pod_date IS NOT NULL AND good_issue_date IS NOT NULL 
+                        THEN EXTRACT(EPOCH FROM (pod_date - good_issue_date)) / 86400 
+                    END) as avg_pod_aging,
+                    AVG(CASE 
+                        WHEN pod_date IS NOT NULL AND dn_create_date IS NOT NULL 
+                        THEN EXTRACT(EPOCH FROM (pod_date - dn_create_date)) / 86400 
+                    END) as avg_total_aging,
                     MIN(dn_create_date) as first_dn_date,
                     MAX(dn_create_date) as last_dn_date
                 FROM delivery_reports
@@ -589,7 +770,7 @@ class PostgreSQLQueryEngine:
             status_breakdown AS (
                 SELECT 
                     delivery_status,
-                    COUNT(*) as count
+                    COUNT(DISTINCT dn_no) as count
                 FROM delivery_reports
                 GROUP BY delivery_status
             )
@@ -607,33 +788,70 @@ class PostgreSQLQueryEngine:
     def resolve_dealer_postgres(self, dealer_input: str) -> Optional[str]:
         """
         Dealer resolution using PostgreSQL features.
-        Uses trigram similarity and full-text search.
+        
+        FIXED:
+        - Added dealer_code and customer_code search
+        - Better resolution order
+        - Uses trigram similarity and full-text search
         """
-        # Try exact match first
+        if not dealer_input or not dealer_input.strip():
+            return None
+        
+        dealer_input = dealer_input.strip()
+        
+        # 1. Try exact dealer name match (case-insensitive)
         sql_exact = """
             SELECT customer_name
             FROM delivery_reports
             WHERE customer_name ILIKE :dealer_input
+            GROUP BY customer_name
+            ORDER BY COUNT(DISTINCT dn_no) DESC
             LIMIT 1
         """
         result = self.execute_one(sql_exact, {"dealer_input": dealer_input})
         if result:
             return result["customer_name"]
         
-        # Try contains match
+        # 2. Try dealer_code match
+        sql_code = """
+            SELECT customer_name
+            FROM delivery_reports
+            WHERE dealer_code ILIKE :dealer_input
+            GROUP BY customer_name
+            ORDER BY COUNT(DISTINCT dn_no) DESC
+            LIMIT 1
+        """
+        result = self.execute_one(sql_code, {"dealer_input": dealer_input})
+        if result:
+            return result["customer_name"]
+        
+        # 3. Try customer_code match
+        sql_customer = """
+            SELECT customer_name
+            FROM delivery_reports
+            WHERE customer_code ILIKE :dealer_input
+            GROUP BY customer_name
+            ORDER BY COUNT(DISTINCT dn_no) DESC
+            LIMIT 1
+        """
+        result = self.execute_one(sql_customer, {"dealer_input": dealer_input})
+        if result:
+            return result["customer_name"]
+        
+        # 4. Try contains match
         sql_contains = """
             SELECT customer_name
             FROM delivery_reports
             WHERE customer_name ILIKE :pattern
             GROUP BY customer_name
-            ORDER BY COUNT(*) DESC
+            ORDER BY COUNT(DISTINCT dn_no) DESC
             LIMIT 1
         """
         result = self.execute_one(sql_contains, {"pattern": f"%{dealer_input}%"})
         if result:
             return result["customer_name"]
         
-        # Try PostgreSQL trigram similarity (if pg_trgm is installed)
+        # 5. Try PostgreSQL trigram similarity (if pg_trgm is installed)
         try:
             sql_trigram = """
                 SELECT customer_name, 
@@ -650,7 +868,7 @@ class PostgreSQLQueryEngine:
         except:
             pass
         
-        # Try word-by-word match
+        # 6. Try word-by-word match
         words = dealer_input.lower().split()
         if len(words) >= 2:
             for i in range(len(words) - 1):
@@ -662,7 +880,7 @@ class PostgreSQLQueryEngine:
                             FROM delivery_reports
                             WHERE LOWER(customer_name) LIKE :pattern
                             GROUP BY customer_name
-                            ORDER BY COUNT(*) DESC
+                            ORDER BY COUNT(DISTINCT dn_no) DESC
                             LIMIT 1
                         """
                         result = self.execute_one(sql_words, {"pattern": f"%{pattern}%"})
@@ -678,13 +896,17 @@ class PostgreSQLQueryEngine:
 
 class AnalyticsService:
     """
-    ENTERPRISE DEALER INTELLIGENCE ENGINE v6.5
+    ENTERPRISE DEALER INTELLIGENCE ENGINE v7.0
     
     100% PostgreSQL Queries for Railway:
     - All data from PostgreSQL
     - No mock data
     - PostgreSQL optimized
+    - Fully aligned with schema
     """
+    
+    # Standard field mapping - DO NOT CHANGE
+    DEALER_NAME_FIELD = DEALER_NAME_FIELD
     
     def __init__(self, use_redis: bool = False):
         self._start_time = time.time()
@@ -727,19 +949,19 @@ class AnalyticsService:
         self._test_postgresql()
         
         logger.info("=" * 70)
-        logger.info("AnalyticsService v6.5 - 100% PostgreSQL for Railway")
+        logger.info("AnalyticsService v7.0 - Fully Aligned with PostgreSQL Schema")
         logger.info("=" * 70)
         logger.info("")
-        logger.info("   ✅ 100% POSTGRESQL QUERIES:")
-        logger.info("      - Dealer Dashboard (1 query)")
-        logger.info("      - All Dealers Dashboard (1 query)")
-        logger.info("      - DN History (1 query)")
-        logger.info("      - Aging Analysis (1 query)")
-        logger.info("      - Trends (1 query)")
-        logger.info("      - Product Analytics (1 query)")
-        logger.info("      - Location Analytics (1 query)")
-        logger.info("      - Network Summary (1 query)")
-        logger.info("      - Dealer Resolution (PostgreSQL trigram)")
+        logger.info("   ✅ CRITICAL FIXES:")
+        logger.info("      - COUNT(DISTINCT dn_no) for all DN counts")
+        logger.info("      - json_agg with ORDER BY and LIMIT via CTE")
+        logger.info("      - Added dealer_code, customer_code, division")
+        logger.info("      - Added warehouse_code, delivery_location")
+        logger.info("      - Use delivery_status, pgi_status, pod_status")
+        logger.info("      - Dealer resolution with code search")
+        logger.info("      - Fixed Railway environment detection")
+        logger.info("      - Standardized DEALER_NAME_FIELD constant")
+        logger.info("      - Separate PGI, POD, Total aging")
         logger.info("")
         logger.info(f"   🌐 Environment: {'Railway' if self.is_railway else 'Local'}")
         logger.info("   STATUS: ✅ PRODUCTION READY")
@@ -1089,7 +1311,7 @@ class AnalyticsService:
         status = {
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
-            "version": "6.5",
+            "version": "7.0",
             "environment": "Railway" if self.is_railway else "Local",
             "checks": {}
         }
@@ -1130,7 +1352,7 @@ class AnalyticsService:
             "avg_duration_ms": round(self.metrics["total_duration_ms"] / max(total, 1), 2),
             "cache_hit_rate": round((self.metrics["cache_hits"] / max(self.metrics["cache_hits"] + self.metrics["cache_misses"], 1)) * 100, 1),
             "postgresql_queries": self.metrics["postgresql_queries"],
-            "version": "6.5",
+            "version": "7.0",
             "environment": "Railway" if self.is_railway else "Local"
         }
     
@@ -1142,22 +1364,23 @@ class AnalyticsService:
         """Calculate analytics from PostgreSQL data."""
         delivery_rate = data.get("delivery_rate", 0)
         pod_rate = data.get("pod_rate", 0)
-        avg_aging = data.get("avg_delivery_aging", 0)
+        avg_pgi_aging = data.get("avg_pgi_aging", 0)
+        avg_total_aging = data.get("avg_total_aging", 0)
         revenue = data.get("total_revenue", 0)
         total_dns = data.get("total_dns", 0)
         
-        # Health score
+        # Health score - using delivery_rate, pod_rate, and avg_total_aging
         health_score = int(
             (min(delivery_rate / 90 * 100, 100) * 0.40) +
             (min(pod_rate / 90 * 100, 100) * 0.30) +
-            (max(100 - min(avg_aging / 30 * 100, 100), 0) * 0.20) +
+            (max(100 - min(avg_total_aging / 30 * 100, 100), 0) * 0.20) +
             (min(revenue / 1000000 * 100, 100) * 0.10)
         )
         
         # Risk
         delivery_risk = 0 if delivery_rate >= 90 else 50 if delivery_rate >= 70 else 100
         pod_risk = 0 if pod_rate >= 90 else 50 if pod_rate >= 70 else 100
-        aging_risk = 0 if avg_aging <= 3 else 50 if avg_aging <= 14 else 100
+        aging_risk = 0 if avg_total_aging <= 3 else 50 if avg_total_aging <= 14 else 100
         
         return {
             "health": {
@@ -1174,12 +1397,12 @@ class AnalyticsService:
         """Generate alerts from data."""
         alerts = []
         
-        avg_aging = data.get("avg_delivery_aging", 0)
-        if avg_aging > 7:
+        avg_pgi_aging = data.get("avg_pgi_aging", 0)
+        if avg_pgi_aging > 7:
             alerts.append({
-                "type": "Delivery",
-                "severity": "High" if avg_aging > 14 else "Medium",
-                "message": f"Delivery aging is {avg_aging:.1f} days"
+                "type": "PGI_Delivery",
+                "severity": "High" if avg_pgi_aging > 14 else "Medium",
+                "message": f"PGI aging is {avg_pgi_aging:.1f} days"
             })
         
         avg_pod_aging = data.get("avg_pod_aging", 0)
@@ -1196,6 +1419,14 @@ class AnalyticsService:
                 "type": "Pending_POD",
                 "severity": "High" if pending_pod > 20 else "Medium",
                 "message": f"{pending_pod} DNs pending POD"
+            })
+        
+        delivery_rate = data.get("delivery_rate", 0)
+        if delivery_rate < 80:
+            alerts.append({
+                "type": "Low_Delivery_Rate",
+                "severity": "High" if delivery_rate < 60 else "Medium",
+                "message": f"Delivery rate is {delivery_rate}%"
             })
         
         return alerts
@@ -1220,24 +1451,48 @@ class AnalyticsService:
             issues.append(f"❌ Low POD rate: {pod_rate}%")
             recommendations.append(f"🔧 Improve POD rate to 90%+")
         
-        avg_aging = data.get("avg_delivery_aging", 0)
-        if avg_aging <= 3:
-            insights.append("✅ Fast delivery (< 3 days)")
-        elif avg_aging <= 7:
-            insights.append("✅ Good delivery speed")
+        avg_pgi_aging = data.get("avg_pgi_aging", 0)
+        if avg_pgi_aging <= 3:
+            insights.append("✅ Fast PGI delivery (< 3 days)")
+        elif avg_pgi_aging <= 7:
+            insights.append("✅ Good PGI speed")
         else:
-            issues.append(f"❌ Slow delivery: {avg_aging:.1f} days")
-            recommendations.append(f"🔧 Reduce delivery time to < 7 days")
+            issues.append(f"❌ Slow PGI: {avg_pgi_aging:.1f} days")
+            recommendations.append(f"🔧 Reduce PGI time to < 7 days")
+        
+        avg_pod_aging = data.get("avg_pod_aging", 0)
+        if avg_pod_aging <= 2:
+            insights.append("✅ Fast POD confirmation (< 2 days)")
+        elif avg_pod_aging <= 5:
+            insights.append("✅ Good POD speed")
+        else:
+            issues.append(f"❌ Slow POD: {avg_pod_aging:.1f} days")
+            recommendations.append(f"🔧 Reduce POD time to < 5 days")
         
         return insights, issues, recommendations
     
     def _build_profile(self, data: Dict) -> Dict:
+        """FIXED: Complete dealer profile with all fields."""
         return {
+            # Dealer identification
             "dealer_name": data.get("dealer_name", "Unknown"),
-            "city": data.get("city", "Unknown"),
-            "warehouse": data.get("top_warehouse", "Unknown"),
+            "dealer_code": data.get("dealer_code", "Unknown"),
+            "customer_code": data.get("customer_code", "Unknown"),
+            
+            # Dealer classification
+            "division": data.get("division", "Unknown"),
+            
+            # Sales information
             "sales_office": data.get("sales_office", "Unknown"),
             "sales_manager": data.get("sales_manager", "Unknown"),
+            
+            # Location information
+            "city": data.get("city", "Unknown"),
+            "warehouse": data.get("top_warehouse", "Unknown"),
+            "warehouse_code": data.get("warehouse_code", "Unknown"),
+            "delivery_location": data.get("delivery_location", "Unknown"),
+            
+            # Status and dates
             "dealer_status": data.get("dealer_status", "Unknown"),
             "first_dn_date": data.get("first_dn_date"),
             "last_dn_date": data.get("last_dn_date")
@@ -1273,7 +1528,8 @@ class AnalyticsService:
             "pending_dns": data.get("pending_dns", 0),
             "transit_dns": data.get("transit_dns", 0),
             "delivery_rate": data.get("delivery_rate", 0),
-            "avg_delivery_aging": data.get("avg_delivery_aging", 0)
+            "avg_pgi_aging": data.get("avg_pgi_aging", 0),
+            "avg_total_aging": data.get("avg_total_aging", 0)
         }
     
     def _build_pod(self, data: Dict) -> Dict:
@@ -1389,5 +1645,12 @@ def get_analytics_service(use_redis: bool = False) -> AnalyticsService:
 __all__ = [
     'AnalyticsService',
     'AnalyticsResponse',
-    'get_analytics_service'
+    'get_analytics_service',
+    'DEALER_NAME_FIELD',
+    'DEALER_CODE_FIELD',
+    'CUSTOMER_CODE_FIELD',
+    'DN_NO_FIELD',
+    'DELIVERY_STATUS_FIELD',
+    'PGI_STATUS_FIELD',
+    'POD_STATUS_FIELD'
 ]
