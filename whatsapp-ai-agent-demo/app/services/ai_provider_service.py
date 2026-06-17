@@ -1,22 +1,19 @@
 # ==========================================================
-# FILE: app/services/ai_provider_service.py (v11.0 - FULLY ALIGNED)
+# FILE: app/services/ai_provider_service.py (v12.0 - ANALYTICSRESPONSE ALIGNED)
 # ==========================================================
 # PURPOSE: Master Orchestrator - FINAL AUTHORITY & GOVERNANCE LAYER
 # 
-# ALIGNED WITH:
-# - SchemaService v7.0 (Enhanced dealer alias generation, SequenceMatcher)
-# - AIQueryService v6.0 (Pure Routing Engine with RoutingDecision)
-# - AnalyticsService v3.0 (Complete Methods)
-# 
-# ARCHITECTURE RULES ENFORCED:
-# 1. AIQueryService SUGGESTS → SchemaService VERIFIES → AIProviderService DECIDES
-# 2. Groq ONLY for General Knowledge, Creative, Casual
-# 3. DN Lookup IMMEDIATE (highest priority)
-# 4. Entity Resolution OVERRIDES Intent Detection
-# 5. Safe attribute handling (no direct attribute assumptions)
-# 6. Comprehensive error logging with reference IDs
-# 7. Cache invalidation on metadata refresh
-# 8. Timeout protection (30 seconds)
+# CRITICAL FIXES APPLIED:
+# 1. ✅ AnalyticsResponse support in ALL formatters
+# 2. ✅ DN normalization with re.sub(r"\D", "", question)
+# 3. ✅ DN detection 8-12 digits (not fullmatch)
+# 4. ✅ customer_name standardization (not sold_to_party_name)
+# 5. ✅ Production diagnostics at every step
+# 6. ✅ Dealer dashboard aligned with AnalyticsResponse
+# 7. ✅ All formatters support AnalyticsResponse
+# 8. ✅ KPI standardization (COUNT DISTINCT dn_no, SUM dn_qty)
+# 9. ✅ WhatsApp response validation
+# 10. ✅ Error handling for every analytics call
 # ==========================================================
 
 import time
@@ -44,8 +41,8 @@ def _get_ai_query_service():
     return get_ai_query_service()
 
 def _get_analytics_service():
-    from app.services.analytics_service import get_analytics_service
-    return get_analytics_service()
+    from app.services.analytics_service import get_analytics_service, AnalyticsResponse
+    return get_analytics_service(), AnalyticsResponse
 
 def _get_kpi_service():
     from app.services.kpi_service import get_kpi_service
@@ -56,8 +53,8 @@ def _get_groq_service():
     return get_groq_service()
 
 def _get_schema_service():
-    from app.schemas.schema_service import get_schema_service, DN_PATTERN
-    return get_schema_service(), DN_PATTERN
+    from app.schemas.schema_service import get_schema_service
+    return get_schema_service()
 
 def _get_whatsapp_service():
     from app.services.whatsapp_service import get_whatsapp_service
@@ -70,8 +67,9 @@ def _get_whatsapp_service():
 
 CACHE_TTL_SECONDS = 300
 CONTEXT_TTL_SECONDS = 1800
-DN_PATTERN = re.compile(r'\b(\d{8,12})\b')
 
+# DN Pattern: 8-12 digits (loose matching)
+DN_PATTERN_LOOSE = re.compile(r'\b(\d{8,12})\b')
 
 # ==========================================================
 # GROQ PROTECTION - COMPREHENSIVE BLOCK LIST
@@ -144,26 +142,29 @@ class ConversationContext:
 
 class AIOrchestrator:
     """
-    MASTER ORCHESTRATOR - FINAL AUTHORITY & GOVERNANCE LAYER
+    MASTER ORCHESTRATOR - FINAL AUTHORITY & GOVERNANCE LAYER v12.0
     
     Architecture Flow:
-    1. DN Detection (Highest Priority)
-    2. Entity Resolution (SchemaService Verifies)
-    3. Intent Detection (AIQueryService Suggests)
-    4. Governance Override (AIProviderService Decides)
-    5. Service Execution
-    6. Groq Enrichment (Only When Appropriate)
+    1. DN Detection (Highest Priority - 8-12 digits)
+    2. DN Normalization (re.sub r"\D")
+    3. Entity Resolution (SchemaService Verifies)
+    4. Intent Detection (AIQueryService Suggests)
+    5. Governance Override (AIProviderService Decides)
+    6. Service Execution (AnalyticsResponse handling)
+    7. Formatter (Supports AnalyticsResponse)
+    8. Groq Enrichment (Only When Appropriate)
     """
     
     def __init__(self):
         # Lazy loaded services
         self._query_service = None
         self._analytics = None
+        self._analytics_response = None
         self._kpi = None
         self._groq = None
         self._schema = None
         self._whatsapp = None
-        self._dn_pattern = DN_PATTERN
+        self._dn_pattern = DN_PATTERN_LOOSE
         
         # Caches
         self.response_cache = TTLCache(maxsize=500, ttl=CACHE_TTL_SECONDS)
@@ -175,7 +176,11 @@ class AIOrchestrator:
             "cache_hits": 0,
             "cache_misses": 0,
             "dn_lookups": 0,
+            "dn_lookups_success": 0,
+            "dn_lookups_failure": 0,
             "dealer_queries": 0,
+            "dealer_queries_success": 0,
+            "dealer_queries_failure": 0,
             "city_queries": 0,
             "warehouse_queries": 0,
             "comparisons": 0,
@@ -187,25 +192,22 @@ class AIOrchestrator:
             "timeouts": 0,
             "errors": 0,
             "service_successes": 0,
-            "service_failures": 0
+            "service_failures": 0,
+            "analytics_response_errors": 0
         }
         
         logger.info("=" * 70)
-        logger.info("AI Orchestrator v11.0 - Fully Aligned")
+        logger.info("AI Orchestrator v12.0 - AnalyticsResponse Aligned")
         logger.info("=" * 70)
         logger.info("")
-        logger.info("   ALIGNED WITH:")
-        logger.info("   ✅ SchemaService v7.0 (Enhanced dealer resolution)")
-        logger.info("   ✅ AIQueryService v6.0 (Pure Routing Engine)")
-        logger.info("   ✅ AnalyticsService v3.0 (Complete Methods)")
-        logger.info("")
-        logger.info("   ARCHITECTURE RULES:")
-        logger.info("   ✅ DN Lookup: IMMEDIATE (8-12 digits)")
-        logger.info("   ✅ Entity Resolution: OVERRIDES Intent Detection")
-        logger.info("   ✅ Groq: ONLY for General/Creative/Casual")
-        logger.info("   ✅ Analytics: NEVER goes to Groq alone")
-        logger.info("   ✅ Safe attribute handling (getattr for all)")
-        logger.info("   ✅ Timeout protection (30 seconds)")
+        logger.info("   CRITICAL FIXES:")
+        logger.info("   ✅ AnalyticsResponse support in ALL formatters")
+        logger.info("   ✅ DN normalization: re.sub(r'\\D', '', question)")
+        logger.info("   ✅ DN detection: 8-12 digits (not fullmatch)")
+        logger.info("   ✅ customer_name standardization")
+        logger.info("   ✅ Production diagnostics at every step")
+        logger.info("   ✅ All formatters support AnalyticsResponse")
+        logger.info("   ✅ KPI standardization (COUNT DISTINCT dn_no)")
         logger.info("")
         logger.info("   STATUS: ✅ PRODUCTION READY")
         logger.info("=" * 70)
@@ -223,7 +225,7 @@ class AIOrchestrator:
     @property
     def analytics(self):
         if self._analytics is None:
-            self._analytics = _get_analytics_service()
+            self._analytics, self._analytics_response = _get_analytics_service()
         return self._analytics
     
     @property
@@ -241,7 +243,7 @@ class AIOrchestrator:
     @property
     def schema(self):
         if self._schema is None:
-            self._schema, _ = _get_schema_service()
+            self._schema = _get_schema_service()
         return self._schema
     
     @property
@@ -328,13 +330,22 @@ class AIOrchestrator:
             self.metrics["cache_misses"] += 1
             
             # ==========================================================
-            # STEP 1: DN Lookup (HIGHEST PRIORITY - No Exceptions)
+            # STEP 1: DN Lookup (HIGHEST PRIORITY - 8-12 digits)
             # ==========================================================
             
             if self._is_dn_query(question):
-                logger.info(f"🔍 DN Lookup: {question}")
+                logger.info(f"[{req_id}] 🔍 DN Lookup Start={question}")
                 self.metrics["dn_lookups"] += 1
-                response = self._execute_dn_lookup(question)
+                
+                # FIXED: Normalize DN before lookup
+                dn_normalized = self._normalize_dn(question)
+                logger.info(f"[{req_id}] DN Normalized={dn_normalized}")
+                
+                response = self._execute_dn_lookup(dn_normalized, req_id)
+                
+                # Log result
+                logger.info(f"[{req_id}] DN Lookup Result={'success' if response and '❌' not in response else 'failure'}")
+                
                 self._update_context(phone_number, "dn_lookup", "dn", question, req_id)
                 self._cache_response(question, phone_number, response)
                 return response
@@ -351,24 +362,24 @@ class AIOrchestrator:
                 confidence = entity_result["confidence"]
                 
                 logger.info(
-                    f"📍 Entity Resolved: {entity_type}='{entity_name}' "
+                    f"[{req_id}] 📍 Entity Resolved: {entity_type}='{entity_name}' "
                     f"(confidence: {confidence:.2f})"
                 )
                 
                 # Check for comparison query
                 if self._is_comparison_query(question):
-                    logger.info(f"⚡ Comparison Detected: {entity_type}")
+                    logger.info(f"[{req_id}] ⚡ Comparison Detected: {entity_type}")
                     self.metrics["comparisons"] += 1
-                    response = self._execute_comparison(entity_type, question, entity_name)
+                    response = self._execute_comparison(entity_type, question, entity_name, req_id)
                     self._update_context(phone_number, f"compare_{entity_type}s", entity_type, entity_name, req_id)
                     self._cache_response(question, phone_number, response)
                     return response
                 
                 # Entity-only queries go to dashboard
                 if self._is_entity_only_query(question, entity_name):
-                    logger.info(f"⚡ Entity-Only: {entity_type}_dashboard")
+                    logger.info(f"[{req_id}] ⚡ Entity-Only: {entity_type}_dashboard")
                     self.metrics["overrides"] += 1
-                    response = self._execute_entity_dashboard(entity_type, entity_name)
+                    response = self._execute_entity_dashboard(entity_type, entity_name, req_id)
                     self._update_context(phone_number, f"{entity_type}_dashboard", entity_type, entity_name, req_id)
                     self._cache_response(question, phone_number, response)
                     return response
@@ -398,11 +409,11 @@ class AIOrchestrator:
                 intent = f"{entity_result['type']}_dashboard"
                 entity = entity_result["name"]
                 entity_type = entity_result["type"]
-                logger.info(f"⚡ OVERRIDE: {intent}")
+                logger.info(f"[{req_id}] ⚡ OVERRIDE: {intent}")
                 self.metrics["overrides"] += 1
             
             logger.info(
-                f"🎯 ROUTING: intent={intent}, "
+                f"[{req_id}] 🎯 ROUTING: intent={intent}, "
                 f"entity={entity}, "
                 f"service={service}"
             )
@@ -420,7 +431,7 @@ class AIOrchestrator:
             # ==========================================================
             
             if needs_groq and service != "groq":
-                response = self._enrich_with_groq(response, intent, question, context_dict)
+                response = self._enrich_with_groq(response, intent, question, context_dict, req_id)
             
             # ==========================================================
             # STEP 7: Update Context & Cache
@@ -439,8 +450,36 @@ class AIOrchestrator:
             return response
             
         except Exception as e:
-            logger.exception(f"Sync processing error: {e}")
+            logger.exception(f"[{req_id}] Sync processing error: {e}")
             raise
+    
+    # ==========================================================
+    # DN NORMALIZATION (CRITICAL FIX)
+    # ==========================================================
+    
+    def _normalize_dn(self, text: str) -> str:
+        """
+        Normalize DN number by removing all non-digit characters.
+        
+        Examples:
+        - "6243611858." → "6243611858"
+        - "DN 6243611858" → "6243611858"
+        - "6243611858-0" → "6243611858"
+        """
+        return re.sub(r"\D", "", text.strip())
+    
+    # ==========================================================
+    # DN DETECTION (CRITICAL FIX - Not fullmatch)
+    # ==========================================================
+    
+    def _is_dn_query(self, question: str) -> bool:
+        """
+        Check if query contains a DN number (8-12 digits).
+        
+        FIXED: Uses loose detection, not fullmatch.
+        """
+        digits = self._normalize_dn(question)
+        return 8 <= len(digits) <= 12
     
     # ==========================================================
     # ROUTING DECISION
@@ -475,23 +514,50 @@ class AIOrchestrator:
             )
     
     # ==========================================================
-    # DN DETECTION (HIGHEST PRIORITY)
+    # DN EXECUTION (With Diagnostics & AnalyticsResponse)
     # ==========================================================
     
-    def _is_dn_query(self, question: str) -> bool:
-        """Check if query is a DN number (8-12 digits)."""
-        cleaned = question.strip()
-        return bool(self._dn_pattern.fullmatch(cleaned.replace(" ", "")))
-    
-    def _execute_dn_lookup(self, question: str) -> str:
-        """Execute DN lookup immediately - bypass all other logic."""
-        dn_number = question.strip()
+    def _execute_dn_lookup(self, dn_number: str, req_id: str) -> str:
+        """
+        Execute DN lookup - bypass all other logic.
+        Handles AnalyticsResponse properly.
+        """
         try:
+            logger.info(f"[{req_id}] 🔍 Executing DN Lookup: {dn_number}")
+            
             result = self.analytics.get_dn_analytics(dn_number)
-            return self._format_dn_details(result)
+            
+            # Log response type
+            logger.info(f"[{req_id}] Response Type={type(result).__name__}")
+            
+            # Check if we got an AnalyticsResponse
+            if self._is_analytics_response(result):
+                logger.info(f"[{req_id}] AnalyticsResponse.success={result.success}")
+                
+                if not result.success:
+                    self.metrics["dn_lookups_failure"] += 1
+                    return f"❌ Unable to retrieve DN {dn_number}. Please verify the number and try again."
+                
+                # Extract data from AnalyticsResponse
+                formatted = self._format_dn_details(result, req_id)
+                self.metrics["dn_lookups_success"] += 1
+                return formatted
+            else:
+                # Fallback for dict response
+                logger.warning(f"[{req_id}] Expected AnalyticsResponse, got {type(result).__name__}")
+                return self._format_dn_details_fallback(result, req_id)
+                
         except Exception as e:
-            logger.error(f"DN lookup failed for {dn_number}: {e}")
+            logger.exception(f"[{req_id}] DN lookup failed for {dn_number}: {e}")
+            self.metrics["dn_lookups_failure"] += 1
             return f"❌ Unable to retrieve DN {dn_number}. Please verify the number and try again."
+    
+    def _is_analytics_response(self, obj) -> bool:
+        """Check if object is AnalyticsResponse."""
+        if obj is None:
+            return False
+        # Check for AnalyticsResponse attributes
+        return hasattr(obj, 'success') and hasattr(obj, 'data') and hasattr(obj, 'error')
     
     # ==========================================================
     # COMPARISON DETECTION
@@ -503,29 +569,29 @@ class AIOrchestrator:
         patterns = [" vs ", " versus ", " compare ", " compare with ", " between "]
         return any(p in question_lower for p in patterns)
     
-    def _execute_comparison(self, entity_type: str, question: str, entity_name: str) -> str:
+    def _execute_comparison(self, entity_type: str, question: str, entity_name: str, req_id: str) -> str:
         """Execute comparison analytics."""
         entities = self._parse_comparison(question, entity_type)
         
         if len(entities) < 2:
-            return self._execute_entity_dashboard(entity_type, entity_name)
+            return self._execute_entity_dashboard(entity_type, entity_name, req_id)
         
         entity1, entity2 = entities[0], entities[1]
         
         try:
             if entity_type == "dealer":
                 result = self.analytics.compare_dealers(entity1, entity2)
-                return self._format_dealer_comparison(result, entity1, entity2)
+                return self._format_dealer_comparison(result, entity1, entity2, req_id)
             elif entity_type == "warehouse":
                 result = self.analytics.compare_warehouses(entity1, entity2)
-                return self._format_warehouse_comparison(result, entity1, entity2)
+                return self._format_warehouse_comparison(result, entity1, entity2, req_id)
             elif entity_type == "city":
                 result = self.analytics.compare_cities(entity1, entity2)
-                return self._format_city_comparison(result, entity1, entity2)
+                return self._format_city_comparison(result, entity1, entity2, req_id)
             else:
-                return self._execute_entity_dashboard(entity_type, entity_name)
+                return self._execute_entity_dashboard(entity_type, entity_name, req_id)
         except Exception as e:
-            logger.error(f"Comparison failed: {e}")
+            logger.error(f"[{req_id}] Comparison failed: {e}")
             return f"❌ Unable to compare {entity1} and {entity2}. Please try again."
     
     def _parse_comparison(self, question: str, entity_type: str) -> List[str]:
@@ -583,28 +649,32 @@ class AIOrchestrator:
         return False
     
     # ==========================================================
-    # ENTITY DASHBOARD EXECUTION
+    # ENTITY DASHBOARD EXECUTION (With AnalyticsResponse)
     # ==========================================================
     
-    def _execute_entity_dashboard(self, entity_type: str, entity_name: str) -> str:
+    def _execute_entity_dashboard(self, entity_type: str, entity_name: str, req_id: str) -> str:
         """Execute dashboard for entity type with error handling."""
         try:
+            logger.info(f"[{req_id}] 📊 Entity Dashboard: {entity_type}={entity_name}")
+            
             if entity_type == "dealer":
                 self.metrics["dealer_queries"] += 1
                 result = self.analytics.get_dealer_dashboard(entity_name)
-                return self._format_dealer_dashboard(result, entity_name)
+                self.metrics["dealer_queries_success"] += 1
+                return self._format_dealer_dashboard(result, entity_name, req_id)
             elif entity_type == "city":
                 self.metrics["city_queries"] += 1
                 result = self.analytics.get_city_dashboard(entity_name)
-                return self._format_city_dashboard(result, entity_name)
+                return self._format_city_dashboard(result, entity_name, req_id)
             elif entity_type == "warehouse":
                 self.metrics["warehouse_queries"] += 1
                 result = self.analytics.get_warehouse_dashboard(entity_name)
-                return self._format_warehouse_dashboard(result, entity_name)
+                return self._format_warehouse_dashboard(result, entity_name, req_id)
             else:
                 return f"❌ Unknown entity type: {entity_type}"
         except Exception as e:
-            logger.error(f"Dashboard failed for {entity_name}: {e}")
+            logger.exception(f"[{req_id}] Dashboard failed for {entity_name}: {e}")
+            self.metrics["dealer_queries_failure"] += 1
             return f"❌ Unable to retrieve dashboard for {entity_name}. Please try again."
     
     # ==========================================================
@@ -623,96 +693,96 @@ class AIOrchestrator:
         """Execute service based on routing decision."""
         try:
             if service == "analytics":
-                return self._execute_analytics(intent, entity)
+                return self._execute_analytics(intent, entity, req_id)
             elif service == "kpi":
-                return self._execute_kpi(intent, entity)
+                return self._execute_kpi(intent, entity, req_id)
             elif service == "groq":
-                return self._execute_groq(intent, context)
+                return self._execute_groq(intent, context, req_id)
             else:
                 return self._get_help_message()
         except Exception as e:
             self.metrics["service_failures"] += 1
             error_id = str(uuid.uuid4())[:8]
-            logger.error(f"Service execution error [{error_id}]: {e}")
-            return self._get_service_error_response(intent, entity, service, e, error_id)
+            logger.error(f"[{req_id}] Service execution error [{error_id}]: {e}")
+            return self._get_service_error_response(intent, entity, service, e, error_id, req_id)
     
     # ==========================================================
-    # ANALYTICS EXECUTION
+    # ANALYTICS EXECUTION (With AnalyticsResponse)
     # ==========================================================
     
-    def _execute_analytics(self, intent: str, entity: Optional[str]) -> str:
+    def _execute_analytics(self, intent: str, entity: Optional[str], req_id: str) -> str:
         """Execute analytics with comprehensive intent handling."""
         
         # DEALER ANALYTICS
         if intent == "dealer_dashboard" and entity:
             result = self.analytics.get_dealer_dashboard(entity)
-            return self._format_dealer_dashboard(result, entity)
+            return self._format_dealer_dashboard(result, entity, req_id)
         
         if intent == "dealer_revenue" and entity:
             result = self.analytics.get_dealer_revenue(entity)
-            return self._format_dealer_revenue(result, entity)
+            return self._format_dealer_revenue(result, entity, req_id)
         
         if intent == "dealer_units" and entity:
             result = self.analytics.get_dealer_units(entity)
-            return self._format_dealer_units(result, entity)
+            return self._format_dealer_units(result, entity, req_id)
         
         if intent == "dealer_performance" and entity:
             result = self.analytics.get_dealer_performance(entity)
-            return self._format_dealer_performance(result, entity)
+            return self._format_dealer_performance(result, entity, req_id)
         
         if intent == "dealer_aging" and entity:
             result = self.analytics.get_dealer_aging(entity)
-            return self._format_dealer_aging(result, entity)
+            return self._format_dealer_aging(result, entity, req_id)
         
         # WAREHOUSE ANALYTICS
         if intent == "warehouse_dashboard" and entity:
             result = self.analytics.get_warehouse_dashboard(entity)
-            return self._format_warehouse_dashboard(result, entity)
+            return self._format_warehouse_dashboard(result, entity, req_id)
         
         if intent == "warehouse_performance" and entity:
             result = self.analytics.get_warehouse_dashboard(entity)
-            return self._format_warehouse_performance(result, entity)
+            return self._format_warehouse_performance(result, entity, req_id)
         
         # CITY ANALYTICS
         if intent == "city_dashboard" and entity:
             result = self.analytics.get_city_dashboard(entity)
-            return self._format_city_dashboard(result, entity)
+            return self._format_city_dashboard(result, entity, req_id)
         
         if intent == "city_performance" and entity:
             result = self.analytics.get_city_dashboard(entity)
-            return self._format_city_performance(result, entity)
+            return self._format_city_performance(result, entity, req_id)
         
         if intent == "city_ranking":
             result = self.analytics.get_city_ranking()
-            return self._format_city_ranking(result)
+            return self._format_city_ranking(result, req_id)
         
         # DEALER RANKING
         if intent == "dealer_ranking":
             result = self.analytics.get_dealer_ranking(limit=10, top=True)
-            return self._format_dealer_ranking(result, True)
+            return self._format_dealer_ranking(result, True, req_id)
         
         # EXECUTIVE & ROOT CAUSE
         if intent == "executive_insight":
             self.metrics["executive_insights"] += 1
             result = self.analytics.get_executive_summary()
-            return self._format_executive_insights(result)
+            return self._format_executive_insights(result, req_id)
         
         if intent == "root_cause":
             self.metrics["root_cause_analyses"] += 1
             result = self.analytics.get_root_cause_insights()
-            return self._format_root_cause(result)
+            return self._format_root_cause(result, req_id)
         
         if intent == "control_tower":
             result = self.analytics.get_control_tower_alerts()
-            return self._format_control_tower(result)
+            return self._format_control_tower(result, req_id)
         
         if intent == "delivery_performance":
             result = self.analytics.get_delivery_performance()
-            return self._format_delivery_performance(result)
+            return self._format_delivery_performance(result, req_id)
         
         if intent == "trend":
             result = self.analytics.get_trend_analysis()
-            return self._format_trend_analysis(result)
+            return self._format_trend_analysis(result, req_id)
         
         if intent == "help":
             return self._get_help_message()
@@ -723,7 +793,7 @@ class AIOrchestrator:
     # KPI EXECUTION
     # ==========================================================
     
-    def _execute_kpi(self, intent: str, entity: Optional[str]) -> str:
+    def _execute_kpi(self, intent: str, entity: Optional[str], req_id: str) -> str:
         """Execute KPI queries."""
         try:
             if intent == "pending_pgi":
@@ -740,14 +810,14 @@ class AIOrchestrator:
             
             return self._get_help_message()
         except Exception as e:
-            logger.error(f"KPI execution failed: {e}")
+            logger.error(f"[{req_id}] KPI execution failed: {e}")
             return f"⚠️ Unable to retrieve KPI data. Please try again."
     
     # ==========================================================
     # GROQ EXECUTION
     # ==========================================================
     
-    def _execute_groq(self, intent: str, context: Dict) -> str:
+    def _execute_groq(self, intent: str, context: Dict, req_id: str) -> str:
         """Execute Groq for general AI queries."""
         if self._is_logistics_query(intent):
             return self._get_groq_blocked_response()
@@ -758,12 +828,12 @@ class AIOrchestrator:
                 self.metrics["groq_uses"] += 1
                 return response
             except Exception as e:
-                logger.error(f"Groq execution failed: {e}")
+                logger.error(f"[{req_id}] Groq execution failed: {e}")
                 return "⚠️ AI service is temporarily unavailable. Please try again later."
         
         return "⚠️ AI service is not available. Please try again later."
     
-    def _enrich_with_groq(self, response: str, intent: str, question: str, context: Dict) -> str:
+    def _enrich_with_groq(self, response: str, intent: str, question: str, context: Dict, req_id: str) -> str:
         """Enrich analytics with Groq insight."""
         if not hasattr(self.groq, 'is_available') or not self.groq.is_available:
             return response
@@ -788,7 +858,7 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
                     self.metrics["groq_uses"] += 1
                     return f"{response}\n\n💡 *AI Insight:*\n{groq_summary}"
             except Exception as e:
-                logger.warning(f"Groq enrichment failed: {e}")
+                logger.warning(f"[{req_id}] Groq enrichment failed: {e}")
         
         return response
     
@@ -882,13 +952,83 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
         self.response_cache.clear()
         self.conversation_cache.clear()
         logger.info("🗑️ All caches cleared")
-        return {"status": "cleared", "version": "11.0"}
+        return {"status": "cleared", "version": "12.0"}
     
     # ==========================================================
-    # FORMATTERS - DEALER
+    # FORMATTERS - DEALER (FIXED: AnalyticsResponse Support)
     # ==========================================================
     
-    def _format_dealer_dashboard(self, data: Dict, dealer_name: str) -> str:
+    def _format_dealer_dashboard(self, data, dealer_name: str, req_id: str) -> str:
+        """Format dealer dashboard with AnalyticsResponse support."""
+        try:
+            # Check if data is AnalyticsResponse
+            if self._is_analytics_response(data):
+                logger.info(f"[{req_id}] Dealer Dashboard AnalyticsResponse.success={data.success}")
+                
+                if not data.success:
+                    return f"❌ No data found for {dealer_name}"
+                
+                # Extract data from AnalyticsResponse
+                response_data = data.data if data.data else {}
+                summary = response_data.get("summary", {})
+                aging = response_data.get("aging", {})
+                performance = response_data.get("performance", {})
+                profile = response_data.get("profile", {})
+                
+                total_dns = summary.get("total_dns", 0)
+                
+                if total_dns == 0:
+                    return f"🏪 *{dealer_name} - No Deliveries Found*\n\n" \
+                           f"⚠️ No delivery data found for this dealer."
+                
+                # Get dealer_code and customer_code from profile
+                dealer_code = profile.get("dealer_code", "N/A")
+                customer_code = profile.get("customer_code", "N/A")
+                
+                lines = [
+                    f"🏪 *{dealer_name} - Dashboard*",
+                    "",
+                    f"📋 *Dealer Code:* {dealer_code}",
+                    f"📋 *Customer Code:* {customer_code}",
+                    "",
+                    f"📄 *Total DNs:* {summary.get('total_dns', 0):,}",
+                    f"📦 *Total Units:* {summary.get('total_units', 0):,}",
+                    f"💰 *Revenue:* PKR {summary.get('total_revenue', 0):,.0f}",
+                    "",
+                    f"📊 *Delivery Status:*",
+                    f"   ✅ Delivered: {summary.get('delivered', 0)}",
+                    f"   🚚 In Transit: {summary.get('in_transit', 0)}",
+                    f"   ⏳ Pending PGI: {aging.get('pending_pgi', 0)}",
+                    f"   📎 Pending POD: {aging.get('pending_pod', 0)}",
+                    "",
+                    f"📈 *Performance:*",
+                    f"   📦 Delivery Rate: {summary.get('delivery_rate', 0):.1f}%",
+                    f"   📎 POD Rate: {summary.get('pod_rate', 0):.1f}%",
+                    f"   ⏰ Avg Delivery Aging: {aging.get('avg_delivery_aging', 0):.1f} days",
+                ]
+                
+                risk_status = performance.get('risk_status', 'low')
+                risk_emoji = self.schema.get_risk_emoji(risk_status) if hasattr(self.schema, 'get_risk_emoji') else "🟢"
+                lines.append(f"   {risk_emoji} Risk Status: {risk_status.upper()}")
+                
+                logger.info(f"[{req_id}] Dealer Records={total_dns}")
+                return "\n".join(lines)
+            
+            # Fallback: Assume data is dict
+            elif isinstance(data, dict):
+                logger.warning(f"[{req_id}] Expected AnalyticsResponse, got dict")
+                return self._format_dealer_dashboard_fallback(data, dealer_name, req_id)
+            
+            else:
+                logger.error(f"[{req_id}] Unknown data type: {type(data).__name__}")
+                return f"❌ Unable to format dealer dashboard for {dealer_name}"
+                
+        except Exception as e:
+            logger.exception(f"[{req_id}] Dealer dashboard formatting failed: {e}")
+            return f"❌ Unable to format dealer dashboard for {dealer_name}"
+    
+    def _format_dealer_dashboard_fallback(self, data: Dict, dealer_name: str, req_id: str) -> str:
+        """Fallback formatter for dict data."""
         if not data or "error" in data:
             return f"❌ No data found for {dealer_name}"
         
@@ -914,7 +1054,7 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
             f"   📎 Pending POD: {aging.get('pending_pod', 0)}",
             "",
             f"📈 *Performance:*",
-            f"   📦 Delivery Rate: {summary.get('pod_rate', 0):.1f}%",
+            f"   📦 Delivery Rate: {summary.get('delivery_rate', 0):.1f}%",
             f"   📎 POD Rate: {summary.get('pod_rate', 0):.1f}%",
             f"   ⏰ Avg Delivery Aging: {aging.get('avg_delivery_aging', 0):.1f} days",
         ]
@@ -925,67 +1065,184 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
         
         return "\n".join(lines)
     
-    def _format_dealer_revenue(self, data: Dict, dealer_name: str) -> str:
-        if not data:
+    def _format_dealer_revenue(self, data, dealer_name: str, req_id: str) -> str:
+        """Format dealer revenue with AnalyticsResponse support."""
+        try:
+            if self._is_analytics_response(data):
+                if not data.success:
+                    return f"❌ No revenue data for {dealer_name}"
+                d = data.data or {}
+                return (
+                    f"💰 *Revenue for {dealer_name}*\n\n"
+                    f"• Total Revenue: PKR {d.get('total_revenue', 0):,.0f}\n"
+                    f"• Number of DNs: {d.get('count', 0)}\n"
+                    f"• Average per DN: PKR {d.get('avg_revenue', 0):,.0f}"
+                )
+            elif isinstance(data, dict):
+                return (
+                    f"💰 *Revenue for {dealer_name}*\n\n"
+                    f"• Total Revenue: PKR {data.get('total_revenue', 0):,.0f}\n"
+                    f"• Number of DNs: {data.get('count', 0)}\n"
+                    f"• Average per DN: PKR {data.get('avg_revenue', 0):,.0f}"
+                )
             return f"❌ No revenue data for {dealer_name}"
-        return (
-            f"💰 *Revenue for {dealer_name}*\n\n"
-            f"• Total Revenue: PKR {data.get('total_revenue', 0):,.0f}\n"
-            f"• Number of DNs: {data.get('count', 0)}\n"
-            f"• Average per DN: PKR {data.get('avg_revenue', 0):,.0f}"
-        )
+        except Exception as e:
+            logger.exception(f"[{req_id}] Dealer revenue formatting failed: {e}")
+            return f"❌ Unable to format revenue for {dealer_name}"
     
-    def _format_dealer_units(self, data: Dict, dealer_name: str) -> str:
-        if not data:
+    def _format_dealer_units(self, data, dealer_name: str, req_id: str) -> str:
+        """Format dealer units with AnalyticsResponse support."""
+        try:
+            if self._is_analytics_response(data):
+                if not data.success:
+                    return f"❌ No units data for {dealer_name}"
+                d = data.data or {}
+                return (
+                    f"📦 *Units for {dealer_name}*\n\n"
+                    f"• Total Units: {d.get('total_units', 0):,}\n"
+                    f"• Number of DNs: {d.get('count', 0)}\n"
+                    f"• Average per DN: {d.get('avg_units', 0):.1f}"
+                )
+            elif isinstance(data, dict):
+                return (
+                    f"📦 *Units for {dealer_name}*\n\n"
+                    f"• Total Units: {data.get('total_units', 0):,}\n"
+                    f"• Number of DNs: {data.get('count', 0)}\n"
+                    f"• Average per DN: {data.get('avg_units', 0):.1f}"
+                )
             return f"❌ No units data for {dealer_name}"
-        return (
-            f"📦 *Units for {dealer_name}*\n\n"
-            f"• Total Units: {data.get('total_units', 0):,}\n"
-            f"• Number of DNs: {data.get('count', 0)}\n"
-            f"• Average per DN: {data.get('avg_units', 0):.1f}"
-        )
+        except Exception as e:
+            logger.exception(f"[{req_id}] Dealer units formatting failed: {e}")
+            return f"❌ Unable to format units for {dealer_name}"
     
-    def _format_dealer_performance(self, data: Dict, dealer_name: str) -> str:
-        if not data:
+    def _format_dealer_performance(self, data, dealer_name: str, req_id: str) -> str:
+        """Format dealer performance with AnalyticsResponse support."""
+        try:
+            if self._is_analytics_response(data):
+                if not data.success:
+                    return f"❌ No performance data for {dealer_name}"
+                d = data.data or {}
+                lines = [
+                    f"📊 *Performance: {dealer_name}*",
+                    "",
+                    f"📦 Delivery Rate: {d.get('delivery_rate', 0):.1f}%",
+                    f"📎 POD Rate: {d.get('pod_rate', 0):.1f}%",
+                    f"⏳ Pending PGI: {d.get('pending_pgi', 0)}",
+                    f"📎 Pending POD: {d.get('pending_pod', 0)}",
+                    f"⏰ Avg Aging: {d.get('avg_aging', 0):.1f} days",
+                ]
+                return "\n".join(lines)
+            elif isinstance(data, dict):
+                lines = [
+                    f"📊 *Performance: {dealer_name}*",
+                    "",
+                    f"📦 Delivery Rate: {data.get('delivery_rate', 0):.1f}%",
+                    f"📎 POD Rate: {data.get('pod_rate', 0):.1f}%",
+                    f"⏳ Pending PGI: {data.get('pending_pgi', 0)}",
+                    f"📎 Pending POD: {data.get('pending_pod', 0)}",
+                    f"⏰ Avg Aging: {data.get('avg_aging', 0):.1f} days",
+                ]
+                return "\n".join(lines)
             return f"❌ No performance data for {dealer_name}"
-        lines = [
-            f"📊 *Performance: {dealer_name}*",
-            "",
-            f"📦 Delivery Rate: {data.get('delivery_rate', 0):.1f}%",
-            f"📎 POD Rate: {data.get('pod_rate', 0):.1f}%",
-            f"⏳ Pending PGI: {data.get('pending_pgi', 0)}",
-            f"📎 Pending POD: {data.get('pending_pod', 0)}",
-            f"⏰ Avg Aging: {data.get('avg_aging', 0):.1f} days",
-        ]
-        return "\n".join(lines)
+        except Exception as e:
+            logger.exception(f"[{req_id}] Dealer performance formatting failed: {e}")
+            return f"❌ Unable to format performance for {dealer_name}"
     
-    def _format_dealer_aging(self, data: Dict, dealer_name: str) -> str:
-        if not data:
+    def _format_dealer_aging(self, data, dealer_name: str, req_id: str) -> str:
+        """Format dealer aging with AnalyticsResponse support."""
+        try:
+            if self._is_analytics_response(data):
+                if not data.success:
+                    return f"❌ No aging data for {dealer_name}"
+                d = data.data or {}
+                return (
+                    f"⏱️ *Aging for {dealer_name}*\n\n"
+                    f"• Average Aging: {d.get('avg_aging', 0):.1f} days\n"
+                    f"• Maximum Aging: {d.get('max_aging', 0)} days\n"
+                    f"• DNs with Aging: {d.get('count', 0)}"
+                )
+            elif isinstance(data, dict):
+                return (
+                    f"⏱️ *Aging for {dealer_name}*\n\n"
+                    f"• Average Aging: {data.get('avg_aging', 0):.1f} days\n"
+                    f"• Maximum Aging: {data.get('max_aging', 0)} days\n"
+                    f"• DNs with Aging: {data.get('count', 0)}"
+                )
             return f"❌ No aging data for {dealer_name}"
-        return (
-            f"⏱️ *Aging for {dealer_name}*\n\n"
-            f"• Average Aging: {data.get('avg_aging', 0):.1f} days\n"
-            f"• Maximum Aging: {data.get('max_aging', 0)} days\n"
-            f"• DNs with Aging: {data.get('count', 0)}"
-        )
+        except Exception as e:
+            logger.exception(f"[{req_id}] Dealer aging formatting failed: {e}")
+            return f"❌ Unable to format aging for {dealer_name}"
     
-    def _format_dealer_ranking(self, data: Dict, top: bool) -> str:
-        dealers = data.get("dealers", [])
-        if not dealers:
-            return "📊 No dealers found."
-        title = "🏆 *Top Dealers*" if top else "📉 *Bottom Dealers*"
-        lines = [title, ""]
-        for i, dealer in enumerate(dealers[:10], 1):
-            revenue = dealer.get('revenue', 0)
-            pod_rate = dealer.get('pod_rate', 0)
-            lines.append(f"{i}. {dealer.get('name', 'N/A')}\n   Revenue: PKR {revenue:,.0f} | POD Rate: {pod_rate:.1f}%")
-        return "\n".join(lines)
+    def _format_dealer_ranking(self, data, top: bool, req_id: str) -> str:
+        """Format dealer ranking with AnalyticsResponse support."""
+        try:
+            if self._is_analytics_response(data):
+                if not data.success:
+                    return "📊 No dealer ranking data available."
+                d = data.data or {}
+                dealers = d.get("dealers", [])
+            elif isinstance(data, dict):
+                dealers = data.get("dealers", [])
+            else:
+                return "📊 No dealer ranking data available."
+            
+            if not dealers:
+                return "📊 No dealers found."
+            
+            title = "🏆 *Top Dealers*" if top else "📉 *Bottom Dealers*"
+            lines = [title, ""]
+            for i, dealer in enumerate(dealers[:10], 1):
+                revenue = dealer.get('revenue', 0)
+                pod_rate = dealer.get('pod_rate', 0)
+                lines.append(f"{i}. {dealer.get('name', 'N/A')}\n   Revenue: PKR {revenue:,.0f} | POD Rate: {pod_rate:.1f}%")
+            return "\n".join(lines)
+        except Exception as e:
+            logger.exception(f"[{req_id}] Dealer ranking formatting failed: {e}")
+            return "📊 Unable to format dealer ranking."
     
     # ==========================================================
-    # FORMATTERS - WAREHOUSE & CITY
+    # FORMATTERS - WAREHOUSE & CITY (FIXED: AnalyticsResponse Support)
     # ==========================================================
     
-    def _format_warehouse_dashboard(self, data: Dict, warehouse_name: str) -> str:
+    def _format_warehouse_dashboard(self, data, warehouse_name: str, req_id: str) -> str:
+        """Format warehouse dashboard with AnalyticsResponse support."""
+        try:
+            if self._is_analytics_response(data):
+                if not data.success:
+                    return f"❌ No data found for {warehouse_name}"
+                d = data.data or {}
+                summary = d.get("summary", {})
+                
+                if summary.get("total_dns", 0) == 0:
+                    return f"🏭 *{warehouse_name} - No Deliveries Found*\n\n" \
+                           f"⚠️ No delivery data found for this warehouse."
+                
+                lines = [
+                    f"🏭 *{warehouse_name} - Dashboard*",
+                    "",
+                    f"📄 *Total DNs:* {summary.get('total_dns', 0):,}",
+                    f"📦 *Total Units:* {summary.get('total_units', 0):,}",
+                    f"💰 *Revenue:* PKR {summary.get('total_revenue', 0):,.0f}",
+                    f"📎 *POD Rate:* {summary.get('pod_rate', 0):.1f}%",
+                ]
+                
+                top_dealers = d.get("top_dealers", [])
+                if top_dealers:
+                    lines.append("")
+                    lines.append("🏆 *Top Dealers:*")
+                    for i, dealer in enumerate(top_dealers[:5], 1):
+                        lines.append(f"   {i}. {dealer.get('name', 'N/A')} - PKR {dealer.get('revenue', 0):,.0f}")
+                
+                return "\n".join(lines)
+            elif isinstance(data, dict):
+                return self._format_warehouse_dashboard_fallback(data, warehouse_name, req_id)
+            return f"❌ No data found for {warehouse_name}"
+        except Exception as e:
+            logger.exception(f"[{req_id}] Warehouse dashboard formatting failed: {e}")
+            return f"❌ Unable to format warehouse dashboard for {warehouse_name}"
+    
+    def _format_warehouse_dashboard_fallback(self, data: Dict, warehouse_name: str, req_id: str) -> str:
+        """Fallback formatter for dict data."""
         if not data or "error" in data:
             return f"❌ No data found for {warehouse_name}"
         summary = data.get("summary", {})
@@ -1008,18 +1265,72 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
                 lines.append(f"   {i}. {dealer.get('name', 'N/A')} - PKR {dealer.get('revenue', 0):,.0f}")
         return "\n".join(lines)
     
-    def _format_warehouse_performance(self, data: Dict, warehouse_name: str) -> str:
-        if not data:
+    def _format_warehouse_performance(self, data, warehouse_name: str, req_id: str) -> str:
+        """Format warehouse performance with AnalyticsResponse support."""
+        try:
+            if self._is_analytics_response(data):
+                if not data.success:
+                    return f"❌ No performance data for {warehouse_name}"
+                d = data.data or {}
+                summary = d.get("summary", {})
+                return (
+                    f"📊 *Performance: {warehouse_name}*\n\n"
+                    f"• Total DNs: {summary.get('total_dns', 0)}\n"
+                    f"• POD Rate: {summary.get('pod_rate', 0):.1f}%\n"
+                    f"• Revenue: PKR {summary.get('total_revenue', 0):,.0f}"
+                )
+            elif isinstance(data, dict):
+                summary = data.get("summary", {})
+                return (
+                    f"📊 *Performance: {warehouse_name}*\n\n"
+                    f"• Total DNs: {summary.get('total_dns', 0)}\n"
+                    f"• POD Rate: {summary.get('pod_rate', 0):.1f}%\n"
+                    f"• Revenue: PKR {summary.get('total_revenue', 0):,.0f}"
+                )
             return f"❌ No performance data for {warehouse_name}"
-        summary = data.get("summary", {})
-        return (
-            f"📊 *Performance: {warehouse_name}*\n\n"
-            f"• Total DNs: {summary.get('total_dns', 0)}\n"
-            f"• POD Rate: {summary.get('pod_rate', 0):.1f}%\n"
-            f"• Revenue: PKR {summary.get('total_revenue', 0):,.0f}"
-        )
+        except Exception as e:
+            logger.exception(f"[{req_id}] Warehouse performance formatting failed: {e}")
+            return f"❌ Unable to format performance for {warehouse_name}"
     
-    def _format_city_dashboard(self, data: Dict, city_name: str) -> str:
+    def _format_city_dashboard(self, data, city_name: str, req_id: str) -> str:
+        """Format city dashboard with AnalyticsResponse support."""
+        try:
+            if self._is_analytics_response(data):
+                if not data.success:
+                    return f"❌ No data found for {city_name}"
+                d = data.data or {}
+                summary = d.get("summary", {})
+                
+                if summary.get("total_dns", 0) == 0:
+                    return f"🏙️ *{city_name} - No Deliveries Found*\n\n" \
+                           f"⚠️ No delivery data found for this city."
+                
+                lines = [
+                    f"🏙️ *{city_name} - Dashboard*",
+                    "",
+                    f"📄 *Total DNs:* {summary.get('total_dns', 0):,}",
+                    f"💰 *Revenue:* PKR {summary.get('total_revenue', 0):,.0f}",
+                    f"🏪 *Active Dealers:* {summary.get('total_dealers', 0)}",
+                    f"📎 *POD Rate:* {summary.get('pod_rate', 0):.1f}%",
+                ]
+                
+                top_dealers = d.get("top_dealers", [])
+                if top_dealers:
+                    lines.append("")
+                    lines.append(f"🏆 *Top Dealers in {city_name}:*")
+                    for i, dealer in enumerate(top_dealers[:5], 1):
+                        lines.append(f"   {i}. {dealer.get('name', 'N/A')} - PKR {dealer.get('revenue', 0):,.0f}")
+                
+                return "\n".join(lines)
+            elif isinstance(data, dict):
+                return self._format_city_dashboard_fallback(data, city_name, req_id)
+            return f"❌ No data found for {city_name}"
+        except Exception as e:
+            logger.exception(f"[{req_id}] City dashboard formatting failed: {e}")
+            return f"❌ Unable to format city dashboard for {city_name}"
+    
+    def _format_city_dashboard_fallback(self, data: Dict, city_name: str, req_id: str) -> str:
+        """Fallback formatter for dict data."""
         if not data or "error" in data:
             return f"❌ No data found for {city_name}"
         summary = data.get("summary", {})
@@ -1042,322 +1353,510 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
                 lines.append(f"   {i}. {dealer.get('name', 'N/A')} - PKR {dealer.get('revenue', 0):,.0f}")
         return "\n".join(lines)
     
-    def _format_city_performance(self, data: Dict, city_name: str) -> str:
-        if not data:
+    def _format_city_performance(self, data, city_name: str, req_id: str) -> str:
+        """Format city performance with AnalyticsResponse support."""
+        try:
+            if self._is_analytics_response(data):
+                if not data.success:
+                    return f"❌ No performance data for {city_name}"
+                d = data.data or {}
+                summary = d.get("summary", {})
+                return (
+                    f"📊 *Performance: {city_name}*\n\n"
+                    f"• Total DNs: {summary.get('total_dns', 0)}\n"
+                    f"• POD Rate: {summary.get('pod_rate', 0):.1f}%\n"
+                    f"• Revenue: PKR {summary.get('total_revenue', 0):,.0f}\n"
+                    f"• Active Dealers: {summary.get('total_dealers', 0)}"
+                )
+            elif isinstance(data, dict):
+                summary = data.get("summary", {})
+                return (
+                    f"📊 *Performance: {city_name}*\n\n"
+                    f"• Total DNs: {summary.get('total_dns', 0)}\n"
+                    f"• POD Rate: {summary.get('pod_rate', 0):.1f}%\n"
+                    f"• Revenue: PKR {summary.get('total_revenue', 0):,.0f}\n"
+                    f"• Active Dealers: {summary.get('total_dealers', 0)}"
+                )
             return f"❌ No performance data for {city_name}"
-        summary = data.get("summary", {})
-        return (
-            f"📊 *Performance: {city_name}*\n\n"
-            f"• Total DNs: {summary.get('total_dns', 0)}\n"
-            f"• POD Rate: {summary.get('pod_rate', 0):.1f}%\n"
-            f"• Revenue: PKR {summary.get('total_revenue', 0):,.0f}\n"
-            f"• Active Dealers: {summary.get('total_dealers', 0)}"
-        )
+        except Exception as e:
+            logger.exception(f"[{req_id}] City performance formatting failed: {e}")
+            return f"❌ Unable to format performance for {city_name}"
     
-    def _format_city_ranking(self, data: Dict) -> str:
-        cities = data.get("cities", [])
-        if not cities:
-            return "📊 No city data available."
-        lines = ["🏙️ *City Rankings*", ""]
-        for i, city in enumerate(cities[:10], 1):
-            revenue = city.get('revenue', 0)
-            pod_rate = city.get('pod_rate', 0)
-            dealers = city.get('dealers', 0)
-            lines.append(f"{i}. {city.get('name', 'N/A')}\n   Revenue: PKR {revenue:,.0f} | POD Rate: {pod_rate:.1f}% | Dealers: {dealers}")
-        return "\n".join(lines)
+    def _format_city_ranking(self, data, req_id: str) -> str:
+        """Format city ranking with AnalyticsResponse support."""
+        try:
+            if self._is_analytics_response(data):
+                if not data.success:
+                    return "📊 No city ranking data available."
+                d = data.data or {}
+                cities = d.get("cities", [])
+            elif isinstance(data, dict):
+                cities = data.get("cities", [])
+            else:
+                return "📊 No city ranking data available."
+            
+            if not cities:
+                return "📊 No city data available."
+            
+            lines = ["🏙️ *City Rankings*", ""]
+            for i, city in enumerate(cities[:10], 1):
+                revenue = city.get('revenue', 0)
+                pod_rate = city.get('pod_rate', 0)
+                dealers = city.get('dealers', 0)
+                lines.append(f"{i}. {city.get('name', 'N/A')}\n   Revenue: PKR {revenue:,.0f} | POD Rate: {pod_rate:.1f}% | Dealers: {dealers}")
+            return "\n".join(lines)
+        except Exception as e:
+            logger.exception(f"[{req_id}] City ranking formatting failed: {e}")
+            return "📊 Unable to format city ranking."
     
     # ==========================================================
-    # FORMATTERS - DN
+    # FORMATTERS - COMPARISON (FIXED: AnalyticsResponse Support)
     # ==========================================================
     
-    def _format_dn_details(self, data: Dict) -> str:
-        if not data or not data.get("found"):
+    def _format_dealer_comparison(self, data, dealer1: str, dealer2: str, req_id: str) -> str:
+        """Format dealer comparison with AnalyticsResponse support."""
+        try:
+            if self._is_analytics_response(data):
+                if not data.success:
+                    return f"❌ Could not compare {dealer1} and {dealer2}"
+                d = data.data or {}
+                d1 = d.get(dealer1, {})
+                d2 = d.get(dealer2, {})
+            elif isinstance(data, dict):
+                d1 = data.get(dealer1, {})
+                d2 = data.get(dealer2, {})
+            else:
+                return f"❌ Could not compare {dealer1} and {dealer2}"
+            
+            lines = [
+                f"📊 *Dealer Comparison: {dealer1} vs {dealer2}*",
+                "",
+                "┌─────────────────┬─────────────┬─────────────┐",
+                f"│ Metric           │ {dealer1[:12]:<11} │ {dealer2[:12]:<11} │",
+                "├─────────────────┼─────────────┼─────────────┤",
+                f"│ Revenue (PKR)    │ {d1.get('revenue', 0):>11,.0f} │ {d2.get('revenue', 0):>11,.0f} │",
+                f"│ Units            │ {d1.get('units', 0):>11,} │ {d2.get('units', 0):>11,} │",
+                f"│ DNs              │ {d1.get('dn_count', 0):>11} │ {d2.get('dn_count', 0):>11} │",
+                f"│ POD Rate (%)     │ {d1.get('pod_rate', 0):>11.1f} │ {d2.get('pod_rate', 0):>11.1f} │",
+                "└─────────────────┴─────────────┴─────────────┘",
+            ]
+            if d1.get('revenue', 0) > d2.get('revenue', 0):
+                lines.append(f"\n🏆 {dealer1} has higher revenue by PKR {d1.get('revenue', 0) - d2.get('revenue', 0):,.0f}")
+            elif d2.get('revenue', 0) > d1.get('revenue', 0):
+                lines.append(f"\n🏆 {dealer2} has higher revenue by PKR {d2.get('revenue', 0) - d1.get('revenue', 0):,.0f}")
+            else:
+                lines.append("\n⚖️ Both dealers have equal revenue")
+            return "\n".join(lines)
+        except Exception as e:
+            logger.exception(f"[{req_id}] Dealer comparison formatting failed: {e}")
+            return f"❌ Could not compare {dealer1} and {dealer2}"
+    
+    def _format_warehouse_comparison(self, data, warehouse1: str, warehouse2: str, req_id: str) -> str:
+        """Format warehouse comparison with AnalyticsResponse support."""
+        try:
+            if self._is_analytics_response(data):
+                if not data.success:
+                    return f"❌ Could not compare {warehouse1} and {warehouse2}"
+                d = data.data or {}
+                w1 = d.get(warehouse1, {})
+                w2 = d.get(warehouse2, {})
+            elif isinstance(data, dict):
+                w1 = data.get(warehouse1, {})
+                w2 = data.get(warehouse2, {})
+            else:
+                return f"❌ Could not compare {warehouse1} and {warehouse2}"
+            
+            lines = [
+                f"🏭 *Warehouse Comparison: {warehouse1} vs {warehouse2}*",
+                "",
+                "┌─────────────────┬─────────────┬─────────────┐",
+                f"│ Metric           │ {warehouse1[:12]:<11} │ {warehouse2[:12]:<11} │",
+                "├─────────────────┼─────────────┼─────────────┤",
+                f"│ Revenue (PKR)    │ {w1.get('revenue', 0):>11,.0f} │ {w2.get('revenue', 0):>11,.0f} │",
+                f"│ Units            │ {w1.get('units', 0):>11,} │ {w2.get('units', 0):>11,} │",
+                f"│ DNs              │ {w1.get('dn_count', 0):>11} │ {w2.get('dn_count', 0):>11} │",
+                f"│ POD Rate (%)     │ {w1.get('pod_rate', 0):>11.1f} │ {w2.get('pod_rate', 0):>11.1f} │",
+                "└─────────────────┴─────────────┴─────────────┘",
+            ]
+            if w1.get('revenue', 0) > w2.get('revenue', 0):
+                lines.append(f"\n🏭 {warehouse1} has higher revenue by PKR {w1.get('revenue', 0) - w2.get('revenue', 0):,.0f}")
+            return "\n".join(lines)
+        except Exception as e:
+            logger.exception(f"[{req_id}] Warehouse comparison formatting failed: {e}")
+            return f"❌ Could not compare {warehouse1} and {warehouse2}"
+    
+    def _format_city_comparison(self, data, city1: str, city2: str, req_id: str) -> str:
+        """Format city comparison with AnalyticsResponse support."""
+        try:
+            if self._is_analytics_response(data):
+                if not data.success:
+                    return f"❌ Could not compare {city1} and {city2}"
+                d = data.data or {}
+                c1 = d.get(city1, {})
+                c2 = d.get(city2, {})
+            elif isinstance(data, dict):
+                c1 = data.get(city1, {})
+                c2 = data.get(city2, {})
+            else:
+                return f"❌ Could not compare {city1} and {city2}"
+            
+            lines = [
+                f"🏙️ *City Comparison: {city1} vs {city2}*",
+                "",
+                "┌─────────────────┬─────────────┬─────────────┐",
+                f"│ Metric           │ {city1[:12]:<11} │ {city2[:12]:<11} │",
+                "├─────────────────┼─────────────┼─────────────┤",
+                f"│ Revenue (PKR)    │ {c1.get('revenue', 0):>11,.0f} │ {c2.get('revenue', 0):>11,.0f} │",
+                f"│ Dealers          │ {c1.get('dealers', 0):>11} │ {c2.get('dealers', 0):>11} │",
+                f"│ DNs              │ {c1.get('dn_count', 0):>11} │ {c2.get('dn_count', 0):>11} │",
+                f"│ POD Rate (%)     │ {c1.get('pod_rate', 0):>11.1f} │ {c2.get('pod_rate', 0):>11.1f} │",
+                "└─────────────────┴─────────────┴─────────────┘",
+            ]
+            return "\n".join(lines)
+        except Exception as e:
+            logger.exception(f"[{req_id}] City comparison formatting failed: {e}")
+            return f"❌ Could not compare {city1} and {city2}"
+    
+    # ==========================================================
+    # FORMATTERS - DN DETAILS (CRITICAL FIX: FULL DN Details)
+    # ==========================================================
+    
+    def _format_dn_details(self, data, req_id: str) -> str:
+        """Format DN details with full information."""
+        try:
+            # Check if data is AnalyticsResponse
+            if self._is_analytics_response(data):
+                if not data.success:
+                    logger.warning(f"[{req_id}] DN not found")
+                    return f"❌ DN not found."
+                
+                # Extract data from AnalyticsResponse
+                record = data.data.get("record", {}) if data.data else {}
+                validation = data.data.get("validation", {}) if data.data else {}
+                status = data.data.get("status", "unknown") if data.data else "unknown"
+                
+            elif isinstance(data, dict):
+                record = data.get("record", {})
+                validation = data.get("validation", {})
+                status = data.get("status", "unknown")
+                
+                if not data.get("found", False):
+                    logger.warning(f"[{req_id}] DN not found in dict response")
+                    return f"❌ DN not found."
+            else:
+                logger.error(f"[{req_id}] Unknown data type: {type(data).__name__}")
+                return f"❌ Unable to retrieve DN details."
+            
+            # Extract fields - using customer_name (not sold_to_party_name)
+            dn_no = record.get('dn_number', record.get('dn_no', 'N/A'))
+            dealer_name = record.get('customer_name', record.get('dealer', 'N/A'))
+            dealer_code = record.get('dealer_code', 'N/A')
+            customer_code = record.get('customer_code', 'N/A')
+            warehouse = record.get('warehouse', 'N/A')
+            city = record.get('city', record.get('ship_to_city', 'N/A'))
+            units = record.get('units', 0)
+            amount = record.get('amount', record.get('dn_amount', 0))
+            delivery_status = record.get('delivery_status', 'N/A')
+            pgi_status = record.get('pgi_status', 'N/A')
+            pod_status = record.get('pod_status', 'N/A')
+            
+            # Date fields
+            dn_date = record.get('dn_date', record.get('dn_create_date', 'N/A'))
+            pgi_date = record.get('pgi_date', record.get('good_issue_date', 'N/A'))
+            pod_date = record.get('pod_date', 'N/A')
+            
+            # Aging
+            pgi_aging = record.get('pgi_aging_days', record.get('processing_time_days', 'N/A'))
+            pod_aging = record.get('pod_aging_days', record.get('delivery_time_days', 'N/A'))
+            total_aging = record.get('total_aging_days', record.get('total_cycle_days', 'N/A'))
+            
+            # Status display
+            status_map = {
+                "pending_pgi": "⏳ Pending PGI",
+                "pending_pod": "🚚 In Transit (POD Pending)",
+                "delivered": "✅ Delivered",
+                "completed": "✅ Completed",
+                "unknown": "❓ Unknown"
+            }
+            status_display = status_map.get(status.lower() if status else "unknown", "❓ Unknown")
+            
+            lines = [
+                "📄 *DN Details*",
+                "",
+                f"📋 *DN No:* {dn_no}",
+                f"🏪 *Dealer:* {dealer_name}",
+                f"📋 *Dealer Code:* {dealer_code}",
+                f"📋 *Customer Code:* {customer_code}",
+                "",
+                f"🏭 *Warehouse:* {warehouse}",
+                f"🏙️ *City:* {city}",
+                "",
+                f"📦 *Units:* {units}",
+                f"💰 *Revenue:* PKR {amount:,.0f}",
+                "",
+                f"📊 *Status:* {status_display}",
+                f"   • PGI Status: {pgi_status}",
+                f"   • POD Status: {pod_status}",
+                f"   • Delivery Status: {delivery_status}",
+                "",
+                f"📅 *Dates:*",
+                f"   • DN Create: {dn_date}",
+                f"   • PGI: {pgi_date}",
+                f"   • POD: {pod_date}",
+                "",
+                f"⏱️ *Aging:*",
+                f"   • PGI Aging: {pgi_aging} days" if pgi_aging != 'N/A' else "   • PGI Aging: Not available",
+                f"   • POD Aging: {pod_aging} days" if pod_aging != 'N/A' else "   • POD Aging: Not available",
+                f"   • Total Aging: {total_aging} days" if total_aging != 'N/A' else "   • Total Aging: Not available",
+            ]
+            
+            # Data quality
+            is_valid = validation.get('is_valid', True)
+            issues = validation.get('issues', [])
+            
+            if is_valid and not issues:
+                lines.append("")
+                lines.append("✅ *Data Quality: VALID*")
+            elif issues:
+                lines.append("")
+                lines.append("⚠️ *Data Quality Issues:*")
+                for issue in issues:
+                    lines.append(f"   • {issue}")
+            
+            return "\n".join(lines)
+            
+        except Exception as e:
+            logger.exception(f"[{req_id}] DN formatting failed: {e}")
+            return f"❌ Unable to format DN details."
+    
+    def _format_dn_details_fallback(self, data: Dict, req_id: str) -> str:
+        """Fallback formatter for dict DN data."""
+        if not data or not data.get("found", False):
             return "❌ DN not found."
         
         record = data.get("record", {})
-        validation = data.get("validation", {})
-        durations = validation.get("durations", {})
-        status = data.get("status", "unknown")
+        dn_no = record.get('dn_number', record.get('dn_no', 'N/A'))
+        dealer_name = record.get('customer_name', record.get('dealer', 'N/A'))
+        warehouse = record.get('warehouse', 'N/A')
+        city = record.get('city', record.get('ship_to_city', 'N/A'))
+        units = record.get('units', 0)
+        amount = record.get('amount', record.get('dn_amount', 0))
         
-        processing_days = durations.get('processing_time_days')
-        delivery_days = durations.get('delivery_time_days')
-        cycle_days = durations.get('total_cycle_days')
-        
-        is_valid = validation.get('is_valid', False)
-        issues = validation.get('issues', [])
-        
-        if is_valid and not issues:
-            quality_emoji = "✅"
-            quality_status = "VALID - All dates in correct order"
-        elif issues:
-            quality_emoji = "⚠️"
-            quality_status = "DATA INTEGRITY ISSUE DETECTED"
-        else:
-            quality_emoji = "ℹ️"
-            quality_status = "INCOMPLETE DATA"
-        
-        status_map = {
-            "pending_pgi": "⏳ Pending PGI",
-            "pending_pod": "🚚 In Transit (POD Pending)",
-            "delivered": "✅ Delivered",
-            "unknown": "❓ Status Unknown"
-        }
-        status_display = status_map.get(status, "❓ Unknown")
-        
-        lines = [
-            "📄 *DN Details*",
-            f"• DN: {record.get('dn_number', 'N/A')}",
-            f"• Dealer: {record.get('sold_to_party_name', 'N/A')}",
-            f"• City: {record.get('ship_to_city', 'N/A')}",
-            f"• Warehouse: {record.get('warehouse', 'N/A')}",
-            "",
-            f"📦 *Units:* {record.get('units', 0)}",
-            f"💰 *Amount:* PKR {record.get('amount', 0):,.0f}",
-            "",
-            f"📅 *Dates:*",
-            f"   • DN Create: {record.get('dn_date', 'N/A')}",
-            f"   • Good Issue: {record.get('pgi_date', 'N/A')}",
-            f"   • POD: {record.get('pod_date', 'N/A')}",
-            "",
-            "⏱️ *Time Metrics:*",
-        ]
-        
-        if processing_days is not None:
-            emoji = "✅" if processing_days <= 7 else "⚠️" if processing_days <= 15 else "🔴"
-            lines.append(f"   {emoji} Processing Time: {processing_days} days")
-        else:
-            lines.append("   ⏳ Processing Time: Not available")
-        
-        if delivery_days is not None:
-            emoji = "✅" if delivery_days <= 7 else "⚠️" if delivery_days <= 15 else "🔴"
-            lines.append(f"   {emoji} Delivery Time: {delivery_days} days")
-        else:
-            lines.append("   ⏳ Delivery Time: Not available")
-        
-        if cycle_days is not None:
-            emoji = "✅" if cycle_days <= 14 else "⚠️" if cycle_days <= 21 else "🔴"
-            lines.append(f"   {emoji} Total Cycle Time: {cycle_days} days")
-        else:
-            lines.append("   ⏳ Total Cycle Time: Not available")
-        
-        lines.append("")
-        lines.append(f"{quality_emoji} *Data Quality: {quality_status}*")
-        
-        if issues:
-            lines.append("")
-            lines.append("⚠️ *Issues Detected:*")
-            for issue in issues:
-                lines.append(f"   • {issue}")
-        
-        warnings = validation.get('warnings', [])
-        if warnings:
-            lines.append("")
-            lines.append("📋 *Warnings:*")
-            for warning in warnings:
-                lines.append(f"   • {warning}")
-        
-        lines.append("")
-        lines.append(f"📊 *Status:* {status_display}")
-        
-        return "\n".join(lines)
-    
-    # ==========================================================
-    # FORMATTERS - COMPARISON
-    # ==========================================================
-    
-    def _format_dealer_comparison(self, data: Dict, dealer1: str, dealer2: str) -> str:
-        if not data:
-            return f"❌ Could not compare {dealer1} and {dealer2}"
-        d1 = data.get(dealer1, {})
-        d2 = data.get(dealer2, {})
-        lines = [
-            f"📊 *Dealer Comparison: {dealer1} vs {dealer2}*",
-            "",
-            "┌─────────────────┬─────────────┬─────────────┐",
-            f"│ Metric           │ {dealer1[:12]:<11} │ {dealer2[:12]:<11} │",
-            "├─────────────────┼─────────────┼─────────────┤",
-            f"│ Revenue (PKR)    │ {d1.get('revenue', 0):>11,.0f} │ {d2.get('revenue', 0):>11,.0f} │",
-            f"│ Units            │ {d1.get('units', 0):>11,} │ {d2.get('units', 0):>11,} │",
-            f"│ DNs              │ {d1.get('dn_count', 0):>11} │ {d2.get('dn_count', 0):>11} │",
-            f"│ POD Rate (%)     │ {d1.get('pod_rate', 0):>11.1f} │ {d2.get('pod_rate', 0):>11.1f} │",
-            "└─────────────────┴─────────────┴─────────────┘",
-        ]
-        if d1.get('revenue', 0) > d2.get('revenue', 0):
-            lines.append(f"\n🏆 {dealer1} has higher revenue by PKR {d1.get('revenue', 0) - d2.get('revenue', 0):,.0f}")
-        elif d2.get('revenue', 0) > d1.get('revenue', 0):
-            lines.append(f"\n🏆 {dealer2} has higher revenue by PKR {d2.get('revenue', 0) - d1.get('revenue', 0):,.0f}")
-        else:
-            lines.append("\n⚖️ Both dealers have equal revenue")
-        return "\n".join(lines)
-    
-    def _format_warehouse_comparison(self, data: Dict, warehouse1: str, warehouse2: str) -> str:
-        if not data:
-            return f"❌ Could not compare {warehouse1} and {warehouse2}"
-        w1 = data.get(warehouse1, {})
-        w2 = data.get(warehouse2, {})
-        lines = [
-            f"🏭 *Warehouse Comparison: {warehouse1} vs {warehouse2}*",
-            "",
-            "┌─────────────────┬─────────────┬─────────────┐",
-            f"│ Metric           │ {warehouse1[:12]:<11} │ {warehouse2[:12]:<11} │",
-            "├─────────────────┼─────────────┼─────────────┤",
-            f"│ Revenue (PKR)    │ {w1.get('revenue', 0):>11,.0f} │ {w2.get('revenue', 0):>11,.0f} │",
-            f"│ Units            │ {w1.get('units', 0):>11,} │ {w2.get('units', 0):>11,} │",
-            f"│ DNs              │ {w1.get('dn_count', 0):>11} │ {w2.get('dn_count', 0):>11} │",
-            f"│ POD Rate (%)     │ {w1.get('pod_rate', 0):>11.1f} │ {w2.get('pod_rate', 0):>11.1f} │",
-            "└─────────────────┴─────────────┴─────────────┘",
-        ]
-        if w1.get('revenue', 0) > w2.get('revenue', 0):
-            lines.append(f"\n🏭 {warehouse1} has higher revenue by PKR {w1.get('revenue', 0) - w2.get('revenue', 0):,.0f}")
-        return "\n".join(lines)
-    
-    def _format_city_comparison(self, data: Dict, city1: str, city2: str) -> str:
-        if not data:
-            return f"❌ Could not compare {city1} and {city2}"
-        c1 = data.get(city1, {})
-        c2 = data.get(city2, {})
-        lines = [
-            f"🏙️ *City Comparison: {city1} vs {city2}*",
-            "",
-            "┌─────────────────┬─────────────┬─────────────┐",
-            f"│ Metric           │ {city1[:12]:<11} │ {city2[:12]:<11} │",
-            "├─────────────────┼─────────────┼─────────────┤",
-            f"│ Revenue (PKR)    │ {c1.get('revenue', 0):>11,.0f} │ {c2.get('revenue', 0):>11,.0f} │",
-            f"│ Dealers          │ {c1.get('dealers', 0):>11} │ {c2.get('dealers', 0):>11} │",
-            f"│ DNs              │ {c1.get('dn_count', 0):>11} │ {c2.get('dn_count', 0):>11} │",
-            f"│ POD Rate (%)     │ {c1.get('pod_rate', 0):>11.1f} │ {c2.get('pod_rate', 0):>11.1f} │",
-            "└─────────────────┴─────────────┴─────────────┘",
-        ]
-        return "\n".join(lines)
-    
-    # ==========================================================
-    # FORMATTERS - EXECUTIVE & ROOT CAUSE
-    # ==========================================================
-    
-    def _format_executive_insights(self, data: Dict) -> str:
-        if not data:
-            return "📊 No executive insights available."
-        if data.get("error"):
-            return f"⚠️ {data['error']}"
-        summary = data.get("summary", {})
-        top_issues = data.get("top_issues", [])
-        recommendations = data.get("recommendations", [])
-        if summary.get("total_dns", 0) == 0:
-            return "📊 *Executive Insights*\n\n" \
-                   "📈 *Overview:*\n" \
-                   "   • No deliveries found in the system.\n\n" \
-                   "⚠️ *Critical Issues:*\n" \
-                   "   • No data available for analysis.\n\n" \
-                   "💡 *Recommended Actions:*\n" \
-                   "   • Please ensure data is imported into the system."
-        lines = [
-            "🚨 *Executive Insights*",
-            "",
-            f"📈 *Overview:*",
-            f"   • Total DNs: {summary.get('total_dns', 0):,}",
-            f"   • Total Revenue: PKR {summary.get('total_revenue', 0):,.0f}",
-            f"   • Overall POD Rate: {summary.get('overall_pod_rate', 0):.1f}%",
-            f"   • Active Dealers: {summary.get('active_dealers', 0)}",
-            "",
-            "⚠️ *Critical Issues:*",
-        ]
-        if top_issues:
-            for issue in top_issues:
-                lines.append(f"   • {issue}")
-        else:
-            lines.append("   ✅ No critical issues detected.")
-        if recommendations:
-            lines.append("")
-            lines.append("💡 *Recommended Actions:*")
-            for rec in recommendations:
-                lines.append(f"   • {rec}")
-        return "\n".join(lines)
-    
-    def _format_root_cause(self, data: Dict) -> str:
-        if not data:
-            return "🔍 No root cause analysis available."
-        if data.get("error"):
-            return f"⚠️ {data['error']}"
-        issues = data.get("key_issues", [])
-        recommendations = data.get("recommendations", [])
-        metrics = data.get("metrics", {})
-        if metrics.get("total_dns", 0) == 0:
-            return "🔍 *Root Cause Analysis*\n\n" \
-                   "📊 *Key Metrics:*\n" \
-                   "   • No deliveries found in the system.\n\n" \
-                   "⚠️ *Key Issues Identified:*\n" \
-                   "   • No data available for analysis.\n\n" \
-                   "💡 *Data-Driven Recommendations:*\n" \
-                   "   • Please ensure data is imported into the system."
-        lines = [
-            "🔍 *Root Cause Analysis*",
-            "",
-            f"📊 *Key Metrics:*",
-            f"   • Total DNs: {metrics.get('total_dns', 0)}",
-            f"   • Avg Processing: {metrics.get('avg_processing_days', 0):.1f} days",
-            f"   • Avg Delivery: {metrics.get('avg_delivery_days', 0):.1f} days",
-            f"   • POD Rate: {metrics.get('pod_rate', 0):.1f}%",
-            f"   • Pending POD: {metrics.get('pending_pod', 0)}",
-            "",
-            "⚠️ *Key Issues Identified:*",
-        ]
-        if issues:
-            for issue in issues:
-                lines.append(f"   • {issue}")
-        else:
-            lines.append("   ✅ No critical issues identified.")
-        if recommendations:
-            lines.append("")
-            lines.append("💡 *Data-Driven Recommendations:*")
-            for rec in recommendations:
-                lines.append(f"   • {rec}")
-        return "\n".join(lines)
-    
-    def _format_control_tower(self, data: Dict) -> str:
-        if not data:
-            return "🚨 *Control Tower*\n\nNo data available."
-        alerts = data.get("alerts", [])
-        critical_count = data.get("critical_count", 0)
-        high_count = data.get("high_count", 0)
-        if not alerts and critical_count == 0 and high_count == 0:
-            return "🚨 *Control Tower*\n\n✅ No critical alerts at this time."
-        lines = [
-            "🚨 *Control Tower*",
-            "",
-            f"🔴 Critical: {critical_count}",
-            f"🟠 High: {high_count}",
-            "",
-        ]
-        for alert in alerts[:10]:
-            risk_emoji = "🔴" if alert.get('risk_status') == "critical" else "🟠"
-            lines.append(f"{risk_emoji} {alert.get('type', 'Alert')}: {alert.get('dealer', 'N/A')} - {alert.get('description', '')}")
-        return "\n".join(lines)
-    
-    def _format_delivery_performance(self, data: Dict) -> str:
-        metrics = data.get("metrics", {})
         return (
-            "📦 *Delivery Performance Dashboard*\n\n"
-            f"📊 *Key Metrics:*\n"
-            f"   • Total DNs: {metrics.get('total_dns', 0)}\n"
-            f"   • Delivered: {metrics.get('delivered', 0)}\n"
-            f"   • In Transit: {metrics.get('in_transit', 0)}\n"
-            f"   • Pending PGI: {metrics.get('pending_pgi', 0)}\n"
-            f"   • Pending POD: {metrics.get('pending_pod', 0)}\n"
-            f"\n📈 *Rates:*\n"
-            f"   • PGI Rate: {metrics.get('pgi_rate', 0):.1f}%\n"
-            f"   • POD Rate: {metrics.get('pod_rate', 0):.1f}%\n"
-            f"   • On-Time Delivery: {metrics.get('on_time_delivery_rate', 0):.1f}%"
+            f"📄 *DN Details*\n\n"
+            f"📋 *DN No:* {dn_no}\n"
+            f"🏪 *Dealer:* {dealer_name}\n"
+            f"🏭 *Warehouse:* {warehouse}\n"
+            f"🏙️ *City:* {city}\n"
+            f"📦 *Units:* {units}\n"
+            f"💰 *Revenue:* PKR {amount:,.0f}"
         )
     
-    def _format_trend_analysis(self, data: Dict) -> str:
-        trends = data.get("trends", {})
-        monthly = trends.get("monthly", [])
-        if not monthly:
-            return "📈 No trend data available."
-        lines = ["📈 *Trend Analysis*", "", "📊 *Monthly Trends:*"]
-        for month in monthly[:6]:
-            lines.append(f"   • {month.get('period', 'N/A')}: {month.get('count', 0)} DNs, Revenue: PKR {month.get('revenue', 0):,.0f}")
-        return "\n".join(lines)
+    # ==========================================================
+    # FORMATTERS - EXECUTIVE, ROOT CAUSE, ETC. (FIXED: AnalyticsResponse Support)
+    # ==========================================================
+    
+    def _format_executive_insights(self, data, req_id: str) -> str:
+        """Format executive insights with AnalyticsResponse support."""
+        try:
+            if self._is_analytics_response(data):
+                if not data.success:
+                    return "📊 No executive insights available."
+                d = data.data or {}
+                summary = d.get("summary", {})
+                top_issues = d.get("top_issues", [])
+                recommendations = d.get("recommendations", [])
+            elif isinstance(data, dict):
+                summary = data.get("summary", {})
+                top_issues = data.get("top_issues", [])
+                recommendations = data.get("recommendations", [])
+                if data.get("error"):
+                    return f"⚠️ {data['error']}"
+            else:
+                return "📊 No executive insights available."
+            
+            if summary.get("total_dns", 0) == 0:
+                return "📊 *Executive Insights*\n\n" \
+                       "📈 *Overview:*\n" \
+                       "   • No deliveries found in the system.\n\n" \
+                       "⚠️ *Critical Issues:*\n" \
+                       "   • No data available for analysis.\n\n" \
+                       "💡 *Recommended Actions:*\n" \
+                       "   • Please ensure data is imported into the system."
+            
+            lines = [
+                "🚨 *Executive Insights*",
+                "",
+                f"📈 *Overview:*",
+                f"   • Total DNs: {summary.get('total_dns', 0):,}",
+                f"   • Total Revenue: PKR {summary.get('total_revenue', 0):,.0f}",
+                f"   • Overall POD Rate: {summary.get('overall_pod_rate', 0):.1f}%",
+                f"   • Active Dealers: {summary.get('active_dealers', 0)}",
+                "",
+                "⚠️ *Critical Issues:*",
+            ]
+            if top_issues:
+                for issue in top_issues:
+                    lines.append(f"   • {issue}")
+            else:
+                lines.append("   ✅ No critical issues detected.")
+            if recommendations:
+                lines.append("")
+                lines.append("💡 *Recommended Actions:*")
+                for rec in recommendations:
+                    lines.append(f"   • {rec}")
+            return "\n".join(lines)
+        except Exception as e:
+            logger.exception(f"[{req_id}] Executive insights formatting failed: {e}")
+            return "📊 Unable to format executive insights."
+    
+    def _format_root_cause(self, data, req_id: str) -> str:
+        """Format root cause analysis with AnalyticsResponse support."""
+        try:
+            if self._is_analytics_response(data):
+                if not data.success:
+                    return "🔍 No root cause analysis available."
+                d = data.data or {}
+                issues = d.get("key_issues", [])
+                recommendations = d.get("recommendations", [])
+                metrics = d.get("metrics", {})
+            elif isinstance(data, dict):
+                issues = data.get("key_issues", [])
+                recommendations = data.get("recommendations", [])
+                metrics = data.get("metrics", {})
+                if data.get("error"):
+                    return f"⚠️ {data['error']}"
+            else:
+                return "🔍 No root cause analysis available."
+            
+            if metrics.get("total_dns", 0) == 0:
+                return "🔍 *Root Cause Analysis*\n\n" \
+                       "📊 *Key Metrics:*\n" \
+                       "   • No deliveries found in the system.\n\n" \
+                       "⚠️ *Key Issues Identified:*\n" \
+                       "   • No data available for analysis.\n\n" \
+                       "💡 *Data-Driven Recommendations:*\n" \
+                       "   • Please ensure data is imported into the system."
+            
+            lines = [
+                "🔍 *Root Cause Analysis*",
+                "",
+                f"📊 *Key Metrics:*",
+                f"   • Total DNs: {metrics.get('total_dns', 0)}",
+                f"   • Avg Processing: {metrics.get('avg_processing_days', 0):.1f} days",
+                f"   • Avg Delivery: {metrics.get('avg_delivery_days', 0):.1f} days",
+                f"   • POD Rate: {metrics.get('pod_rate', 0):.1f}%",
+                f"   • Pending POD: {metrics.get('pending_pod', 0)}",
+                "",
+                "⚠️ *Key Issues Identified:*",
+            ]
+            if issues:
+                for issue in issues:
+                    lines.append(f"   • {issue}")
+            else:
+                lines.append("   ✅ No critical issues identified.")
+            if recommendations:
+                lines.append("")
+                lines.append("💡 *Data-Driven Recommendations:*")
+                for rec in recommendations:
+                    lines.append(f"   • {rec}")
+            return "\n".join(lines)
+        except Exception as e:
+            logger.exception(f"[{req_id}] Root cause formatting failed: {e}")
+            return "🔍 Unable to format root cause analysis."
+    
+    def _format_control_tower(self, data, req_id: str) -> str:
+        """Format control tower with AnalyticsResponse support."""
+        try:
+            if self._is_analytics_response(data):
+                if not data.success:
+                    return "🚨 *Control Tower*\n\nNo data available."
+                d = data.data or {}
+                alerts = d.get("alerts", [])
+                critical_count = d.get("critical_count", 0)
+                high_count = d.get("high_count", 0)
+            elif isinstance(data, dict):
+                alerts = data.get("alerts", [])
+                critical_count = data.get("critical_count", 0)
+                high_count = data.get("high_count", 0)
+                if data.get("error"):
+                    return f"🚨 *Control Tower*\n\n⚠️ {data['error']}"
+            else:
+                return "🚨 *Control Tower*\n\nNo data available."
+            
+            if not alerts and critical_count == 0 and high_count == 0:
+                return "🚨 *Control Tower*\n\n✅ No critical alerts at this time."
+            
+            lines = [
+                "🚨 *Control Tower*",
+                "",
+                f"🔴 Critical: {critical_count}",
+                f"🟠 High: {high_count}",
+                "",
+            ]
+            for alert in alerts[:10]:
+                risk_emoji = "🔴" if alert.get('risk_status') == "critical" else "🟠"
+                lines.append(f"{risk_emoji} {alert.get('type', 'Alert')}: {alert.get('dealer', 'N/A')} - {alert.get('description', '')}")
+            return "\n".join(lines)
+        except Exception as e:
+            logger.exception(f"[{req_id}] Control tower formatting failed: {e}")
+            return "🚨 Unable to format control tower."
+    
+    def _format_delivery_performance(self, data, req_id: str) -> str:
+        """Format delivery performance with AnalyticsResponse support."""
+        try:
+            if self._is_analytics_response(data):
+                if not data.success:
+                    return "📦 No delivery performance data available."
+                d = data.data or {}
+                metrics = d.get("metrics", {})
+            elif isinstance(data, dict):
+                metrics = data.get("metrics", {})
+            else:
+                return "📦 No delivery performance data available."
+            
+            return (
+                "📦 *Delivery Performance Dashboard*\n\n"
+                f"📊 *Key Metrics:*\n"
+                f"   • Total DNs: {metrics.get('total_dns', 0)}\n"
+                f"   • Delivered: {metrics.get('delivered', 0)}\n"
+                f"   • In Transit: {metrics.get('in_transit', 0)}\n"
+                f"   • Pending PGI: {metrics.get('pending_pgi', 0)}\n"
+                f"   • Pending POD: {metrics.get('pending_pod', 0)}\n"
+                f"\n📈 *Rates:*\n"
+                f"   • PGI Rate: {metrics.get('pgi_rate', 0):.1f}%\n"
+                f"   • POD Rate: {metrics.get('pod_rate', 0):.1f}%\n"
+                f"   • On-Time Delivery: {metrics.get('on_time_delivery_rate', 0):.1f}%"
+            )
+        except Exception as e:
+            logger.exception(f"[{req_id}] Delivery performance formatting failed: {e}")
+            return "📦 Unable to format delivery performance."
+    
+    def _format_trend_analysis(self, data, req_id: str) -> str:
+        """Format trend analysis with AnalyticsResponse support."""
+        try:
+            if self._is_analytics_response(data):
+                if not data.success:
+                    return "📈 No trend data available."
+                d = data.data or {}
+                trends = d.get("trends", {})
+                monthly = trends.get("monthly", [])
+            elif isinstance(data, dict):
+                trends = data.get("trends", {})
+                monthly = trends.get("monthly", [])
+            else:
+                return "📈 No trend data available."
+            
+            if not monthly:
+                return "📈 No trend data available."
+            
+            lines = ["📈 *Trend Analysis*", "", "📊 *Monthly Trends:*"]
+            for month in monthly[:6]:
+                lines.append(f"   • {month.get('period', 'N/A')}: {month.get('count', 0)} DNs, Revenue: PKR {month.get('revenue', 0):,.0f}")
+            return "\n".join(lines)
+        except Exception as e:
+            logger.exception(f"[{req_id}] Trend analysis formatting failed: {e}")
+            return "📈 Unable to format trend analysis."
     
     # ==========================================================
     # ERROR & FALLBACK RESPONSES
@@ -1369,7 +1868,7 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
 *🔍 DN Tracking:* Send any 8-12 digit DN number
 
 *🏪 Dealer Queries:*
-   • "Dealer name" (e.g., "Dubai Electronics")
+   • "Dealer name" (e.g., "ZQ Electronics")
    • "Dealer revenue" or "Dealer units"
    • "Dealer performance" or "Dealer aging"
    • "Compare Dealer A vs Dealer B"
@@ -1403,7 +1902,7 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
             f"Please try again or contact support with the reference ID."
         )
     
-    def _get_service_error_response(self, intent: str, entity: Optional[str], service: str, error: Exception, error_id: str) -> str:
+    def _get_service_error_response(self, intent: str, entity: Optional[str], service: str, error: Exception, error_id: str, req_id: str) -> str:
         error_msg = str(error)[:100]
         return (
             f"⚠️ *Unable to retrieve analytics data*\n\n"
@@ -1441,7 +1940,13 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
             "service_failures": self.metrics["service_failures"],
             "service_success_rate": self.metrics["service_successes"] / max(1, self.metrics["service_successes"] + self.metrics["service_failures"]),
             "dn_lookups": self.metrics["dn_lookups"],
+            "dn_lookups_success": self.metrics["dn_lookups_success"],
+            "dn_lookups_failure": self.metrics["dn_lookups_failure"],
+            "dn_lookups_success_rate": self.metrics["dn_lookups_success"] / max(1, self.metrics["dn_lookups"]),
             "dealer_queries": self.metrics["dealer_queries"],
+            "dealer_queries_success": self.metrics["dealer_queries_success"],
+            "dealer_queries_failure": self.metrics["dealer_queries_failure"],
+            "dealer_queries_success_rate": self.metrics["dealer_queries_success"] / max(1, self.metrics["dealer_queries"]),
             "city_queries": self.metrics["city_queries"],
             "warehouse_queries": self.metrics["warehouse_queries"],
             "comparisons": self.metrics["comparisons"],
@@ -1452,9 +1957,10 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
             "rejections": self.metrics["rejections"],
             "timeouts": self.metrics["timeouts"],
             "errors": self.metrics["errors"],
+            "analytics_response_errors": self.metrics["analytics_response_errors"],
             "conversation_count": len(self.conversation_cache),
             "cache_size": len(self.response_cache),
-            "version": "11.0"
+            "version": "12.0"
         }
     
     def get_routing_debug(self, question: str) -> Dict[str, Any]:
@@ -1462,6 +1968,8 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
         routing = self._get_routing_decision(question, context)
         return {
             "question": question,
+            "is_dn_query": self._is_dn_query(question),
+            "normalized_dn": self._normalize_dn(question) if self._is_dn_query(question) else None,
             "routing_decision": {
                 "intent": getattr(routing, "intent", "unknown"),
                 "entity": getattr(routing, "entity", None),
@@ -1529,21 +2037,17 @@ def get_routing_debug(question: str) -> Dict[str, Any]:
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("AI Provider Service v11.0 - Fully Aligned")
+logger.info("AI Provider Service v12.0 - AnalyticsResponse Aligned")
 logger.info("=" * 70)
 logger.info("")
-logger.info("   ALIGNED WITH:")
-logger.info("   ✅ SchemaService v7.0 (Enhanced dealer resolution)")
-logger.info("   ✅ AIQueryService v6.0 (Pure Routing Engine)")
-logger.info("   ✅ AnalyticsService v3.0 (Complete Methods)")
-logger.info("")
 logger.info("   CRITICAL FIXES:")
-logger.info("   ✅ Dealer queries route to dealer_dashboard")
-logger.info("   ✅ DN Lookup works immediately (8-12 digits)")
-logger.info("   ✅ Safe attribute handling (getattr for all)")
-logger.info("   ✅ No generic 'I understand' fallback")
-logger.info("   ✅ Executive analytics route to analytics")
-logger.info("   ✅ Timeout protection (30 seconds)")
+logger.info("   ✅ AnalyticsResponse support in ALL formatters")
+logger.info("   ✅ DN normalization: re.sub(r'\\D', '', question)")
+logger.info("   ✅ DN detection: 8-12 digits (not fullmatch)")
+logger.info("   ✅ customer_name standardization")
+logger.info("   ✅ Production diagnostics at every step")
+logger.info("   ✅ All formatters support AnalyticsResponse")
+logger.info("   ✅ KPI standardization (COUNT DISTINCT dn_no)")
 logger.info("")
 logger.info("   STATUS: ✅ PRODUCTION READY")
 logger.info("=" * 70)
