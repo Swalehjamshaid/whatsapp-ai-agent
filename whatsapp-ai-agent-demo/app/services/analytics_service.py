@@ -2,7 +2,7 @@
 # FILE: app/services/analytics_service.py (v10.1 - 100% ALIGNED)
 # ==========================================================
 # PURPOSE: PRIMARY ANALYTICS ENGINE - Direct PostgreSQL Integration
-# VERSION: 10.1 - Complete Alignment with ai_provider_service.py v15.0
+# VERSION: 10.1 - Complete Alignment with ai_provider_service.py v15.1
 #
 # FULL ALIGNMENT:
 # 1. ✅ All methods return AnalyticsResponse
