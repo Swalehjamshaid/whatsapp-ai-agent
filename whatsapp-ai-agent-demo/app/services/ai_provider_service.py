@@ -1,2409 +1,1508 @@
 # ==========================================================
-# FILE: app/services/ai_provider_service.py (v14.0 - ENTERPRISE LOGISTICS ANALYTICS ENGINE)
+# FILE: app/schemas/schema_service.py (v8.0 - FULLY ALIGNED)
 # ==========================================================
-# PURPOSE: Master Orchestrator - WhatsApp AI Analytics Agent
+# PURPOSE: Central Metadata Intelligence Engine for Logistics Analytics
 # 
-# ENTERPRISE FEATURES:
-# 1. ✅ Dealer 360 Dashboard with Full Profile, Summary, Performance, Risk, Timeline, Products
-# 2. ✅ Enhanced DN Dashboard with Journey Tracking, Aging Analysis, Data Quality Engine
-# 3. ✅ City Dashboard with Total Dealers, Warehouses, Performance, Risk
-# 4. ✅ Warehouse Dashboard with Performance, Top Dealers, Cities, Products
-# 5. ✅ Dealer Ranking (Top by Revenue, Units, DN Count)
-# 6. ✅ City Ranking (Top by Revenue, Units, DN Count)
-# 7. ✅ Warehouse Ranking (Top by Revenue, Units, DN Count)
-# 8. ✅ Product Performance Dashboard
-# 9. ✅ Control Tower Dashboard with Risk Alerts
-# 10. ✅ Root Cause Analysis with SLA Compliance
-# 11. ✅ Executive Dashboard with Management Recommendations
-# 12. ✅ Dealer Resolution Engine with 5 Attempts
-# 13. ✅ Dealer Suggestion Engine (Did You Mean?)
-# 14. ✅ DN Retry Logic with 5 Attempts
-# 15. ✅ Self-Healing Cache Management (Never cache failures)
-# 16. ✅ Comprehensive Production Diagnostics
+# CRITICAL FIXES:
+# 1. ✅ customer_name = Dealer Name = Sold-To Party (MANDATORY)
+# 2. ✅ Enhanced dealer resolution with direct PostgreSQL fallback
+# 3. ✅ Added get_all_dealers_from_db() for direct database access
+# 4. ✅ Added resolve_dealer_direct() bypassing cache
+# 5. ✅ Better logging for debugging dealer resolution
+# 6. ✅ Full alignment with ai_provider_service.py v14.0
+# 7. ✅ All dealer searches use customer_name column
 # ==========================================================
 
-import time
-import uuid
-import hashlib
+from typing import Dict, List, Optional, Tuple, Set, Any
+from threading import Lock
+import logging
 import re
-import asyncio
-import concurrent.futures
-import traceback
-from typing import Optional, Callable, Any, Dict, List, Tuple
-from cachetools import TTLCache
-from loguru import logger
-from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
+from dataclasses import dataclass, field
+from difflib import SequenceMatcher
+import json
 
-from app.config import config
-from app.database import SessionLocal
-
-# ==========================================================
-# LAZY IMPORTS - Avoid circular dependencies
-# ==========================================================
-
-def _get_ai_query_service():
-    from app.services.ai_query_service import get_ai_query_service
-    return get_ai_query_service()
-
-def _get_analytics_service():
-    from app.services.analytics_service import get_analytics_service, AnalyticsResponse
-    return get_analytics_service(), AnalyticsResponse
-
-def _get_kpi_service():
-    from app.services.kpi_service import get_kpi_service
-    return get_kpi_service()
-
-def _get_groq_service():
-    from app.services.groq_service import get_groq_service
-    return get_groq_service()
-
-def _get_schema_service():
-    from app.schemas.schema_service import get_schema_service
-    return get_schema_service()
-
-def _get_whatsapp_service():
-    from app.services.whatsapp_service import get_whatsapp_service
-    return get_whatsapp_service()
-
+logger = logging.getLogger(__name__)
 
 # ==========================================================
-# CONFIGURATION
+# DN PATTERN (8-12 digits)
 # ==========================================================
 
-CACHE_TTL_SECONDS = 300
-CONTEXT_TTL_SECONDS = 1800
-MAX_RETRY_ATTEMPTS = 5
-DEALER_SUGGESTION_LIMIT = 3
-
-# DN Pattern: 8-12 digits (loose matching)
-DN_PATTERN_LOOSE = re.compile(r'\b(\d{8,12})\b')
-
-# SLA Compliance Rules
-SLA_RULES = {
-    "pgi_aging": {"excellent": 3, "good": 7, "attention": 15, "critical": 30},
-    "pod_aging": {"excellent": 3, "good": 7, "attention": 15, "critical": 30},
-    "delivery_aging": {"excellent": 3, "good": 7, "attention": 15, "critical": 30},
-    "total_aging": {"excellent": 7, "good": 14, "attention": 21, "critical": 30}
-}
-
-# Risk Levels
-RISK_LEVELS = {
-    "critical": "🔴 CRITICAL",
-    "high": "🟠 HIGH",
-    "medium": "🟡 MEDIUM",
-    "low": "🟢 LOW"
-}
+DN_PATTERN = re.compile(r'\b(\d{8,12})\b')
 
 # ==========================================================
-# GROQ PROTECTION - COMPREHENSIVE BLOCK LIST
+# DELIVERY CALCULATION RULES
 # ==========================================================
 
-GROQ_BLOCKED_PATTERNS = {
-    # Dealer Terms
-    'dealer', 'customer', 'sold to', 'buyer', 'traders', 'electronics',
-    'enterprises', 'industries', 'corporation', 'group', 'sons',
+@dataclass
+class DeliveryMetrics:
+    """Delivery time calculation rules with validation."""
     
-    # Logistics Terms
-    'delivery', 'pgi', 'pod', 'dn', 'warehouse', 'ship to',
-    'dispatch', 'transit', 'delivered', 'pending', 'order',
+    processing_time_rule: str = "Good Issue Date - DN Create Date"
+    delivery_time_rule: str = "POD Date - Good Issue Date"
+    total_cycle_time_rule: str = "POD Date - DN Create Date"
     
-    # KPI Terms
-    'revenue', 'sales', 'units', 'quantity', 'aging', 'performance',
-    'kpi', 'rate', 'completion', 'efficiency', 'metrics', 'target',
+    max_processing_days: int = 30
+    max_delivery_days: int = 30
+    max_cycle_days: int = 60
     
-    # Analytics Terms
-    'root cause', 'improvement', 'bottleneck', 'insight', 'executive',
-    'critical', 'urgent', 'priority', 'alert', 'issue', 'problem',
-    'key issue', 'bring improvement', 'why delayed', 'what is the key',
-    
-    # Comparison Terms
-    'top', 'bottom', 'best', 'worst', 'compare', 'vs', 'versus',
-    'highest', 'lowest', 'ranking', 'rank',
-    
-    # Time Terms
-    'today', 'yesterday', 'week', 'month', 'year', 'trend', 'historical',
-    
-    # Action Terms
-    'show', 'display', 'get', 'view', 'list', 'fetch', 'find', 'tell',
-}
-
-
-# ==========================================================
-# CONVERSATION CONTEXT
-# ==========================================================
-
-class ConversationContext:
-    def __init__(self, phone_number: str):
-        self.phone_number = phone_number
-        self.last_intent: Optional[str] = None
-        self.last_entity: Optional[str] = None
-        self.last_dealer: Optional[str] = None
-        self.last_warehouse: Optional[str] = None
-        self.last_city: Optional[str] = None
-        self.last_dn: Optional[str] = None
-        self.last_question: Optional[str] = None
-        self.last_response: Optional[str] = None
-        self.message_count: int = 0
-        self.created_at: float = time.time()
-        self.last_updated: float = time.time()
-        self.confidence: float = 0.0
-        self.retry_count: int = 0
-    
-    def to_dict(self) -> Dict[str, Any]:
+    def validate_dates(self, dn_date: Optional[datetime], pgi_date: Optional[datetime], pod_date: Optional[datetime]) -> Dict[str, Any]:
+        issues = []
+        is_valid = True
+        warnings = []
+        
+        missing_dates = []
+        if dn_date is None:
+            missing_dates.append("DN Create Date")
+            is_valid = False
+        if pgi_date is None:
+            missing_dates.append("Good Issue Date")
+            is_valid = False
+        if pod_date is None:
+            missing_dates.append("POD Date")
+            is_valid = False
+        
+        if missing_dates:
+            issues.append(f"Missing dates: {', '.join(missing_dates)}")
+        
+        if dn_date and pgi_date and pod_date:
+            if pgi_date < dn_date:
+                issues.append(
+                    f"⚠️ Data Integrity Issue: PGI Date ({pgi_date.strftime('%Y-%m-%d')}) "
+                    f"occurs before DN Date ({dn_date.strftime('%Y-%m-%d')})"
+                )
+                is_valid = False
+            
+            if pod_date < pgi_date:
+                issues.append(
+                    f"⚠️ Data Integrity Issue: POD Date ({pod_date.strftime('%Y-%m-%d')}) "
+                    f"occurs before PGI Date ({pgi_date.strftime('%Y-%m-%d')})"
+                )
+                is_valid = False
+            
+            if pod_date < dn_date:
+                issues.append(
+                    f"⚠️ Data Integrity Issue: POD Date ({pod_date.strftime('%Y-%m-%d')}) "
+                    f"occurs before DN Date ({dn_date.strftime('%Y-%m-%d')})"
+                )
+                is_valid = False
+        
+        durations = {}
+        if is_valid and dn_date and pgi_date and pod_date:
+            processing_days = (pgi_date - dn_date).days
+            delivery_days = (pod_date - pgi_date).days
+            cycle_days = (pod_date - dn_date).days
+            
+            if processing_days < 0:
+                issues.append(f"⚠️ Negative processing time: {processing_days} days")
+                processing_days = 0
+                is_valid = False
+            
+            if delivery_days < 0:
+                issues.append(f"⚠️ Negative delivery time: {delivery_days} days")
+                delivery_days = 0
+                is_valid = False
+            
+            if cycle_days < 0:
+                issues.append(f"⚠️ Negative cycle time: {cycle_days} days")
+                cycle_days = 0
+                is_valid = False
+            
+            durations = {
+                'processing_time_days': processing_days,
+                'delivery_time_days': delivery_days,
+                'total_cycle_days': cycle_days
+            }
+            
+            if processing_days > self.max_processing_days:
+                warnings.append(f"Processing time ({processing_days} days) exceeds threshold ({self.max_processing_days} days)")
+            
+            if delivery_days > self.max_delivery_days:
+                warnings.append(f"Delivery time ({delivery_days} days) exceeds threshold ({self.max_delivery_days} days)")
+            
+            if cycle_days > self.max_cycle_days:
+                warnings.append(f"Total cycle time ({cycle_days} days) exceeds threshold ({self.max_cycle_days} days)")
+        else:
+            durations = {
+                'processing_time_days': None,
+                'delivery_time_days': None,
+                'total_cycle_days': None
+            }
+        
+        data_quality_flags = {
+            'missing_dn_date': dn_date is None,
+            'missing_pgi_date': pgi_date is None,
+            'missing_pod_date': pod_date is None,
+            'invalid_date_sequence': not is_valid if (dn_date and pgi_date and pod_date) else False
+        }
+        
         return {
-            "last_dealer": self.last_dealer,
-            "last_warehouse": self.last_warehouse,
-            "last_city": self.last_city,
-            "last_dn": self.last_dn,
-            "last_intent": self.last_intent,
-            "phone_number": self.phone_number,
-            "last_question": self.last_question,
-            "confidence": self.confidence,
-            "retry_count": self.retry_count
+            'is_valid': is_valid,
+            'issues': issues,
+            'warnings': warnings,
+            'durations': durations,
+            'data_quality_flags': data_quality_flags,
+            'dn_date': dn_date.isoformat() if dn_date else None,
+            'pgi_date': pgi_date.isoformat() if pgi_date else None,
+            'pod_date': pod_date.isoformat() if pod_date else None
         }
 
+# ==========================================================
+# INTENT KEYWORDS
+# ==========================================================
+
+INTENT_KEYWORDS: Dict[str, List[Tuple[str, int]]] = {
+    "dn_lookup": [
+        ("dn", 10), ("delivery note", 10), ("track dn", 10),
+        ("track delivery", 10), ("check dn", 9), ("dn status", 9)
+    ],
+    "dealer_dashboard": [
+        ("dealer", 9), ("show dealer", 10), ("dealer dashboard", 9),
+        ("dealer summary", 9), ("dealer details", 9)
+    ],
+    "dealer_revenue": [
+        ("revenue", 8), ("sales", 8), ("total revenue", 9),
+        ("total sales", 9), ("dealer revenue", 10), ("dealer sales", 10)
+    ],
+    "dealer_units": [
+        ("units", 8), ("quantity", 8), ("total units", 9),
+        ("dealer units", 10), ("dealer quantity", 10)
+    ],
+    "dealer_performance": [
+        ("performance", 8), ("kpi", 8), ("dealer performance", 10),
+        ("dealer kpi", 10), ("performance metrics", 9)
+    ],
+    "dealer_aging": [
+        ("aging", 8), ("delay", 8), ("pending", 7),
+        ("dealer aging", 10), ("dealer delay", 10), ("oldest", 8)
+    ],
+    "warehouse_dashboard": [
+        ("warehouse", 9), ("show warehouse", 10), ("warehouse summary", 9),
+        ("warehouse details", 9), ("warehouse status", 9)
+    ],
+    "warehouse_performance": [
+        ("warehouse performance", 10), ("warehouse kpi", 10),
+        ("warehouse metrics", 9), ("warehouse efficiency", 9)
+    ],
+    "city_dashboard": [
+        ("city", 9), ("show city", 10), ("city summary", 9),
+        ("city details", 9), ("city status", 9)
+    ],
+    "city_performance": [
+        ("city performance", 10), ("city kpi", 10),
+        ("city metrics", 9), ("city efficiency", 9)
+    ],
+    "pending_pgi": [
+        ("pending pgi", 10), ("pgi pending", 10), ("open pgi", 8),
+        ("pgi not done", 9), ("pending good issue", 9)
+    ],
+    "pending_pod": [
+        ("pending pod", 10), ("pod pending", 10), ("open pod", 8),
+        ("pod not done", 9), ("pending delivery", 9)
+    ],
+    "pgi_aging": [
+        ("pgi aging", 10), ("aging pgi", 10), ("pgi delay", 8),
+        ("good issue aging", 9), ("pgi overdue", 9)
+    ],
+    "pod_aging": [
+        ("pod aging", 10), ("aging pod", 10), ("pod delay", 8),
+        ("delivery aging", 9), ("pod overdue", 9)
+    ],
+    "top_dealers": [
+        ("top dealer", 10), ("best dealer", 9), ("top performing", 8),
+        ("top 10 dealers", 10), ("highest dealer", 9), ("top performers", 9)
+    ],
+    "bottom_dealers": [
+        ("bottom dealer", 10), ("worst dealer", 9), ("poor performing", 8),
+        ("bottom 10 dealers", 10), ("lowest dealer", 9), ("worst performers", 9)
+    ],
+    "top_warehouses": [
+        ("top warehouse", 10), ("best warehouse", 9), ("top performing warehouse", 10)
+    ],
+    "top_cities": [
+        ("top city", 10), ("best city", 9), ("top performing city", 10)
+    ],
+    "root_cause": [
+        ("root cause", 10), ("what is the key issue", 10), 
+        ("why delayed", 10), ("why aging", 10), ("key issue", 9),
+        ("how to bring improvement", 10), ("how to improve", 9),
+        ("reason", 8), ("cause", 9), ("improvement areas", 10),
+        ("bring improvement", 10), ("critical issue", 9)
+    ],
+    "executive_insight": [
+        ("executive insight", 10), ("executive summary", 10),
+        ("bottleneck", 9), ("critical issues", 9),
+        ("top issues", 9), ("urgent matters", 9)
+    ],
+    "control_tower": [
+        ("control tower", 10), ("critical", 8), ("urgent", 8),
+        ("priority", 8), ("alert", 7), ("command center", 9)
+    ],
+    "delivery_performance": [
+        ("delivery performance", 10), ("delivery kpi", 10),
+        ("delivery metrics", 9), ("delivery efficiency", 9),
+        ("on time delivery", 9), ("delivery rate", 9)
+    ],
+    "trend": [
+        ("trend", 8), ("month over month", 9), ("trends", 9),
+        ("over time", 8), ("historical", 8), ("performance trend", 10)
+    ],
+    "comparison": [
+        ("compare", 8), ("vs", 7), ("versus", 7),
+        ("comparison", 8), ("between", 7), ("compare dealers", 10),
+        ("compare warehouses", 10), ("compare cities", 10)
+    ],
+    "help": [
+        ("help", 10), ("menu", 8), ("commands", 8),
+        ("what can you do", 10), ("available commands", 10)
+    ],
+    "general_ai": [
+        ("hello", 5), ("hi", 5), ("hey", 5), ("how are you", 6),
+        ("good morning", 5), ("good evening", 5)
+    ],
+}
 
 # ==========================================================
-# MASTER ORCHESTRATOR - ENTERPRISE ANALYTICS ENGINE
+# METRIC KEYWORDS
 # ==========================================================
 
-class AIOrchestrator:
+METRIC_KEYWORDS: Dict[str, List[str]] = {
+    "revenue": ["revenue", "sales", "amount", "total revenue", "total sales", "sales amount"],
+    "units": ["units", "quantity", "qty", "total units", "unit count", "number of units"],
+    "dn_count": ["dns", "delivery notes", "orders", "total dns", "order count"],
+    "pending_pod": ["pending pod", "pod pending", "pod not done", "open pod"],
+    "pending_delivery": ["pending delivery", "delivery pending", "pending pgi", "undelivered"],
+    "delivery_aging": ["delivery aging", "pgi aging", "delivery delay", "pgi delay"],
+    "pod_aging": ["pod aging", "pod delay", "pod latency", "aging pod"],
+    "pod_rate": ["pod rate", "pod percentage", "pod completion", "pod ratio"],
+    "pgi_rate": ["pgi rate", "pgi percentage", "pgi completion", "pgi ratio"],
+    "delivery_rate": ["delivery rate", "delivery percentage", "delivery completion", "on-time delivery"],
+    "success_rate": ["success rate", "success percentage", "completion rate"],
+    "failure_rate": ["failure rate", "failure percentage", "error rate"],
+    "avg_delivery_time": ["avg delivery time", "average delivery", "mean delivery", "average delivery time"],
+    "processing_time": ["processing time", "pgi time", "good issue time"],
+    "total_cycle_time": ["cycle time", "total cycle", "total time"],
+    "total_deliveries": ["total deliveries", "total dispatched", "total sent"],
+    "total_revenue": ["total revenue", "total sales", "overall revenue"],
+    "total_units": ["total units", "total quantity", "overall units"],
+}
+
+# ==========================================================
+# LOGISTICS KEYWORDS
+# ==========================================================
+
+LOGISTICS_KEYWORDS: Set[str] = {
+    'pending', 'delivered', 'in_transit', 'dispatched', 'shipped', 'received',
+    'pgi', 'pod', 'aging', 'delivery', 'revenue', 'units', 'performance',
+    'critical', 'alert', 'urgent', 'priority', 'control', 'tower',
+    'help', 'menu', 'status', 'what', 'how', 'why', 'when', 'where',
+    'who', 'which', 'can', 'could', 'would', 'should', 'is', 'are',
+    'show', 'display', 'get', 'tell', 'view', 'list', 'fetch', 'find',
+    'warehouse', 'summary', 'report', 'kpi', 'dashboard', 'insight',
+    'issue', 'problem', 'bottleneck', 'root', 'cause', 'reason',
+    'dealer', 'customer', 'city', 'stock', 'inventory', 'sales',
+    'transit', 'delivered', 'rate', 'completion', 'dn', 'order',
+    'compare', 'versus', 'vs', 'between', 'against',
+    'today', 'yesterday', 'week', 'month', 'year', 'last', 'this',
+    'current', 'day', 'week', 'month', 'year', 'all',
+    'top', 'bottom', 'best', 'worst', 'highest', 'lowest', 'average',
+    'total', 'all', 'some', 'most', 'least', 'more', 'less', 'much',
+    'first', 'second', 'third', 'fourth', 'fifth', 'tenth',
+    'one', 'two', 'three', 'four', 'five', 'ten',
+}
+
+# ==========================================================
+# BUSINESS RULES
+# ==========================================================
+
+BUSINESS_RULES: Dict[str, Any] = {
+    "delivery_aging": {
+        "rule": "IF PGI EXISTS THEN delivery_aging = PGI_Date - DN_Creation_Date ELSE delivery_aging = Today - DN_Creation_Date",
+        "thresholds": {"critical": 30, "high": 15, "medium": 7, "low": 3}
+    },
+    "pod_aging": {
+        "rule": "IF POD EXISTS THEN pod_aging = POD_Date - PGI_Date ELSE pod_aging = Today - PGI_Date",
+        "thresholds": {"critical": 30, "high": 15, "medium": 7, "low": 3}
+    },
+    "processing_time": {
+        "rule": "Processing Time = Good Issue Date - DN Create Date",
+        "thresholds": {"critical": 7, "high": 5, "medium": 3, "low": 1}
+    },
+    "delivery_time": {
+        "rule": "Delivery Time = POD Date - Good Issue Date",
+        "thresholds": {"critical": 7, "high": 5, "medium": 3, "low": 1}
+    },
+    "total_cycle_time": {
+        "rule": "Total Cycle Time = POD Date - DN Create Date",
+        "thresholds": {"critical": 14, "high": 10, "medium": 7, "low": 3}
+    },
+    "sla": {
+        "delivery_aging_target": 7,
+        "pod_aging_target": 7,
+        "delivery_rate_target": 90,
+        "pod_rate_target": 90,
+        "processing_time_target": 3,
+        "delivery_time_target": 3,
+        "total_cycle_time_target": 7
+    }
+}
+
+# ==========================================================
+# STATUS DEFINITIONS
+# ==========================================================
+
+STATUS_DEFINITIONS: Dict[str, Dict[str, str]] = {
+    "dn_status": {
+        "delivered": "✅ Delivered - POD Received",
+        "in_transit": "🚚 In Transit - PGI Done, POD Pending",
+        "pending_pgi": "⏳ Pending PGI - Not Yet Dispatched",
+        "pending_pod": "📦 Pending POD - Dispatched, Awaiting Confirmation",
+        "unknown": "❓ Status Unknown",
+    },
+    "risk_status": {
+        "critical": "🔴 CRITICAL - Immediate Attention Required",
+        "high": "🟠 HIGH - Action Required",
+        "medium": "🟡 MEDIUM - Monitor Closely",
+        "low": "🟢 LOW - Normal Operations",
+    },
+    "data_quality": {
+        "valid": "✅ All dates valid and in correct order",
+        "warning": "⚠️ Data quality issues detected - check details",
+        "error": "❌ Critical data quality issues - requires investigation"
+    }
+}
+
+# ==========================================================
+# DELIVERY REPOSITORY - FIXED FOR YOUR MODEL
+# ==========================================================
+
+class DeliveryRepository:
     """
-    ENTERPRISE LOGISTICS ANALYTICS ENGINE - v14.0
+    Embedded repository for Delivery Report database operations.
+    ✅ FIXED: Uses your actual column names from models.py
+    - Table: delivery_reports (with 's')
+    - Dealer: customer_name (not sold_to_party_name)
+    - DN: dn_no (correct)
+    - City: ship_to_city (correct)
+    - Warehouse: warehouse (correct)
+    """
     
-    Architecture Flow:
-    1. DN Detection (Highest Priority - 8-12 digits)
-    2. DN Normalization (re.sub r"\D")
-    3. Entity Resolution (SchemaService Verifies)
-    4. Intent Detection (AIQueryService Suggests)
-    5. Governance Override (AIProviderService Decides)
-    6. Service Execution (AnalyticsResponse handling)
-    7. Formatter (Supports AnalyticsResponse)
-    8. Groq Enrichment (Only When Appropriate)
+    def __init__(self, db_session=None):
+        self._session = db_session
+    
+    def _get_session(self):
+        """Get database session."""
+        if self._session is None:
+            try:
+                from app.database import get_db
+                self._session = next(get_db())
+            except ImportError:
+                logger.error("❌ Cannot import database session")
+                raise RuntimeError("Database session not available")
+        return self._session
+    
+    def get_distinct_customers(self) -> List[Dict[str, Any]]:
+        """
+        Get all unique customer/dealer names from delivery reports.
+        ✅ customer_name = Dealer Name = Sold-To Party
+        """
+        try:
+            session = self._get_session()
+            
+            try:
+                from app.models import DeliveryReport
+            except ImportError:
+                logger.error("❌ Cannot import DeliveryReport model")
+                return []
+            
+            # ✅ FIXED: Use 'customer_name' column (matches your model)
+            results = session.query(
+                DeliveryReport.customer_name.label('customer_name')
+            ).filter(
+                DeliveryReport.customer_name.isnot(None)
+            ).filter(
+                DeliveryReport.customer_name != ''
+            ).filter(
+                DeliveryReport.customer_name != 'N/A'
+            ).distinct().order_by(
+                DeliveryReport.customer_name
+            ).all()
+            
+            dealers = [{"customer_name": r[0]} for r in results if r[0]]
+            logger.info(f"✅ Loaded {len(dealers)} distinct customers from 'customer_name'")
+            
+            # Log sample for debugging
+            if len(dealers) > 0:
+                sample = [d['customer_name'] for d in dealers[:5]]
+                logger.info(f"   📋 Sample dealers: {sample}")
+            else:
+                logger.warning("   ⚠️ NO DEALERS FOUND IN customer_name COLUMN!")
+                logger.warning("   ⚠️ Check that delivery_reports table has data with customer_name")
+            
+            return dealers
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to load distinct customers: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return []
+    
+    def get_all_dealers_raw(self) -> List[str]:
+        """
+        Get all dealer names as a flat list.
+        ✅ Direct database access - bypasses cache
+        """
+        try:
+            dealers_data = self.get_distinct_customers()
+            return [d['customer_name'] for d in dealers_data if d.get('customer_name')]
+        except Exception as e:
+            logger.error(f"❌ Failed to get all dealers raw: {e}")
+            return []
+    
+    def get_distinct_cities(self) -> List[Dict[str, Any]]:
+        """Get all unique ship-to cities from delivery reports."""
+        try:
+            session = self._get_session()
+            
+            try:
+                from app.models import DeliveryReport
+            except ImportError:
+                logger.error("❌ Cannot import DeliveryReport model")
+                return []
+            
+            # ✅ FIXED: Use 'ship_to_city' column (matches your model)
+            results = session.query(
+                DeliveryReport.ship_to_city.label('city')
+            ).filter(
+                DeliveryReport.ship_to_city.isnot(None)
+            ).filter(
+                DeliveryReport.ship_to_city != ''
+            ).filter(
+                DeliveryReport.ship_to_city != 'N/A'
+            ).distinct().order_by(
+                DeliveryReport.ship_to_city
+            ).all()
+            
+            cities = [{"city": r[0]} for r in results if r[0]]
+            logger.info(f"✅ Loaded {len(cities)} distinct cities from 'ship_to_city'")
+            return cities
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to load distinct cities: {e}")
+            return []
+    
+    def get_distinct_warehouses(self) -> List[Dict[str, Any]]:
+        """Get all unique warehouses from delivery reports."""
+        try:
+            session = self._get_session()
+            
+            try:
+                from app.models import DeliveryReport
+            except ImportError:
+                logger.error("❌ Cannot import DeliveryReport model")
+                return []
+            
+            # ✅ FIXED: Use 'warehouse' column (matches your model)
+            results = session.query(
+                DeliveryReport.warehouse.label('warehouse')
+            ).filter(
+                DeliveryReport.warehouse.isnot(None)
+            ).filter(
+                DeliveryReport.warehouse != ''
+            ).filter(
+                DeliveryReport.warehouse != 'N/A'
+            ).distinct().order_by(
+                DeliveryReport.warehouse
+            ).all()
+            
+            warehouses = [{"warehouse": r[0]} for r in results if r[0]]
+            logger.info(f"✅ Loaded {len(warehouses)} distinct warehouses from 'warehouse'")
+            return warehouses
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to load distinct warehouses: {e}")
+            return []
+
+
+# ==========================================================
+# SCHEMA SERVICE - FULLY ALIGNED
+# ==========================================================
+
+class SchemaService:
+    """
+    Central Metadata Intelligence Engine for Logistics Analytics.
+    ✅ FIXED: Uses your actual column names from models.py
+    ✅ customer_name = Dealer Name = Sold-To Party
     """
     
     def __init__(self):
-        # Lazy loaded services
-        self._query_service = None
-        self._analytics = None
-        self._analytics_response = None
-        self._kpi = None
-        self._groq = None
-        self._schema = None
-        self._whatsapp = None
-        self._dn_pattern = DN_PATTERN_LOOSE
+        """Initialize SchemaService with database metadata."""
         
-        # Caches - Only successful responses cached
-        self.response_cache = TTLCache(maxsize=500, ttl=CACHE_TTL_SECONDS)
-        self.failure_cache = TTLCache(maxsize=100, ttl=60)  # Short TTL for failures
-        self.conversation_cache: Dict[str, ConversationContext] = {}
+        self.intents = INTENT_KEYWORDS
+        self.metrics = METRIC_KEYWORDS
+        self.logistics_keywords = LOGISTICS_KEYWORDS
+        self.rules = BUSINESS_RULES
+        self.statuses = STATUS_DEFINITIONS
+        self.delivery_metrics = DeliveryMetrics()
         
-        # Dealer resolution cache
-        self.dealer_resolution_cache: Dict[str, Tuple[str, float, float]] = {}  # input -> (resolved, confidence, timestamp)
+        self.dealers: Dict[str, str] = {}
+        self.cities: Dict[str, str] = {}
+        self.warehouses: Dict[str, str] = {}
         
-        # Metrics
-        self.metrics = {
-            "total_requests": 0,
-            "cache_hits": 0,
-            "cache_misses": 0,
-            "cache_failures_avoided": 0,
-            "dn_lookups": 0,
-            "dn_lookups_success": 0,
-            "dn_lookups_failure": 0,
-            "dn_retry_attempts": 0,
-            "dealer_queries": 0,
-            "dealer_queries_success": 0,
-            "dealer_queries_failure": 0,
-            "dealer_suggestions": 0,
-            "city_queries": 0,
-            "warehouse_queries": 0,
-            "comparisons": 0,
-            "executive_insights": 0,
-            "root_cause_analyses": 0,
-            "control_tower": 0,
-            "product_queries": 0,
-            "groq_uses": 0,
-            "overrides": 0,
-            "rejections": 0,
-            "timeouts": 0,
-            "errors": 0,
-            "service_successes": 0,
-            "service_failures": 0,
-            "analytics_response_errors": 0,
-            "dealer_resolution_attempts": 0,
-            "dealer_resolution_success": 0,
-            "dealer_resolution_failure": 0
+        self._dealer_search_index: Dict[str, str] = {}
+        self._city_search_index: Dict[str, str] = {}
+        self._warehouse_search_index: Dict[str, str] = {}
+        
+        self._last_refresh: Optional[datetime] = None
+        self._health_score: int = 0
+        self._initialized: bool = False
+        self._load_error: Optional[str] = None
+        self._db_connected: bool = False
+        self._lock = Lock()
+        self._stats = {
+            "total_dealers_loaded": 0,
+            "total_cities_loaded": 0,
+            "total_warehouses_loaded": 0,
+            "refresh_count": 0,
+            "last_refresh_duration_ms": 0
         }
         
-        logger.info("=" * 70)
-        logger.info("AI Orchestrator v14.0 - Enterprise Logistics Analytics Engine")
-        logger.info("=" * 70)
-        logger.info("")
-        logger.info("   ENTERPRISE FEATURES:")
-        logger.info("   ✅ Dealer 360 Dashboard")
-        logger.info("   ✅ Enhanced DN Dashboard with Journey Tracking")
-        logger.info("   ✅ City & Warehouse Dashboards")
-        logger.info("   ✅ Rankings (Dealer, City, Warehouse)")
-        logger.info("   ✅ Product Performance Dashboard")
-        logger.info("   ✅ Control Tower Dashboard")
-        logger.info("   ✅ Root Cause Analysis")
-        logger.info("   ✅ Executive Dashboard")
-        logger.info("   ✅ Dealer Resolution Engine (5 Attempts)")
-        logger.info("   ✅ Dealer Suggestion Engine")
-        logger.info("   ✅ DN Retry Logic (5 Attempts)")
-        logger.info("   ✅ Self-Healing Cache")
-        logger.info("")
-        logger.info("   STATUS: ✅ PRODUCTION READY")
-        logger.info("=" * 70)
-    
-    # ==========================================================
-    # LAZY PROPERTIES
-    # ==========================================================
-    
-    @property
-    def query_service(self):
-        if self._query_service is None:
-            self._query_service = _get_ai_query_service()
-        return self._query_service
-    
-    @property
-    def analytics(self):
-        if self._analytics is None:
-            self._analytics, self._analytics_response = _get_analytics_service()
-        return self._analytics
-    
-    @property
-    def kpi(self):
-        if self._kpi is None:
-            self._kpi = _get_kpi_service()
-        return self._kpi
-    
-    @property
-    def groq(self):
-        if self._groq is None:
-            self._groq = _get_groq_service()
-        return self._groq
-    
-    @property
-    def schema(self):
-        if self._schema is None:
-            self._schema = _get_schema_service()
-        return self._schema
-    
-    @property
-    def whatsapp(self):
-        if self._whatsapp is None:
-            self._whatsapp = _get_whatsapp_service()
-        return self._whatsapp
-    
-    # ==========================================================
-    # ANALYTICSRESPONSE VALIDATION HELPER
-    # ==========================================================
-    
-    def _validate_analytics_response(
-        self,
-        response: Any,
-        service_name: str,
-        request_id: str
-    ) -> bool:
-        """Validate AnalyticsResponse before formatting."""
-        if response is None:
-            logger.error(f"[{request_id}] AnalyticsResponse is None for {service_name}")
-            self.metrics["analytics_response_errors"] += 1
-            return False
+        self._dealer_list: List[str] = []
+        self._city_list: List[str] = []
+        self._warehouse_list: List[str] = []
         
-        if not hasattr(response, 'success'):
-            logger.error(f"[{request_id}] AnalyticsResponse missing 'success' for {service_name}")
-            self.metrics["analytics_response_errors"] += 1
-            return False
-        
-        if not hasattr(response, 'data'):
-            logger.error(f"[{request_id}] AnalyticsResponse missing 'data' for {service_name}")
-            self.metrics["analytics_response_errors"] += 1
-            return False
-        
-        if not hasattr(response, 'error'):
-            logger.error(f"[{request_id}] AnalyticsResponse missing 'error' for {service_name}")
-            self.metrics["analytics_response_errors"] += 1
-            return False
-        
-        return True
+        # Load metadata on startup
+        self.refresh_metadata()
     
-    def _is_analytics_response(self, obj) -> bool:
-        """Check if object is AnalyticsResponse."""
-        if obj is None:
-            return False
-        return hasattr(obj, 'success') and hasattr(obj, 'data') and hasattr(obj, 'error')
-    
-    # ==========================================================
-    # SELF-HEALING CACHE MANAGEMENT
-    # ==========================================================
-    
-    def _get_cached_success(self, key: str) -> Optional[str]:
-        """Get cached successful response only."""
-        if key in self.failure_cache:
-            self.metrics["cache_failures_avoided"] += 1
-            logger.debug(f"Cache: Skipping failed response for {key[:20]}")
-            return None
-        
-        return self.response_cache.get(key)
-    
-    def _cache_success(self, key: str, value: str):
-        """Cache only successful responses."""
-        self.response_cache[key] = value
-    
-    def _cache_failure(self, key: str):
-        """Cache failure to prevent retries."""
-        self.failure_cache[key] = time.time()
-    
-    def _get_cached_response(self, question: str, phone_number: Optional[str]) -> Optional[str]:
-        cache_key = self._generate_cache_key(question, phone_number)
-        
-        # Check failure cache first
-        if cache_key in self.failure_cache:
-            self.metrics["cache_failures_avoided"] += 1
-            return None
-        
-        return self.response_cache.get(cache_key)
-    
-    def _cache_response(self, question: str, phone_number: Optional[str], response: str, success: bool = True):
-        cache_key = self._generate_cache_key(question, phone_number)
-        
-        if success and not response.startswith("❌") and "Unable" not in response:
-            self.response_cache[cache_key] = response
-        else:
-            self.failure_cache[cache_key] = time.time()
-    
-    def _generate_cache_key(self, question: str, phone_number: Optional[str]) -> str:
-        key = question.lower().strip()
-        if phone_number:
-            key = f"{phone_number}:{key}"
-        return hashlib.md5(key.encode()).hexdigest()
-    
-    # ==========================================================
-    # DN NORMALIZATION
-    # ==========================================================
-    
-    def _normalize_dn(self, text: str) -> str:
-        """Normalize DN number by removing all non-digit characters."""
-        return re.sub(r"\D", "", text.strip())
-    
-    # ==========================================================
-    # DN DETECTION
-    # ==========================================================
-    
-    def _is_dn_query(self, question: str) -> bool:
-        """Check if query contains a DN number (8-12 digits)."""
-        digits = self._normalize_dn(question)
-        return 8 <= len(digits) <= 12
-    
-    # ==========================================================
-    # DEALER RESOLUTION ENGINE (5 Attempts)
-    # ==========================================================
-    
-    def _resolve_dealer_with_retry(self, dealer_input: str, req_id: str) -> Tuple[Optional[str], float, str]:
-        """
-        Resolve dealer with 5 attempts and confidence scoring.
-        
-        Attempt 1: Exact Match
-        Attempt 2: ILIKE Match (case-insensitive)
-        Attempt 3: Wildcard Match (%dealer%)
-        Attempt 4: Normalized Match (remove special chars)
-        Attempt 5: Fuzzy Match (SequenceMatcher)
-        """
-        self.metrics["dealer_resolution_attempts"] += 1
-        
-        if not dealer_input or not dealer_input.strip():
-            return None, 0.0, "empty_input"
-        
-        # Check cache
-        cache_key = dealer_input.lower().strip()
-        if cache_key in self.dealer_resolution_cache:
-            resolved, confidence, timestamp = self.dealer_resolution_cache[cache_key]
-            if time.time() - timestamp < 3600:  # 1 hour cache
-                logger.info(f"[{req_id}] Dealer resolution cache hit: '{resolved}' (conf: {confidence:.2f})")
-                return resolved, confidence, "cache_hit"
-        
-        logger.info(f"[{req_id}] 🔍 Dealer Resolution: '{dealer_input}' (Attempt 1/5)")
-        
-        dealer_clean = dealer_input.strip()
-        
-        # Attempt 1: Exact Match via SchemaService
-        try:
-            resolved = self.schema.resolve_dealer(dealer_clean)
-            if resolved:
-                confidence = 0.99
-                self.metrics["dealer_resolution_success"] += 1
-                logger.info(f"[{req_id}] ✅ Attempt 1 (Exact): '{resolved}' (conf: {confidence:.2f})")
-                self.dealer_resolution_cache[cache_key] = (resolved, confidence, time.time())
-                return resolved, confidence, "exact_match"
-        except Exception as e:
-            logger.debug(f"[{req_id}] Attempt 1 failed: {e}")
-        
-        # Attempt 2: ILIKE Match via Analytics
-        try:
-            # Get all dealers and find ILIKE match
-            result = self.analytics.get_all_dealers_dashboard()
-            if result and result.success:
-                dealers = result.data.get("dealers", [])
-                for dealer in dealers:
-                    name = dealer.get("dealer_name", "")
-                    if name.lower() == dealer_clean.lower():
-                        resolved = name
-                        confidence = 0.95
-                        self.metrics["dealer_resolution_success"] += 1
-                        logger.info(f"[{req_id}] ✅ Attempt 2 (ILIKE): '{resolved}' (conf: {confidence:.2f})")
-                        self.dealer_resolution_cache[cache_key] = (resolved, confidence, time.time())
-                        return resolved, confidence, "ilike_match"
-        except Exception as e:
-            logger.debug(f"[{req_id}] Attempt 2 failed: {e}")
-        
-        # Attempt 3: Wildcard Match
-        try:
-            result = self.analytics.get_all_dealers_dashboard()
-            if result and result.success:
-                dealers = result.data.get("dealers", [])
-                for dealer in dealers:
-                    name = dealer.get("dealer_name", "")
-                    if dealer_clean.lower() in name.lower():
-                        resolved = name
-                        confidence = 0.90
-                        self.metrics["dealer_resolution_success"] += 1
-                        logger.info(f"[{req_id}] ✅ Attempt 3 (Wildcard): '{resolved}' (conf: {confidence:.2f})")
-                        self.dealer_resolution_cache[cache_key] = (resolved, confidence, time.time())
-                        return resolved, confidence, "wildcard_match"
-        except Exception as e:
-            logger.debug(f"[{req_id}] Attempt 3 failed: {e}")
-        
-        # Attempt 4: Normalized Match (remove special characters)
-        try:
-            normalized_input = re.sub(r'[^a-zA-Z0-9\s]', '', dealer_clean).lower()
-            result = self.analytics.get_all_dealers_dashboard()
-            if result and result.success:
-                dealers = result.data.get("dealers", [])
-                for dealer in dealers:
-                    name = dealer.get("dealer_name", "")
-                    normalized_name = re.sub(r'[^a-zA-Z0-9\s]', '', name).lower()
-                    if normalized_input == normalized_name:
-                        resolved = name
-                        confidence = 0.85
-                        self.metrics["dealer_resolution_success"] += 1
-                        logger.info(f"[{req_id}] ✅ Attempt 4 (Normalized): '{resolved}' (conf: {confidence:.2f})")
-                        self.dealer_resolution_cache[cache_key] = (resolved, confidence, time.time())
-                        return resolved, confidence, "normalized_match"
-        except Exception as e:
-            logger.debug(f"[{req_id}] Attempt 4 failed: {e}")
-        
-        # Attempt 5: Fuzzy Match
-        try:
-            from difflib import SequenceMatcher
-            result = self.analytics.get_all_dealers_dashboard()
-            if result and result.success:
-                dealers = result.data.get("dealers", [])
-                best_match = None
-                best_score = 0.0
+    def refresh_metadata(self) -> Dict[str, Any]:
+        """Reload all metadata from database."""
+        with self._lock:
+            logger.info("🔄 Refreshing metadata from database...")
+            start_time = datetime.now()
+            
+            try:
+                repo = DeliveryRepository()
                 
-                for dealer in dealers:
-                    name = dealer.get("dealer_name", "")
-                    score = SequenceMatcher(None, dealer_clean.lower(), name.lower()).ratio()
-                    if score > best_score and score >= 0.70:
-                        best_score = score
-                        best_match = name
+                # Load dealers from customer_name
+                dealers_data = repo.get_distinct_customers()
+                dealer_names = [d['customer_name'] for d in dealers_data if d.get('customer_name')]
                 
-                if best_match:
-                    resolved = best_match
-                    confidence = round(best_score, 2)
-                    self.metrics["dealer_resolution_success"] += 1
-                    logger.info(f"[{req_id}] ✅ Attempt 5 (Fuzzy): '{resolved}' (conf: {confidence:.2f})")
-                    self.dealer_resolution_cache[cache_key] = (resolved, confidence, time.time())
-                    return resolved, confidence, "fuzzy_match"
-        except Exception as e:
-            logger.debug(f"[{req_id}] Attempt 5 failed: {e}")
-        
-        # All attempts failed
-        self.metrics["dealer_resolution_failure"] += 1
-        logger.warning(f"[{req_id}] ❌ Dealer resolution failed after 5 attempts: '{dealer_input}'")
-        return None, 0.0, "all_failed"
+                logger.info(f"📋 Found {len(dealer_names)} dealers in database from customer_name")
+                
+                if dealer_names:
+                    logger.info(f"📋 Sample dealers: {dealer_names[:5]}")
+                else:
+                    logger.warning("⚠️ NO DEALERS FOUND IN DATABASE!")
+                    logger.warning("⚠️ Check that delivery_reports table has data with customer_name values")
+                
+                self.dealers = self._build_dealer_map(dealer_names)
+                self._dealer_search_index = self._build_search_index(self.dealers)
+                self._dealer_list = list(self.dealers.values())
+                logger.info(f"  ✅ Loaded {len(self.dealers)} dealers from 'customer_name'")
+                
+                # Load cities
+                cities_data = repo.get_distinct_cities()
+                city_names = [c['city'] for c in cities_data if c.get('city')]
+                self.cities = self._build_city_map(city_names)
+                self._city_search_index = self._build_search_index(self.cities)
+                self._city_list = list(self.cities.values())
+                logger.info(f"  ✅ Loaded {len(self.cities)} cities from 'ship_to_city'")
+                
+                # Load warehouses
+                warehouses_data = repo.get_distinct_warehouses()
+                warehouse_names = [w['warehouse'] for w in warehouses_data if w.get('warehouse')]
+                self.warehouses = self._build_warehouse_map(warehouse_names)
+                self._warehouse_search_index = self._build_search_index(self.warehouses)
+                self._warehouse_list = list(self.warehouses.values())
+                logger.info(f"  ✅ Loaded {len(self.warehouses)} warehouses from 'warehouse'")
+                
+                self._last_refresh = datetime.now()
+                self._db_connected = True
+                self._stats["refresh_count"] += 1
+                self._stats["total_dealers_loaded"] = len(self.dealers)
+                self._stats["total_cities_loaded"] = len(self.cities)
+                self._stats["total_warehouses_loaded"] = len(self.warehouses)
+                
+                self._validate_or_raise()
+                self._health_score = self._calculate_health_score()
+                self._initialized = True
+                self._load_error = None
+                
+                duration = (datetime.now() - start_time).total_seconds()
+                self._stats["last_refresh_duration_ms"] = round(duration * 1000, 2)
+                
+                logger.info(f"✅ Metadata refresh complete in {duration:.2f}s")
+                logger.info(f"   Dealers: {len(self.dealers)}")
+                logger.info(f"   Cities: {len(self.cities)}")
+                logger.info(f"   Warehouses: {len(self.warehouses)}")
+                logger.info(f"   Health Score: {self._health_score}/100")
+                
+                self._log_warnings()
+                
+                return {
+                    "status": "success",
+                    "dealers": len(self.dealers),
+                    "cities": len(self.cities),
+                    "warehouses": len(self.warehouses),
+                    "health_score": self._health_score,
+                    "initialized": self._initialized,
+                    "duration_seconds": round(duration, 2),
+                    "last_refresh": self._last_refresh.isoformat()
+                }
+                
+            except Exception as e:
+                self._initialized = False
+                self._load_error = str(e)
+                self._db_connected = False
+                logger.error(f"❌ Failed to refresh metadata: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                
+                return {
+                    "status": "failed",
+                    "error": str(e),
+                    "dealers": len(self.dealers),
+                    "cities": len(self.cities),
+                    "warehouses": len(self.warehouses),
+                    "initialized": False
+                }
     
     # ==========================================================
-    # DEALER SUGGESTION ENGINE
+    # DIRECT DATABASE ACCESS METHODS (Bypass Cache)
     # ==========================================================
     
-    def _get_dealer_suggestions(self, dealer_input: str, req_id: str) -> List[str]:
-        """Get dealer suggestions when no exact match found."""
+    def get_all_dealers_from_db(self) -> List[str]:
+        """
+        Get all dealers directly from database.
+        ✅ Bypasses cache - always fresh data
+        ✅ customer_name = Dealer Name = Sold-To Party
+        """
         try:
-            from difflib import SequenceMatcher
-            suggestions = []
-            
-            result = self.analytics.get_all_dealers_dashboard()
-            if not result or not result.success:
-                return []
-            
-            dealers = result.data.get("dealers", [])
-            scored = []
-            
-            for dealer in dealers:
-                name = dealer.get("dealer_name", "")
-                score = SequenceMatcher(None, dealer_input.lower(), name.lower()).ratio()
-                if 0.40 <= score < 0.80:  # Close but not exact
-                    scored.append((name, score))
-            
-            scored.sort(key=lambda x: x[1], reverse=True)
-            suggestions = [s[0] for s in scored[:DEALER_SUGGESTION_LIMIT]]
-            
-            if suggestions:
-                self.metrics["dealer_suggestions"] += 1
-                logger.info(f"[{req_id}] 💡 Dealer suggestions: {suggestions}")
-            
-            return suggestions
-            
+            repo = DeliveryRepository()
+            dealers = repo.get_all_dealers_raw()
+            logger.info(f"📋 Direct DB dealers: {len(dealers)} found")
+            return dealers
         except Exception as e:
-            logger.debug(f"[{req_id}] Dealer suggestions failed: {e}")
+            logger.error(f"❌ Failed to get dealers from DB: {e}")
             return []
     
-    # ==========================================================
-    # DN RETRY LOGIC (5 Attempts)
-    # ==========================================================
-    
-    def _execute_dn_lookup_with_retry(self, dn_number: str, req_id: str) -> Tuple[str, bool]:
+    def resolve_dealer_direct(self, dealer_input: str) -> Optional[str]:
         """
-        Execute DN lookup with 5 retry attempts.
-        
-        Attempt 1: Exact Match
-        Attempt 2: Normalized DN (clean)
-        Attempt 3: CAST(dn_no AS TEXT)
-        Attempt 4: LIKE Search
-        Attempt 5: verify_dn_exists()
+        Resolve dealer directly from database (bypasses cache).
+        ✅ customer_name = Dealer Name = Sold-To Party
         """
-        logger.info(f"[{req_id}] 🔍 DN Lookup: '{dn_number}' (Attempt 1/5)")
-        self.metrics["dn_retry_attempts"] += 1
+        if not dealer_input or not dealer_input.strip():
+            return None
         
-        # Check cache for failures
-        cache_key = f"dn_fail_{dn_number}"
-        if cache_key in self.failure_cache:
-            self.metrics["cache_failures_avoided"] += 1
-            return f"❌ Unable to retrieve DN {dn_number}. Please verify the number and try again.", False
+        dealer_input = dealer_input.strip()
+        dealers = self.get_all_dealers_from_db()
         
-        try:
-            # Attempt 1: Direct Analytics call
-            result = self.analytics.get_dn_analytics(dn_number)
-            
-            if self._validate_analytics_response(result, "dn_lookup", req_id):
-                if result.success:
-                    formatted = self._format_dn_details(result, req_id)
-                    self.metrics["dn_lookups_success"] += 1
-                    return formatted, True
-            
-            # Attempt 2: Normalized DN
-            normalized = self._normalize_dn(dn_number)
-            logger.info(f"[{req_id}] DN Attempt 2: Normalized='{normalized}'")
-            
-            if normalized != dn_number:
-                result = self.analytics.get_dn_analytics(normalized)
-                if self._validate_analytics_response(result, "dn_lookup_normalized", req_id):
-                    if result.success:
-                        formatted = self._format_dn_details(result, req_id)
-                        self.metrics["dn_lookups_success"] += 1
-                        return formatted, True
-            
-            # Attempt 3: Verify via logistics service (if available)
-            try:
-                from app.services.logistics_query_service import get_logistics_query_service
-                logistics = get_logistics_query_service()
-                verification = logistics.verify_dn_exists(dn_number)
-                
-                if verification.get("found", False):
-                    # Found via verification, try analytics again
-                    result = self.analytics.get_dn_analytics(dn_number)
-                    if self._validate_analytics_response(result, "dn_lookup_verify", req_id):
-                        if result.success:
-                            formatted = self._format_dn_details(result, req_id)
-                            self.metrics["dn_lookups_success"] += 1
-                            return formatted, True
-            except Exception as e:
-                logger.debug(f"[{req_id}] Attempt 3 failed: {e}")
-            
-            # All attempts failed
-            self.metrics["dn_lookups_failure"] += 1
-            self.failure_cache[cache_key] = time.time()
-            return f"❌ Unable to retrieve DN {dn_number}. Please verify the number and try again.", False
-            
-        except Exception as e:
-            logger.exception(f"[{req_id}] DN lookup failed for {dn_number}: {e}")
-            self.metrics["dn_lookups_failure"] += 1
-            self.failure_cache[cache_key] = time.time()
-            return f"❌ Unable to retrieve DN {dn_number}. Please verify the number and try again.", False
+        if not dealers:
+            logger.warning(f"⚠️ No dealers found in database for: {dealer_input}")
+            return None
+        
+        dealer_clean = dealer_input.lower()
+        
+        # 1. Exact match (case-insensitive)
+        for dealer in dealers:
+            if dealer.lower() == dealer_clean:
+                logger.info(f"✅ Exact match: {dealer}")
+                return dealer
+        
+        # 2. Contains match
+        for dealer in dealers:
+            if dealer_clean in dealer.lower():
+                logger.info(f"✅ Contains match: {dealer}")
+                return dealer
+        
+        # 3. Word match
+        words = dealer_clean.split()
+        for dealer in dealers:
+            dealer_lower = dealer.lower()
+            dealer_words = dealer_lower.split()
+            for word in words:
+                if len(word) >= 3 and word in dealer_words:
+                    logger.info(f"✅ Word match: {dealer}")
+                    return dealer
+        
+        # 4. Fuzzy match
+        best_match = None
+        best_score = 0.0
+        
+        for dealer in dealers:
+            score = SequenceMatcher(None, dealer_clean, dealer.lower()).ratio()
+            if score > best_score and score >= 0.70:
+                best_score = score
+                best_match = dealer
+        
+        if best_match:
+            logger.info(f"✅ Fuzzy match: {best_match} (score: {best_score:.2f})")
+            return best_match
+        
+        logger.warning(f"❌ No dealer found for: {dealer_input}")
+        return None
     
     # ==========================================================
-    # MAIN ENTRY POINT
+    # SEARCH INDEX BUILDING
     # ==========================================================
     
-    def process_whatsapp_query(
-        self,
-        question: str,
-        session_factory: Optional[Callable[[], Session]] = None,
-        phone_number: Optional[str] = None,
-        user_id: Optional[str] = None,
-        request_id: Optional[str] = None
-    ) -> str:
-        """Process query with timeout and error handling."""
-        start_time = time.time()
-        req_id = request_id or str(uuid.uuid4())[:8]
+    def _build_search_index(self, data: Dict[str, str]) -> Dict[str, str]:
+        index = {}
+        for alias, full_name in data.items():
+            normalized = alias.lower().strip()
+            index[normalized] = full_name
+            prefixes = ["dealer ", "customer ", "warehouse "]
+            for prefix in prefixes:
+                if normalized.startswith(prefix):
+                    without_prefix = normalized[len(prefix):]
+                    if without_prefix:
+                        index[without_prefix] = full_name
+        return index
+    
+    def _build_dealer_map(self, dealer_names: List[str]) -> Dict[str, str]:
+        """
+        Build dealer lookup map with intelligent aliases.
+        ✅ customer_name = Dealer Name = Sold-To Party
+        """
+        dealer_map = {}
         
-        self.metrics["total_requests"] += 1
+        for name in dealer_names:
+            if not name or not name.strip():
+                continue
+            
+            name = name.strip()
+            name_lower = name.lower()
+            dealer_map[name_lower] = name
+            
+            words = name.split()
+            aliases = set()
+            
+            for word in words:
+                if len(word) >= 2:
+                    aliases.add(word.lower())
+                    if len(word) >= 3:
+                        aliases.add(word[:3].lower())
+                    if len(word) >= 2:
+                        aliases.add(word[:2].lower())
+            
+            for i in range(len(words) - 1):
+                if words[i].lower() in ['of', 'the', 'and'] and words[i+1].lower() in ['of', 'the', 'and']:
+                    continue
+                two_words = f"{words[i]} {words[i+1]}"
+                if len(two_words) >= 3:
+                    aliases.add(two_words.lower())
+                    abbr = f"{words[i][0]}{words[i+1][0]}".lower()
+                    if len(abbr) >= 2:
+                        aliases.add(abbr)
+            
+            for i in range(len(words) - 2):
+                three_words = f"{words[i]} {words[i+1]} {words[i+2]}"
+                if len(three_words) >= 3:
+                    aliases.add(three_words.lower())
+                    abbr = f"{words[i][0]}{words[i+1][0]}{words[i+2][0]}".lower()
+                    if len(abbr) >= 2:
+                        aliases.add(abbr)
+            
+            if len(words) >= 2:
+                concat = ''.join(words).lower()
+                if len(concat) >= 3:
+                    aliases.add(concat)
+            
+            prefixes = ["dealer ", "customer ", "m/s ", "ms ", "m/s. ", "ms. ", "shop "]
+            for prefix in prefixes:
+                if name_lower.startswith(prefix):
+                    without_prefix = name_lower[len(prefix):]
+                    if without_prefix:
+                        aliases.add(without_prefix)
+                        for word in without_prefix.split():
+                            if len(word) >= 2:
+                                aliases.add(word)
+            
+            business_suffixes = ["electronics", "traders", "enterprises", "industries", 
+                               "corporation", "company", "group", "trading"]
+            for suffix in business_suffixes:
+                if name_lower.endswith(suffix):
+                    without_suffix = name_lower[:-len(suffix)].strip()
+                    if without_suffix:
+                        aliases.add(without_suffix)
+                        if without_suffix:
+                            first_word = without_suffix.split()[0]
+                            if first_word:
+                                aliases.add(first_word)
+            
+            if len(words) >= 2:
+                last_word = words[-1].lower()
+                if len(last_word) >= 2:
+                    aliases.add(last_word)
+                if len(words) >= 2:
+                    last_two = f"{words[-2]} {words[-1]}"
+                    if len(last_two) >= 3:
+                        aliases.add(last_two.lower())
+            
+            for alias in aliases:
+                if alias and len(alias) >= 2:
+                    dealer_map[alias] = name
         
-        logger.bind(
-            request_id=req_id,
-            phone=phone_number[:4] + "****" if phone_number else None
-        ).info(f"📥 Processing: {question[:100]}")
-        
-        try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(
-                    self._process_sync,
-                    question,
-                    phone_number,
-                    req_id
-                )
-                response = future.result(timeout=30)
-                
-                duration_ms = int((time.time() - start_time) * 1000)
-                logger.bind(request_id=req_id).info(
-                    f"✅ Done: {duration_ms}ms | Response length: {len(response)}"
-                )
-                return response
-                    
-        except concurrent.futures.TimeoutError:
-            self.metrics["timeouts"] += 1
-            logger.error(f"[{req_id}] Request timed out after 30 seconds")
-            return (
-                f"⏳ *Request Timed Out*\n\n"
-                f"Your query is taking too long to process.\n"
-                f"Please try again or simplify your question.\n\n"
-                f"Reference: `{req_id}`"
-            )
-                
-        except Exception as e:
-            self.metrics["errors"] += 1
-            error_id = str(uuid.uuid4())[:8]
-            logger.exception(f"[{req_id}] FATAL ERROR [{error_id}]: {e}")
-            return self._get_error_response(question, e, error_id, req_id)
+        return dealer_map
+    
+    def _build_city_map(self, city_names: List[str]) -> Dict[str, str]:
+        city_map = {}
+        for name in city_names:
+            if not name or not name.strip():
+                continue
+            name = name.strip()
+            name_lower = name.lower()
+            city_map[name_lower] = name
+            aliases = set()
+            if len(name) >= 3:
+                aliases.add(name[:3].lower())
+            if len(name) >= 2:
+                aliases.add(name[:2].lower())
+            common_abbr = {
+                "lahore": "lhr", "karachi": "khi", "islamabad": "isb",
+                "rawalpindi": "rwp", "multan": "mux", "faisalabad": "fsd",
+                "peshawar": "pwr", "quetta": "qta", "hyderabad": "hyd",
+                "gujranwala": "guj", "sialkot": "skt", "bahawalpur": "bwp",
+                "haripur": "hrp", "pindigheb": "pdg", "abbottabad": "abb",
+                "mingora": "mng", "dera": "der", "sahiwal": "shw",
+                "okara": "okr", "sheikhupura": "shp"
+            }
+            for full, abbr in common_abbr.items():
+                if full in name_lower:
+                    aliases.add(abbr)
+                    break
+            for alias in aliases:
+                if alias and len(alias) >= 2:
+                    city_map[alias] = name
+        return city_map
+    
+    def _build_warehouse_map(self, warehouse_names: List[str]) -> Dict[str, str]:
+        warehouse_map = {}
+        for name in warehouse_names:
+            if not name or not name.strip():
+                continue
+            name = name.strip()
+            name_lower = name.lower()
+            warehouse_map[name_lower] = name
+            aliases = set()
+            if name_lower.endswith(" warehouse"):
+                without_suffix = name_lower[:-10].strip()
+                if without_suffix:
+                    aliases.add(without_suffix)
+                    first_word = without_suffix.split()[0]
+                    if first_word:
+                        aliases.add(first_word)
+            words = name.split()
+            for word in words:
+                if len(word) >= 2:
+                    aliases.add(word.lower())
+            if words:
+                aliases.add(words[0].lower())
+            if len(words) >= 2:
+                two_words = f"{words[0]} {words[1]}"
+                aliases.add(two_words.lower())
+            common_abbr = {
+                "lahore": "lhr", "karachi": "khi", "islamabad": "isb",
+                "rawalpindi": "rwp", "multan": "mux", "faisalabad": "fsd",
+                "peshawar": "pwr", "quetta": "qta",
+            }
+            for full, abbr in common_abbr.items():
+                if full in name_lower:
+                    aliases.add(abbr)
+                    break
+            for alias in aliases:
+                if alias and len(alias) >= 2:
+                    warehouse_map[alias] = name
+        return warehouse_map
+    
+    def _fuzzy_match(self, text: str, candidates: List[str], threshold: float = 0.80) -> Tuple[Optional[str], float]:
+        if not text or not candidates:
+            return None, 0.0
+        text_lower = text.lower()
+        best_match = None
+        best_score = 0.0
+        for candidate in candidates:
+            if not candidate:
+                continue
+            candidate_lower = candidate.lower()
+            score = SequenceMatcher(None, text_lower, candidate_lower).ratio()
+            if text_lower in candidate_lower or candidate_lower in text_lower:
+                score = min(1.0, score + 0.1)
+            if score > best_score and score >= threshold:
+                best_score = score
+                best_match = candidate
+        return best_match, best_score
     
     # ==========================================================
-    # SYNC PROCESSING (Runs in ThreadPool)
+    # ENTITY RESOLUTION (Uses customer_name = Dealer)
     # ==========================================================
     
-    def _process_sync(self, question: str, phone_number: Optional[str], req_id: str) -> str:
-        """Synchronous processing method."""
-        try:
-            context = self._load_context(phone_number)
-            context_dict = context.to_dict() if context else {}
-            
-            # Check cache for successful responses only
-            cached_response = self._get_cached_response(question, phone_number)
-            if cached_response:
-                self.metrics["cache_hits"] += 1
-                return cached_response
-            
-            self.metrics["cache_misses"] += 1
-            
-            # ==========================================================
-            # STEP 1: DN Lookup (HIGHEST PRIORITY - 8-12 digits)
-            # ==========================================================
-            
-            if self._is_dn_query(question):
-                logger.info(f"[{req_id}] 🔍 DN Lookup Start={question}")
-                self.metrics["dn_lookups"] += 1
-                
-                dn_normalized = self._normalize_dn(question)
-                logger.info(f"[{req_id}] DN Normalized={dn_normalized}")
-                
-                response, success = self._execute_dn_lookup_with_retry(dn_normalized, req_id)
-                
-                logger.info(f"[{req_id}] DN Lookup Result={'success' if success else 'failure'}")
-                
-                self._update_context(phone_number, "dn_lookup", "dn", question, req_id)
-                self._cache_response(question, phone_number, response, success)
-                return response
-            
-            # ==========================================================
-            # STEP 2: Intent Detection (AIQueryService Suggests)
-            # ==========================================================
-            
-            routing_decision = self._get_routing_decision(question, context_dict)
-            
-            intent = getattr(routing_decision, "intent", "help")
-            entity = getattr(routing_decision, "entity", None)
-            entity_type = getattr(routing_decision, "entity_type", None)
-            service = getattr(routing_decision, "service", "help")
-            confidence = getattr(routing_decision, "confidence", 0.0)
-            needs_groq = getattr(routing_decision, "needs_groq", False)
-            reason = getattr(routing_decision, "reason", "")
-            
-            # ==========================================================
-            # STEP 3: Entity Resolution (SchemaService Verifies)
-            # ==========================================================
-            
-            entity_result = self.schema.resolve_entity(question)
-            
-            if entity_result["type"] != "none":
-                entity_type = entity_result["type"]
-                entity_name = entity_result["name"]
-                confidence = entity_result["confidence"]
-                
-                logger.info(
-                    f"[{req_id}] 📍 Entity Resolved: {entity_type}='{entity_name}' "
-                    f"(confidence: {confidence:.2f})"
-                )
-                
-                # Check for comparison query
-                if self._is_comparison_query(question):
-                    logger.info(f"[{req_id}] ⚡ Comparison Detected: {entity_type}")
-                    self.metrics["comparisons"] += 1
-                    response = self._execute_comparison(entity_type, question, entity_name, req_id)
-                    success = response and not response.startswith("❌")
-                    self._update_context(phone_number, f"compare_{entity_type}s", entity_type, entity_name, req_id)
-                    self._cache_response(question, phone_number, response, success)
-                    return response
-                
-                # Entity-only queries go to dashboard
-                if self._is_entity_only_query(question, entity_name):
-                    logger.info(f"[{req_id}] ⚡ Entity-Only: {entity_type}_dashboard")
-                    self.metrics["overrides"] += 1
-                    response = self._execute_entity_dashboard(entity_type, entity_name, req_id)
-                    success = response and not response.startswith("❌")
-                    self._update_context(phone_number, f"{entity_type}_dashboard", entity_type, entity_name, req_id)
-                    self._cache_response(question, phone_number, response, success)
-                    return response
-            
-            # ==========================================================
-            # STEP 4: Governance Override
-            # ==========================================================
-            
-            if entity_result["type"] != "none" and service != "analytics":
-                service = "analytics"
-                intent = f"{entity_result['type']}_dashboard"
-                entity = entity_result["name"]
-                entity_type = entity_result["type"]
-                logger.info(f"[{req_id}] ⚡ OVERRIDE: {intent}")
-                self.metrics["overrides"] += 1
-            
-            logger.info(f"[{req_id}] 🎯 ROUTING: intent={intent}, entity={entity}, service={service}")
-            
-            # ==========================================================
-            # STEP 5: Service Execution
-            # ==========================================================
-            
-            response = self._execute_service_by_routing(
-                intent, entity, entity_type, service, context_dict, req_id
-            )
-            success = response and not response.startswith("❌") and "Unable" not in response
-            
-            # ==========================================================
-            # STEP 6: Groq Governance (Enrich Only, Never Replace)
-            # ==========================================================
-            
-            if needs_groq and service != "groq" and success:
-                response = self._enrich_with_groq(response, intent, question, context_dict, req_id)
-            
-            # ==========================================================
-            # STEP 7: Update Context & Cache
-            # ==========================================================
-            
-            self._update_context(
-                phone_number,
-                intent,
-                entity_type or "none",
-                entity or question,
-                req_id,
-                response
-            )
-            self._cache_response(question, phone_number, response, success)
-            
-            return response
-            
-        except Exception as e:
-            logger.exception(f"[{req_id}] Sync processing error: {e}")
-            raise
-    
-    # ==========================================================
-    # ROUTING DECISION
-    # ==========================================================
-    
-    def _get_routing_decision(self, question: str, context: Dict) -> Any:
-        """Get routing decision from AIQueryService."""
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+    def resolve_entity(self, text: str) -> Dict[str, Any]:
+        """
+        Resolve entity from text.
+        ✅ Dealer = customer_name = Sold-To Party
+        """
+        if not text:
+            return {"type": "none", "name": None, "confidence": 0.0}
         
-        try:
-            if asyncio.iscoroutinefunction(self.query_service.process_query):
-                return loop.run_until_complete(
-                    self.query_service.process_query(question, context)
-                )
-            return self.query_service.process_query(question, context)
-        except Exception as e:
-            logger.error(f"Routing decision failed: {e}")
-            from types import SimpleNamespace
-            return SimpleNamespace(
-                intent="help",
-                entity=None,
-                entity_type=None,
-                service="help",
-                confidence=0.0,
-                needs_groq=False,
-                reason=f"Routing error: {str(e)[:50]}",
-                original_message=question
-            )
-    
-    # ==========================================================
-    # COMPARISON DETECTION
-    # ==========================================================
-    
-    def _is_comparison_query(self, question: str) -> bool:
-        question_lower = question.lower()
-        patterns = [" vs ", " versus ", " compare ", " compare with ", " between "]
-        return any(p in question_lower for p in patterns)
-    
-    def _execute_comparison(self, entity_type: str, question: str, entity_name: str, req_id: str) -> str:
-        entities = self._parse_comparison(question, entity_type)
+        text_clean = text.strip()
         
-        if len(entities) < 2:
-            return self._execute_entity_dashboard(entity_type, entity_name, req_id)
+        # 1. Try dealer resolution first (customer_name)
+        dealer_result = self.resolve_dealer(text_clean)
+        if dealer_result:
+            return {
+                "type": "dealer",
+                "name": dealer_result,
+                "confidence": self._get_dealer_confidence(text_clean, dealer_result)
+            }
         
-        entity1, entity2 = entities[0], entities[1]
+        # 2. Try city resolution
+        city_result = self.resolve_city(text_clean)
+        if city_result:
+            return {
+                "type": "city",
+                "name": city_result,
+                "confidence": 0.90
+            }
         
-        try:
-            if entity_type == "dealer":
-                result = self.analytics.compare_dealers(entity1, entity2)
-                return self._format_dealer_comparison(result, entity1, entity2, req_id)
-            elif entity_type == "warehouse":
-                result = self.analytics.compare_warehouses(entity1, entity2)
-                return self._format_warehouse_comparison(result, entity1, entity2, req_id)
-            elif entity_type == "city":
-                result = self.analytics.compare_cities(entity1, entity2)
-                return self._format_city_comparison(result, entity1, entity2, req_id)
+        # 3. Try warehouse resolution
+        warehouse_result = self.resolve_warehouse(text_clean)
+        if warehouse_result:
+            return {
+                "type": "warehouse",
+                "name": warehouse_result,
+                "confidence": 0.90
+            }
+        
+        return {"type": "none", "name": None, "confidence": 0.0}
+    
+    def resolve_dealer(self, text: str) -> Optional[str]:
+        """
+        Resolve dealer using customer_name.
+        ✅ customer_name = Dealer Name = Sold-To Party
+        """
+        if not text:
+            return None
+        
+        text = text.lower().strip()
+        prefixes = ["dealer ", "customer ", "show ", "display ", "get "]
+        for prefix in prefixes:
+            if text.startswith(prefix):
+                text = text[len(prefix):].strip()
+                break
+        
+        if not text:
+            return None
+        
+        # 1. Exact match in dealer map
+        for alias, dealer in self.dealers.items():
+            if alias == text:
+                logger.debug(f"✅ Dealer exact match: {dealer}")
+                return dealer
+        
+        # 2. Search index match
+        if text in self._dealer_search_index:
+            result = self._dealer_search_index[text]
+            logger.debug(f"✅ Dealer index match: {result}")
+            return result
+        
+        # 3. Word boundary match
+        words = text.split()
+        for word in words:
+            if len(word) >= 2:
+                pattern = re.compile(rf'\b{re.escape(word)}\b')
+                for alias, dealer in self.dealers.items():
+                    if pattern.search(alias):
+                        logger.debug(f"✅ Dealer word match: {dealer}")
+                        return dealer
+        
+        # 4. Contains match
+        for alias, dealer in self.dealers.items():
+            if alias in text or text in alias:
+                logger.debug(f"✅ Dealer contains match: {dealer}")
+                return dealer
+        
+        # 5. Word set match
+        text_words = set(text.split())
+        best_candidates = []
+        for dealer in self._dealer_list:
+            dealer_words = set(dealer.lower().split())
+            common_words = text_words & dealer_words
+            if len(common_words) >= 1:
+                best_candidates.append(dealer)
+        
+        if not best_candidates:
+            best_candidates = self._dealer_list
+        
+        # 6. Fuzzy match
+        best_match, confidence = self._fuzzy_match(text, best_candidates, threshold=0.80)
+        if best_match and confidence >= 0.80:
+            logger.debug(f"✅ Dealer fuzzy match: {best_match} (score: {confidence:.2f})")
+            return best_match
+        
+        # 7. Direct database fallback (bypass cache)
+        direct_match = self.resolve_dealer_direct(text)
+        if direct_match:
+            return direct_match
+        
+        logger.warning(f"❌ Dealer not resolved: {text}")
+        return None
+    
+    def _get_dealer_confidence(self, input_text: str, resolved_name: str) -> float:
+        if not input_text or not resolved_name:
+            return 0.0
+        input_lower = input_text.lower().strip()
+        resolved_lower = resolved_name.lower().strip()
+        if input_lower == resolved_lower:
+            return 0.99
+        if input_lower in resolved_lower:
+            return 0.95
+        if resolved_lower in input_lower:
+            return 0.90
+        input_words = set(input_lower.split())
+        resolved_words = set(resolved_lower.split())
+        common_words = input_words & resolved_words
+        if common_words:
+            if len(common_words) >= 2:
+                return 0.85
             else:
-                return self._execute_entity_dashboard(entity_type, entity_name, req_id)
-        except Exception as e:
-            logger.error(f"[{req_id}] Comparison failed: {e}")
-            return f"❌ Unable to compare {entity1} and {entity2}. Please try again."
+                return 0.80
+        score = SequenceMatcher(None, input_lower, resolved_lower).ratio()
+        return min(0.90, score)
     
-    def _parse_comparison(self, question: str, entity_type: str) -> List[str]:
-        question_lower = question.lower()
-        entities = []
+    # ==========================================================
+    # DEBUG METHODS
+    # ==========================================================
+    
+    def find_dealer_debug(self, name: str) -> Dict[str, Any]:
+        result = {"input": name, "resolved": None, "method": "none", "confidence": 0.0, "all_matches": []}
+        if not name:
+            return result
         
-        patterns = [
-            r"compare\s+(.+?)\s+(?:vs|versus|and)\s+(.+)",
-            r"(.+?)\s+(?:vs|versus|and)\s+(.+)",
-            r"compare\s+(.+?)\s+with\s+(.+)",
-            r"between\s+(.+?)\s+and\s+(.+)"
+        methods = [
+            ("exact", self._resolve_dealer_exact),
+            ("index", self._resolve_dealer_index),
+            ("word_boundary", self._resolve_dealer_word_boundary),
+            ("fuzzy", self._resolve_dealer_fuzzy),
+            ("sequence", self._resolve_dealer_sequence),
+            ("direct_db", self._resolve_dealer_direct_db)
         ]
         
-        for pattern in patterns:
-            match = re.search(pattern, question_lower, re.IGNORECASE)
-            if match:
-                entity1 = match.group(1).strip()
-                entity2 = match.group(2).strip()
-                
-                resolved1 = self.schema.resolve_entity(entity1)
-                resolved2 = self.schema.resolve_entity(entity2)
-                
-                if resolved1["type"] == entity_type and resolved2["type"] == entity_type:
-                    entities = [resolved1["name"], resolved2["name"]]
-                    break
+        for method_name, method_func in methods:
+            resolved = method_func(name)
+            if resolved:
+                result["resolved"] = resolved
+                result["method"] = method_name
+                result["confidence"] = self._get_dealer_confidence(name, resolved)
+                break
         
-        return entities
+        # Find all close matches
+        for dealer in self._dealer_list:
+            if dealer.lower() != name.lower():
+                score = SequenceMatcher(None, name.lower(), dealer.lower()).ratio()
+                if score >= 0.70:
+                    result["all_matches"].append({"name": dealer, "similarity": round(score, 3)})
+        
+        result["all_matches"] = sorted(result["all_matches"], key=lambda x: x["similarity"], reverse=True)[:5]
+        return result
+    
+    def _resolve_dealer_exact(self, text: str) -> Optional[str]:
+        text_lower = text.lower().strip()
+        for alias, dealer in self.dealers.items():
+            if alias == text_lower:
+                return dealer
+        return None
+    
+    def _resolve_dealer_index(self, text: str) -> Optional[str]:
+        text_lower = text.lower().strip()
+        return self._dealer_search_index.get(text_lower)
+    
+    def _resolve_dealer_word_boundary(self, text: str) -> Optional[str]:
+        text_lower = text.lower().strip()
+        words = text_lower.split()
+        for word in words:
+            if len(word) >= 2:
+                pattern = re.compile(rf'\b{re.escape(word)}\b')
+                for alias, dealer in self.dealers.items():
+                    if pattern.search(alias):
+                        return dealer
+        return None
+    
+    def _resolve_dealer_fuzzy(self, text: str) -> Optional[str]:
+        text_lower = text.lower().strip()
+        for alias, dealer in self.dealers.items():
+            if alias in text_lower or text_lower in alias:
+                return dealer
+        return None
+    
+    def _resolve_dealer_sequence(self, text: str) -> Optional[str]:
+        text_lower = text.lower().strip()
+        best_match, _ = self._fuzzy_match(text_lower, self._dealer_list, threshold=0.80)
+        return best_match
+    
+    def _resolve_dealer_direct_db(self, text: str) -> Optional[str]:
+        return self.resolve_dealer_direct(text)
     
     # ==========================================================
-    # ENTITY-ONLY QUERY DETECTION
+    # CITY AND WAREHOUSE RESOLUTION
     # ==========================================================
     
-    def _is_entity_only_query(self, question: str, entity_name: str) -> bool:
-        question_clean = question.lower().strip()
-        entity_clean = entity_name.lower().strip()
-        
-        if question_clean == entity_clean:
-            return True
-        
-        prefixes = ["show ", "display ", "get ", "view ", "tell me about ", "what about "]
-        for prefix in prefixes:
-            if question_clean.startswith(prefix) and question_clean[len(prefix):].strip() == entity_clean:
-                return True
-        
-        question_words = set(question_clean.split())
-        entity_words = set(entity_clean.split())
-        common_words = {"show", "display", "get", "view", "tell", "me", "about", "the", "a", "an", "what"}
-        meaningful_question_words = question_words - common_words
-        
-        if not meaningful_question_words or meaningful_question_words.issubset(entity_words):
-            return True
-        
-        return False
-    
-    # ==========================================================
-    # ENTITY DASHBOARD EXECUTION
-    # ==========================================================
-    
-    def _execute_entity_dashboard(self, entity_type: str, entity_name: str, req_id: str) -> str:
-        try:
-            logger.info(f"[{req_id}] 📊 Entity Dashboard: {entity_type}={entity_name}")
-            
-            if entity_type == "dealer":
-                self.metrics["dealer_queries"] += 1
-                
-                # Use dealer resolution engine
-                resolved, confidence, strategy = self._resolve_dealer_with_retry(entity_name, req_id)
-                
-                if not resolved:
-                    # Try suggestions
-                    suggestions = self._get_dealer_suggestions(entity_name, req_id)
-                    if suggestions:
-                        suggestion_text = "\n\n💡 *Did You Mean?*\n" + "\n".join([f"   • {s}" for s in suggestions])
-                        return f"❌ Dealer '{entity_name}' not found.{suggestion_text}"
-                    
-                    self.metrics["dealer_queries_failure"] += 1
-                    return f"❌ Dealer '{entity_name}' not found. Please check the spelling and try again."
-                
-                result = self.analytics.get_dealer_dashboard(resolved)
-                
-                if not self._validate_analytics_response(result, "get_dealer_dashboard", req_id):
-                    self.metrics["dealer_queries_failure"] += 1
-                    return f"❌ Unable to retrieve dashboard for '{resolved}'."
-                
-                self.metrics["dealer_queries_success"] += 1
-                return self._format_dealer_dashboard(result, resolved, req_id, confidence)
-                
-            elif entity_type == "city":
-                self.metrics["city_queries"] += 1
-                result = self.analytics.get_city_dashboard(entity_name)
-                
-                if not self._validate_analytics_response(result, "get_city_dashboard", req_id):
-                    return f"❌ Unable to retrieve dashboard for city '{entity_name}'."
-                
-                return self._format_city_dashboard(result, entity_name, req_id)
-                
-            elif entity_type == "warehouse":
-                self.metrics["warehouse_queries"] += 1
-                result = self.analytics.get_warehouse_dashboard(entity_name)
-                
-                if not self._validate_analytics_response(result, "get_warehouse_dashboard", req_id):
-                    return f"❌ Unable to retrieve dashboard for warehouse '{entity_name}'."
-                
-                return self._format_warehouse_dashboard(result, entity_name, req_id)
-                
-            else:
-                return f"❌ Unknown entity type: {entity_type}"
-                
-        except Exception as e:
-            logger.exception(f"[{req_id}] Dashboard failed for {entity_name}: {e}")
-            return f"❌ Unable to retrieve dashboard for {entity_name}. Please try again."
-    
-    # ==========================================================
-    # SERVICE EXECUTION
-    # ==========================================================
-    
-    def _execute_service_by_routing(
-        self,
-        intent: str,
-        entity: Optional[str],
-        entity_type: Optional[str],
-        service: str,
-        context: Dict,
-        req_id: str
-    ) -> str:
-        try:
-            logger.info(f"[{req_id}] Intent={intent}")
-            logger.info(f"[{req_id}] Entity={entity}")
-            logger.info(f"[{req_id}] Service={service}")
-            
-            if service == "analytics":
-                return self._execute_analytics(intent, entity, req_id)
-            elif service == "kpi":
-                return self._execute_kpi(intent, entity, req_id)
-            elif service == "groq":
-                return self._execute_groq(intent, context, req_id)
-            else:
-                return self._get_help_message()
-        except Exception as e:
-            self.metrics["service_failures"] += 1
-            error_id = str(uuid.uuid4())[:8]
-            logger.error(f"[{req_id}] Service execution error [{error_id}]: {e}")
-            return self._get_service_error_response(intent, entity, service, e, error_id, req_id)
-    
-    # ==========================================================
-    # ANALYTICS EXECUTION
-    # ==========================================================
-    
-    def _execute_analytics(self, intent: str, entity: Optional[str], req_id: str) -> str:
-        """Execute analytics with comprehensive intent handling."""
-        
-        # DEALER ANALYTICS
-        if intent == "dealer_dashboard" and entity:
-            result = self.analytics.get_dealer_dashboard(entity)
-            return self._format_dealer_dashboard(result, entity, req_id)
-        
-        if intent == "dealer_revenue" and entity:
-            result = self.analytics.get_dealer_revenue(entity)
-            return self._format_dealer_revenue(result, entity, req_id)
-        
-        if intent == "dealer_units" and entity:
-            result = self.analytics.get_dealer_units(entity)
-            return self._format_dealer_units(result, entity, req_id)
-        
-        if intent == "dealer_performance" and entity:
-            result = self.analytics.get_dealer_performance(entity)
-            return self._format_dealer_performance(result, entity, req_id)
-        
-        if intent == "dealer_aging" and entity:
-            result = self.analytics.get_dealer_aging(entity)
-            return self._format_dealer_aging(result, entity, req_id)
-        
-        # WAREHOUSE ANALYTICS
-        if intent == "warehouse_dashboard" and entity:
-            result = self.analytics.get_warehouse_dashboard(entity)
-            return self._format_warehouse_dashboard(result, entity, req_id)
-        
-        if intent == "warehouse_performance" and entity:
-            result = self.analytics.get_warehouse_dashboard(entity)
-            return self._format_warehouse_performance(result, entity, req_id)
-        
-        # CITY ANALYTICS
-        if intent == "city_dashboard" and entity:
-            result = self.analytics.get_city_dashboard(entity)
-            return self._format_city_dashboard(result, entity, req_id)
-        
-        if intent == "city_performance" and entity:
-            result = self.analytics.get_city_dashboard(entity)
-            return self._format_city_performance(result, entity, req_id)
-        
-        # RANKINGS
-        if intent == "dealer_ranking":
-            self.metrics["dealer_queries"] += 1
-            top = True if "top" in str(entity or "").lower() else False
-            result = self.analytics.get_dealer_ranking(limit=10, top=top)
-            return self._format_dealer_ranking(result, top, req_id)
-        
-        if intent == "city_ranking":
-            top = True if "top" in str(entity or "").lower() else False
-            result = self.analytics.get_city_ranking(limit=10, top=top)
-            return self._format_city_ranking(result, req_id)
-        
-        if intent == "warehouse_ranking":
-            top = True if "top" in str(entity or "").lower() else False
-            result = self.analytics.get_warehouse_ranking(limit=10, top=top)
-            return self._format_warehouse_ranking(result, req_id)
-        
-        # PRODUCT ANALYTICS
-        if intent == "product_dashboard" and entity:
-            self.metrics["product_queries"] += 1
-            result = self.analytics.get_product_dashboard(entity)
-            return self._format_product_dashboard(result, entity, req_id)
-        
-        # EXECUTIVE & ROOT CAUSE
-        if intent == "executive_insight" or intent == "executive_summary":
-            self.metrics["executive_insights"] += 1
-            result = self.analytics.get_executive_summary()
-            return self._format_executive_insights(result, req_id)
-        
-        if intent == "root_cause":
-            self.metrics["root_cause_analyses"] += 1
-            result = self.analytics.get_root_cause_insights()
-            return self._format_root_cause(result, req_id)
-        
-        if intent == "control_tower":
-            self.metrics["control_tower"] += 1
-            result = self.analytics.get_control_tower_alerts()
-            return self._format_control_tower(result, req_id)
-        
-        if intent == "delivery_performance":
-            result = self.analytics.get_delivery_performance()
-            return self._format_delivery_performance(result, req_id)
-        
-        if intent == "trend":
-            result = self.analytics.get_trend_analysis()
-            return self._format_trend_analysis(result, req_id)
-        
-        if intent == "help":
-            return self._get_help_message()
-        
-        return self._get_help_message()
-    
-    # ==========================================================
-    # KPI EXECUTION
-    # ==========================================================
-    
-    def _execute_kpi(self, intent: str, entity: Optional[str], req_id: str) -> str:
-        try:
-            if intent == "pending_pgi":
-                kpi = self.kpi.get_pending_pgi(entity)
-                if entity:
-                    return f"⏳ *PGI Pending for {entity}:* {kpi.get('pending_pgi', 0)}"
-                return f"⏳ *Total PGI Pending:* {kpi.get('pending_pgi', 0)}"
-            
-            if intent == "pending_pod":
-                kpi = self.kpi.get_pending_pod(entity)
-                if entity:
-                    return f"📎 *POD Pending for {entity}:* {kpi.get('pending_pod', 0)}"
-                return f"📎 *Total POD Pending:* {kpi.get('pending_pod', 0)}"
-            
-            return self._get_help_message()
-        except Exception as e:
-            logger.error(f"[{req_id}] KPI execution failed: {e}")
-            return f"⚠️ Unable to retrieve KPI data. Please try again."
-    
-    # ==========================================================
-    # GROQ EXECUTION
-    # ==========================================================
-    
-    def _execute_groq(self, intent: str, context: Dict, req_id: str) -> str:
-        if self._is_logistics_query(intent):
-            return self._get_groq_blocked_response()
-        
-        if hasattr(self.groq, 'is_available') and self.groq.is_available:
-            try:
-                response = self.groq.chat(intent, context)
-                self.metrics["groq_uses"] += 1
-                return response
-            except Exception as e:
-                logger.error(f"[{req_id}] Groq execution failed: {e}")
-                return "⚠️ AI service is temporarily unavailable. Please try again later."
-        
-        return "⚠️ AI service is not available. Please try again later."
-    
-    def _enrich_with_groq(self, response: str, intent: str, question: str, context: Dict, req_id: str) -> str:
-        if not hasattr(self.groq, 'is_available') or not self.groq.is_available:
-            return response
-        
-        if intent in ["executive_insight", "root_cause"] and len(response) > 50:
-            if "0" in response and "No" in response:
-                return response
-            
-            try:
-                enrichment_prompt = f"""
-Based on this logistics analytics data:
-
-{response[:600]}
-
-Provide a brief, professional executive summary (2-3 sentences) that highlights the most critical insight and recommends one immediate action.
-
-Keep it concise and actionable. Do not repeat the data, just provide insight.
-"""
-                groq_summary = self.groq.chat(enrichment_prompt, context)
-                
-                if groq_summary and len(groq_summary) > 10:
-                    self.metrics["groq_uses"] += 1
-                    return f"{response}\n\n💡 *AI Insight:*\n{groq_summary}"
-            except Exception as e:
-                logger.warning(f"[{req_id}] Groq enrichment failed: {e}")
-        
-        return response
-    
-    # ==========================================================
-    # QUERY DETECTION HELPERS
-    # ==========================================================
-    
-    def _is_logistics_query(self, question: str) -> bool:
-        question_lower = question.lower()
-        
-        for pattern in GROQ_BLOCKED_PATTERNS:
-            if pattern in question_lower:
-                return True
-        
-        if hasattr(self.schema, 'detect_metric') and self.schema.detect_metric(question):
-            return True
-        
-        if hasattr(self.schema, 'is_logistics_keyword') and self.schema.is_logistics_keyword(question):
-            return True
-        
-        return False
-    
-    # ==========================================================
-    # CONTEXT MANAGEMENT
-    # ==========================================================
-    
-    def _load_context(self, phone_number: Optional[str]) -> Optional[ConversationContext]:
-        if not phone_number:
+    def resolve_city(self, text: str) -> Optional[str]:
+        if not text:
             return None
-        if phone_number not in self.conversation_cache:
-            self.conversation_cache[phone_number] = ConversationContext(phone_number)
-        context = self.conversation_cache[phone_number]
-        if time.time() - context.last_updated > CONTEXT_TTL_SECONDS:
-            context = ConversationContext(phone_number)
-            self.conversation_cache[phone_number] = context
-        return context
+        text = text.lower().strip()
+        for alias, city in self.cities.items():
+            if alias == text:
+                return city
+        if text in self._city_search_index:
+            return self._city_search_index[text]
+        words = text.split()
+        for word in words:
+            if len(word) >= 2:
+                pattern = re.compile(rf'\b{re.escape(word)}\b')
+                for alias, city in self.cities.items():
+                    if pattern.search(alias):
+                        return city
+        for alias, city in self.cities.items():
+            if alias in text or text in alias:
+                return city
+        best_match, confidence = self._fuzzy_match(text, self._city_list, threshold=0.80)
+        if best_match and confidence >= 0.80:
+            return best_match
+        return None
     
-    def _update_context(
+    def resolve_warehouse(self, text: str) -> Optional[str]:
+        if not text:
+            return None
+        text = text.lower().strip()
+        for alias, warehouse in self.warehouses.items():
+            if alias == text:
+                return warehouse
+        if text in self._warehouse_search_index:
+            return self._warehouse_search_index[text]
+        words = text.split()
+        for word in words:
+            if len(word) >= 2:
+                pattern = re.compile(rf'\b{re.escape(word)}\b')
+                for alias, warehouse in self.warehouses.items():
+                    if pattern.search(alias):
+                        return warehouse
+        for alias, warehouse in self.warehouses.items():
+            if alias in text or text in alias:
+                return warehouse
+        best_match, confidence = self._fuzzy_match(text, self._warehouse_list, threshold=0.80)
+        if best_match and confidence >= 0.80:
+            return best_match
+        return None
+    
+    # ==========================================================
+    # PUBLIC METHODS
+    # ==========================================================
+    
+    def get_sample_dealers(self, limit: int = 10) -> List[Dict[str, str]]:
+        dealer_list = list(self.dealers.values())[:limit]
+        return [{"name": d} for d in dealer_list]
+    
+    def get_dealer_count(self) -> int:
+        return len(self.dealers)
+    
+    def find_city_debug(self, name: str) -> Dict[str, Any]:
+        result = {"input": name, "resolved": None, "method": "none", "confidence": 0.0}
+        if not name:
+            return result
+        resolved = self.resolve_city(name)
+        if resolved:
+            result["resolved"] = resolved
+            result["method"] = "city_resolution"
+            result["confidence"] = 0.90
+        return result
+    
+    def find_warehouse_debug(self, name: str) -> Dict[str, Any]:
+        result = {"input": name, "resolved": None, "method": "none", "confidence": 0.0}
+        if not name:
+            return result
+        resolved = self.resolve_warehouse(name)
+        if resolved:
+            result["resolved"] = resolved
+            result["method"] = "warehouse_resolution"
+            result["confidence"] = 0.90
+        return result
+    
+    def find_entity_debug(self, name: str) -> Dict[str, Any]:
+        result = {
+            "input": name,
+            "dealer": self.find_dealer_debug(name),
+            "city": self.find_city_debug(name),
+            "warehouse": self.find_warehouse_debug(name),
+            "unified": self.resolve_entity(name)
+        }
+        return result
+    
+    def get_all_entities(self, entity_type: str = "all") -> Dict[str, Any]:
+        result = {}
+        if entity_type in ["dealers", "all"]:
+            result["dealers"] = list(self.dealers.values())
+        if entity_type in ["cities", "all"]:
+            result["cities"] = list(self.cities.values())
+        if entity_type in ["warehouses", "all"]:
+            result["warehouses"] = list(self.warehouses.values())
+        return result
+    
+    def search_entities(self, query: str) -> Dict[str, Any]:
+        query_lower = query.lower().strip()
+        result = {"query": query, "matching_dealers": [], "matching_cities": [], "matching_warehouses": []}
+        for name in self.dealers.values():
+            if query_lower in name.lower():
+                result["matching_dealers"].append(name)
+        for name in self.cities.values():
+            if query_lower in name.lower():
+                result["matching_cities"].append(name)
+        for name in self.warehouses.values():
+            if query_lower in name.lower():
+                result["matching_warehouses"].append(name)
+        return result
+    
+    def get_metadata_stats(self) -> Dict[str, Any]:
+        return {
+            "dealers": len(self.dealers),
+            "cities": len(self.cities),
+            "warehouses": len(self.warehouses),
+            "intents": len(self.intents),
+            "metrics": len(self.metrics),
+            "health_score": self._health_score,
+            "initialized": self._initialized,
+            "last_refresh": self._last_refresh.isoformat() if self._last_refresh else None
+        }
+    
+    def generate_metadata_report(self) -> Dict[str, Any]:
+        return {
+            "status": "healthy" if self._health_score >= 70 else "warning" if self._health_score >= 50 else "critical",
+            "health_score": self._health_score,
+            "initialized": self._initialized,
+            "database_connected": self._db_connected,
+            "last_refresh": self._last_refresh.isoformat() if self._last_refresh else None,
+            "load_error": self._load_error,
+            "counts": {
+                "dealers": len(self.dealers),
+                "cities": len(self.cities),
+                "warehouses": len(self.warehouses),
+                "intents": len(self.intents),
+                "metrics": len(self.metrics),
+                "logistics_keywords": len(self.logistics_keywords),
+                "business_rules": len(self.rules),
+                "status_definitions": len(self.statuses)
+            },
+            "search_index_sizes": {
+                "dealers": len(self._dealer_search_index),
+                "cities": len(self._city_search_index),
+                "warehouses": len(self._warehouse_search_index)
+            },
+            "stats": self._stats,
+            "sample_data": {
+                "dealers": list(self.dealers.values())[:5],
+                "cities": list(self.cities.values())[:5],
+                "warehouses": list(self.warehouses.values())[:5]
+            },
+            "generated_at": datetime.now().isoformat()
+        }
+    
+    def _validate_or_raise(self):
+        if len(self.dealers) == 0:
+            raise RuntimeError("No dealers loaded from database. Check customer_name column.")
+    
+    def _log_warnings(self):
+        if len(self.dealers) < 10:
+            logger.warning(f"⚠️ Dealer count low: {len(self.dealers)} - check data import")
+        if len(self.cities) < 5:
+            logger.warning(f"⚠️ City count low: {len(self.cities)} - check data import")
+        if len(self.warehouses) < 3:
+            logger.warning(f"⚠️ Warehouse count low: {len(self.warehouses)} - check data import")
+    
+    def _calculate_health_score(self) -> int:
+        score = 100
+        if len(self.dealers) == 0:
+            score -= 40
+        elif len(self.dealers) < 10:
+            score -= 20
+        elif len(self.dealers) < 50:
+            score -= 10
+        if len(self.cities) == 0:
+            score -= 30
+        elif len(self.cities) < 5:
+            score -= 15
+        if len(self.warehouses) == 0:
+            score -= 30
+        elif len(self.warehouses) < 3:
+            score -= 15
+        return max(0, min(100, score))
+    
+    # ==========================================================
+    # INTENT AND METRIC DETECTION
+    # ==========================================================
+    
+    def detect_intent(self, text: str) -> Tuple[Optional[str], float]:
+        if not text:
+            return None, 0.0
+        text = text.lower().strip()
+        if DN_PATTERN.search(text):
+            return "dn_lookup", 0.95
+        scores = {}
+        for intent, keywords in self.intents.items():
+            total_score = 0
+            matched_keywords = 0
+            for keyword, priority in keywords:
+                if keyword in text:
+                    total_score += priority
+                    matched_keywords += 1
+            if matched_keywords > 0:
+                confidence = min(0.95, 0.5 + (total_score / 20))
+                scores[intent] = confidence
+        if scores:
+            best_intent = max(scores, key=scores.get)
+            confidence = scores[best_intent]
+            return best_intent, confidence
+        return None, 0.0
+    
+    def detect_metric(self, text: str) -> Optional[str]:
+        if not text:
+            return None
+        text = text.lower().strip()
+        for metric, keywords in self.metrics.items():
+            for keyword in keywords:
+                if keyword in text:
+                    return metric
+        return None
+    
+    def is_logistics_keyword(self, text: str) -> bool:
+        if not text:
+            return False
+        text = text.lower().strip()
+        for keyword in self.logistics_keywords:
+            if keyword in text:
+                return True
+        return False
+    
+    def is_dn_number(self, text: str) -> bool:
+        if not text:
+            return False
+        return bool(DN_PATTERN.match(text.strip()))
+    
+    def extract_dn_number(self, text: str) -> Optional[str]:
+        if not text:
+            return None
+        match = DN_PATTERN.search(text)
+        return match.group(1) if match else None
+    
+    def calculate_delivery_metrics(
         self,
-        phone_number: Optional[str],
-        intent: str,
-        entity_type: str,
-        entity: str,
-        req_id: str,
-        response: str = ""
-    ):
-        if not phone_number:
-            return
-        context = self._load_context(phone_number)
-        if not context:
-            return
-        
-        context.last_intent = intent
-        context.last_question = entity
-        
-        if entity_type == "dealer":
-            context.last_dealer = entity
-        elif entity_type == "warehouse":
-            context.last_warehouse = entity
-        elif entity_type == "city":
-            context.last_city = entity
-        elif entity_type == "dn":
-            context.last_dn = entity
-        
-        if response:
-            context.last_response = response[:200]
-        
-        context.message_count += 1
-        context.last_updated = time.time()
+        dn_date: Optional[datetime],
+        pgi_date: Optional[datetime],
+        pod_date: Optional[datetime]
+    ) -> Dict[str, Any]:
+        return self.delivery_metrics.validate_dates(dn_date, pgi_date, pod_date)
     
-    def clear_caches(self):
-        self.response_cache.clear()
-        self.failure_cache.clear()
-        self.conversation_cache.clear()
-        self.dealer_resolution_cache.clear()
-        logger.info("🗑️ All caches cleared")
-        return {"status": "cleared", "version": "14.0"}
-    
-    # ==========================================================
-    # FORMATTERS - DEALER 360 DASHBOARD (ENHANCED)
-    # ==========================================================
-    
-    def _format_dealer_dashboard(self, data, dealer_name: str, req_id: str, confidence: float = 0.0) -> str:
-        """Format enhanced Dealer 360 Dashboard."""
-        try:
-            if not self._validate_analytics_response(data, "dealer_dashboard", req_id):
-                return f"❌ Unable to retrieve dashboard for {dealer_name}."
-            
-            if not data.success:
-                return f"❌ No data found for {dealer_name}"
-            
-            response_data = data.data or {}
-            
-            profile = response_data.get("profile", {})
-            summary = response_data.get("summary", {})
-            aging = response_data.get("aging", {})
-            performance = response_data.get("performance", {})
-            
-            total_dns = summary.get("total_dns", 0)
-            
-            if total_dns == 0:
-                suggestions = self._get_dealer_suggestions(dealer_name, req_id)
-                if suggestions:
-                    suggestion_text = "\n\n💡 *Did You Mean?*\n" + "\n".join([f"   • {s}" for s in suggestions])
-                    return f"🏪 *{dealer_name} - No Deliveries Found*\n\n⚠️ No delivery data found for this dealer.{suggestion_text}"
-                return f"🏪 *{dealer_name} - No Deliveries Found*\n\n⚠️ No delivery data found for this dealer."
-            
-            dealer_code = profile.get("dealer_code", "N/A")
-            customer_code = profile.get("customer_code", "N/A")
-            city = profile.get("city", "N/A")
-            warehouse = profile.get("warehouse", "N/A")
-            division = profile.get("division", "N/A")
-            sales_office = profile.get("sales_office", "N/A")
-            sales_manager = profile.get("sales_manager", "N/A")
-            dealer_status = profile.get("dealer_status", "Unknown")
-            
-            # Risk Analysis
-            risk_level = performance.get("risk_level", "low").lower()
-            risk_emoji = self.schema.get_risk_emoji(risk_level) if hasattr(self.schema, 'get_risk_emoji') else "🟢"
-            risk_display = RISK_LEVELS.get(risk_level, "🟢 LOW")
-            
-            # Calculate derived metrics
-            avg_dn_value = summary.get("total_revenue", 0) / total_dns if total_dns > 0 else 0
-            avg_units_per_dn = summary.get("total_units", 0) / total_dns if total_dns > 0 else 0
-            
-            lines = [
-                f"🏪 *{dealer_name} - 360 Dashboard*",
-                "",
-                "📋 *PROFILE:*",
-                f"   • Dealer Code: {dealer_code}",
-                f"   • Customer Code: {customer_code}",
-                f"   • City: {city}",
-                f"   • Warehouse: {warehouse}",
-                f"   • Division: {division}",
-                f"   • Sales Office: {sales_office}",
-                f"   • Sales Manager: {sales_manager}",
-                f"   • Status: {dealer_status}",
-                f"   • Resolution Confidence: {confidence*100:.1f}%",
-                "",
-                "📊 *SUMMARY:*",
-                f"   • Total DNs: {total_dns:,}",
-                f"   • Total Units: {summary.get('total_units', 0):,}",
-                f"   • Total Revenue: PKR {summary.get('total_revenue', 0):,.0f}",
-                f"   • Avg DN Value: PKR {avg_dn_value:,.0f}",
-                f"   • Avg Units/DN: {avg_units_per_dn:.1f}",
-                "",
-                "📈 *PERFORMANCE:*",
-                f"   • Delivery Rate: {summary.get('delivery_rate', 0):.1f}%",
-                f"   • POD Rate: {summary.get('pod_rate', 0):.1f}%",
-                f"   • Pending DNs: {summary.get('pending_pgi', 0)}",
-                f"   • Pending PODs: {aging.get('pending_pod', 0)}",
-                "",
-                "⚠️ *RISK ANALYSIS:*",
-                f"   {risk_emoji} {risk_display}",
-                f"   • Health Score: {performance.get('health_score', 0)}/100",
-                "",
-                "⏱️ *AGING:*",
-                f"   • Avg Delivery Aging: {aging.get('avg_delivery_aging', 0):.1f} days",
-                f"   • Avg POD Aging: {aging.get('avg_pod_aging', 0):.1f} days",
-                f"   • Avg Total Aging: {aging.get('avg_total_aging', 0):.1f} days",
-            ]
-            
-            # Timeline
-            first_dn = profile.get("first_dn_date")
-            last_dn = profile.get("last_dn_date")
-            if first_dn and last_dn:
-                lines.append("")
-                lines.append("📅 *TIMELINE:*")
-                lines.append(f"   • First DN: {first_dn}")
-                lines.append(f"   • Last DN: {last_dn}")
-            
-            logger.info(f"[{req_id}] Dealer Records={total_dns}")
-            return "\n".join(lines)
-            
-        except Exception as e:
-            logger.exception(f"[{req_id}] Dealer dashboard formatting failed: {e}")
-            return f"❌ Unable to format dealer dashboard for {dealer_name}"
-    
-    # ==========================================================
-    # FORMATTERS - ENHANCED DN DASHBOARD
-    # ==========================================================
-    
-    def _format_dn_details(self, data, req_id: str) -> str:
-        """Format enhanced DN Dashboard with Journey Tracking."""
-        try:
-            if not self._validate_analytics_response(data, "dn_details", req_id):
-                return "❌ Unable to retrieve DN details."
-            
-            if not data.success:
-                logger.warning(f"[{req_id}] DN not found")
-                return "❌ DN not found."
-            
-            record = data.data.get("record", {})
-            validation = data.data.get("validation", {})
-            status = data.data.get("status", "unknown")
-            
-            # Extract fields
-            dn_no = record.get('dn_number', record.get('dn_no', 'N/A'))
-            dealer_name = record.get('customer_name', record.get('dealer', 'N/A'))
-            dealer_code = record.get('dealer_code', 'N/A')
-            customer_code = record.get('customer_code', 'N/A')
-            division = record.get('division', 'N/A')
-            warehouse = record.get('warehouse', 'N/A')
-            warehouse_code = record.get('warehouse_code', 'N/A')
-            city = record.get('ship_to_city', 'N/A')
-            delivery_location = record.get('delivery_location', 'N/A')
-            material_no = record.get('material_no', 'N/A')
-            model = record.get('customer_model', 'N/A')
-            sales_office = record.get('sales_office', 'N/A')
-            sales_manager = record.get('sales_manager', 'N/A')
-            units = record.get('units', 0)
-            amount = record.get('amount', record.get('dn_amount', 0))
-            delivery_status = record.get('delivery_status', 'N/A')
-            pgi_status = record.get('pgi_status', 'N/A')
-            pod_status = record.get('pod_status', 'N/A')
-            pending_flag = record.get('pending_flag', False)
-            
-            # Dates
-            dn_date = record.get('dn_create_date', 'N/A')
-            pgi_date = record.get('good_issue_date', 'N/A')
-            pod_date = record.get('pod_date', 'N/A')
-            current_date = datetime.now().date().isoformat()
-            
-            # Aging
-            pgi_aging = record.get('pgi_aging_days', 'N/A')
-            pod_aging = record.get('pod_aging_days', 'N/A')
-            total_aging = record.get('total_aging_days', 'N/A')
-            
-            # Calculate Transit Aging
-            transit_aging = "N/A"
-            if pgi_date != 'N/A' and pod_date == 'N/A':
-                try:
-                    pgi_dt = datetime.fromisoformat(pgi_date) if isinstance(pgi_date, str) else pgi_date
-                    transit_aging = (datetime.now().date() - pgi_dt).days if hasattr(pgi_dt, 'date') else "N/A"
-                except:
-                    transit_aging = "N/A"
-            
-            # Revenue Per Unit
-            revenue_per_unit = amount / units if units > 0 else 0
-            
-            # Journey Tracking
-            journey = self._get_dn_journey(dn_date, pgi_date, pod_date, status)
-            
-            # Status display
-            status_map = {
-                "pending_pgi": "⏳ Pending PGI",
-                "pending_pod": "🚚 In Transit",
-                "delivered": "✅ Delivered",
-                "completed": "✅ Completed",
-                "unknown": "❓ Unknown"
+    def get_delivery_metrics_definition(self) -> Dict[str, Any]:
+        return {
+            "processing_time": {
+                "rule": self.delivery_metrics.processing_time_rule,
+                "target_days": self.rules["sla"]["processing_time_target"],
+                "thresholds": self.rules["processing_time"]["thresholds"]
+            },
+            "delivery_time": {
+                "rule": self.delivery_metrics.delivery_time_rule,
+                "target_days": self.rules["sla"]["delivery_time_target"],
+                "thresholds": self.rules["delivery_time"]["thresholds"]
+            },
+            "total_cycle_time": {
+                "rule": self.delivery_metrics.total_cycle_time_rule,
+                "target_days": self.rules["sla"]["total_cycle_time_target"],
+                "thresholds": self.rules["total_cycle_time"]["thresholds"]
             }
-            status_display = status_map.get(status.lower() if status else "unknown", "❓ Unknown")
-            
-            lines = [
-                "📄 *DN Dashboard*",
-                "",
-                "📋 *PROFILE:*",
-                f"   • DN No: {dn_no}",
-                f"   • Dealer: {dealer_name}",
-                f"   • Dealer Code: {dealer_code}",
-                f"   • Customer Code: {customer_code}",
-                f"   • Division: {division}",
-                f"   • Warehouse: {warehouse}",
-                f"   • Warehouse Code: {warehouse_code}",
-                f"   • City: {city}",
-                f"   • Delivery Location: {delivery_location}",
-                f"   • Material: {material_no}",
-                f"   • Model: {model}",
-                f"   • Sales Office: {sales_office}",
-                f"   • Sales Manager: {sales_manager}",
-                "",
-                "📊 *PERFORMANCE:*",
-                f"   • Units: {units:,}",
-                f"   • Revenue: PKR {amount:,.0f}",
-                f"   • Revenue/Unit: PKR {revenue_per_unit:,.0f}",
-                f"   • Delivery Status: {delivery_status}",
-                f"   • PGI Status: {pgi_status}",
-                f"   • POD Status: {pod_status}",
-                f"   • Pending Flag: {'⚠️ Yes' if pending_flag else '✅ No'}",
-                f"   • Status: {status_display}",
-                "",
-                "📅 *DATE ANALYSIS:*",
-                f"   • DN Create: {dn_date}",
-                f"   • PGI Date: {pgi_date}",
-                f"   • POD Date: {pod_date}",
-                f"   • Current Date: {current_date}",
-                "",
-                "⏱️ *AGING ANALYSIS:*",
-                f"   • PGI Aging: {pgi_aging} days" if pgi_aging != 'N/A' else "   • PGI Aging: N/A",
-                f"   • POD Aging: {pod_aging} days" if pod_aging != 'N/A' else "   • POD Aging: N/A",
-                f"   • Total Aging: {total_aging} days" if total_aging != 'N/A' else "   • Total Aging: N/A",
-                f"   • Transit Aging: {transit_aging} days" if transit_aging != 'N/A' else "   • Transit Aging: N/A",
-                "",
-                "🗺️ *JOURNEY TRACKING:*",
-            ]
-            
-            # Add journey steps
-            for step, completed in journey.items():
-                icon = "✅" if completed else "⏳"
-                lines.append(f"   {icon} {step}")
-            
-            # Data Quality
-            is_valid = validation.get('is_valid', True)
-            issues = validation.get('issues', [])
-            
-            if is_valid and not issues:
-                lines.append("")
-                lines.append("✅ *DATA QUALITY: VALID*")
-            elif issues:
-                lines.append("")
-                lines.append("⚠️ *DATA QUALITY ISSUES:*")
-                for issue in issues:
-                    lines.append(f"   • {issue}")
-            
-            # POD Compliance
-            if pod_aging != 'N/A':
-                lines.append("")
-                lines.append("📎 *POD ANALYSIS:*")
-                compliance = self._get_pod_compliance(pod_aging)
-                for key, value in compliance.items():
-                    lines.append(f"   • {key}: {value}")
-            
-            # Delivery Analysis
-            if status == "delivered" or status == "completed":
-                lines.append("")
-                lines.append("🚚 *DELIVERY ANALYSIS:*")
-                delivery_perf = self._get_delivery_performance(pgi_aging, pod_aging, total_aging)
-                for key, value in delivery_perf.items():
-                    lines.append(f"   • {key}: {value}")
-            
-            return "\n".join(lines)
-            
-        except Exception as e:
-            logger.exception(f"[{req_id}] DN formatting failed: {e}")
-            return f"❌ Unable to format DN details."
-    
-    def _get_dn_journey(self, dn_date, pgi_date, pod_date, status) -> Dict[str, bool]:
-        """Get DN journey tracking."""
-        journey = {
-            "DN Created": dn_date != 'N/A' and dn_date is not None,
-            "PGI Completed": pgi_date != 'N/A' and pgi_date is not None,
-            "Warehouse Dispatch": pgi_date != 'N/A' and pgi_date is not None,
-            "In Transit": status in ["pending_pod", "in_transit"],
-            "Delivered": status in ["delivered", "completed"],
-            "POD Received": pod_date != 'N/A' and pod_date is not None
-        }
-        return journey
-    
-    def _get_pod_compliance(self, pod_aging) -> Dict[str, Any]:
-        """Get POD compliance analysis."""
-        if pod_aging == 'N/A' or not isinstance(pod_aging, (int, float)):
-            return {"Status": "N/A", "Compliance": "N/A"}
-        
-        if pod_aging <= 3:
-            compliance = "Excellent"
-            emoji = "✅"
-        elif pod_aging <= 7:
-            compliance = "Good"
-            emoji = "👍"
-        elif pod_aging <= 15:
-            compliance = "Needs Attention"
-            emoji = "⚠️"
-        else:
-            compliance = "Critical"
-            emoji = "🔴"
-        
-        return {
-            "Status": f"{emoji} {compliance}",
-            "POD Aging": f"{pod_aging} days",
-            "Compliance": compliance
         }
     
-    def _get_delivery_performance(self, pgi_aging, pod_aging, total_aging) -> Dict[str, Any]:
-        """Get delivery performance analysis."""
-        perf = {}
-        
-        if pgi_aging != 'N/A' and isinstance(pgi_aging, (int, float)):
-            if pgi_aging <= 3:
-                perf["PGI Performance"] = "✅ Excellent"
-            elif pgi_aging <= 7:
-                perf["PGI Performance"] = "👍 Good"
-            elif pgi_aging <= 15:
-                perf["PGI Performance"] = "⚠️ Needs Attention"
-            else:
-                perf["PGI Performance"] = "🔴 Critical"
-        
-        if pod_aging != 'N/A' and isinstance(pod_aging, (int, float)):
-            if pod_aging <= 3:
-                perf["POD Performance"] = "✅ Excellent"
-            elif pod_aging <= 7:
-                perf["POD Performance"] = "👍 Good"
-            elif pod_aging <= 15:
-                perf["POD Performance"] = "⚠️ Needs Attention"
-            else:
-                perf["POD Performance"] = "🔴 Critical"
-        
-        if total_aging != 'N/A' and isinstance(total_aging, (int, float)):
-            if total_aging <= 7:
-                perf["Total Cycle"] = "✅ On Target"
-            elif total_aging <= 14:
-                perf["Total Cycle"] = "👍 Acceptable"
-            elif total_aging <= 21:
-                perf["Total Cycle"] = "⚠️ Extended"
-            else:
-                perf["Total Cycle"] = "🔴 Excessive"
-        
-        return perf
+    def get_risk_status(self, score: float) -> str:
+        if score < 50:
+            return "critical"
+        elif score < 70:
+            return "high"
+        elif score < 85:
+            return "medium"
+        return "low"
     
-    # ==========================================================
-    # FORMATTERS - CITY & WAREHOUSE DASHBOARDS
-    # ==========================================================
+    def get_risk_emoji(self, status: str) -> str:
+        emojis = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}
+        return emojis.get(status, "⚪")
     
-    def _format_city_dashboard(self, data, city_name: str, req_id: str) -> str:
-        """Format city dashboard."""
-        try:
-            if not self._validate_analytics_response(data, "city_dashboard", req_id):
-                return f"❌ No data found for {city_name}"
-            
-            if not data.success:
-                return f"❌ No data found for {city_name}"
-            
-            d = data.data or {}
-            summary = d.get("summary", {})
-            
-            if summary.get("total_dns", 0) == 0:
-                return f"🏙️ *{city_name} - No Deliveries Found*\n\n⚠️ No delivery data found for this city."
-            
-            lines = [
-                f"🏙️ *{city_name} - City Dashboard*",
-                "",
-                "📊 *SUMMARY:*",
-                f"   • Total DNs: {summary.get('total_dns', 0):,}",
-                f"   • Total Units: {summary.get('total_units', 0):,}",
-                f"   • Total Revenue: PKR {summary.get('total_revenue', 0):,.0f}",
-                f"   • Active Dealers: {summary.get('total_dealers', 0)}",
-                f"   • Delivery Rate: {summary.get('delivery_rate', 0):.1f}%",
-                f"   • Pending Flag: {summary.get('pending_flag_dns', 0)}",
-                "",
-                "📈 *PERFORMANCE:*",
-                f"   • PGI Rate: {summary.get('pgi_rate', 0):.1f}%",
-                f"   • POD Rate: {summary.get('pod_rate', 0):.1f}%",
-                f"   • Delivered: {summary.get('delivered_dns', 0)}",
-            ]
-            
-            return "\n".join(lines)
-        except Exception as e:
-            logger.exception(f"[{req_id}] City dashboard formatting failed: {e}")
-            return f"❌ Unable to format city dashboard for {city_name}"
+    def get_dn_status(self, status_key: str) -> str:
+        return self.statuses.get("dn_status", {}).get(status_key, "❓ Unknown")
     
-    def _format_warehouse_dashboard(self, data, warehouse_name: str, req_id: str) -> str:
-        """Format warehouse dashboard."""
-        try:
-            if not self._validate_analytics_response(data, "warehouse_dashboard", req_id):
-                return f"❌ No data found for {warehouse_name}"
-            
-            if not data.success:
-                return f"❌ No data found for {warehouse_name}"
-            
-            d = data.data or {}
-            summary = d.get("summary", {})
-            
-            if summary.get("total_dns", 0) == 0:
-                return f"🏭 *{warehouse_name} - No Deliveries Found*\n\n⚠️ No delivery data found for this warehouse."
-            
-            lines = [
-                f"🏭 *{warehouse_name} - Warehouse Dashboard*",
-                "",
-                "📊 *SUMMARY:*",
-                f"   • Total DNs: {summary.get('total_dns', 0):,}",
-                f"   • Total Units: {summary.get('total_units', 0):,}",
-                f"   • Total Revenue: PKR {summary.get('total_revenue', 0):,.0f}",
-                f"   • Active Dealers: {summary.get('total_dealers', 0)}",
-                f"   • Delivery Rate: {summary.get('delivery_rate', 0):.1f}%",
-                f"   • Pending Flag: {summary.get('pending_flag_dns', 0)}",
-                "",
-                "📈 *PERFORMANCE:*",
-                f"   • PGI Rate: {summary.get('pgi_rate', 0):.1f}%",
-                f"   • POD Rate: {summary.get('pod_rate', 0):.1f}%",
-                f"   • Delivered: {summary.get('delivered_dns', 0)}",
-            ]
-            
-            return "\n".join(lines)
-        except Exception as e:
-            logger.exception(f"[{req_id}] Warehouse dashboard formatting failed: {e}")
-            return f"❌ Unable to format warehouse dashboard for {warehouse_name}"
+    def get_rule(self, rule_name: str) -> Optional[Any]:
+        return self.rules.get(rule_name)
     
-    # ==========================================================
-    # FORMATTERS - RANKINGS
-    # ==========================================================
+    def get_data_quality_status(self, validation_result: Dict[str, Any]) -> str:
+        if not validation_result.get("is_valid", False):
+            return "error"
+        elif validation_result.get("issues", []):
+            return "warning"
+        return "valid"
     
-    def _format_dealer_ranking(self, data, top: bool, req_id: str) -> str:
-        """Format dealer ranking."""
-        try:
-            if not self._validate_analytics_response(data, "dealer_ranking", req_id):
-                return "📊 No dealer ranking data available."
-            
-            if not data.success:
-                return "📊 No dealer ranking data available."
-            
-            d = data.data or {}
-            dealers = d.get("dealers", [])
-            
-            if not dealers:
-                return "📊 No dealers found."
-            
-            title = "🏆 *Top Dealers*" if top else "📉 *Bottom Dealers*"
-            lines = [title, ""]
-            for i, dealer in enumerate(dealers[:10], 1):
-                name = dealer.get('dealer_name', 'N/A')
-                revenue = dealer.get('total_revenue', 0)
-                total_dns = dealer.get('total_dns', 0)
-                delivery_rate = dealer.get('delivery_rate', 0)
-                lines.append(f"{i}. {name}")
-                lines.append(f"   Revenue: PKR {revenue:,.0f} | DNs: {total_dns} | Delivery Rate: {delivery_rate:.1f}%")
-            
-            return "\n".join(lines)
-        except Exception as e:
-            logger.exception(f"[{req_id}] Dealer ranking formatting failed: {e}")
-            return "📊 Unable to format dealer ranking."
-    
-    def _format_city_ranking(self, data, req_id: str) -> str:
-        """Format city ranking."""
-        try:
-            if not self._validate_analytics_response(data, "city_ranking", req_id):
-                return "📊 No city ranking data available."
-            
-            if not data.success:
-                return "📊 No city ranking data available."
-            
-            d = data.data or {}
-            cities = d.get("cities", [])
-            
-            if not cities:
-                return "📊 No city data available."
-            
-            lines = ["🏙️ *City Rankings*", ""]
-            for i, city in enumerate(cities[:10], 1):
-                name = city.get('city', 'N/A')
-                revenue = city.get('total_revenue', 0)
-                total_dns = city.get('total_dns', 0)
-                dealers = city.get('total_dealers', 0)
-                delivery_rate = city.get('delivery_rate', 0)
-                lines.append(f"{i}. {name}")
-                lines.append(f"   Revenue: PKR {revenue:,.0f} | DNs: {total_dns} | Dealers: {dealers} | Delivery Rate: {delivery_rate:.1f}%")
-            
-            return "\n".join(lines)
-        except Exception as e:
-            logger.exception(f"[{req_id}] City ranking formatting failed: {e}")
-            return "📊 Unable to format city ranking."
-    
-    def _format_warehouse_ranking(self, data, req_id: str) -> str:
-        """Format warehouse ranking."""
-        try:
-            if not self._validate_analytics_response(data, "warehouse_ranking", req_id):
-                return "📊 No warehouse ranking data available."
-            
-            if not data.success:
-                return "📊 No warehouse ranking data available."
-            
-            d = data.data or {}
-            warehouses = d.get("warehouses", [])
-            
-            if not warehouses:
-                return "📊 No warehouse data available."
-            
-            lines = ["🏭 *Warehouse Rankings*", ""]
-            for i, warehouse in enumerate(warehouses[:10], 1):
-                name = warehouse.get('warehouse', 'N/A')
-                revenue = warehouse.get('total_revenue', 0)
-                total_dns = warehouse.get('total_dns', 0)
-                dealers = warehouse.get('total_dealers', 0)
-                delivery_rate = warehouse.get('delivery_rate', 0)
-                lines.append(f"{i}. {name}")
-                lines.append(f"   Revenue: PKR {revenue:,.0f} | DNs: {total_dns} | Dealers: {dealers} | Delivery Rate: {delivery_rate:.1f}%")
-            
-            return "\n".join(lines)
-        except Exception as e:
-            logger.exception(f"[{req_id}] Warehouse ranking formatting failed: {e}")
-            return "📊 Unable to format warehouse ranking."
-    
-    # ==========================================================
-    # FORMATTERS - PRODUCT DASHBOARD
-    # ==========================================================
-    
-    def _format_product_dashboard(self, data, dealer_name: str, req_id: str) -> str:
-        """Format product dashboard."""
-        try:
-            if not self._validate_analytics_response(data, "product_dashboard", req_id):
-                return f"❌ No product data found for {dealer_name}"
-            
-            if not data.success:
-                return f"❌ No product data found for {dealer_name}"
-            
-            d = data.data or {}
-            products = d.get("products", [])
-            
-            if not products:
-                return f"📦 *Product Performance for {dealer_name}*\n\n⚠️ No product data found."
-            
-            lines = [f"📦 *Product Performance for {dealer_name}*", ""]
-            for i, product in enumerate(products[:10], 1):
-                name = product.get('product_name', 'N/A')
-                code = product.get('product_code', 'N/A')
-                revenue = product.get('total_revenue', 0)
-                units = product.get('total_units', 0)
-                dn_count = product.get('dn_count', 0)
-                delivery_rate = product.get('delivery_rate', 0)
-                lines.append(f"{i}. {name}")
-                lines.append(f"   Code: {code} | Revenue: PKR {revenue:,.0f} | Units: {units} | DNs: {dn_count} | Delivery Rate: {delivery_rate:.1f}%")
-            
-            return "\n".join(lines)
-        except Exception as e:
-            logger.exception(f"[{req_id}] Product dashboard formatting failed: {e}")
-            return f"❌ Unable to format product dashboard for {dealer_name}"
-    
-    # ==========================================================
-    # FORMATTERS - EXECUTIVE, ROOT CAUSE, CONTROL TOWER
-    # ==========================================================
-    
-    def _format_executive_insights(self, data, req_id: str) -> str:
-        """Format executive insights."""
-        try:
-            if not self._validate_analytics_response(data, "executive_insights", req_id):
-                return "📊 No executive insights available."
-            
-            if not data.success:
-                return "📊 No executive insights available."
-            
-            d = data.data or {}
-            summary = d.get("summary", {})
-            insights_list = d.get("insights", [])
-            top_dealers = d.get("top_dealers", [])
-            top_cities = d.get("top_cities", [])
-            
-            if summary.get("total_dns", 0) == 0:
-                return "📊 *Executive Insights*\n\n⚠️ No deliveries found in the system."
-            
-            lines = [
-                "🚨 *Executive Dashboard*",
-                "",
-                "📈 *SUMMARY:*",
-                f"   • Total DNs: {summary.get('total_dns', 0):,}",
-                f"   • PGI Rate: {summary.get('pgi_rate', 0):.1f}%",
-                f"   • POD Rate: {summary.get('pod_rate', 0):.1f}%",
-                f"   • Avg Processing: {summary.get('avg_processing_days', 0):.1f} days",
-                f"   • Avg Delivery: {summary.get('avg_delivery_days', 0):.1f} days",
-                "",
-                "💡 *KEY INSIGHTS:*",
-            ]
-            if insights_list:
-                for insight in insights_list:
-                    lines.append(f"   • {insight}")
-            else:
-                lines.append("   ✅ No critical issues detected.")
-            
-            if top_dealers:
-                lines.append("")
-                lines.append("🏆 *TOP DEALERS:*")
-                for dealer in top_dealers[:5]:
-                    lines.append(f"   • {dealer.get('dealer_name', 'N/A')} - PKR {dealer.get('total_revenue', 0):,.0f}")
-            
-            if top_cities:
-                lines.append("")
-                lines.append("🏙️ *TOP CITIES:*")
-                for city in top_cities[:5]:
-                    lines.append(f"   • {city.get('city', 'N/A')} - PKR {city.get('total_revenue', 0):,.0f}")
-            
-            lines.append("")
-            lines.append("📋 *MANAGEMENT RECOMMENDATIONS:*")
-            recommendations = self._generate_management_recommendations(summary)
-            for rec in recommendations:
-                lines.append(f"   • {rec}")
-            
-            return "\n".join(lines)
-        except Exception as e:
-            logger.exception(f"[{req_id}] Executive insights formatting failed: {e}")
-            return "📊 Unable to format executive insights."
-    
-    def _generate_management_recommendations(self, summary: Dict) -> List[str]:
-        """Generate management recommendations based on data."""
-        recommendations = []
-        
-        pgi_rate = summary.get("pgi_rate", 0)
-        if pgi_rate < 80:
-            recommendations.append("⚠️ PGI rate below 80% - Investigate delays in goods issue processing")
-        
-        pod_rate = summary.get("pod_rate", 0)
-        if pod_rate < 80:
-            recommendations.append("⚠️ POD rate below 80% - Improve POD collection process")
-        
-        avg_processing = summary.get("avg_processing_days", 0)
-        if avg_processing > 5:
-            recommendations.append(f"⏳ Average processing time {avg_processing} days - Reduce PGI processing time")
-        
-        avg_delivery = summary.get("avg_delivery_days", 0)
-        if avg_delivery > 5:
-            recommendations.append(f"⏳ Average delivery time {avg_delivery} days - Optimize delivery routes")
-        
-        if not recommendations:
-            recommendations.append("✅ All KPIs are performing well - Continue current practices")
-        
-        return recommendations
-    
-    def _format_root_cause(self, data, req_id: str) -> str:
-        """Format root cause analysis."""
-        try:
-            if not self._validate_analytics_response(data, "root_cause", req_id):
-                return "🔍 No root cause analysis available."
-            
-            if not data.success:
-                return "🔍 No root cause analysis available."
-            
-            d = data.data or {}
-            issues = d.get("key_issues", [])
-            recommendations = d.get("recommendations", [])
-            metrics = d.get("metrics", {})
-            
-            if metrics.get("total_dns", 0) == 0:
-                return "🔍 *Root Cause Analysis*\n\n⚠️ No deliveries found in the system."
-            
-            lines = [
-                "🔍 *Root Cause Analysis*",
-                "",
-                "📊 *KEY METRICS:*",
-                f"   • Total DNs: {metrics.get('total_dns', 0)}",
-                f"   • Avg Processing: {metrics.get('avg_processing_days', 0):.1f} days",
-                f"   • Avg Delivery: {metrics.get('avg_delivery_days', 0):.1f} days",
-                f"   • POD Rate: {metrics.get('pod_rate', 0):.1f}%",
-                f"   • Pending POD: {metrics.get('pending_pod', 0)}",
-                "",
-                "⚠️ *KEY ISSUES IDENTIFIED:*",
-            ]
-            if issues:
-                for issue in issues:
-                    lines.append(f"   • {issue}")
-            else:
-                lines.append("   ✅ No critical issues identified.")
-            
-            if recommendations:
-                lines.append("")
-                lines.append("💡 *RECOMMENDATIONS:*")
-                for rec in recommendations:
-                    lines.append(f"   • {rec}")
-            
-            return "\n".join(lines)
-        except Exception as e:
-            logger.exception(f"[{req_id}] Root cause formatting failed: {e}")
-            return "🔍 Unable to format root cause analysis."
-    
-    def _format_control_tower(self, data, req_id: str) -> str:
-        """Format control tower dashboard."""
-        try:
-            if not self._validate_analytics_response(data, "control_tower", req_id):
-                return "🚨 *Control Tower*\n\nNo data available."
-            
-            if not data.success:
-                return "🚨 *Control Tower*\n\nNo data available."
-            
-            d = data.data or {}
-            alerts = d.get("alerts", [])
-            critical_count = d.get("critical_count", 0)
-            high_count = d.get("high_count", 0)
-            
-            if not alerts and critical_count == 0 and high_count == 0:
-                return "🚨 *Control Tower*\n\n✅ No critical alerts at this time."
-            
-            lines = [
-                "🚨 *Control Tower Dashboard*",
-                "",
-                f"🔴 Critical Alerts: {critical_count}",
-                f"🟠 High Priority: {high_count}",
-                "",
-            ]
-            for alert in alerts[:10]:
-                risk_emoji = "🔴" if alert.get('risk_status') == "critical" else "🟠"
-                lines.append(f"{risk_emoji} {alert.get('type', 'Alert')}: {alert.get('dealer', 'N/A')} - {alert.get('description', '')}")
-            
-            return "\n".join(lines)
-        except Exception as e:
-            logger.exception(f"[{req_id}] Control tower formatting failed: {e}")
-            return "🚨 Unable to format control tower."
-    
-    # ==========================================================
-    # FORMATTERS - COMPARISONS
-    # ==========================================================
-    
-    def _format_dealer_comparison(self, data, dealer1: str, dealer2: str, req_id: str) -> str:
-        try:
-            if not self._validate_analytics_response(data, "dealer_comparison", req_id):
-                return f"❌ Could not compare {dealer1} and {dealer2}"
-            
-            if not data.success:
-                return f"❌ Could not compare {dealer1} and {dealer2}"
-            
-            d = data.data or {}
-            d1 = d.get(dealer1, {})
-            d2 = d.get(dealer2, {})
-            
-            lines = [
-                f"📊 *Dealer Comparison: {dealer1} vs {dealer2}*",
-                "",
-                "┌─────────────────┬─────────────┬─────────────┐",
-                f"│ Metric           │ {dealer1[:12]:<11} │ {dealer2[:12]:<11} │",
-                "├─────────────────┼─────────────┼─────────────┤",
-                f"│ Revenue (PKR)    │ {d1.get('revenue', 0):>11,.0f} │ {d2.get('revenue', 0):>11,.0f} │",
-                f"│ Units            │ {d1.get('units', 0):>11,} │ {d2.get('units', 0):>11,} │",
-                f"│ DNs              │ {d1.get('dn_count', 0):>11} │ {d2.get('dn_count', 0):>11} │",
-                f"│ POD Rate (%)     │ {d1.get('pod_rate', 0):>11.1f} │ {d2.get('pod_rate', 0):>11.1f} │",
-                "└─────────────────┴─────────────┴─────────────┘",
-            ]
-            if d1.get('revenue', 0) > d2.get('revenue', 0):
-                lines.append(f"\n🏆 {dealer1} has higher revenue by PKR {d1.get('revenue', 0) - d2.get('revenue', 0):,.0f}")
-            elif d2.get('revenue', 0) > d1.get('revenue', 0):
-                lines.append(f"\n🏆 {dealer2} has higher revenue by PKR {d2.get('revenue', 0) - d1.get('revenue', 0):,.0f}")
-            else:
-                lines.append("\n⚖️ Both dealers have equal revenue")
-            return "\n".join(lines)
-        except Exception as e:
-            logger.exception(f"[{req_id}] Dealer comparison formatting failed: {e}")
-            return f"❌ Could not compare {dealer1} and {dealer2}"
-    
-    def _format_warehouse_comparison(self, data, warehouse1: str, warehouse2: str, req_id: str) -> str:
-        try:
-            if not self._validate_analytics_response(data, "warehouse_comparison", req_id):
-                return f"❌ Could not compare {warehouse1} and {warehouse2}"
-            
-            if not data.success:
-                return f"❌ Could not compare {warehouse1} and {warehouse2}"
-            
-            d = data.data or {}
-            w1 = d.get(warehouse1, {})
-            w2 = d.get(warehouse2, {})
-            
-            lines = [
-                f"🏭 *Warehouse Comparison: {warehouse1} vs {warehouse2}*",
-                "",
-                "┌─────────────────┬─────────────┬─────────────┐",
-                f"│ Metric           │ {warehouse1[:12]:<11} │ {warehouse2[:12]:<11} │",
-                "├─────────────────┼─────────────┼─────────────┤",
-                f"│ Revenue (PKR)    │ {w1.get('revenue', 0):>11,.0f} │ {w2.get('revenue', 0):>11,.0f} │",
-                f"│ Units            │ {w1.get('units', 0):>11,} │ {w2.get('units', 0):>11,} │",
-                f"│ DNs              │ {w1.get('dn_count', 0):>11} │ {w2.get('dn_count', 0):>11} │",
-                f"│ POD Rate (%)     │ {w1.get('pod_rate', 0):>11.1f} │ {w2.get('pod_rate', 0):>11.1f} │",
-                "└─────────────────┴─────────────┴─────────────┘",
-            ]
-            if w1.get('revenue', 0) > w2.get('revenue', 0):
-                lines.append(f"\n🏭 {warehouse1} has higher revenue by PKR {w1.get('revenue', 0) - w2.get('revenue', 0):,.0f}")
-            return "\n".join(lines)
-        except Exception as e:
-            logger.exception(f"[{req_id}] Warehouse comparison formatting failed: {e}")
-            return f"❌ Could not compare {warehouse1} and {warehouse2}"
-    
-    def _format_city_comparison(self, data, city1: str, city2: str, req_id: str) -> str:
-        try:
-            if not self._validate_analytics_response(data, "city_comparison", req_id):
-                return f"❌ Could not compare {city1} and {city2}"
-            
-            if not data.success:
-                return f"❌ Could not compare {city1} and {city2}"
-            
-            d = data.data or {}
-            c1 = d.get(city1, {})
-            c2 = d.get(city2, {})
-            
-            lines = [
-                f"🏙️ *City Comparison: {city1} vs {city2}*",
-                "",
-                "┌─────────────────┬─────────────┬─────────────┐",
-                f"│ Metric           │ {city1[:12]:<11} │ {city2[:12]:<11} │",
-                "├─────────────────┼─────────────┼─────────────┤",
-                f"│ Revenue (PKR)    │ {c1.get('revenue', 0):>11,.0f} │ {c2.get('revenue', 0):>11,.0f} │",
-                f"│ Dealers          │ {c1.get('dealers', 0):>11} │ {c2.get('dealers', 0):>11} │",
-                f"│ DNs              │ {c1.get('dn_count', 0):>11} │ {c2.get('dn_count', 0):>11} │",
-                f"│ POD Rate (%)     │ {c1.get('pod_rate', 0):>11.1f} │ {c2.get('pod_rate', 0):>11.1f} │",
-                "└─────────────────┴─────────────┴─────────────┘",
-            ]
-            return "\n".join(lines)
-        except Exception as e:
-            logger.exception(f"[{req_id}] City comparison formatting failed: {e}")
-            return f"❌ Could not compare {city1} and {city2}"
-    
-    # ==========================================================
-    # FORMATTERS - DELIVERY PERFORMANCE & TREND
-    # ==========================================================
-    
-    def _format_delivery_performance(self, data, req_id: str) -> str:
-        try:
-            if not self._validate_analytics_response(data, "delivery_performance", req_id):
-                return "📦 No delivery performance data available."
-            
-            if not data.success:
-                return "📦 No delivery performance data available."
-            
-            d = data.data or {}
-            metrics = d.get("metrics", {})
-            
-            return (
-                "📦 *Delivery Performance Dashboard*\n\n"
-                f"📊 *KEY METRICS:*\n"
-                f"   • Total DNs: {metrics.get('total_dns', 0)}\n"
-                f"   • Delivered: {metrics.get('delivered', 0)}\n"
-                f"   • In Transit: {metrics.get('in_transit', 0)}\n"
-                f"   • Pending PGI: {metrics.get('pending_pgi', 0)}\n"
-                f"   • Pending POD: {metrics.get('pending_pod', 0)}\n"
-                f"   • Pending Flag: {metrics.get('pending_flag_count', 0)}\n"
-                f"\n📈 *RATES:*\n"
-                f"   • PGI Rate: {metrics.get('pgi_rate', 0):.1f}%\n"
-                f"   • POD Rate: {metrics.get('pod_rate', 0):.1f}%\n"
-                f"   • Avg Processing: {metrics.get('avg_processing_days', 0):.1f} days\n"
-                f"   • Avg Delivery: {metrics.get('avg_delivery_days', 0):.1f} days"
-            )
-        except Exception as e:
-            logger.exception(f"[{req_id}] Delivery performance formatting failed: {e}")
-            return "📦 Unable to format delivery performance."
-    
-    def _format_trend_analysis(self, data, req_id: str) -> str:
-        try:
-            if not self._validate_analytics_response(data, "trend_analysis", req_id):
-                return "📈 No trend data available."
-            
-            if not data.success:
-                return "📈 No trend data available."
-            
-            d = data.data or {}
-            trends = d.get("trends", {})
-            monthly = trends.get("monthly", [])
-            
-            if not monthly:
-                return "📈 No trend data available."
-            
-            lines = ["📈 *Trend Analysis*", "", "📊 *Monthly Trends:*"]
-            for month in monthly[:6]:
-                period = month.get('period', 'N/A')
-                count = month.get('count', 0)
-                revenue = month.get('revenue', 0)
-                lines.append(f"   • {period}: {count} DNs, Revenue: PKR {revenue:,.0f}")
-            return "\n".join(lines)
-        except Exception as e:
-            logger.exception(f"[{req_id}] Trend analysis formatting failed: {e}")
-            return "📈 Unable to format trend analysis."
-    
-    # ==========================================================
-    # FORMATTERS - REVENUE, UNITS, PERFORMANCE, AGING
-    # ==========================================================
-    
-    def _format_dealer_revenue(self, data, dealer_name: str, req_id: str) -> str:
-        try:
-            if not self._validate_analytics_response(data, "dealer_revenue", req_id):
-                return f"❌ No revenue data for {dealer_name}"
-            
-            if not data.success:
-                return f"❌ No revenue data for {dealer_name}"
-            
-            d = data.data or {}
-            return (
-                f"💰 *Revenue for {dealer_name}*\n\n"
-                f"• Total Revenue: PKR {d.get('total_revenue', 0):,.0f}\n"
-                f"• Number of DNs: {d.get('count', 0)}\n"
-                f"• Average per DN: PKR {d.get('avg_revenue', 0):,.0f}"
-            )
-        except Exception as e:
-            logger.exception(f"[{req_id}] Dealer revenue formatting failed: {e}")
-            return f"❌ Unable to format revenue for {dealer_name}"
-    
-    def _format_dealer_units(self, data, dealer_name: str, req_id: str) -> str:
-        try:
-            if not self._validate_analytics_response(data, "dealer_units", req_id):
-                return f"❌ No units data for {dealer_name}"
-            
-            if not data.success:
-                return f"❌ No units data for {dealer_name}"
-            
-            d = data.data or {}
-            return (
-                f"📦 *Units for {dealer_name}*\n\n"
-                f"• Total Units: {d.get('total_units', 0):,}\n"
-                f"• Number of DNs: {d.get('count', 0)}\n"
-                f"• Average per DN: {d.get('avg_units', 0):.1f}"
-            )
-        except Exception as e:
-            logger.exception(f"[{req_id}] Dealer units formatting failed: {e}")
-            return f"❌ Unable to format units for {dealer_name}"
-    
-    def _format_dealer_performance(self, data, dealer_name: str, req_id: str) -> str:
-        try:
-            if not self._validate_analytics_response(data, "dealer_performance", req_id):
-                return f"❌ No performance data for {dealer_name}"
-            
-            if not data.success:
-                return f"❌ No performance data for {dealer_name}"
-            
-            d = data.data or {}
-            lines = [
-                f"📊 *Performance: {dealer_name}*",
-                "",
-                f"📦 Delivery Rate: {d.get('delivery_rate', 0):.1f}%",
-                f"📎 POD Rate: {d.get('pod_rate', 0):.1f}%",
-                f"⏳ Pending PGI: {d.get('pending_pgi', 0)}",
-                f"📎 Pending POD: {d.get('pending_pod', 0)}",
-                f"⏰ Avg Aging: {d.get('avg_aging', 0):.1f} days",
-            ]
-            return "\n".join(lines)
-        except Exception as e:
-            logger.exception(f"[{req_id}] Dealer performance formatting failed: {e}")
-            return f"❌ Unable to format performance for {dealer_name}"
-    
-    def _format_dealer_aging(self, data, dealer_name: str, req_id: str) -> str:
-        try:
-            if not self._validate_analytics_response(data, "dealer_aging", req_id):
-                return f"❌ No aging data for {dealer_name}"
-            
-            if not data.success:
-                return f"❌ No aging data for {dealer_name}"
-            
-            d = data.data or {}
-            return (
-                f"⏱️ *Aging for {dealer_name}*\n\n"
-                f"• Average Aging: {d.get('avg_aging', 0):.1f} days\n"
-                f"• Maximum Aging: {d.get('max_aging', 0)} days\n"
-                f"• DNs with Aging: {d.get('count', 0)}"
-            )
-        except Exception as e:
-            logger.exception(f"[{req_id}] Dealer aging formatting failed: {e}")
-            return f"❌ Unable to format aging for {dealer_name}"
-    
-    # ==========================================================
-    # FORMATTERS - WAREHOUSE & CITY PERFORMANCE
-    # ==========================================================
-    
-    def _format_warehouse_performance(self, data, warehouse_name: str, req_id: str) -> str:
-        try:
-            if not self._validate_analytics_response(data, "warehouse_performance", req_id):
-                return f"❌ No performance data for {warehouse_name}"
-            
-            if not data.success:
-                return f"❌ No performance data for {warehouse_name}"
-            
-            d = data.data or {}
-            summary = d.get("summary", {})
-            return (
-                f"📊 *Performance: {warehouse_name}*\n\n"
-                f"• Total DNs: {summary.get('total_dns', 0)}\n"
-                f"• POD Rate: {summary.get('pod_rate', 0):.1f}%\n"
-                f"• Revenue: PKR {summary.get('total_revenue', 0):,.0f}\n"
-                f"• Active Dealers: {summary.get('total_dealers', 0)}"
-            )
-        except Exception as e:
-            logger.exception(f"[{req_id}] Warehouse performance formatting failed: {e}")
-            return f"❌ Unable to format performance for {warehouse_name}"
-    
-    def _format_city_performance(self, data, city_name: str, req_id: str) -> str:
-        try:
-            if not self._validate_analytics_response(data, "city_performance", req_id):
-                return f"❌ No performance data for {city_name}"
-            
-            if not data.success:
-                return f"❌ No performance data for {city_name}"
-            
-            d = data.data or {}
-            summary = d.get("summary", {})
-            return (
-                f"📊 *Performance: {city_name}*\n\n"
-                f"• Total DNs: {summary.get('total_dns', 0)}\n"
-                f"• POD Rate: {summary.get('pod_rate', 0):.1f}%\n"
-                f"• Revenue: PKR {summary.get('total_revenue', 0):,.0f}\n"
-                f"• Active Dealers: {summary.get('total_dealers', 0)}"
-            )
-        except Exception as e:
-            logger.exception(f"[{req_id}] City performance formatting failed: {e}")
-            return f"❌ Unable to format performance for {city_name}"
-    
-    # ==========================================================
-    # ERROR & FALLBACK RESPONSES
-    # ==========================================================
-    
-    def _get_help_message(self) -> str:
-        return """📋 *AI Logistics Assistant - Help*
-
-*🔍 DN Tracking:* Send any 8-12 digit DN number
-
-*🏪 Dealer Queries:*
-   • "Dealer name" (e.g., "ZQ Electronics")
-   • "Dealer revenue" or "Dealer units"
-   • "Dealer performance" or "Dealer aging"
-   • "Compare Dealer A vs Dealer B"
-
-*🏙️ City Queries:*
-   • "City name" (e.g., "Haripur")
-   • "Which city has highest sales"
-   • "Compare City A vs City B"
-
-*🏭 Warehouse Queries:*
-   • "Warehouse name" (e.g., "Rawalpindi")
-   • "Compare Warehouse A vs Warehouse B"
-
-*📊 Analytics:*
-   • "Top dealers" or "Bottom dealers"
-   • "Executive insights" or "Key issues"
-   • "Root cause" or "Critical alerts"
-   • "Delivery performance"
-   • "Control tower"
-
-*🤖 General AI:* Any non-logistics question
-
-*What would you like to know?* 🤖"""
-    
-    def _get_error_response(self, question: str, error: Exception, error_id: str, request_id: str) -> str:
-        return (
-            f"⚠️ *Unable to process your request*\n\n"
-            f"• Error Reference: `{error_id}`\n"
-            f"• Request ID: `{request_id}`\n\n"
-            f"Please try again or contact support with the reference ID."
-        )
-    
-    def _get_service_error_response(self, intent: str, entity: Optional[str], service: str, error: Exception, error_id: str, req_id: str) -> str:
-        return (
-            f"⚠️ *Unable to retrieve analytics data*\n\n"
-            f"• Intent: {intent}\n"
-            f"• Entity: {entity or 'N/A'}\n"
-            f"• Service: {service}\n"
-            f"• Error Reference: `{error_id}`\n\n"
-            f"Please try again or contact support."
-        )
-    
-    def _get_groq_blocked_response(self) -> str:
-        return (
-            "⚠️ *Logistics queries are handled by analytics, not AI.*\n\n"
-            "Please try one of these:\n"
-            "• A specific dealer name\n"
-            "• A DN number (8-12 digits)\n"
-            "• 'Top dealers' or 'Top cities'\n"
-            "• 'Key issues' or 'Executive insights'\n"
-            "• 'Compare Dealer A vs Dealer B'\n\n"
-            "Type 'Help' for all available commands."
-        )
-    
-    # ==========================================================
-    # METRICS & ADMIN
-    # ==========================================================
-    
-    def get_metrics(self) -> Dict[str, Any]:
-        total_dn = self.metrics["dn_lookups_success"] + self.metrics["dn_lookups_failure"]
-        total_dealer = self.metrics["dealer_queries_success"] + self.metrics["dealer_queries_failure"]
-        
+    def get_health_report(self) -> Dict[str, Any]:
         return {
-            "version": "14.0",
-            "total_requests": self.metrics["total_requests"],
-            "cache_hits": self.metrics["cache_hits"],
-            "cache_misses": self.metrics["cache_misses"],
-            "cache_failures_avoided": self.metrics["cache_failures_avoided"],
-            "cache_hit_rate": round(self.metrics["cache_hits"] / max(1, self.metrics["cache_hits"] + self.metrics["cache_misses"]) * 100, 1),
-            "dn_lookups": {
-                "total": self.metrics["dn_lookups"],
-                "success": self.metrics["dn_lookups_success"],
-                "failure": self.metrics["dn_lookups_failure"],
-                "success_rate": round(self.metrics["dn_lookups_success"] / max(total_dn, 1) * 100, 1),
-                "retry_attempts": self.metrics["dn_retry_attempts"]
-            },
-            "dealer_queries": {
-                "total": self.metrics["dealer_queries"],
-                "success": self.metrics["dealer_queries_success"],
-                "failure": self.metrics["dealer_queries_failure"],
-                "success_rate": round(self.metrics["dealer_queries_success"] / max(total_dealer, 1) * 100, 1),
-                "suggestions": self.metrics["dealer_suggestions"]
-            },
-            "dealer_resolution": {
-                "attempts": self.metrics["dealer_resolution_attempts"],
-                "success": self.metrics["dealer_resolution_success"],
-                "failure": self.metrics["dealer_resolution_failure"],
-                "success_rate": round(self.metrics["dealer_resolution_success"] / max(self.metrics["dealer_resolution_attempts"], 1) * 100, 1)
-            },
-            "city_queries": self.metrics["city_queries"],
-            "warehouse_queries": self.metrics["warehouse_queries"],
-            "product_queries": self.metrics["product_queries"],
-            "comparisons": self.metrics["comparisons"],
-            "executive_insights": self.metrics["executive_insights"],
-            "root_cause_analyses": self.metrics["root_cause_analyses"],
-            "control_tower": self.metrics["control_tower"],
-            "groq_uses": self.metrics["groq_uses"],
-            "overrides": self.metrics["overrides"],
-            "timeouts": self.metrics["timeouts"],
-            "errors": self.metrics["errors"],
-            "analytics_response_errors": self.metrics["analytics_response_errors"],
-            "conversation_count": len(self.conversation_cache),
-            "cache_size": len(self.response_cache),
-            "failure_cache_size": len(self.failure_cache)
+            "dealers": len(self.dealers),
+            "cities": len(self.cities),
+            "warehouses": len(self.warehouses),
+            "intents": len(self.intents),
+            "metrics": len(self.metrics),
+            "health_score": self._health_score,
+            "initialized": self._initialized,
+            "database_connected": self._db_connected,
+            "last_refresh": self._last_refresh.isoformat() if self._last_refresh else None,
+            "load_error": self._load_error,
+            "stats": self._stats,
+            "status": "healthy" if self._health_score >= 70 else "warning" if self._health_score >= 50 else "critical"
         }
     
-    def get_routing_debug(self, question: str) -> Dict[str, Any]:
-        context = {}
-        routing = self._get_routing_decision(question, context)
+    def get_diagnostic_report(self) -> Dict[str, Any]:
         return {
-            "question": question,
-            "is_dn_query": self._is_dn_query(question),
-            "normalized_dn": self._normalize_dn(question) if self._is_dn_query(question) else None,
-            "routing_decision": {
-                "intent": getattr(routing, "intent", "unknown"),
-                "entity": getattr(routing, "entity", None),
-                "entity_type": getattr(routing, "entity_type", None),
-                "service": getattr(routing, "service", "unknown"),
-                "confidence": getattr(routing, "confidence", 0.0),
-                "needs_groq": getattr(routing, "needs_groq", False),
-                "reason": getattr(routing, "reason", "")
+            "dealers": len(self.dealers),
+            "cities": len(self.cities),
+            "warehouses": len(self.warehouses),
+            "intents": len(self.intents),
+            "metrics": len(self.metrics),
+            "health_score": self._health_score,
+            "initialized": self._initialized,
+            "search_index_sizes": {
+                "dealers": len(self._dealer_search_index),
+                "cities": len(self._city_search_index),
+                "warehouses": len(self._warehouse_search_index)
             },
-            "timestamp": time.time()
+            "last_refresh": self._last_refresh.isoformat() if self._last_refresh else None,
+            "stats": self._stats,
+            "timestamp": datetime.now().isoformat()
+        }
+    
+    def validate_metadata(self) -> Dict[str, Any]:
+        warnings = []
+        if len(self.dealers) == 0:
+            warnings.append("No dealers loaded from database")
+        if len(self.cities) == 0:
+            warnings.append("No cities loaded from database")
+        if len(self.warehouses) == 0:
+            warnings.append("No warehouses loaded from database")
+        if len(self.dealers) < 10:
+            warnings.append(f"Low dealer count: {len(self.dealers)}")
+        return {
+            "counts": {
+                "dealers": len(self.dealers),
+                "cities": len(self.cities),
+                "warehouses": len(self.warehouses),
+                "intents": len(self.intents),
+                "metrics": len(self.metrics),
+            },
+            "warnings": warnings,
+            "initialized": self._initialized,
+            "health_score": self._health_score,
+            "last_refresh": self._last_refresh.isoformat() if self._last_refresh else None
         }
 
 
@@ -2411,72 +1510,143 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
 # SINGLETON
 # ==========================================================
 
-_orchestrator = None
-
-def get_orchestrator() -> AIOrchestrator:
-    global _orchestrator
-    if _orchestrator is None:
-        _orchestrator = AIOrchestrator()
-    return _orchestrator
+_schema_service = None
+_schema_lock = Lock()
 
 
-# ==========================================================
-# WRAPPER FUNCTIONS (PRESERVED SIGNATURES - CRITICAL)
-# ==========================================================
-
-def process_whatsapp_query(
-    question: str,
-    session_factory: Optional[Callable[[], Session]] = None,
-    phone_number: Optional[str] = None,
-    user_id: Optional[str] = None,
-    request_id: Optional[str] = None
-) -> str:
-    orchestrator = get_orchestrator()
-    return orchestrator.process_whatsapp_query(
-        question=question,
-        session_factory=session_factory,
-        phone_number=phone_number,
-        user_id=user_id,
-        request_id=request_id
-    )
-
-
-def get_ai_service_metrics() -> Dict[str, Any]:
-    orchestrator = get_orchestrator()
-    return orchestrator.get_metrics()
-
-
-def clear_ai_cache():
-    orchestrator = get_orchestrator()
-    return orchestrator.clear_caches()
-
-
-def get_routing_debug(question: str) -> Dict[str, Any]:
-    orchestrator = get_orchestrator()
-    return orchestrator.get_routing_debug(question)
+def get_schema_service() -> SchemaService:
+    global _schema_service
+    if _schema_service is None:
+        with _schema_lock:
+            if _schema_service is None:
+                try:
+                    _schema_service = SchemaService()
+                    logger.info("✅ SchemaService singleton initialized")
+                except Exception as e:
+                    logger.error(f"❌ SchemaService initialization failed: {e}")
+                    raise
+    return _schema_service
 
 
 # ==========================================================
-# INITIALIZATION
+# HELPER FUNCTIONS
 # ==========================================================
 
-logger.info("=" * 70)
-logger.info("AI Provider Service v14.0 - Enterprise Logistics Analytics Engine")
-logger.info("=" * 70)
-logger.info("")
-logger.info("   ENTERPRISE FEATURES:")
-logger.info("   ✅ Dealer 360 Dashboard")
-logger.info("   ✅ Enhanced DN Dashboard with Journey Tracking")
-logger.info("   ✅ City & Warehouse Dashboards")
-logger.info("   ✅ Rankings (Dealer, City, Warehouse)")
-logger.info("   ✅ Product Performance Dashboard")
-logger.info("   ✅ Control Tower Dashboard")
-logger.info("   ✅ Root Cause Analysis")
-logger.info("   ✅ Executive Dashboard")
-logger.info("   ✅ Dealer Resolution Engine (5 Attempts)")
-logger.info("   ✅ Dealer Suggestion Engine")
-logger.info("   ✅ DN Retry Logic (5 Attempts)")
-logger.info("   ✅ Self-Healing Cache")
-logger.info("")
-logger.info("   STATUS: ✅ PRODUCTION READY")
-logger.info("=" * 70)
+def refresh_schema_metadata() -> Dict[str, Any]:
+    service = get_schema_service()
+    return service.refresh_metadata()
+
+def get_schema_health() -> Dict[str, Any]:
+    service = get_schema_service()
+    return service.get_health_report()
+
+def get_schema_diagnostics() -> Dict[str, Any]:
+    service = get_schema_service()
+    return service.get_diagnostic_report()
+
+def generate_metadata_report() -> Dict[str, Any]:
+    service = get_schema_service()
+    return service.generate_metadata_report()
+
+def get_metadata_stats() -> Dict[str, Any]:
+    service = get_schema_service()
+    return service.get_metadata_stats()
+
+def get_all_dealers() -> List[str]:
+    """Get all dealers directly from database."""
+    service = get_schema_service()
+    return service.get_all_dealers_from_db()
+
+def resolve_dealer_direct(dealer_input: str) -> Optional[str]:
+    """Resolve dealer directly from database (bypasses cache)."""
+    service = get_schema_service()
+    return service.resolve_dealer_direct(dealer_input)
+
+def is_dn_number(text: str) -> bool:
+    service = get_schema_service()
+    return service.is_dn_number(text)
+
+def extract_dn_number(text: str) -> Optional[str]:
+    service = get_schema_service()
+    return service.extract_dn_number(text)
+
+def calculate_delivery_metrics(
+    dn_date: Optional[datetime],
+    pgi_date: Optional[datetime],
+    pod_date: Optional[datetime]
+) -> Dict[str, Any]:
+    service = get_schema_service()
+    return service.calculate_delivery_metrics(dn_date, pgi_date, pod_date)
+
+def resolve_entity(text: str) -> Dict[str, Any]:
+    service = get_schema_service()
+    return service.resolve_entity(text)
+
+def find_dealer_debug(name: str) -> Dict[str, Any]:
+    service = get_schema_service()
+    return service.find_dealer_debug(name)
+
+def find_city_debug(name: str) -> Dict[str, Any]:
+    service = get_schema_service()
+    return service.find_city_debug(name)
+
+def find_warehouse_debug(name: str) -> Dict[str, Any]:
+    service = get_schema_service()
+    return service.find_warehouse_debug(name)
+
+def find_entity_debug(name: str) -> Dict[str, Any]:
+    service = get_schema_service()
+    return service.find_entity_debug(name)
+
+def get_all_entities(entity_type: str = "all") -> Dict[str, Any]:
+    service = get_schema_service()
+    return service.get_all_entities(entity_type)
+
+def search_entities(query: str) -> Dict[str, Any]:
+    service = get_schema_service()
+    return service.search_entities(query)
+
+def get_sample_dealers(limit: int = 10) -> List[Dict[str, str]]:
+    service = get_schema_service()
+    return service.get_sample_dealers(limit)
+
+def get_dealer_count() -> int:
+    service = get_schema_service()
+    return service.get_dealer_count()
+
+
+# ==========================================================
+# EXPORTS
+# ==========================================================
+
+__all__ = [
+    'SchemaService',
+    'DeliveryMetrics',
+    'DeliveryRepository',
+    'get_schema_service',
+    'refresh_schema_metadata',
+    'get_schema_health',
+    'get_schema_diagnostics',
+    'generate_metadata_report',
+    'get_metadata_stats',
+    'resolve_entity',
+    'find_dealer_debug',
+    'find_city_debug',
+    'find_warehouse_debug',
+    'find_entity_debug',
+    'get_all_entities',
+    'search_entities',
+    'get_sample_dealers',
+    'get_dealer_count',
+    'get_all_dealers',
+    'resolve_dealer_direct',
+    'is_dn_number',
+    'extract_dn_number',
+    'calculate_delivery_metrics',
+    'DN_PATTERN',
+    'INTENT_KEYWORDS',
+    'METRIC_KEYWORDS',
+    'LOGISTICS_KEYWORDS',
+    'BUSINESS_RULES',
+    'STATUS_DEFINITIONS',
+]
