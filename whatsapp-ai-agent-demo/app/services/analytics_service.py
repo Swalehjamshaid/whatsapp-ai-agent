@@ -1,8 +1,8 @@
 # ==========================================================
-# FILE: app/services/analytics_service.py (v7.0 - FULLY ALIGNED)
+# FILE: app/services/analytics_service.py (v8.0 - DN ANALYTICS ADDED)
 # ==========================================================
 # PURPOSE: Business Intelligence Layer - Enterprise Dealer Intelligence Engine
-# VERSION: 7.0 - Fully Aligned with PostgreSQL Schema
+# VERSION: 8.0 - Added get_dn_analytics() method
 #
 # CRITICAL FIXES:
 # 1. ✅ COUNT(DISTINCT dn_no) instead of COUNT(*) for all DN counts
@@ -13,6 +13,8 @@
 # 6. ✅ Fixed Railway environment detection
 # 7. ✅ Standardized DEALER_NAME_FIELD constant
 # 8. ✅ Proper aging calculation (PGI, POD, Total)
+# 9. ✅ Added get_dn_analytics() method for DN lookup
+# 10. ✅ Added _normalize_dn() and _calculate_dn_metrics() helpers
 # ==========================================================
 
 from typing import Optional, Dict, Any, List, Tuple
@@ -20,6 +22,7 @@ from datetime import datetime, timedelta
 from loguru import logger
 import time
 import uuid
+import re
 from collections import defaultdict
 from statistics import mean, stdev
 import math
@@ -70,7 +73,6 @@ class RailwayPostgresConfig:
     @classmethod
     def is_railway(cls) -> bool:
         """Check if running on Railway - only if DATABASE_URL is set."""
-        # FIXED: Don't use RAILWAY_ENVIRONMENT default as it always returns True
         return bool(cls.DATABASE_URL)
 
 
@@ -896,13 +898,14 @@ class PostgreSQLQueryEngine:
 
 class AnalyticsService:
     """
-    ENTERPRISE DEALER INTELLIGENCE ENGINE v7.0
+    ENTERPRISE DEALER INTELLIGENCE ENGINE v8.0
     
     100% PostgreSQL Queries for Railway:
     - All data from PostgreSQL
     - No mock data
     - PostgreSQL optimized
     - Fully aligned with schema
+    - DN Analytics support
     """
     
     # Standard field mapping - DO NOT CHANGE
@@ -942,14 +945,17 @@ class AnalyticsService:
             "dealer_resolution_failure": 0,
             "postgresql_queries": 0,
             "slow_queries": 0,
-            "errors_by_type": defaultdict(int)
+            "errors_by_type": defaultdict(int),
+            "dn_lookups": 0,
+            "dn_lookups_success": 0,
+            "dn_lookups_failure": 0
         }
         
         # Test PostgreSQL connection
         self._test_postgresql()
         
         logger.info("=" * 70)
-        logger.info("AnalyticsService v7.0 - Fully Aligned with PostgreSQL Schema")
+        logger.info("AnalyticsService v8.0 - DN Analytics Added")
         logger.info("=" * 70)
         logger.info("")
         logger.info("   ✅ CRITICAL FIXES:")
@@ -962,6 +968,9 @@ class AnalyticsService:
         logger.info("      - Fixed Railway environment detection")
         logger.info("      - Standardized DEALER_NAME_FIELD constant")
         logger.info("      - Separate PGI, POD, Total aging")
+        logger.info("      - ✅ ADDED: get_dn_analytics() method")
+        logger.info("      - ✅ ADDED: _normalize_dn() helper")
+        logger.info("      - ✅ ADDED: _calculate_dn_metrics() helper")
         logger.info("")
         logger.info(f"   🌐 Environment: {'Railway' if self.is_railway else 'Local'}")
         logger.info("   STATUS: ✅ PRODUCTION READY")
@@ -1046,6 +1055,265 @@ class AnalyticsService:
             self.metrics["dealer_resolution_failure"] += 1
         
         return resolved
+    
+    # ==========================================================
+    # DN ANALYTICS - NEW METHOD (CRITICAL FIX)
+    # ==========================================================
+    
+    def get_dn_analytics(self, dn_number: str) -> AnalyticsResponse:
+        """
+        Get comprehensive DN analytics including:
+        - DN details from logistics service
+        - Validation with date integrity checks
+        - Status determination
+        - Time metrics (processing, delivery, total cycle)
+        - Data quality flags
+        
+        Returns:
+            AnalyticsResponse with:
+            - success: bool
+            - data: {
+                "record": Dict with DN details,
+                "validation": Dict with validation results,
+                "status": str (delivered/pending_pod/pending_pgi/unknown),
+                "found": bool,
+                "request_id": str,
+                "duration_ms": float
+              }
+            - error: Optional[str]
+            - error_id: Optional[str]
+        """
+        request_id = str(uuid.uuid4())[:8]
+        start_time = time.time()
+        self.metrics["total_requests"] += 1
+        self.metrics["dn_lookups"] += 1
+        
+        try:
+            # Validate input
+            if not dn_number or not dn_number.strip():
+                error_id = str(uuid.uuid4())[:8]
+                self.metrics["failed_requests"] += 1
+                self.metrics["dn_lookups_failure"] += 1
+                return AnalyticsResponse(
+                    success=False,
+                    error="DN number cannot be empty",
+                    error_id=error_id
+                )
+            
+            # Normalize DN
+            normalized_dn = self._normalize_dn(dn_number)
+            
+            if not normalized_dn:
+                error_id = str(uuid.uuid4())[:8]
+                self.metrics["failed_requests"] += 1
+                self.metrics["dn_lookups_failure"] += 1
+                return AnalyticsResponse(
+                    success=False,
+                    error=f"Invalid DN format: {dn_number}. DN must be 8-12 digits.",
+                    error_id=error_id
+                )
+            
+            logger.info(f"[{request_id}] 🔍 DN Analytics: {dn_number} (normalized: {normalized_dn})")
+            
+            # Get DN details from logistics service
+            record = self.logistics.get_dn_details(normalized_dn)
+            
+            if not record:
+                self.metrics["failed_requests"] += 1
+                self.metrics["dn_lookups_failure"] += 1
+                return AnalyticsResponse(
+                    success=False,
+                    error=f"DN {dn_number} not found in database",
+                    error_id=str(uuid.uuid4())[:8]
+                )
+            
+            # Calculate metrics and validation
+            metrics = self._calculate_dn_metrics(record)
+            
+            # Build response data
+            data = {
+                "record": record,
+                "validation": metrics.get("validation", {}),
+                "status": metrics.get("status", "unknown"),
+                "found": True,
+                "request_id": request_id,
+                "duration_ms": (time.time() - start_time) * 1000
+            }
+            
+            duration_ms = (time.time() - start_time) * 1000
+            self.metrics["successful_requests"] += 1
+            self.metrics["dn_lookups_success"] += 1
+            self.metrics["total_duration_ms"] += duration_ms
+            
+            logger.info(f"[{request_id}] ✅ DN Analytics found: {record.get('dn_number')} in {duration_ms:.2f}ms")
+            
+            return AnalyticsResponse(success=True, data=data)
+            
+        except Exception as e:
+            error_id = str(uuid.uuid4())[:8]
+            self.metrics["failed_requests"] += 1
+            self.metrics["dn_lookups_failure"] += 1
+            self.metrics["errors_by_type"][type(e).__name__] += 1
+            logger.exception(f"[{request_id}] ❌ DN Analytics error: {e}")
+            return AnalyticsResponse(
+                success=False,
+                error=str(e),
+                error_id=error_id
+            )
+    
+    # ==========================================================
+    # DN HELPERS - NEW METHODS
+    # ==========================================================
+    
+    def _normalize_dn(self, dn: str) -> Optional[str]:
+        """
+        Normalize DN by removing all non-digit characters.
+        
+        Examples:
+        - "6243611858" → "6243611858"
+        - "6243611858." → "6243611858"
+        - "DN 6243611858" → "6243611858"
+        - "6243611858-0" → "6243611858"
+        
+        Returns:
+            Normalized DN string if valid (8-12 digits), else None
+        """
+        if not dn:
+            return None
+        
+        # Remove all non-digit characters
+        normalized = re.sub(r'\D', '', dn.strip())
+        
+        # Validate length (8-12 digits)
+        if len(normalized) < 8 or len(normalized) > 12:
+            return None
+        
+        return normalized
+    
+    def _calculate_dn_metrics(self, record: Dict) -> Dict[str, Any]:
+        """
+        Calculate DN metrics including validation, status, and durations.
+        
+        Returns:
+            {
+                "validation": {
+                    "is_valid": bool,
+                    "issues": List[str],
+                    "warnings": List[str],
+                    "durations": {
+                        "processing_time_days": Optional[int],
+                        "delivery_time_days": Optional[int],
+                        "total_cycle_days": Optional[int]
+                    },
+                    "data_quality_flags": Dict[str, bool]
+                },
+                "status": str
+            }
+        """
+        validation = {
+            "is_valid": True,
+            "issues": [],
+            "warnings": [],
+            "durations": {},
+            "data_quality_flags": {}
+        }
+        
+        # Extract dates (handle both field name variations)
+        dn_date = record.get('dn_date') or record.get('dn_create_date')
+        pgi_date = record.get('pgi_date') or record.get('good_issue_date')
+        pod_date = record.get('pod_date')
+        
+        # Check missing dates
+        missing_dates = []
+        if dn_date is None:
+            missing_dates.append("DN Create Date")
+            validation["is_valid"] = False
+        if pgi_date is None:
+            missing_dates.append("PGI Date")
+        if pod_date is None:
+            missing_dates.append("POD Date")
+        
+        if missing_dates:
+            validation["issues"].append(f"Missing dates: {', '.join(missing_dates)}")
+        
+        # Calculate durations
+        if dn_date and pgi_date:
+            processing_days = (pgi_date - dn_date).days
+            if processing_days < 0:
+                validation["issues"].append(f"⚠️ Negative processing time: {processing_days} days")
+                validation["is_valid"] = False
+                validation["durations"]["processing_time_days"] = None
+            else:
+                validation["durations"]["processing_time_days"] = processing_days
+        else:
+            validation["durations"]["processing_time_days"] = None
+        
+        if pgi_date and pod_date:
+            delivery_days = (pod_date - pgi_date).days
+            if delivery_days < 0:
+                validation["issues"].append(f"⚠️ Negative delivery time: {delivery_days} days")
+                validation["is_valid"] = False
+                validation["durations"]["delivery_time_days"] = None
+            else:
+                validation["durations"]["delivery_time_days"] = delivery_days
+        else:
+            validation["durations"]["delivery_time_days"] = None
+        
+        if dn_date and pod_date:
+            cycle_days = (pod_date - dn_date).days
+            if cycle_days < 0:
+                validation["issues"].append(f"⚠️ Negative cycle time: {cycle_days} days")
+                validation["is_valid"] = False
+                validation["durations"]["total_cycle_days"] = None
+            else:
+                validation["durations"]["total_cycle_days"] = cycle_days
+        else:
+            validation["durations"]["total_cycle_days"] = None
+        
+        # Check date sequence
+        if dn_date and pgi_date and pod_date:
+            if pgi_date < dn_date:
+                validation["issues"].append(
+                    f"⚠️ Data Integrity Issue: PGI Date ({pgi_date.strftime('%Y-%m-%d')}) "
+                    f"occurs before DN Date ({dn_date.strftime('%Y-%m-%d')})"
+                )
+                validation["is_valid"] = False
+            
+            if pod_date < pgi_date:
+                validation["issues"].append(
+                    f"⚠️ Data Integrity Issue: POD Date ({pod_date.strftime('%Y-%m-%d')}) "
+                    f"occurs before PGI Date ({pgi_date.strftime('%Y-%m-%d')})"
+                )
+                validation["is_valid"] = False
+            
+            if pod_date < dn_date:
+                validation["issues"].append(
+                    f"⚠️ Data Integrity Issue: POD Date ({pod_date.strftime('%Y-%m-%d')}) "
+                    f"occurs before DN Date ({dn_date.strftime('%Y-%m-%d')})"
+                )
+                validation["is_valid"] = False
+        
+        # Data quality flags
+        validation["data_quality_flags"] = {
+            'missing_dn_date': dn_date is None,
+            'missing_pgi_date': pgi_date is None,
+            'missing_pod_date': pod_date is None,
+            'invalid_date_sequence': not validation["is_valid"] if (dn_date and pgi_date and pod_date) else False
+        }
+        
+        # Determine status
+        status = "unknown"
+        if pod_date:
+            status = "delivered"
+        elif pgi_date:
+            status = "pending_pod"
+        elif dn_date:
+            status = "pending_pgi"
+        
+        return {
+            "validation": validation,
+            "status": status
+        }
     
     # ==========================================================
     # DEALER 360 DASHBOARD - 100% POSTGRESQL
@@ -1311,7 +1579,7 @@ class AnalyticsService:
         status = {
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
-            "version": "7.0",
+            "version": "8.0",
             "environment": "Railway" if self.is_railway else "Local",
             "checks": {}
         }
@@ -1352,7 +1620,11 @@ class AnalyticsService:
             "avg_duration_ms": round(self.metrics["total_duration_ms"] / max(total, 1), 2),
             "cache_hit_rate": round((self.metrics["cache_hits"] / max(self.metrics["cache_hits"] + self.metrics["cache_misses"], 1)) * 100, 1),
             "postgresql_queries": self.metrics["postgresql_queries"],
-            "version": "7.0",
+            "dn_lookups": self.metrics["dn_lookups"],
+            "dn_lookups_success": self.metrics["dn_lookups_success"],
+            "dn_lookups_failure": self.metrics["dn_lookups_failure"],
+            "dn_lookups_success_rate": round((self.metrics["dn_lookups_success"] / max(self.metrics["dn_lookups"], 1)) * 100, 1),
+            "version": "8.0",
             "environment": "Railway" if self.is_railway else "Local"
         }
     
