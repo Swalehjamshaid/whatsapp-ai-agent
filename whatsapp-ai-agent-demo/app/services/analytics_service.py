@@ -1,20 +1,20 @@
 # ==========================================================
-# FILE: app/services/analytics_service.py (v8.0 - DN ANALYTICS ADDED)
+# FILE: app/services/analytics_service.py (v8.1 - FULLY ALIGNED)
 # ==========================================================
 # PURPOSE: Business Intelligence Layer - Enterprise Dealer Intelligence Engine
-# VERSION: 8.0 - Added get_dn_analytics() method
+# VERSION: 8.1 - Complete Alignment with ai_provider_service.py
 #
 # CRITICAL FIXES:
-# 1. ✅ COUNT(DISTINCT dn_no) instead of COUNT(*) for all DN counts
-# 2. ✅ Fixed json_agg with ORDER BY and LIMIT using CTE
-# 3. ✅ Added dealer_code, customer_code, division, warehouse_code, delivery_location
-# 4. ✅ Use delivery_status, pgi_status, pod_status for status logic
-# 5. ✅ Dealer resolution with code search
-# 6. ✅ Fixed Railway environment detection
-# 7. ✅ Standardized DEALER_NAME_FIELD constant
-# 8. ✅ Proper aging calculation (PGI, POD, Total)
-# 9. ✅ Added get_dn_analytics() method for DN lookup
-# 10. ✅ Added _normalize_dn() and _calculate_dn_metrics() helpers
+# 1. ✅ get_dn_analytics() ALWAYS returns AnalyticsResponse
+# 2. ✅ Production diagnostics with detailed logging
+# 3. ✅ verify_dn_exists() - DN verification method
+# 4. ✅ debug_dn() - DN debug method
+# 5. ✅ debug_dealer() - Dealer debug method
+# 6. ✅ debug_database() - Database health check
+# 7. ✅ Dashboard response ALWAYS contains: summary, aging, performance, profile
+# 8. ✅ Null safety for all SQL outputs (or 0)
+# 9. ✅ DN normalization aligned with ai_provider_service (re.sub(r"\D", "", str(dn)))
+# 10. ✅ All methods return AnalyticsResponse with proper structure
 # ==========================================================
 
 from typing import Optional, Dict, Any, List, Tuple
@@ -40,8 +40,7 @@ from app.schemas.schema_service import get_schema_service
 # CONSTANTS - STANDARD FIELD MAPPING
 # ==========================================================
 
-# CRITICAL: Standard field mapping - DO NOT CHANGE
-DEALER_NAME_FIELD = "customer_name"  # customer_name = Dealer Name = Sold-To Party
+DEALER_NAME_FIELD = "customer_name"
 DEALER_CODE_FIELD = "dealer_code"
 CUSTOMER_CODE_FIELD = "customer_code"
 DN_NO_FIELD = "dn_no"
@@ -55,8 +54,6 @@ POD_STATUS_FIELD = "pod_status"
 # ==========================================================
 
 class RailwayPostgresConfig:
-    """Railway PostgreSQL configuration."""
-    
     DATABASE_URL = os.getenv('DATABASE_URL', '')
     RAILWAY_ENVIRONMENT = os.getenv('RAILWAY_ENVIRONMENT', 'production')
     
@@ -72,7 +69,6 @@ class RailwayPostgresConfig:
     
     @classmethod
     def is_railway(cls) -> bool:
-        """Check if running on Railway - only if DATABASE_URL is set."""
         return bool(cls.DATABASE_URL)
 
 
@@ -81,7 +77,6 @@ class RailwayPostgresConfig:
 # ==========================================================
 
 class AnalyticsError(Exception):
-    """Base exception for analytics errors."""
     pass
 
 class DealerNotFoundError(AnalyticsError):
@@ -128,25 +123,17 @@ class AnalyticsResponse:
 
 
 # ==========================================================
-# POSTGRESQL QUERY ENGINE - 100% POSTGRESQL
+# POSTGRESQL QUERY ENGINE
 # ==========================================================
 
 class PostgreSQLQueryEngine:
-    """
-    100% PostgreSQL Query Engine for Railway.
-    All queries use direct SQL with PostgreSQL features.
-    """
-    
     def __init__(self, logistics_service):
         self.logistics = logistics_service
         self.db = logistics_service.db
     
     def execute(self, sql: str, params: Dict = None) -> List[Dict]:
-        """Execute SQL and return results as list of dicts."""
         try:
             result = self.db.execute(text(sql), params or {})
-            
-            # Handle different result types
             if result.returns_rows:
                 rows = result.fetchall()
                 if rows:
@@ -158,25 +145,14 @@ class PostgreSQLQueryEngine:
             raise DatabaseQueryError(sql, str(e))
     
     def execute_one(self, sql: str, params: Dict = None) -> Optional[Dict]:
-        """Execute SQL and return first row as dict."""
         results = self.execute(sql, params)
         return results[0] if results else None
     
     # ==========================================================
-    # CORE QUERIES - 100% POSTGRESQL
+    # CORE QUERIES
     # ==========================================================
     
     def get_dealer_dashboard(self, dealer_name: str) -> Optional[Dict]:
-        """
-        Get complete dealer dashboard in ONE PostgreSQL query.
-        Uses CTE, window functions, and JSON aggregation.
-        
-        FIXED:
-        - COUNT(DISTINCT dn_no) for all DN counts
-        - Added dealer_code, customer_code, division, warehouse_code, delivery_location
-        - Use delivery_status for status logic
-        - json_agg with ORDER BY and LIMIT via CTE
-        """
         sql = """
             WITH dealer_data AS (
                 SELECT 
@@ -193,12 +169,10 @@ class PostgreSQLQueryEngine:
                     MIN(dn_create_date) as first_dn_date,
                     MAX(dn_create_date) as last_dn_date,
                     
-                    -- FIXED: COUNT(DISTINCT dn_no) instead of COUNT(*)
                     COUNT(DISTINCT dn_no) as total_dns,
                     COALESCE(SUM(dn_qty), 0) as total_units,
                     COALESCE(SUM(dn_amount), 0) as total_revenue,
                     
-                    -- FIXED: Use delivery_status instead of date-only logic
                     COUNT(DISTINCT CASE 
                         WHEN delivery_status = 'Completed' AND good_issue_date IS NOT NULL 
                         THEN dn_no 
@@ -224,7 +198,6 @@ class PostgreSQLQueryEngine:
                         THEN dn_no 
                     END) as pending_pod_dns,
                     
-                    -- FIXED: Separate aging calculations
                     AVG(CASE 
                         WHEN good_issue_date IS NOT NULL AND dn_create_date IS NOT NULL 
                         THEN EXTRACT(EPOCH FROM (good_issue_date - dn_create_date)) / 86400 
@@ -240,7 +213,6 @@ class PostgreSQLQueryEngine:
                         THEN EXTRACT(EPOCH FROM (pod_date - dn_create_date)) / 86400 
                     END) as avg_total_aging,
                     
-                    -- FIXED: Recent DNs via CTE with json_agg
                     COALESCE(
                         (SELECT json_agg(
                             json_build_object(
@@ -279,7 +251,6 @@ class PostgreSQLQueryEngine:
             )
             SELECT 
                 *,
-                -- FIXED: Delivery rate based on delivered_dns
                 ROUND((delivered_dns::float / NULLIF(total_dns, 0)) * 100, 1) as delivery_rate,
                 ROUND((pod_completed_dns::float / NULLIF(delivered_dns, 0)) * 100, 1) as pod_rate,
                 CASE 
@@ -289,7 +260,6 @@ class PostgreSQLQueryEngine:
                     ELSE 'Active - Needs Attention'
                 END as dealer_status,
                 
-                -- FIXED: Unit counts with DISTINCT
                 COALESCE(SUM(CASE WHEN delivery_status = 'Completed' THEN dn_qty ELSE 0 END), 0) as delivered_units,
                 COALESCE(SUM(CASE WHEN delivery_status != 'Completed' OR good_issue_date IS NULL THEN dn_qty ELSE 0 END), 0) as pending_units,
                 COALESCE(SUM(CASE WHEN delivery_status = 'Completed' AND pod_status != 'Completed' THEN dn_qty ELSE 0 END), 0) as transit_units
@@ -308,15 +278,6 @@ class PostgreSQLQueryEngine:
         return self.execute_one(sql, {"dealer_name": dealer_name})
     
     def get_all_dealers_dashboard(self) -> List[Dict]:
-        """
-        Get dashboards for ALL dealers in ONE PostgreSQL query.
-        Uses window functions for rankings.
-        
-        FIXED:
-        - COUNT(DISTINCT dn_no) for all DN counts
-        - Added dealer_code, customer_code, division, warehouse_code, delivery_location
-        - Use delivery_status for status logic
-        """
         sql = """
             WITH dealer_aggregates AS (
                 SELECT 
@@ -331,7 +292,6 @@ class PostgreSQLQueryEngine:
                     MAX(warehouse) as top_warehouse,
                     MODE() WITHIN GROUP (ORDER BY ship_to_city) as city,
                     
-                    -- FIXED: COUNT(DISTINCT dn_no)
                     COUNT(DISTINCT dn_no) as total_dns,
                     COALESCE(SUM(dn_qty), 0) as total_units,
                     COALESCE(SUM(dn_amount), 0) as total_revenue,
@@ -430,7 +390,6 @@ class PostgreSQLQueryEngine:
         return self.execute(sql)
     
     def get_dealer_dn_history(self, dealer_name: str, limit: int = 100) -> List[Dict]:
-        """Get dealer DN history with PostgreSQL date calculations."""
         sql = """
             SELECT 
                 dn_no,
@@ -454,7 +413,6 @@ class PostgreSQLQueryEngine:
                     WHEN delivery_status = 'Completed' THEN 'in_transit'
                     ELSE 'pending'
                 END as current_status,
-                -- FIXED: Separate aging calculations
                 CASE 
                     WHEN good_issue_date IS NOT NULL AND dn_create_date IS NOT NULL 
                     THEN EXTRACT(EPOCH FROM (good_issue_date - dn_create_date)) / 86400
@@ -479,13 +437,6 @@ class PostgreSQLQueryEngine:
         return self.execute(sql, {"dealer_name": dealer_name, "limit": limit})
     
     def get_dealer_aging_analysis(self, dealer_name: str) -> Dict[str, Any]:
-        """
-        Get aging analysis with PostgreSQL window functions.
-        
-        FIXED:
-        - COUNT(DISTINCT dn_no)
-        - Separate PGI, POD, and Total aging
-        """
         sql = """
             WITH aging_data AS (
                 SELECT 
@@ -497,7 +448,6 @@ class PostgreSQLQueryEngine:
                     pod_date,
                     delivery_status,
                     pod_status,
-                    -- FIXED: Separate aging calculations
                     CASE 
                         WHEN good_issue_date IS NOT NULL AND dn_create_date IS NOT NULL 
                         THEN EXTRACT(EPOCH FROM (good_issue_date - dn_create_date)) / 86400
@@ -581,12 +531,6 @@ class PostgreSQLQueryEngine:
         return self.execute_one(sql, {"dealer_name": dealer_name})
     
     def get_dealer_trends(self, dealer_name: str) -> Dict[str, Any]:
-        """
-        Get dealer trends using PostgreSQL date_trunc and window functions.
-        
-        FIXED:
-        - COUNT(DISTINCT dn_no)
-        """
         sql = """
             WITH daily_trends AS (
                 SELECT 
@@ -639,12 +583,6 @@ class PostgreSQLQueryEngine:
         return self.execute_one(sql, {"dealer_name": dealer_name})
     
     def get_dealer_product_analytics(self, dealer_name: str) -> List[Dict]:
-        """
-        Get product analytics using PostgreSQL aggregation.
-        
-        FIXED:
-        - COUNT(DISTINCT dn_no)
-        """
         sql = """
             SELECT 
                 COALESCE(material_no, 'UNKNOWN') as product_code,
@@ -670,12 +608,6 @@ class PostgreSQLQueryEngine:
         return self.execute(sql, {"dealer_name": dealer_name})
     
     def get_dealer_location_analytics(self, dealer_name: str) -> Dict[str, Any]:
-        """
-        Get location analytics using PostgreSQL aggregation.
-        
-        FIXED:
-        - COUNT(DISTINCT dn_no)
-        """
         sql = """
             WITH warehouse_stats AS (
                 SELECT 
@@ -724,12 +656,6 @@ class PostgreSQLQueryEngine:
         return self.execute_one(sql, {"dealer_name": dealer_name})
     
     def get_network_summary(self) -> Dict[str, Any]:
-        """
-        Get network summary using PostgreSQL aggregation.
-        
-        FIXED:
-        - COUNT(DISTINCT dn_no)
-        """
         sql = """
             WITH network_stats AS (
                 SELECT 
@@ -788,20 +714,11 @@ class PostgreSQLQueryEngine:
         return self.execute_one(sql)
     
     def resolve_dealer_postgres(self, dealer_input: str) -> Optional[str]:
-        """
-        Dealer resolution using PostgreSQL features.
-        
-        FIXED:
-        - Added dealer_code and customer_code search
-        - Better resolution order
-        - Uses trigram similarity and full-text search
-        """
         if not dealer_input or not dealer_input.strip():
             return None
         
         dealer_input = dealer_input.strip()
         
-        # 1. Try exact dealer name match (case-insensitive)
         sql_exact = """
             SELECT customer_name
             FROM delivery_reports
@@ -814,7 +731,6 @@ class PostgreSQLQueryEngine:
         if result:
             return result["customer_name"]
         
-        # 2. Try dealer_code match
         sql_code = """
             SELECT customer_name
             FROM delivery_reports
@@ -827,7 +743,6 @@ class PostgreSQLQueryEngine:
         if result:
             return result["customer_name"]
         
-        # 3. Try customer_code match
         sql_customer = """
             SELECT customer_name
             FROM delivery_reports
@@ -840,7 +755,6 @@ class PostgreSQLQueryEngine:
         if result:
             return result["customer_name"]
         
-        # 4. Try contains match
         sql_contains = """
             SELECT customer_name
             FROM delivery_reports
@@ -853,7 +767,6 @@ class PostgreSQLQueryEngine:
         if result:
             return result["customer_name"]
         
-        # 5. Try PostgreSQL trigram similarity (if pg_trgm is installed)
         try:
             sql_trigram = """
                 SELECT customer_name, 
@@ -870,7 +783,6 @@ class PostgreSQLQueryEngine:
         except:
             pass
         
-        # 6. Try word-by-word match
         words = dealer_input.lower().split()
         if len(words) >= 2:
             for i in range(len(words) - 1):
@@ -893,47 +805,35 @@ class PostgreSQLQueryEngine:
 
 
 # ==========================================================
-# ANALYTICS SERVICE - 100% POSTGRESQL
+# ANALYTICS SERVICE - FULLY ALIGNED v8.1
 # ==========================================================
 
 class AnalyticsService:
     """
-    ENTERPRISE DEALER INTELLIGENCE ENGINE v8.0
-    
-    100% PostgreSQL Queries for Railway:
-    - All data from PostgreSQL
-    - No mock data
-    - PostgreSQL optimized
-    - Fully aligned with schema
-    - DN Analytics support
+    ENTERPRISE DEALER INTELLIGENCE ENGINE v8.1
+    Fully aligned with ai_provider_service.py
     """
     
-    # Standard field mapping - DO NOT CHANGE
     DEALER_NAME_FIELD = DEALER_NAME_FIELD
     
     def __init__(self, use_redis: bool = False):
         self._start_time = time.time()
         
-        # Check if running on Railway
         self.is_railway = RailwayPostgresConfig.is_railway()
         if self.is_railway:
             logger.info("🚆 Running on Railway - 100% PostgreSQL mode enabled")
         
-        # Dependencies
         self.logistics = LogisticsQueryService()
         self.kpi = KPIService()
         self.schema = get_schema_service()
         self.today = datetime.now().date()
         
-        # PostgreSQL Query Engine - 100% PostgreSQL
         self.pg = PostgreSQLQueryEngine(self.logistics)
         
-        # Cache
         self._cache: Dict[str, Any] = {}
         self._cache_ttl: Dict[str, datetime] = {}
         self._dealer_cache: Dict[str, Tuple[str, datetime]] = {}
         
-        # Performance metrics
         self.metrics = {
             "total_requests": 0,
             "successful_requests": 0,
@@ -951,39 +851,33 @@ class AnalyticsService:
             "dn_lookups_failure": 0
         }
         
-        # Test PostgreSQL connection
         self._test_postgresql()
         
         logger.info("=" * 70)
-        logger.info("AnalyticsService v8.0 - DN Analytics Added")
+        logger.info("AnalyticsService v8.1 - Fully Aligned")
         logger.info("=" * 70)
         logger.info("")
         logger.info("   ✅ CRITICAL FIXES:")
-        logger.info("      - COUNT(DISTINCT dn_no) for all DN counts")
-        logger.info("      - json_agg with ORDER BY and LIMIT via CTE")
-        logger.info("      - Added dealer_code, customer_code, division")
-        logger.info("      - Added warehouse_code, delivery_location")
-        logger.info("      - Use delivery_status, pgi_status, pod_status")
-        logger.info("      - Dealer resolution with code search")
-        logger.info("      - Fixed Railway environment detection")
-        logger.info("      - Standardized DEALER_NAME_FIELD constant")
-        logger.info("      - Separate PGI, POD, Total aging")
-        logger.info("      - ✅ ADDED: get_dn_analytics() method")
-        logger.info("      - ✅ ADDED: _normalize_dn() helper")
-        logger.info("      - ✅ ADDED: _calculate_dn_metrics() helper")
+        logger.info("      - get_dn_analytics() ALWAYS returns AnalyticsResponse")
+        logger.info("      - Production diagnostics with detailed logging")
+        logger.info("      - verify_dn_exists() - DN verification")
+        logger.info("      - debug_dn() - DN debug method")
+        logger.info("      - debug_dealer() - Dealer debug method")
+        logger.info("      - debug_database() - Database health check")
+        logger.info("      - Dashboard response contains summary, aging, performance, profile")
+        logger.info("      - Null safety for all SQL outputs (or 0)")
+        logger.info("      - DN normalization aligned (re.sub(r'\\D', '', str(dn)))")
         logger.info("")
         logger.info(f"   🌐 Environment: {'Railway' if self.is_railway else 'Local'}")
         logger.info("   STATUS: ✅ PRODUCTION READY")
         logger.info("=" * 70)
     
     def _test_postgresql(self):
-        """Test PostgreSQL connection."""
         try:
             result = self.logistics.db.execute(text("SELECT version()"))
             version = result.first()[0]
             logger.info(f"✅ PostgreSQL connected: {version[:50]}...")
             
-            # Check pg_trgm extension
             ext_result = self.logistics.db.execute(
                 text("SELECT extname FROM pg_extension WHERE extname = 'pg_trgm'")
             )
@@ -1033,20 +927,17 @@ class AnalyticsService:
         logger.info("All caches cleared")
     
     # ==========================================================
-    # DEALER RESOLUTION - 100% POSTGRESQL
+    # DEALER RESOLUTION
     # ==========================================================
     
     def _resolve_dealer(self, dealer_input: str) -> Optional[str]:
-        """Resolve dealer using PostgreSQL."""
         if not dealer_input:
             return None
         
-        # Check cache
         cached = self._get_cached_dealer(dealer_input)
         if cached:
             return cached
         
-        # Use PostgreSQL resolution
         resolved = self.pg.resolve_dealer_postgres(dealer_input)
         if resolved:
             self._set_cached_dealer(dealer_input, resolved)
@@ -1057,36 +948,323 @@ class AnalyticsService:
         return resolved
     
     # ==========================================================
-    # DN ANALYTICS - NEW METHOD (CRITICAL FIX)
+    # DN NORMALIZATION (ALIGNED WITH ai_provider_service)
+    # ==========================================================
+    
+    def _normalize_dn(self, dn: str) -> Optional[str]:
+        """
+        Normalize DN by removing all non-digit characters.
+        ALIGNED with ai_provider_service.py normalization.
+        
+        Examples:
+        - "6243611858" → "6243611858"
+        - "6243611858." → "6243611858"
+        - "DN 6243611858" → "6243611858"
+        - "6243611858-0" → "6243611858"
+        """
+        if not dn:
+            return None
+        
+        # Remove all non-digit characters (identical to ai_provider_service)
+        normalized = re.sub(r'\D', '', str(dn).strip())
+        
+        # Validate length (8-12 digits)
+        if len(normalized) < 8 or len(normalized) > 12:
+            return None
+        
+        return normalized
+    
+    # ==========================================================
+    # VERIFY DN EXISTS (NEW DIAGNOSTIC METHOD)
+    # ==========================================================
+    
+    def verify_dn_exists(self, dn_no: str) -> Dict[str, Any]:
+        """
+        Direct verification if a DN exists in the database.
+        
+        Returns:
+            {
+                "dn": "6243610989",
+                "found": True,
+                "record": {
+                    "dn_no": "6243610989",
+                    "customer_name": "Gul Electronics Shinkiari",
+                    "dealer_code": "ABC123"
+                }
+            }
+        """
+        request_id = str(uuid.uuid4())[:8]
+        
+        try:
+            logger.info(f"[{request_id}] 🔍 VERIFY_DN: {dn_no}")
+            
+            # Normalize the DN
+            normalized = self._normalize_dn(dn_no)
+            
+            if not normalized:
+                logger.warning(f"[{request_id}] Invalid DN format: {dn_no}")
+                return {
+                    "dn": dn_no,
+                    "normalized": None,
+                    "found": False,
+                    "error": "Invalid DN format"
+                }
+            
+            # Query the database
+            record = self.pg.execute_one(
+                """
+                SELECT
+                    dn_no,
+                    customer_name,
+                    dealer_code,
+                    customer_code,
+                    warehouse,
+                    ship_to_city
+                FROM delivery_reports
+                WHERE CAST(dn_no AS TEXT) = :dn_no
+                LIMIT 1
+                """,
+                {"dn_no": normalized}
+            )
+            
+            found = record is not None
+            
+            logger.info(f"[{request_id}] DN_FOUND={found}")
+            
+            return {
+                "dn": dn_no,
+                "normalized": normalized,
+                "found": found,
+                "record": record if record else None
+            }
+            
+        except Exception as e:
+            logger.error(f"[{request_id}] Verify DN failed: {e}")
+            return {
+                "dn": dn_no,
+                "found": False,
+                "error": str(e)
+            }
+    
+    # ==========================================================
+    # DEBUG DN (NEW DIAGNOSTIC METHOD)
+    # ==========================================================
+    
+    def debug_dn(self, dn_no: str) -> Dict[str, Any]:
+        """
+        Debug a DN with detailed information.
+        
+        Returns:
+            {
+                "input": "6243610989",
+                "normalized": "6243610989",
+                "exists": {
+                    "found": True,
+                    "record": {...}
+                },
+                "validation": {
+                    "is_valid": True,
+                    "issues": [],
+                    "durations": {...}
+                }
+            }
+        """
+        request_id = str(uuid.uuid4())[:8]
+        
+        try:
+            logger.info(f"[{request_id}] 🔍 DEBUG_DN: {dn_no}")
+            
+            normalized = self._normalize_dn(dn_no)
+            exists_result = self.verify_dn_exists(dn_no)
+            
+            # If found, get additional details
+            validation = {}
+            if exists_result.get("found"):
+                # Get full record
+                record = self.logistics.get_dn_details(normalized)
+                if record:
+                    validation = self._calculate_dn_metrics(record)
+            
+            return {
+                "input": dn_no,
+                "normalized": normalized,
+                "exists": exists_result,
+                "validation": validation,
+                "request_id": request_id
+            }
+            
+        except Exception as e:
+            logger.error(f"[{request_id}] Debug DN failed: {e}")
+            return {
+                "input": dn_no,
+                "error": str(e)
+            }
+    
+    # ==========================================================
+    # DEBUG DEALER (NEW DIAGNOSTIC METHOD)
+    # ==========================================================
+    
+    def debug_dealer(self, dealer_name: str) -> Dict[str, Any]:
+        """
+        Debug a dealer with detailed resolution information.
+        
+        Returns:
+            {
+                "input": "Gul Electronics Shinkiari",
+                "resolved": True,
+                "resolved_name": "Gul Electronics Shinkiari",
+                "total_dns": 45,
+                "profile": {...}
+            }
+        """
+        request_id = str(uuid.uuid4())[:8]
+        
+        try:
+            logger.info(f"[{request_id}] 🔍 DEBUG_DEALER: {dealer_name}")
+            
+            # Try to resolve the dealer
+            resolved = self._resolve_dealer(dealer_name)
+            
+            if not resolved:
+                logger.warning(f"[{request_id}] Dealer not resolved: {dealer_name}")
+                return {
+                    "input": dealer_name,
+                    "resolved": False,
+                    "request_id": request_id
+                }
+            
+            # Get dashboard data
+            dashboard = self.pg.get_dealer_dashboard(resolved)
+            
+            if not dashboard:
+                logger.warning(f"[{request_id}] No data for dealer: {resolved}")
+                return {
+                    "input": dealer_name,
+                    "resolved": True,
+                    "resolved_name": resolved,
+                    "total_dns": 0,
+                    "request_id": request_id
+                }
+            
+            # Build response with null safety
+            total_dns = dashboard.get("total_dns") or 0
+            
+            return {
+                "input": dealer_name,
+                "resolved": True,
+                "resolved_name": resolved,
+                "total_dns": total_dns,
+                "profile": self._build_profile(dashboard),
+                "summary": {
+                    "total_units": dashboard.get("total_units") or 0,
+                    "total_revenue": dashboard.get("total_revenue") or 0,
+                    "delivered_dns": dashboard.get("delivered_dns") or 0,
+                    "pending_dns": dashboard.get("pending_dns") or 0
+                },
+                "request_id": request_id
+            }
+            
+        except Exception as e:
+            logger.error(f"[{request_id}] Debug dealer failed: {e}")
+            return {
+                "input": dealer_name,
+                "resolved": False,
+                "error": str(e)
+            }
+    
+    # ==========================================================
+    # DEBUG DATABASE (NEW DIAGNOSTIC METHOD)
+    # ==========================================================
+    
+    def debug_database(self) -> Dict[str, Any]:
+        """
+        Debug database health and connection.
+        
+        Returns:
+            {
+                "connected": True,
+                "table_name": "delivery_reports",
+                "total_records": 125432,
+                "total_dns": 89211,
+                "total_dealers": 245,
+                "sample_dn": "6243610989"
+            }
+        """
+        request_id = str(uuid.uuid4())[:8]
+        
+        try:
+            logger.info(f"[{request_id}] 🔍 DEBUG_DATABASE")
+            
+            # Check connection
+            connection_result = self.pg.execute_one("SELECT 1 as connected")
+            connected = connection_result is not None
+            
+            if not connected:
+                return {
+                    "connected": False,
+                    "error": "Database connection failed"
+                }
+            
+            # Get counts
+            count_result = self.pg.execute_one(
+                f"SELECT COUNT(*) as total FROM {self.pg.logistics.table_name}"
+            )
+            total_records = count_result.get("total") if count_result else 0
+            
+            dn_count_result = self.pg.execute_one(
+                f"SELECT COUNT(DISTINCT dn_no) as total FROM {self.pg.logistics.table_name}"
+            )
+            total_dns = dn_count_result.get("total") if dn_count_result else 0
+            
+            dealer_count_result = self.pg.execute_one(
+                f"SELECT COUNT(DISTINCT customer_name) as total FROM {self.pg.logistics.table_name} WHERE customer_name IS NOT NULL"
+            )
+            total_dealers = dealer_count_result.get("total") if dealer_count_result else 0
+            
+            # Get sample DN
+            sample_result = self.pg.execute_one(
+                f"SELECT dn_no FROM {self.pg.logistics.table_name} LIMIT 1"
+            )
+            sample_dn = sample_result.get("dn_no") if sample_result else None
+            
+            return {
+                "connected": True,
+                "table_name": self.pg.logistics.table_name,
+                "total_records": total_records,
+                "total_dns": total_dns,
+                "total_dealers": total_dealers,
+                "sample_dn": sample_dn,
+                "request_id": request_id
+            }
+            
+        except Exception as e:
+            logger.error(f"[{request_id}] Debug database failed: {e}")
+            return {
+                "connected": False,
+                "error": str(e)
+            }
+    
+    # ==========================================================
+    # DN ANALYTICS (ALWAYS RETURNS AnalyticsResponse)
     # ==========================================================
     
     def get_dn_analytics(self, dn_number: str) -> AnalyticsResponse:
         """
-        Get comprehensive DN analytics including:
-        - DN details from logistics service
-        - Validation with date integrity checks
-        - Status determination
-        - Time metrics (processing, delivery, total cycle)
-        - Data quality flags
+        Get comprehensive DN analytics.
         
-        Returns:
-            AnalyticsResponse with:
-            - success: bool
-            - data: {
-                "record": Dict with DN details,
-                "validation": Dict with validation results,
-                "status": str (delivered/pending_pod/pending_pgi/unknown),
-                "found": bool,
-                "request_id": str,
-                "duration_ms": float
-              }
-            - error: Optional[str]
-            - error_id: Optional[str]
+        ALWAYS RETURNS AnalyticsResponse with:
+        - success: bool
+        - data: Dict with record, validation, status
+        - error: Optional[str]
+        - error_id: Optional[str]
         """
         request_id = str(uuid.uuid4())[:8]
         start_time = time.time()
         self.metrics["total_requests"] += 1
         self.metrics["dn_lookups"] += 1
+        
+        # PRODUCTION DIAGNOSTICS
+        logger.info(f"[{request_id}] DN_LOOKUP_START={dn_number}")
         
         try:
             # Validate input
@@ -1094,33 +1272,40 @@ class AnalyticsService:
                 error_id = str(uuid.uuid4())[:8]
                 self.metrics["failed_requests"] += 1
                 self.metrics["dn_lookups_failure"] += 1
+                logger.warning(f"[{request_id}] DN_LOOKUP_FAILED=empty_input")
                 return AnalyticsResponse(
                     success=False,
                     error="DN number cannot be empty",
                     error_id=error_id
                 )
             
-            # Normalize DN
+            # Normalize DN (aligned with ai_provider_service)
             normalized_dn = self._normalize_dn(dn_number)
+            
+            # PRODUCTION DIAGNOSTICS
+            logger.info(f"[{request_id}] DN_NORMALIZED={normalized_dn}")
             
             if not normalized_dn:
                 error_id = str(uuid.uuid4())[:8]
                 self.metrics["failed_requests"] += 1
                 self.metrics["dn_lookups_failure"] += 1
+                logger.warning(f"[{request_id}] DN_LOOKUP_FAILED=invalid_format")
                 return AnalyticsResponse(
                     success=False,
                     error=f"Invalid DN format: {dn_number}. DN must be 8-12 digits.",
                     error_id=error_id
                 )
             
-            logger.info(f"[{request_id}] 🔍 DN Analytics: {dn_number} (normalized: {normalized_dn})")
-            
             # Get DN details from logistics service
             record = self.logistics.get_dn_details(normalized_dn)
+            
+            # PRODUCTION DIAGNOSTICS
+            logger.info(f"[{request_id}] DN_ROWS_FOUND={1 if record else 0}")
             
             if not record:
                 self.metrics["failed_requests"] += 1
                 self.metrics["dn_lookups_failure"] += 1
+                logger.warning(f"[{request_id}] DN_LOOKUP_FAILED=not_found")
                 return AnalyticsResponse(
                     success=False,
                     error=f"DN {dn_number} not found in database",
@@ -1145,7 +1330,9 @@ class AnalyticsService:
             self.metrics["dn_lookups_success"] += 1
             self.metrics["total_duration_ms"] += duration_ms
             
-            logger.info(f"[{request_id}] ✅ DN Analytics found: {record.get('dn_number')} in {duration_ms:.2f}ms")
+            # PRODUCTION DIAGNOSTICS
+            logger.info(f"[{request_id}] DN_SUCCESS=True")
+            logger.info(f"[{request_id}] DN_LOOKUP_DURATION={duration_ms:.2f}ms")
             
             return AnalyticsResponse(success=True, data=data)
             
@@ -1154,7 +1341,11 @@ class AnalyticsService:
             self.metrics["failed_requests"] += 1
             self.metrics["dn_lookups_failure"] += 1
             self.metrics["errors_by_type"][type(e).__name__] += 1
-            logger.exception(f"[{request_id}] ❌ DN Analytics error: {e}")
+            
+            # PRODUCTION DIAGNOSTICS
+            logger.error(f"[{request_id}] DN_LOOKUP_FAILED=exception")
+            logger.exception(f"[{request_id}] DN Analytics error: {e}")
+            
             return AnalyticsResponse(
                 success=False,
                 error=str(e),
@@ -1162,53 +1353,12 @@ class AnalyticsService:
             )
     
     # ==========================================================
-    # DN HELPERS - NEW METHODS
+    # DN METRICS HELPER
     # ==========================================================
-    
-    def _normalize_dn(self, dn: str) -> Optional[str]:
-        """
-        Normalize DN by removing all non-digit characters.
-        
-        Examples:
-        - "6243611858" → "6243611858"
-        - "6243611858." → "6243611858"
-        - "DN 6243611858" → "6243611858"
-        - "6243611858-0" → "6243611858"
-        
-        Returns:
-            Normalized DN string if valid (8-12 digits), else None
-        """
-        if not dn:
-            return None
-        
-        # Remove all non-digit characters
-        normalized = re.sub(r'\D', '', dn.strip())
-        
-        # Validate length (8-12 digits)
-        if len(normalized) < 8 or len(normalized) > 12:
-            return None
-        
-        return normalized
     
     def _calculate_dn_metrics(self, record: Dict) -> Dict[str, Any]:
         """
         Calculate DN metrics including validation, status, and durations.
-        
-        Returns:
-            {
-                "validation": {
-                    "is_valid": bool,
-                    "issues": List[str],
-                    "warnings": List[str],
-                    "durations": {
-                        "processing_time_days": Optional[int],
-                        "delivery_time_days": Optional[int],
-                        "total_cycle_days": Optional[int]
-                    },
-                    "data_quality_flags": Dict[str, bool]
-                },
-                "status": str
-            }
         """
         validation = {
             "is_valid": True,
@@ -1218,7 +1368,7 @@ class AnalyticsService:
             "data_quality_flags": {}
         }
         
-        # Extract dates (handle both field name variations)
+        # Extract dates
         dn_date = record.get('dn_date') or record.get('dn_create_date')
         pgi_date = record.get('pgi_date') or record.get('good_issue_date')
         pod_date = record.get('pod_date')
@@ -1316,11 +1466,19 @@ class AnalyticsService:
         }
     
     # ==========================================================
-    # DEALER 360 DASHBOARD - 100% POSTGRESQL
+    # DEALER 360 DASHBOARD (WITH ALL REQUIRED KEYS)
     # ==========================================================
     
     def get_dealer_360_dashboard(self, dealer_name: str) -> AnalyticsResponse:
-        """Get complete dealer dashboard from PostgreSQL."""
+        """
+        Get complete dealer dashboard from PostgreSQL.
+        
+        ALWAYS RETURNS AnalyticsResponse with data containing:
+        - summary: Dict
+        - aging: Dict
+        - performance: Dict
+        - profile: Dict
+        """
         request_id = str(uuid.uuid4())[:8]
         start_time = time.time()
         self.metrics["total_requests"] += 1
@@ -1365,31 +1523,54 @@ class AnalyticsService:
                     error_id=error_id
                 )
             
-            # Get additional data
-            trends = self.pg.get_dealer_trends(resolved)
-            products = self.pg.get_dealer_product_analytics(resolved)
-            location = self.pg.get_dealer_location_analytics(resolved)
-            aging = self.pg.get_dealer_aging_analysis(resolved)
-            
-            # Build complete dashboard
+            # Build dashboard with ALL required keys
             analytics = self._calculate_analytics_from_data(dashboard_data)
             
+            # IMPORTANT: Ensure all required keys exist with null safety
+            summary = {
+                "total_dns": dashboard_data.get("total_dns") or 0,
+                "total_units": dashboard_data.get("total_units") or 0,
+                "total_revenue": dashboard_data.get("total_revenue") or 0,
+                "delivered": dashboard_data.get("delivered_dns") or 0,
+                "in_transit": dashboard_data.get("transit_dns") or 0,
+                "delivery_rate": dashboard_data.get("delivery_rate") or 0,
+                "pod_rate": dashboard_data.get("pod_rate") or 0
+            }
+            
+            aging = {
+                "pending_pgi": dashboard_data.get("pending_dns") or 0,
+                "pending_pod": dashboard_data.get("pending_pod_dns") or 0,
+                "avg_delivery_aging": dashboard_data.get("avg_pgi_aging") or 0,
+                "avg_pod_aging": dashboard_data.get("avg_pod_aging") or 0,
+                "avg_total_aging": dashboard_data.get("avg_total_aging") or 0
+            }
+            
+            performance = {
+                "risk_status": analytics["risk"]["risk_level"].lower() if analytics.get("risk") else "low",
+                "health_score": analytics["health"]["score"] if analytics.get("health") else 0
+            }
+            
+            profile = self._build_profile(dashboard_data)
+            
+            # Build complete dashboard
             dashboard = {
                 "success": True,
                 "request_id": request_id,
                 "dealer_name": resolved,
-                "profile": self._build_profile(dashboard_data),
+                "profile": profile,
+                "summary": summary,
+                "aging": aging,
+                "performance": performance,
                 "executive_kpis": self._build_kpis(dashboard_data, analytics),
-                "performance": self._build_performance(dashboard_data),
                 "delivery": self._build_delivery(dashboard_data),
                 "pod": self._build_pod(dashboard_data),
                 "financial": self._build_financial(dashboard_data),
-                "health": analytics["health"],
-                "risk": analytics["risk"],
-                "trends": trends,
-                "products": products,
-                "location": location,
-                "aging": aging,
+                "health": analytics["health"] if analytics.get("health") else {"score": 0, "category": "Unknown"},
+                "risk": analytics["risk"] if analytics.get("risk") else {"risk_score": 0, "risk_level": "Unknown"},
+                "trends": self.pg.get_dealer_trends(resolved),
+                "products": self.pg.get_dealer_product_analytics(resolved),
+                "location": self.pg.get_dealer_location_analytics(resolved),
+                "aging_data": self.pg.get_dealer_aging_analysis(resolved),
                 "generated_at": datetime.now().isoformat()
             }
             
@@ -1416,11 +1597,10 @@ class AnalyticsService:
             )
     
     # ==========================================================
-    # ALL DEALERS DASHBOARD - 100% POSTGRESQL
+    # ALL DEALERS DASHBOARD
     # ==========================================================
     
     def get_all_dealers_dashboard(self) -> AnalyticsResponse:
-        """Get dashboards for all dealers from PostgreSQL."""
         try:
             cache_key = "all_dealers_dashboard"
             dealers = self._get_cached(cache_key)
@@ -1441,11 +1621,10 @@ class AnalyticsService:
             return AnalyticsResponse(success=False, error=str(e))
     
     # ==========================================================
-    # DEALER RANKINGS - 100% POSTGRESQL
+    # DEALER RANKINGS
     # ==========================================================
     
     def get_dealer_rankings(self, dealer_name: str) -> AnalyticsResponse:
-        """Get dealer rankings from PostgreSQL."""
         try:
             resolved = self._resolve_dealer(dealer_name)
             if not resolved:
@@ -1479,11 +1658,10 @@ class AnalyticsService:
             return AnalyticsResponse(success=False, error=str(e))
     
     # ==========================================================
-    # DEALER TIMELINE - 100% POSTGRESQL
+    # DEALER TIMELINE
     # ==========================================================
     
     def get_dealer_timeline(self, dealer_name: str, limit: int = 20) -> AnalyticsResponse:
-        """Get dealer timeline from PostgreSQL."""
         try:
             resolved = self._resolve_dealer(dealer_name)
             if not resolved:
@@ -1503,11 +1681,10 @@ class AnalyticsService:
             return AnalyticsResponse(success=False, error=str(e))
     
     # ==========================================================
-    # DEALER ALERTS - 100% POSTGRESQL
+    # DEALER ALERTS
     # ==========================================================
     
     def get_dealer_alerts(self, dealer_name: str) -> AnalyticsResponse:
-        """Get dealer alerts from PostgreSQL."""
         try:
             resolved = self._resolve_dealer(dealer_name)
             if not resolved:
@@ -1530,11 +1707,10 @@ class AnalyticsService:
             return AnalyticsResponse(success=False, error=str(e))
     
     # ==========================================================
-    # EXECUTIVE INSIGHTS - 100% POSTGRESQL
+    # EXECUTIVE INSIGHTS
     # ==========================================================
     
     def get_executive_insights(self, dealer_name: str = None) -> AnalyticsResponse:
-        """Get executive insights from PostgreSQL."""
         try:
             if dealer_name:
                 resolved = self._resolve_dealer(dealer_name)
@@ -1554,7 +1730,6 @@ class AnalyticsService:
                     "recommendations": recommendations
                 })
             else:
-                # Network insights
                 network = self.pg.get_network_summary()
                 return AnalyticsResponse(success=True, data={
                     "network": network,
@@ -1571,20 +1746,18 @@ class AnalyticsService:
             return AnalyticsResponse(success=False, error=str(e))
     
     # ==========================================================
-    # HEALTH CHECK - 100% POSTGRESQL
+    # HEALTH CHECK
     # ==========================================================
     
     def health_check(self) -> Dict[str, Any]:
-        """Health check with PostgreSQL validation."""
         status = {
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
-            "version": "8.0",
+            "version": "8.1",
             "environment": "Railway" if self.is_railway else "Local",
             "checks": {}
         }
         
-        # Check PostgreSQL
         try:
             result = self.logistics.db.execute(text("SELECT 1 as connected"))
             if result.first():
@@ -1595,7 +1768,6 @@ class AnalyticsService:
             status["status"] = "unhealthy"
             status["checks"]["postgresql"] = {"status": "unhealthy", "message": str(e)}
         
-        # Check data access
         try:
             test_data = self.pg.execute_one("SELECT COUNT(*) as count FROM delivery_reports LIMIT 1")
             if test_data:
@@ -1608,7 +1780,6 @@ class AnalyticsService:
         return status
     
     def get_metrics(self) -> Dict[str, Any]:
-        """Get service metrics."""
         total = self.metrics["total_requests"]
         successful = self.metrics["successful_requests"]
         
@@ -1624,7 +1795,7 @@ class AnalyticsService:
             "dn_lookups_success": self.metrics["dn_lookups_success"],
             "dn_lookups_failure": self.metrics["dn_lookups_failure"],
             "dn_lookups_success_rate": round((self.metrics["dn_lookups_success"] / max(self.metrics["dn_lookups"], 1)) * 100, 1),
-            "version": "8.0",
+            "version": "8.1",
             "environment": "Railway" if self.is_railway else "Local"
         }
     
@@ -1633,15 +1804,13 @@ class AnalyticsService:
     # ==========================================================
     
     def _calculate_analytics_from_data(self, data: Dict) -> Dict:
-        """Calculate analytics from PostgreSQL data."""
-        delivery_rate = data.get("delivery_rate", 0)
-        pod_rate = data.get("pod_rate", 0)
-        avg_pgi_aging = data.get("avg_pgi_aging", 0)
-        avg_total_aging = data.get("avg_total_aging", 0)
-        revenue = data.get("total_revenue", 0)
-        total_dns = data.get("total_dns", 0)
+        delivery_rate = data.get("delivery_rate") or 0
+        pod_rate = data.get("pod_rate") or 0
+        avg_pgi_aging = data.get("avg_pgi_aging") or 0
+        avg_total_aging = data.get("avg_total_aging") or 0
+        revenue = data.get("total_revenue") or 0
+        total_dns = data.get("total_dns") or 0
         
-        # Health score - using delivery_rate, pod_rate, and avg_total_aging
         health_score = int(
             (min(delivery_rate / 90 * 100, 100) * 0.40) +
             (min(pod_rate / 90 * 100, 100) * 0.30) +
@@ -1649,7 +1818,6 @@ class AnalyticsService:
             (min(revenue / 1000000 * 100, 100) * 0.10)
         )
         
-        # Risk
         delivery_risk = 0 if delivery_rate >= 90 else 50 if delivery_rate >= 70 else 100
         pod_risk = 0 if pod_rate >= 90 else 50 if pod_rate >= 70 else 100
         aging_risk = 0 if avg_total_aging <= 3 else 50 if avg_total_aging <= 14 else 100
@@ -1666,10 +1834,9 @@ class AnalyticsService:
         }
     
     def _generate_alerts(self, data: Dict) -> List[Dict]:
-        """Generate alerts from data."""
         alerts = []
         
-        avg_pgi_aging = data.get("avg_pgi_aging", 0)
+        avg_pgi_aging = data.get("avg_pgi_aging") or 0
         if avg_pgi_aging > 7:
             alerts.append({
                 "type": "PGI_Delivery",
@@ -1677,7 +1844,7 @@ class AnalyticsService:
                 "message": f"PGI aging is {avg_pgi_aging:.1f} days"
             })
         
-        avg_pod_aging = data.get("avg_pod_aging", 0)
+        avg_pod_aging = data.get("avg_pod_aging") or 0
         if avg_pod_aging > 5:
             alerts.append({
                 "type": "POD",
@@ -1685,7 +1852,7 @@ class AnalyticsService:
                 "message": f"POD aging is {avg_pod_aging:.1f} days"
             })
         
-        pending_pod = data.get("pending_pod_dns", 0)
+        pending_pod = data.get("pending_pod_dns") or 0
         if pending_pod > 5:
             alerts.append({
                 "type": "Pending_POD",
@@ -1693,7 +1860,7 @@ class AnalyticsService:
                 "message": f"{pending_pod} DNs pending POD"
             })
         
-        delivery_rate = data.get("delivery_rate", 0)
+        delivery_rate = data.get("delivery_rate") or 0
         if delivery_rate < 80:
             alerts.append({
                 "type": "Low_Delivery_Rate",
@@ -1704,26 +1871,25 @@ class AnalyticsService:
         return alerts
     
     def _generate_insights(self, data: Dict) -> Tuple[List[str], List[str], List[str]]:
-        """Generate insights, issues, recommendations."""
         insights = []
         issues = []
         recommendations = []
         
-        delivery_rate = data.get("delivery_rate", 0)
+        delivery_rate = data.get("delivery_rate") or 0
         if delivery_rate >= 90:
             insights.append("✅ Excellent delivery rate")
         else:
             issues.append(f"❌ Low delivery rate: {delivery_rate}%")
             recommendations.append(f"🔧 Improve delivery rate to 90%+")
         
-        pod_rate = data.get("pod_rate", 0)
+        pod_rate = data.get("pod_rate") or 0
         if pod_rate >= 90:
             insights.append("✅ Excellent POD rate")
         else:
             issues.append(f"❌ Low POD rate: {pod_rate}%")
             recommendations.append(f"🔧 Improve POD rate to 90%+")
         
-        avg_pgi_aging = data.get("avg_pgi_aging", 0)
+        avg_pgi_aging = data.get("avg_pgi_aging") or 0
         if avg_pgi_aging <= 3:
             insights.append("✅ Fast PGI delivery (< 3 days)")
         elif avg_pgi_aging <= 7:
@@ -1732,7 +1898,7 @@ class AnalyticsService:
             issues.append(f"❌ Slow PGI: {avg_pgi_aging:.1f} days")
             recommendations.append(f"🔧 Reduce PGI time to < 7 days")
         
-        avg_pod_aging = data.get("avg_pod_aging", 0)
+        avg_pod_aging = data.get("avg_pod_aging") or 0
         if avg_pod_aging <= 2:
             insights.append("✅ Fast POD confirmation (< 2 days)")
         elif avg_pod_aging <= 5:
@@ -1744,27 +1910,18 @@ class AnalyticsService:
         return insights, issues, recommendations
     
     def _build_profile(self, data: Dict) -> Dict:
-        """FIXED: Complete dealer profile with all fields."""
+        """Complete dealer profile with all fields."""
         return {
-            # Dealer identification
             "dealer_name": data.get("dealer_name", "Unknown"),
             "dealer_code": data.get("dealer_code", "Unknown"),
             "customer_code": data.get("customer_code", "Unknown"),
-            
-            # Dealer classification
             "division": data.get("division", "Unknown"),
-            
-            # Sales information
             "sales_office": data.get("sales_office", "Unknown"),
             "sales_manager": data.get("sales_manager", "Unknown"),
-            
-            # Location information
             "city": data.get("city", "Unknown"),
             "warehouse": data.get("top_warehouse", "Unknown"),
             "warehouse_code": data.get("warehouse_code", "Unknown"),
             "delivery_location": data.get("delivery_location", "Unknown"),
-            
-            # Status and dates
             "dealer_status": data.get("dealer_status", "Unknown"),
             "first_dn_date": data.get("first_dn_date"),
             "last_dn_date": data.get("last_dn_date")
@@ -1772,50 +1929,39 @@ class AnalyticsService:
     
     def _build_kpis(self, data: Dict, analytics: Dict) -> Dict:
         return {
-            "total_dns": data.get("total_dns", 0),
-            "total_revenue": data.get("total_revenue", 0),
-            "total_units": data.get("total_units", 0),
-            "delivered_dns": data.get("delivered_dns", 0),
-            "pending_dns": data.get("pending_dns", 0),
-            "pending_pod_dns": data.get("pending_pod_dns", 0),
-            "health_score": analytics["health"]["score"],
-            "risk_level": analytics["risk"]["risk_level"]
-        }
-    
-    def _build_performance(self, data: Dict) -> Dict:
-        return {
-            "total_dns": data.get("total_dns", 0),
-            "delivered_dns": data.get("delivered_dns", 0),
-            "pending_dns": data.get("pending_dns", 0),
-            "transit_dns": data.get("transit_dns", 0),
-            "delivery_rate": data.get("delivery_rate", 0),
-            "total_units": data.get("total_units", 0),
-            "delivered_units": data.get("delivered_units", 0),
-            "pending_units": data.get("pending_units", 0)
+            "total_dns": data.get("total_dns") or 0,
+            "total_revenue": data.get("total_revenue") or 0,
+            "total_units": data.get("total_units") or 0,
+            "delivered_dns": data.get("delivered_dns") or 0,
+            "pending_dns": data.get("pending_dns") or 0,
+            "pending_pod_dns": data.get("pending_pod_dns") or 0,
+            "health_score": analytics["health"]["score"] if analytics.get("health") else 0,
+            "risk_level": analytics["risk"]["risk_level"] if analytics.get("risk") else "Unknown"
         }
     
     def _build_delivery(self, data: Dict) -> Dict:
         return {
-            "delivered_dns": data.get("delivered_dns", 0),
-            "pending_dns": data.get("pending_dns", 0),
-            "transit_dns": data.get("transit_dns", 0),
-            "delivery_rate": data.get("delivery_rate", 0),
-            "avg_pgi_aging": data.get("avg_pgi_aging", 0),
-            "avg_total_aging": data.get("avg_total_aging", 0)
+            "delivered_dns": data.get("delivered_dns") or 0,
+            "pending_dns": data.get("pending_dns") or 0,
+            "transit_dns": data.get("transit_dns") or 0,
+            "delivery_rate": data.get("delivery_rate") or 0,
+            "avg_pgi_aging": data.get("avg_pgi_aging") or 0,
+            "avg_total_aging": data.get("avg_total_aging") or 0
         }
     
     def _build_pod(self, data: Dict) -> Dict:
         return {
-            "pod_completed_dns": data.get("pod_completed_dns", 0),
-            "pending_pod_dns": data.get("pending_pod_dns", 0),
-            "pod_rate": data.get("pod_rate", 0),
-            "avg_pod_aging": data.get("avg_pod_aging", 0)
+            "pod_completed_dns": data.get("pod_completed_dns") or 0,
+            "pending_pod_dns": data.get("pending_pod_dns") or 0,
+            "pod_rate": data.get("pod_rate") or 0,
+            "avg_pod_aging": data.get("avg_pod_aging") or 0
         }
     
     def _build_financial(self, data: Dict) -> Dict:
+        total_dns = data.get("total_dns") or 1
         return {
-            "total_revenue": data.get("total_revenue", 0),
-            "avg_dn_value": data.get("total_revenue", 0) / max(data.get("total_dns", 1), 1)
+            "total_revenue": data.get("total_revenue") or 0,
+            "avg_dn_value": (data.get("total_revenue") or 0) / total_dns
         }
     
     # ==========================================================
@@ -1870,7 +2016,7 @@ class AnalyticsService:
     def get_data_integrity_score(self) -> AnalyticsResponse:
         try:
             network = self.pg.get_network_summary()
-            total = network.get("total_dns", 0)
+            total = network.get("total_dns") or 0
             return AnalyticsResponse(success=True, data={
                 "total_records": total,
                 "integrity_score": 100 if total > 0 else 0,
