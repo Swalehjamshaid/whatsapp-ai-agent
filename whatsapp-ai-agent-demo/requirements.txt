@@ -1,9 +1,14 @@
+# ==========================================
+# WhatsApp AI Agent - Fixed Requirements
+# ==========================================
+
 # Core Backend
 fastapi==0.116.1
 uvicorn==0.35.0
 sqlalchemy==2.0.43
 psycopg2-binary==2.9.10
 alembic==1.16.4
+asyncpg>=0.30.0
 
 # Configuration
 python-dotenv==1.1.1
@@ -17,120 +22,87 @@ python-multipart==0.0.20
 # HTTP
 requests==2.32.4
 httpx==0.28.1
+orjson>=3.10.0
+ujson>=5.10.0
 
 # AI Providers
+openai>=1.50.0
+groq>=0.31.0
 anthropic==0.58.2
-openai==2.43.0
-groq==1.4.0
-litellm==1.89.2
 
 # Data Analysis
-numpy==2.2.6
-pandas==2.3.1
-scipy==1.16.1
-statsmodels==0.14.6
-polars==1.41.2
-duckdb==1.5.4
+polars>=1.10.0
+pandas==2.2.2
+numpy==1.26.4
+scipy==1.13.0
+duckdb>=1.1.3
+
+# Machine Learning
+scikit-learn>=1.5.0
+xgboost>=2.0.0
+statsmodels>=0.14.0
+
+# AI Embeddings
+sentence-transformers>=2.2.2
+faiss-cpu>=1.7.4
+tiktoken==0.7.0
+
+# NLP
+nltk==3.8.1
+textblob==0.18.0
+
+# LangChain
+langchain==0.2.0
+langchain-core==0.2.0
+langchain-community==0.2.0
+litellm>=1.40.0
+
+# Caching
+redis>=5.0.0
+hiredis>=3.0.0
+cachetools==5.3.3
+diskcache>=5.6.0
+slowapi>=0.1.9
+
+# Dealer Matching
+rapidfuzz>=3.9.0
+
+# Geographical
+geopy>=2.4.0
+openrouteservice>=2.3.3
 
 # Excel
 openpyxl==3.1.5
 xlsxwriter==3.2.5
 xlrd==2.0.2
 pyxlsb==1.0.10
-fastexcel==0.20.2
+fastexcel>=0.12.0
 
 # Visualization
-matplotlib==3.10.5
-plotly==6.2.0
+matplotlib==3.9.0
+plotly==5.24.0
 
-# PDF & Reporting
-pypdf==5.8.0
-pymupdf==1.26.3
-reportlab==4.4.3
-
-# Images & OCR
-Pillow==11.3.0
+# PDF
+pypdf==4.3.0
+pymupdf==1.24.0
+reportlab==4.2.0
+Pillow==10.4.0
 pytesseract==0.3.13
 
-# NLP
-nltk==3.9.1
-textblob==0.19.0
-spacy==3.8.14
-
-# LangChain
-langchain==0.3.27
-langchain-core==0.3.74
-langchain-community==0.3.27
-
-# Embeddings / RAG
-sentence-transformers==5.0.0
-faiss-cpu==1.14.3
-tiktoken==0.10.0
-
 # Security
-python-jose[cryptography]==3.5.0
+python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 
-# Scheduling & Optimization
-apscheduler==3.11.0
-ortools==9.15.6755
+# Scheduling
+apscheduler==3.10.4
 
 # Logging
-loguru==0.7.3
+loguru==0.7.2
+prometheus-client>=0.20.0
 
-# Cache
-cachetools==6.1.0
-diskcache==5.6.3
-redis==8.0.0
-hiredis==3.4.0
-
-# Database
-asyncpg==0.31.0
-
-# SQL Validation & AI SQL Safety
-sqlglot==30.11.0
-
-# Machine Learning
-scikit-learn==1.9.0
-xgboost==3.3.0
-feature-engine==1.9.4
-pyod==3.6.1
-
-# Data Quality & Validation
-great-expectations==1.18.1
-ydata-profiling==4.18.4
-
-# Financial / Statistical Analytics
-pingouin==0.6.1
-scikit-posthocs==0.14.0
-
-# Explainable AI
-shap==0.52.0
-
-# Forecasting
-prophet==1.3.0
-sktime==1.0.1
-
-# Network & Supply Chain Analytics
-networkx==3.6.1
-
-# Dealer Matching
-rapidfuzz==3.14.5
-
-# Monitoring
-prometheus-client==0.25.0
-psutil==6.1.1
-
-# Geography & Routing
-geopy==2.4.1
-openrouteservice==2.3.3
-pycountry==26.2.16
-
-# Performance
-orjson==3.11.9
-ujson==5.13.0
+# Retry
+tenacity>=8.2.0
 
 # Utilities
 python-dateutil==2.9.0.post0
-tenacity==9.1.2
-slowapi==0.1.10
+psutil>=5.9.0
