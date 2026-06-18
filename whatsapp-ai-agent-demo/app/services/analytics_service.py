@@ -1,8 +1,8 @@
 # ==========================================================
-# FILE: app/services/analytics_service.py (v12.0 - MASTER GROQ INTELLIGENCE ALIGNED)
+# FILE: app/services/analytics_service.py (v12.2 - FULLY ALIGNED WITH AI ORCHESTRATOR)
 # ==========================================================
 # PURPOSE: PRIMARY ANALYTICS ENGINE - Direct PostgreSQL Integration
-# VERSION: 12.0 - Master Groq Intelligence Aligned with Distance & Transit
+# VERSION: 12.2 - Fully Aligned with AI Orchestrator v17.2
 #
 # CRITICAL FEATURES:
 # 1. ✅ All methods return AnalyticsResponse
@@ -19,6 +19,7 @@
 # 12. ✅ Root Cause Analysis
 # 13. ✅ Executive Intelligence
 # 14. ✅ Control Tower with Risk Areas
+# 15. ✅ 100% Aligned with AI Orchestrator v17.2
 # ==========================================================
 
 from typing import Optional, Dict, Any, List, Tuple
@@ -173,7 +174,7 @@ class AnalyticsRepository:
         self._owned_db = db is None
         self.table_name = "delivery_reports"
         
-        # Warehouse coordinates cache
+        # Warehouse coordinates cache (aligned with AI Orchestrator)
         self._warehouse_coords: Dict[str, Tuple[float, float]] = {
             "lahore": (31.5204, 74.3587),
             "karachi": (24.8607, 67.0011),
@@ -202,7 +203,119 @@ class AnalyticsRepository:
             "attock": (33.7667, 72.3667),
             "chakwal": (32.9333, 72.8500),
             "jhelum": (32.9333, 73.7333),
-            "gujrat": (32.5738, 74.0789)
+            "gujrat": (32.5738, 74.0789),
+            "mandi bahauddin": (32.5833, 73.4833),
+            "hafizabad": (32.0667, 73.6833),
+            "chiniot": (31.7167, 72.9833),
+            "toba tek singh": (30.9667, 72.4833),
+            "jhang": (31.2667, 72.3167),
+            "bhawana": (31.5667, 72.6500),
+            "kabirwala": (30.4000, 71.8667),
+            "lodhran": (29.5333, 71.6167),
+            "vehari": (30.0333, 72.3500),
+            "pakpattan": (30.3500, 73.4000),
+            "arifwala": (30.2833, 73.0667),
+            "depalpur": (30.6500, 73.6500),
+            "kasur": (31.1167, 74.4500),
+            "burewala": (30.1500, 72.6500),
+            "chichawatni": (30.5333, 72.7000),
+            "kamalia": (30.7333, 72.6333),
+            "khanewal": (30.3000, 71.9333),
+            "mailsi": (29.8000, 72.1667),
+            "hasilpur": (29.6833, 72.5337),
+            "ahmadpur east": (29.1333, 71.2500),
+            "bahawalnagar": (30.0000, 73.2500),
+            "fort abbas": (29.4667, 72.8667),
+            "haroonabad": (29.6167, 73.1333),
+            "minchinabad": (30.1667, 73.5667),
+            "renala khurd": (30.8667, 73.5833),
+            "dunyapur": (29.8000, 71.7333),
+            "kahror pakka": (29.6167, 71.9333),
+            "lal suhanra": (29.3000, 72.1500),
+            "ubauro": (28.1667, 69.7333),
+            "pano aqil": (27.8500, 69.1167),
+            "ghotki": (28.0000, 69.3167),
+            "daharki": (28.0500, 69.7000),
+            "mirpur mathelo": (28.0167, 69.5500),
+            "kandhkot": (28.3000, 69.1833),
+            "kashmore": (28.4333, 69.5833),
+            "shikarpur": (27.9500, 68.6333),
+            "jacobabad": (28.2833, 68.4333),
+            "thul": (28.2333, 68.7833),
+            "garhi yasin": (28.1000, 68.5167),
+            "ratodero": (27.8000, 68.2833),
+            "bhira": (27.5333, 68.1667),
+            "moro": (26.6667, 67.9167),
+            "naushahro feroze": (26.8333, 68.1167),
+            "mehrabpur": (26.8167, 68.0000),
+            "padidan": (26.8833, 68.3000),
+            "bhitshah": (25.8667, 68.5000),
+            "hala": (25.8167, 68.4167),
+            "matiari": (25.6000, 68.4333),
+            "tando allahyar": (25.4667, 68.7167),
+            "tando muhammad khan": (25.1333, 68.5333),
+            "thattha": (24.7500, 67.9167),
+            "badin": (24.6667, 68.8333),
+            "golarchi": (24.6833, 68.7333),
+            "mirpur bathoro": (24.7333, 68.2333),
+            "sujawal": (24.6000, 68.0833),
+            "jhudo": (24.4833, 68.6667),
+            "kunri": (24.4167, 69.0333),
+            "pithoro": (25.4333, 69.3667),
+            "digri": (25.3833, 69.1167),
+            "mirwah": (25.2000, 69.0000),
+            "chor": (24.4167, 69.2333),
+            "islamkot": (24.7000, 70.1833),
+            "diplo": (24.4667, 69.5833),
+            "chachro": (24.2167, 70.2500),
+            "mithi": (24.7333, 69.8000),
+            "nagarparkar": (24.3500, 70.7667),
+            "khairpur": (27.5333, 68.7667),
+            "kingri": (27.2833, 68.5000),
+            "gambat": (27.3500, 68.5167),
+            "ranipur": (27.2833, 68.5000),
+            "manchar": (27.1667, 68.4167),
+            "lakhi": (27.0833, 68.1000),
+            "pir jo goth": (27.0500, 68.3333),
+            "kandiaro": (27.0667, 68.2167),
+            "sohbat pur": (26.9167, 68.3167),
+            "shahdadkot": (27.8500, 67.9000),
+            "warah": (27.4500, 67.8000),
+            "qambar": (27.5833, 67.9833),
+            "mubarakpur": (27.5333, 67.9667),
+            "nasirabad": (27.3833, 67.9167),
+            "jhabel": (27.2833, 67.8833),
+            "kamber": (27.5833, 67.9833),
+            "shahpur chakar": (26.1500, 68.6500),
+            "sakrand": (26.1333, 68.2667),
+            "dadu": (26.7333, 67.7833),
+            "mehar": (26.6000, 67.8333),
+            "khairpur nathan shah": (26.5833, 67.7333),
+            "johi": (26.6667, 67.6167),
+            "sewan": (26.4000, 67.7000),
+            "bhan": (26.4500, 67.7167),
+            "lakki marwat": (32.6000, 70.9000),
+            "tank": (32.2167, 70.3833),
+            "dera ismail khan": (31.8333, 70.9000),
+            "kulachi": (31.9333, 70.4500),
+            "daraban": (31.6667, 70.3500),
+            "parachinar": (33.9000, 70.1000),
+            "hangu": (33.5333, 71.0667),
+            "kohat": (33.5833, 71.4333),
+            "karak": (33.1167, 71.1000),
+            "bannu": (32.9833, 70.6000),
+            "mardan": (34.2000, 72.0500),
+            "swabi": (34.1167, 72.4667),
+            "charsadda": (34.1500, 71.7333),
+            "nowshera": (34.0167, 71.9833),
+            "risalpur": (34.0667, 71.9667),
+            "pabbi": (34.0167, 72.1000),
+            "tordher": (34.0167, 72.2667),
+            "topi": (34.0667, 72.6167),
+            "jehangira": (34.0333, 72.2833),
+            "khalabat": (34.0167, 72.3333),
+            "nathia gali": (34.0667, 73.3833),
+            "murree": (33.9000, 73.3833)
         }
     
     def close(self):
@@ -224,7 +337,7 @@ class AnalyticsRepository:
         return normalized
     
     # ==========================================================
-    # DISTANCE ENGINE (Haversine Formula)
+    # DISTANCE ENGINE (Haversine Formula) - Aligned with AI Orchestrator
     # ==========================================================
     
     def _calculate_haversine_distance(
@@ -565,7 +678,7 @@ Risk Level: Low"""
             return None
     
     # ==========================================================
-    # DEALER DASHBOARD WITH RECOVERY (v12.0)
+    # DEALER DASHBOARD WITH RECOVERY (v12.2 - Aligned)
     # ==========================================================
     
     def get_dealer_dashboard(self, dealer_name: str, recovery_attempts: int = 0) -> Dict[str, Any]:
@@ -632,7 +745,7 @@ Risk Level: Low"""
             # Get monthly trend
             monthly_trend = self.get_dealer_monthly_trend(resolved, 6)
             
-            # Calculate distance and transit if warehouse available
+            # Calculate distance and transit if warehouse available (aligned with AI Orchestrator)
             warehouse = result.top_warehouse or ""
             distance_info = {}
             if warehouse:
@@ -647,7 +760,7 @@ Risk Level: Low"""
                         "summary": self._get_distance_summary(distance, transit_days, status, resolved)
                     }
             
-            # Calculate risk level
+            # Calculate risk level (aligned with AI Orchestrator)
             avg_aging = float(result.avg_total_aging or 0)
             risk_level, risk_percentage = self._calculate_risk_level(
                 int(avg_aging),
@@ -867,7 +980,7 @@ Risk Level: Low"""
             return []
     
     # ==========================================================
-    # CITY DASHBOARD (v12.0)
+    # CITY DASHBOARD (v12.2 - Aligned)
     # ==========================================================
     
     def get_city_dashboard(self, city_name: str) -> Dict[str, Any]:
@@ -990,7 +1103,7 @@ Risk Level: Low"""
             return {"error": str(e)}
     
     # ==========================================================
-    # WAREHOUSE DASHBOARD (v12.0)
+    # WAREHOUSE DASHBOARD (v12.2 - Aligned)
     # ==========================================================
     
     def get_warehouse_dashboard(self, warehouse_name: str) -> Dict[str, Any]:
@@ -1254,7 +1367,7 @@ Risk Level: Low"""
             return {"error": str(e)}
     
     # ==========================================================
-    # CONTROL TOWER (v12.0)
+    # CONTROL TOWER (v12.2 - Aligned)
     # ==========================================================
     
     def get_control_tower_alerts(self) -> Dict[str, Any]:
@@ -1337,7 +1450,7 @@ Risk Level: Low"""
             return {"error": str(e)}
     
     # ==========================================================
-    # ROOT CAUSE INSIGHTS
+    # ROOT CAUSE INSIGHTS (v12.2 - Aligned)
     # ==========================================================
     
     def get_root_cause_insights(self) -> Dict[str, Any]:
@@ -1523,7 +1636,7 @@ class AnalyticsService:
         }
         self._test_postgresql()
         logger.info("=" * 70)
-        logger.info("AnalyticsService v12.0 - Master Groq Intelligence Aligned")
+        logger.info("AnalyticsService v12.2 - Fully Aligned with AI Orchestrator")
         logger.info("=" * 70)
         logger.info("")
         logger.info("   ✅ SELF-HEALING FEATURES:")
@@ -1537,6 +1650,12 @@ class AnalyticsService:
         logger.info("      - Same City Rule")
         logger.info("      - Transit Time Rules")
         logger.info("      - Risk Assessment")
+        logger.info("")
+        logger.info("   ✅ ALIGNED WITH AI ORCHESTRATOR v17.2:")
+        logger.info("      - Distance info in dashboards")
+        logger.info("      - Risk levels and percentages")
+        logger.info("      - Transit time calculations")
+        logger.info("      - Same city detection")
         logger.info("")
         logger.info("   ✅ BUSINESS RULES:")
         logger.info("      - customer_name = Dealer = Sold-To Party")
@@ -1625,7 +1744,7 @@ class AnalyticsService:
         self._request_cache = {}
     
     # ==========================================================
-    # DN ANALYTICS (v12.0)
+    # DN ANALYTICS (v12.2 - Aligned)
     # ==========================================================
     
     def get_dn_analytics(self, dn_number: str) -> AnalyticsResponse:
@@ -1677,7 +1796,7 @@ class AnalyticsService:
             formatted = self._format_dn_record(record)
             validation = self._validate_dn_dates(record)
             
-            # Add distance and transit if warehouse available
+            # Add distance and transit if warehouse available (aligned with AI Orchestrator)
             distance_info = {}
             if record.warehouse and record.customer_name:
                 distance, transit_days, status = self.repo._calculate_distance_and_transit(
@@ -1693,7 +1812,7 @@ class AnalyticsService:
                         )
                     }
             
-            # Calculate risk level
+            # Calculate risk level (aligned with AI Orchestrator)
             pgi_aging = formatted.get("pgi_aging_days", 0) or 0
             risk_level, risk_percentage = self.repo._calculate_risk_level(
                 int(pgi_aging),
@@ -1879,7 +1998,7 @@ class AnalyticsService:
             return AnalyticsResponse(success=False, error=str(e), error_id=str(uuid.uuid4())[:8])
     
     # ==========================================================
-    # DEALER DASHBOARD (v12.0)
+    # DEALER DASHBOARD (v12.2 - Aligned)
     # ==========================================================
     
     def get_dealer_dashboard(self, dealer_name: str) -> AnalyticsResponse:
@@ -1985,18 +2104,6 @@ class AnalyticsService:
         revenue = data.get("total_revenue") or 0
         score = int((min(delivery_rate / 90 * 100, 100) * 0.40) + (min(pod_rate / 90 * 100, 100) * 0.30) + (max(100 - min(avg_aging / 30 * 100, 100), 0) * 0.20) + (min(revenue / 1000000 * 100, 100) * 0.10))
         return min(score, 100)
-    
-    def _calculate_risk_level(self, data: Dict) -> str:
-        delivery_rate = data.get("delivery_rate") or 0
-        pod_rate = data.get("pod_rate") or 0
-        avg_aging = data.get("avg_total_aging") or 0
-        delivery_risk = 0 if delivery_rate >= 90 else 50 if delivery_rate >= 70 else 100
-        pod_risk = 0 if pod_rate >= 90 else 50 if pod_rate >= 70 else 100
-        aging_risk = 0 if avg_aging <= 3 else 50 if avg_aging <= 14 else 100
-        risk_score = (delivery_risk + pod_risk + aging_risk) // 3
-        if risk_score <= 25: return "Low"
-        elif risk_score <= 50: return "Medium"
-        else: return "High"
     
     def _build_profile(self, data: Dict) -> Dict[str, Any]:
         return {
@@ -2214,7 +2321,7 @@ class AnalyticsService:
             return AnalyticsResponse(success=False, error=str(e), error_id=str(uuid.uuid4())[:8])
     
     # ==========================================================
-    # EXECUTIVE SUMMARY (v12.0)
+    # EXECUTIVE SUMMARY (v12.2 - Aligned)
     # ==========================================================
     
     def get_executive_summary(self) -> AnalyticsResponse:
@@ -2364,7 +2471,7 @@ class AnalyticsService:
     # ==========================================================
     
     def health_check(self) -> Dict[str, Any]:
-        status = {"status": "healthy", "timestamp": datetime.now().isoformat(), "version": "12.0", "environment": "Railway" if self.is_railway else "Local", "checks": {}}
+        status = {"status": "healthy", "timestamp": datetime.now().isoformat(), "version": "12.2", "environment": "Railway" if self.is_railway else "Local", "checks": {}}
         try:
             db_health = self.repo.debug_database()
             if db_health.get("connected"):
@@ -2395,7 +2502,7 @@ class AnalyticsService:
             "groq_fallbacks": self.metrics["groq_fallbacks"],
             "distance_calculations": self.metrics.get("distance_calculations", 0),
             "risk_assessments": self.metrics.get("risk_assessments", 0),
-            "version": "12.0",
+            "version": "12.2",
             "environment": "Railway" if self.is_railway else "Local"
         }
 
