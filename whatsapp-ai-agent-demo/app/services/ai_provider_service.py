@@ -1,5 +1,5 @@
 # ==========================================================
-# FILE: app/services/ai_provider_service.py (v17.0 - MASTER GROQ INTELLIGENCE)
+# FILE: app/services/ai_provider_service.py (v17.2 - FULLY SELF-HEALING)
 # ==========================================================
 # PURPOSE: Master Orchestrator - WhatsApp AI Analytics Agent
 # 
@@ -10,18 +10,21 @@
 # 4. ✅ Groq AI Fallback - For queries outside structured analytics
 # 5. ✅ Production Diagnostics - Full logging at every step
 # 6. ✅ System Survival - Failed queries never poison future queries
+# 7. ✅ Context Validation - Invalid entities never stored
+# 8. ✅ Error Recovery - Graceful handling with user guidance
+# 9. ✅ Cache Self-Healing - Auto-clean corrupted entries
 # 
-# MASTER GROQ INTELLIGENCE (v17.0):
-# 7. ✅ AI Logistics Control Tower - Groq as Chief Logistics Officer
-# 8. ✅ Dealer Distance Engine - Haversine Formula with Same City Rule
-# 9. ✅ Transit Time Engine - Distance-based delivery estimation
-# 10. ✅ Delay Engine - Actual vs Expected delivery analysis
-# 11. ✅ Risk Engine - Multi-level risk assessment
-# 12. ✅ Root Cause Analysis - Why analysis with recommendations
-# 13. ✅ AI Insight Generation - Automatic business intelligence
-# 14. ✅ Forecasting Engine - Predictive analytics
-# 15. ✅ WhatsApp Menu System - Interactive navigation
-# 16. ✅ Executive Decision Support - Management recommendations
+# MASTER GROQ INTELLIGENCE:
+# 10. ✅ AI Logistics Control Tower - Groq as Chief Logistics Officer
+# 11. ✅ Dealer Distance Engine - Haversine Formula with Same City Rule
+# 12. ✅ Transit Time Engine - Distance-based delivery estimation
+# 13. ✅ Delay Engine - Actual vs Expected delivery analysis
+# 14. ✅ Risk Engine - Multi-level risk assessment
+# 15. ✅ Root Cause Analysis - Why analysis with recommendations
+# 16. ✅ AI Insight Generation - Automatic business intelligence
+# 17. ✅ Forecasting Engine - Predictive analytics
+# 18. ✅ WhatsApp Menu System - Interactive navigation
+# 19. ✅ Executive Decision Support - Management recommendations
 # ==========================================================
 
 import time
@@ -231,6 +234,7 @@ class ConversationContext:
         self.last_distance: Optional[float] = None
         self.last_transit_days: Optional[int] = None
         self.last_risk_level: Optional[str] = None
+        self.is_valid: bool = True
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -245,17 +249,18 @@ class ConversationContext:
             "retry_count": self.retry_count,
             "last_distance": self.last_distance,
             "last_transit_days": self.last_transit_days,
-            "last_risk_level": self.last_risk_level
+            "last_risk_level": self.last_risk_level,
+            "is_valid": self.is_valid
         }
 
 
 # ==========================================================
-# MASTER ORCHESTRATOR - SELF-HEALING ARCHITECTURE v17.0
+# MASTER ORCHESTRATOR - SELF-HEALING ARCHITECTURE v17.2
 # ==========================================================
 
 class AIOrchestrator:
     """
-    ENTERPRISE LOGISTICS ANALYTICS ENGINE - v17.0 (MASTER GROQ INTELLIGENCE)
+    ENTERPRISE LOGISTICS ANALYTICS ENGINE - v17.2 (FULLY SELF-HEALING)
     
     Self-Healing Features:
     - Request isolation (fresh context for every request)
@@ -263,6 +268,8 @@ class AIOrchestrator:
     - Never cache failures
     - Groq AI fallback
     - System survival (failed queries never poison future queries)
+    - Context validation and auto-cleaning
+    - Cache self-healing
     
     Master Groq Intelligence:
     - AI Logistics Control Tower
@@ -330,192 +337,13 @@ class AIOrchestrator:
             "mianwali": (32.5906, 71.5391),
             "abbottabad": (34.1688, 73.2215),
             "mansehra": (34.3372, 73.1957),
-            "muzaffarabad": (34.3625, 73.4705),
-            "gilgit": (35.9209, 74.3146),
-            "skardu": (35.3026, 75.6275),
-            "chitral": (35.8579, 71.7863),
-            "swat": (35.2223, 72.4258),
-            "diamer": (35.4404, 73.7149),
-            "astore": (35.3633, 74.9202),
-            "ghizer": (36.1323, 73.9167),
-            "hunza": (36.3232, 74.6419),
-            "nagar": (36.2758, 74.3750),
-            "ghizer": (36.1323, 73.9167),
-            "shigar": (35.4299, 75.6345),
-            "kharmang": (35.0633, 76.2122),
-            "gultari": (35.4667, 75.4000),
-            "rongdo": (35.4000, 75.5000),
-            "darel": (35.4000, 73.7000),
-            "tangir": (35.5000, 73.8000),
-            "kohistan": (35.3000, 73.1000),
-            "kolai palas": (35.1000, 73.3000),
-            "batagram": (34.7000, 73.0000),
-            "allai": (34.8000, 73.1000),
-            "torghar": (34.5000, 73.0000),
             "haripur": (34.0000, 72.9333),
             "taxila": (33.7461, 72.8511),
             "wah cantt": (33.7800, 72.7100),
             "attock": (33.7667, 72.3667),
             "chakwal": (32.9333, 72.8500),
             "jhelum": (32.9333, 73.7333),
-            "gujrat": (32.5738, 74.0789),
-            "mandi bahauddin": (32.5833, 73.4833),
-            "hafizabad": (32.0667, 73.6833),
-            "chiniot": (31.7167, 72.9833),
-            "toba tek singh": (30.9667, 72.4833),
-            "jhang": (31.2667, 72.3167),
-            "bhawana": (31.5667, 72.6500),
-            "kabirwala": (30.4000, 71.8667),
-            "lodhran": (29.5333, 71.6167),
-            "vehari": (30.0333, 72.3500),
-            "pakpattan": (30.3500, 73.4000),
-            "arifwala": (30.2833, 73.0667),
-            "depalpur": (30.6500, 73.6500),
-            "kasur": (31.1167, 74.4500),
-            "okara": (30.8089, 73.4516),
-            "sahiwal": (30.6681, 73.1033),
-            "burewala": (30.1500, 72.6500),
-            "chichawatni": (30.5333, 72.7000),
-            "kamalia": (30.7333, 72.6333),
-            "khanewal": (30.3000, 71.9333),
-            "mailsi": (29.8000, 72.1667),
-            "hasilpur": (29.6833, 72.5333),
-            "ahmadpur east": (29.1333, 71.2500),
-            "bahawalnagar": (30.0000, 73.2500),
-            "fort abbas": (29.4667, 72.8667),
-            "haroonabad": (29.6167, 73.1333),
-            "minchinabad": (30.1667, 73.5667),
-            "renala khurd": (30.8667, 73.5833),
-            "dunyapur": (29.8000, 71.7333),
-            "kahror pakka": (29.6167, 71.9333),
-            "lal suhanra": (29.3000, 72.1500),
-            "ubauro": (28.1667, 69.7333),
-            "pano aqil": (27.8500, 69.1167),
-            "ghotki": (28.0000, 69.3167),
-            "daharki": (28.0500, 69.7000),
-            "mirpur mathelo": (28.0167, 69.5500),
-            "kandhkot": (28.3000, 69.1833),
-            "kashmore": (28.4333, 69.5833),
-            "shikarpur": (27.9500, 68.6333),
-            "jacobabad": (28.2833, 68.4333),
-            "thul": (28.2333, 68.7833),
-            "garhi yasin": (28.1000, 68.5167),
-            "ratodero": (27.8000, 68.2833),
-            "bhira": (27.5333, 68.1667),
-            "moro": (26.6667, 67.9167),
-            "naushahro feroze": (26.8333, 68.1167),
-            "mehrabpur": (26.8167, 68.0000),
-            "padidan": (26.8833, 68.3000),
-            "bhitshah": (25.8667, 68.5000),
-            "hala": (25.8167, 68.4167),
-            "matiari": (25.6000, 68.4333),
-            "tando allahyar": (25.4667, 68.7167),
-            "tando muhammad khan": (25.1333, 68.5333),
-            "thattha": (24.7500, 67.9167),
-            "badin": (24.6667, 68.8333),
-            "golarchi": (24.6833, 68.7333),
-            "mirpur bathoro": (24.7333, 68.2333),
-            "sujawal": (24.6000, 68.0833),
-            "jhudo": (24.4833, 68.6667),
-            "kunri": (24.4167, 69.0333),
-            "pithoro": (25.4333, 69.3667),
-            "digri": (25.3833, 69.1167),
-            "mirwah": (25.2000, 69.0000),
-            "chor": (24.4167, 69.2333),
-            "islamkot": (24.7000, 70.1833),
-            "diplo": (24.4667, 69.5833),
-            "chachro": (24.2167, 70.2500),
-            "mithi": (24.7333, 69.8000),
-            "nagarparkar": (24.3500, 70.7667),
-            "khairpur": (27.5333, 68.7667),
-            "kingri": (27.2833, 68.5000),
-            "gambat": (27.3500, 68.5167),
-            "ranipur": (27.2833, 68.5000),
-            "manchar": (27.1667, 68.4167),
-            "lakhi": (27.0833, 68.1000),
-            "pir jo goth": (27.0500, 68.3333),
-            "kandiaro": (27.0667, 68.2167),
-            "sohbat pur": (26.9167, 68.3167),
-            "shahdadkot": (27.8500, 67.9000),
-            "warah": (27.4500, 67.8000),
-            "qambar": (27.5833, 67.9833),
-            "mubarakpur": (27.5333, 67.9667),
-            "nasirabad": (27.3833, 67.9167),
-            "jhabel": (27.2833, 67.8833),
-            "kamber": (27.5833, 67.9833),
-            "shahpur chakar": (26.1500, 68.6500),
-            "sakrand": (26.1333, 68.2667),
-            "dadu": (26.7333, 67.7833),
-            "mehar": (26.6000, 67.8333),
-            "khairpur nathan shah": (26.5833, 67.7333),
-            "johi": (26.6667, 67.6167),
-            "sewan": (26.4000, 67.7000),
-            "bhan": (26.4500, 67.7167),
-            "lakki marwat": (32.6000, 70.9000),
-            "tank": (32.2167, 70.3833),
-            "dera ismail khan": (31.8333, 70.9000),
-            "kulachi": (31.9333, 70.4500),
-            "daraban": (31.6667, 70.3500),
-            "parachinar": (33.9000, 70.1000),
-            "hangu": (33.5333, 71.0667),
-            "kohat": (33.5833, 71.4333),
-            "karak": (33.1167, 71.1000),
-            "bannu": (32.9833, 70.6000),
-            "mardan": (34.2000, 72.0500),
-            "swabi": (34.1167, 72.4667),
-            "charsadda": (34.1500, 71.7333),
-            "nowshera": (34.0167, 71.9833),
-            "risalpur": (34.0667, 71.9667),
-            "pabbi": (34.0167, 72.1000),
-            "tordher": (34.0167, 72.2667),
-            "topi": (34.0667, 72.6167),
-            "jehangira": (34.0333, 72.2833),
-            "khalabat": (34.0167, 72.3333),
-            "mansehra": (34.3372, 73.1957),
-            "abbottabad": (34.1688, 73.2215),
-            "haripur": (34.0000, 72.9333),
-            "havelian": (34.0500, 73.1667),
-            "ghazi": (34.0000, 72.8333),
-            "nathia gali": (34.0667, 73.3833),
-            "murree": (33.9000, 73.3833),
-            "rawalpindi": (33.5651, 73.0169),
-            "islamabad": (33.6844, 73.0479),
-            "taxila": (33.7461, 72.8511),
-            "wah cantt": (33.7800, 72.7100),
-            "attock": (33.7667, 72.3667),
-            "chakwal": (32.9333, 72.8500),
-            "jhelum": (32.9333, 73.7333),
-            "gujrat": (32.5738, 74.0789),
-            "mandi bahauddin": (32.5833, 73.4833),
-            "hafizabad": (32.0667, 73.6833),
-            "chiniot": (31.7167, 72.9833),
-            "toba tek singh": (30.9667, 72.4833),
-            "jhang": (31.2667, 72.3167),
-            "bhawana": (31.5667, 72.6500),
-            "kabirwala": (30.4000, 71.8667),
-            "lodhran": (29.5333, 71.6167),
-            "vehari": (30.0333, 72.3500),
-            "pakpattan": (30.3500, 73.4000),
-            "arifwala": (30.2833, 73.0667),
-            "depalpur": (30.6500, 73.6500),
-            "kasur": (31.1167, 74.4500),
-            "okara": (30.8089, 73.4516),
-            "sahiwal": (30.6681, 73.1033),
-            "burewala": (30.1500, 72.6500),
-            "chichawatni": (30.5333, 72.7000),
-            "kamalia": (30.7333, 72.6333),
-            "khanewal": (30.3000, 71.9333),
-            "mailsi": (29.8000, 72.1667),
-            "hasilpur": (29.6833, 72.5337),
-            "ahmadpur east": (29.1333, 71.2500),
-            "bahawalnagar": (30.0000, 73.2500),
-            "fort abbas": (29.4667, 72.8667),
-            "haroonabad": (29.6167, 73.1333),
-            "minchinabad": (30.1667, 73.5667),
-            "renala khurd": (30.8667, 73.5833),
-            "dunyapur": (29.8000, 71.7333),
-            "kahror pakka": (29.6167, 71.9333),
-            "lal suhanra": (29.3000, 72.1500)
+            "gujrat": (32.5738, 74.0789)
         }
         
         # Metrics
@@ -524,6 +352,7 @@ class AIOrchestrator:
             "cache_hits": 0,
             "cache_misses": 0,
             "cache_failures_avoided": 0,
+            "cache_cleaned": 0,
             "dn_lookups": 0,
             "dn_lookups_success": 0,
             "dn_lookups_failure": 0,
@@ -556,11 +385,13 @@ class AIOrchestrator:
             "transit_calculations": 0,
             "risk_assessments": 0,
             "forecast_requests": 0,
-            "root_cause_requests": 0
+            "root_cause_requests": 0,
+            "context_reset": 0,
+            "invalid_entity_cleared": 0
         }
         
         logger.info("=" * 70)
-        logger.info("AI Orchestrator v17.0 - Master Groq Intelligence")
+        logger.info("AI Orchestrator v17.2 - Fully Self-Healing")
         logger.info("=" * 70)
         logger.info("")
         logger.info("   SELF-HEALING FEATURES:")
@@ -569,6 +400,8 @@ class AIOrchestrator:
         logger.info("   ✅ Never Cache Failures")
         logger.info("   ✅ Groq AI Fallback")
         logger.info("   ✅ System Survival")
+        logger.info("   ✅ Context Validation & Auto-Cleaning")
+        logger.info("   ✅ Cache Self-Healing")
         logger.info("")
         logger.info("   MASTER GROQ INTELLIGENCE:")
         logger.info("   ✅ AI Logistics Control Tower")
@@ -581,14 +414,6 @@ class AIOrchestrator:
         logger.info("   ✅ Forecasting Engine")
         logger.info("   ✅ WhatsApp Menu System")
         logger.info("   ✅ Executive Decision Support")
-        logger.info("")
-        logger.info("   ENTERPRISE FEATURES:")
-        logger.info("   ✅ Dealer 360 Dashboard")
-        logger.info("   ✅ Enhanced DN Dashboard")
-        logger.info("   ✅ City Performance Dashboard")
-        logger.info("   ✅ Warehouse Performance Dashboard")
-        logger.info("   ✅ Control Tower Dashboard")
-        logger.info("   ✅ Executive Dashboard")
         logger.info("")
         logger.info("   STATUS: ✅ PRODUCTION READY")
         logger.info("=" * 70)
@@ -650,6 +475,11 @@ class AIOrchestrator:
         
         if not hasattr(response, 'success'):
             logger.error(f"[{request_id}] AnalyticsResponse missing 'success' for {service_name}")
+            self.metrics["analytics_response_errors"] += 1
+            return False
+        
+        if response.success is False:
+            logger.error(f"[{request_id}] AnalyticsResponse success=False for {service_name}: {response.error}")
             self.metrics["analytics_response_errors"] += 1
             return False
         
@@ -1085,7 +915,7 @@ Keep insights actionable and brief.
     def _cache_response(self, question: str, phone_number: Optional[str], response: str, success: bool = True):
         cache_key = self._generate_cache_key(question, phone_number)
         
-        if success and not response.startswith("❌") and "Unable" not in response:
+        if success and not response.startswith("❌") and "Unable" not in response and "not found" not in response.lower():
             self.response_cache[cache_key] = response
         else:
             self.failure_cache[cache_key] = time.time()
@@ -1121,6 +951,67 @@ Keep insights actionable and brief.
         logger.info(f"[{request_id}] 🔄 Request context reset (isolation)")
     
     # ==========================================================
+    # VALIDATION HELPERS
+    # ==========================================================
+    
+    def _is_invalid_entity(self, entity: str) -> bool:
+        """Check if an entity is invalid/corrupted."""
+        if not entity:
+            return True
+        # Check for error patterns
+        error_patterns = ['not found', 'error', 'invalid', 'unable', 'failed', 'null', 'none']
+        if any(pattern in entity.lower() for pattern in error_patterns):
+            return True
+        # Check if entity is too short or too long
+        if len(entity.strip()) < 2 or len(entity.strip()) > 100:
+            return True
+        # Check if entity contains SQL or code patterns
+        if any(char in entity for char in [';', '--', "'", '"', '\\']):
+            return True
+        return False
+    
+    def _clean_context(self, phone_number: str) -> None:
+        """Clean corrupted context for a user."""
+        if phone_number not in self.conversation_cache:
+            return
+        
+        context = self.conversation_cache[phone_number]
+        cleaned = False
+        
+        # Check dealer
+        if context.last_dealer and self._is_invalid_entity(context.last_dealer):
+            logger.warning(f"Cleaning invalid dealer: {context.last_dealer}")
+            context.last_dealer = None
+            context.confidence = 0.0
+            cleaned = True
+            self.metrics["invalid_entity_cleared"] += 1
+        
+        # Check DN
+        if context.last_dn and self._is_invalid_entity(context.last_dn):
+            logger.warning(f"Cleaning invalid DN: {context.last_dn}")
+            context.last_dn = None
+            cleaned = True
+            self.metrics["invalid_entity_cleared"] += 1
+        
+        # Check warehouse
+        if context.last_warehouse and self._is_invalid_entity(context.last_warehouse):
+            logger.warning(f"Cleaning invalid warehouse: {context.last_warehouse}")
+            context.last_warehouse = None
+            cleaned = True
+            self.metrics["invalid_entity_cleared"] += 1
+        
+        # Check city
+        if context.last_city and self._is_invalid_entity(context.last_city):
+            logger.warning(f"Cleaning invalid city: {context.last_city}")
+            context.last_city = None
+            cleaned = True
+            self.metrics["invalid_entity_cleared"] += 1
+        
+        if cleaned:
+            self.metrics["context_reset"] += 1
+            logger.info(f"Context cleaned for {phone_number}")
+    
+    # ==========================================================
     # DEALER RESOLUTION ENGINE (6 Strategies)
     # ==========================================================
     
@@ -1141,13 +1032,20 @@ Keep insights actionable and brief.
         if not dealer_input or not dealer_input.strip():
             return None, 0.0, "empty_input"
         
-        # Check cache
+        # Check cache with validation
         cache_key = dealer_input.lower().strip()
         if cache_key in self.dealer_resolution_cache:
             resolved, confidence, timestamp = self.dealer_resolution_cache[cache_key]
-            if time.time() - timestamp < 3600:
-                logger.info(f"[{req_id}] Dealer resolution cache hit: '{resolved}'")
-                return resolved, confidence, "cache_hit"
+            # Check if cached entry is valid
+            if resolved and not self._is_invalid_entity(resolved):
+                if time.time() - timestamp < 3600:
+                    logger.info(f"[{req_id}] Dealer resolution cache hit: '{resolved}'")
+                    return resolved, confidence, "cache_hit"
+            else:
+                # Remove invalid cache entry
+                del self.dealer_resolution_cache[cache_key]
+                self.metrics["cache_cleaned"] += 1
+                logger.info(f"[{req_id}] Removed invalid cache entry for: '{dealer_input}'")
         
         dealer_clean = dealer_input.strip()
         logger.info(f"[{req_id}] 🔍 Safe Dealer Resolution: '{dealer_clean}'")
@@ -1157,7 +1055,7 @@ Keep insights actionable and brief.
         # ==========================================================
         try:
             resolved = self.schema.resolve_dealer(dealer_clean)
-            if resolved:
+            if resolved and not self._is_invalid_entity(resolved):
                 confidence = 0.99
                 self.metrics["dealer_resolution_success"] += 1
                 logger.info(f"[{req_id}] ✅ Strategy 1 (Schema): '{resolved}'")
@@ -1190,7 +1088,7 @@ Keep insights actionable and brief.
         # ==========================================================
         try:
             resolved = self.schema.resolve_dealer_direct(dealer_clean)
-            if resolved:
+            if resolved and not self._is_invalid_entity(resolved):
                 confidence = 0.90
                 self.metrics["dealer_resolution_success"] += 1
                 logger.info(f"[{req_id}] ✅ Strategy 3 (Direct DB): '{resolved}'")
@@ -1250,7 +1148,7 @@ Keep insights actionable and brief.
             logger.debug(f"[{req_id}] Strategy 5 failed: {e}")
         
         # ==========================================================
-        # STRATEGY 6: Groq AI Fallback
+        # STRATEGY 6: Groq AI Fallback (with validation)
         # ==========================================================
         if self._is_groq_available():
             try:
@@ -1259,7 +1157,7 @@ Keep insights actionable and brief.
                     future = executor.submit(self.groq.chat, groq_prompt, {})
                     try:
                         resolved = future.result(timeout=3.0)
-                        if resolved and len(resolved) > 3:
+                        if resolved and len(resolved) > 3 and not self._is_invalid_entity(resolved):
                             confidence = 0.60
                             self.metrics["dealer_resolution_success"] += 1
                             self.metrics["groq_fallbacks"] += 1
@@ -1415,7 +1313,7 @@ I specialize in logistics analytics. Please ask questions about:
 Type 'help' for the full menu."""
     
     # ==========================================================
-    # MASTER GROQ EXECUTION (v17.0)
+    # MASTER GROQ EXECUTION (v17.2)
     # ==========================================================
     
     def _execute_master_groq(
@@ -1520,7 +1418,7 @@ Keep it concise but comprehensive.
             return "👔 Unable to generate executive insights."
     
     # ==========================================================
-    # GROQ FALLBACK FOR NON-ANALYTICS QUERIES (v17.0)
+    # GROQ FALLBACK FOR NON-ANALYTICS QUERIES (v17.2)
     # ==========================================================
     
     def _execute_groq_fallback(self, query: str, req_id: str) -> str:
@@ -1570,7 +1468,7 @@ Keep it concise but comprehensive.
             return self._get_help_message()
     
     # ==========================================================
-    # SAFE ENRICHMENT WITH TIMEOUT (v17.0)
+    # SAFE ENRICHMENT WITH TIMEOUT (v17.2)
     # ==========================================================
     
     def _enrich_with_groq_safe(
@@ -1643,6 +1541,10 @@ Keep it concise and actionable. Max 3 sentences.
         # Reset request context for isolation
         self._reset_request_context(req_id)
         
+        # Clean any corrupted context for this user
+        if phone_number:
+            self._clean_context(phone_number)
+        
         self.metrics["total_requests"] += 1
         
         logger.bind(request_id=req_id).info(f"📥 Processing: {question[:100]}")
@@ -1667,7 +1569,7 @@ Keep it concise and actionable. Max 3 sentences.
             return self._get_error_response(question, e, error_id, req_id)
     
     # ==========================================================
-    # SYNC PROCESSING (SELF-HEALING v17.0)
+    # SYNC PROCESSING (SELF-HEALING v17.2)
     # ==========================================================
     
     def _process_sync(self, question: str, phone_number: Optional[str], req_id: str) -> str:
@@ -1725,9 +1627,11 @@ Keep it concise and actionable. Max 3 sentences.
                     if self._validate_analytics_response(result, "warehouse_dashboard", req_id):
                         response = self._format_warehouse_dashboard(result, warehouse_result, req_id)
                         self._cache_response(question, phone_number, response, True)
+                        self._update_context_safe(phone_number, "warehouse_dashboard", "warehouse", warehouse_result, req_id, response, True)
                         return response
                     else:
-                        return f"🏭 Unable to retrieve warehouse dashboard for '{warehouse_result}'."
+                        error_msg = f"🏭 Unable to retrieve warehouse dashboard for '{warehouse_result}'."
+                        return error_msg
             
             # ==========================================================
             # STEP 2: Check for city
@@ -1741,12 +1645,14 @@ Keep it concise and actionable. Max 3 sentences.
                 if self._validate_analytics_response(result, "city_dashboard", req_id):
                     response = self._format_city_dashboard(result, city_result, req_id)
                     self._cache_response(question, phone_number, response, True)
+                    self._update_context_safe(phone_number, "city_dashboard", "city", city_result, req_id, response, True)
                     return response
                 else:
-                    return f"🏙️ Unable to retrieve city dashboard for '{city_result}'."
+                    error_msg = f"🏙️ Unable to retrieve city dashboard for '{city_result}'."
+                    return error_msg
             
             # ==========================================================
-            # STEP 3: DN Lookup
+            # STEP 3: DN Lookup with Validation
             # ==========================================================
             
             if self._is_dn_query(question):
@@ -1754,12 +1660,12 @@ Keep it concise and actionable. Max 3 sentences.
                 self.metrics["dn_lookups"] += 1
                 dn_normalized = self._normalize_dn(question)
                 response, success = self._execute_dn_lookup_with_retry(dn_normalized, req_id)
-                self._update_context(phone_number, "dn_lookup", "dn", question, req_id)
+                self._update_context_safe(phone_number, "dn_lookup", "dn", question, req_id, response, success)
                 self._cache_response(question, phone_number, response, success)
                 return response
             
             # ==========================================================
-            # STEP 4: Dealer Resolution (with recovery + distance)
+            # STEP 4: Dealer Resolution with Recovery and Validation
             # ==========================================================
             
             # Try dealer resolution with recovery
@@ -1783,17 +1689,39 @@ Keep it concise and actionable. Max 3 sentences.
                             )
                             response = f"{response}\n\n{distance_summary}"
                     
-                    self._update_context(phone_number, "dealer_dashboard", "dealer", resolved, req_id)
                     self._cache_response(question, phone_number, response, True)
+                    self._update_context_safe(phone_number, "dealer_dashboard", "dealer", resolved, req_id, response, True)
                     return response
                 else:
-                    return f"🏪 Unable to retrieve dealer dashboard for '{resolved}'."
+                    error_msg = f"🏪 Unable to retrieve dealer dashboard for '{resolved}'."
+                    return error_msg
             
             # ==========================================================
-            # STEP 5: Master Groq Intelligence (v17.0)
+            # STEP 5: Dealer Not Found - Help User Recover
             # ==========================================================
             
-            # Use Master Groq for all remaining queries
+            # Try to get suggestions
+            suggestions = self._get_dealer_suggestions(question_clean, req_id)
+            if suggestions:
+                suggestion_text = "\n".join([f"   • {s}" for s in suggestions[:3]])
+                help_response = f"""❌ Dealer '{question_clean}' not found.
+
+💡 *Did You Mean?*
+{suggestion_text}
+
+📋 *Try these commands:*
+• Enter 8-12 digit DN number
+• Type "help" for full menu
+• Use city name (e.g., "Lahore")
+• Use warehouse name (e.g., "Rawalpindi")
+
+*What would you like to know?* 🤖"""
+                return help_response
+            
+            # ==========================================================
+            # STEP 6: Master Groq Intelligence (for all remaining queries)
+            # ==========================================================
+            
             logger.info(f"[{req_id}] 🤖 Master Groq Intelligence triggered")
             
             # Gather any available data for context
@@ -1810,7 +1738,59 @@ Keep it concise and actionable. Max 3 sentences.
             
         except Exception as e:
             logger.exception(f"[{req_id}] Sync processing error: {e}")
-            raise
+            # Return friendly error instead of crashing
+            return f"⚠️ *Unable to process your request*\n\nPlease try again or type 'help' for assistance.\n\nReference: `{req_id}`"
+    
+    # ==========================================================
+    # SAFE CONTEXT UPDATE
+    # ==========================================================
+    
+    def _update_context_safe(
+        self,
+        phone_number: Optional[str],
+        intent: str,
+        entity_type: str,
+        entity: str,
+        req_id: str,
+        response: str = "",
+        success: bool = True
+    ):
+        """Safe context update with validation."""
+        if not phone_number:
+            return
+            
+        # Only update context if the operation was successful
+        if not success:
+            logger.info(f"[{req_id}] Not updating context due to failed operation")
+            return
+            
+        # Validate entity before storing
+        if self._is_invalid_entity(entity):
+            logger.warning(f"[{req_id}] Not storing invalid entity: {entity}")
+            return
+            
+        context = self._load_context(phone_number)
+        if not context:
+            return
+        
+        context.last_intent = intent
+        context.last_question = entity
+        context.confidence = 0.9  # High confidence for successful operations
+        
+        if entity_type == "dealer":
+            context.last_dealer = entity
+        elif entity_type == "warehouse":
+            context.last_warehouse = entity
+        elif entity_type == "city":
+            context.last_city = entity
+        elif entity_type == "dn":
+            context.last_dn = entity
+        
+        if response:
+            context.last_response = response[:200]
+        context.message_count += 1
+        context.last_updated = time.time()
+        context.is_valid = True
     
     # ==========================================================
     # ROUTING DECISION
@@ -1842,18 +1822,29 @@ Keep it concise and actionable. Max 3 sentences.
             )
     
     # ==========================================================
-    # CONTEXT MANAGEMENT
+    # CONTEXT MANAGEMENT (SELF-HEALING)
     # ==========================================================
     
     def _load_context(self, phone_number: Optional[str]) -> Optional[ConversationContext]:
+        """Load context with validation and self-healing."""
         if not phone_number:
             return None
+        
+        # Clean context on load
+        self._clean_context(phone_number)
+            
         if phone_number not in self.conversation_cache:
             self.conversation_cache[phone_number] = ConversationContext(phone_number)
+            
         context = self.conversation_cache[phone_number]
+        
+        # Check if context is stale
         if time.time() - context.last_updated > CONTEXT_TTL_SECONDS:
+            logger.info(f"Context expired for {phone_number}, resetting")
             context = ConversationContext(phone_number)
             self.conversation_cache[phone_number] = context
+            self.metrics["context_reset"] += 1
+        
         return context
     
     def _update_context(
@@ -1865,28 +1856,8 @@ Keep it concise and actionable. Max 3 sentences.
         req_id: str,
         response: str = ""
     ):
-        if not phone_number:
-            return
-        context = self._load_context(phone_number)
-        if not context:
-            return
-        
-        context.last_intent = intent
-        context.last_question = entity
-        
-        if entity_type == "dealer":
-            context.last_dealer = entity
-        elif entity_type == "warehouse":
-            context.last_warehouse = entity
-        elif entity_type == "city":
-            context.last_city = entity
-        elif entity_type == "dn":
-            context.last_dn = entity
-        
-        if response:
-            context.last_response = response[:200]
-        context.message_count += 1
-        context.last_updated = time.time()
+        # Deprecated - use _update_context_safe instead
+        self._update_context_safe(phone_number, intent, entity_type, entity, req_id, response, True)
     
     def clear_caches(self):
         self.response_cache.clear()
@@ -1894,8 +1865,9 @@ Keep it concise and actionable. Max 3 sentences.
         self.conversation_cache.clear()
         self.dealer_resolution_cache.clear()
         self.distance_cache.clear()
+        self.metrics["cache_cleaned"] += 1
         logger.info("🗑️ All caches cleared")
-        return {"status": "cleared", "version": "17.0"}
+        return {"status": "cleared", "version": "17.2", "message": "All caches cleared successfully"}
     
     # ==========================================================
     # QUERY DETECTION HELPERS
@@ -1913,7 +1885,7 @@ Keep it concise and actionable. Max 3 sentences.
         return False
     
     # ==========================================================
-    # ENTERPRISE DASHBOARD FORMATTERS (v17.0)
+    # ENTERPRISE DASHBOARD FORMATTERS (v17.2)
     # ==========================================================
     
     def _format_dn_dashboard(self, data, req_id: str) -> str:
@@ -1929,6 +1901,9 @@ Keep it concise and actionable. Max 3 sentences.
             record = data.data.get("record", {})
             validation = data.data.get("validation", {})
             status = data.data.get("status", "unknown")
+            distance_info = data.data.get("distance_info", {})
+            risk_level = data.data.get("risk_level", "low")
+            risk_percentage = data.data.get("risk_percentage", 0)
             
             # Extract all fields
             dn_no = record.get('dn_number', record.get('dn_no', 'N/A'))
@@ -1962,8 +1937,10 @@ Keep it concise and actionable. Max 3 sentences.
             total_aging = record.get('total_aging_days', 'N/A')
             
             # Distance and transit
-            distance_km = record.get('distance_km', 0)
-            transit_days = record.get('transit_days', 0)
+            distance_km = distance_info.get('distance_km', 0)
+            transit_days = distance_info.get('transit_days', 0)
+            distance_status = distance_info.get('status', 'unknown')
+            distance_summary = distance_info.get('summary', '')
             
             # Compliance
             delivery_compliance = self._get_compliance_status(pgi_aging)
@@ -1973,10 +1950,6 @@ Keep it concise and actionable. Max 3 sentences.
             journey = self._get_dn_journey(dn_date, pgi_date, pod_date, status)
             
             # Risk Assessment
-            risk_level, risk_percentage = self._calculate_risk_level(
-                pgi_aging if pgi_aging != 'N/A' else 0,
-                transit_days if transit_days > 0 else 1
-            )
             risk_emoji = self._get_risk_emoji(risk_level)
             
             # Management Action
@@ -2025,21 +1998,25 @@ Keep it concise and actionable. Max 3 sentences.
                 f"🚚 Delivery Days: {pgi_aging if pgi_aging != 'N/A' else 'N/A'}",
                 f"📋 POD Days: {pod_aging if pod_aging != 'N/A' else 'N/A'}",
                 f"🔄 Total Cycle Days: {total_aging if total_aging != 'N/A' else 'N/A'}",
-                "",
-                "📍 *Distance & Transit*",
-                f"Distance: {distance_km:.1f} KM" if distance_km > 0 else "📍 Same City Delivery",
-                f"Expected Transit: {transit_days} Days" if transit_days > 0 else "Expected Transit: 1 Day",
-                "",
-                "⚠️ *Risk Assessment*",
-                f"Risk Level: {risk_emoji} {risk_level.upper()}",
-                f"Risk Score: {risk_percentage:.1%}" if risk_percentage > 0 else "Risk Score: 0%",
-                "",
-                "📈 *Compliance*",
-                f"Delivery Compliance: {delivery_compliance}",
-                f"POD Compliance: {pod_compliance}",
-                "",
-                "📍 *Journey Tracking*",
             ]
+            
+            # Distance info
+            if distance_summary:
+                lines.append("")
+                lines.append("📍 *Distance & Transit*")
+                lines.append(distance_summary)
+            
+            # Risk
+            lines.append("")
+            lines.append("⚠️ *Risk Assessment*")
+            lines.append(f"Risk Level: {risk_emoji} {risk_level.upper()}")
+            lines.append(f"Risk Score: {risk_percentage:.1f}%" if risk_percentage > 0 else "Risk Score: 0%")
+            lines.append("")
+            lines.append("📈 *Compliance*")
+            lines.append(f"Delivery Compliance: {delivery_compliance}")
+            lines.append(f"POD Compliance: {pod_compliance}")
+            lines.append("")
+            lines.append("📍 *Journey Tracking*")
             
             for step, completed in journey.items():
                 icon = "✅" if completed else "⏳"
@@ -2069,7 +2046,12 @@ Keep it concise and actionable. Max 3 sentences.
                 lines.append(f"💡 *AI Insight:*")
                 lines.append(insight)
             
-            return "\n".join(lines)
+            # Truncate if too long
+            result = "\n".join(lines)
+            if len(result) > MAX_RESPONSE_LENGTH:
+                result = result[:MAX_RESPONSE_LENGTH] + "\n\n... (truncated)"
+            
+            return result
             
         except Exception as e:
             logger.exception(f"[{req_id}] DN formatting failed: {e}")
@@ -2090,6 +2072,7 @@ Keep it concise and actionable. Max 3 sentences.
             summary = response_data.get("summary", {})
             aging = response_data.get("aging", {})
             performance = response_data.get("performance", {})
+            distance_info = response_data.get("distance_info", {})
             
             total_dns = summary.get("total_dns", 0)
             
@@ -2116,17 +2099,6 @@ Keep it concise and actionable. Max 3 sentences.
             risk_emoji = self._get_risk_emoji(risk_level)
             risk_display = RISK_LEVELS.get(risk_level, "🟢 LOW")
             health_score = performance.get("health_score", 0)
-            
-            # Calculate distance if warehouse available
-            distance_info = ""
-            if warehouse and warehouse != "N/A":
-                distance, transit_days, status = self._calculate_distance_and_transit(
-                    warehouse, dealer_name, req_id
-                )
-                if status != "unknown":
-                    distance_info = self._get_distance_summary(
-                        distance, transit_days, status, dealer_name
-                    )
             
             # Generate forecast
             forecast = self._generate_forecast(response_data, "next_month")
@@ -2170,8 +2142,10 @@ Keep it concise and actionable. Max 3 sentences.
             
             # Distance info
             if distance_info:
-                lines.append("")
-                lines.append(distance_info)
+                summary_text = distance_info.get("summary", "")
+                if summary_text:
+                    lines.append("")
+                    lines.append(summary_text)
             
             # Forecast
             if forecast.get("trend") != "insufficient_data":
@@ -2219,7 +2193,12 @@ Keep it concise and actionable. Max 3 sentences.
                 lines.append("💡 *AI Insight:*")
                 lines.append(insight)
             
-            return "\n".join(lines)
+            # Truncate if too long
+            result = "\n".join(lines)
+            if len(result) > MAX_RESPONSE_LENGTH:
+                result = result[:MAX_RESPONSE_LENGTH] + "\n\n... (truncated)"
+            
+            return result
             
         except Exception as e:
             logger.exception(f"[{req_id}] Dealer 360 formatting failed: {e}")
@@ -2322,7 +2301,12 @@ Keep it concise and actionable. Max 3 sentences.
                 lines.append("💡 *AI Insight:*")
                 lines.append(insight)
             
-            return "\n".join(lines)
+            # Truncate if too long
+            result = "\n".join(lines)
+            if len(result) > MAX_RESPONSE_LENGTH:
+                result = result[:MAX_RESPONSE_LENGTH] + "\n\n... (truncated)"
+            
+            return result
             
         except Exception as e:
             logger.exception(f"[{req_id}] City dashboard formatting failed: {e}")
@@ -2431,7 +2415,12 @@ Keep it concise and actionable. Max 3 sentences.
                 lines.append("💡 *AI Insight:*")
                 lines.append(insight)
             
-            return "\n".join(lines)
+            # Truncate if too long
+            result = "\n".join(lines)
+            if len(result) > MAX_RESPONSE_LENGTH:
+                result = result[:MAX_RESPONSE_LENGTH] + "\n\n... (truncated)"
+            
+            return result
             
         except Exception as e:
             logger.exception(f"[{req_id}] Warehouse dashboard formatting failed: {e}")
@@ -2516,7 +2505,12 @@ Keep it concise and actionable. Max 3 sentences.
                 lines.append("💡 *AI Insight:*")
                 lines.append(insight)
             
-            return "\n".join(lines)
+            # Truncate if too long
+            result = "\n".join(lines)
+            if len(result) > MAX_RESPONSE_LENGTH:
+                result = result[:MAX_RESPONSE_LENGTH] + "\n\n... (truncated)"
+            
+            return result
             
         except Exception as e:
             logger.exception(f"[{req_id}] Control tower formatting failed: {e}")
@@ -2618,7 +2612,12 @@ Keep it concise and actionable. Max 3 sentences.
                 lines.append("💡 *AI Insight:*")
                 lines.append(insight)
             
-            return "\n".join(lines)
+            # Truncate if too long
+            result = "\n".join(lines)
+            if len(result) > MAX_RESPONSE_LENGTH:
+                result = result[:MAX_RESPONSE_LENGTH] + "\n\n... (truncated)"
+            
+            return result
             
         except Exception as e:
             logger.exception(f"[{req_id}] Executive dashboard formatting failed: {e}")
@@ -2831,11 +2830,12 @@ Ask about:
         total_dealer = self.metrics["dealer_queries_success"] + self.metrics["dealer_queries_failure"]
         
         return {
-            "version": "17.0",
+            "version": "17.2",
             "total_requests": self.metrics["total_requests"],
             "cache_hits": self.metrics["cache_hits"],
             "cache_misses": self.metrics["cache_misses"],
             "cache_failures_avoided": self.metrics["cache_failures_avoided"],
+            "cache_cleaned": self.metrics["cache_cleaned"],
             "cache_hit_rate": round(self.metrics["cache_hits"] / max(1, self.metrics["cache_hits"] + self.metrics["cache_misses"]) * 100, 1),
             "dn_lookups": {
                 "total": self.metrics["dn_lookups"],
@@ -2876,6 +2876,8 @@ Ask about:
             "risk_assessments": self.metrics["risk_assessments"],
             "forecast_requests": self.metrics["forecast_requests"],
             "root_cause_requests": self.metrics["root_cause_requests"],
+            "context_reset": self.metrics["context_reset"],
+            "invalid_entity_cleared": self.metrics["invalid_entity_cleared"],
             "conversation_count": len(self.conversation_cache),
             "cache_size": len(self.response_cache),
             "failure_cache_size": len(self.failure_cache)
@@ -2954,7 +2956,7 @@ def get_routing_debug(question: str) -> Dict[str, Any]:
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("AI Provider Service v17.0 - Master Groq Intelligence")
+logger.info("AI Provider Service v17.2 - Fully Self-Healing")
 logger.info("=" * 70)
 logger.info("")
 logger.info("   SELF-HEALING FEATURES:")
@@ -2963,6 +2965,8 @@ logger.info("   ✅ Multiple Recovery Attempts (6 strategies)")
 logger.info("   ✅ Never Cache Failures")
 logger.info("   ✅ Groq AI Fallback")
 logger.info("   ✅ System Survival")
+logger.info("   ✅ Context Validation & Auto-Cleaning")
+logger.info("   ✅ Cache Self-Healing")
 logger.info("")
 logger.info("   MASTER GROQ INTELLIGENCE:")
 logger.info("   ✅ AI Logistics Control Tower")
@@ -2975,14 +2979,6 @@ logger.info("   ✅ AI Insight Generation")
 logger.info("   ✅ Forecasting Engine")
 logger.info("   ✅ WhatsApp Menu System")
 logger.info("   ✅ Executive Decision Support")
-logger.info("")
-logger.info("   ENTERPRISE FEATURES:")
-logger.info("   ✅ Dealer 360 Dashboard")
-logger.info("   ✅ Enhanced DN Dashboard")
-logger.info("   ✅ City Performance Dashboard")
-logger.info("   ✅ Warehouse Performance Dashboard")
-logger.info("   ✅ Control Tower Dashboard")
-logger.info("   ✅ Executive Dashboard")
 logger.info("")
 logger.info("   STATUS: ✅ PRODUCTION READY")
 logger.info("=" * 70)
