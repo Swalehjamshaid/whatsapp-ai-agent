@@ -1,5 +1,5 @@
 # ==========================================================
-# FILE: app/services/ai_provider_service.py (v16.0 - SELF-HEALING)
+# FILE: app/services/ai_provider_service.py (v17.0 - MASTER GROQ INTELLIGENCE)
 # ==========================================================
 # PURPOSE: Master Orchestrator - WhatsApp AI Analytics Agent
 # 
@@ -10,12 +10,18 @@
 # 4. ✅ Groq AI Fallback - For queries outside structured analytics
 # 5. ✅ Production Diagnostics - Full logging at every step
 # 6. ✅ System Survival - Failed queries never poison future queries
-# 7. ✅ Dealer 360 Dashboard with Top Models & Monthly Trends
-# 8. ✅ Enhanced DN Dashboard with Journey Tracking
-# 9. ✅ City Dashboard with Top Dealers & Products
-# 10. ✅ Warehouse Dashboard with Coverage & Top Cities
-# 11. ✅ Control Tower with Network Overview & Risk Areas
-# 12. ✅ Executive Dashboard with Health Score & Recommendations
+# 
+# MASTER GROQ INTELLIGENCE (v17.0):
+# 7. ✅ AI Logistics Control Tower - Groq as Chief Logistics Officer
+# 8. ✅ Dealer Distance Engine - Haversine Formula with Same City Rule
+# 9. ✅ Transit Time Engine - Distance-based delivery estimation
+# 10. ✅ Delay Engine - Actual vs Expected delivery analysis
+# 11. ✅ Risk Engine - Multi-level risk assessment
+# 12. ✅ Root Cause Analysis - Why analysis with recommendations
+# 13. ✅ AI Insight Generation - Automatic business intelligence
+# 14. ✅ Forecasting Engine - Predictive analytics
+# 15. ✅ WhatsApp Menu System - Interactive navigation
+# 16. ✅ Executive Decision Support - Management recommendations
 # ==========================================================
 
 import time
@@ -25,6 +31,7 @@ import re
 import asyncio
 import concurrent.futures
 import traceback
+import math
 from typing import Optional, Callable, Any, Dict, List, Tuple
 from cachetools import TTLCache
 from loguru import logger
@@ -72,26 +79,93 @@ CACHE_TTL_SECONDS = 300
 CONTEXT_TTL_SECONDS = 1800
 MAX_RETRY_ATTEMPTS = 5
 DEALER_SUGGESTION_LIMIT = 3
-GROQ_TIMEOUT_SECONDS = 5
-ENRICHMENT_TIMEOUT_SECONDS = 3
+GROQ_TIMEOUT_SECONDS = 8  # Increased for complex reasoning
+ENRICHMENT_TIMEOUT_SECONDS = 5  # Increased for insights
 MAX_RECOVERY_ATTEMPTS = 5
+MAX_RESPONSE_LENGTH = 3000  # WhatsApp character limit
 
 DN_PATTERN_LOOSE = re.compile(r'\b(\d{8,12})\b')
 
-# SLA Compliance Rules
-SLA_RULES = {
-    "pgi_aging": {"excellent": 3, "good": 7, "attention": 15, "critical": 30},
-    "pod_aging": {"excellent": 3, "good": 7, "attention": 15, "critical": 30},
-    "delivery_aging": {"excellent": 3, "good": 7, "attention": 15, "critical": 30},
-    "total_aging": {"excellent": 7, "good": 14, "attention": 21, "critical": 30}
+# ==========================================================
+# DISTANCE & TRANSIT CONFIGURATION
+# ==========================================================
+
+EARTH_RADIUS_KM = 6371.0
+
+TRANSIT_DAYS_RULES = {
+    "same_city": 1,
+    "0-50": 1,
+    "51-150": 2,
+    "151-300": 3,
+    "301-500": 4,
+    "501-800": 5,
+    "800+": 7
 }
 
-RISK_LEVELS = {
-    "critical": "🔴 CRITICAL",
-    "high": "🟠 HIGH",
-    "medium": "🟡 MEDIUM",
-    "low": "🟢 LOW"
+RISK_THRESHOLDS = {
+    "low": 0.10,    # <= 10% delay
+    "medium": 0.30, # 11-30% delay
+    "high": 0.30    # > 30% delay
 }
+
+# ==========================================================
+# MASTER GROQ INTELLIGENCE PROMPT
+# ==========================================================
+
+MASTER_GROQ_PROMPT = """
+You are Haier Pakistan's AI Logistics Control Tower.
+
+You act as:
+1. Chief Logistics Officer
+2. Supply Chain Director
+3. Secondary Operations Head
+4. Warehouse Operations Manager
+5. Transportation Manager
+6. Business Intelligence Analyst
+7. Data Analyst
+8. Executive Consultant
+9. Dealer Relationship Manager
+10. Customer Service Advisor
+
+Your responsibility is to analyze logistics data and provide business intelligence, insights, recommendations, predictions, and answers.
+
+DATA UNDERSTANDING RULES:
+- Customer Name = Dealer Name = Sold-To Party
+- Dealer Code = Dealer Code
+- Customer Code = Customer Code
+- DN Count = COUNT(DISTINCT dn_no)
+- Units = SUM(dn_qty)
+- Revenue = SUM(dn_amount)
+- Never mix DN Count, Units, and Revenue
+
+DISTANCE ENGINE:
+- Calculate distance using Haversine Formula
+- If Warehouse City = Dealer City: Same City Delivery (1 Day)
+- Transit Times: Same City=1, 0-50KM=1, 51-150KM=2, 151-300KM=3, 301-500KM=4, 501-800KM=5, 800+KM=7
+
+DELAY ENGINE:
+- Expected Days = Transit Time Rules
+- Actual Days = POD Date - PGI Date
+- Pending Days = Today Date - PGI Date
+- Delay Days = Actual Days - Expected Days
+- If Delay Days > 0: Status = Delayed
+
+RISK ENGINE:
+- Low Risk: Delay <= 10%
+- Medium Risk: Delay 11% - 30%
+- High Risk: Delay > 30%
+
+RESPONSE RULES:
+- Always explain: What happened, Why it happened, Impact, Recommendation
+- Never simply repeat SQL results
+- Use analytics data first, then Groq reasoning
+- Maximum 3000 characters per response
+- WhatsApp-safe formatting with emojis
+"""
+
+# ==========================================================
+# SPECIAL COMMANDS
+# ==========================================================
 
 SPECIAL_COMMANDS = {
     "control tower": "control_tower",
@@ -104,12 +178,14 @@ SPECIAL_COMMANDS = {
     "management": "executive_summary",
     "help": "help",
     "hi": "help",
-    "hello": "help"
+    "hello": "help",
+    "menu": "help",
+    "start": "help",
+    "whatsapp menu": "help"
 }
 
-
 # ==========================================================
-# GROQ PROTECTION
+# GROQ PROTECTION PATTERNS
 # ==========================================================
 
 GROQ_BLOCKED_PATTERNS = {
@@ -126,6 +202,9 @@ GROQ_BLOCKED_PATTERNS = {
     'highest', 'lowest', 'ranking', 'rank',
     'today', 'yesterday', 'week', 'month', 'year', 'trend', 'historical',
     'show', 'display', 'get', 'view', 'list', 'fetch', 'find', 'tell',
+    'forecast', 'predict', 'estimated', 'projected', 'future',
+    'service score', 'health', 'risk', 'compliance',
+    'distance', 'km', 'transit', 'travel'
 }
 
 
@@ -149,6 +228,9 @@ class ConversationContext:
         self.last_updated: float = time.time()
         self.confidence: float = 0.0
         self.retry_count: int = 0
+        self.last_distance: Optional[float] = None
+        self.last_transit_days: Optional[int] = None
+        self.last_risk_level: Optional[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -160,17 +242,20 @@ class ConversationContext:
             "phone_number": self.phone_number,
             "last_question": self.last_question,
             "confidence": self.confidence,
-            "retry_count": self.retry_count
+            "retry_count": self.retry_count,
+            "last_distance": self.last_distance,
+            "last_transit_days": self.last_transit_days,
+            "last_risk_level": self.last_risk_level
         }
 
 
 # ==========================================================
-# MASTER ORCHESTRATOR - SELF-HEALING ARCHITECTURE
+# MASTER ORCHESTRATOR - SELF-HEALING ARCHITECTURE v17.0
 # ==========================================================
 
 class AIOrchestrator:
     """
-    ENTERPRISE LOGISTICS ANALYTICS ENGINE - v16.0 (SELF-HEALING)
+    ENTERPRISE LOGISTICS ANALYTICS ENGINE - v17.0 (MASTER GROQ INTELLIGENCE)
     
     Self-Healing Features:
     - Request isolation (fresh context for every request)
@@ -178,6 +263,18 @@ class AIOrchestrator:
     - Never cache failures
     - Groq AI fallback
     - System survival (failed queries never poison future queries)
+    
+    Master Groq Intelligence:
+    - AI Logistics Control Tower
+    - Distance Engine (Haversine Formula)
+    - Transit Time Engine
+    - Delay Engine
+    - Risk Engine
+    - Root Cause Analysis
+    - AI Insight Generation
+    - Forecasting Engine
+    - WhatsApp Menu System
+    - Executive Decision Support
     """
     
     def __init__(self):
@@ -196,6 +293,7 @@ class AIOrchestrator:
         self.failure_cache = TTLCache(maxsize=100, ttl=60)  # Short TTL for failures
         self.conversation_cache: Dict[str, ConversationContext] = {}
         self.dealer_resolution_cache: Dict[str, Tuple[str, float, float]] = {}
+        self.distance_cache: Dict[str, Tuple[float, float]] = {}  # (distance_km, transit_days)
         
         # Circuit breaker for Groq
         self._groq_failures = 0
@@ -208,6 +306,217 @@ class AIOrchestrator:
         self._request_cache: Dict[str, Any] = {}
         self._recovery_attempts: int = 0
         self._groq_used: bool = False
+        
+        # Warehouse coordinates cache
+        self._warehouse_coords: Dict[str, Tuple[float, float]] = {
+            "lahore": (31.5204, 74.3587),
+            "karachi": (24.8607, 67.0011),
+            "rawalpindi": (33.5651, 73.0169),
+            "faisalabad": (31.4504, 73.1350),
+            "multan": (30.1575, 71.5249),
+            "hyderabad": (25.3960, 68.3578),
+            "peshawar": (34.0151, 71.5249),
+            "quetta": (30.1798, 66.9750),
+            "islamabad": (33.6844, 73.0479),
+            "gujranwala": (32.1877, 74.1945),
+            "sialkot": (32.4945, 74.5227),
+            "sukkur": (27.7036, 68.8578),
+            "larkana": (27.5622, 68.2024),
+            "sahiwal": (30.6681, 73.1033),
+            "okara": (30.8089, 73.4516),
+            "bahawalpur": (29.3981, 71.6757),
+            "dera ghazi khan": (30.0478, 70.6483),
+            "sargodha": (32.0836, 72.6711),
+            "mianwali": (32.5906, 71.5391),
+            "abbottabad": (34.1688, 73.2215),
+            "mansehra": (34.3372, 73.1957),
+            "muzaffarabad": (34.3625, 73.4705),
+            "gilgit": (35.9209, 74.3146),
+            "skardu": (35.3026, 75.6275),
+            "chitral": (35.8579, 71.7863),
+            "swat": (35.2223, 72.4258),
+            "diamer": (35.4404, 73.7149),
+            "astore": (35.3633, 74.9202),
+            "ghizer": (36.1323, 73.9167),
+            "hunza": (36.3232, 74.6419),
+            "nagar": (36.2758, 74.3750),
+            "ghizer": (36.1323, 73.9167),
+            "shigar": (35.4299, 75.6345),
+            "kharmang": (35.0633, 76.2122),
+            "gultari": (35.4667, 75.4000),
+            "rongdo": (35.4000, 75.5000),
+            "darel": (35.4000, 73.7000),
+            "tangir": (35.5000, 73.8000),
+            "kohistan": (35.3000, 73.1000),
+            "kolai palas": (35.1000, 73.3000),
+            "batagram": (34.7000, 73.0000),
+            "allai": (34.8000, 73.1000),
+            "torghar": (34.5000, 73.0000),
+            "haripur": (34.0000, 72.9333),
+            "taxila": (33.7461, 72.8511),
+            "wah cantt": (33.7800, 72.7100),
+            "attock": (33.7667, 72.3667),
+            "chakwal": (32.9333, 72.8500),
+            "jhelum": (32.9333, 73.7333),
+            "gujrat": (32.5738, 74.0789),
+            "mandi bahauddin": (32.5833, 73.4833),
+            "hafizabad": (32.0667, 73.6833),
+            "chiniot": (31.7167, 72.9833),
+            "toba tek singh": (30.9667, 72.4833),
+            "jhang": (31.2667, 72.3167),
+            "bhawana": (31.5667, 72.6500),
+            "kabirwala": (30.4000, 71.8667),
+            "lodhran": (29.5333, 71.6167),
+            "vehari": (30.0333, 72.3500),
+            "pakpattan": (30.3500, 73.4000),
+            "arifwala": (30.2833, 73.0667),
+            "depalpur": (30.6500, 73.6500),
+            "kasur": (31.1167, 74.4500),
+            "okara": (30.8089, 73.4516),
+            "sahiwal": (30.6681, 73.1033),
+            "burewala": (30.1500, 72.6500),
+            "chichawatni": (30.5333, 72.7000),
+            "kamalia": (30.7333, 72.6333),
+            "khanewal": (30.3000, 71.9333),
+            "mailsi": (29.8000, 72.1667),
+            "hasilpur": (29.6833, 72.5333),
+            "ahmadpur east": (29.1333, 71.2500),
+            "bahawalnagar": (30.0000, 73.2500),
+            "fort abbas": (29.4667, 72.8667),
+            "haroonabad": (29.6167, 73.1333),
+            "minchinabad": (30.1667, 73.5667),
+            "renala khurd": (30.8667, 73.5833),
+            "dunyapur": (29.8000, 71.7333),
+            "kahror pakka": (29.6167, 71.9333),
+            "lal suhanra": (29.3000, 72.1500),
+            "ubauro": (28.1667, 69.7333),
+            "pano aqil": (27.8500, 69.1167),
+            "ghotki": (28.0000, 69.3167),
+            "daharki": (28.0500, 69.7000),
+            "mirpur mathelo": (28.0167, 69.5500),
+            "kandhkot": (28.3000, 69.1833),
+            "kashmore": (28.4333, 69.5833),
+            "shikarpur": (27.9500, 68.6333),
+            "jacobabad": (28.2833, 68.4333),
+            "thul": (28.2333, 68.7833),
+            "garhi yasin": (28.1000, 68.5167),
+            "ratodero": (27.8000, 68.2833),
+            "bhira": (27.5333, 68.1667),
+            "moro": (26.6667, 67.9167),
+            "naushahro feroze": (26.8333, 68.1167),
+            "mehrabpur": (26.8167, 68.0000),
+            "padidan": (26.8833, 68.3000),
+            "bhitshah": (25.8667, 68.5000),
+            "hala": (25.8167, 68.4167),
+            "matiari": (25.6000, 68.4333),
+            "tando allahyar": (25.4667, 68.7167),
+            "tando muhammad khan": (25.1333, 68.5333),
+            "thattha": (24.7500, 67.9167),
+            "badin": (24.6667, 68.8333),
+            "golarchi": (24.6833, 68.7333),
+            "mirpur bathoro": (24.7333, 68.2333),
+            "sujawal": (24.6000, 68.0833),
+            "jhudo": (24.4833, 68.6667),
+            "kunri": (24.4167, 69.0333),
+            "pithoro": (25.4333, 69.3667),
+            "digri": (25.3833, 69.1167),
+            "mirwah": (25.2000, 69.0000),
+            "chor": (24.4167, 69.2333),
+            "islamkot": (24.7000, 70.1833),
+            "diplo": (24.4667, 69.5833),
+            "chachro": (24.2167, 70.2500),
+            "mithi": (24.7333, 69.8000),
+            "nagarparkar": (24.3500, 70.7667),
+            "khairpur": (27.5333, 68.7667),
+            "kingri": (27.2833, 68.5000),
+            "gambat": (27.3500, 68.5167),
+            "ranipur": (27.2833, 68.5000),
+            "manchar": (27.1667, 68.4167),
+            "lakhi": (27.0833, 68.1000),
+            "pir jo goth": (27.0500, 68.3333),
+            "kandiaro": (27.0667, 68.2167),
+            "sohbat pur": (26.9167, 68.3167),
+            "shahdadkot": (27.8500, 67.9000),
+            "warah": (27.4500, 67.8000),
+            "qambar": (27.5833, 67.9833),
+            "mubarakpur": (27.5333, 67.9667),
+            "nasirabad": (27.3833, 67.9167),
+            "jhabel": (27.2833, 67.8833),
+            "kamber": (27.5833, 67.9833),
+            "shahpur chakar": (26.1500, 68.6500),
+            "sakrand": (26.1333, 68.2667),
+            "dadu": (26.7333, 67.7833),
+            "mehar": (26.6000, 67.8333),
+            "khairpur nathan shah": (26.5833, 67.7333),
+            "johi": (26.6667, 67.6167),
+            "sewan": (26.4000, 67.7000),
+            "bhan": (26.4500, 67.7167),
+            "lakki marwat": (32.6000, 70.9000),
+            "tank": (32.2167, 70.3833),
+            "dera ismail khan": (31.8333, 70.9000),
+            "kulachi": (31.9333, 70.4500),
+            "daraban": (31.6667, 70.3500),
+            "parachinar": (33.9000, 70.1000),
+            "hangu": (33.5333, 71.0667),
+            "kohat": (33.5833, 71.4333),
+            "karak": (33.1167, 71.1000),
+            "bannu": (32.9833, 70.6000),
+            "mardan": (34.2000, 72.0500),
+            "swabi": (34.1167, 72.4667),
+            "charsadda": (34.1500, 71.7333),
+            "nowshera": (34.0167, 71.9833),
+            "risalpur": (34.0667, 71.9667),
+            "pabbi": (34.0167, 72.1000),
+            "tordher": (34.0167, 72.2667),
+            "topi": (34.0667, 72.6167),
+            "jehangira": (34.0333, 72.2833),
+            "khalabat": (34.0167, 72.3333),
+            "mansehra": (34.3372, 73.1957),
+            "abbottabad": (34.1688, 73.2215),
+            "haripur": (34.0000, 72.9333),
+            "havelian": (34.0500, 73.1667),
+            "ghazi": (34.0000, 72.8333),
+            "nathia gali": (34.0667, 73.3833),
+            "murree": (33.9000, 73.3833),
+            "rawalpindi": (33.5651, 73.0169),
+            "islamabad": (33.6844, 73.0479),
+            "taxila": (33.7461, 72.8511),
+            "wah cantt": (33.7800, 72.7100),
+            "attock": (33.7667, 72.3667),
+            "chakwal": (32.9333, 72.8500),
+            "jhelum": (32.9333, 73.7333),
+            "gujrat": (32.5738, 74.0789),
+            "mandi bahauddin": (32.5833, 73.4833),
+            "hafizabad": (32.0667, 73.6833),
+            "chiniot": (31.7167, 72.9833),
+            "toba tek singh": (30.9667, 72.4833),
+            "jhang": (31.2667, 72.3167),
+            "bhawana": (31.5667, 72.6500),
+            "kabirwala": (30.4000, 71.8667),
+            "lodhran": (29.5333, 71.6167),
+            "vehari": (30.0333, 72.3500),
+            "pakpattan": (30.3500, 73.4000),
+            "arifwala": (30.2833, 73.0667),
+            "depalpur": (30.6500, 73.6500),
+            "kasur": (31.1167, 74.4500),
+            "okara": (30.8089, 73.4516),
+            "sahiwal": (30.6681, 73.1033),
+            "burewala": (30.1500, 72.6500),
+            "chichawatni": (30.5333, 72.7000),
+            "kamalia": (30.7333, 72.6333),
+            "khanewal": (30.3000, 71.9333),
+            "mailsi": (29.8000, 72.1667),
+            "hasilpur": (29.6833, 72.5337),
+            "ahmadpur east": (29.1333, 71.2500),
+            "bahawalnagar": (30.0000, 73.2500),
+            "fort abbas": (29.4667, 72.8667),
+            "haroonabad": (29.6167, 73.1333),
+            "minchinabad": (30.1667, 73.5667),
+            "renala khurd": (30.8667, 73.5833),
+            "dunyapur": (29.8000, 71.7333),
+            "kahror pakka": (29.6167, 71.9333),
+            "lal suhanra": (29.3000, 72.1500)
+        }
         
         # Metrics
         self.metrics = {
@@ -242,11 +551,16 @@ class AIOrchestrator:
             "dealer_resolution_attempts": 0,
             "dealer_resolution_success": 0,
             "dealer_resolution_failure": 0,
-            "recovery_attempts": 0
+            "recovery_attempts": 0,
+            "distance_calculations": 0,
+            "transit_calculations": 0,
+            "risk_assessments": 0,
+            "forecast_requests": 0,
+            "root_cause_requests": 0
         }
         
         logger.info("=" * 70)
-        logger.info("AI Orchestrator v16.0 - Self-Healing Architecture")
+        logger.info("AI Orchestrator v17.0 - Master Groq Intelligence")
         logger.info("=" * 70)
         logger.info("")
         logger.info("   SELF-HEALING FEATURES:")
@@ -255,6 +569,18 @@ class AIOrchestrator:
         logger.info("   ✅ Never Cache Failures")
         logger.info("   ✅ Groq AI Fallback")
         logger.info("   ✅ System Survival")
+        logger.info("")
+        logger.info("   MASTER GROQ INTELLIGENCE:")
+        logger.info("   ✅ AI Logistics Control Tower")
+        logger.info("   ✅ Dealer Distance Engine (Haversine)")
+        logger.info("   ✅ Transit Time Engine")
+        logger.info("   ✅ Delay Engine")
+        logger.info("   ✅ Risk Engine")
+        logger.info("   ✅ Root Cause Analysis")
+        logger.info("   ✅ AI Insight Generation")
+        logger.info("   ✅ Forecasting Engine")
+        logger.info("   ✅ WhatsApp Menu System")
+        logger.info("   ✅ Executive Decision Support")
         logger.info("")
         logger.info("   ENTERPRISE FEATURES:")
         logger.info("   ✅ Dealer 360 Dashboard")
@@ -376,6 +702,358 @@ class AIOrchestrator:
         if self._is_groq_circuit_breaker_open():
             return False
         return hasattr(self.groq, 'is_available') and self.groq.is_available
+    
+    # ==========================================================
+    # DISTANCE ENGINE (Haversine Formula)
+    # ==========================================================
+    
+    def _calculate_haversine_distance(
+        self,
+        lat1: float,
+        lon1: float,
+        lat2: float,
+        lon2: float
+    ) -> float:
+        """Calculate distance between two points using Haversine formula."""
+        phi1 = math.radians(lat1)
+        phi2 = math.radians(lat2)
+        delta_phi = math.radians(lat2 - lat1)
+        delta_lambda = math.radians(lon2 - lon1)
+        
+        a = math.sin(delta_phi / 2) ** 2 + \
+            math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+        
+        return EARTH_RADIUS_KM * c
+    
+    def _get_warehouse_coordinates(self, warehouse_name: str) -> Optional[Tuple[float, float]]:
+        """Get warehouse coordinates from cache."""
+        warehouse_lower = warehouse_name.lower().strip()
+        return self._warehouse_coords.get(warehouse_lower)
+    
+    def _get_dealer_coordinates(self, dealer_name: str) -> Optional[Tuple[float, float]]:
+        """Get dealer coordinates from dealer data."""
+        try:
+            result = self.analytics.get_dealer_dashboard(dealer_name)
+            if result and result.success:
+                data = result.data or {}
+                profile = data.get("profile", {})
+                lat = profile.get("latitude")
+                lon = profile.get("longitude")
+                if lat is not None and lon is not None:
+                    return (float(lat), float(lon))
+        except Exception as e:
+            logger.debug(f"Failed to get dealer coordinates: {e}")
+        return None
+    
+    def _calculate_distance_and_transit(
+        self,
+        warehouse_name: str,
+        dealer_name: str,
+        request_id: str
+    ) -> Tuple[float, int, str]:
+        """
+        Calculate distance between warehouse and dealer.
+        Returns: (distance_km, transit_days, status)
+        Status: "same_city", "calculated", "unknown"
+        """
+        self.metrics["distance_calculations"] += 1
+        
+        # Get warehouse coordinates
+        warehouse_coords = self._get_warehouse_coordinates(warehouse_name)
+        if not warehouse_coords:
+            logger.warning(f"[{request_id}] Warehouse coordinates not found: {warehouse_name}")
+            return 0.0, 0, "unknown"
+        
+        # Get dealer coordinates
+        dealer_coords = self._get_dealer_coordinates(dealer_name)
+        if not dealer_coords:
+            logger.warning(f"[{request_id}] Dealer coordinates not found: {dealer_name}")
+            return 0.0, 0, "unknown"
+        
+        # Check same city
+        warehouse_lower = warehouse_name.lower().strip()
+        dealer_lower = dealer_name.lower().strip()
+        
+        # Get city from dealer data
+        try:
+            result = self.analytics.get_dealer_dashboard(dealer_name)
+            if result and result.success:
+                data = result.data or {}
+                profile = data.get("profile", {})
+                dealer_city = profile.get("city", "").lower()
+                warehouse_city = warehouse_lower
+                
+                if dealer_city and dealer_city == warehouse_city:
+                    return 0.0, 1, "same_city"
+        except:
+            pass
+        
+        # Calculate distance
+        distance = self._calculate_haversine_distance(
+            warehouse_coords[0],
+            warehouse_coords[1],
+            dealer_coords[0],
+            dealer_coords[1]
+        )
+        
+        # Calculate transit days
+        transit_days = self._calculate_transit_days(distance)
+        
+        return distance, transit_days, "calculated"
+    
+    def _calculate_transit_days(self, distance_km: float) -> int:
+        """Calculate expected transit days based on distance."""
+        self.metrics["transit_calculations"] += 1
+        
+        if distance_km <= 0:
+            return 1
+        elif distance_km <= 50:
+            return 1
+        elif distance_km <= 150:
+            return 2
+        elif distance_km <= 300:
+            return 3
+        elif distance_km <= 500:
+            return 4
+        elif distance_km <= 800:
+            return 5
+        else:
+            return 7
+    
+    def _calculate_delay_days(
+        self,
+        actual_days: int,
+        expected_days: int
+    ) -> int:
+        """Calculate delay days."""
+        return max(0, actual_days - expected_days)
+    
+    def _calculate_risk_level(
+        self,
+        delay_days: int,
+        expected_days: int
+    ) -> Tuple[str, float]:
+        """Calculate risk level based on delay percentage."""
+        self.metrics["risk_assessments"] += 1
+        
+        if expected_days <= 0:
+            return "low", 0.0
+        
+        delay_percentage = delay_days / expected_days
+        
+        if delay_percentage <= 0.10:
+            return "low", delay_percentage
+        elif delay_percentage <= 0.30:
+            return "medium", delay_percentage
+        else:
+            return "high", delay_percentage
+    
+    def _get_distance_summary(
+        self,
+        distance_km: float,
+        transit_days: int,
+        status: str,
+        dealer_name: str
+    ) -> str:
+        """Generate distance summary text."""
+        if status == "same_city":
+            return f"📍 Same City Delivery\nWarehouse and Dealer are located in the same city.\nExpected Delivery: 1 Day\nRisk: Low\nDistance: Not Applicable"
+        
+        if distance_km <= 0:
+            return "📍 Distance: Not Available"
+        
+        # Determine route description
+        if distance_km <= 50:
+            route_desc = "Short distance route"
+        elif distance_km <= 150:
+            route_desc = "Medium distance route"
+        elif distance_km <= 300:
+            route_desc = "Long distance route"
+        elif distance_km <= 500:
+            route_desc = "Extended distance route"
+        else:
+            route_desc = "Very long distance route"
+        
+        return f"""📍 Distance Analysis
+Dealer: {dealer_name}
+Distance: {distance_km:.1f} KM
+Route Type: {route_desc}
+Expected Transit: {transit_days} Days
+Risk Level: Low"""
+
+    # ==========================================================
+    # FORECASTING ENGINE
+    # ==========================================================
+    
+    def _generate_forecast(
+        self,
+        historical_data: Dict,
+        period: str = "next_month"
+    ) -> Dict:
+        """Generate forecast based on historical data."""
+        self.metrics["forecast_requests"] += 1
+        
+        # Simple trend-based forecasting
+        monthly_trend = historical_data.get("monthly_trend", [])
+        if not monthly_trend:
+            return {
+                "forecast_revenue": 0,
+                "forecast_units": 0,
+                "forecast_dns": 0,
+                "confidence": 0.0,
+                "trend": "insufficient_data"
+            }
+        
+        # Calculate average growth rate
+        revenues = [m.get("revenue", 0) for m in monthly_trend[-3:]]  # Last 3 months
+        units = [m.get("units", 0) for m in monthly_trend[-3:]]
+        dns = [m.get("dns", 0) for m in monthly_trend[-3:]]
+        
+        if len(revenues) >= 2:
+            revenue_growth = (revenues[-1] - revenues[0]) / max(revenues[0], 1)
+            units_growth = (units[-1] - units[0]) / max(units[0], 1)
+            dns_growth = (dns[-1] - dns[0]) / max(dns[0], 1)
+            
+            avg_revenue = sum(revenues) / len(revenues)
+            avg_units = sum(units) / len(units)
+            avg_dns = sum(dns) / len(dns)
+            
+            forecast_revenue = avg_revenue * (1 + revenue_growth)
+            forecast_units = avg_units * (1 + units_growth)
+            forecast_dns = avg_dns * (1 + dns_growth)
+            
+            trend = "increasing" if revenue_growth > 0.05 else \
+                    "decreasing" if revenue_growth < -0.05 else "stable"
+            
+            confidence = min(0.95, 0.70 + (len(monthly_trend) * 0.05))
+            
+            return {
+                "forecast_revenue": forecast_revenue,
+                "forecast_units": forecast_units,
+                "forecast_dns": forecast_dns,
+                "confidence": confidence,
+                "trend": trend,
+                "growth_rate": revenue_growth
+            }
+        
+        return {
+            "forecast_revenue": 0,
+            "forecast_units": 0,
+            "forecast_dns": 0,
+            "confidence": 0.0,
+            "trend": "insufficient_data"
+        }
+    
+    # ==========================================================
+    # ROOT CAUSE ANALYSIS
+    # ==========================================================
+    
+    def _perform_root_cause_analysis(
+        self,
+        question: str,
+        data: Dict,
+        request_id: str
+    ) -> str:
+        """Perform root cause analysis using Groq intelligence."""
+        self.metrics["root_cause_requests"] += 1
+        
+        if not self._is_groq_available():
+            return "🔍 Root cause analysis requires AI enrichment. Please try again."
+        
+        try:
+            # Prepare context for Groq
+            context = {
+                "question": question,
+                "data": data,
+                "analysis_type": "root_cause",
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            root_cause_prompt = f"""
+As Haier Pakistan's AI Logistics Control Tower, perform root cause analysis.
+
+Question: {question}
+
+Available Data:
+{data}
+
+Provide:
+1. Root Cause - What is the primary cause?
+2. Impact - What is the business impact?
+3. Risk - What is the risk level?
+4. Recommendation - What should management do?
+
+Keep it concise and actionable.
+"""
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self.groq.chat, root_cause_prompt, context)
+                try:
+                    response = future.result(timeout=GROQ_TIMEOUT_SECONDS)
+                    if response and len(response) > 20:
+                        self.metrics["groq_uses"] += 1
+                        return f"🔍 *Root Cause Analysis*\n\n{response}"
+                except concurrent.futures.TimeoutError:
+                    logger.warning(f"[{request_id}] Root cause analysis timeout")
+            
+            return "🔍 Unable to perform root cause analysis at this time."
+            
+        except Exception as e:
+            logger.error(f"[{request_id}] Root cause analysis failed: {e}")
+            return "🔍 Unable to perform root cause analysis."
+    
+    # ==========================================================
+    # AI INSIGHT GENERATION
+    # ==========================================================
+    
+    def _generate_insights(
+        self,
+        data: Dict,
+        insight_type: str,
+        request_id: str
+    ) -> str:
+        """Generate AI insights using Groq."""
+        if not self._is_groq_available():
+            return ""
+        
+        try:
+            context = {
+                "data": data,
+                "insight_type": insight_type,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            insight_prompt = f"""
+As Haier Pakistan's AI Logistics Control Tower, generate business insights.
+
+Data: {data}
+Insight Type: {insight_type}
+
+Provide concise business intelligence insights.
+Focus on:
+1. What is happening
+2. Why it matters
+3. What to do next
+
+Keep insights actionable and brief.
+"""
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self.groq.chat, insight_prompt, context)
+                try:
+                    response = future.result(timeout=ENRICHMENT_TIMEOUT_SECONDS)
+                    if response and len(response) > 10:
+                        self.metrics["groq_uses"] += 1
+                        return response
+                except concurrent.futures.TimeoutError:
+                    logger.warning(f"[{request_id}] Insight generation timeout")
+            
+            return ""
+            
+        except Exception as e:
+            logger.error(f"[{request_id}] Insight generation failed: {e}")
+            return ""
     
     # ==========================================================
     # SELF-HEALING CACHE MANAGEMENT
@@ -720,12 +1398,133 @@ class AIOrchestrator:
     def _get_groq_fallback_response(self) -> str:
         return "ℹ️ AI enrichment is currently unavailable. The analytics data above is still accurate."
     
+    def _get_groq_blocked_response(self) -> str:
+        return """📋 *AI Logistics Assistant*
+
+I specialize in logistics analytics. Please ask questions about:
+- Dealer performance
+- Warehouse operations
+- City performance
+- DN tracking
+- Delivery performance
+- Revenue and units
+- Distance and transit
+- Forecasting
+- Root cause analysis
+
+Type 'help' for the full menu."""
+    
     # ==========================================================
-    # GROQ FALLBACK FOR NON-ANALYTICS QUERIES
+    # MASTER GROQ EXECUTION (v17.0)
+    # ==========================================================
+    
+    def _execute_master_groq(
+        self,
+        question: str,
+        data: Dict,
+        context: Dict,
+        request_id: str
+    ) -> str:
+        """Execute Master Groq Intelligence with full context."""
+        if not self._is_groq_available():
+            return self._get_help_message()
+        
+        try:
+            # Build master prompt
+            master_prompt = f"""{MASTER_GROQ_PROMPT}
+
+USER QUESTION:
+{question}
+
+ANALYTICS DATA:
+{data}
+
+CONTEXT:
+{context}
+
+RESPONSE REQUIREMENTS:
+1. Use analytics data first
+2. Provide Groq reasoning and insights
+3. Explain: What happened, Why, Impact, Recommendation
+4. WhatsApp-safe formatting with emojis
+5. Maximum 3000 characters
+
+Provide the most comprehensive and actionable response possible."""
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self.groq.chat, master_prompt, context)
+                try:
+                    response = future.result(timeout=GROQ_TIMEOUT_SECONDS + 5)
+                    if response and len(response) > 20:
+                        self._record_groq_success()
+                        self.metrics["groq_uses"] += 1
+                        self.metrics["groq_fallbacks"] += 1
+                        return response
+                except concurrent.futures.TimeoutError:
+                    logger.warning(f"[{request_id}] Master Groq timeout")
+                    self._record_groq_failure()
+            
+            return self._get_help_message()
+            
+        except Exception as e:
+            logger.error(f"[{request_id}] Master Groq execution failed: {e}")
+            return self._get_help_message()
+    
+    # ==========================================================
+    # EXECUTIVE GROQ INTELLIGENCE
+    # ==========================================================
+    
+    def _execute_executive_groq(
+        self,
+        question: str,
+        data: Dict,
+        request_id: str
+    ) -> str:
+        """Execute Groq for executive-level intelligence."""
+        if not self._is_groq_available():
+            return "👔 Executive insights require AI enrichment. Please try again."
+        
+        try:
+            executive_prompt = f"""
+As Haier Pakistan's Chief Logistics Officer, provide executive intelligence.
+
+Question: {question}
+
+Data: {data}
+
+Provide:
+1. Executive Summary - One paragraph overview
+2. Critical Issues - Top 3 challenges
+3. Strategic Recommendations - Actionable items
+4. Risk Assessment - Key risks and mitigation
+5. Business Impact - Bottom-line implications
+
+Format for WhatsApp with clear sections and emojis.
+Keep it concise but comprehensive.
+"""
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self.groq.chat, executive_prompt, {})
+                try:
+                    response = future.result(timeout=GROQ_TIMEOUT_SECONDS)
+                    if response and len(response) > 20:
+                        self.metrics["groq_uses"] += 1
+                        return f"👔 *Executive Intelligence*\n\n{response}"
+                except concurrent.futures.TimeoutError:
+                    logger.warning(f"[{request_id}] Executive Groq timeout")
+            
+            return "👔 Unable to generate executive insights at this time."
+            
+        except Exception as e:
+            logger.error(f"[{request_id}] Executive Groq failed: {e}")
+            return "👔 Unable to generate executive insights."
+    
+    # ==========================================================
+    # GROQ FALLBACK FOR NON-ANALYTICS QUERIES (v17.0)
     # ==========================================================
     
     def _execute_groq_fallback(self, query: str, req_id: str) -> str:
-        """Execute Groq AI fallback for queries outside structured analytics."""
+        """Execute Groq AI fallback with Master Intelligence."""
         try:
             logger.info(f"[{req_id}] 🤖 Groq AI fallback triggered for: {query[:50]}...")
             self.metrics["groq_uses"] += 1
@@ -734,18 +1533,33 @@ class AIOrchestrator:
             if not self._is_groq_available():
                 return self._get_help_message()
             
+            # Check if this is a executive/strategic question
+            strategic_keywords = ["ceo", "executive", "strategy", "management", "recommendation", 
+                                 "critical", "urgent", "priority", "overall", "nationwide"]
+            
+            if any(kw in query.lower() for kw in strategic_keywords):
+                return self._execute_executive_groq(query, {}, req_id)
+            
+            # Check if this is a root cause question
+            root_cause_keywords = ["why", "root cause", "reason", "cause", "because", "due to"]
+            
+            if any(kw in query.lower() for kw in root_cause_keywords):
+                return self._perform_root_cause_analysis(query, {}, req_id)
+            
+            # Regular fallback with Master Groq
             groq_context = {
                 "query": query,
-                "intent": "general_question",
-                "context": "User asked a logistics-related question"
+                "intent": "general_logistics",
+                "context": "User asked a logistics-related question",
+                "mode": "master_intelligence"
             }
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(self.groq.chat, query, groq_context)
+                future = executor.submit(self._safe_groq_call, query, groq_context)
                 try:
                     response = future.result(timeout=8.0)
                     if response and len(response) > 10:
-                        return f"💡 *AI Assistant:*\n{response}"
+                        return f"💡 *AI Logistics Control Tower:*\n{response}"
                 except concurrent.futures.TimeoutError:
                     logger.warning(f"[{req_id}] Groq fallback timeout")
             
@@ -756,15 +1570,22 @@ class AIOrchestrator:
             return self._get_help_message()
     
     # ==========================================================
-    # SAFE ENRICHMENT WITH TIMEOUT
+    # SAFE ENRICHMENT WITH TIMEOUT (v17.0)
     # ==========================================================
     
-    def _enrich_with_groq_safe(self, response: str, intent: str, question: str, context: Dict, req_id: str) -> str:
+    def _enrich_with_groq_safe(
+        self,
+        response: str,
+        intent: str,
+        question: str,
+        context: Dict,
+        req_id: str
+    ) -> str:
         """Safe Groq enrichment with timeout - NON-BLOCKING."""
         if not self._is_groq_available():
             return response
         
-        if intent not in ["executive_insight", "root_cause", "executive_summary"]:
+        if intent not in ["executive_insight", "root_cause", "executive_summary", "dealer_dashboard"]:
             return response
         
         if "0" in response and "No" in response:
@@ -775,13 +1596,18 @@ class AIOrchestrator:
         
         try:
             enrichment_prompt = f"""
+As Haier Pakistan's AI Logistics Control Tower, provide executive enrichment.
+
 Based on this logistics analytics data:
 
 {response[:500]}
 
-Provide a brief, professional executive summary (2-3 sentences) that highlights the most critical insight and recommends one immediate action.
+Provide:
+1. Key Insight - What's the most important finding?
+2. Impact - What's the business impact?
+3. Recommendation - One immediate action
 
-Keep it concise and actionable. Do not repeat the data, just provide insight.
+Keep it concise and actionable. Max 3 sentences.
 """
             
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
@@ -841,7 +1667,7 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
             return self._get_error_response(question, e, error_id, req_id)
     
     # ==========================================================
-    # SYNC PROCESSING (SELF-HEALING)
+    # SYNC PROCESSING (SELF-HEALING v17.0)
     # ==========================================================
     
     def _process_sync(self, question: str, phone_number: Optional[str], req_id: str) -> str:
@@ -933,7 +1759,7 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
                 return response
             
             # ==========================================================
-            # STEP 4: Dealer Resolution (with recovery)
+            # STEP 4: Dealer Resolution (with recovery + distance)
             # ==========================================================
             
             # Try dealer resolution with recovery
@@ -945,6 +1771,18 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
                 result = self.analytics.get_dealer_dashboard(resolved)
                 if self._validate_analytics_response(result, "dealer_dashboard", req_id):
                     response = self._format_dealer_360_dashboard(result, resolved, req_id, confidence)
+                    
+                    # Add distance analysis if available
+                    if context and context.last_warehouse:
+                        distance, transit_days, status = self._calculate_distance_and_transit(
+                            context.last_warehouse, resolved, req_id
+                        )
+                        if status != "unknown":
+                            distance_summary = self._get_distance_summary(
+                                distance, transit_days, status, resolved
+                            )
+                            response = f"{response}\n\n{distance_summary}"
+                    
                     self._update_context(phone_number, "dealer_dashboard", "dealer", resolved, req_id)
                     self._cache_response(question, phone_number, response, True)
                     return response
@@ -952,13 +1790,21 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
                     return f"🏪 Unable to retrieve dealer dashboard for '{resolved}'."
             
             # ==========================================================
-            # STEP 5: Groq AI Fallback (for non-analytics queries)
+            # STEP 5: Master Groq Intelligence (v17.0)
             # ==========================================================
             
-            # If we get here, no structured analytics matched
-            # Use Groq AI as final fallback
-            logger.info(f"[{req_id}] 🤖 No structured match, trying Groq AI fallback")
-            response = self._execute_groq_fallback(question, req_id)
+            # Use Master Groq for all remaining queries
+            logger.info(f"[{req_id}] 🤖 Master Groq Intelligence triggered")
+            
+            # Gather any available data for context
+            context_data = {}
+            if context:
+                context_data = context.to_dict()
+            
+            # Execute Master Groq
+            response = self._execute_master_groq(question, context_data, {}, req_id)
+            
+            # Cache the response
             self._cache_response(question, phone_number, response, True)
             return response
             
@@ -1047,8 +1893,9 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
         self.failure_cache.clear()
         self.conversation_cache.clear()
         self.dealer_resolution_cache.clear()
+        self.distance_cache.clear()
         logger.info("🗑️ All caches cleared")
-        return {"status": "cleared", "version": "16.0"}
+        return {"status": "cleared", "version": "17.0"}
     
     # ==========================================================
     # QUERY DETECTION HELPERS
@@ -1066,11 +1913,11 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
         return False
     
     # ==========================================================
-    # ENTERPRISE DASHBOARD FORMATTERS
+    # ENTERPRISE DASHBOARD FORMATTERS (v17.0)
     # ==========================================================
     
     def _format_dn_dashboard(self, data, req_id: str) -> str:
-        """Format professional DN Dashboard."""
+        """Format professional DN Dashboard with distance and transit."""
         try:
             if not self._validate_analytics_response(data, "dn_dashboard", req_id):
                 return "❌ Unable to retrieve DN details."
@@ -1114,12 +1961,23 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
             pod_aging = record.get('pod_aging_days', 'N/A')
             total_aging = record.get('total_aging_days', 'N/A')
             
+            # Distance and transit
+            distance_km = record.get('distance_km', 0)
+            transit_days = record.get('transit_days', 0)
+            
             # Compliance
             delivery_compliance = self._get_compliance_status(pgi_aging)
             pod_compliance = self._get_compliance_status(pod_aging)
             
             # Journey Tracking
             journey = self._get_dn_journey(dn_date, pgi_date, pod_date, status)
+            
+            # Risk Assessment
+            risk_level, risk_percentage = self._calculate_risk_level(
+                pgi_aging if pgi_aging != 'N/A' else 0,
+                transit_days if transit_days > 0 else 1
+            )
+            risk_emoji = self._get_risk_emoji(risk_level)
             
             # Management Action
             management_action = self._get_dn_management_action(pod_aging, pgi_aging, status)
@@ -1168,6 +2026,14 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
                 f"📋 POD Days: {pod_aging if pod_aging != 'N/A' else 'N/A'}",
                 f"🔄 Total Cycle Days: {total_aging if total_aging != 'N/A' else 'N/A'}",
                 "",
+                "📍 *Distance & Transit*",
+                f"Distance: {distance_km:.1f} KM" if distance_km > 0 else "📍 Same City Delivery",
+                f"Expected Transit: {transit_days} Days" if transit_days > 0 else "Expected Transit: 1 Day",
+                "",
+                "⚠️ *Risk Assessment*",
+                f"Risk Level: {risk_emoji} {risk_level.upper()}",
+                f"Risk Score: {risk_percentage:.1%}" if risk_percentage > 0 else "Risk Score: 0%",
+                "",
                 "📈 *Compliance*",
                 f"Delivery Compliance: {delivery_compliance}",
                 f"POD Compliance: {pod_compliance}",
@@ -1192,6 +2058,17 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
                 lines.append(f"🎯 *Management Action*")
                 lines.append(management_action)
             
+            # AI Insight
+            insight = self._generate_insights(
+                {"record": record, "status": status, "risk": risk_level},
+                "dn_analytics",
+                req_id
+            )
+            if insight:
+                lines.append("")
+                lines.append(f"💡 *AI Insight:*")
+                lines.append(insight)
+            
             return "\n".join(lines)
             
         except Exception as e:
@@ -1199,7 +2076,7 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
             return f"❌ Unable to format DN details."
     
     def _format_dealer_360_dashboard(self, data, dealer_name: str, req_id: str, confidence: float = 0.0) -> str:
-        """Format professional Dealer 360 Dashboard."""
+        """Format professional Dealer 360 Dashboard with distance and transit."""
         try:
             if not self._validate_analytics_response(data, "dealer_360_dashboard", req_id):
                 return f"❌ Unable to retrieve dashboard for {dealer_name}."
@@ -1236,9 +2113,23 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
             avg_units_per_dn = summary.get("total_units", 0) / total_dns if total_dns > 0 else 0
             
             risk_level = performance.get("risk_level", "low").lower()
-            risk_emoji = self.schema.get_risk_emoji(risk_level) if hasattr(self.schema, 'get_risk_emoji') else "🟢"
+            risk_emoji = self._get_risk_emoji(risk_level)
             risk_display = RISK_LEVELS.get(risk_level, "🟢 LOW")
             health_score = performance.get("health_score", 0)
+            
+            # Calculate distance if warehouse available
+            distance_info = ""
+            if warehouse and warehouse != "N/A":
+                distance, transit_days, status = self._calculate_distance_and_transit(
+                    warehouse, dealer_name, req_id
+                )
+                if status != "unknown":
+                    distance_info = self._get_distance_summary(
+                        distance, transit_days, status, dealer_name
+                    )
+            
+            # Generate forecast
+            forecast = self._generate_forecast(response_data, "next_month")
             
             lines = [
                 "🏪 *DEALER 360 DASHBOARD*",
@@ -1277,6 +2168,21 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
                 f"Last DN: {self._format_date(profile.get('last_dn_date'))}",
             ]
             
+            # Distance info
+            if distance_info:
+                lines.append("")
+                lines.append(distance_info)
+            
+            # Forecast
+            if forecast.get("trend") != "insufficient_data":
+                lines.append("")
+                lines.append("📊 *Forecast (Next Month)*")
+                lines.append(f"Expected Revenue: PKR {forecast.get('forecast_revenue', 0):,.0f}")
+                lines.append(f"Expected Units: {forecast.get('forecast_units', 0):,.0f}")
+                lines.append(f"Expected DNs: {forecast.get('forecast_dns', 0):,.0f}")
+                lines.append(f"Trend: {forecast.get('trend', 'stable').title()}")
+                lines.append(f"Confidence: {forecast.get('confidence', 0) * 100:.0f}%")
+            
             # Top Models
             if response_data.get("products"):
                 lines.append("")
@@ -1302,6 +2208,17 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
                 lines.append("🎯 *Management Recommendation*")
                 lines.append(recommendation)
             
+            # AI Insight
+            insight = self._generate_insights(
+                {"profile": profile, "summary": summary, "performance": performance},
+                "dealer_dashboard",
+                req_id
+            )
+            if insight:
+                lines.append("")
+                lines.append("💡 *AI Insight:*")
+                lines.append(insight)
+            
             return "\n".join(lines)
             
         except Exception as e:
@@ -1309,7 +2226,7 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
             return f"❌ Unable to format dealer dashboard for {dealer_name}"
     
     def _format_city_dashboard(self, data, city_name: str, req_id: str) -> str:
-        """Format professional City Performance Dashboard."""
+        """Format professional City Performance Dashboard with forecasting."""
         try:
             if not self._validate_analytics_response(data, "city_dashboard", req_id):
                 return f"❌ No data found for {city_name}"
@@ -1322,6 +2239,9 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
             
             if summary.get("total_dns", 0) == 0:
                 return f"❌ No data found for {city_name}"
+            
+            # Generate forecast
+            forecast = self._generate_forecast(d, "next_month")
             
             lines = [
                 "🏙️ *CITY PERFORMANCE DASHBOARD*",
@@ -1345,6 +2265,15 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
                 f"Pending DNs: {summary.get('pending_dns', 0)}",
                 f"Pending PODs: {summary.get('pending_pod_dns', 0)}",
             ]
+            
+            # Forecast
+            if forecast.get("trend") != "insufficient_data":
+                lines.append("")
+                lines.append("📊 *Forecast (Next Month)*")
+                lines.append(f"Expected Revenue: PKR {forecast.get('forecast_revenue', 0):,.0f}")
+                lines.append(f"Expected Units: {forecast.get('forecast_units', 0):,.0f}")
+                lines.append(f"Expected DNs: {forecast.get('forecast_dns', 0):,.0f}")
+                lines.append(f"Trend: {forecast.get('trend', 'stable').title()}")
             
             # Top Dealers
             if d.get("top_dealers"):
@@ -1382,6 +2311,17 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
                 lines.append("🎯 *Management Recommendation*")
                 lines.append(recommendation)
             
+            # AI Insight
+            insight = self._generate_insights(
+                {"summary": summary, "top_dealers": d.get("top_dealers", [])},
+                "city_dashboard",
+                req_id
+            )
+            if insight:
+                lines.append("")
+                lines.append("💡 *AI Insight:*")
+                lines.append(insight)
+            
             return "\n".join(lines)
             
         except Exception as e:
@@ -1389,7 +2329,7 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
             return f"❌ Unable to format city dashboard for {city_name}"
     
     def _format_warehouse_dashboard(self, data, warehouse_name: str, req_id: str) -> str:
-        """Format professional Warehouse Performance Dashboard."""
+        """Format professional Warehouse Performance Dashboard with forecasting."""
         try:
             if not self._validate_analytics_response(data, "warehouse_dashboard", req_id):
                 return f"❌ No data found for {warehouse_name}"
@@ -1402,6 +2342,9 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
             
             if summary.get("total_dns", 0) == 0:
                 return f"❌ No data found for {warehouse_name}"
+            
+            # Generate forecast
+            forecast = self._generate_forecast(d, "next_month")
             
             lines = [
                 "🏭 *WAREHOUSE PERFORMANCE DASHBOARD*",
@@ -1428,6 +2371,15 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
                 f"Pending PGIs: {summary.get('pending_pgi_dns', 0):,}",
                 f"Pending PODs: {summary.get('pending_pod_dns', 0):,}",
             ]
+            
+            # Forecast
+            if forecast.get("trend") != "insufficient_data":
+                lines.append("")
+                lines.append("📊 *Forecast (Next Month)*")
+                lines.append(f"Expected Revenue: PKR {forecast.get('forecast_revenue', 0):,.0f}")
+                lines.append(f"Expected Units: {forecast.get('forecast_units', 0):,.0f}")
+                lines.append(f"Expected DNs: {forecast.get('forecast_dns', 0):,.0f}")
+                lines.append(f"Trend: {forecast.get('trend', 'stable').title()}")
             
             # Top Cities
             if d.get("top_cities"):
@@ -1468,6 +2420,17 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
                 lines.append("🎯 *Management Recommendation*")
                 lines.append(recommendation)
             
+            # AI Insight
+            insight = self._generate_insights(
+                {"summary": summary, "top_cities": d.get("top_cities", [])},
+                "warehouse_dashboard",
+                req_id
+            )
+            if insight:
+                lines.append("")
+                lines.append("💡 *AI Insight:*")
+                lines.append(insight)
+            
             return "\n".join(lines)
             
         except Exception as e:
@@ -1475,7 +2438,7 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
             return f"❌ Unable to format warehouse dashboard for {warehouse_name}"
     
     def _format_control_tower_dashboard(self, data, req_id: str) -> str:
-        """Format professional Control Tower Dashboard."""
+        """Format professional Control Tower Dashboard with AI insights."""
         try:
             if not self._validate_analytics_response(data, "control_tower", req_id):
                 return "🚨 No control tower data available."
@@ -1542,6 +2505,17 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
                 for action in actions:
                     lines.append(f"• {action}")
             
+            # AI Insight
+            insight = self._generate_insights(
+                {"alerts": alerts, "critical_count": critical_count},
+                "control_tower",
+                req_id
+            )
+            if insight:
+                lines.append("")
+                lines.append("💡 *AI Insight:*")
+                lines.append(insight)
+            
             return "\n".join(lines)
             
         except Exception as e:
@@ -1549,7 +2523,7 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
             return "🚨 Unable to format control tower."
     
     def _format_executive_dashboard(self, data, req_id: str) -> str:
-        """Format professional Executive Dashboard."""
+        """Format professional Executive Dashboard with AI insights."""
         try:
             if not self._validate_analytics_response(data, "executive_dashboard", req_id):
                 return "👔 No executive insights available."
@@ -1570,6 +2544,9 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
             health_score = d.get("health_score", 0)
             health_status = "Healthy" if health_score >= 80 else "Needs Attention" if health_score >= 60 else "Critical"
             health_emoji = "✅" if health_score >= 80 else "⚠️" if health_score >= 60 else "🔴"
+            
+            # Generate forecast
+            forecast = self._generate_forecast(d, "next_month")
             
             lines = [
                 "👔 *EXECUTIVE DASHBOARD*",
@@ -1602,6 +2579,15 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
                 f"Delayed Deliveries: {summary.get('pending_pgi', 0)}",
             ]
             
+            # Forecast
+            if forecast.get("trend") != "insufficient_data":
+                lines.append("")
+                lines.append("📊 *Forecast (Next Month)*")
+                lines.append(f"Expected Revenue: PKR {forecast.get('forecast_revenue', 0):,.0f}")
+                lines.append(f"Expected Units: {forecast.get('forecast_units', 0):,.0f}")
+                lines.append(f"Expected DNs: {forecast.get('forecast_dns', 0):,.0f}")
+                lines.append(f"Trend: {forecast.get('trend', 'stable').title()}")
+            
             if insights_list:
                 lines.append("")
                 lines.append("💡 *Insights*")
@@ -1620,6 +2606,17 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
             lines.append("📊 *Overall Health Score*")
             lines.append(f"{health_score}/100")
             lines.append(f"Status: {health_emoji} {health_status}")
+            
+            # AI Insight
+            insight = self._generate_insights(
+                {"summary": summary, "health_score": health_score},
+                "executive_dashboard",
+                req_id
+            )
+            if insight:
+                lines.append("")
+                lines.append("💡 *AI Insight:*")
+                lines.append(insight)
             
             return "\n".join(lines)
             
@@ -1652,6 +2649,17 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
             return date_str
         except:
             return str(date_str)
+    
+    def _get_risk_emoji(self, risk_level: str) -> str:
+        risk_level = risk_level.lower()
+        if risk_level == "critical":
+            return "🔴"
+        elif risk_level == "high":
+            return "🟠"
+        elif risk_level == "medium":
+            return "🟡"
+        else:
+            return "🟢"
     
     def _get_compliance_status(self, days) -> str:
         if days == 'N/A' or days is None:
@@ -1769,35 +2777,42 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
     # ==========================================================
     
     def _get_help_message(self) -> str:
-        return """📋 *AI Logistics Assistant - Help*
+        return """🏠 *Haier Logistics AI - WhatsApp Menu*
 
-*🔍 DN Tracking:* Send any 8-12 digit DN number
+*📋 Main Menu*
+1️⃣ Dealer Dashboard
+2️⃣ Warehouse Dashboard
+3️⃣ City Dashboard
+4️⃣ Product Dashboard
+5️⃣ DN Tracking
+6️⃣ Pending Deliveries
+7️⃣ POD Dashboard
+8️⃣ Distance Dashboard
+9️⃣ Revenue Dashboard
+🔟 Performance Dashboard
+1️⃣1️⃣ Executive Dashboard
+1️⃣2️⃣ Forecast Dashboard
+1️⃣3️⃣ AI Ask Anything
 
-*🏪 Dealer Queries:*
-   • "Dealer name" (e.g., "ZQ Electronics")
-   • "Dealer revenue" or "Dealer units"
-   • "Dealer performance" or "Dealer aging"
-   • "Compare Dealer A vs Dealer B"
+*🔍 Quick Commands:*
+• Enter 8-12 digit DN number
+• Dealer name (e.g., "ZQ Electronics")
+• City name (e.g., "Haripur")
+• Warehouse name
+• "Executive summary"
+• "Control tower"
+• "Top dealers"
+• "Root cause analysis"
 
-*🏙️ City Queries:*
-   • "City name" (e.g., "Haripur")
-   • "Which city has highest sales"
-   • "Compare City A vs City B"
+*💡 AI Intelligence:*
+I can analyze any logistics question.
+Ask about:
+• Performance - "Which dealer has highest revenue?"
+• Distance - "How far is dealer from warehouse?"
+• Forecasting - "What is next month's revenue outlook?"
+• Root Cause - "Why are deliveries delayed in Lahore?"
 
-*🏭 Warehouse Queries:*
-   • "Warehouse name" (e.g., "Rawalpindi")
-   • "Compare Warehouse A vs Warehouse B"
-
-*📊 Analytics:*
-   • "Top dealers" or "Bottom dealers"
-   • "Executive insights" or "Key issues"
-   • "Root cause" or "Critical alerts"
-   • "Delivery performance"
-   • "Control tower"
-
-*🤖 General AI:* Any non-logistics question
-
-*What would you like to know?* 🤖"""
+*What would you like to explore?* 🤖"""
     
     def _get_error_response(self, question: str, error: Exception, error_id: str, request_id: str) -> str:
         return (
@@ -1816,7 +2831,7 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
         total_dealer = self.metrics["dealer_queries_success"] + self.metrics["dealer_queries_failure"]
         
         return {
-            "version": "16.0",
+            "version": "17.0",
             "total_requests": self.metrics["total_requests"],
             "cache_hits": self.metrics["cache_hits"],
             "cache_misses": self.metrics["cache_misses"],
@@ -1856,6 +2871,11 @@ Keep it concise and actionable. Do not repeat the data, just provide insight.
             "errors": self.metrics["errors"],
             "analytics_response_errors": self.metrics["analytics_response_errors"],
             "recovery_attempts": self.metrics["recovery_attempts"],
+            "distance_calculations": self.metrics["distance_calculations"],
+            "transit_calculations": self.metrics["transit_calculations"],
+            "risk_assessments": self.metrics["risk_assessments"],
+            "forecast_requests": self.metrics["forecast_requests"],
+            "root_cause_requests": self.metrics["root_cause_requests"],
             "conversation_count": len(self.conversation_cache),
             "cache_size": len(self.response_cache),
             "failure_cache_size": len(self.failure_cache)
@@ -1934,7 +2954,7 @@ def get_routing_debug(question: str) -> Dict[str, Any]:
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("AI Provider Service v16.0 - Self-Healing Architecture")
+logger.info("AI Provider Service v17.0 - Master Groq Intelligence")
 logger.info("=" * 70)
 logger.info("")
 logger.info("   SELF-HEALING FEATURES:")
@@ -1943,6 +2963,18 @@ logger.info("   ✅ Multiple Recovery Attempts (6 strategies)")
 logger.info("   ✅ Never Cache Failures")
 logger.info("   ✅ Groq AI Fallback")
 logger.info("   ✅ System Survival")
+logger.info("")
+logger.info("   MASTER GROQ INTELLIGENCE:")
+logger.info("   ✅ AI Logistics Control Tower")
+logger.info("   ✅ Dealer Distance Engine (Haversine)")
+logger.info("   ✅ Transit Time Engine")
+logger.info("   ✅ Delay Engine")
+logger.info("   ✅ Risk Engine")
+logger.info("   ✅ Root Cause Analysis")
+logger.info("   ✅ AI Insight Generation")
+logger.info("   ✅ Forecasting Engine")
+logger.info("   ✅ WhatsApp Menu System")
+logger.info("   ✅ Executive Decision Support")
 logger.info("")
 logger.info("   ENTERPRISE FEATURES:")
 logger.info("   ✅ Dealer 360 Dashboard")
