@@ -256,8 +256,7 @@ ujson>=5.10.0
 # Natural Language Analytics on DataFrames
 
 # ==========================================
-
-pandasai>=2.4.0
+pandasai==2.3.2
 
 # ==========================================
 
