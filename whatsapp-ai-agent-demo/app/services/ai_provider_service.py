@@ -1,8 +1,14 @@
 # ==========================================================
-# FILE: app/services/ai_provider_service.py (v21.1 - COMPLETE FIX)
+# FILE: app/services/ai_provider_service.py (v21.2 - DN FIXED)
 # ==========================================================
 # PURPOSE: AI ROUTER - Routes queries to appropriate services
-# VERSION: 21.1 - Complete Error-Free Version
+# VERSION: 21.2 - DN Dashboard Fixed with Sample DNs
+#
+# FIXES IN v21.2:
+# - ✅ FIXED: DN Dashboard returns helpful error messages
+# - ✅ FIXED: Shows sample DNs when DN not found
+# - ✅ FIXED: Better DN validation
+# - ✅ FIXED: Improved error handling
 #
 # FIXES IN v21.1:
 # - ✅ FIXED: Added 'field' import from dataclasses
@@ -31,7 +37,7 @@ import traceback
 import math
 from typing import Optional, Callable, Any, Dict, List, Tuple, Set
 from enum import Enum
-from dataclasses import dataclass, field  # ✅ FIXED: Added field import
+from dataclasses import dataclass, field
 from cachetools import TTLCache, LRUCache
 from loguru import logger
 from sqlalchemy.orm import Session
@@ -533,12 +539,12 @@ class ConversationContext:
 
 
 # ==========================================================
-# MASTER AI ROUTER - v21.1
+# MASTER AI ROUTER - v21.2
 # ==========================================================
 
 class AIOrchestrator:
     """
-    MASTER AI ROUTER - v21.1
+    MASTER AI ROUTER - v21.2
     
     ROLE: This file is the AI Router.
     This file must NEVER perform analytics.
@@ -806,7 +812,7 @@ class AIOrchestrator:
         }
         
         logger.info("=" * 70)
-        logger.info("AI Router v21.1 - Master AI Router with Full Dashboards")
+        logger.info("AI Router v21.2 - DN Dashboard Fixed")
         logger.info("=" * 70)
         logger.info("")
         logger.info("   RULES:")
@@ -822,7 +828,7 @@ class AIOrchestrator:
         logger.info("      2. 🏭 Warehouse Dashboard")
         logger.info("      3. 🏙️ City Dashboard")
         logger.info("      4. 📦 Product Dashboard")
-        logger.info("      5. 📄 DN Dashboard")
+        logger.info("      5. 📄 DN Dashboard (FIXED)")
         logger.info("      6. 📋 PGI Dashboard")
         logger.info("      7. ✅ POD Dashboard")
         logger.info("      8. 🚚 Delivery Dashboard")
@@ -1272,6 +1278,34 @@ class AIOrchestrator:
         return False
     
     # ==========================================================
+    # GET SAMPLE DNS - NEW METHOD
+    # ==========================================================
+    
+    def _get_sample_dns(self, limit: int = 5) -> List[str]:
+        """Get sample DN numbers from database for reference."""
+        try:
+            if self.analytics and hasattr(self.analytics, 'get_sample_dns'):
+                return self.analytics.get_sample_dns(limit)
+            
+            # Fallback: try direct database query
+            from app.database import SessionLocal
+            from app.models import DeliveryReport
+            from sqlalchemy import func
+            
+            db = SessionLocal()
+            try:
+                results = db.query(DeliveryReport.dn_no).filter(
+                    DeliveryReport.dn_no.isnot(None),
+                    DeliveryReport.dn_no != ''
+                ).distinct().limit(limit).all()
+                return [r[0] for r in results if r[0]]
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"Failed to get sample DNs: {e}")
+            return []
+    
+    # ==========================================================
     # CACHE MANAGEMENT
     # ==========================================================
     
@@ -1561,11 +1595,8 @@ class AIOrchestrator:
 *What would you like to know?* 🤖"""
     
     # ==========================================================
-    # DASHBOARD ROUTERS - All 18 Dashboards (continued)
+    # DASHBOARD ROUTERS - All 18 Dashboards
     # ==========================================================
-    
-    # Note: All dashboard router methods are preserved from v21.0
-    # They are too long to include here but should remain unchanged
     
     def _route_dealer_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> Optional[str]:
         """Route to Dealer Dashboard."""
@@ -1607,7 +1638,94 @@ class AIOrchestrator:
         return self._format_dealer_dashboard(result, resolved, req_id)
     
     # ==========================================================
-    # ADDITIONAL ROUTERS (Placeholders)
+    # DN DASHBOARD - FIXED v21.2
+    # ==========================================================
+    
+    def _route_dn_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> Optional[str]:
+        """Route to DN Dashboard with improved error handling."""
+        
+        if not self.analytics:
+            return "⚠️ Analytics service not available. Please try again later."
+        
+        dn_number = entity or (context.last_dn if context else None)
+        
+        if not dn_number:
+            return "❌ Please provide a DN number (8-12 digits)."
+        
+        cleaned = self._normalize_dn(dn_number)
+        
+        if not cleaned or len(cleaned) < 8 or len(cleaned) > 12:
+            return f"""❌ Invalid DN number: '{dn_number}'
+
+💡 *DN numbers must be 8-12 digits.*
+
+📋 *Try these:*
+• Enter a valid DN number (e.g., 1234567890)
+• Type "help" for menu
+• Ask about a dealer name
+
+*What would you like to know?* 🤖"""
+        
+        # --- NEW: Check if DN exists first ---
+        try:
+            # Try to verify DN exists
+            if hasattr(self.analytics, 'verify_dn_exists'):
+                exists_check = self.analytics.verify_dn_exists(cleaned)
+                
+                if not exists_check.get('found', False):
+                    # Get sample DNs from database to help user
+                    sample_dns = self._get_sample_dns(5)
+                    sample_text = ""
+                    if sample_dns:
+                        sample_text = "\n".join([f"• {dn}" for dn in sample_dns[:3]])
+                    
+                    return f"""❌ DN {cleaned} not found in system.
+
+💡 *The DN number you entered doesn't exist in our database.*
+
+📋 *Sample DN numbers in system:*
+{sample_text}
+
+📋 *Try these:*
+• Enter a valid DN number from the list above
+• Type "help" for menu
+• Ask about a dealer name (e.g., "Show ZQ Electronics")
+
+*What would you like to know?* 🤖"""
+        except Exception as e:
+            logger.error(f"[{req_id}] DN existence check failed: {e}")
+            # Continue to try analytics anyway
+        
+        result = self.analytics.get_dn_analytics(cleaned)
+        
+        if not self._validate_analytics_response(result, "dn_dashboard", req_id):
+            error_msg = getattr(result, 'error', 'Unknown error')
+            logger.error(f"[{req_id}] ❌ DN lookup failed: {error_msg}")
+            
+            # Try to get sample DNs
+            sample_dns = self._get_sample_dns(5)
+            sample_text = ""
+            if sample_dns:
+                sample_text = "\n".join([f"• {dn}" for dn in sample_dns[:3]])
+            
+            return f"""⚠️ Unable to load DN Dashboard.
+
+💡 *Error details:* {error_msg}
+
+📋 *Sample DN numbers in system:*
+{sample_text}
+
+📋 *Try these:*
+• Enter a different DN number
+• Check if DN exists in system
+• Type "help" for menu
+
+*What would you like to know?* 🤖"""
+        
+        return self._format_dn_dashboard(result, req_id)
+    
+    # ==========================================================
+    # ADDITIONAL ROUTERS (Placeholders - preserved from v21.0)
     # ==========================================================
     
     def _route_warehouse_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> Optional[str]:
@@ -1663,46 +1781,6 @@ class AIOrchestrator:
             return "❌ Unable to retrieve product data."
         
         return self._format_product_dashboard(result, req_id)
-    
-    def _route_dn_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> Optional[str]:
-        """Route to DN Dashboard."""
-        if not self.analytics:
-            return "⚠️ Analytics service not available. Please try again later."
-        
-        dn_number = entity or (context.last_dn if context else None)
-        
-        if not dn_number:
-            return "❌ Please provide a DN number (8-12 digits)."
-        
-        cleaned = self._normalize_dn(dn_number)
-        
-        if not cleaned or len(cleaned) < 8 or len(cleaned) > 12:
-            return f"""❌ Invalid DN number: '{dn_number}'
-
-💡 *DN numbers must be 8-12 digits.*
-
-📋 *Try these:*
-• Enter a valid DN number (e.g., 1234567890)
-• Type "help" for menu
-• Ask about a dealer name
-
-*What would you like to know?* 🤖"""
-        
-        result = self.analytics.get_dn_analytics(cleaned)
-        
-        if not self._validate_analytics_response(result, "dn_dashboard", req_id):
-            return f"""❌ DN {cleaned} not found.
-
-💡 *Please verify the number and try again.*
-
-📋 *Try these:*
-• Enter 8-12 digit DN number
-• Type "help" for full menu
-• Ask about a dealer name
-
-*What would you like to know?* 🤖"""
-        
-        return self._format_dn_dashboard(result, req_id)
     
     def _route_pgi_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> Optional[str]:
         """Route to PGI Dashboard."""
@@ -2153,9 +2231,6 @@ Keep it simple and easy to understand."""
             return response[:MAX_RESPONSE_LENGTH - 20] + "\n\n... (truncated)"
         return response
     
-    # Note: All formatter methods (_format_*) are preserved from v21.0
-    # They are too long to include here but should remain unchanged
-    
     def _format_dealer_dashboard(self, data, dealer_name: str, req_id: str) -> str:
         """Format dealer dashboard for WhatsApp."""
         try:
@@ -2212,9 +2287,55 @@ Keep it simple and easy to understand."""
             logger.error(f"[{req_id}] Dealer format error: {e}")
             return f"❌ Unable to format dealer dashboard for {dealer_name}"
     
-    # ==========================================================
-    # ADDITIONAL FORMATTERS (Placeholders - preserved from v21.0)
-    # ==========================================================
+    def _format_dn_dashboard(self, data, req_id: str) -> str:
+        """Format DN tracking for WhatsApp."""
+        try:
+            record = data.data.get("record", {})
+            validation = data.data.get("validation", {})
+            status = data.data.get("status", "unknown")
+            distance_info = data.data.get("distance_info", {})
+            risk_level = data.data.get("risk_level", "low")
+            
+            dn_no = record.get('dn_number', 'N/A')
+            dealer_name = record.get('customer_name', 'N/A')
+            warehouse = record.get('warehouse', 'N/A')
+            units = record.get('units', 0)
+            amount = record.get('amount', 0)
+            
+            status_emoji = "✅" if status == "delivered" else "🚚" if status == "pending_pod" else "⏳"
+            risk_emoji = self._get_risk_emoji(risk_level)
+            
+            lines = [
+                "📄 *DN TRACKING*",
+                "",
+                f"DN No: {dn_no}",
+                f"Dealer: {dealer_name}",
+                f"Warehouse: {warehouse}",
+                "",
+                f"Units: {units}",
+                f"Revenue: PKR {amount:,.0f}",
+                "",
+                f"Status: {status_emoji} {status.upper()}",
+                f"Risk: {risk_emoji} {risk_level.upper()}"
+            ]
+            
+            distance_summary = distance_info.get("summary", "")
+            if distance_summary:
+                lines.append("")
+                lines.append(distance_summary)
+            
+            issues = validation.get("issues", [])
+            if issues:
+                lines.append("")
+                lines.append("⚠️ Issues:")
+                for issue in issues[:2]:
+                    lines.append(f"   • {issue}")
+            
+            return self._truncate_response("\n".join(lines))
+            
+        except Exception as e:
+            logger.error(f"[{req_id}] DN format error: {e}")
+            return f"❌ Unable to format DN details"
     
     def _format_warehouse_dashboard(self, data, warehouse_name: str, req_id: str) -> str:
         """Format warehouse dashboard for WhatsApp."""
@@ -2292,56 +2413,6 @@ Keep it simple and easy to understand."""
         except Exception as e:
             logger.error(f"[{req_id}] City format error: {e}")
             return f"❌ Unable to format city dashboard for {city_name}"
-    
-    def _format_dn_dashboard(self, data, req_id: str) -> str:
-        """Format DN tracking for WhatsApp."""
-        try:
-            record = data.data.get("record", {})
-            validation = data.data.get("validation", {})
-            status = data.data.get("status", "unknown")
-            distance_info = data.data.get("distance_info", {})
-            risk_level = data.data.get("risk_level", "low")
-            
-            dn_no = record.get('dn_number', 'N/A')
-            dealer_name = record.get('customer_name', 'N/A')
-            warehouse = record.get('warehouse', 'N/A')
-            units = record.get('units', 0)
-            amount = record.get('amount', 0)
-            
-            status_emoji = "✅" if status == "delivered" else "🚚" if status == "pending_pod" else "⏳"
-            risk_emoji = self._get_risk_emoji(risk_level)
-            
-            lines = [
-                "📄 *DN TRACKING*",
-                "",
-                f"DN No: {dn_no}",
-                f"Dealer: {dealer_name}",
-                f"Warehouse: {warehouse}",
-                "",
-                f"Units: {units}",
-                f"Revenue: PKR {amount:,.0f}",
-                "",
-                f"Status: {status_emoji} {status.upper()}",
-                f"Risk: {risk_emoji} {risk_level.upper()}"
-            ]
-            
-            distance_summary = distance_info.get("summary", "")
-            if distance_summary:
-                lines.append("")
-                lines.append(distance_summary)
-            
-            issues = validation.get("issues", [])
-            if issues:
-                lines.append("")
-                lines.append("⚠️ Issues:")
-                for issue in issues[:2]:
-                    lines.append(f"   • {issue}")
-            
-            return self._truncate_response("\n".join(lines))
-            
-        except Exception as e:
-            logger.error(f"[{req_id}] DN format error: {e}")
-            return f"❌ Unable to format DN details"
     
     def _format_product_dashboard(self, data, req_id: str) -> str:
         """Format product dashboard for WhatsApp."""
@@ -2866,7 +2937,7 @@ Reference: `{req_id}` | Error: `{error_id}`"""
             avg_response = sum(self.metrics["response_times_ms"]) / len(self.metrics["response_times_ms"])
         
         return {
-            "version": "21.1",
+            "version": "21.2",
             "total_requests": self.metrics["total_requests"],
             "fast_cache_hits": self.metrics["fast_cache_hits"],
             "cache_hits": self.metrics["cache_hits"],
@@ -2898,7 +2969,7 @@ Reference: `{req_id}` | Error: `{error_id}`"""
                 pass
         
         logger.info("🗑️ All caches cleared")
-        return {"status": "cleared", "version": "21.1"}
+        return {"status": "cleared", "version": "21.2"}
 
 
 # ==========================================================
@@ -2946,14 +3017,14 @@ def process_whatsapp_query(
 def get_ai_service_metrics() -> Dict[str, Any]:
     orchestrator = get_orchestrator()
     if orchestrator is None:
-        return {"error": "AI Orchestrator not available", "version": "21.1"}
+        return {"error": "AI Orchestrator not available", "version": "21.2"}
     return orchestrator.get_metrics()
 
 
 def clear_ai_cache():
     orchestrator = get_orchestrator()
     if orchestrator is None:
-        return {"error": "AI Orchestrator not available", "version": "21.1"}
+        return {"error": "AI Orchestrator not available", "version": "21.2"}
     return orchestrator.clear_caches()
 
 
@@ -2980,15 +3051,14 @@ def get_routing_debug(question: str) -> Dict[str, Any]:
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("AI Router v21.1 - Complete Error-Free Version")
+logger.info("AI Router v21.2 - DN Dashboard Fixed")
 logger.info("=" * 70)
 logger.info("")
-logger.info("   FIXES IN v21.1:")
-logger.info("   ✅ FIXED: Added 'field' import from dataclasses")
-logger.info("   ✅ FIXED: All imports are correct")
-logger.info("   ✅ FIXED: All syntax errors resolved")
-logger.info("   ✅ FIXED: Better error handling for missing services")
-logger.info("   ✅ All v21.0 features preserved")
+logger.info("   FIXES IN v21.2:")
+logger.info("   ✅ FIXED: DN Dashboard shows helpful messages")
+logger.info("   ✅ FIXED: Shows sample DNs when DN not found")
+logger.info("   ✅ FIXED: Better DN validation")
+logger.info("   ✅ FIXED: Improved error handling")
 logger.info("")
 logger.info("   RULES:")
 logger.info("   ✅ Analytics First - analytics_service.py")
@@ -2997,36 +3067,6 @@ logger.info("   ✅ Database Truth Always")
 logger.info("   ✅ Never Crash")
 logger.info("   ✅ Always Fast")
 logger.info("   ✅ Always WhatsApp Safe")
-logger.info("")
-logger.info("   📊 18 DASHBOARDS SUPPORTED:")
-logger.info("      1. 🏪 Dealer Dashboard")
-logger.info("      2. 🏭 Warehouse Dashboard")
-logger.info("      3. 🏙️ City Dashboard")
-logger.info("      4. 📦 Product Dashboard")
-logger.info("      5. 📄 DN Dashboard")
-logger.info("      6. 📋 PGI Dashboard")
-logger.info("      7. ✅ POD Dashboard")
-logger.info("      8. 🚚 Delivery Dashboard")
-logger.info("      9. 📍 Distance Dashboard")
-logger.info("      10. 👔 Executive Dashboard")
-logger.info("      11. 🚨 Control Tower Dashboard")
-logger.info("      12. 🏆 Dealer Ranking")
-logger.info("      13. 🏆 Warehouse Ranking")
-logger.info("      14. 🏆 Product Ranking")
-logger.info("      15. 🚛 Transporter Dashboard")
-logger.info("      16. 💰 Revenue Dashboard")
-logger.info("      17. 📦 Inventory Dashboard")
-logger.info("      18. 📊 Forecast Dashboard")
-logger.info("")
-logger.info("   🔍 ENTITY RECOGNITION:")
-logger.info("      - Dealer Name | Dealer Code | Customer Code")
-logger.info("      - Warehouse | City | Material | Product Model")
-logger.info("      - DN Number | Sales Office | Division")
-logger.info("")
-logger.info("   💬 FOLLOW-UP SUPPORT:")
-logger.info("      - 'What is its POD?' → Uses last_dealer")
-logger.info("      - 'How many pending DN?' → Uses last_dealer")
-logger.info("      - 'Show me its revenue' → Uses last_dealer")
 logger.info("")
 logger.info("   STATUS: ✅ PRODUCTION READY")
 logger.info("=" * 70)
