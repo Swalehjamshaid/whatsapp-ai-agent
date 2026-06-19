@@ -1,8 +1,8 @@
 # ==========================================================
-# FILE: app/services/analytics_service.py (v14.0 - MASTER ANALYTICS BRAIN)
+# FILE: app/services/analytics_service.py (v14.1 - FULLY INTEGRATED)
 # ==========================================================
 # PURPOSE: PRIMARY ANALYTICS ENGINE - Direct PostgreSQL Integration
-# VERSION: 14.0 - Master Analytics Brain with Full Dashboards
+# VERSION: 14.1 - Full Integration with DN Methods
 #
 # ROLE: This file is the Analytics Brain.
 #       This file must NEVER call Groq.
@@ -15,6 +15,15 @@
 #       * Forecasting Engine
 #       * Distance Engine
 #       * Benchmarking
+#       * DN Verification (NEW)
+#       * Sample DN Retrieval (NEW)
+#
+# CHANGES IN v14.1:
+# - ✅ ADDED: verify_dn_exists() method
+# - ✅ ADDED: get_sample_dns() method
+# - ✅ ADDED: Proxy methods in AnalyticsService
+# - ✅ 100% Integrated with ai_provider_service.py
+# - ✅ Full WhatsApp compatibility maintained
 #
 # CRITICAL BUSINESS RULES:
 # - Dealer Name = customer_name
@@ -1617,6 +1626,74 @@ class AnalyticsRepository:
                 time.sleep(0.5)
         return None
     
+    # ==========================================================
+    # DN VERIFICATION & SAMPLE METHODS - NEW v14.1
+    # ==========================================================
+    
+    def verify_dn_exists(self, dn_no: str) -> Dict[str, Any]:
+        """
+        Verify if a DN number exists in the database.
+        
+        Args:
+            dn_no: DN number to verify
+            
+        Returns:
+            Dict with found status and record details if found
+        """
+        try:
+            normalized = self.normalize_dn(dn_no)
+            if not normalized:
+                return {"dn": dn_no, "normalized": None, "found": False, "error": "Invalid DN format"}
+            
+            record = self.db.query(DeliveryReport).filter(
+                cast(DeliveryReport.dn_no, String) == normalized
+            ).first()
+            
+            found = record is not None
+            result = {"dn": dn_no, "normalized": normalized, "found": found}
+            
+            if found and record:
+                result["record"] = {
+                    "dn_no": record.dn_no,
+                    "customer_name": record.customer_name,
+                    "dealer_code": record.dealer_code or "",
+                    "customer_code": record.customer_code or "",
+                    "warehouse": record.warehouse,
+                    "ship_to_city": record.ship_to_city,
+                    "dn_qty": int(record.dn_qty) if record.dn_qty else 0,
+                    "dn_amount": float(record.dn_amount) if record.dn_amount else 0,
+                    "pending_flag": record.pending_flag or False
+                }
+            
+            logger.debug(f"DN verification: {dn_no} → found={found}")
+            return result
+        except Exception as e:
+            logger.error(f"Verify DN failed for {dn_no}: {e}")
+            return {"dn": dn_no, "found": False, "error": str(e)}
+    
+    def get_sample_dns(self, limit: int = 5) -> List[str]:
+        """
+        Get sample DN numbers from database.
+        
+        Args:
+            limit: Maximum number of sample DNs to return
+            
+        Returns:
+            List of sample DN numbers
+        """
+        try:
+            results = self.db.query(DeliveryReport.dn_no).filter(
+                DeliveryReport.dn_no.isnot(None),
+                DeliveryReport.dn_no != ''
+            ).distinct().limit(limit).all()
+            
+            sample_dns = [r[0] for r in results if r[0]]
+            logger.debug(f"Retrieved {len(sample_dns)} sample DNs")
+            return sample_dns
+        except Exception as e:
+            logger.error(f"Failed to get sample DNs: {e}")
+            return []
+    
     def verify_dn_exists(self, dn_no: str) -> Dict[str, Any]:
         try:
             normalized = self.normalize_dn(dn_no)
@@ -2710,7 +2787,7 @@ class AnalyticsService:
         
         self._test_postgresql()
         logger.info("=" * 70)
-        logger.info("AnalyticsService v14.0 - Master Analytics Brain")
+        logger.info("AnalyticsService v14.1 - Fully Integrated")
         logger.info("=" * 70)
         logger.info("")
         logger.info("   ROLE: Analytics Brain - NEVER calls Groq")
@@ -2736,6 +2813,10 @@ class AnalyticsService:
         logger.info("      9. Inventory Dashboard")
         logger.info("      10. Forecast Dashboard")
         logger.info("")
+        logger.info("   ✅ v14.1 NEW METHODS:")
+        logger.info("      - verify_dn_exists()")
+        logger.info("      - get_sample_dns()")
+        logger.info("")
         logger.info("   STATUS: ✅ PRODUCTION READY")
         logger.info("=" * 70)
     
@@ -2751,6 +2832,34 @@ class AnalyticsService:
         self.repo.close()
         if hasattr(self.kpi, 'close'):
             self.kpi.close()
+    
+    # ==========================================================
+    # DN VERIFICATION METHODS - NEW v14.1
+    # ==========================================================
+    
+    def verify_dn_exists(self, dn_no: str) -> Dict[str, Any]:
+        """
+        Verify if a DN exists - proxy to repository.
+        
+        Args:
+            dn_no: DN number to verify
+            
+        Returns:
+            Dict with found status and record details
+        """
+        return self.repo.verify_dn_exists(dn_no)
+    
+    def get_sample_dns(self, limit: int = 5) -> List[str]:
+        """
+        Get sample DNs - proxy to repository.
+        
+        Args:
+            limit: Maximum number of sample DNs to return
+            
+        Returns:
+            List of sample DN numbers
+        """
+        return self.repo.get_sample_dns(limit)
     
     # ==========================================================
     # PUBLIC DASHBOARD METHODS
@@ -3074,8 +3183,7 @@ class AnalyticsService:
             if datetime.now() < self._cache_ttl[key]:
                 self.metrics["cache_hits"] += 1
                 return self._cache[key]
-        self.metrics["cache_misses"] += 1
-        return None
+        self.metrics["cache_misses"] += 1        return None
     
     def _set_cached(self, key: str, value: Any, ttl_seconds: int = 300):
         if isinstance(value, dict) and value.get("error"):
