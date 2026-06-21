@@ -131,6 +131,7 @@ class DatabaseHealthChecker:
 # BLOCK 5: DATE VALIDATION ENGINE (FIXED)
 # ==========================================================
 # ==========================================================
+# ==========================================================
 # BLOCK 5: DATE VALIDATION ENGINE (BUSINESS DATE INTERPRETATION)
 # ==========================================================
 
@@ -166,8 +167,6 @@ class DateValidator:
         if not isinstance(raw_date, datetime):
             raw_date = datetime.combine(raw_date, datetime.min.time())
         
-        # Return the datetime as-is - business interpretation is handled
-        # by the calculation logic, not by modifying the date itself
         return raw_date
     
     @staticmethod
