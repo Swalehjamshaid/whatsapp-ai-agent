@@ -130,8 +130,7 @@ class DatabaseHealthChecker:
 # ==========================================================
 # BLOCK 5: DATE VALIDATION ENGINE (FIXED)
 # ==========================================================
-# ==========================================================
-# BLOCK 5: DATE VALIDATION ENGINE (CORRECT DATE PARSING)
+# BLOCK 5: DATE VALIDATION ENGINE (FIXED - CRITICAL BUG)
 # ==========================================================
 
 class DateValidator:
@@ -160,8 +159,8 @@ class DateValidator:
         
         Business Format: YYYY-DD-MM
         - First part: Year
-        - Second part: Day
-        - Third part: Month
+        - Second part: Day (business day)
+        - Third part: Month (business month)
         
         Example:
         raw_value = "2026-07-05" → datetime(2026, 5, 7) → 07-May-2026
@@ -174,8 +173,6 @@ class DateValidator:
         # If already datetime, convert to string for parsing
         if isinstance(raw_value, datetime):
             raw_value = raw_value.strftime("%Y-%m-%d")
-        elif isinstance(raw_value, date):
-            raw_value = raw_value.strftime("%Y-%m-%d")
         
         # Convert to string if needed
         raw_str = str(raw_value).strip()
@@ -185,7 +182,7 @@ class DateValidator:
             parts = raw_str.split("-")
             
             if len(parts) != 3:
-                # Try parsing as datetime
+                # If not in expected format, return as is
                 if isinstance(raw_value, datetime):
                     return raw_value
                 return None
@@ -292,6 +289,26 @@ class DateValidator:
         SCENARIO 5: Invalid Data
         - Display: ⚠ Data Validation Issue
         - No aging calculated
+        
+        EXPECTED RESULTS FOR TEST DNs:
+        
+        DN 6243609944:
+        Create: 2026-05-05 → 05-May-2026
+        PGI: 2026-07-05 → 07-May-2026
+        POD: 2026-05-15 → 15-May-2026
+        Expected: Delivery Aging = 2 Days, POD Aging = 8 Days, Total Cycle = 10 Days
+        
+        DN 6243610517:
+        Create: 2026-05-05 → 05-May-2026
+        PGI: 2026-06-05 → 06-May-2026
+        POD: 2026-11-05 → 11-May-2026
+        Expected: Delivery Aging = 1 Day, POD Aging = 5 Days, Total Cycle = 6 Days
+        
+        DN 6243610691:
+        Create: 2026-05-05 → 05-May-2026
+        PGI: 2026-07-05 → 07-May-2026
+        POD: 2026-05-19 → 19-May-2026
+        Expected: Delivery Aging = 2 Days, POD Aging = 12 Days, Total Cycle = 14 Days
         """
         
         # ✅ Parse dates using business interpretation
