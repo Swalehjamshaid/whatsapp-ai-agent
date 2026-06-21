@@ -134,6 +134,8 @@ class DatabaseHealthChecker:
 # ==========================================================
 # BLOCK 5: DATE VALIDATION ENGINE (BUSINESS DATE INTERPRETATION)
 # ==========================================================
+# BLOCK 5: DATE VALIDATION ENGINE (BUSINESS DATE INTERPRETATION)
+# ==========================================================
 
 class DateValidator:
     """
@@ -391,7 +393,6 @@ class DateValidator:
             return "1 Day"
         else:
             return f"{days} Days"
-
 # ==========================================================
 # BLOCK 6: KPI ENGINE
 # ==========================================================
@@ -1039,7 +1040,7 @@ class AnalyticsRepository:
                 "pod_status": record.pod_status,
                 "pending_flag": record.pending_flag,
                 
-                # ✅ CORRECT AGING FIELDS - Business Interpretation
+                # ✅ CORRECT AGING FIELDS
                 "delivery_aging": aging_result.get("delivery_aging"),
                 "pod_aging": aging_result.get("pod_aging"),
                 "total_cycle": aging_result.get("total_cycle"),
@@ -1053,8 +1054,8 @@ class AnalyticsRepository:
         except Exception as e:
             logger.error(f"Get DN dashboard failed: {e}")
             return {"error": str(e)}
-    
-    
+
+
     # ==========================================================
     # BLOCK 11: DEALER DASHBOARD
     # ==========================================================
