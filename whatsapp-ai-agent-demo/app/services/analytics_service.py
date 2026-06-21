@@ -129,6 +129,9 @@ class DatabaseHealthChecker:
 # ==========================================================
 # BLOCK 5: DATE VALIDATION ENGINE
 # ==========================================================
+# ==========================================================
+# BLOCK 5: DATE VALIDATION ENGINE (FIXED)
+# ==========================================================
 
 class DateValidator:
     """Validate date sequences for DN, PGI, POD"""
@@ -150,12 +153,13 @@ class DateValidator:
         issues = []
         is_valid = True
         
-        if isinstance(create_date, str):
-            create_date = datetime.fromisoformat(create_date) if create_date else None
-        if isinstance(pgi_date, str):
-            pgi_date = datetime.fromisoformat(pgi_date) if pgi_date else None
-        if isinstance(pod_date, str):
-            pod_date = datetime.fromisoformat(pod_date) if pod_date else None
+        # Convert to datetime if needed
+        if create_date and not isinstance(create_date, datetime):
+            create_date = datetime.combine(create_date, datetime.min.time())
+        if pgi_date and not isinstance(pgi_date, datetime):
+            pgi_date = datetime.combine(pgi_date, datetime.min.time())
+        if pod_date and not isinstance(pod_date, datetime):
+            pod_date = datetime.combine(pod_date, datetime.min.time())
         
         if pgi_date and create_date and pgi_date < create_date:
             issues.append(f"PGI Date ({pgi_date.date()}) occurs before DN Create Date ({create_date.date()})")
@@ -177,13 +181,15 @@ class DateValidator:
         pgi_date: Optional[datetime],
         pod_date: Optional[datetime]
     ) -> Dict[str, Any]:
-        """Calculate aging with validation"""
-        if isinstance(create_date, str):
-            create_date = datetime.fromisoformat(create_date) if create_date else None
-        if isinstance(pgi_date, str):
-            pgi_date = datetime.fromisoformat(pgi_date) if pgi_date else None
-        if isinstance(pod_date, str):
-            pod_date = datetime.fromisoformat(pod_date) if pod_date else None
+        """Calculate aging with validation - FIXED"""
+        
+        # Convert to datetime if needed
+        if create_date and not isinstance(create_date, datetime):
+            create_date = datetime.combine(create_date, datetime.min.time())
+        if pgi_date and not isinstance(pgi_date, datetime):
+            pgi_date = datetime.combine(pgi_date, datetime.min.time())
+        if pod_date and not isinstance(pod_date, datetime):
+            pod_date = datetime.combine(pod_date, datetime.min.time())
         
         is_valid, issues = DateValidator.validate_date_sequence(create_date, pgi_date, pod_date)
         
@@ -197,21 +203,30 @@ class DateValidator:
         }
         
         if is_valid:
+            today = datetime.now().date()
+            
+            # DN Aging
             if create_date:
-                if pod_date and create_date:
-                    dn_aging = (pod_date - create_date).days
+                create_date_only = create_date.date() if isinstance(create_date, datetime) else create_date
+                if pod_date:
+                    pod_date_only = pod_date.date() if isinstance(pod_date, datetime) else pod_date
+                    result["dn_aging"] = (pod_date_only - create_date_only).days
                 else:
-                    dn_aging = (datetime.now().date() - create_date.date()).days
-                result["dn_aging"] = dn_aging
+                    result["dn_aging"] = (today - create_date_only).days
             
+            # PGI Aging
             if pgi_date and create_date and pgi_date >= create_date:
-                result["pgi_aging"] = (pgi_date - create_date).days
+                pgi_date_only = pgi_date.date() if isinstance(pgi_date, datetime) else pgi_date
+                create_date_only = create_date.date() if isinstance(create_date, datetime) else create_date
+                result["pgi_aging"] = (pgi_date_only - create_date_only).days
             
+            # POD Aging
             if pod_date and pgi_date and pod_date >= pgi_date:
-                result["pod_aging"] = (pod_date - pgi_date).days
+                pod_date_only = pod_date.date() if isinstance(pod_date, datetime) else pod_date
+                pgi_date_only = pgi_date.date() if isinstance(pgi_date, datetime) else pgi_date
+                result["pod_aging"] = (pod_date_only - pgi_date_only).days
         
         return result
-
 # ==========================================================
 # BLOCK 6: KPI ENGINE
 # ==========================================================
