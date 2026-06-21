@@ -130,10 +130,7 @@ class DatabaseHealthChecker:
 # ==========================================================
 # BLOCK 5: DATE VALIDATION ENGINE (FIXED)
 # ==========================================================
-# BLOCK 5: DATE VALIDATION ENGINE (COMPLETE FIX)
-# ==========================================================
-# ==========================================================
-# BLOCK 5: DATE VALIDATION ENGINE (COMPLETE FIX - v2)
+# BLOCK 5: DATE VALIDATION ENGINE (COMPLETE FIX - FINAL)
 # ==========================================================
 
 class DateValidator:
@@ -154,7 +151,7 @@ class DateValidator:
         - POD Date >= DN Create Date
         
         Invalid Business Case:
-        - POD Received Before PGI (Scenario 5)
+        - POD Received Before PGI
         """
         issues = []
         is_valid = True
@@ -169,17 +166,17 @@ class DateValidator:
         
         # Check: PGI Date >= DN Create Date
         if pgi_date and create_date and pgi_date < create_date:
-            issues.append(f"PGI Date ({pgi_date.date()}) occurs before DN Create Date ({create_date.date()})")
+            issues.append(f"PGI Date ({pgi_date.strftime('%d-%b-%Y')}) occurs before DN Create Date ({create_date.strftime('%d-%b-%Y')})")
             is_valid = False
         
         # Check: POD Date >= DN Create Date
         if pod_date and create_date and pod_date < create_date:
-            issues.append(f"POD Date ({pod_date.date()}) occurs before DN Create Date ({create_date.date()})")
+            issues.append(f"POD Date ({pod_date.strftime('%d-%b-%Y')}) occurs before DN Create Date ({create_date.strftime('%d-%b-%Y')})")
             is_valid = False
         
         # Check: POD Date >= PGI Date (Invalid Business Case)
         if pod_date and pgi_date and pod_date < pgi_date:
-            issues.append(f"⚠ POD Received Before PGI - Please Verify Source Data")
+            issues.append(f"⚠ POD Received Before PGI - POD: {pod_date.strftime('%d-%b-%Y')} < PGI: {pgi_date.strftime('%d-%b-%Y')}")
             is_valid = False
         
         return is_valid, issues
@@ -194,27 +191,33 @@ class DateValidator:
         Calculate aging based on official business logic.
         
         SCENARIO 1: PGI Completed, POD Received
-        - Delivery Aging: PGI Date - Create Date (or Same Day)
+        - Delivery Aging: PGI Date - Create Date
         - POD Aging: POD Date - PGI Date
         - Total Cycle: POD Date - Create Date
         
-        SCENARIO 2: PGI Not Done, POD Not Received
-        - Delivery Aging: Today - Create Date (Open Aging)
-        - PGI Status: Pending
-        - POD Status: Pending
+        SCENARIO 2: PGI Same Day, POD Received Later
+        - Delivery Aging: Same Day (0 days)
+        - POD Aging: POD Date - PGI Date
+        - Total Cycle: POD Date - Create Date
         
-        SCENARIO 3: PGI Completed, POD Not Received
+        SCENARIO 3: PGI Not Done, POD Not Received
+        - Delivery Aging: Today - Create Date (Open)
+        - POD Aging: N/A
+        - Total Cycle: In Progress
+        
+        SCENARIO 4: PGI Completed, POD Not Received
         - Delivery Aging: PGI Date - Create Date
-        - POD Aging: Today - PGI Date (Open POD Aging)
-        - POD Status: Pending
+        - POD Aging: Today - PGI Date (Open)
+        - Total Cycle: In Progress
         
-        SCENARIO 4: PGI Same Day, POD Not Received
-        - Delivery Aging: Same Day
-        - POD Aging: Today - PGI Date
-        - POD Status: Pending
+        SCENARIO 5: PGI Same Day, POD Not Received
+        - Delivery Aging: Same Day (0 days)
+        - POD Aging: Today - PGI Date (Open)
+        - Total Cycle: In Progress
         
-        SCENARIO 5: PGI Not Done, POD Received (Invalid)
-        - Display: ⚠ Data Validation Issue - POD Received Before PGI
+        SCENARIO 6: Invalid Data (POD Before PGI)
+        - Display: ⚠ Data Validation Issue
+        - No aging calculated
         """
         
         # Convert to datetime if needed
@@ -234,43 +237,38 @@ class DateValidator:
             "delivery_aging": None,
             "pod_aging": None,
             "total_cycle": None,
-            "delivery_aging_display": None,
-            "pod_aging_display": None,
-            "total_cycle_display": None,
+            "delivery_aging_text": None,
+            "pod_aging_text": None,
+            "total_cycle_text": None,
             "is_valid": is_valid,
             "issues": issues,
             "status": "valid" if is_valid else "invalid",
-            # Status flags for display
             "pgi_completed": False,
             "pod_received": False,
-            "delivery_completed": False,
-            # Display strings
-            "delivery_aging_text": None,
-            "pod_aging_text": None,
-            "total_cycle_text": None
+            "delivery_completed": False
         }
         
         # ==========================================================
-        # Determine PGI and POD status
+        # Determine existence
         # ==========================================================
+        create_exists = create_date is not None
         pgi_exists = pgi_date is not None
         pod_exists = pod_date is not None
-        create_exists = create_date is not None
         
         # ==========================================================
-        # SCENARIO 5: PGI NOT DONE, POD RECEIVED (INVALID)
+        # SCENARIO 6: INVALID DATA (POD Before PGI)
         # ==========================================================
-        if not pgi_exists and pod_exists:
-            issues.append("⚠ Data Validation Issue: POD Received Before PGI")
-            result["is_valid"] = False
-            result["status"] = "invalid"
+        if not is_valid:
             result["delivery_aging_text"] = "N/A"
             result["pod_aging_text"] = "N/A"
             result["total_cycle_text"] = "N/A"
+            result["delivery_completed"] = False
+            result["pgi_completed"] = False
+            result["pod_received"] = False
             return result
         
         # ==========================================================
-        # SCENARIO 2: PGI NOT DONE, POD NOT RECEIVED
+        # SCENARIO 3: PGI NOT DONE, POD NOT RECEIVED
         # ==========================================================
         if not pgi_exists and not pod_exists and create_exists:
             create_date_only = create_date.date() if isinstance(create_date, datetime) else create_date
@@ -278,52 +276,45 @@ class DateValidator:
             
             result["delivery_aging"] = delivery_aging
             result["delivery_aging_text"] = DateValidator._format_aging(delivery_aging)
+            result["pod_aging_text"] = "N/A"
+            result["total_cycle_text"] = "In Progress"
             result["pgi_completed"] = False
             result["pod_received"] = False
             result["delivery_completed"] = False
-            result["pod_aging_text"] = "Pending ⏳"
-            result["total_cycle_text"] = f"{delivery_aging} Days (Open)"
             return result
         
         # ==========================================================
-        # SCENARIO 1: PGI COMPLETED, POD RECEIVED
+        # SCENARIO 1 & 2: PGI COMPLETED, POD RECEIVED
         # ==========================================================
         if pgi_exists and pod_exists and create_exists:
             create_date_only = create_date.date() if isinstance(create_date, datetime) else create_date
             pgi_date_only = pgi_date.date() if isinstance(pgi_date, datetime) else pgi_date
             pod_date_only = pod_date.date() if isinstance(pod_date, datetime) else pod_date
             
-            # Check if dates are in valid sequence
-            if pgi_date_only >= create_date_only and pod_date_only >= pgi_date_only:
-                # Delivery Aging: PGI Date - Create Date
-                delivery_aging = (pgi_date_only - create_date_only).days
-                
-                # POD Aging: POD Date - PGI Date
-                pod_aging = (pod_date_only - pgi_date_only).days
-                
-                # Total Cycle: POD Date - Create Date
-                total_cycle = (pod_date_only - create_date_only).days
-                
-                result["delivery_aging"] = delivery_aging
-                result["pod_aging"] = pod_aging
-                result["total_cycle"] = total_cycle
-                
-                result["delivery_aging_text"] = DateValidator._format_aging(delivery_aging)
-                result["pod_aging_text"] = DateValidator._format_aging(pod_aging)
-                result["total_cycle_text"] = DateValidator._format_aging(total_cycle)
-                
-                result["pgi_completed"] = True
-                result["pod_received"] = True
-                result["delivery_completed"] = True
-                
-                return result
-            else:
-                # Invalid sequence - mark as invalid
-                result["is_valid"] = False
-                result["status"] = "invalid"
+            # Delivery Aging: PGI Date - Create Date
+            delivery_aging = (pgi_date_only - create_date_only).days
+            
+            # POD Aging: POD Date - PGI Date
+            pod_aging = (pod_date_only - pgi_date_only).days
+            
+            # Total Cycle: POD Date - Create Date
+            total_cycle = (pod_date_only - create_date_only).days
+            
+            result["delivery_aging"] = delivery_aging
+            result["pod_aging"] = pod_aging
+            result["total_cycle"] = total_cycle
+            
+            result["delivery_aging_text"] = DateValidator._format_aging(delivery_aging)
+            result["pod_aging_text"] = DateValidator._format_aging(pod_aging)
+            result["total_cycle_text"] = DateValidator._format_aging(total_cycle)
+            
+            result["pgi_completed"] = True
+            result["pod_received"] = True
+            result["delivery_completed"] = True
+            return result
         
         # ==========================================================
-        # SCENARIO 3 & 4: PGI COMPLETED, POD NOT RECEIVED
+        # SCENARIO 4 & 5: PGI COMPLETED, POD NOT RECEIVED
         # ==========================================================
         if pgi_exists and not pod_exists and create_exists:
             create_date_only = create_date.date() if isinstance(create_date, datetime) else create_date
@@ -337,20 +328,19 @@ class DateValidator:
             
             result["delivery_aging"] = delivery_aging
             result["pod_aging"] = pod_aging
-            result["total_cycle"] = None  # In Progress
+            result["total_cycle"] = None
             
             result["delivery_aging_text"] = DateValidator._format_aging(delivery_aging)
-            result["pod_aging_text"] = f"{pod_aging} Days (Pending)"
+            result["pod_aging_text"] = f"{DateValidator._format_aging(pod_aging)} (Pending)"
             result["total_cycle_text"] = "In Progress"
             
             result["pgi_completed"] = True
             result["pod_received"] = False
             result["delivery_completed"] = True
-            
             return result
         
         # ==========================================================
-        # FALLBACK: No data
+        # FALLBACK: No data or incomplete
         # ==========================================================
         result["delivery_aging_text"] = "N/A"
         result["pod_aging_text"] = "N/A"
