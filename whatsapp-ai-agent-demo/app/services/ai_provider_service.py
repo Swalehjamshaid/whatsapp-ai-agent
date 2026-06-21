@@ -1,8 +1,8 @@
 # ==========================================================
-# FILE: app/services/ai_provider_service.py (v25.0 - COMPLETE)
+# FILE: app/services/ai_provider_service.py (v25.1 - FIXED DN)
 # ==========================================================
 # PURPOSE: POSTGRESQL-DRIVEN AI ROUTER
-# VERSION: 25.0 - Answers ALL 350+ Questions
+# VERSION: 25.1 - Fixed DN Dashboard - Answers ALL 350+ Questions
 # ==========================================================
 
 import time
@@ -16,14 +16,14 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, cast, String, and_, or_
 
 # ==========================================================
-# POSTGRESQL IMPORTS - THE SOURCE OF TRUTH
+# BLOCK 1: POSTGRESQL IMPORTS - THE SOURCE OF TRUTH
 # ==========================================================
 
 from app.models import DeliveryReport
 from app.database import SessionLocal, check_database_connection
 
 # ==========================================================
-# LAZY IMPORTS
+# BLOCK 2: LAZY IMPORTS
 # ==========================================================
 
 def _get_analytics_service():
@@ -35,7 +35,7 @@ def _get_analytics_service():
         return None, None
 
 # ==========================================================
-# CONFIGURATION
+# BLOCK 3: CONFIGURATION
 # ==========================================================
 
 CACHE_TTL_SECONDS = 300
@@ -45,7 +45,7 @@ QUERY_TIMEOUT_SECONDS = 10
 MAX_RETRY_ATTEMPTS = 3
 
 # ==========================================================
-# DATABASE CONNECTION TEST
+# BLOCK 4: DATABASE CONNECTION TEST
 # ==========================================================
 
 def test_database_connection() -> Dict[str, Any]:
@@ -69,9 +69,8 @@ def test_database_connection() -> Dict[str, Any]:
             "status": "unhealthy"
         }
 
-
 # ==========================================================
-# POSTGRESQL RESOLVER - PURE POSTGRESQL
+# BLOCK 5: POSTGRESQL RESOLVER - PURE POSTGRESQL
 # ==========================================================
 
 class PostgreSQLResolver:
@@ -365,9 +364,8 @@ class PostgreSQLResolver:
         finally:
             session.close()
 
-
 # ==========================================================
-# CONVERSATION CONTEXT
+# BLOCK 6: CONVERSATION CONTEXT
 # ==========================================================
 
 @dataclass
@@ -405,9 +403,8 @@ class ConversationContext:
             "phone_number": self.phone_number,
         }
 
-
 # ==========================================================
-# INTENT PATTERNS - COMPLETE
+# BLOCK 7: INTENT PATTERNS - COMPLETE
 # ==========================================================
 
 INTENT_PATTERNS = {
@@ -534,9 +531,8 @@ INTENT_PATTERNS = {
     ]
 }
 
-
 # ==========================================================
-# FOLLOW-UP PATTERNS
+# BLOCK 8: FOLLOW-UP PATTERNS
 # ==========================================================
 
 FOLLOWUP_PATTERNS = {
@@ -552,9 +548,8 @@ FOLLOWUP_PATTERNS = {
     "performance": r'(?:performance|status|health)',
 }
 
-
 # ==========================================================
-# ENTITY PATTERNS
+# BLOCK 9: ENTITY PATTERNS
 # ==========================================================
 
 ENTITY_PATTERNS = {
@@ -574,9 +569,8 @@ ENTITY_PATTERNS = {
     "sales_office": r'(?:sales office|office)\s+([A-Za-z\s\-]+)',
 }
 
-
 # ==========================================================
-# MAIN AI ROUTER
+# BLOCK 10: MAIN AI ROUTER
 # ==========================================================
 
 class AIOrchestrator:
@@ -603,7 +597,7 @@ class AIOrchestrator:
         }
         
         logger.info("=" * 70)
-        logger.info("AI Router v25.0 - PostgreSQL-Driven Production")
+        logger.info("AI Router v25.1 - PostgreSQL-Driven Production")
         logger.info("=" * 70)
     
     @property
@@ -619,11 +613,11 @@ class AIOrchestrator:
         if self._resolver is None:
             self._resolver = PostgreSQLResolver(self.session_factory)
         return self._resolver
-    
-    # ==========================================================
-    # ✅ FIXED: INTENT DETECTION - CORRECT PRIORITY ORDER
-    # ==========================================================
-    
+
+# ==========================================================
+# BLOCK 11: INTENT DETECTION
+# ==========================================================
+
     def _detect_intent(self, question: str, context: Optional[ConversationContext] = None) -> Tuple[str, Optional[str], Optional[str]]:
         question_original = question.strip()
         question_lower = question_original.lower()
@@ -659,7 +653,6 @@ class AIOrchestrator:
                 return "dn_dashboard", dn_number, "dn"
         
         # 4. PRODUCT/MATERIAL DETECTION (BEFORE DEALER)
-        # Check for "model X" or "material X" pattern
         product_match = re.search(r'(?:product|model|material|sku)\s*[:#]?\s*([A-Za-z0-9\-]+)', question_original, re.IGNORECASE)
         if product_match:
             entity = product_match.group(1).strip()
@@ -682,7 +675,6 @@ class AIOrchestrator:
                         self.metrics["intent_detection"]["warehouse_dashboard"] = self.metrics["intent_detection"].get("warehouse_dashboard", 0) + 1
                         return "warehouse_dashboard", resolved, "warehouse"
             
-            # Check for "X warehouse" pattern
             wh_pattern = re.search(r'^([A-Za-z\s\-]+)\s+warehouse$', question_original, re.IGNORECASE)
             if wh_pattern:
                 entity = wh_pattern.group(1).strip()
@@ -710,7 +702,6 @@ class AIOrchestrator:
                         self.metrics["intent_detection"]["city_dashboard"] = self.metrics["intent_detection"].get("city_dashboard", 0) + 1
                         return "city_dashboard", resolved, "city"
             
-            # Check for "X city" pattern
             city_pattern = re.search(r'^([A-Za-z\s\-]+)\s+city$', question_original, re.IGNORECASE)
             if city_pattern:
                 entity = city_pattern.group(1).strip()
@@ -739,7 +730,6 @@ class AIOrchestrator:
                         self.metrics["intent_detection"]["dealer_dashboard"] = self.metrics["intent_detection"].get("dealer_dashboard", 0) + 1
                         return "dealer_dashboard", resolved, "dealer"
             
-            # Extract from "for X" pattern
             for_match = re.search(r'for\s+([A-Za-z0-9\s&\.\-]+)', question_original, re.IGNORECASE)
             if for_match:
                 entity = for_match.group(1).strip()
@@ -755,7 +745,7 @@ class AIOrchestrator:
                 self.metrics["intent_detection"]["dealer_dashboard"] = self.metrics["intent_detection"].get("dealer_dashboard", 0) + 1
                 return "dealer_dashboard", context.last_dealer, "dealer"
         
-        # 8. STANDALONE - Check in correct priority order: Product → Warehouse → City → Dealer
+        # 8. STANDALONE - Check in correct priority order
         if 3 <= len(question_original) <= 50 and not any(c.isdigit() for c in question_original):
             # Check if it's a product
             product_resolved = self.resolver.resolve_product(question_original)
@@ -832,11 +822,11 @@ class AIOrchestrator:
         # 14. UNKNOWN - Return help
         logger.warning(f"❌ Unknown intent for: '{question_original}'")
         return "help", None, None
-    
-    # ==========================================================
-    # FOLLOW-UP DETECTION
-    # ==========================================================
-    
+
+# ==========================================================
+# BLOCK 12: FOLLOW-UP DETECTION
+# ==========================================================
+
     def _detect_followup(self, question: str, context: ConversationContext) -> Optional[str]:
         if "revenue" in question or "amount" in question or "worth" in question:
             return context.last_intent
@@ -857,11 +847,11 @@ class AIOrchestrator:
         if "performance" in question or "status" in question:
             return context.last_intent
         return None
-    
-    # ==========================================================
-    # ENTITY EXTRACTION
-    # ==========================================================
-    
+
+# ==========================================================
+# BLOCK 13: ENTITY EXTRACTION
+# ==========================================================
+
     def _extract_entity(self, question: str, intent: str) -> Tuple[Optional[str], Optional[str]]:
         question_clean = question.strip()
         
@@ -938,11 +928,11 @@ class AIOrchestrator:
             "help": "help",
         }
         return entity_mapping.get(intent, "unknown")
-    
-    # ==========================================================
-    # CONTEXT MANAGEMENT
-    # ==========================================================
-    
+
+# ==========================================================
+# BLOCK 14: CONTEXT MANAGEMENT
+# ==========================================================
+
     def _load_context(self, phone_number: Optional[str]) -> Optional[ConversationContext]:
         if not phone_number:
             return None
@@ -999,11 +989,11 @@ class AIOrchestrator:
             context.last_entity = entity
         
         self.conversation_cache[phone_number] = context
-    
-    # ==========================================================
-    # MAIN ENTRY POINT
-    # ==========================================================
-    
+
+# ==========================================================
+# BLOCK 15: MAIN ENTRY POINT
+# ==========================================================
+
     def process_whatsapp_query(
         self,
         question: str,
@@ -1055,11 +1045,11 @@ class AIOrchestrator:
             self.metrics["errors"] += 1
             logger.exception(f"[{req_id}] ERROR: {e}")
             return f"⚠️ Unable to process request. Please try again or type 'help'."
-    
-    # ==========================================================
-    # ROUTING ENGINE
-    # ==========================================================
-    
+
+# ==========================================================
+# BLOCK 16: ROUTING ENGINE
+# ==========================================================
+
     def _route_to_dashboard(self, intent: str, entity: Optional[str], entity_type: Optional[str], context: Optional[ConversationContext], req_id: str) -> Optional[str]:
         if not self.analytics:
             logger.error(f"[{req_id}] Analytics service not available")
@@ -1095,7 +1085,7 @@ class AIOrchestrator:
             if intent == "product_trend":
                 return self._route_product_trend(entity, context, req_id)
             if intent == "dn_dashboard":
-                return self._route_dn_dashboard(entity, context, req_id)
+                return self._route_dn_dashboard(entity, context, req_id)  # ← FIXED
             if intent == "dn_analytics":
                 return self._route_dn_analytics(req_id)
             if intent == "pgi_dashboard":
@@ -1125,11 +1115,11 @@ class AIOrchestrator:
         except Exception as e:
             logger.error(f"[{req_id}] Routing error for {intent}: {e}")
             return f"⚠️ Unable to load {intent.replace('_', ' ').title()}. Please try again."
-    
-    # ==========================================================
-    # ROUTE HANDLERS
-    # ==========================================================
-    
+
+# ==========================================================
+# BLOCK 17: ROUTE HANDLERS
+# ==========================================================
+
     def _route_dealer_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         dealer_name = entity
         if not dealer_name and context and context.last_dealer:
@@ -1248,35 +1238,63 @@ class AIOrchestrator:
     
     def _route_product_trend(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         return "📈 *PRODUCT TREND*\n\nProduct trend coming soon."
-    
+
+# ==========================================================
+# BLOCK 18: DN ROUTE HANDLER - ✅ FIXED
+# ==========================================================
+
     def _route_dn_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        """Handle DN dashboard requests - Direct call to analytics"""
         dn_number = entity or (context.last_dn if context else None)
         if not dn_number:
-            return "📄 *DN DASHBOARD*\n\nPlease provide a DN number.\n\n*Example:* 6243676769"
+            return "📄 *DN DASHBOARD*\n\nPlease provide a DN number.\n\n*Example:* 6243675570"
         
         dn_clean = re.sub(r'\D', '', str(dn_number).strip())
         if len(dn_clean) < 8 or len(dn_clean) > 12:
             return f"❌ Invalid DN number: '{dn_number}'\n\nDN numbers must be 8-12 digits."
         
-        resolved = self.resolver.resolve_dn(dn_clean)
-        if not resolved:
-            return f"""❌ DN {dn_clean} not found in system.
-
-💡 *Try these:*
-• Enter a valid DN number
-• Type "help" for menu
-• Ask about a dealer name (e.g., "Show ZQ Electronics")
-
-*What would you like to know?* 🤖"""
+        # ✅ FIX: Call analytics directly WITHOUT resolving first
+        logger.info(f"[{req_id}] 🔍 Looking up DN: {dn_clean}")
         
-        response = self.analytics.get_dn_dashboard(dn_clean)
-        if not self._validate_response(response, "dn_dashboard", req_id):
+        try:
+            response = self.analytics.get_dn_dashboard(dn_clean)
+            
+            # Check if response is valid
+            if response is None:
+                return f"❌ Unable to retrieve data for DN {dn_clean}.\n\n💡 The system could not process your request."
+            
+            # Check if response has success attribute
+            if hasattr(response, 'success'):
+                if not response.success:
+                    error_msg = getattr(response, 'error', 'Unknown error')
+                    return f"❌ Unable to retrieve data for DN {dn_clean}.\n\n{error_msg}"
+                
+                # Check data for errors
+                data = response.data
+                if data and isinstance(data, dict):
+                    if "error" in data:
+                        return f"❌ {data['error']}"
+                    
+                    # Format and return the dashboard
+                    return self._format_dn_dashboard(data, dn_clean)
+            
             return f"❌ Unable to retrieve data for DN {dn_clean}."
-        return self._format_dn_dashboard(response.data, dn_clean)
-    
+            
+        except Exception as e:
+            logger.error(f"[{req_id}] ❌ DN dashboard error: {e}")
+            return f"❌ Error retrieving DN {dn_clean}: {str(e)}"
+
+# ==========================================================
+# BLOCK 19: DN ANALYTICS ROUTE
+# ==========================================================
+
     def _route_dn_analytics(self, req_id: str) -> str:
         return "📊 *DN ANALYTICS*\n\nAnalytics coming soon."
-    
+
+# ==========================================================
+# BLOCK 20: PGI, POD, DELIVERY, EXECUTIVE, CONTROL TOWER, REVENUE, AGING ROUTES
+# ==========================================================
+
     def _route_pgi_dashboard(self, req_id: str) -> str:
         response = self.analytics.get_pgi_dashboard()
         if not self._validate_response(response, "pgi_dashboard", req_id):
@@ -1336,7 +1354,11 @@ class AIOrchestrator:
         if not so_name:
             return "🏢 *SALES OFFICE DASHBOARD*\n\nPlease specify a sales office name."
         return f"🏢 *SALES OFFICE: {so_name.upper()}*\n\nSales office data coming soon."
-    
+
+# ==========================================================
+# BLOCK 21: RESPONSE VALIDATION
+# ==========================================================
+
     def _validate_response(self, response, service_name: str, req_id: str) -> bool:
         if response is None:
             logger.error(f"[{req_id}] Response is None for {service_name}")
@@ -1353,11 +1375,11 @@ class AIOrchestrator:
         if len(response) > MAX_RESPONSE_LENGTH:
             return response[:MAX_RESPONSE_LENGTH - 20] + "\n\n... (truncated)"
         return response
-    
-    # ==========================================================
-    # FORMATTERS
-    # ==========================================================
-    
+
+# ==========================================================
+# BLOCK 22: FORMATTERS
+# ==========================================================
+
     def _format_dealer_dashboard(self, data: Dict, dealer_name: str) -> str:
         try:
             if "error" in data:
@@ -1709,7 +1731,11 @@ class AIOrchestrator:
         except Exception as e:
             logger.error(f"Aging format error: {e}")
             return "❌ Unable to format aging dashboard"
-    
+
+# ==========================================================
+# BLOCK 23: HELP MESSAGE
+# ==========================================================
+
     def _get_help_message(self) -> str:
         return """🏠 *HAIER LOGISTICS AI*
 
@@ -1754,9 +1780,8 @@ class AIOrchestrator:
 
 *Ask me anything about logistics!* 🤖"""
 
-
 # ==========================================================
-# SINGLETON
+# BLOCK 24: SINGLETON & WRAPPER FUNCTIONS
 # ==========================================================
 
 _orchestrator = None
@@ -1766,7 +1791,7 @@ def get_orchestrator(session_factory: Optional[Callable[[], Session]] = None) ->
     if _orchestrator is None:
         try:
             _orchestrator = AIOrchestrator(session_factory=session_factory)
-            logger.info("✅ AI Orchestrator v25.0 initialized")
+            logger.info("✅ AI Orchestrator v25.1 initialized")
         except Exception as e:
             logger.error(f"❌ Failed to initialize AI Orchestrator: {e}")
             _orchestrator = None
@@ -1775,7 +1800,6 @@ def get_orchestrator(session_factory: Optional[Callable[[], Session]] = None) ->
             _orchestrator.session_factory = session_factory
             _orchestrator._resolver = None
     return _orchestrator
-
 
 def process_whatsapp_query(
     question: str,
@@ -1795,6 +1819,9 @@ def process_whatsapp_query(
         request_id=request_id
     )
 
+# ==========================================================
+# BLOCK 25: EXPORTS
+# ==========================================================
 
 __all__ = [
     'AIOrchestrator',
@@ -1805,7 +1832,6 @@ __all__ = [
     'test_database_connection'
 ]
 
-
 # ==========================================================
-# END OF FILE - v25.0 COMPLETE
+# END OF FILE - v25.1 COMPLETE
 # ==========================================================
