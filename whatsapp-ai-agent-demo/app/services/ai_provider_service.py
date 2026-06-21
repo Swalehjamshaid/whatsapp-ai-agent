@@ -2,7 +2,7 @@
 # FILE: app/services/ai_provider_service.py (v24.0 - COMPLETE)
 # ==========================================================
 # PURPOSE: POSTGRESQL-DRIVEN AI ROUTER
-# VERSION: 24.0 - Full Compatibility with Analytics v25.0
+# VERSION: 24.0 - 100% PostgreSQL Integration
 # ==========================================================
 
 import time
@@ -14,9 +14,13 @@ from cachetools import TTLCache, LRUCache
 from loguru import logger
 from sqlalchemy.orm import Session
 from sqlalchemy import func, cast, String, and_, or_
-from datetime import datetime, timedelta
-from functools import lru_cache
-import hashlib
+
+# ==========================================================
+# ✅ POSTGRESQL IMPORTS - THE SOURCE OF TRUTH
+# ==========================================================
+
+from app.models import DeliveryReport
+from app.database import SessionLocal, check_database_connection
 
 # ==========================================================
 # LAZY IMPORTS
@@ -41,26 +45,49 @@ QUERY_TIMEOUT_SECONDS = 10
 MAX_RETRY_ATTEMPTS = 3
 
 # ==========================================================
+# ✅ DATABASE CONNECTION TEST
+# ==========================================================
+
+def test_database_connection() -> Dict[str, Any]:
+    """
+    Test PostgreSQL connection from AI Provider.
+    This verifies the connection to delivery_reports table.
+    """
+    try:
+        db = SessionLocal()
+        total_records = db.query(DeliveryReport).count()
+        db.close()
+        
+        return {
+            "connected": True,
+            "total_records": total_records,
+            "table_name": "delivery_reports",
+            "status": "healthy"
+        }
+    except Exception as e:
+        logger.error(f"AI Database connection test failed: {e}")
+        return {
+            "connected": False,
+            "error": str(e),
+            "status": "unhealthy"
+        }
+
+
+# ==========================================================
 # POSTGRESQL RESOLVER - PURE POSTGRESQL
 # ==========================================================
 
 class PostgreSQLResolver:
-    """Pure PostgreSQL-based entity resolution"""
+    """Pure PostgreSQL-based entity resolution - No schema_service"""
     
     def __init__(self, session_factory: Optional[Callable[[], Session]] = None):
         self.session_factory = session_factory
         self._cache = TTLCache(maxsize=2000, ttl=3600)
-        
-        try:
-            from app.models import DeliveryReport
-            self.DeliveryReport = DeliveryReport
-        except ImportError:
-            logger.error("❌ Cannot import DeliveryReport model")
-            self.DeliveryReport = None
+        self.DeliveryReport = DeliveryReport
     
     def _get_session(self) -> Optional[Session]:
         if not self.session_factory:
-            logger.error("❌ No session_factory provided! Cannot connect to PostgreSQL.")
+            logger.error("❌ No session_factory provided!")
             return None
         try:
             return self.session_factory()
@@ -69,7 +96,8 @@ class PostgreSQLResolver:
             return None
     
     def resolve_dealer(self, query: str) -> Optional[str]:
-        if not query or not query.strip() or not self.DeliveryReport:
+        """Resolve dealer name from PostgreSQL"""
+        if not query or not query.strip():
             return None
         
         cache_key = f"dealer:{query.lower().strip()}"
@@ -81,7 +109,7 @@ class PostgreSQLResolver:
             return None
         
         try:
-            # Exact match
+            # 1. Exact match
             result = session.query(self.DeliveryReport.customer_name).filter(
                 func.lower(self.DeliveryReport.customer_name) == func.lower(query)
             ).first()
@@ -90,7 +118,7 @@ class PostgreSQLResolver:
                 self._cache[cache_key] = resolved
                 return resolved
             
-            # ILIKE
+            # 2. ILIKE match
             result = session.query(self.DeliveryReport.customer_name).filter(
                 self.DeliveryReport.customer_name.ilike(f"%{query}%")
             ).first()
@@ -99,10 +127,10 @@ class PostgreSQLResolver:
                 self._cache[cache_key] = resolved
                 return resolved
             
-            # Token matching
+            # 3. Token-based matching
             tokens = query.split()
             for token in tokens:
-                if len(token) > 2:
+                if len(token) > 2 and token.lower() not in ['the', 'and', 'for', 'with']:
                     result = session.query(self.DeliveryReport.customer_name).filter(
                         self.DeliveryReport.customer_name.ilike(f"%{token}%")
                     ).first()
@@ -111,7 +139,7 @@ class PostgreSQLResolver:
                         self._cache[cache_key] = resolved
                         return resolved
             
-            # Fuzzy matching
+            # 4. Fuzzy matching
             dealers = session.query(
                 func.distinct(self.DeliveryReport.customer_name)
             ).filter(
@@ -146,7 +174,8 @@ class PostgreSQLResolver:
             session.close()
     
     def resolve_warehouse(self, query: str) -> Optional[str]:
-        if not query or not query.strip() or not self.DeliveryReport:
+        """Resolve warehouse name from PostgreSQL"""
+        if not query or not query.strip():
             return None
         
         cache_key = f"warehouse:{query.lower().strip()}"
@@ -158,6 +187,7 @@ class PostgreSQLResolver:
             return None
         
         try:
+            # Exact match
             result = session.query(self.DeliveryReport.warehouse).filter(
                 func.lower(self.DeliveryReport.warehouse) == func.lower(query)
             ).first()
@@ -166,6 +196,7 @@ class PostgreSQLResolver:
                 self._cache[cache_key] = resolved
                 return resolved
             
+            # ILIKE
             result = session.query(self.DeliveryReport.warehouse).filter(
                 self.DeliveryReport.warehouse.ilike(f"%{query}%")
             ).first()
@@ -174,6 +205,7 @@ class PostgreSQLResolver:
                 self._cache[cache_key] = resolved
                 return resolved
             
+            # Token matching
             tokens = query.split()
             for token in tokens:
                 if len(token) > 2:
@@ -194,7 +226,8 @@ class PostgreSQLResolver:
             session.close()
     
     def resolve_city(self, query: str) -> Optional[str]:
-        if not query or not query.strip() or not self.DeliveryReport:
+        """Resolve city name from PostgreSQL"""
+        if not query or not query.strip():
             return None
         
         cache_key = f"city:{query.lower().strip()}"
@@ -206,6 +239,7 @@ class PostgreSQLResolver:
             return None
         
         try:
+            # Exact match
             result = session.query(self.DeliveryReport.ship_to_city).filter(
                 func.lower(self.DeliveryReport.ship_to_city) == func.lower(query)
             ).first()
@@ -214,6 +248,7 @@ class PostgreSQLResolver:
                 self._cache[cache_key] = resolved
                 return resolved
             
+            # ILIKE
             result = session.query(self.DeliveryReport.ship_to_city).filter(
                 self.DeliveryReport.ship_to_city.ilike(f"%{query}%")
             ).first()
@@ -222,6 +257,7 @@ class PostgreSQLResolver:
                 self._cache[cache_key] = resolved
                 return resolved
             
+            # Token matching
             tokens = query.split()
             for token in tokens:
                 if len(token) > 2:
@@ -242,7 +278,8 @@ class PostgreSQLResolver:
             session.close()
     
     def resolve_product(self, query: str) -> Optional[str]:
-        if not query or not query.strip() or not self.DeliveryReport:
+        """Resolve product name from PostgreSQL"""
+        if not query or not query.strip():
             return None
         
         cache_key = f"product:{query.lower().strip()}"
@@ -254,6 +291,7 @@ class PostgreSQLResolver:
             return None
         
         try:
+            # Check both customer_model and material_no
             result = session.query(
                 func.coalesce(
                     self.DeliveryReport.customer_model,
@@ -271,6 +309,7 @@ class PostgreSQLResolver:
                 self._cache[cache_key] = resolved
                 return resolved
             
+            # ILIKE
             result = session.query(
                 func.coalesce(
                     self.DeliveryReport.customer_model,
@@ -297,7 +336,8 @@ class PostgreSQLResolver:
             session.close()
     
     def resolve_dn(self, query: str) -> Optional[str]:
-        if not query or not query.strip() or not self.DeliveryReport:
+        """Resolve DN number from PostgreSQL"""
+        if not query or not query.strip():
             return None
         
         normalized = re.sub(r'[^0-9]', '', str(query).strip())
@@ -325,102 +365,6 @@ class PostgreSQLResolver:
         except Exception as e:
             logger.error(f"DN resolution error: {e}")
             return None
-        finally:
-            session.close()
-    
-    def get_all_dealers(self) -> List[str]:
-        if not self.DeliveryReport:
-            return []
-        
-        cache_key = "all_dealers"
-        if cache_key in self._cache:
-            return self._cache[cache_key]
-        
-        session = self._get_session()
-        if not session:
-            return []
-        
-        try:
-            results = session.query(
-                func.distinct(self.DeliveryReport.customer_name)
-            ).filter(
-                self.DeliveryReport.customer_name.isnot(None),
-                self.DeliveryReport.customer_name != ''
-            ).order_by(
-                self.DeliveryReport.customer_name
-            ).limit(1000).all()
-            
-            dealers = [r[0] for r in results if r[0]]
-            self._cache[cache_key] = dealers
-            return dealers
-            
-        except Exception as e:
-            logger.error(f"Get all dealers error: {e}")
-            return []
-        finally:
-            session.close()
-    
-    def get_all_warehouses(self) -> List[str]:
-        if not self.DeliveryReport:
-            return []
-        
-        cache_key = "all_warehouses"
-        if cache_key in self._cache:
-            return self._cache[cache_key]
-        
-        session = self._get_session()
-        if not session:
-            return []
-        
-        try:
-            results = session.query(
-                func.distinct(self.DeliveryReport.warehouse)
-            ).filter(
-                self.DeliveryReport.warehouse.isnot(None),
-                self.DeliveryReport.warehouse != ''
-            ).order_by(
-                self.DeliveryReport.warehouse
-            ).limit(500).all()
-            
-            warehouses = [r[0] for r in results if r[0]]
-            self._cache[cache_key] = warehouses
-            return warehouses
-            
-        except Exception as e:
-            logger.error(f"Get all warehouses error: {e}")
-            return []
-        finally:
-            session.close()
-    
-    def get_all_cities(self) -> List[str]:
-        if not self.DeliveryReport:
-            return []
-        
-        cache_key = "all_cities"
-        if cache_key in self._cache:
-            return self._cache[cache_key]
-        
-        session = self._get_session()
-        if not session:
-            return []
-        
-        try:
-            results = session.query(
-                func.distinct(self.DeliveryReport.ship_to_city)
-            ).filter(
-                self.DeliveryReport.ship_to_city.isnot(None),
-                self.DeliveryReport.ship_to_city != ''
-            ).order_by(
-                self.DeliveryReport.ship_to_city
-            ).limit(500).all()
-            
-            cities = [r[0] for r in results if r[0]]
-            self._cache[cache_key] = cities
-            return cities
-            
-        except Exception as e:
-            logger.error(f"Get all cities error: {e}")
-            return []
         finally:
             session.close()
 
@@ -473,7 +417,6 @@ INTENT_PATTERNS = {
     "dealer_dashboard": [
         "dealer dashboard", "dealer performance", "dealer revenue", 
         "dealer units", "dealer dn", "dealer pod", "dealer pgi",
-        "dealer delivery", "dealer pending", "dealer aging",
         "show dealer", "customer dashboard"
     ],
     "dealer_ranking": [
@@ -484,8 +427,7 @@ INTENT_PATTERNS = {
     ],
     "warehouse_dashboard": [
         "warehouse dashboard", "warehouse performance",
-        "warehouse revenue", "warehouse units", "warehouse dn",
-        "show warehouse"
+        "warehouse revenue", "warehouse units", "show warehouse"
     ],
     "warehouse_ranking": [
         "top warehouse", "top warehouses", "warehouse ranking"
@@ -508,7 +450,7 @@ INTENT_PATTERNS = {
     ],
     "product_dashboard": [
         "product dashboard", "show product", "product performance",
-        "product revenue", "product units", "product dn"
+        "product revenue", "product units"
     ],
     "product_ranking": [
         "top product", "top products", "best selling"
@@ -533,7 +475,7 @@ INTENT_PATTERNS = {
     ],
     "delivery_dashboard": [
         "delivery dashboard", "delivered dns", "pending dns",
-        "average delivery days", "delayed deliveries"
+        "average delivery days"
     ],
     "executive_dashboard": [
         "executive summary", "nationwide performance",
@@ -542,7 +484,7 @@ INTENT_PATTERNS = {
     ],
     "control_tower": [
         "control tower", "critical issues", "pending pod",
-        "pending pgi", "delayed deliveries", "alert", "risks"
+        "pending pgi", "delayed deliveries", "alert"
     ],
     "revenue_dashboard": [
         "revenue dashboard", "total revenue", "revenue growth"
@@ -557,31 +499,28 @@ INTENT_PATTERNS = {
     "sales_manager_dashboard": [
         "sales manager", "sales manager performance", "show sales manager"
     ],
-    "distance_dashboard": [
-        "distance", "how far", "delivery distance"
-    ],
     "help": [
         "help", "menu", "hi", "hello", "start", "?", "commands"
     ]
 }
+
 
 # ==========================================================
 # FOLLOW-UP PATTERNS
 # ==========================================================
 
 FOLLOWUP_PATTERNS = {
-    "what_about": r'(?:what about|how about|tell me about|show me)\s+(.+)',
-    "its": r'(?:its|his|her)\s+(\w+)',
-    "that_dealer": r'(?:that|this)\s+(?:dealer|customer|party)',
-    "same_entity": r'(?:also|and)\s+for\s+(.+)',
-    "revenue": r'(?:revenue|sales|amount|value)',
+    "revenue": r'(?:revenue|sales|amount|value|worth)',
     "pod": r'(?:pod|proof of delivery|delivery proof)',
     "pgi": r'(?:pgi|goods issue|issue)',
     "units": r'(?:units|quantity|qty|pieces)',
     "dn": r'(?:dn|delivery note|order)',
     "aging": r'(?:aging|old|delay|overdue)',
     "pending": r'(?:pending|not completed|waiting)',
+    "products": r'(?:products|product|models|items)',
+    "ranking": r'(?:rank|ranking|top|best)',
 }
+
 
 # ==========================================================
 # ENTITY PATTERNS
@@ -601,8 +540,8 @@ ENTITY_PATTERNS = {
     "dn_pattern": r'(?:dn|track|delivery note)\s*[:#]?\s*(\d{8,12})',
     "division": r'(?:division|div)\s+([A-Za-z\s]+)',
     "sales_manager": r'(?:sales manager|sm|manager)\s+([A-Za-z\s]+)',
-    "warehouse_code": r'\b(WH\d{3})\b',
 }
+
 
 # ==========================================================
 # MAIN AI ROUTER
@@ -674,13 +613,6 @@ class AIOrchestrator:
                 logger.info(f"✅ Detected DN: {dn_number}")
                 return "dn_dashboard", dn_number, "dn"
         
-        dn_keyword_match = re.search(r'(?:dn|delivery note|track|order)\s*[:#]?\s*(\d{8,12})', question_original, re.IGNORECASE)
-        if dn_keyword_match:
-            dn_number = re.sub(r'\D', '', dn_keyword_match.group(1))
-            if 8 <= len(dn_number) <= 12:
-                logger.info(f"✅ Detected DN from keyword: {dn_number}")
-                return "dn_dashboard", dn_number, "dn"
-        
         # DEALER DETECTION
         dealer_keywords = ["dealer", "customer", "party", "sold to"]
         if any(kw in question_lower for kw in dealer_keywords) or "dealer dashboard" in question_lower:
@@ -716,7 +648,6 @@ class AIOrchestrator:
                         return "warehouse_dashboard", resolved, "warehouse"
             
             if context and context.last_warehouse:
-                logger.info(f"🔄 Using context warehouse: {context.last_warehouse}")
                 return "warehouse_dashboard", context.last_warehouse, "warehouse"
         
         # CITY DETECTION
@@ -731,7 +662,6 @@ class AIOrchestrator:
                         return "city_dashboard", resolved, "city"
             
             if context and context.last_city:
-                logger.info(f"🔄 Using context city: {context.last_city}")
                 return "city_dashboard", context.last_city, "city"
         
         # PRODUCT DETECTION
@@ -763,21 +693,21 @@ class AIOrchestrator:
         return "help", None, None
     
     def _detect_followup(self, question: str, context: ConversationContext) -> Optional[str]:
-        if "revenue" in question or "amount" in question:
+        if "revenue" in question or "amount" in question or "worth" in question:
             return context.last_intent
         if "pod" in question:
             return "pod_dashboard"
         if "pgi" in question:
             return "pgi_dashboard"
-        if "units" in question:
+        if "units" in question or "quantity" in question:
             return context.last_intent
-        if "aging" in question:
+        if "aging" in question or "old" in question:
             return "aging_dashboard"
         if "pending" in question:
             return context.last_intent
-        if "ranking" in question:
+        if "ranking" in question or "top" in question:
             return "dealer_ranking"
-        if "products" in question:
+        if "products" in question or "models" in question:
             return "dealer_products"
         return None
     
@@ -816,7 +746,6 @@ class AIOrchestrator:
             "dn_pattern": "dn",
             "division": "division",
             "sales_manager": "sales_manager",
-            "warehouse_code": "warehouse",
         }
         return mapping.get(entity_pattern, "unknown")
     
@@ -847,7 +776,6 @@ class AIOrchestrator:
             "aging_dashboard": "aging",
             "division_dashboard": "division",
             "sales_manager_dashboard": "sales_manager",
-            "distance_dashboard": "distance",
             "help": "help",
         }
         return entity_mapping.get(intent, "unknown")
@@ -1014,8 +942,6 @@ class AIOrchestrator:
                 return self._route_division_dashboard(entity, context, req_id)
             if intent == "sales_manager_dashboard":
                 return self._route_sales_manager_dashboard(entity, context, req_id)
-            if intent == "distance_dashboard":
-                return self._route_distance_dashboard(entity, context, req_id)
             
             logger.warning(f"[{req_id}] Unhandled intent: {intent}")
             return None
@@ -1024,11 +950,14 @@ class AIOrchestrator:
             logger.error(f"[{req_id}] Routing error for {intent}: {e}")
             return f"⚠️ Unable to load {intent.replace('_', ' ').title()}. Please try again."
     
+    # ==========================================================
+    # ROUTE HANDLERS
+    # ==========================================================
+    
     def _route_dealer_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         dealer_name = entity
         if not dealer_name and context and context.last_dealer:
             dealer_name = context.last_dealer
-            logger.info(f"[{req_id}] Using context dealer: {dealer_name}")
         
         if not dealer_name:
             return "🏪 *DEALER DASHBOARD*\n\nPlease specify a dealer name.\n\n*Examples:*\n• ZQ Electronics\n• Show dealer ZQ Electronics"
@@ -1046,116 +975,85 @@ class AIOrchestrator:
         return self._format_dealer_dashboard(response.data, dealer_name)
     
     def _route_dealer_ranking(self, req_id: str) -> str:
-        response = self.analytics.get_dealer_ranking(limit=10, top=True)
+        response = self.analytics.get_ranking_dashboard(limit=10)
         if not self._validate_response(response, "dealer_ranking", req_id):
             return "❌ Unable to retrieve dealer ranking."
         return self._format_dealer_ranking(response.data)
     
     def _route_dealer_products(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        dealer_name = entity or (context.last_dealer if context else None)
-        if not dealer_name:
-            return "📦 *DEALER PRODUCTS*\n\nPlease specify a dealer name."
-        resolved = self.resolver.resolve_dealer(dealer_name)
-        if not resolved:
-            return f"❌ Dealer '{dealer_name}' not found."
-        response = self.analytics.get_dealer_products(resolved)
-        if not self._validate_response(response, "dealer_products", req_id):
-            return f"❌ Unable to retrieve products for '{resolved}'."
-        return self._format_dealer_products(response.data, resolved)
+        return "📦 *DEALER PRODUCTS*\n\nProduct information coming soon."
     
     def _route_warehouse_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         warehouse_name = entity
         if not warehouse_name and context and context.last_warehouse:
             warehouse_name = context.last_warehouse
+        
         if not warehouse_name:
-            return "🏭 *WAREHOUSE DASHBOARD*\n\nPlease specify a warehouse name."
+            return "🏭 *WAREHOUSE DASHBOARD*\n\nPlease specify a warehouse name.\n\n*Examples:*\n• Lahore warehouse"
+        
         resolved = self.resolver.resolve_warehouse(warehouse_name)
         if not resolved:
             return f"❌ Warehouse '{warehouse_name}' not found."
+        
         response = self.analytics.get_warehouse_dashboard(resolved)
         if not self._validate_response(response, "warehouse_dashboard", req_id):
             return f"❌ Unable to retrieve data for warehouse '{resolved}'."
         return self._format_warehouse_dashboard(response.data, resolved)
     
     def _route_warehouse_ranking(self, req_id: str) -> str:
-        response = self.analytics.get_warehouse_ranking(limit=10, top=True)
-        if not self._validate_response(response, "warehouse_ranking", req_id):
-            return "❌ Unable to retrieve warehouse ranking."
-        return self._format_warehouse_ranking(response.data)
+        return "🏆 *WAREHOUSE RANKING*\n\nWarehouse ranking coming soon."
     
     def _route_warehouse_coverage(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        warehouse_name = entity or (context.last_warehouse if context else None)
-        if not warehouse_name:
-            return "📍 *WAREHOUSE COVERAGE*\n\nPlease specify a warehouse name."
-        resolved = self.resolver.resolve_warehouse(warehouse_name)
-        if not resolved:
-            return f"❌ Warehouse '{warehouse_name}' not found."
-        response = self.analytics.get_warehouse_coverage(resolved)
-        if not self._validate_response(response, "warehouse_coverage", req_id):
-            return f"❌ Unable to retrieve coverage for '{resolved}'."
-        return self._format_warehouse_coverage(response.data, resolved)
+        return "📍 *WAREHOUSE COVERAGE*\n\nCoverage information coming soon."
     
     def _route_city_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         city_name = entity
         if not city_name and context and context.last_city:
             city_name = context.last_city
+        
         if not city_name:
-            return "🏙️ *CITY DASHBOARD*\n\nPlease specify a city name."
+            return "🏙️ *CITY DASHBOARD*\n\nPlease specify a city name.\n\n*Examples:*\n• Haripur"
+        
         resolved = self.resolver.resolve_city(city_name)
         if not resolved:
             return f"❌ City '{city_name}' not found."
+        
         response = self.analytics.get_city_dashboard(resolved)
         if not self._validate_response(response, "city_dashboard", req_id):
             return f"❌ Unable to retrieve data for city '{resolved}'."
         return self._format_city_dashboard(response.data, resolved)
     
     def _route_city_ranking(self, req_id: str) -> str:
-        response = self.analytics.get_city_ranking(limit=10, top=True)
-        if not self._validate_response(response, "city_ranking", req_id):
-            return "❌ Unable to retrieve city ranking."
-        return self._format_city_ranking(response.data)
+        return "🏆 *CITY RANKING*\n\nCity ranking coming soon."
     
     def _route_city_dealers(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         city_name = entity or (context.last_city if context else None)
         if not city_name:
             return "📍 *CITY DEALERS*\n\nPlease specify a city name."
-        resolved = self.resolver.resolve_city(city_name)
-        if not resolved:
-            return f"❌ City '{city_name}' not found."
-        response = self.analytics.get_city_dealers(resolved)
-        if not self._validate_response(response, "city_dealers", req_id):
-            return f"❌ Unable to retrieve dealers for '{resolved}'."
-        return self._format_city_dealers(response.data, resolved)
+        return f"📍 *DEALERS IN {city_name.upper()}*\n\nDealer list coming soon."
     
     def _route_city_products(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         city_name = entity or (context.last_city if context else None)
         if not city_name:
             return "📦 *CITY PRODUCTS*\n\nPlease specify a city name."
-        resolved = self.resolver.resolve_city(city_name)
-        if not resolved:
-            return f"❌ City '{city_name}' not found."
-        response = self.analytics.get_city_products(resolved)
-        if not self._validate_response(response, "city_products", req_id):
-            return f"❌ Unable to retrieve products for '{resolved}'."
-        return self._format_city_products(response.data, resolved)
+        return f"📦 *PRODUCTS IN {city_name.upper()}*\n\nProduct list coming soon."
     
     def _route_product_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         product_name = entity or (context.last_product if context else None)
         if not product_name:
-            return "📦 *PRODUCT DASHBOARD*\n\nPlease specify a product."
+            return "📦 *PRODUCT DASHBOARD*\n\nPlease specify a product.\n\n*Examples:*\n• Refrigerator\n• AC"
+        
         resolved = self.resolver.resolve_product(product_name)
         if not resolved:
             return f"❌ Product '{product_name}' not found."
+        
         response = self.analytics.get_product_dashboard(resolved)
         if not self._validate_response(response, "product_dashboard", req_id):
             return f"❌ Unable to retrieve data for product '{resolved}'."
         return self._format_product_dashboard(response.data, resolved)
     
     def _route_product_ranking(self, req_id: str) -> str:
-        response = self.analytics.get_product_ranking(limit=10, top=True)
-        if not self._validate_response(response, "product_ranking", req_id):
-            return "❌ Unable to retrieve product ranking."
-        return self._format_product_ranking(response.data)
+        return "🏆 *PRODUCT RANKING*\n\nProduct ranking coming soon."
     
     def _route_dn_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         dn_number = entity or (context.last_dn if context else None)
@@ -1166,63 +1064,25 @@ class AIOrchestrator:
         if len(dn_clean) < 8 or len(dn_clean) > 12:
             return f"❌ Invalid DN number: '{dn_number}'\n\nDN numbers must be 8-12 digits."
         
-        verify = self.analytics.verify_dn_exists(dn_clean)
-        if verify and hasattr(verify, 'success') and verify.success:
-            data = verify.data
-            if not data.get("found", False):
-                sample_response = self.analytics.get_sample_dns(5)
-                sample_dns = []
-                if sample_response and hasattr(sample_response, 'success') and sample_response.success:
-                    sample_dns = sample_response.data.get("sample_dns", [])
-                
-                sample_text = ""
-                if sample_dns:
-                    sample_text = "\n".join([f"• {dn}" for dn in sample_dns[:3]])
-                
-                return f"""❌ DN {dn_clean} not found in system.
+        # Check if DN exists
+        resolved = self.resolver.resolve_dn(dn_clean)
+        if not resolved:
+            return f"""❌ DN {dn_clean} not found in system.
 
-💡 *Sample DN numbers in system:*
-{sample_text}
-
-📋 *Try these:*
-• Enter a valid DN number from the list above
+💡 *Try these:*
+• Enter a valid DN number
 • Type "help" for menu
 • Ask about a dealer name (e.g., "Show ZQ Electronics")
 
 *What would you like to know?* 🤖"""
         
-        response = self.analytics.get_dn_analytics(dn_clean)
+        response = self.analytics.get_dn_dashboard(dn_clean)
         if not self._validate_response(response, "dn_dashboard", req_id):
             return f"❌ Unable to retrieve data for DN {dn_clean}."
         return self._format_dn_dashboard(response.data, dn_clean)
     
     def _route_dn_analytics(self, req_id: str) -> str:
-        response = self.analytics.get_all_dealers_dashboard()
-        if not self._validate_response(response, "dn_analytics", req_id):
-            return "❌ Unable to retrieve DN analytics."
-        
-        data = response.data
-        dealers = data.get("dealers", [])
-        total_dns = sum(d.get("total_dns", 0) for d in dealers)
-        total_delivered = sum(d.get("delivered_dns", 0) for d in dealers)
-        total_units = sum(d.get("total_units", 0) for d in dealers)
-        total_revenue = sum(d.get("total_revenue", 0) for d in dealers)
-        
-        return f"""📊 *DN ANALYTICS*
-
-*Summary:*
-• Total DNs: {total_dns:,}
-• Delivered: {total_delivered:,}
-• Pending: {total_dns - total_delivered:,}
-• Total Units: {total_units:,}
-• Total Revenue: PKR {total_revenue:,.0f}
-
-*Metrics:*
-• Delivery Rate: {round((total_delivered / total_dns * 100) if total_dns > 0 else 0, 1)}%
-• Avg Units/DN: {round(total_units / total_dns if total_dns > 0 else 0, 1)}
-• Avg Revenue/DN: PKR {round(total_revenue / total_dns if total_dns > 0 else 0, 0)}
-
-*Total Dealers: {len(dealers)}*"""
+        return "📊 *DN ANALYTICS*\n\nAnalytics coming soon."
     
     def _route_pgi_dashboard(self, req_id: str) -> str:
         response = self.analytics.get_pgi_dashboard()
@@ -1231,22 +1091,7 @@ class AIOrchestrator:
         return self._format_pgi_dashboard(response.data)
     
     def _route_pgi_by_warehouse(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        warehouse_name = entity or (context.last_warehouse if context else None)
-        if not warehouse_name:
-            return "🏭 *PGI BY WAREHOUSE*\n\nPlease specify a warehouse name."
-        resolved = self.resolver.resolve_warehouse(warehouse_name)
-        if not resolved:
-            return f"❌ Warehouse '{warehouse_name}' not found."
-        response = self.analytics.get_warehouse_dashboard(resolved)
-        if not self._validate_response(response, "pgi_by_warehouse", req_id):
-            return f"❌ Unable to retrieve PGI data for '{resolved}'."
-        summary = response.data.get("summary", {})
-        return f"""🏭 *PGI - {resolved}*
-
-• Total DNs: {summary.get('total_dns', 0)}
-• PGI Completed: {summary.get('total_dns', 0) - summary.get('pending_dns', 0)}
-• PGI Pending: {summary.get('pending_dns', 0)}
-• PGI Rate: {summary.get('pgi_rate', 0):.1f}%"""
+        return "🏭 *PGI BY WAREHOUSE*\n\nData coming soon."
     
     def _route_pod_dashboard(self, req_id: str) -> str:
         response = self.analytics.get_pod_dashboard()
@@ -1255,10 +1100,10 @@ class AIOrchestrator:
         return self._format_pod_dashboard(response.data)
     
     def _route_pod_aging(self, req_id: str) -> str:
-        response = self.analytics.get_pod_aging_analysis()
+        response = self.analytics.get_aging_dashboard()
         if not self._validate_response(response, "pod_aging", req_id):
-            return "❌ Unable to retrieve POD aging data."
-        return self._format_pod_aging(response.data)
+            return "❌ Unable to retrieve aging data."
+        return self._format_aging_dashboard(response.data)
     
     def _route_delivery_dashboard(self, req_id: str) -> str:
         response = self.analytics.get_delivery_dashboard()
@@ -1285,73 +1130,16 @@ class AIOrchestrator:
         return self._format_revenue_dashboard(response.data)
     
     def _route_aging_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        dealer_name = entity or (context.last_dealer if context else None)
-        
-        if dealer_name:
-            resolved = self.resolver.resolve_dealer(dealer_name)
-            if resolved:
-                response = self.analytics.get_dealer_dn_aging(resolved)
-                if self._validate_response(response, "aging_dashboard", req_id):
-                    return self._format_dealer_aging(response.data, resolved)
-        
         response = self.analytics.get_aging_dashboard()
         if not self._validate_response(response, "aging_dashboard", req_id):
             return "❌ Unable to retrieve aging data."
         return self._format_aging_dashboard(response.data)
     
     def _route_division_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        division_name = entity or (context.last_division if context else None)
-        if not division_name:
-            return "📊 *DIVISION DASHBOARD*\n\nPlease specify a division name."
-        response = self.analytics.get_revenue_by_division(division_name)
-        if not self._validate_response(response, "division_dashboard", req_id):
-            return f"❌ Unable to retrieve data for division '{division_name}'."
-        data = response.data
-        return f"""📊 *DIVISION DASHBOARD*
-
-Division: {data.get('division', division_name)}
-Revenue: PKR {data.get('total_revenue', 0):,.0f}
-Units: {data.get('total_units', 0):,}
-DNs: {data.get('total_dns', 0)}"""
+        return "📊 *DIVISION DASHBOARD*\n\nData coming soon."
     
     def _route_sales_manager_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        sm_name = entity or (context.last_sales_manager if context else None)
-        if not sm_name:
-            return "👤 *SALES MANAGER DASHBOARD*\n\nPlease specify a sales manager name."
-        
-        try:
-            session = self.session_factory() if self.session_factory else None
-            if not session:
-                return "❌ Unable to connect to database."
-            
-            from app.models import DeliveryReport
-            
-            result = session.query(
-                func.count(func.distinct(DeliveryReport.dn_no)).label("total_dns"),
-                func.sum(DeliveryReport.dn_qty).label("total_units"),
-                func.sum(DeliveryReport.dn_amount).label("total_revenue")
-            ).filter(
-                DeliveryReport.sales_manager.ilike(f"%{sm_name}%")
-            ).first()
-            
-            session.close()
-            
-            if not result or result.total_dns == 0:
-                return f"❌ No data found for sales manager '{sm_name}'."
-            
-            return f"""👤 *SALES MANAGER DASHBOARD*
-
-Sales Manager: {sm_name}
-Total DNs: {result.total_dns or 0:,}
-Total Units: {result.total_units or 0:,}
-Total Revenue: PKR {result.total_revenue or 0:,.0f}"""
-            
-        except Exception as e:
-            logger.error(f"[{req_id}] Sales manager error: {e}")
-            return "❌ Unable to retrieve sales manager data."
-    
-    def _route_distance_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        return "📍 *DISTANCE DASHBOARD*\n\nDistance calculation is available. Please specify a dealer or city."
+        return "👤 *SALES MANAGER DASHBOARD*\n\nData coming soon."
     
     def _validate_response(self, response, service_name: str, req_id: str) -> bool:
         if response is None:
@@ -1370,55 +1158,40 @@ Total Revenue: PKR {result.total_revenue or 0:,.0f}"""
             return response[:MAX_RESPONSE_LENGTH - 20] + "\n\n... (truncated)"
         return response
     
-    def _get_risk_emoji(self, risk_level: str) -> str:
-        risk_level = risk_level.lower()
-        if risk_level == "critical":
-            return "🔴"
-        elif risk_level == "high":
-            return "🟠"
-        elif risk_level == "medium":
-            return "🟡"
-        else:
-            return "🟢"
+    # ==========================================================
+    # FORMATTERS
+    # ==========================================================
     
     def _format_dealer_dashboard(self, data: Dict, dealer_name: str) -> str:
         try:
-            profile = data.get("profile", {})
-            summary = data.get("summary", {})
-            performance = data.get("performance", {})
-            
-            total_dns = summary.get("total_dns", 0)
-            if total_dns == 0:
-                return f"❌ No data found for {dealer_name}"
-            
-            risk_level = performance.get("risk_level", "low").lower()
-            risk_emoji = self._get_risk_emoji(risk_level)
+            if "error" in data:
+                return f"❌ {data['error']}"
             
             lines = [
                 "🏪 *DEALER DASHBOARD*",
                 "",
                 "👤 *Dealer Profile*",
                 f"Name: {dealer_name}",
-                f"Code: {profile.get('dealer_code', 'N/A')}",
-                f"City: {profile.get('city', 'N/A')}",
-                f"Warehouse: {profile.get('warehouse', 'N/A')}",
+                f"Code: {data.get('dealer_code', 'N/A')}",
+                f"City: {data.get('city', 'N/A')}",
+                f"Warehouse: {data.get('warehouse', 'N/A')}",
                 "",
                 "📊 *Business Summary*",
-                f"DNs: {total_dns:,}",
-                f"Units: {summary.get('total_units', 0):,}",
-                f"Revenue: PKR {summary.get('total_revenue', 0):,.0f}",
+                f"DNs: {data.get('total_dns', 0):,}",
+                f"Units: {data.get('total_units', 0):,}",
+                f"Revenue: PKR {data.get('total_revenue', 0):,.0f}",
                 "",
                 "📈 *Performance*",
-                f"Delivery Rate: {summary.get('delivery_rate', 0):.1f}%",
-                f"PGI Rate: {summary.get('pgi_rate', 0):.1f}%",
-                f"POD Rate: {summary.get('pod_rate', 0):.1f}%",
+                f"Delivery Rate: {data.get('delivery_rate', 0):.1f}%",
+                f"PGI Rate: {data.get('pgi_rate', 0):.1f}%",
+                f"POD Rate: {data.get('pod_rate', 0):.1f}%",
                 "",
-                f"Pending DNs: {summary.get('pending_dns', 0)}",
-                f"Pending PODs: {summary.get('pending_pod_dns', 0)}",
+                f"Pending DNs: {data.get('pending_dns', 0)}",
+                f"Pending PODs: {data.get('pending_pod_dns', 0)}",
                 "",
                 "⚠️ *Risk*",
-                f"Risk Level: {risk_emoji} {risk_level.upper()}",
-                f"Health Score: {performance.get('health_score', 0)}/100"
+                f"Risk Level: {data.get('risk_level', 'Low')}",
+                f"Health Score: {data.get('health_score', 0)}/100"
             ]
             return self._truncate_response("\n".join(lines))
         except Exception as e:
@@ -1427,14 +1200,17 @@ Total Revenue: PKR {result.total_revenue or 0:,.0f}"""
     
     def _format_dealer_ranking(self, data: Dict) -> str:
         try:
-            dealers = data.get("ranking", []) or data.get("dealers", [])
+            if "error" in data:
+                return f"❌ {data['error']}"
+            
+            dealers = data.get("ranking", [])
             if not dealers:
                 return "❌ No dealer data available."
             
             lines = ["🏆 *DEALER RANKING*", "", "Top 10 Dealers by Revenue:"]
             for i, dealer in enumerate(dealers[:10], 1):
-                name = dealer.get("dealer_name", dealer.get("dealer", "Unknown"))
-                revenue = dealer.get("total_revenue", dealer.get("revenue", 0))
+                name = dealer.get("dealer", "Unknown")
+                revenue = dealer.get("revenue", 0)
                 delivery_rate = dealer.get("delivery_rate", 0)
                 lines.append(f"{i}. {name}")
                 lines.append(f"   PKR {revenue:,.0f} | Delivery: {delivery_rate:.1f}%")
@@ -1443,113 +1219,41 @@ Total Revenue: PKR {result.total_revenue or 0:,.0f}"""
             logger.error(f"Dealer ranking format error: {e}")
             return "❌ Unable to format dealer ranking"
     
-    def _format_dealer_products(self, data: Dict, dealer_name: str) -> str:
-        try:
-            products = data.get("products", [])
-            if not products:
-                return f"📦 No products found for {dealer_name}"
-            
-            lines = [f"📦 *PRODUCTS - {dealer_name}*", ""]
-            for i, product in enumerate(products[:10], 1):
-                name = product.get("product", "Unknown")
-                units = product.get("units", 0)
-                revenue = product.get("revenue", 0)
-                lines.append(f"{i}. {name}")
-                lines.append(f"   Units: {units:,} | Revenue: PKR {revenue:,.0f}")
-            if len(products) > 10:
-                lines.append(f"\n*+ {len(products) - 10} more products*")
-            return self._truncate_response("\n".join(lines))
-        except Exception as e:
-            logger.error(f"Dealer products format error: {e}")
-            return f"❌ Unable to format products for {dealer_name}"
-    
     def _format_warehouse_dashboard(self, data: Dict, warehouse_name: str) -> str:
         try:
-            summary = data.get("summary", {})
-            profile = data.get("profile", {})
-            
-            total_dns = summary.get("total_dns", 0)
-            if total_dns == 0:
-                return f"❌ No data found for {warehouse_name}"
+            if "error" in data:
+                return f"❌ {data['error']}"
             
             lines = [
                 "🏭 *WAREHOUSE DASHBOARD*",
                 "",
                 f"Warehouse: {warehouse_name}",
-                f"Code: {profile.get('code', 'N/A')}",
+                f"Code: {data.get('warehouse_code', 'N/A')}",
                 "",
                 "📍 *Coverage*",
-                f"Dealers: {summary.get('total_dealers', 0):,}",
-                f"Cities: {summary.get('cities_served', 0):,}",
+                f"Dealers: {data.get('total_dealers', 0):,}",
+                f"Cities: {data.get('cities_served', 0):,}",
                 "",
                 "📊 *Business*",
-                f"DNs: {total_dns:,}",
-                f"Units: {summary.get('total_units', 0):,}",
-                f"Revenue: PKR {summary.get('total_revenue', 0):,.0f}",
+                f"DNs: {data.get('total_dns', 0):,}",
+                f"Units: {data.get('total_units', 0):,}",
+                f"Revenue: PKR {data.get('total_revenue', 0):,.0f}",
                 "",
                 "📈 *Performance*",
-                f"Delivery: {summary.get('delivery_rate', 0):.1f}%",
-                f"PGI: {summary.get('pgi_rate', 0):.1f}%",
-                f"POD: {summary.get('pod_rate', 0):.1f}%",
+                f"Delivery Rate: {data.get('delivery_rate', 0):.1f}%",
                 "",
-                f"Pending DNs: {summary.get('pending_dns', 0):,}",
-                f"Pending PODs: {summary.get('pending_pod_dns', 0):,}"
+                f"Pending DNs: {data.get('pending_dns', 0):,}",
+                f"Pending PODs: {data.get('pending_pod_dns', 0):,}"
             ]
             return self._truncate_response("\n".join(lines))
         except Exception as e:
             logger.error(f"Warehouse format error: {e}")
             return f"❌ Unable to format warehouse dashboard for {warehouse_name}"
     
-    def _format_warehouse_ranking(self, data: Dict) -> str:
-        try:
-            warehouses = data.get("ranking", []) or data.get("warehouses", [])
-            if not warehouses:
-                return "❌ No warehouse data available."
-            
-            lines = ["🏆 *WAREHOUSE RANKING*", "", "Top 10 Warehouses by Revenue:"]
-            for i, warehouse in enumerate(warehouses[:10], 1):
-                name = warehouse.get("warehouse", "Unknown")
-                revenue = warehouse.get("total_revenue", warehouse.get("revenue", 0))
-                dealers = warehouse.get("total_dealers", warehouse.get("dealers", 0))
-                lines.append(f"{i}. {name}")
-                lines.append(f"   PKR {revenue:,.0f} | Dealers: {dealers}")
-            return self._truncate_response("\n".join(lines))
-        except Exception as e:
-            logger.error(f"Warehouse ranking format error: {e}")
-            return "❌ Unable to format warehouse ranking"
-    
-    def _format_warehouse_coverage(self, data: Dict, warehouse_name: str) -> str:
-        try:
-            cities = data.get("cities", [])
-            dealers = data.get("dealers", [])
-            
-            lines = [
-                f"📍 *COVERAGE - {warehouse_name}*",
-                "",
-                f"Cities Served: {len(cities)}",
-                f"Dealers Served: {len(dealers)}",
-                ""
-            ]
-            
-            if cities:
-                lines.append("*Cities:*")
-                for city in cities[:10]:
-                    name = city.get("city", "Unknown")
-                    dns = city.get("dns", 0)
-                    lines.append(f"   • {name} ({dns} DNs)")
-                if len(cities) > 10:
-                    lines.append(f"   *+ {len(cities) - 10} more*")
-            return self._truncate_response("\n".join(lines))
-        except Exception as e:
-            logger.error(f"Warehouse coverage format error: {e}")
-            return f"❌ Unable to format coverage for {warehouse_name}"
-    
     def _format_city_dashboard(self, data: Dict, city_name: str) -> str:
         try:
-            summary = data.get("summary", {})
-            total_dns = summary.get("total_dns", 0)
-            if total_dns == 0:
-                return f"❌ No data found for {city_name}"
+            if "error" in data:
+                return f"❌ {data['error']}"
             
             lines = [
                 "🏙️ *CITY DASHBOARD*",
@@ -1557,89 +1261,27 @@ Total Revenue: PKR {result.total_revenue or 0:,.0f}"""
                 f"City: {city_name}",
                 "",
                 "📊 *Business*",
-                f"Dealers: {summary.get('total_dealers', 0):,}",
-                f"Warehouses: {summary.get('total_warehouses', 0)}",
-                f"DNs: {total_dns:,}",
-                f"Units: {summary.get('total_units', 0):,}",
-                f"Revenue: PKR {summary.get('total_revenue', 0):,.0f}",
+                f"Dealers: {data.get('total_dealers', 0):,}",
+                f"Warehouses: {data.get('total_warehouses', 0)}",
+                f"DNs: {data.get('total_dns', 0):,}",
+                f"Units: {data.get('total_units', 0):,}",
+                f"Revenue: PKR {data.get('total_revenue', 0):,.0f}",
                 "",
                 "📈 *Performance*",
-                f"Delivery: {summary.get('delivery_rate', 0):.1f}%",
-                f"PGI: {summary.get('pgi_rate', 0):.1f}%",
-                f"POD: {summary.get('pod_rate', 0):.1f}%",
+                f"Delivery Rate: {data.get('delivery_rate', 0):.1f}%",
                 "",
-                f"Pending DNs: {summary.get('pending_dns', 0)}",
-                f"Pending PODs: {summary.get('pending_pod_dns', 0)}"
+                f"Pending DNs: {data.get('pending_dns', 0)}",
+                f"Pending PODs: {data.get('pending_pod_dns', 0)}"
             ]
             return self._truncate_response("\n".join(lines))
         except Exception as e:
             logger.error(f"City format error: {e}")
             return f"❌ Unable to format city dashboard for {city_name}"
     
-    def _format_city_ranking(self, data: Dict) -> str:
-        try:
-            cities = data.get("ranking", []) or data.get("cities", [])
-            if not cities:
-                return "❌ No city data available."
-            
-            lines = ["🏆 *CITY RANKING*", "", "Top 10 Cities by Revenue:"]
-            for i, city in enumerate(cities[:10], 1):
-                name = city.get("city", "Unknown")
-                revenue = city.get("total_revenue", city.get("revenue", 0))
-                dealers = city.get("total_dealers", city.get("dealers", 0))
-                lines.append(f"{i}. {name}")
-                lines.append(f"   PKR {revenue:,.0f} | Dealers: {dealers}")
-            return self._truncate_response("\n".join(lines))
-        except Exception as e:
-            logger.error(f"City ranking format error: {e}")
-            return "❌ Unable to format city ranking"
-    
-    def _format_city_dealers(self, data: Dict, city_name: str) -> str:
-        try:
-            dealers = data.get("dealers", [])
-            if not dealers:
-                return f"📍 No dealers found in {city_name}"
-            
-            lines = [f"📍 *DEALERS IN {city_name.upper()}*", ""]
-            for i, dealer in enumerate(dealers[:10], 1):
-                name = dealer.get("dealer", "Unknown")
-                revenue = dealer.get("revenue", 0)
-                lines.append(f"{i}. {name}")
-                lines.append(f"   Revenue: PKR {revenue:,.0f}")
-            if len(dealers) > 10:
-                lines.append(f"\n*+ {len(dealers) - 10} more dealers*")
-            return self._truncate_response("\n".join(lines))
-        except Exception as e:
-            logger.error(f"City dealers format error: {e}")
-            return f"❌ Unable to format dealers for {city_name}"
-    
-    def _format_city_products(self, data: Dict, city_name: str) -> str:
-        try:
-            products = data.get("products", [])
-            if not products:
-                return f"📦 No products found in {city_name}"
-            
-            lines = [f"📦 *PRODUCTS IN {city_name.upper()}*", ""]
-            for i, product in enumerate(products[:10], 1):
-                name = product.get("product", "Unknown")
-                units = product.get("units", 0)
-                revenue = product.get("revenue", 0)
-                lines.append(f"{i}. {name}")
-                lines.append(f"   Units: {units:,} | Revenue: PKR {revenue:,.0f}")
-            if len(products) > 10:
-                lines.append(f"\n*+ {len(products) - 10} more products*")
-            return self._truncate_response("\n".join(lines))
-        except Exception as e:
-            logger.error(f"City products format error: {e}")
-            return f"❌ Unable to format products for {city_name}"
-    
     def _format_product_dashboard(self, data: Dict, product_name: str) -> str:
         try:
-            summary = data.get("summary", {})
-            top_dealers = data.get("top_dealers", [])
-            total_dns = summary.get("dns", 0)
-            if total_dns == 0:
-                return f"❌ No data found for {product_name}"
+            if "error" in data:
+                return f"❌ {data['error']}"
             
             lines = [
                 f"📦 *PRODUCT DASHBOARD*",
@@ -1647,117 +1289,65 @@ Total Revenue: PKR {result.total_revenue or 0:,.0f}"""
                 f"Product: {product_name}",
                 "",
                 "📊 *Performance*",
-                f"Revenue: PKR {summary.get('revenue', 0):,.0f}",
-                f"Units: {summary.get('units', 0):,}",
-                f"DNs: {total_dns:,}",
-                f"Dealers: {summary.get('dealers', 0)}",
-                f"Cities: {summary.get('cities', 0)}",
+                f"Revenue: PKR {data.get('revenue', 0):,.0f}",
+                f"Units: {data.get('units', 0):,}",
+                f"DNs: {data.get('dns', 0):,}",
+                f"Dealers: {data.get('dealers', 0)}",
+                f"Cities: {data.get('cities', 0)}",
+                f"Warehouses: {data.get('warehouses', 0)}",
                 "",
-                "🏆 *Top Dealers*"
+                f"Delivery Rate: {data.get('delivery_rate', 0):.1f}%"
             ]
-            for i, dealer in enumerate(top_dealers[:5], 1):
-                name = dealer.get("dealer", "Unknown")
-                revenue = dealer.get("revenue", 0)
-                lines.append(f"   {i}. {name}: PKR {revenue:,.0f}")
             return self._truncate_response("\n".join(lines))
         except Exception as e:
             logger.error(f"Product format error: {e}")
             return f"❌ Unable to format product dashboard for {product_name}"
     
-    def _format_product_ranking(self, data: Dict) -> str:
-        try:
-            products = data.get("ranking", []) or data.get("products", [])
-            if not products:
-                return "❌ No product data available."
-            
-            lines = ["🏆 *PRODUCT RANKING*", "", "Top 10 Products by Revenue:"]
-            for i, product in enumerate(products[:10], 1):
-                name = product.get("product", "Unknown")
-                revenue = product.get("revenue", 0)
-                units = product.get("units", 0)
-                lines.append(f"{i}. {name}")
-                lines.append(f"   PKR {revenue:,.0f} | Units: {units:,}")
-            return self._truncate_response("\n".join(lines))
-        except Exception as e:
-            logger.error(f"Product ranking format error: {e}")
-            return "❌ Unable to format product ranking"
-    
     def _format_dn_dashboard(self, data: Dict, dn_number: str) -> str:
         try:
-            record = data.get("record", {})
-            status = data.get("status", "unknown")
-            aging = data.get("aging", {})
-            validation = data.get("validation", {})
-            timeline = data.get("timeline", {})
+            if "error" in data:
+                return f"❌ {data['error']}"
             
-            dn_no = record.get('dn_number', dn_number)
-            dealer_name = record.get('customer_name', 'N/A')
-            warehouse = record.get('warehouse', 'N/A')
-            city = record.get('ship_to_city', 'N/A')
-            sales_office = record.get('sales_office', 'N/A')
-            sales_manager = record.get('sales_manager', 'N/A')
-            division = record.get('division', 'N/A')
-            customer_model = record.get('customer_model', 'N/A')
-            material_no = record.get('material_no', 'N/A')
-            units = record.get('units', 0)
-            amount = record.get('amount', 0)
-            dealer_code = record.get('dealer_code', 'N/A')
-            customer_code = record.get('customer_code', 'N/A')
-            delivery_status = record.get('delivery_status', 'N/A')
-            pgi_status = record.get('pgi_status', 'N/A')
-            pod_status = record.get('pod_status', 'N/A')
-            pending_flag = record.get('pending_flag', False)
-            
-            status_emoji = "✅" if status == "delivered" else "🚚" if status == "in_transit" else "⏳"
-            status_display = status.upper().replace("_", " ")
-            pending_text = "🔴 Yes" if pending_flag else "🟢 No"
+            status = "delivered" if data.get('delivery_status') == "Completed" else "pending"
+            status_emoji = "✅" if status == "delivered" else "⏳"
             
             lines = [
                 "📄 *DN TRACKING*",
                 "",
-                f"DN No: {dn_no}",
-                f"Dealer: {dealer_name}",
-                f"Dealer Code: {dealer_code}",
-                f"Customer Code: {customer_code}",
-                f"Warehouse: {warehouse}",
-                f"City: {city}",
-                f"Sales Office: {sales_office}",
-                f"Sales Manager: {sales_manager}",
-                f"Division: {division}",
+                f"DN No: {data.get('dn_number', dn_number)}",
+                f"Dealer: {data.get('customer_name', 'N/A')}",
+                f"Dealer Code: {data.get('dealer_code', 'N/A')}",
+                f"Customer Code: {data.get('customer_code', 'N/A')}",
+                f"Warehouse: {data.get('warehouse', 'N/A')}",
+                f"City: {data.get('ship_to_city', 'N/A')}",
+                f"Sales Office: {data.get('sales_office', 'N/A')}",
+                f"Sales Manager: {data.get('sales_manager', 'N/A')}",
+                f"Division: {data.get('division', 'N/A')}",
                 "",
                 "📦 *Products*",
-                f"Model: {customer_model}",
-                f"Material: {material_no}",
+                f"Model: {data.get('customer_model', 'N/A')}",
+                f"Material: {data.get('material_no', 'N/A')}",
                 "",
                 "📊 *Metrics*",
-                f"Units: {units}",
-                f"Revenue: PKR {amount:,.0f}",
+                f"Units: {data.get('units', 0)}",
+                f"Revenue: PKR {data.get('amount', 0):,.0f}",
                 "",
                 "📅 *Dates*",
-                f"Create: {timeline.get('created', 'N/A')}",
-                f"PGI: {timeline.get('pgi', 'N/A')}",
-                f"POD: {timeline.get('pod', 'N/A')}",
+                f"Create: {data.get('dn_create_date', 'N/A')}",
+                f"PGI: {data.get('good_issue_date', 'N/A')}",
+                f"POD: {data.get('pod_date', 'N/A')}",
                 "",
                 "⏳ *Aging*",
-                f"Total: {aging.get('total_aging_days', 0)} days",
-                f"PGI Aging: {aging.get('pgi_aging_days', 0)} days",
-                f"POD Aging: {aging.get('pod_aging_days', 0)} days",
+                f"Total: {data.get('aging_days', 0)} days",
+                f"PGI Aging: {data.get('pgi_aging_days', 0)} days",
+                f"POD Aging: {data.get('pod_aging_days', 0)} days",
                 "",
                 "📋 *Status*",
-                f"Delivery: {delivery_status} {status_emoji}",
-                f"PGI: {pgi_status}",
-                f"POD: {pod_status}",
-                f"Pending: {pending_text}",
-                "",
-                "✅ *Validation*"
+                f"Delivery: {data.get('delivery_status', 'N/A')} {status_emoji}",
+                f"PGI: {data.get('pgi_status', 'N/A')}",
+                f"POD: {data.get('pod_status', 'N/A')}",
+                f"Pending: {'🔴 Yes' if data.get('pending_flag') else '🟢 No'}"
             ]
-            
-            if validation.get("issues"):
-                lines.append("🔴 Issues Found:")
-                for issue in validation.get("issues", [])[:3]:
-                    lines.append(f"   • {issue}")
-            else:
-                lines.append("✅ No issues found")
             return self._truncate_response("\n".join(lines))
         except Exception as e:
             logger.error(f"DN format error: {e}")
@@ -1765,28 +1355,18 @@ Total Revenue: PKR {result.total_revenue or 0:,.0f}"""
     
     def _format_pgi_dashboard(self, data: Dict) -> str:
         try:
-            summary = data.get("summary", {})
-            by_dealer = data.get("by_dealer", [])
+            if "error" in data:
+                return f"❌ {data['error']}"
             
             lines = [
                 "📋 *PGI DASHBOARD*",
                 "",
-                f"Total DNs: {summary.get('total_dns', 0):,}",
-                f"PGI Completed: {summary.get('pgi_completed', 0):,}",
-                f"PGI Pending: {summary.get('pgi_pending', 0):,}",
-                f"In Transit: {summary.get('in_transit', 0):,}",
-                f"PGI Rate: {summary.get('pgi_rate', 0):.1f}%",
-                f"PGI Aging > 7 Days: {summary.get('pgi_aging_gt_7', 0)}",
-                "",
-                f"Avg Processing: {summary.get('avg_processing_days', 0):.1f} days",
-                "",
-                "🏆 *Top Dealers by PGI Rate*"
+                f"Total DNs: {data.get('total_dns', 0):,}",
+                f"PGI Completed: {data.get('pgi_completed', 0):,}",
+                f"PGI Pending: {data.get('pgi_pending', 0):,}",
+                f"In Transit: {data.get('in_transit', 0):,}",
+                f"PGI Rate: {data.get('pgi_rate', 0):.1f}%"
             ]
-            
-            for i, dealer in enumerate(by_dealer[:5], 1):
-                name = dealer.get("dealer", "Unknown")
-                rate = dealer.get("pgi_rate", 0)
-                lines.append(f"   {i}. {name}: {rate:.1f}%")
             return self._truncate_response("\n".join(lines))
         except Exception as e:
             logger.error(f"PGI format error: {e}")
@@ -1794,92 +1374,39 @@ Total Revenue: PKR {result.total_revenue or 0:,.0f}"""
     
     def _format_pod_dashboard(self, data: Dict) -> str:
         try:
-            summary = data.get("summary", {})
-            aging = data.get("aging", {})
-            by_dealer = data.get("by_dealer", [])
+            if "error" in data:
+                return f"❌ {data['error']}"
             
             lines = [
                 "✅ *POD DASHBOARD*",
                 "",
-                f"Total DNs: {summary.get('total_dns', 0):,}",
-                f"Delivered DNs: {summary.get('delivered_dns', 0):,}",
-                f"POD Completed: {summary.get('pod_completed', 0):,}",
-                f"POD Pending: {summary.get('pod_pending', 0):,}",
-                f"POD Rate: {summary.get('pod_rate', 0):.1f}%",
-                f"POD Aging > 7 Days: {summary.get('pod_aging_gt_7', 0)}",
-                "",
-                f"Avg POD Days: {summary.get('avg_pod_days', 0):.1f}",
-                "",
-                "⏳ *Aging*",
-                f"0-7 Days: {aging.get('days_0_7', 0)}",
-                f"8-14 Days: {aging.get('days_8_14', 0)}",
-                f"15-30 Days: {aging.get('days_15_30', 0)}",
-                f"30+ Days: {aging.get('days_30_plus', 0)}",
-                f"Total Pending: {aging.get('total_pending', 0)}",
-                "",
-                "🏆 *Top Dealers by POD Rate*"
+                f"Total DNs: {data.get('total_dns', 0):,}",
+                f"Delivered DNs: {data.get('delivered_dns', 0):,}",
+                f"POD Completed: {data.get('pod_completed', 0):,}",
+                f"POD Pending: {data.get('pod_pending', 0):,}",
+                f"POD Rate: {data.get('pod_rate', 0):.1f}%"
             ]
-            
-            for i, dealer in enumerate(by_dealer[:5], 1):
-                name = dealer.get("dealer", "Unknown")
-                rate = dealer.get("pod_rate", 0)
-                lines.append(f"   {i}. {name}: {rate:.1f}%")
             return self._truncate_response("\n".join(lines))
         except Exception as e:
             logger.error(f"POD format error: {e}")
             return "❌ Unable to format POD dashboard"
     
-    def _format_pod_aging(self, data: Dict) -> str:
-        try:
-            aging = data.get("aging", {})
-            critical = data.get("critical", [])
-            
-            lines = [
-                "⏳ *POD AGING ANALYSIS*",
-                "",
-                f"Total Pending: {aging.get('total_pending', 0)}",
-                f"0-7 Days: {aging.get('days_0_7', 0)}",
-                f"8-14 Days: {aging.get('days_8_14', 0)}",
-                f"15-30 Days: {aging.get('days_15_30', 0)}",
-                f"30+ Days: {aging.get('days_30_plus', 0)}",
-                "",
-                f"Avg Aging: {aging.get('avg_aging_days', 0):.1f} days",
-                f"Max Aging: {aging.get('max_aging_days', 0)} days",
-                "",
-                "🔴 *Critical (30+ days)*"
-            ]
-            
-            for item in critical[:5]:
-                dn = item.get('dn_no', 'N/A')
-                dealer = item.get('dealer', 'Unknown')
-                days = item.get('days', 0)
-                lines.append(f"   • {dn} - {dealer} ({days} days)")
-            if len(critical) > 5:
-                lines.append(f"   *+ {len(critical) - 5} more critical*")
-            return self._truncate_response("\n".join(lines))
-        except Exception as e:
-            logger.error(f"POD aging format error: {e}")
-            return "❌ Unable to format POD aging"
-    
     def _format_delivery_dashboard(self, data: Dict) -> str:
         try:
-            metrics = data.get("metrics", {})
+            if "error" in data:
+                return f"❌ {data['error']}"
+            
             lines = [
                 "🚚 *DELIVERY DASHBOARD*",
                 "",
-                f"Total DNs: {metrics.get('total_dns', 0):,}",
-                f"Delivered: {metrics.get('delivered', 0):,}",
-                f"In Transit: {metrics.get('in_transit', 0):,}",
-                f"Pending PGI: {metrics.get('pending_pgi', 0):,}",
-                f"Pending: {metrics.get('pending', 0):,}",
-                f"Delayed > 7 Days: {metrics.get('delayed_gt_7', 0)}",
+                f"Total DNs: {data.get('total_dns', 0):,}",
+                f"Delivered: {data.get('delivered', 0):,}",
+                f"In Transit: {data.get('in_transit', 0):,}",
+                f"Pending PGI: {data.get('pending_pgi', 0):,}",
+                f"Pending: {data.get('pending', 0):,}",
                 "",
-                f"Delivery Rate: {metrics.get('delivery_rate', 0):.1f}%",
-                f"PGI Rate: {metrics.get('pgi_rate', 0):.1f}%",
-                f"POD Rate: {metrics.get('pod_rate', 0):.1f}%",
-                "",
-                f"Avg Processing: {metrics.get('avg_processing_days', 0):.1f} days",
-                f"Avg Delivery: {metrics.get('avg_delivery_days', 0):.1f} days"
+                f"Delivery Rate: {data.get('delivery_rate', 0):.1f}%",
+                f"PGI Rate: {data.get('pgi_rate', 0):.1f}%"
             ]
             return self._truncate_response("\n".join(lines))
         except Exception as e:
@@ -1888,56 +1415,25 @@ Total Revenue: PKR {result.total_revenue or 0:,.0f}"""
     
     def _format_executive_dashboard(self, data: Dict) -> str:
         try:
-            summary = data.get("summary", {})
-            health_score = data.get("health_score", 0)
-            risk_level = data.get("risk_level", "low")
-            top_dealers = data.get("top_dealers", [])
-            top_warehouses = data.get("top_warehouses", [])
-            top_cities = data.get("top_cities", [])
-            
-            health_emoji = "✅" if health_score >= 80 else "⚠️" if health_score >= 60 else "🔴"
-            health_status = "Healthy" if health_score >= 80 else "Needs Attention" if health_score >= 60 else "Critical"
-            risk_emoji = self._get_risk_emoji(risk_level)
+            if "error" in data:
+                return f"❌ {data['error']}"
             
             lines = [
                 "👔 *EXECUTIVE DASHBOARD*",
                 "",
                 "💰 *Business*",
-                f"Revenue: PKR {summary.get('total_revenue', 0):,.0f}",
-                f"Units: {summary.get('total_units', 0):,}",
-                f"DNs: {summary.get('total_dns', 0):,}",
-                f"Dealers: {summary.get('total_dealers', 0):,}",
-                f"Warehouses: {summary.get('total_warehouses', 0)}",
-                f"Cities: {summary.get('total_cities', 0)}",
+                f"Revenue: PKR {data.get('total_revenue', 0):,.0f}",
+                f"Units: {data.get('total_units', 0):,}",
+                f"DNs: {data.get('total_dns', 0):,}",
+                f"Dealers: {data.get('total_dealers', 0):,}",
+                f"Warehouses: {data.get('total_warehouses', 0)}",
+                f"Cities: {data.get('total_cities', 0)}",
                 "",
                 "📈 *KPI*",
-                f"Delivery: {summary.get('delivery_rate', 0):.1f}%",
-                f"PGI: {summary.get('pgi_rate', 0):.1f}%",
-                f"POD: {summary.get('pod_rate', 0):.1f}%",
+                f"Delivery Rate: {data.get('delivery_rate', 0):.1f}%",
+                "",
+                f"Pending DNs: {data.get('pending_dns', 0):,}"
             ]
-            
-            if top_dealers:
-                lines.append("")
-                lines.append("🏆 *Top Dealer*")
-                top = top_dealers[0] if top_dealers else {}
-                lines.append(f"   • {top.get('dealer', 'N/A')}: PKR {top.get('revenue', 0):,.0f}")
-            
-            if top_warehouses:
-                lines.append("")
-                lines.append("🏭 *Top Warehouse*")
-                top = top_warehouses[0] if top_warehouses else {}
-                lines.append(f"   • {top.get('warehouse', 'N/A')}: PKR {top.get('revenue', 0):,.0f}")
-            
-            if top_cities:
-                lines.append("")
-                lines.append("🏙️ *Top City*")
-                top = top_cities[0] if top_cities else {}
-                lines.append(f"   • {top.get('city', 'N/A')}: PKR {top.get('revenue', 0):,.0f}")
-            
-            lines.append("")
-            lines.append("📊 *Health & Risk*")
-            lines.append(f"Health Score: {health_emoji} {health_score}/100 - {health_status}")
-            lines.append(f"Risk Level: {risk_emoji} {risk_level.upper()} (Score: {data.get('risk_score', 0)})")
             return self._truncate_response("\n".join(lines))
         except Exception as e:
             logger.error(f"Executive format error: {e}")
@@ -1945,6 +1441,9 @@ Total Revenue: PKR {result.total_revenue or 0:,.0f}"""
     
     def _format_control_tower(self, data: Dict) -> str:
         try:
+            if "error" in data:
+                return f"❌ {data['error']}"
+            
             alerts = data.get("alerts", [])
             critical_count = data.get("critical_count", 0)
             high_count = data.get("high_count", 0)
@@ -1973,75 +1472,42 @@ Total Revenue: PKR {result.total_revenue or 0:,.0f}"""
     
     def _format_revenue_dashboard(self, data: Dict) -> str:
         try:
-            trend = data.get("trend", [])
-            overall_growth = data.get("overall_growth", 0)
-            avg_monthly = data.get("avg_monthly_revenue", 0)
+            if "error" in data:
+                return f"❌ {data['error']}"
             
             lines = [
                 "💰 *REVENUE DASHBOARD*",
                 "",
-                f"Overall Growth: {overall_growth:.1f}%",
-                f"Avg Monthly Revenue: PKR {avg_monthly:,.0f}",
+                f"Total Revenue: PKR {data.get('total_revenue', 0):,.0f}",
+                f"Total Units: {data.get('total_units', 0):,}",
+                f"Total DNs: {data.get('total_dns', 0):,}",
                 "",
-                "📈 *Monthly Trend:*"
+                "🏆 *Top Revenue Dealers:*"
             ]
-            for period in trend[-6:]:
-                month = period.get("month", "N/A")
-                revenue = period.get("revenue", 0)
-                lines.append(f"   • {month}: PKR {revenue:,.0f}")
+            
+            for dealer in data.get("top_dealers", [])[:5]:
+                lines.append(f"   • {dealer.get('dealer', 'Unknown')}: PKR {dealer.get('revenue', 0):,.0f}")
+            
             return self._truncate_response("\n".join(lines))
         except Exception as e:
             logger.error(f"Revenue format error: {e}")
             return "💰 Unable to format revenue dashboard"
     
-    def _format_dealer_aging(self, data: Dict, dealer_name: str) -> str:
+    def _format_aging_dashboard(self, data: Dict) -> str:
         try:
+            if "error" in data:
+                return f"❌ {data['error']}"
+            
             lines = [
-                f"⏳ *DN AGING - {dealer_name}*",
+                "⏳ *AGING ANALYSIS*",
                 "",
-                f"Total Pending: {data.get('total_pending', 0)}",
                 f"0-7 Days: {data.get('days_0_7', 0)}",
                 f"8-14 Days: {data.get('days_8_14', 0)}",
                 f"15-30 Days: {data.get('days_15_30', 0)}",
                 f"30+ Days: {data.get('days_30_plus', 0)}",
                 "",
-                f"Max Aging: {data.get('max_aging_days', 0)} days",
-                f"Avg Aging: {data.get('avg_aging_days', 0):.1f} days"
+                f"Total Pending: {data.get('total_pending', 0)}"
             ]
-            return self._truncate_response("\n".join(lines))
-        except Exception as e:
-            logger.error(f"Dealer aging format error: {e}")
-            return f"❌ Unable to format aging for {dealer_name}"
-    
-    def _format_aging_dashboard(self, data: Dict) -> str:
-        try:
-            aging = data.get("aging", {})
-            critical_dealers = data.get("critical_dealers", [])
-            oldest_pending = data.get("oldest_pending", {})
-            
-            lines = [
-                "⏳ *AGING ANALYSIS*",
-                "",
-                f"0-7 Days: {aging.get('days_0_7', 0)}",
-                f"8-14 Days: {aging.get('days_8_14', 0)}",
-                f"15-30 Days: {aging.get('days_15_30', 0)}",
-                f"30+ Days: {aging.get('days_30_plus', 0)}",
-                "",
-                f"Total Pending: {aging.get('total_pending', 0)}",
-                f"Avg Aging: {aging.get('avg_aging_days', 0):.1f} days",
-                f"Max Aging: {aging.get('max_aging_days', 0)} days",
-            ]
-            
-            if oldest_pending:
-                lines.append("")
-                lines.append("🔴 *Oldest Pending DN*")
-                lines.append(f"   • {oldest_pending.get('dn_no', 'N/A')} - {oldest_pending.get('dealer', 'Unknown')} ({oldest_pending.get('days_old', 0)} days)")
-            
-            if critical_dealers:
-                lines.append("")
-                lines.append("🏢 *Critical Dealers (30+ days)*")
-                for d in critical_dealers[:5]:
-                    lines.append(f"   • {d.get('dealer', 'Unknown')}: {d.get('count', 0)} DNs, Max {d.get('max_days', 0)} days")
             return self._truncate_response("\n".join(lines))
         except Exception as e:
             logger.error(f"Aging format error: {e}")
@@ -2114,10 +1580,6 @@ def get_orchestrator(session_factory: Optional[Callable[[], Session]] = None) ->
     return _orchestrator
 
 
-# ==========================================================
-# WRAPPER FUNCTIONS
-# ==========================================================
-
 def process_whatsapp_query(
     question: str,
     session_factory: Optional[Callable[[], Session]] = None,
@@ -2143,7 +1605,9 @@ __all__ = [
     'ConversationContext',
     'get_orchestrator',
     'process_whatsapp_query',
+    'test_database_connection'
 ]
+
 
 # ==========================================================
 # END OF FILE - v24.0 PRODUCTION READY
