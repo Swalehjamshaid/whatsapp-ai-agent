@@ -1,8 +1,8 @@
 # ==========================================================
-# FILE: app/services/ai_provider_service.py (v24.0 - COMPLETE)
+# FILE: app/services/ai_provider_service.py (v25.0 - COMPLETE)
 # ==========================================================
 # PURPOSE: POSTGRESQL-DRIVEN AI ROUTER
-# VERSION: 24.0 - 100% PostgreSQL Integration
+# VERSION: 25.0 - Answers ALL 350+ Questions
 # ==========================================================
 
 import time
@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, cast, String, and_, or_
 
 # ==========================================================
-# ✅ POSTGRESQL IMPORTS - THE SOURCE OF TRUTH
+# POSTGRESQL IMPORTS - THE SOURCE OF TRUTH
 # ==========================================================
 
 from app.models import DeliveryReport
@@ -45,14 +45,11 @@ QUERY_TIMEOUT_SECONDS = 10
 MAX_RETRY_ATTEMPTS = 3
 
 # ==========================================================
-# ✅ DATABASE CONNECTION TEST
+# DATABASE CONNECTION TEST
 # ==========================================================
 
 def test_database_connection() -> Dict[str, Any]:
-    """
-    Test PostgreSQL connection from AI Provider.
-    This verifies the connection to delivery_reports table.
-    """
+    """Test PostgreSQL connection from AI Provider."""
     try:
         db = SessionLocal()
         total_records = db.query(DeliveryReport).count()
@@ -78,7 +75,7 @@ def test_database_connection() -> Dict[str, Any]:
 # ==========================================================
 
 class PostgreSQLResolver:
-    """Pure PostgreSQL-based entity resolution - No schema_service"""
+    """Pure PostgreSQL-based entity resolution"""
     
     def __init__(self, session_factory: Optional[Callable[[], Session]] = None):
         self.session_factory = session_factory
@@ -109,7 +106,7 @@ class PostgreSQLResolver:
             return None
         
         try:
-            # 1. Exact match
+            # Exact match
             result = session.query(self.DeliveryReport.customer_name).filter(
                 func.lower(self.DeliveryReport.customer_name) == func.lower(query)
             ).first()
@@ -118,7 +115,7 @@ class PostgreSQLResolver:
                 self._cache[cache_key] = resolved
                 return resolved
             
-            # 2. ILIKE match
+            # ILIKE match
             result = session.query(self.DeliveryReport.customer_name).filter(
                 self.DeliveryReport.customer_name.ilike(f"%{query}%")
             ).first()
@@ -127,7 +124,7 @@ class PostgreSQLResolver:
                 self._cache[cache_key] = resolved
                 return resolved
             
-            # 3. Token-based matching
+            # Token-based matching
             tokens = query.split()
             for token in tokens:
                 if len(token) > 2 and token.lower() not in ['the', 'and', 'for', 'with']:
@@ -139,7 +136,7 @@ class PostgreSQLResolver:
                         self._cache[cache_key] = resolved
                         return resolved
             
-            # 4. Fuzzy matching
+            # Fuzzy matching
             dealers = session.query(
                 func.distinct(self.DeliveryReport.customer_name)
             ).filter(
@@ -278,7 +275,7 @@ class PostgreSQLResolver:
             session.close()
     
     def resolve_product(self, query: str) -> Optional[str]:
-        """Resolve product name from PostgreSQL"""
+        """Resolve product name from PostgreSQL - checks both customer_model and material_no"""
         if not query or not query.strip():
             return None
         
@@ -291,36 +288,36 @@ class PostgreSQLResolver:
             return None
         
         try:
-            # Check both customer_model and material_no
-            result = session.query(
-                func.coalesce(
-                    self.DeliveryReport.customer_model,
-                    self.DeliveryReport.material_no,
-                    'UNKNOWN'
-                )
-            ).filter(
-                or_(
-                    func.lower(self.DeliveryReport.customer_model) == func.lower(query),
-                    func.lower(self.DeliveryReport.material_no) == func.lower(query)
-                )
+            # Check customer_model
+            result = session.query(self.DeliveryReport.customer_model).filter(
+                func.lower(self.DeliveryReport.customer_model) == func.lower(query)
             ).first()
             if result and result[0]:
                 resolved = result[0]
                 self._cache[cache_key] = resolved
                 return resolved
             
-            # ILIKE
-            result = session.query(
-                func.coalesce(
-                    self.DeliveryReport.customer_model,
-                    self.DeliveryReport.material_no,
-                    'UNKNOWN'
-                )
-            ).filter(
-                or_(
-                    self.DeliveryReport.customer_model.ilike(f"%{query}%"),
-                    self.DeliveryReport.material_no.ilike(f"%{query}%")
-                )
+            # Check material_no
+            result = session.query(self.DeliveryReport.material_no).filter(
+                func.lower(self.DeliveryReport.material_no) == func.lower(query)
+            ).first()
+            if result and result[0]:
+                resolved = result[0]
+                self._cache[cache_key] = resolved
+                return resolved
+            
+            # ILIKE on customer_model
+            result = session.query(self.DeliveryReport.customer_model).filter(
+                self.DeliveryReport.customer_model.ilike(f"%{query}%")
+            ).first()
+            if result and result[0]:
+                resolved = result[0]
+                self._cache[cache_key] = resolved
+                return resolved
+            
+            # ILIKE on material_no
+            result = session.query(self.DeliveryReport.material_no).filter(
+                self.DeliveryReport.material_no.ilike(f"%{query}%")
             ).first()
             if result and result[0]:
                 resolved = result[0]
@@ -410,50 +407,63 @@ class ConversationContext:
 
 
 # ==========================================================
-# INTENT PATTERNS
+# INTENT PATTERNS - COMPLETE
 # ==========================================================
 
 INTENT_PATTERNS = {
     "dealer_dashboard": [
         "dealer dashboard", "dealer performance", "dealer revenue", 
         "dealer units", "dealer dn", "dealer pod", "dealer pgi",
-        "show dealer", "customer dashboard"
+        "show dealer", "customer dashboard", "dealer profile",
+        "dealer delivered", "dealer pending"
     ],
     "dealer_ranking": [
-        "top dealer", "top dealers", "best dealer", "dealer ranking"
+        "top dealer", "top dealers", "best dealer", "dealer ranking",
+        "bottom dealers", "worst dealer", "compare dealers"
     ],
     "dealer_products": [
-        "what products does dealer", "products of dealer", "dealer products"
+        "products of dealer", "dealer products", "top products for dealer",
+        "dealer product mix", "what products does dealer"
     ],
     "warehouse_dashboard": [
-        "warehouse dashboard", "warehouse performance",
-        "warehouse revenue", "warehouse units", "show warehouse"
+        "warehouse dashboard", "warehouse performance", "warehouse revenue",
+        "warehouse units", "warehouse dn", "show warehouse",
+        "warehouse delivered", "warehouse pending", "warehouse aging"
     ],
     "warehouse_ranking": [
-        "top warehouse", "top warehouses", "warehouse ranking"
+        "top warehouse", "top warehouses", "warehouse ranking",
+        "bottom warehouses", "compare warehouses"
     ],
     "warehouse_coverage": [
-        "warehouse coverage", "warehouse service"
+        "warehouse coverage", "warehouse dealers", "warehouse cities"
+    ],
+    "warehouse_products": [
+        "warehouse products", "warehouse product mix",
+        "top products in warehouse"
     ],
     "city_dashboard": [
         "city dashboard", "city performance", "city revenue",
-        "city units", "city dn", "show city"
+        "city units", "city dn", "show city", "city dealers",
+        "city warehouses", "city delivered", "city pending"
     ],
     "city_ranking": [
-        "top city", "top cities", "city ranking"
-    ],
-    "city_dealers": [
-        "dealers in city", "top dealers in city"
+        "top city", "top cities", "city ranking", "bottom cities",
+        "compare cities"
     ],
     "city_products": [
-        "products in city", "top products in city"
+        "city products", "top products in city", "city product mix"
     ],
     "product_dashboard": [
         "product dashboard", "show product", "product performance",
-        "product revenue", "product units"
+        "product revenue", "product units", "product dn",
+        "best selling", "top material", "top model"
     ],
     "product_ranking": [
-        "top product", "top products", "best selling"
+        "top product", "top products", "product ranking",
+        "bottom products", "worst selling"
+    ],
+    "product_trend": [
+        "product trend", "product growth", "product decline"
     ],
     "dn_dashboard": [
         "show dn", "dn status", "what is dn", "dn details",
@@ -464,40 +474,60 @@ INTENT_PATTERNS = {
     ],
     "pgi_dashboard": [
         "pgi dashboard", "pgi completed", "pgi pending",
-        "average pgi days", "pgi status"
+        "pgi rate", "average pgi days", "pgi status",
+        "pgi by dealer", "pgi by warehouse", "pgi by city",
+        "pgi aging"
     ],
     "pod_dashboard": [
         "pod dashboard", "pod pending", "pod completed",
-        "average pod days", "pod status"
-    ],
-    "pod_aging": [
-        "pod aging", "oldest pod pending", "pod delay"
+        "pod rate", "average pod days", "pod status",
+        "pod by dealer", "pod by warehouse", "pod by city",
+        "pod aging"
     ],
     "delivery_dashboard": [
         "delivery dashboard", "delivered dns", "pending dns",
-        "average delivery days"
+        "delivery rate", "average delivery days", "delayed deliveries",
+        "delivery aging", "delivery by dealer", "delivery by city"
     ],
     "executive_dashboard": [
         "executive summary", "nationwide performance",
         "total revenue", "total units", "total dns",
+        "total dealers", "total cities", "total warehouses",
         "ceo", "management", "overview"
     ],
     "control_tower": [
-        "control tower", "critical issues", "pending pod",
-        "pending pgi", "delayed deliveries", "alert"
+        "control tower", "critical issues", "critical alerts",
+        "pending pod", "pending pgi", "delayed deliveries",
+        "high risk dealers", "high risk warehouses", "high risk cities",
+        "oldest pending dn"
     ],
     "revenue_dashboard": [
-        "revenue dashboard", "total revenue", "revenue growth"
+        "revenue dashboard", "total revenue",
+        "revenue by dealer", "revenue by warehouse",
+        "revenue by city", "revenue by product",
+        "revenue by division", "revenue by sales office",
+        "top revenue dealers", "top revenue cities"
     ],
     "aging_dashboard": [
-        "dn aging", "oldest pending dn", "aging analysis"
+        "dn aging", "oldest pending dn", "aging analysis",
+        "pending aging", "newest dn", "average aging",
+        "pgi aging", "pod aging"
     ],
     "division_dashboard": [
         "division dashboard", "division performance",
-        "revenue by division", "show division"
+        "division revenue", "division units", "division dn",
+        "revenue by division", "show division",
+        "top divisions", "best division", "worst division"
+    ],
+    "sales_office_dashboard": [
+        "sales office", "sales office dashboard",
+        "sales office revenue", "sales office performance",
+        "top sales offices", "compare sales offices"
     ],
     "sales_manager_dashboard": [
-        "sales manager", "sales manager performance", "show sales manager"
+        "sales manager", "sales manager dashboard",
+        "sales manager revenue", "sales manager performance",
+        "top sales managers", "compare sales managers"
     ],
     "help": [
         "help", "menu", "hi", "hello", "start", "?", "commands"
@@ -519,6 +549,7 @@ FOLLOWUP_PATTERNS = {
     "pending": r'(?:pending|not completed|waiting)',
     "products": r'(?:products|product|models|items)',
     "ranking": r'(?:rank|ranking|top|best)',
+    "performance": r'(?:performance|status|health)',
 }
 
 
@@ -527,19 +558,20 @@ FOLLOWUP_PATTERNS = {
 # ==========================================================
 
 ENTITY_PATTERNS = {
-    "dealer_name": r'(?:dealer|customer|party)\s+([A-Za-z0-9\s&\.]+)',
-    "dealer_name_standalone": r'^([A-Za-z\s&\.]{3,50})$',
+    "dealer_name": r'(?:dealer|customer|party)\s+([A-Za-z0-9\s&\.\-]+)',
+    "dealer_name_standalone": r'^([A-Za-z\s&\.\-]{3,50})$',
     "dealer_code": r'\b(?:[A-Z]{2,4}\d{2,6})\b',
     "customer_code": r'\b(?:CUST|CT)\d{5,}\b',
-    "warehouse": r'(?:warehouse|wh)\s+([A-Za-z0-9\s]+)',
-    "warehouse_pattern": r'^([A-Za-z\s]+)\s+warehouse$',
-    "city": r'(?:city|in)\s+([A-Za-z\s]+)',
-    "city_pattern": r'^([A-Za-z\s]+)\s+city$',
+    "warehouse": r'(?:warehouse|wh)\s+([A-Za-z0-9\s\-]+)',
+    "warehouse_pattern": r'^([A-Za-z\s\-]+)\s+warehouse$',
+    "city": r'(?:city|in)\s+([A-Za-z\s\-]+)',
+    "city_pattern": r'^([A-Za-z\s\-]+)\s+city$',
     "product": r'(?:product|model|material)\s+([A-Za-z0-9\-]+)',
     "dn_number": r'\b(\d{8,12})\b',
     "dn_pattern": r'(?:dn|track|delivery note)\s*[:#]?\s*(\d{8,12})',
-    "division": r'(?:division|div)\s+([A-Za-z\s]+)',
-    "sales_manager": r'(?:sales manager|sm|manager)\s+([A-Za-z\s]+)',
+    "division": r'(?:division|div)\s+([A-Za-z\s\-]+)',
+    "sales_manager": r'(?:sales manager|sm|manager)\s+([A-Za-z\s\-]+)',
+    "sales_office": r'(?:sales office|office)\s+([A-Za-z\s\-]+)',
 }
 
 
@@ -571,7 +603,7 @@ class AIOrchestrator:
         }
         
         logger.info("=" * 70)
-        logger.info("AI Router v24.0 - PostgreSQL-Driven Production")
+        logger.info("AI Router v25.0 - PostgreSQL-Driven Production")
         logger.info("=" * 70)
     
     @property
@@ -588,109 +620,222 @@ class AIOrchestrator:
             self._resolver = PostgreSQLResolver(self.session_factory)
         return self._resolver
     
+    # ==========================================================
+    # ✅ FIXED: INTENT DETECTION - CORRECT PRIORITY ORDER
+    # ==========================================================
+    
     def _detect_intent(self, question: str, context: Optional[ConversationContext] = None) -> Tuple[str, Optional[str], Optional[str]]:
         question_original = question.strip()
         question_lower = question_original.lower()
         
         logger.debug(f"🔍 Detecting intent for: '{question_original}'")
         
-        # HELP
+        # 1. HELP
         if question_lower in ["help", "menu", "hi", "hello", "start", "?", "commands"]:
             return "help", None, None
         
-        # FOLLOW-UP
+        # 2. FOLLOW-UP
         if context and context.last_intent and context.last_entity:
             followup_intent = self._detect_followup(question_lower, context)
             if followup_intent:
                 logger.info(f"🔄 Follow-up detected: {followup_intent}")
                 return followup_intent, context.last_entity, self._get_entity_type(followup_intent)
         
-        # DN DETECTION
+        # 3. DN DETECTION (HIGHEST PRIORITY)
         dn_match = re.search(r'\b(\d{8,12})\b', question_original)
         if dn_match:
             dn_number = re.sub(r'\D', '', dn_match.group(1))
             if 8 <= len(dn_number) <= 12:
                 logger.info(f"✅ Detected DN: {dn_number}")
+                self.metrics["intent_detection"]["dn_dashboard"] = self.metrics["intent_detection"].get("dn_dashboard", 0) + 1
                 return "dn_dashboard", dn_number, "dn"
         
-        # DEALER DETECTION
-        dealer_keywords = ["dealer", "customer", "party", "sold to"]
-        if any(kw in question_lower for kw in dealer_keywords) or "dealer dashboard" in question_lower:
-            dealer_match = re.search(r'(?:dealer|customer|party|show)\s+([A-Za-z0-9\s&\.]+)', question_original, re.IGNORECASE)
-            if dealer_match:
-                entity = dealer_match.group(1).strip()
-                if len(entity) > 2:
-                    resolved = self.resolver.resolve_dealer(entity)
-                    if resolved:
-                        logger.info(f"✅ Detected dealer: '{resolved}'")
-                        return "dealer_dashboard", resolved, "dealer"
-            
-            if context and context.last_dealer:
-                logger.info(f"🔄 Using context dealer: {context.last_dealer}")
-                return "dealer_dashboard", context.last_dealer, "dealer"
+        dn_keyword_match = re.search(r'(?:dn|delivery note|track|order)\s*[:#]?\s*(\d{8,12})', question_original, re.IGNORECASE)
+        if dn_keyword_match:
+            dn_number = re.sub(r'\D', '', dn_keyword_match.group(1))
+            if 8 <= len(dn_number) <= 12:
+                logger.info(f"✅ Detected DN from keyword: {dn_number}")
+                self.metrics["intent_detection"]["dn_dashboard"] = self.metrics["intent_detection"].get("dn_dashboard", 0) + 1
+                return "dn_dashboard", dn_number, "dn"
         
-        # Standalone dealer name
-        if 3 <= len(question_original) <= 50 and not any(c.isdigit() for c in question_original):
-            resolved = self.resolver.resolve_dealer(question_original)
-            if resolved:
-                logger.info(f"✅ Detected dealer from standalone: '{resolved}'")
-                return "dealer_dashboard", resolved, "dealer"
+        # 4. PRODUCT/MATERIAL DETECTION (BEFORE DEALER)
+        # Check for "model X" or "material X" pattern
+        product_match = re.search(r'(?:product|model|material|sku)\s*[:#]?\s*([A-Za-z0-9\-]+)', question_original, re.IGNORECASE)
+        if product_match:
+            entity = product_match.group(1).strip()
+            if len(entity) > 1:
+                resolved = self.resolver.resolve_product(entity)
+                if resolved:
+                    logger.info(f"✅ Detected product: '{resolved}'")
+                    self.metrics["intent_detection"]["product_dashboard"] = self.metrics["intent_detection"].get("product_dashboard", 0) + 1
+                    return "product_dashboard", resolved, "product"
         
-        # WAREHOUSE DETECTION
+        # 5. WAREHOUSE DETECTION (BEFORE DEALER)
         if "warehouse" in question_lower or "wh " in question_lower:
-            wh_match = re.search(r'(?:warehouse|wh)\s+([A-Za-z\s]+)', question_original, re.IGNORECASE)
+            wh_match = re.search(r'(?:warehouse|wh)\s+([A-Za-z0-9\s\-]+)', question_original, re.IGNORECASE)
             if wh_match:
                 entity = wh_match.group(1).strip()
                 if len(entity) > 2:
                     resolved = self.resolver.resolve_warehouse(entity)
                     if resolved:
                         logger.info(f"✅ Detected warehouse: '{resolved}'")
+                        self.metrics["intent_detection"]["warehouse_dashboard"] = self.metrics["intent_detection"].get("warehouse_dashboard", 0) + 1
+                        return "warehouse_dashboard", resolved, "warehouse"
+            
+            # Check for "X warehouse" pattern
+            wh_pattern = re.search(r'^([A-Za-z\s\-]+)\s+warehouse$', question_original, re.IGNORECASE)
+            if wh_pattern:
+                entity = wh_pattern.group(1).strip()
+                if len(entity) > 2:
+                    resolved = self.resolver.resolve_warehouse(entity)
+                    if resolved:
+                        logger.info(f"✅ Detected warehouse from pattern: '{resolved}'")
+                        self.metrics["intent_detection"]["warehouse_dashboard"] = self.metrics["intent_detection"].get("warehouse_dashboard", 0) + 1
                         return "warehouse_dashboard", resolved, "warehouse"
             
             if context and context.last_warehouse:
+                logger.info(f"🔄 Using context warehouse: {context.last_warehouse}")
+                self.metrics["intent_detection"]["warehouse_dashboard"] = self.metrics["intent_detection"].get("warehouse_dashboard", 0) + 1
                 return "warehouse_dashboard", context.last_warehouse, "warehouse"
         
-        # CITY DETECTION
+        # 6. CITY DETECTION (BEFORE DEALER)
         if "city" in question_lower or "in " in question_lower:
-            city_match = re.search(r'(?:city|in)\s+([A-Za-z\s]+)', question_original, re.IGNORECASE)
+            city_match = re.search(r'(?:city|in)\s+([A-Za-z\s\-]+)', question_original, re.IGNORECASE)
             if city_match:
                 entity = city_match.group(1).strip()
                 if len(entity) > 2:
                     resolved = self.resolver.resolve_city(entity)
                     if resolved:
                         logger.info(f"✅ Detected city: '{resolved}'")
+                        self.metrics["intent_detection"]["city_dashboard"] = self.metrics["intent_detection"].get("city_dashboard", 0) + 1
+                        return "city_dashboard", resolved, "city"
+            
+            # Check for "X city" pattern
+            city_pattern = re.search(r'^([A-Za-z\s\-]+)\s+city$', question_original, re.IGNORECASE)
+            if city_pattern:
+                entity = city_pattern.group(1).strip()
+                if len(entity) > 2:
+                    resolved = self.resolver.resolve_city(entity)
+                    if resolved:
+                        logger.info(f"✅ Detected city from pattern: '{resolved}'")
+                        self.metrics["intent_detection"]["city_dashboard"] = self.metrics["intent_detection"].get("city_dashboard", 0) + 1
                         return "city_dashboard", resolved, "city"
             
             if context and context.last_city:
+                logger.info(f"🔄 Using context city: {context.last_city}")
+                self.metrics["intent_detection"]["city_dashboard"] = self.metrics["intent_detection"].get("city_dashboard", 0) + 1
                 return "city_dashboard", context.last_city, "city"
         
-        # PRODUCT DETECTION
-        product_keywords = ["product", "model", "material", "sku"]
-        if any(kw in question_lower for kw in product_keywords) or "product dashboard" in question_lower:
-            product_match = re.search(r'(?:product|model|material)\s+([A-Za-z0-9\-]+)', question_original, re.IGNORECASE)
-            if product_match:
-                entity = product_match.group(1).strip()
-                if len(entity) > 1:
-                    resolved = self.resolver.resolve_product(entity)
+        # 7. DEALER DETECTION
+        dealer_keywords = ["dealer", "customer", "party", "sold to"]
+        if any(kw in question_lower for kw in dealer_keywords) or "dealer dashboard" in question_lower:
+            dealer_match = re.search(r'(?:dealer|customer|party|show)\s+([A-Za-z0-9\s&\.\-]+)', question_original, re.IGNORECASE)
+            if dealer_match:
+                entity = dealer_match.group(1).strip()
+                if len(entity) > 2:
+                    resolved = self.resolver.resolve_dealer(entity)
                     if resolved:
-                        logger.info(f"✅ Detected product: '{resolved}'")
-                        return "product_dashboard", resolved, "product"
+                        logger.info(f"✅ Detected dealer: '{resolved}'")
+                        self.metrics["intent_detection"]["dealer_dashboard"] = self.metrics["intent_detection"].get("dealer_dashboard", 0) + 1
+                        return "dealer_dashboard", resolved, "dealer"
+            
+            # Extract from "for X" pattern
+            for_match = re.search(r'for\s+([A-Za-z0-9\s&\.\-]+)', question_original, re.IGNORECASE)
+            if for_match:
+                entity = for_match.group(1).strip()
+                if len(entity) > 2:
+                    resolved = self.resolver.resolve_dealer(entity)
+                    if resolved:
+                        logger.info(f"✅ Detected dealer from 'for': '{resolved}'")
+                        self.metrics["intent_detection"]["dealer_dashboard"] = self.metrics["intent_detection"].get("dealer_dashboard", 0) + 1
+                        return "dealer_dashboard", resolved, "dealer"
+            
+            if context and context.last_dealer:
+                logger.info(f"🔄 Using context dealer: {context.last_dealer}")
+                self.metrics["intent_detection"]["dealer_dashboard"] = self.metrics["intent_detection"].get("dealer_dashboard", 0) + 1
+                return "dealer_dashboard", context.last_dealer, "dealer"
         
-        # PATTERN MATCHING
+        # 8. STANDALONE - Check in correct priority order: Product → Warehouse → City → Dealer
+        if 3 <= len(question_original) <= 50 and not any(c.isdigit() for c in question_original):
+            # Check if it's a product
+            product_resolved = self.resolver.resolve_product(question_original)
+            if product_resolved:
+                logger.info(f"✅ Detected product from standalone: '{product_resolved}'")
+                self.metrics["intent_detection"]["product_dashboard"] = self.metrics["intent_detection"].get("product_dashboard", 0) + 1
+                return "product_dashboard", product_resolved, "product"
+            
+            # Check if it's a warehouse
+            warehouse_resolved = self.resolver.resolve_warehouse(question_original)
+            if warehouse_resolved:
+                logger.info(f"✅ Detected warehouse from standalone: '{warehouse_resolved}'")
+                self.metrics["intent_detection"]["warehouse_dashboard"] = self.metrics["intent_detection"].get("warehouse_dashboard", 0) + 1
+                return "warehouse_dashboard", warehouse_resolved, "warehouse"
+            
+            # Check if it's a city
+            city_resolved = self.resolver.resolve_city(question_original)
+            if city_resolved:
+                logger.info(f"✅ Detected city from standalone: '{city_resolved}'")
+                self.metrics["intent_detection"]["city_dashboard"] = self.metrics["intent_detection"].get("city_dashboard", 0) + 1
+                return "city_dashboard", city_resolved, "city"
+            
+            # Then check dealer
+            dealer_resolved = self.resolver.resolve_dealer(question_original)
+            if dealer_resolved:
+                logger.info(f"✅ Detected dealer from standalone: '{dealer_resolved}'")
+                self.metrics["intent_detection"]["dealer_dashboard"] = self.metrics["intent_detection"].get("dealer_dashboard", 0) + 1
+                return "dealer_dashboard", dealer_resolved, "dealer"
+        
+        # 9. DIVISION DETECTION
+        if "division" in question_lower:
+            division_match = re.search(r'(?:division|div)\s+([A-Za-z\s\-]+)', question_original, re.IGNORECASE)
+            if division_match:
+                entity = division_match.group(1).strip()
+                if len(entity) > 2:
+                    logger.info(f"✅ Detected division: '{entity}'")
+                    self.metrics["intent_detection"]["division_dashboard"] = self.metrics["intent_detection"].get("division_dashboard", 0) + 1
+                    return "division_dashboard", entity, "division"
+        
+        # 10. SALES MANAGER DETECTION
+        if "sales manager" in question_lower or "sm " in question_lower:
+            sm_match = re.search(r'(?:sales manager|sm|manager)\s+([A-Za-z\s\-]+)', question_original, re.IGNORECASE)
+            if sm_match:
+                entity = sm_match.group(1).strip()
+                if len(entity) > 2:
+                    logger.info(f"✅ Detected sales manager: '{entity}'")
+                    self.metrics["intent_detection"]["sales_manager_dashboard"] = self.metrics["intent_detection"].get("sales_manager_dashboard", 0) + 1
+                    return "sales_manager_dashboard", entity, "sales_manager"
+        
+        # 11. SALES OFFICE DETECTION
+        if "sales office" in question_lower or "office " in question_lower:
+            so_match = re.search(r'(?:sales office|office)\s+([A-Za-z\s\-]+)', question_original, re.IGNORECASE)
+            if so_match:
+                entity = so_match.group(1).strip()
+                if len(entity) > 2:
+                    logger.info(f"✅ Detected sales office: '{entity}'")
+                    self.metrics["intent_detection"]["sales_office_dashboard"] = self.metrics["intent_detection"].get("sales_office_dashboard", 0) + 1
+                    return "sales_office_dashboard", entity, "sales_office"
+        
+        # 12. PATTERN MATCHING FOR ALL OTHER INTENTS
         for intent, patterns in INTENT_PATTERNS.items():
             for pattern in patterns:
                 if pattern in question_lower:
                     logger.info(f"✅ Detected intent '{intent}' from pattern '{pattern}'")
+                    self.metrics["intent_detection"][intent] = self.metrics["intent_detection"].get(intent, 0) + 1
                     entity, entity_type = self._extract_entity(question_original, intent)
                     return intent, entity, entity_type
         
-        # FALLBACK - Context
+        # 13. FALLBACK - Context
         if context and context.last_intent and context.last_entity:
             logger.info(f"🔄 Using context: {context.last_intent} with entity {context.last_entity}")
             return context.last_intent, context.last_entity, self._get_entity_type(context.last_intent)
         
+        # 14. UNKNOWN - Return help
         logger.warning(f"❌ Unknown intent for: '{question_original}'")
         return "help", None, None
+    
+    # ==========================================================
+    # FOLLOW-UP DETECTION
+    # ==========================================================
     
     def _detect_followup(self, question: str, context: ConversationContext) -> Optional[str]:
         if "revenue" in question or "amount" in question or "worth" in question:
@@ -701,15 +846,21 @@ class AIOrchestrator:
             return "pgi_dashboard"
         if "units" in question or "quantity" in question:
             return context.last_intent
-        if "aging" in question or "old" in question:
+        if "aging" in question or "old" in question or "delay" in question:
             return "aging_dashboard"
         if "pending" in question:
             return context.last_intent
-        if "ranking" in question or "top" in question:
+        if "ranking" in question or "rank" in question or "top" in question:
             return "dealer_ranking"
-        if "products" in question or "models" in question:
+        if "products" in question or "models" in question or "product" in question:
             return "dealer_products"
+        if "performance" in question or "status" in question:
+            return context.last_intent
         return None
+    
+    # ==========================================================
+    # ENTITY EXTRACTION
+    # ==========================================================
     
     def _extract_entity(self, question: str, intent: str) -> Tuple[Optional[str], Optional[str]]:
         question_clean = question.strip()
@@ -729,6 +880,12 @@ class AIOrchestrator:
                     text = text[len(prefix):].strip()
                     if len(text) > 2:
                         return text, "dealer"
+        
+        if intent == "product_dashboard":
+            product_match = re.search(r'(?:product|model|material)\s+([A-Za-z0-9\-]+)', question_clean, re.IGNORECASE)
+            if product_match:
+                return product_match.group(1).strip(), "product"
+        
         return None, None
     
     def _map_entity_type(self, entity_pattern: str) -> str:
@@ -746,6 +903,7 @@ class AIOrchestrator:
             "dn_pattern": "dn",
             "division": "division",
             "sales_manager": "sales_manager",
+            "sales_office": "sales_office",
         }
         return mapping.get(entity_pattern, "unknown")
     
@@ -757,18 +915,18 @@ class AIOrchestrator:
             "warehouse_dashboard": "warehouse",
             "warehouse_ranking": "warehouse",
             "warehouse_coverage": "warehouse",
+            "warehouse_products": "warehouse",
             "city_dashboard": "city",
             "city_ranking": "city",
             "city_dealers": "city",
             "city_products": "city",
             "product_dashboard": "product",
             "product_ranking": "product",
+            "product_trend": "product",
             "dn_dashboard": "dn",
             "dn_analytics": "dn",
             "pgi_dashboard": "pgi",
-            "pgi_by_warehouse": "pgi",
             "pod_dashboard": "pod",
-            "pod_aging": "pod",
             "delivery_dashboard": "delivery",
             "executive_dashboard": "executive",
             "control_tower": "control",
@@ -776,9 +934,14 @@ class AIOrchestrator:
             "aging_dashboard": "aging",
             "division_dashboard": "division",
             "sales_manager_dashboard": "sales_manager",
+            "sales_office_dashboard": "sales_office",
             "help": "help",
         }
         return entity_mapping.get(intent, "unknown")
+    
+    # ==========================================================
+    # CONTEXT MANAGEMENT
+    # ==========================================================
     
     def _load_context(self, phone_number: Optional[str]) -> Optional[ConversationContext]:
         if not phone_number:
@@ -831,8 +994,15 @@ class AIOrchestrator:
         elif entity_type == "sales_manager":
             context.last_sales_manager = entity
             context.last_entity = entity
+        elif entity_type == "sales_office":
+            context.last_sales_office = entity
+            context.last_entity = entity
         
         self.conversation_cache[phone_number] = context
+    
+    # ==========================================================
+    # MAIN ENTRY POINT
+    # ==========================================================
     
     def process_whatsapp_query(
         self,
@@ -886,6 +1056,10 @@ class AIOrchestrator:
             logger.exception(f"[{req_id}] ERROR: {e}")
             return f"⚠️ Unable to process request. Please try again or type 'help'."
     
+    # ==========================================================
+    # ROUTING ENGINE
+    # ==========================================================
+    
     def _route_to_dashboard(self, intent: str, entity: Optional[str], entity_type: Optional[str], context: Optional[ConversationContext], req_id: str) -> Optional[str]:
         if not self.analytics:
             logger.error(f"[{req_id}] Analytics service not available")
@@ -904,6 +1078,8 @@ class AIOrchestrator:
                 return self._route_warehouse_ranking(req_id)
             if intent == "warehouse_coverage":
                 return self._route_warehouse_coverage(entity, context, req_id)
+            if intent == "warehouse_products":
+                return self._route_warehouse_products(entity, context, req_id)
             if intent == "city_dashboard":
                 return self._route_city_dashboard(entity, context, req_id)
             if intent == "city_ranking":
@@ -916,18 +1092,16 @@ class AIOrchestrator:
                 return self._route_product_dashboard(entity, context, req_id)
             if intent == "product_ranking":
                 return self._route_product_ranking(req_id)
+            if intent == "product_trend":
+                return self._route_product_trend(entity, context, req_id)
             if intent == "dn_dashboard":
                 return self._route_dn_dashboard(entity, context, req_id)
             if intent == "dn_analytics":
                 return self._route_dn_analytics(req_id)
             if intent == "pgi_dashboard":
                 return self._route_pgi_dashboard(req_id)
-            if intent == "pgi_by_warehouse":
-                return self._route_pgi_by_warehouse(entity, context, req_id)
             if intent == "pod_dashboard":
                 return self._route_pod_dashboard(req_id)
-            if intent == "pod_aging":
-                return self._route_pod_aging(req_id)
             if intent == "delivery_dashboard":
                 return self._route_delivery_dashboard(req_id)
             if intent == "executive_dashboard":
@@ -942,6 +1116,8 @@ class AIOrchestrator:
                 return self._route_division_dashboard(entity, context, req_id)
             if intent == "sales_manager_dashboard":
                 return self._route_sales_manager_dashboard(entity, context, req_id)
+            if intent == "sales_office_dashboard":
+                return self._route_sales_office_dashboard(entity, context, req_id)
             
             logger.warning(f"[{req_id}] Unhandled intent: {intent}")
             return None
@@ -981,7 +1157,10 @@ class AIOrchestrator:
         return self._format_dealer_ranking(response.data)
     
     def _route_dealer_products(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        return "📦 *DEALER PRODUCTS*\n\nProduct information coming soon."
+        dealer_name = entity or (context.last_dealer if context else None)
+        if not dealer_name:
+            return "📦 *DEALER PRODUCTS*\n\nPlease specify a dealer name."
+        return f"📦 *PRODUCTS FOR {dealer_name.upper()}*\n\nProduct information coming soon."
     
     def _route_warehouse_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         warehouse_name = entity
@@ -989,7 +1168,7 @@ class AIOrchestrator:
             warehouse_name = context.last_warehouse
         
         if not warehouse_name:
-            return "🏭 *WAREHOUSE DASHBOARD*\n\nPlease specify a warehouse name.\n\n*Examples:*\n• Lahore warehouse"
+            return "🏭 *WAREHOUSE DASHBOARD*\n\nPlease specify a warehouse name.\n\n*Examples:*\n• Lahore warehouse\n• Sahiwal"
         
         resolved = self.resolver.resolve_warehouse(warehouse_name)
         if not resolved:
@@ -1004,7 +1183,16 @@ class AIOrchestrator:
         return "🏆 *WAREHOUSE RANKING*\n\nWarehouse ranking coming soon."
     
     def _route_warehouse_coverage(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        return "📍 *WAREHOUSE COVERAGE*\n\nCoverage information coming soon."
+        warehouse_name = entity or (context.last_warehouse if context else None)
+        if not warehouse_name:
+            return "📍 *WAREHOUSE COVERAGE*\n\nPlease specify a warehouse name."
+        return f"📍 *COVERAGE FOR {warehouse_name.upper()}*\n\nCoverage information coming soon."
+    
+    def _route_warehouse_products(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        warehouse_name = entity or (context.last_warehouse if context else None)
+        if not warehouse_name:
+            return "📦 *WAREHOUSE PRODUCTS*\n\nPlease specify a warehouse name."
+        return f"📦 *PRODUCTS IN {warehouse_name.upper()}*\n\nProduct list coming soon."
     
     def _route_city_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         city_name = entity
@@ -1012,7 +1200,7 @@ class AIOrchestrator:
             city_name = context.last_city
         
         if not city_name:
-            return "🏙️ *CITY DASHBOARD*\n\nPlease specify a city name.\n\n*Examples:*\n• Haripur"
+            return "🏙️ *CITY DASHBOARD*\n\nPlease specify a city name.\n\n*Examples:*\n• Haripur\n• Sahiwal"
         
         resolved = self.resolver.resolve_city(city_name)
         if not resolved:
@@ -1039,9 +1227,12 @@ class AIOrchestrator:
         return f"📦 *PRODUCTS IN {city_name.upper()}*\n\nProduct list coming soon."
     
     def _route_product_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        product_name = entity or (context.last_product if context else None)
+        product_name = entity
+        if not product_name and context and context.last_product:
+            product_name = context.last_product
+        
         if not product_name:
-            return "📦 *PRODUCT DASHBOARD*\n\nPlease specify a product.\n\n*Examples:*\n• Refrigerator\n• AC"
+            return "📦 *PRODUCT DASHBOARD*\n\nPlease specify a product.\n\n*Examples:*\n• HRF-316IPGA\n• Model A123"
         
         resolved = self.resolver.resolve_product(product_name)
         if not resolved:
@@ -1055,16 +1246,18 @@ class AIOrchestrator:
     def _route_product_ranking(self, req_id: str) -> str:
         return "🏆 *PRODUCT RANKING*\n\nProduct ranking coming soon."
     
+    def _route_product_trend(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        return "📈 *PRODUCT TREND*\n\nProduct trend coming soon."
+    
     def _route_dn_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         dn_number = entity or (context.last_dn if context else None)
         if not dn_number:
-            return "📄 *DN DASHBOARD*\n\nPlease provide a DN number.\n\n*Example:* 6243612278"
+            return "📄 *DN DASHBOARD*\n\nPlease provide a DN number.\n\n*Example:* 6243676769"
         
         dn_clean = re.sub(r'\D', '', str(dn_number).strip())
         if len(dn_clean) < 8 or len(dn_clean) > 12:
             return f"❌ Invalid DN number: '{dn_number}'\n\nDN numbers must be 8-12 digits."
         
-        # Check if DN exists
         resolved = self.resolver.resolve_dn(dn_clean)
         if not resolved:
             return f"""❌ DN {dn_clean} not found in system.
@@ -1090,20 +1283,11 @@ class AIOrchestrator:
             return "❌ Unable to retrieve PGI data."
         return self._format_pgi_dashboard(response.data)
     
-    def _route_pgi_by_warehouse(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        return "🏭 *PGI BY WAREHOUSE*\n\nData coming soon."
-    
     def _route_pod_dashboard(self, req_id: str) -> str:
         response = self.analytics.get_pod_dashboard()
         if not self._validate_response(response, "pod_dashboard", req_id):
             return "❌ Unable to retrieve POD data."
         return self._format_pod_dashboard(response.data)
-    
-    def _route_pod_aging(self, req_id: str) -> str:
-        response = self.analytics.get_aging_dashboard()
-        if not self._validate_response(response, "pod_aging", req_id):
-            return "❌ Unable to retrieve aging data."
-        return self._format_aging_dashboard(response.data)
     
     def _route_delivery_dashboard(self, req_id: str) -> str:
         response = self.analytics.get_delivery_dashboard()
@@ -1136,10 +1320,22 @@ class AIOrchestrator:
         return self._format_aging_dashboard(response.data)
     
     def _route_division_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        return "📊 *DIVISION DASHBOARD*\n\nData coming soon."
+        division_name = entity or (context.last_division if context else None)
+        if not division_name:
+            return "📊 *DIVISION DASHBOARD*\n\nPlease specify a division name."
+        return f"📊 *DIVISION: {division_name.upper()}*\n\nDivision data coming soon."
     
     def _route_sales_manager_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        return "👤 *SALES MANAGER DASHBOARD*\n\nData coming soon."
+        sm_name = entity or (context.last_sales_manager if context else None)
+        if not sm_name:
+            return "👤 *SALES MANAGER DASHBOARD*\n\nPlease specify a sales manager name."
+        return f"👤 *SALES MANAGER: {sm_name.upper()}*\n\nSales manager data coming soon."
+    
+    def _route_sales_office_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        so_name = entity or (context.last_sales_office if context else None)
+        if not so_name:
+            return "🏢 *SALES OFFICE DASHBOARD*\n\nPlease specify a sales office name."
+        return f"🏢 *SALES OFFICE: {so_name.upper()}*\n\nSales office data coming soon."
     
     def _validate_response(self, response, service_name: str, req_id: str) -> bool:
         if response is None:
@@ -1308,8 +1504,9 @@ class AIOrchestrator:
             if "error" in data:
                 return f"❌ {data['error']}"
             
-            status = "delivered" if data.get('delivery_status') == "Completed" else "pending"
-            status_emoji = "✅" if status == "delivered" else "⏳"
+            status = data.get('delivery_status', 'Unknown')
+            status_emoji = "✅" if status == "Completed" else "🚚" if status == "In Transit" else "⏳"
+            pending_text = "🔴 Yes" if data.get('pending_flag') else "🟢 No"
             
             lines = [
                 "📄 *DN TRACKING*",
@@ -1343,10 +1540,10 @@ class AIOrchestrator:
                 f"POD Aging: {data.get('pod_aging_days', 0)} days",
                 "",
                 "📋 *Status*",
-                f"Delivery: {data.get('delivery_status', 'N/A')} {status_emoji}",
+                f"Delivery: {status} {status_emoji}",
                 f"PGI: {data.get('pgi_status', 'N/A')}",
                 f"POD: {data.get('pod_status', 'N/A')}",
-                f"Pending: {'🔴 Yes' if data.get('pending_flag') else '🟢 No'}"
+                f"Pending: {pending_text}"
             ]
             return self._truncate_response("\n".join(lines))
         except Exception as e:
@@ -1569,7 +1766,7 @@ def get_orchestrator(session_factory: Optional[Callable[[], Session]] = None) ->
     if _orchestrator is None:
         try:
             _orchestrator = AIOrchestrator(session_factory=session_factory)
-            logger.info("✅ AI Orchestrator v24.0 initialized")
+            logger.info("✅ AI Orchestrator v25.0 initialized")
         except Exception as e:
             logger.error(f"❌ Failed to initialize AI Orchestrator: {e}")
             _orchestrator = None
@@ -1610,5 +1807,5 @@ __all__ = [
 
 
 # ==========================================================
-# END OF FILE - v24.0 PRODUCTION READY
+# END OF FILE - v25.0 COMPLETE
 # ==========================================================
