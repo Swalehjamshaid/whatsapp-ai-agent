@@ -993,8 +993,7 @@ class AnalyticsRepository:
     
     # ==========================================================
     # BLOCK 10: DN DASHBOARD
-   # ==========================================================
-# ==========================================================
+  # ==========================================================
 # BLOCK 10: DN DASHBOARD
 # ==========================================================
     
@@ -1055,9 +1054,14 @@ class AnalyticsRepository:
         except Exception as e:
             logger.error(f"Get DN dashboard failed: {e}")
             return {"error": str(e)}
+    
+    
     # ==========================================================
     # BLOCK 11: DEALER DASHBOARD
     # ==========================================================
+    # ==========================================================
+# BLOCK 11: DEALER DASHBOARD
+# ==========================================================
     
     def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         """Complete dealer dashboard from PostgreSQL"""
@@ -1142,7 +1146,6 @@ class AnalyticsRepository:
         except Exception as e:
             logger.error(f"Get dealer dashboard failed: {e}")
             return {"error": str(e)}
-    
     # ==========================================================
     # BLOCK 12: WAREHOUSE DASHBOARD
     # ==========================================================
