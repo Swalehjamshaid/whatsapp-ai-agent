@@ -130,95 +130,86 @@ class DatabaseHealthChecker:
 # ==========================================================
 # BLOCK 5: DATE VALIDATION ENGINE (FIXED)
 # ==========================================================
-# BLOCK 5: DATE VALIDATION ENGINE (BUSINESS DATE INTERPRETATION - FIXED)
+# ==========================================================
+# BLOCK 5: DATE VALIDATION ENGINE (CORRECT DATE PARSING)
 # ==========================================================
 
 class DateValidator:
     """
-    Date Validation Engine with Business Date Interpretation.
+    Date Validation Engine with Correct Business Date Parsing.
     
-    CRITICAL: Dates must be interpreted according to business process.
-    The business confirms that Create, PGI, and POD occur in the same month.
+    CRITICAL: Dates must be parsed from the ORIGINAL RAW STRING.
     
     Example:
-    Raw PostgreSQL:       Business Interpretation:
-    2026-05-05     →     05-May-2026
-    2026-07-05     →     07-May-2026 (NOT 05-Jul-2026!)
-    2026-05-15     →     15-May-2026
+    Stored: 2026-07-05
+    Python interprets: year=2026, month=7, day=5
     
-    The business confirms all three events occurred in May 2026.
+    Business Interpretation:
+    year=2026, business_day=7, business_month=5
+    → 07-May-2026
+    
+    NOT: 05-Jul-2026!
+    
+    Format: YYYY-DD-MM (Year-Day-Month)
     """
     
     @staticmethod
-    def parse_business_date(raw_date: Optional[datetime]) -> Optional[datetime]:
+    def parse_business_date(raw_value: Any) -> Optional[datetime]:
         """
-        Parse and interpret raw date according to business rules.
+        Parse raw date value according to business rules.
         
-        Business Rule: All dates (Create, PGI, POD) occur in the same month.
-        The month is determined by the CREATE DATE.
+        Business Format: YYYY-DD-MM
+        - First part: Year
+        - Second part: Day
+        - Third part: Month
         
         Example:
-        Create: 2026-05-05 → Month = May 2026
-        PGI: 2026-07-05 → Interpreted as 07-May-2026 (day=07, month=May)
-        POD: 2026-05-15 → Interpreted as 15-May-2026 (day=15, month=May)
+        raw_value = "2026-07-05" → datetime(2026, 5, 7) → 07-May-2026
+        raw_value = "2026-11-05" → datetime(2026, 5, 11) → 11-May-2026
+        raw_value = "2026-05-15" → datetime(2026, 5, 15) → 15-May-2026
         """
-        if raw_date is None:
+        if raw_value is None:
             return None
         
-        # Convert to datetime if needed
-        if not isinstance(raw_date, datetime):
-            raw_date = datetime.combine(raw_date, datetime.min.time())
+        # If already datetime, convert to string for parsing
+        if isinstance(raw_value, datetime):
+            raw_value = raw_value.strftime("%Y-%m-%d")
+        elif isinstance(raw_value, date):
+            raw_value = raw_value.strftime("%Y-%m-%d")
         
-        # For now, return as-is - the business interpretation
-        # is handled in the calling methods with proper month logic
-        return raw_date
+        # Convert to string if needed
+        raw_str = str(raw_value).strip()
+        
+        try:
+            # Split by "-"
+            parts = raw_str.split("-")
+            
+            if len(parts) != 3:
+                # Try parsing as datetime
+                if isinstance(raw_value, datetime):
+                    return raw_value
+                return None
+            
+            # ✅ CORRECT BUSINESS INTERPRETATION
+            # Format: YYYY-DD-MM
+            year = int(parts[0])
+            business_day = int(parts[1])
+            business_month = int(parts[2])
+            
+            # Create datetime with business interpretation
+            # year = year, month = business_month, day = business_day
+            return datetime(year, business_month, business_day)
+            
+        except (ValueError, TypeError) as e:
+            logger.error(f"Date parsing error: {raw_value} - {e}")
+            return None
     
     @staticmethod
-    def interpret_business_date(create_date: Optional[datetime], target_date: Optional[datetime]) -> Optional[datetime]:
+    def interpret_business_date(raw_date: Optional[datetime]) -> Optional[datetime]:
         """
-        Interpret a date according to business rules.
-        
-        Business Rule: All dates in the same month as CREATE DATE.
-        
-        Example:
-        create_date = 2026-05-05 (May 2026)
-        target_date = 2026-07-05 → Interpret as 07-May-2026
-        
-        Args:
-            create_date: The DN create date (determines the month/year)
-            target_date: The date to interpret (PGI or POD)
-        
-        Returns:
-            Interpreted date in the same month as create_date
+        Alias for parse_business_date for backward compatibility.
         """
-        if target_date is None or create_date is None:
-            return target_date
-        
-        # Convert to datetime if needed
-        if not isinstance(create_date, datetime):
-            create_date = datetime.combine(create_date, datetime.min.time())
-        if not isinstance(target_date, datetime):
-            target_date = datetime.combine(target_date, datetime.min.time())
-        
-        # Extract day from target_date, month/year from create_date
-        day = target_date.day
-        month = create_date.month
-        year = create_date.year
-        
-        # Handle day overflow (e.g., Feb 30)
-        try:
-            interpreted_date = datetime(year, month, day)
-        except ValueError:
-            # Day doesn't exist in that month (e.g., Feb 30)
-            # Use last day of the month
-            if month == 12:
-                next_month = datetime(year + 1, 1, 1)
-            else:
-                next_month = datetime(year, month + 1, 1)
-            last_day = next_month - timedelta(days=1)
-            interpreted_date = last_day
-        
-        return interpreted_date
+        return DateValidator.parse_business_date(raw_date)
     
     @staticmethod
     def validate_date_sequence(
@@ -230,9 +221,9 @@ class DateValidator:
         Validate chronological order of dates according to business process.
         
         Business Rules:
-        - PGI Date >= DN Create Date (after business interpretation)
-        - POD Date >= PGI Date (after business interpretation)
-        - POD Date >= DN Create Date (after business interpretation)
+        - PGI Date >= DN Create Date
+        - POD Date >= PGI Date
+        - POD Date >= DN Create Date
         
         Business Process Flow:
         DN Created → PGI Completed → POD Received
@@ -240,28 +231,21 @@ class DateValidator:
         issues = []
         is_valid = True
         
-        # Convert to datetime if needed
-        if create_date and not isinstance(create_date, datetime):
-            create_date = datetime.combine(create_date, datetime.min.time())
-        if pgi_date and not isinstance(pgi_date, datetime):
-            pgi_date = datetime.combine(pgi_date, datetime.min.time())
-        if pod_date and not isinstance(pod_date, datetime):
-            pod_date = datetime.combine(pod_date, datetime.min.time())
+        # ✅ Parse dates using business interpretation
+        create_date = DateValidator.parse_business_date(create_date)
+        pgi_date = DateValidator.parse_business_date(pgi_date)
+        pod_date = DateValidator.parse_business_date(pod_date)
         
-        # ✅ Apply business interpretation
-        # All dates in same month as create_date
-        if create_date and pgi_date:
-            pgi_date = DateValidator.interpret_business_date(create_date, pgi_date)
-        if create_date and pod_date:
-            pod_date = DateValidator.interpret_business_date(create_date, pod_date)
+        if not create_date:
+            return True, []
         
         # Check: PGI Date >= DN Create Date
-        if pgi_date and create_date and pgi_date < create_date:
+        if pgi_date and pgi_date < create_date:
             issues.append(f"⚠ PGI Date ({pgi_date.strftime('%d-%b-%Y')}) occurs before DN Create Date ({create_date.strftime('%d-%b-%Y')})")
             is_valid = False
         
         # Check: POD Date >= DN Create Date
-        if pod_date and create_date and pod_date < create_date:
+        if pod_date and pod_date < create_date:
             issues.append(f"⚠ POD Date ({pod_date.strftime('%d-%b-%Y')}) occurs before DN Create Date ({create_date.strftime('%d-%b-%Y')})")
             is_valid = False
         
@@ -284,12 +268,12 @@ class DateValidator:
         Business Process Flow:
         DN Created → PGI Completed → POD Received
         
-        All dates interpreted in the same month as create_date.
+        All dates are parsed using business interpretation.
         
         SCENARIO 1: PGI Completed, POD Received (Valid)
-        - Delivery Aging: PGI (business) - Create
-        - POD Aging: POD (business) - PGI (business)
-        - Total Cycle: POD (business) - Create
+        - Delivery Aging: PGI - Create
+        - POD Aging: POD - PGI
+        - Total Cycle: POD - Create
         
         SCENARIO 2: PGI Same Day, POD Received Later
         - Delivery Aging: Same Day (0 days)
@@ -310,29 +294,12 @@ class DateValidator:
         - No aging calculated
         """
         
-        # Convert to datetime if needed
-        if create_date and not isinstance(create_date, datetime):
-            create_date = datetime.combine(create_date, datetime.min.time())
-        if pgi_date and not isinstance(pgi_date, datetime):
-            pgi_date = datetime.combine(pgi_date, datetime.min.time())
-        if pod_date and not isinstance(pod_date, datetime):
-            pod_date = datetime.combine(pod_date, datetime.min.time())
+        # ✅ Parse dates using business interpretation
+        create_date = DateValidator.parse_business_date(create_date)
+        pgi_date = DateValidator.parse_business_date(pgi_date)
+        pod_date = DateValidator.parse_business_date(pod_date)
         
         today = datetime.now().date()
-        
-        # ✅ Apply business interpretation
-        # All dates in same month as create_date
-        business_pgi = None
-        business_pod = None
-        
-        if create_date and pgi_date:
-            business_pgi = DateValidator.interpret_business_date(create_date, pgi_date)
-        if create_date and pod_date:
-            business_pod = DateValidator.interpret_business_date(create_date, pod_date)
-        
-        # Use business dates for validation and calculation
-        pgi_date = business_pgi if business_pgi else pgi_date
-        pod_date = business_pod if business_pod else pod_date
         
         # Validate date sequence
         is_valid, issues = DateValidator.validate_date_sequence(create_date, pgi_date, pod_date)
@@ -382,7 +349,7 @@ class DateValidator:
             return result
         
         # ==========================================================
-        # SCENARIO 1 & 2: PGI COMPLETED, POD RECEIVED (Valid)
+        # SCENARIO 1 & 2: PGI COMPLETED, POD RECEIVED
         # ==========================================================
         if pgi_exists and pod_exists and create_exists:
             create_date_only = create_date.date() if isinstance(create_date, datetime) else create_date
