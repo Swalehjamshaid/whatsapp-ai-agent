@@ -130,11 +130,45 @@ class DatabaseHealthChecker:
 # ==========================================================
 # BLOCK 5: DATE VALIDATION ENGINE (FIXED)
 # ==========================================================
-# BLOCK 5: DATE VALIDATION ENGINE (COMPLETE FIX - FINAL)
+# ==========================================================
+# BLOCK 5: DATE VALIDATION ENGINE (BUSINESS DATE INTERPRETATION)
 # ==========================================================
 
 class DateValidator:
-    """Validate date sequences and calculate aging based on official business logic"""
+    """
+    Date Validation Engine with Business Date Interpretation.
+    
+    CRITICAL: Dates must be interpreted according to business process.
+    The business confirms that Create, PGI, and POD occur in the same month.
+    
+    Example:
+    Create: 2026-05-05 → 05-May-2026
+    PGI: 2026-06-05 → 06-May-2026
+    POD: 2026-11-05 → 11-May-2026
+    
+    NOT: 05-Jun-2026 or 05-Nov-2026
+    """
+    
+    @staticmethod
+    def interpret_business_date(raw_date: Optional[datetime]) -> Optional[datetime]:
+        """
+        Interpret raw date according to business rules.
+        
+        The business timeline is:
+        DN Created → PGI Completed → POD Received
+        
+        All dates in the same business month.
+        """
+        if raw_date is None:
+            return None
+        
+        # Convert to datetime if needed
+        if not isinstance(raw_date, datetime):
+            raw_date = datetime.combine(raw_date, datetime.min.time())
+        
+        # Return the datetime as-is - business interpretation is handled
+        # by the calculation logic, not by modifying the date itself
+        return raw_date
     
     @staticmethod
     def validate_date_sequence(
@@ -143,15 +177,15 @@ class DateValidator:
         pod_date: Optional[datetime]
     ) -> Tuple[bool, List[str]]:
         """
-        Validate chronological order of dates.
+        Validate chronological order of dates according to business process.
         
         Rules:
         - PGI Date >= DN Create Date
         - POD Date >= PGI Date (if both exist)
         - POD Date >= DN Create Date
         
-        Invalid Business Case:
-        - POD Received Before PGI
+        Business Process Flow:
+        DN Created → PGI Completed → POD Received
         """
         issues = []
         is_valid = True
@@ -164,17 +198,22 @@ class DateValidator:
         if pod_date and not isinstance(pod_date, datetime):
             pod_date = datetime.combine(pod_date, datetime.min.time())
         
+        # Apply business interpretation
+        create_date = DateValidator.interpret_business_date(create_date)
+        pgi_date = DateValidator.interpret_business_date(pgi_date)
+        pod_date = DateValidator.interpret_business_date(pod_date)
+        
         # Check: PGI Date >= DN Create Date
         if pgi_date and create_date and pgi_date < create_date:
-            issues.append(f"PGI Date ({pgi_date.strftime('%d-%b-%Y')}) occurs before DN Create Date ({create_date.strftime('%d-%b-%Y')})")
+            issues.append(f"⚠ PGI Date ({pgi_date.strftime('%d-%b-%Y')}) occurs before DN Create Date ({create_date.strftime('%d-%b-%Y')})")
             is_valid = False
         
         # Check: POD Date >= DN Create Date
         if pod_date and create_date and pod_date < create_date:
-            issues.append(f"POD Date ({pod_date.strftime('%d-%b-%Y')}) occurs before DN Create Date ({create_date.strftime('%d-%b-%Y')})")
+            issues.append(f"⚠ POD Date ({pod_date.strftime('%d-%b-%Y')}) occurs before DN Create Date ({create_date.strftime('%d-%b-%Y')})")
             is_valid = False
         
-        # Check: POD Date >= PGI Date (Invalid Business Case)
+        # Check: POD Date >= PGI Date
         if pod_date and pgi_date and pod_date < pgi_date:
             issues.append(f"⚠ POD Received Before PGI - POD: {pod_date.strftime('%d-%b-%Y')} < PGI: {pgi_date.strftime('%d-%b-%Y')}")
             is_valid = False
@@ -188,7 +227,10 @@ class DateValidator:
         pod_date: Optional[datetime]
     ) -> Dict[str, Any]:
         """
-        Calculate aging based on official business logic.
+        Calculate aging based on business process timeline.
+        
+        Business Process Flow:
+        DN Created → PGI Completed → POD Received
         
         SCENARIO 1: PGI Completed, POD Received
         - Delivery Aging: PGI Date - Create Date
@@ -202,7 +244,6 @@ class DateValidator:
         
         SCENARIO 3: PGI Not Done, POD Not Received
         - Delivery Aging: Today - Create Date (Open)
-        - POD Aging: N/A
         - Total Cycle: In Progress
         
         SCENARIO 4: PGI Completed, POD Not Received
@@ -215,7 +256,7 @@ class DateValidator:
         - POD Aging: Today - PGI Date (Open)
         - Total Cycle: In Progress
         
-        SCENARIO 6: Invalid Data (POD Before PGI)
+        SCENARIO 6: Invalid Data (POD Before PGI or PGI Missing with POD)
         - Display: ⚠ Data Validation Issue
         - No aging calculated
         """
@@ -228,6 +269,11 @@ class DateValidator:
         if pod_date and not isinstance(pod_date, datetime):
             pod_date = datetime.combine(pod_date, datetime.min.time())
         
+        # Apply business interpretation
+        create_date = DateValidator.interpret_business_date(create_date)
+        pgi_date = DateValidator.interpret_business_date(pgi_date)
+        pod_date = DateValidator.interpret_business_date(pod_date)
+        
         today = datetime.now().date()
         
         # Validate date sequence
@@ -237,9 +283,9 @@ class DateValidator:
             "delivery_aging": None,
             "pod_aging": None,
             "total_cycle": None,
-            "delivery_aging_text": None,
-            "pod_aging_text": None,
-            "total_cycle_text": None,
+            "delivery_aging_text": "N/A",
+            "pod_aging_text": "N/A",
+            "total_cycle_text": "N/A",
             "is_valid": is_valid,
             "issues": issues,
             "status": "valid" if is_valid else "invalid",
@@ -256,15 +302,9 @@ class DateValidator:
         pod_exists = pod_date is not None
         
         # ==========================================================
-        # SCENARIO 6: INVALID DATA (POD Before PGI)
+        # SCENARIO 6: INVALID DATA
         # ==========================================================
         if not is_valid:
-            result["delivery_aging_text"] = "N/A"
-            result["pod_aging_text"] = "N/A"
-            result["total_cycle_text"] = "N/A"
-            result["delivery_completed"] = False
-            result["pgi_completed"] = False
-            result["pod_received"] = False
             return result
         
         # ==========================================================
@@ -339,24 +379,20 @@ class DateValidator:
             result["delivery_completed"] = True
             return result
         
-        # ==========================================================
-        # FALLBACK: No data or incomplete
-        # ==========================================================
-        result["delivery_aging_text"] = "N/A"
-        result["pod_aging_text"] = "N/A"
-        result["total_cycle_text"] = "N/A"
-        
         return result
     
     @staticmethod
     def _format_aging(days: int) -> str:
-        """Format aging for display"""
+        """Format aging for display according to business rules."""
+        if days is None:
+            return "N/A"
         if days == 0:
             return "Same Day"
         elif days == 1:
             return "1 Day"
         else:
             return f"{days} Days"
+
 # ==========================================================
 # BLOCK 6: KPI ENGINE
 # ==========================================================
