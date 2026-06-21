@@ -1,19 +1,18 @@
 # ==========================================================
-# FILE: app/services/ai_provider_service.py (v23.0 - PRODUCTION)
+# FILE: app/services/ai_provider_service.py (v24.0 - COMPLETE)
 # ==========================================================
 # PURPOSE: POSTGRESQL-DRIVEN AI ROUTER
-# VERSION: 23.0 - Complete PostgreSQL Integration
+# VERSION: 24.0 - Full Compatibility with Analytics v25.0
 #
-# CHANGES v23.0:
-# - ✅ REMOVED: schema_service dependency
-# - ✅ ADDED: PostgreSQLResolver class
-# - ✅ ADDED: Complete entity detection
-# - ✅ ADDED: Follow-up support
-# - ✅ ADDED: 25+ dashboard routes
-# - ✅ ADDED: Query timeout and retry
-# - ✅ ADDED: Connection pooling
-# - ✅ FIXED: All bugs identified
-# - ✅ COMPLETE: Production-ready
+# CHANGES v24.0:
+# - ✅ FIXED: All method name mismatches
+# - ✅ ADDED: city_products route
+# - ✅ FIXED: delivery_dashboard route
+# - ✅ FIXED: executive_dashboard route
+# - ✅ FIXED: control_tower route
+# - ✅ FIXED: revenue_dashboard route
+# - ✅ FIXED: pod_aging route
+# - ✅ COMPLETE: 100% compatibility
 # ==========================================================
 
 import time
@@ -62,7 +61,6 @@ class PostgreSQLResolver:
         self.session_factory = session_factory
         self._cache = TTLCache(maxsize=2000, ttl=3600)
         
-        # Import models
         try:
             from app.models import DeliveryReport
             self.DeliveryReport = DeliveryReport
@@ -80,7 +78,6 @@ class PostgreSQLResolver:
             return None
     
     def resolve_dealer(self, query: str) -> Optional[str]:
-        """Resolve dealer name from PostgreSQL"""
         if not query or not query.strip() or not self.DeliveryReport:
             return None
         
@@ -93,7 +90,6 @@ class PostgreSQLResolver:
             return None
         
         try:
-            # 1. Exact match (case-insensitive)
             result = session.query(self.DeliveryReport.customer_name).filter(
                 func.lower(self.DeliveryReport.customer_name) == func.lower(query)
             ).first()
@@ -102,7 +98,6 @@ class PostgreSQLResolver:
                 self._cache[cache_key] = resolved
                 return resolved
             
-            # 2. ILIKE match
             result = session.query(self.DeliveryReport.customer_name).filter(
                 self.DeliveryReport.customer_name.ilike(f"%{query}%")
             ).first()
@@ -111,7 +106,6 @@ class PostgreSQLResolver:
                 self._cache[cache_key] = resolved
                 return resolved
             
-            # 3. Token-based matching (split by space)
             tokens = query.split()
             for token in tokens:
                 if len(token) > 2 and token.lower() not in ['the', 'and', 'for', 'with']:
@@ -123,8 +117,6 @@ class PostgreSQLResolver:
                         self._cache[cache_key] = resolved
                         return resolved
             
-            # 4. Fuzzy-like matching (character-based)
-            # Get all dealers and find best match
             dealers = session.query(
                 func.distinct(self.DeliveryReport.customer_name)
             ).filter(
@@ -140,7 +132,6 @@ class PostgreSQLResolver:
                 if not dealer[0]:
                     continue
                 dealer_lower = dealer[0].lower()
-                # Simple similarity
                 if query_lower in dealer_lower or dealer_lower in query_lower:
                     score = len(set(query_lower) & set(dealer_lower)) / max(len(query_lower), len(dealer_lower))
                     if score > best_score and score > 0.6:
@@ -160,7 +151,6 @@ class PostgreSQLResolver:
             session.close()
     
     def resolve_warehouse(self, query: str) -> Optional[str]:
-        """Resolve warehouse name from PostgreSQL"""
         if not query or not query.strip() or not self.DeliveryReport:
             return None
         
@@ -173,7 +163,6 @@ class PostgreSQLResolver:
             return None
         
         try:
-            # Exact match
             result = session.query(self.DeliveryReport.warehouse).filter(
                 func.lower(self.DeliveryReport.warehouse) == func.lower(query)
             ).first()
@@ -182,7 +171,6 @@ class PostgreSQLResolver:
                 self._cache[cache_key] = resolved
                 return resolved
             
-            # ILIKE
             result = session.query(self.DeliveryReport.warehouse).filter(
                 self.DeliveryReport.warehouse.ilike(f"%{query}%")
             ).first()
@@ -191,7 +179,6 @@ class PostgreSQLResolver:
                 self._cache[cache_key] = resolved
                 return resolved
             
-            # Token matching
             tokens = query.split()
             for token in tokens:
                 if len(token) > 2:
@@ -212,7 +199,6 @@ class PostgreSQLResolver:
             session.close()
     
     def resolve_city(self, query: str) -> Optional[str]:
-        """Resolve city name from PostgreSQL"""
         if not query or not query.strip() or not self.DeliveryReport:
             return None
         
@@ -225,7 +211,6 @@ class PostgreSQLResolver:
             return None
         
         try:
-            # Exact match
             result = session.query(self.DeliveryReport.ship_to_city).filter(
                 func.lower(self.DeliveryReport.ship_to_city) == func.lower(query)
             ).first()
@@ -234,7 +219,6 @@ class PostgreSQLResolver:
                 self._cache[cache_key] = resolved
                 return resolved
             
-            # ILIKE
             result = session.query(self.DeliveryReport.ship_to_city).filter(
                 self.DeliveryReport.ship_to_city.ilike(f"%{query}%")
             ).first()
@@ -243,7 +227,6 @@ class PostgreSQLResolver:
                 self._cache[cache_key] = resolved
                 return resolved
             
-            # Token matching
             tokens = query.split()
             for token in tokens:
                 if len(token) > 2:
@@ -264,7 +247,6 @@ class PostgreSQLResolver:
             session.close()
     
     def resolve_product(self, query: str) -> Optional[str]:
-        """Resolve product name from PostgreSQL"""
         if not query or not query.strip() or not self.DeliveryReport:
             return None
         
@@ -277,7 +259,6 @@ class PostgreSQLResolver:
             return None
         
         try:
-            # Check both customer_model and material_no
             result = session.query(
                 func.coalesce(
                     self.DeliveryReport.customer_model,
@@ -295,7 +276,6 @@ class PostgreSQLResolver:
                 self._cache[cache_key] = resolved
                 return resolved
             
-            # ILIKE
             result = session.query(
                 func.coalesce(
                     self.DeliveryReport.customer_model,
@@ -322,11 +302,9 @@ class PostgreSQLResolver:
             session.close()
     
     def resolve_dn(self, query: str) -> Optional[str]:
-        """Resolve DN number from PostgreSQL (normalized)"""
         if not query or not query.strip() or not self.DeliveryReport:
             return None
         
-        # Normalize DN (remove non-digits)
         normalized = re.sub(r'[^0-9]', '', str(query).strip())
         
         if len(normalized) < 8 or len(normalized) > 12:
@@ -358,7 +336,6 @@ class PostgreSQLResolver:
             session.close()
     
     def get_all_dealers(self) -> List[str]:
-        """Get all dealer names from PostgreSQL"""
         if not self.DeliveryReport:
             return []
         
@@ -391,7 +368,6 @@ class PostgreSQLResolver:
             session.close()
     
     def get_all_warehouses(self) -> List[str]:
-        """Get all warehouse names from PostgreSQL"""
         if not self.DeliveryReport:
             return []
         
@@ -424,7 +400,6 @@ class PostgreSQLResolver:
             session.close()
     
     def get_all_cities(self) -> List[str]:
-        """Get all city names from PostgreSQL"""
         if not self.DeliveryReport:
             return []
         
@@ -455,6 +430,7 @@ class PostgreSQLResolver:
             return []
         finally:
             session.close()
+
 
 # ==========================================================
 # CONVERSATION CONTEXT
@@ -495,12 +471,12 @@ class ConversationContext:
             "phone_number": self.phone_number,
         }
 
+
 # ==========================================================
-# ENHANCED INTENT PATTERNS - COMPLETE
+# INTENT PATTERNS - COMPLETE
 # ==========================================================
 
 INTENT_PATTERNS = {
-    # Dealer
     "dealer_dashboard": [
         "dealer dashboard", "dealer performance", "dealer revenue", 
         "dealer units", "dealer dn", "dealer pod", "dealer pgi",
@@ -508,68 +484,57 @@ INTENT_PATTERNS = {
         "show dealer", "customer dashboard", "customer performance",
         "what is dealer", "tell me about dealer"
     ],
-    
     "dealer_ranking": [
         "top dealer", "top dealers", "best dealer", "best dealers",
         "dealer ranking", "dealer rank", "ranking dealer",
         "top 10 dealers", "best performing dealer", "worst dealer"
     ],
-    
     "dealer_products": [
         "what products does dealer", "products of dealer",
         "top products for dealer", "product mix for dealer",
         "dealer products", "dealer buys", "what dealer buys"
     ],
-    
-    # Warehouse
     "warehouse_dashboard": [
         "warehouse dashboard", "warehouse performance",
         "warehouse revenue", "warehouse units", "warehouse dn",
         "warehouse pgi", "warehouse pod", "show warehouse",
         "warehouse status", "what about warehouse"
     ],
-    
     "warehouse_ranking": [
         "top warehouse", "top warehouses", "warehouse ranking",
         "warehouse rank", "ranking warehouse"
     ],
-    
     "warehouse_coverage": [
         "dealer served by warehouse", "cities served by warehouse",
         "warehouse coverage", "warehouse service",
         "which dealers in warehouse"
     ],
-    
-    # City
     "city_dashboard": [
         "city dashboard", "city performance", "city revenue",
         "city units", "city dn", "show city", "revenue in",
         "dn count in", "units in", "city status"
     ],
-    
     "city_ranking": [
         "top city", "top cities", "city ranking", "city rank"
     ],
-    
     "city_dealers": [
         "dealers in city", "top dealers in city",
         "which dealers in city"
     ],
-    
-    # Product
+    "city_products": [
+        "products in city", "top products in city",
+        "what products in city"
+    ],
     "product_dashboard": [
         "product dashboard", "show product", "product performance",
         "product revenue", "product units", "product dn",
         "refrigerator", "ac dashboard", "tv dashboard",
         "washing machine", "freezer", "product status"
     ],
-    
     "product_ranking": [
         "top product", "top products", "best selling",
         "product ranking", "top model", "top material"
     ],
-    
-    # DN
     "dn_dashboard": [
         "show dn", "dn status", "what is dn", "dn details",
         "dn information", "dn quantity", "dn value",
@@ -577,46 +542,35 @@ INTENT_PATTERNS = {
         "is dn delivered", "is dn pending", "which dealer",
         "track dn", "dn tracking"
     ],
-    
     "dn_analytics": [
         "how many dns", "total dn count", "dn count",
         "delivered dn count", "pending dn count",
         "dn by warehouse", "dn by city", "dn by dealer",
         "dn by division", "dn overview"
     ],
-    
-    # PGI
     "pgi_dashboard": [
         "pgi dashboard", "pgi completed", "pgi pending",
         "average pgi days", "pgi by warehouse", "pgi by city",
         "pgi by dealer", "pgi status", "what is pgi"
     ],
-    
     "pgi_by_warehouse": [
         "pgi by warehouse", "warehouse pgi", "pgi per warehouse"
     ],
-    
-    # POD
     "pod_dashboard": [
         "pod dashboard", "pod pending", "pod completed",
         "pod compliance", "average pod days", "pod by warehouse",
         "pod by dealer", "pod status", "what is pod"
     ],
-    
     "pod_aging": [
         "pod aging", "oldest pod pending", "pod pending more than",
         "longest pending pod", "pod delay"
     ],
-    
-    # Delivery
     "delivery_dashboard": [
         "delivery dashboard", "delivered dns", "pending dns",
         "average delivery days", "delayed deliveries",
         "delivery by warehouse", "delivery by city", "delivery by dealer",
         "delivery status", "on time delivery"
     ],
-    
-    # Executive
     "executive_dashboard": [
         "executive summary", "nationwide performance",
         "total revenue", "total units", "total dns",
@@ -624,8 +578,6 @@ INTENT_PATTERNS = {
         "revenue by division", "revenue by warehouse",
         "revenue by city", "ceo", "management", "overview"
     ],
-    
-    # Control Tower
     "control_tower": [
         "control tower", "critical issues", "pending pod",
         "pending pgi", "delayed deliveries", "alert",
@@ -633,46 +585,35 @@ INTENT_PATTERNS = {
         "pod pending more than", "risks", "risk analysis",
         "what is pending", "show alerts"
     ],
-    
-    # Revenue
     "revenue_dashboard": [
         "revenue dashboard", "total revenue", "revenue by dealer",
         "revenue by warehouse", "revenue by city", "revenue by division",
         "revenue by product", "top revenue dealer", "top revenue warehouse",
         "top revenue city", "revenue growth"
     ],
-    
-    # Aging
     "aging_dashboard": [
         "dn aging", "oldest pending dn", "dns pending more than",
         "pgi aging", "average pgi days", "pod aging",
         "average pod days", "longest pending pod", "aging analysis"
     ],
-    
-    # Division
     "division_dashboard": [
         "division dashboard", "division performance",
         "division revenue", "division units", "division dn",
         "revenue by division", "show division"
     ],
-    
-    # Sales Manager
     "sales_manager_dashboard": [
         "sales manager", "sales manager performance",
         "sales manager revenue", "show sales manager"
     ],
-    
-    # Distance
     "distance_dashboard": [
         "distance", "how far", "distance from warehouse",
         "delivery distance", "km", "kilometers"
     ],
-    
-    # Help
     "help": [
         "help", "menu", "hi", "hello", "start", "?", "commands"
     ]
 }
+
 
 # ==========================================================
 # FOLLOW-UP PATTERNS
@@ -691,6 +632,7 @@ FOLLOWUP_PATTERNS = {
     "aging": r'(?:aging|old|delay|overdue)',
     "pending": r'(?:pending|not completed|waiting)',
 }
+
 
 # ==========================================================
 # ENTITY PATTERNS
@@ -712,6 +654,7 @@ ENTITY_PATTERNS = {
     "sales_manager": r'(?:sales manager|sm|manager)\s+([A-Za-z\s]+)',
     "warehouse_code": r'\b(WH\d{3})\b',
 }
+
 
 # ==========================================================
 # MAIN AI ROUTER
@@ -746,7 +689,7 @@ class AIOrchestrator:
         }
         
         logger.info("=" * 70)
-        logger.info("AI Router v23.0 - PostgreSQL-Driven Production")
+        logger.info("AI Router v24.0 - PostgreSQL-Driven Production")
         logger.info("=" * 70)
     
     # ==========================================================
@@ -772,35 +715,23 @@ class AIOrchestrator:
     # ==========================================================
     
     def _detect_intent(self, question: str, context: Optional[ConversationContext] = None) -> Tuple[str, Optional[str], Optional[str]]:
-        """
-        Enhanced intent detection with entity extraction.
-        Returns: (intent, entity, entity_type)
-        """
         question_original = question.strip()
         question_lower = question_original.lower()
         
         logger.debug(f"🔍 Detecting intent for: '{question_original}'")
         
-        # ==========================================================
         # 1. CHECK FOR HELP COMMANDS
-        # ==========================================================
         if question_lower in ["help", "menu", "hi", "hello", "start", "?", "commands"]:
             return "help", None, None
         
-        # ==========================================================
         # 2. CHECK FOR FOLLOW-UP
-        # ==========================================================
         if context and context.last_intent and context.last_entity:
-            # Check for follow-up patterns
             followup_intent = self._detect_followup(question_lower, context)
             if followup_intent:
                 logger.info(f"🔄 Follow-up detected: {followup_intent}")
                 return followup_intent, context.last_entity, self._get_entity_type(followup_intent)
         
-        # ==========================================================
         # 3. DN NUMBER DETECTION (HIGHEST PRIORITY)
-        # ==========================================================
-        # Check for 8-12 digit number
         dn_match = re.search(r'\b(\d{8,12})\b', question_original)
         if dn_match:
             dn_number = re.sub(r'\D', '', dn_match.group(1))
@@ -809,7 +740,6 @@ class AIOrchestrator:
                 self.metrics["intent_detection"]["dn_dashboard"] = self.metrics["intent_detection"].get("dn_dashboard", 0) + 1
                 return "dn_dashboard", dn_number, "dn"
         
-        # Check for DN keyword patterns
         dn_keyword_match = re.search(r'(?:dn|delivery note|track|order)\s*[:#]?\s*(\d{8,12})', question_original, re.IGNORECASE)
         if dn_keyword_match:
             dn_number = re.sub(r'\D', '', dn_keyword_match.group(1))
@@ -818,7 +748,6 @@ class AIOrchestrator:
                 self.metrics["intent_detection"]["dn_dashboard"] = self.metrics["intent_detection"].get("dn_dashboard", 0) + 1
                 return "dn_dashboard", dn_number, "dn"
         
-        # Check for formatted DN (e.g., 6243-600648)
         dn_formatted = re.search(r'(\d{4})[\s\-](\d{6})', question_original)
         if dn_formatted:
             dn_number = f"{dn_formatted.group(1)}{dn_formatted.group(2)}"
@@ -827,25 +756,19 @@ class AIOrchestrator:
                 self.metrics["intent_detection"]["dn_dashboard"] = self.metrics["intent_detection"].get("dn_dashboard", 0) + 1
                 return "dn_dashboard", dn_number, "dn"
         
-        # ==========================================================
         # 4. DEALER DETECTION
-        # ==========================================================
-        # Check for dealer keywords
         dealer_keywords = ["dealer", "customer", "party", "sold to"]
         if any(kw in question_lower for kw in dealer_keywords) or "dealer dashboard" in question_lower:
-            # Extract dealer name from "dealer X" pattern
             dealer_match = re.search(r'(?:dealer|customer|party|show)\s+([A-Za-z0-9\s&\.]+)', question_original, re.IGNORECASE)
             if dealer_match:
                 entity = dealer_match.group(1).strip()
                 if len(entity) > 2:
-                    # Resolve dealer
                     resolved = self.resolver.resolve_dealer(entity)
                     if resolved:
                         logger.info(f"✅ Detected dealer: '{resolved}'")
                         self.metrics["intent_detection"]["dealer_dashboard"] = self.metrics["intent_detection"].get("dealer_dashboard", 0) + 1
                         return "dealer_dashboard", resolved, "dealer"
             
-            # Extract from "for X" pattern
             for_match = re.search(r'for\s+([A-Za-z0-9\s&\.]+)', question_original, re.IGNORECASE)
             if for_match:
                 entity = for_match.group(1).strip()
@@ -856,13 +779,11 @@ class AIOrchestrator:
                         self.metrics["intent_detection"]["dealer_dashboard"] = self.metrics["intent_detection"].get("dealer_dashboard", 0) + 1
                         return "dealer_dashboard", resolved, "dealer"
             
-            # If no entity found, check context
             if context and context.last_dealer:
                 logger.info(f"🔄 Using context dealer: {context.last_dealer}")
                 self.metrics["intent_detection"]["dealer_dashboard"] = self.metrics["intent_detection"].get("dealer_dashboard", 0) + 1
                 return "dealer_dashboard", context.last_dealer, "dealer"
         
-        # Check if standalone text is a dealer name
         if 3 <= len(question_original) <= 50:
             if not any(c.isdigit() for c in question_original):
                 resolved = self.resolver.resolve_dealer(question_original)
@@ -871,11 +792,8 @@ class AIOrchestrator:
                     self.metrics["intent_detection"]["dealer_dashboard"] = self.metrics["intent_detection"].get("dealer_dashboard", 0) + 1
                     return "dealer_dashboard", resolved, "dealer"
         
-        # ==========================================================
         # 5. WAREHOUSE DETECTION
-        # ==========================================================
         if "warehouse" in question_lower or "wh " in question_lower:
-            # Extract warehouse name
             wh_match = re.search(r'(?:warehouse|wh)\s+([A-Za-z\s]+)', question_original, re.IGNORECASE)
             if wh_match:
                 entity = wh_match.group(1).strip()
@@ -886,7 +804,6 @@ class AIOrchestrator:
                         self.metrics["intent_detection"]["warehouse_dashboard"] = self.metrics["intent_detection"].get("warehouse_dashboard", 0) + 1
                         return "warehouse_dashboard", resolved, "warehouse"
             
-            # Check for "X warehouse" pattern
             wh_pattern = re.search(r'^([A-Za-z\s]+)\s+warehouse$', question_original, re.IGNORECASE)
             if wh_pattern:
                 entity = wh_pattern.group(1).strip()
@@ -897,17 +814,13 @@ class AIOrchestrator:
                         self.metrics["intent_detection"]["warehouse_dashboard"] = self.metrics["intent_detection"].get("warehouse_dashboard", 0) + 1
                         return "warehouse_dashboard", resolved, "warehouse"
             
-            # Check context
             if context and context.last_warehouse:
                 logger.info(f"🔄 Using context warehouse: {context.last_warehouse}")
                 self.metrics["intent_detection"]["warehouse_dashboard"] = self.metrics["intent_detection"].get("warehouse_dashboard", 0) + 1
                 return "warehouse_dashboard", context.last_warehouse, "warehouse"
         
-        # ==========================================================
         # 6. CITY DETECTION
-        # ==========================================================
         if "city" in question_lower or "in " in question_lower:
-            # Extract city name
             city_match = re.search(r'(?:city|in)\s+([A-Za-z\s]+)', question_original, re.IGNORECASE)
             if city_match:
                 entity = city_match.group(1).strip()
@@ -918,7 +831,6 @@ class AIOrchestrator:
                         self.metrics["intent_detection"]["city_dashboard"] = self.metrics["intent_detection"].get("city_dashboard", 0) + 1
                         return "city_dashboard", resolved, "city"
             
-            # Check for "X city" pattern
             city_pattern = re.search(r'^([A-Za-z\s]+)\s+city$', question_original, re.IGNORECASE)
             if city_pattern:
                 entity = city_pattern.group(1).strip()
@@ -929,15 +841,12 @@ class AIOrchestrator:
                         self.metrics["intent_detection"]["city_dashboard"] = self.metrics["intent_detection"].get("city_dashboard", 0) + 1
                         return "city_dashboard", resolved, "city"
             
-            # Check context
             if context and context.last_city:
                 logger.info(f"🔄 Using context city: {context.last_city}")
                 self.metrics["intent_detection"]["city_dashboard"] = self.metrics["intent_detection"].get("city_dashboard", 0) + 1
                 return "city_dashboard", context.last_city, "city"
         
-        # ==========================================================
         # 7. PRODUCT DETECTION
-        # ==========================================================
         product_keywords = ["product", "model", "material", "sku"]
         if any(kw in question_lower for kw in product_keywords) or "product dashboard" in question_lower:
             product_match = re.search(r'(?:product|model|material)\s+([A-Za-z0-9\-]+)', question_original, re.IGNORECASE)
@@ -950,9 +859,7 @@ class AIOrchestrator:
                         self.metrics["intent_detection"]["product_dashboard"] = self.metrics["intent_detection"].get("product_dashboard", 0) + 1
                         return "product_dashboard", resolved, "product"
         
-        # ==========================================================
         # 8. DIVISION DETECTION
-        # ==========================================================
         if "division" in question_lower:
             division_match = re.search(r'(?:division)\s+([A-Za-z\s]+)', question_original, re.IGNORECASE)
             if division_match:
@@ -962,9 +869,7 @@ class AIOrchestrator:
                     self.metrics["intent_detection"]["division_dashboard"] = self.metrics["intent_detection"].get("division_dashboard", 0) + 1
                     return "division_dashboard", entity, "division"
         
-        # ==========================================================
         # 9. SALES MANAGER DETECTION
-        # ==========================================================
         if "sales manager" in question_lower or "sm " in question_lower:
             sm_match = re.search(r'(?:sales manager|sm)\s+([A-Za-z\s]+)', question_original, re.IGNORECASE)
             if sm_match:
@@ -974,29 +879,21 @@ class AIOrchestrator:
                     self.metrics["intent_detection"]["sales_manager_dashboard"] = self.metrics["intent_detection"].get("sales_manager_dashboard", 0) + 1
                     return "sales_manager_dashboard", entity, "sales_manager"
         
-        # ==========================================================
         # 10. PATTERN MATCHING FOR ALL OTHER INTENTS
-        # ==========================================================
         for intent, patterns in INTENT_PATTERNS.items():
             for pattern in patterns:
                 if pattern in question_lower:
                     logger.info(f"✅ Detected intent '{intent}' from pattern '{pattern}'")
                     self.metrics["intent_detection"][intent] = self.metrics["intent_detection"].get(intent, 0) + 1
-                    
-                    # Extract entity if needed
                     entity, entity_type = self._extract_entity(question_original, intent)
                     return intent, entity, entity_type
         
-        # ==========================================================
-        # 11. FALLBACK - Use context if available
-        # ==========================================================
+        # 11. FALLBACK - Use context
         if context and context.last_intent and context.last_entity:
             logger.info(f"🔄 Using context: {context.last_intent} with entity {context.last_entity}")
             return context.last_intent, context.last_entity, self._get_entity_type(context.last_intent)
         
-        # ==========================================================
         # 12. UNKNOWN - Return help
-        # ==========================================================
         logger.warning(f"❌ Unknown intent for: '{question_original}'")
         return "help", None, None
     
@@ -1005,23 +902,16 @@ class AIOrchestrator:
     # ==========================================================
     
     def _detect_followup(self, question: str, context: ConversationContext) -> Optional[str]:
-        """Detect if this is a follow-up question"""
-        
-        # Check for "what about" patterns
         if "what about" in question or "how about" in question or "tell me about" in question:
-            # Extract what they're asking about
             for pattern_type, pattern in FOLLOWUP_PATTERNS.items():
                 if pattern_type == "what_about":
                     continue
                 if pattern in question:
                     return context.last_intent
         
-        # Check for "its" patterns
         if "its" in question or "his" in question or "her" in question:
-            # They're asking about the last entity
             return context.last_intent
         
-        # Check for specific metric follow-ups
         if "revenue" in question or "amount" in question:
             return context.last_intent
         if "pod" in question:
@@ -1042,7 +932,6 @@ class AIOrchestrator:
     # ==========================================================
     
     def _extract_entity(self, question: str, intent: str) -> Tuple[Optional[str], Optional[str]]:
-        """Extract entity from question based on intent."""
         question_clean = question.strip()
         
         for entity_type, pattern in ENTITY_PATTERNS.items():
@@ -1052,7 +941,6 @@ class AIOrchestrator:
                 if len(entity) > 2:
                     return entity, self._map_entity_type(entity_type)
         
-        # For dealer intent, try to extract any meaningful name
         if intent == "dealer_dashboard":
             prefixes = ["show me", "show", "get", "view", "dealer", "customer"]
             text = question_clean
@@ -1097,6 +985,7 @@ class AIOrchestrator:
             "city_dashboard": "city",
             "city_ranking": "city",
             "city_dealers": "city",
+            "city_products": "city",
             "product_dashboard": "product",
             "product_ranking": "product",
             "dn_dashboard": "dn",
@@ -1173,7 +1062,6 @@ class AIOrchestrator:
             context.last_sales_manager = entity
             context.last_entity = entity
         
-        # Update cache
         self.conversation_cache[phone_number] = context
     
     # ==========================================================
@@ -1195,29 +1083,23 @@ class AIOrchestrator:
         
         logger.bind(request_id=req_id).info(f"📥 Processing: '{question[:100]}'")
         
-        # Validate request
         if not question or len(question.strip()) < 2:
             return "Please provide a valid question. Type 'help' for menu."
         
         try:
-            # Load context
             context = self._load_context(phone_number)
             question_clean = question.strip()
             
-            # Detect intent
             intent, entity, entity_type = self._detect_intent(question_clean, context)
             
             if intent == "help":
-                response = self._get_help_message()
-                return response
+                return self._get_help_message()
             
             logger.info(f"[{req_id}] 🎯 Intent: {intent} | Entity: {entity} | Type: {entity_type}")
             
-            # Route to appropriate handler
             result = self._route_to_dashboard(intent, entity, entity_type, context, req_id)
             
             if result:
-                # Update context
                 self._update_context(
                     phone_number, 
                     intent, 
@@ -1227,7 +1109,6 @@ class AIOrchestrator:
                 )
                 return result
             
-            # Fallback to help
             return self._get_help_message()
             
         except Exception as e:
@@ -1236,12 +1117,10 @@ class AIOrchestrator:
             return f"⚠️ Unable to process request. Please try again or type 'help'."
     
     # ==========================================================
-    # ROUTING ENGINE
+    # ROUTING ENGINE - UPDATED FOR v25.0
     # ==========================================================
     
     def _route_to_dashboard(self, intent: str, entity: Optional[str], entity_type: Optional[str], context: Optional[ConversationContext], req_id: str) -> Optional[str]:
-        """Route to the appropriate dashboard based on intent."""
-        
         if not self.analytics:
             logger.error(f"[{req_id}] Analytics service not available")
             return "⚠️ Analytics service is temporarily unavailable. Please try again later."
@@ -1250,58 +1129,50 @@ class AIOrchestrator:
             # Dealer Routes
             if intent == "dealer_dashboard":
                 return self._route_dealer_dashboard(entity, context, req_id)
-            
             if intent == "dealer_ranking":
                 return self._route_dealer_ranking(req_id)
-            
             if intent == "dealer_products":
                 return self._route_dealer_products(entity, context, req_id)
             
             # Warehouse Routes
             if intent == "warehouse_dashboard":
                 return self._route_warehouse_dashboard(entity, context, req_id)
-            
             if intent == "warehouse_ranking":
                 return self._route_warehouse_ranking(req_id)
-            
             if intent == "warehouse_coverage":
                 return self._route_warehouse_coverage(entity, context, req_id)
             
             # City Routes
             if intent == "city_dashboard":
                 return self._route_city_dashboard(entity, context, req_id)
-            
             if intent == "city_ranking":
                 return self._route_city_ranking(req_id)
-            
             if intent == "city_dealers":
                 return self._route_city_dealers(entity, context, req_id)
+            if intent == "city_products":
+                return self._route_city_products(entity, context, req_id)
             
             # Product Routes
             if intent == "product_dashboard":
                 return self._route_product_dashboard(entity, context, req_id)
-            
             if intent == "product_ranking":
                 return self._route_product_ranking(req_id)
             
             # DN Routes
             if intent == "dn_dashboard":
                 return self._route_dn_dashboard(entity, context, req_id)
-            
             if intent == "dn_analytics":
                 return self._route_dn_analytics(req_id)
             
             # PGI Routes
             if intent == "pgi_dashboard":
                 return self._route_pgi_dashboard(req_id)
-            
             if intent == "pgi_by_warehouse":
                 return self._route_pgi_by_warehouse(entity, context, req_id)
             
             # POD Routes
             if intent == "pod_dashboard":
                 return self._route_pod_dashboard(req_id)
-            
             if intent == "pod_aging":
                 return self._route_pod_aging(req_id)
             
@@ -1337,7 +1208,6 @@ class AIOrchestrator:
             if intent == "distance_dashboard":
                 return self._route_distance_dashboard(entity, context, req_id)
             
-            # Unknown
             logger.warning(f"[{req_id}] Unhandled intent: {intent}")
             return None
             
@@ -1350,17 +1220,14 @@ class AIOrchestrator:
     # ==========================================================
     
     def _route_dealer_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """Handle dealer dashboard requests."""
-        
         dealer_name = entity
         if not dealer_name and context and context.last_dealer:
             dealer_name = context.last_dealer
             logger.info(f"[{req_id}] Using context dealer: {dealer_name}")
         
         if not dealer_name:
-            return "🏪 *DEALER DASHBOARD*\n\nPlease specify a dealer name.\n\n*Examples:*\n• ZQ Electronics\n• Show dealer ZQ Electronics\n• Dealer performance for ZQ Electronics"
+            return "🏪 *DEALER DASHBOARD*\n\nPlease specify a dealer name.\n\n*Examples:*\n• ZQ Electronics\n• Show dealer ZQ Electronics"
         
-        # Resolve dealer if not already resolved
         if entity:
             resolved = self.resolver.resolve_dealer(entity)
             if resolved:
@@ -1368,7 +1235,6 @@ class AIOrchestrator:
             else:
                 return f"❌ Dealer '{entity}' not found.\n\n💡 Please check the spelling or try a different dealer name."
         
-        # Get dashboard
         response = self.analytics.get_dealer_dashboard(dealer_name)
         
         if not self._validate_response(response, "dealer_dashboard", req_id):
@@ -1377,18 +1243,13 @@ class AIOrchestrator:
         return self._format_dealer_dashboard(response.data, dealer_name)
     
     def _route_dealer_ranking(self, req_id: str) -> str:
-        """Handle dealer ranking requests."""
         response = self.analytics.get_dealer_ranking(limit=10, top=True)
-        
         if not self._validate_response(response, "dealer_ranking", req_id):
             return "❌ Unable to retrieve dealer ranking."
-        
         return self._format_dealer_ranking(response.data)
     
     def _route_dealer_products(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """Handle dealer products requests."""
         dealer_name = entity or (context.last_dealer if context else None)
-        
         if not dealer_name:
             return "📦 *DEALER PRODUCTS*\n\nPlease specify a dealer name.\n\n*Example:* Products of ZQ Electronics"
         
@@ -1397,10 +1258,8 @@ class AIOrchestrator:
             return f"❌ Dealer '{dealer_name}' not found."
         
         response = self.analytics.get_dealer_products(resolved)
-        
         if not self._validate_response(response, "dealer_products", req_id):
             return f"❌ Unable to retrieve products for '{resolved}'."
-        
         return self._format_dealer_products(response.data, resolved)
     
     # ==========================================================
@@ -1408,8 +1267,6 @@ class AIOrchestrator:
     # ==========================================================
     
     def _route_warehouse_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """Handle warehouse dashboard requests."""
-        
         warehouse_name = entity
         if not warehouse_name and context and context.last_warehouse:
             warehouse_name = context.last_warehouse
@@ -1422,25 +1279,18 @@ class AIOrchestrator:
             return f"❌ Warehouse '{warehouse_name}' not found."
         
         response = self.analytics.get_warehouse_dashboard(resolved)
-        
         if not self._validate_response(response, "warehouse_dashboard", req_id):
             return f"❌ Unable to retrieve data for warehouse '{resolved}'."
-        
         return self._format_warehouse_dashboard(response.data, resolved)
     
     def _route_warehouse_ranking(self, req_id: str) -> str:
-        """Handle warehouse ranking requests."""
         response = self.analytics.get_warehouse_ranking(limit=10, top=True)
-        
         if not self._validate_response(response, "warehouse_ranking", req_id):
             return "❌ Unable to retrieve warehouse ranking."
-        
         return self._format_warehouse_ranking(response.data)
     
     def _route_warehouse_coverage(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """Handle warehouse coverage requests."""
         warehouse_name = entity or (context.last_warehouse if context else None)
-        
         if not warehouse_name:
             return "📍 *WAREHOUSE COVERAGE*\n\nPlease specify a warehouse name.\n\n*Example:* Coverage of Lahore warehouse"
         
@@ -1449,10 +1299,8 @@ class AIOrchestrator:
             return f"❌ Warehouse '{warehouse_name}' not found."
         
         response = self.analytics.get_warehouse_coverage(resolved)
-        
         if not self._validate_response(response, "warehouse_coverage", req_id):
             return f"❌ Unable to retrieve coverage for '{resolved}'."
-        
         return self._format_warehouse_coverage(response.data, resolved)
     
     # ==========================================================
@@ -1460,8 +1308,6 @@ class AIOrchestrator:
     # ==========================================================
     
     def _route_city_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """Handle city dashboard requests."""
-        
         city_name = entity
         if not city_name and context and context.last_city:
             city_name = context.last_city
@@ -1474,25 +1320,18 @@ class AIOrchestrator:
             return f"❌ City '{city_name}' not found."
         
         response = self.analytics.get_city_dashboard(resolved)
-        
         if not self._validate_response(response, "city_dashboard", req_id):
             return f"❌ Unable to retrieve data for city '{resolved}'."
-        
         return self._format_city_dashboard(response.data, resolved)
     
     def _route_city_ranking(self, req_id: str) -> str:
-        """Handle city ranking requests."""
         response = self.analytics.get_city_ranking(limit=10, top=True)
-        
         if not self._validate_response(response, "city_ranking", req_id):
             return "❌ Unable to retrieve city ranking."
-        
         return self._format_city_ranking(response.data)
     
     def _route_city_dealers(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """Handle city dealers requests."""
         city_name = entity or (context.last_city if context else None)
-        
         if not city_name:
             return "📍 *CITY DEALERS*\n\nPlease specify a city name.\n\n*Example:* Dealers in Haripur"
         
@@ -1501,42 +1340,46 @@ class AIOrchestrator:
             return f"❌ City '{city_name}' not found."
         
         response = self.analytics.get_city_dealers(resolved)
-        
         if not self._validate_response(response, "city_dealers", req_id):
             return f"❌ Unable to retrieve dealers for '{resolved}'."
-        
         return self._format_city_dealers(response.data, resolved)
+    
+    def _route_city_products(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        city_name = entity or (context.last_city if context else None)
+        if not city_name:
+            return "📦 *CITY PRODUCTS*\n\nPlease specify a city name.\n\n*Example:* Products in Haripur"
+        
+        resolved = self.resolver.resolve_city(city_name)
+        if not resolved:
+            return f"❌ City '{city_name}' not found."
+        
+        response = self.analytics.get_city_products(resolved)
+        if not self._validate_response(response, "city_products", req_id):
+            return f"❌ Unable to retrieve products for '{resolved}'."
+        return self._format_city_products(response.data, resolved)
     
     # ==========================================================
     # PRODUCT ROUTE HANDLERS
     # ==========================================================
     
     def _route_product_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """Handle product dashboard requests."""
-        
         product_name = entity or (context.last_product if context else None)
-        
         if not product_name:
-            return "📦 *PRODUCT DASHBOARD*\n\nPlease specify a product.\n\n*Examples:*\n• Refrigerator\n• AC\n• TV\n• Model A123"
+            return "📦 *PRODUCT DASHBOARD*\n\nPlease specify a product.\n\n*Examples:*\n• Refrigerator\n• AC\n• TV"
         
         resolved = self.resolver.resolve_product(product_name)
         if not resolved:
             return f"❌ Product '{product_name}' not found."
         
         response = self.analytics.get_product_dashboard(resolved)
-        
         if not self._validate_response(response, "product_dashboard", req_id):
             return f"❌ Unable to retrieve data for product '{resolved}'."
-        
         return self._format_product_dashboard(response.data, resolved)
     
     def _route_product_ranking(self, req_id: str) -> str:
-        """Handle product ranking requests."""
         response = self.analytics.get_product_ranking(limit=10, top=True)
-        
         if not self._validate_response(response, "product_ranking", req_id):
             return "❌ Unable to retrieve product ranking."
-        
         return self._format_product_ranking(response.data)
     
     # ==========================================================
@@ -1544,25 +1387,18 @@ class AIOrchestrator:
     # ==========================================================
     
     def _route_dn_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """Handle DN dashboard requests."""
-        
         dn_number = entity or (context.last_dn if context else None)
-        
         if not dn_number:
             return "📄 *DN DASHBOARD*\n\nPlease provide a DN number.\n\n*Example:* 6243612278"
         
-        # Clean DN
         dn_clean = re.sub(r'\D', '', str(dn_number).strip())
-        
         if len(dn_clean) < 8 or len(dn_clean) > 12:
             return f"❌ Invalid DN number: '{dn_number}'\n\nDN numbers must be 8-12 digits."
         
-        # Verify DN exists
         verify = self.analytics.verify_dn_exists(dn_clean)
         if verify and hasattr(verify, 'success') and verify.success:
             data = verify.data
             if not data.get("found", False):
-                # Get sample DNs
                 sample_response = self.analytics.get_sample_dns(5)
                 sample_dns = []
                 if sample_response and hasattr(sample_response, 'success') and sample_response.success:
@@ -1583,19 +1419,14 @@ class AIOrchestrator:
 
 *What would you like to know?* 🤖"""
         
-        # Get DN analytics
         response = self.analytics.get_dn_analytics(dn_clean)
-        
         if not self._validate_response(response, "dn_dashboard", req_id):
             return f"❌ Unable to retrieve data for DN {dn_clean}."
-        
         return self._format_dn_dashboard(response.data, dn_clean)
     
     def _route_dn_analytics(self, req_id: str) -> str:
-        """Handle DN analytics requests."""
         try:
             response = self.analytics.get_all_dealers_dashboard()
-            
             if not self._validate_response(response, "dn_analytics", req_id):
                 return "❌ Unable to retrieve DN analytics."
             
@@ -1632,18 +1463,13 @@ class AIOrchestrator:
     # ==========================================================
     
     def _route_pgi_dashboard(self, req_id: str) -> str:
-        """Handle PGI dashboard requests."""
         response = self.analytics.get_pgi_dashboard()
-        
         if not self._validate_response(response, "pgi_dashboard", req_id):
             return "❌ Unable to retrieve PGI data."
-        
         return self._format_pgi_dashboard(response.data)
     
     def _route_pgi_by_warehouse(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """Handle PGI by warehouse requests."""
         warehouse_name = entity or (context.last_warehouse if context else None)
-        
         if not warehouse_name:
             return "🏭 *PGI BY WAREHOUSE*\n\nPlease specify a warehouse name.\n\n*Example:* PGI at Lahore warehouse"
         
@@ -1652,12 +1478,10 @@ class AIOrchestrator:
             return f"❌ Warehouse '{warehouse_name}' not found."
         
         response = self.analytics.get_warehouse_dashboard(resolved)
-        
         if not self._validate_response(response, "pgi_by_warehouse", req_id):
             return f"❌ Unable to retrieve PGI data for '{resolved}'."
         
         summary = response.data.get("summary", {})
-        
         return f"""🏭 *PGI - {resolved}*
 
 • Total DNs: {summary.get('total_dns', 0)}
@@ -1670,21 +1494,15 @@ class AIOrchestrator:
     # ==========================================================
     
     def _route_pod_dashboard(self, req_id: str) -> str:
-        """Handle POD dashboard requests."""
         response = self.analytics.get_pod_dashboard()
-        
         if not self._validate_response(response, "pod_dashboard", req_id):
             return "❌ Unable to retrieve POD data."
-        
         return self._format_pod_dashboard(response.data)
     
     def _route_pod_aging(self, req_id: str) -> str:
-        """Handle POD aging requests."""
         response = self.analytics.get_pod_aging_analysis()
-        
         if not self._validate_response(response, "pod_aging", req_id):
             return "❌ Unable to retrieve POD aging data."
-        
         return self._format_pod_aging(response.data)
     
     # ==========================================================
@@ -1692,12 +1510,9 @@ class AIOrchestrator:
     # ==========================================================
     
     def _route_delivery_dashboard(self, req_id: str) -> str:
-        """Handle delivery dashboard requests."""
-        response = self.analytics.get_delivery_performance()
-        
+        response = self.analytics.get_delivery_dashboard()
         if not self._validate_response(response, "delivery_dashboard", req_id):
             return "❌ Unable to retrieve delivery data."
-        
         return self._format_delivery_dashboard(response.data)
     
     # ==========================================================
@@ -1705,12 +1520,9 @@ class AIOrchestrator:
     # ==========================================================
     
     def _route_executive_dashboard(self, req_id: str) -> str:
-        """Handle executive dashboard requests."""
-        response = self.analytics.get_executive_summary()
-        
+        response = self.analytics.get_executive_dashboard()
         if not self._validate_response(response, "executive_dashboard", req_id):
             return "❌ Unable to retrieve executive data."
-        
         return self._format_executive_dashboard(response.data)
     
     # ==========================================================
@@ -1718,12 +1530,9 @@ class AIOrchestrator:
     # ==========================================================
     
     def _route_control_tower(self, req_id: str) -> str:
-        """Handle control tower requests."""
-        response = self.analytics.get_control_tower_alerts()
-        
+        response = self.analytics.get_control_tower_dashboard()
         if not self._validate_response(response, "control_tower", req_id):
             return "❌ Unable to retrieve control tower data."
-        
         return self._format_control_tower(response.data)
     
     # ==========================================================
@@ -1731,12 +1540,9 @@ class AIOrchestrator:
     # ==========================================================
     
     def _route_revenue_dashboard(self, req_id: str) -> str:
-        """Handle revenue dashboard requests."""
-        response = self.analytics.get_revenue_trend()
-        
+        response = self.analytics.get_revenue_dashboard()
         if not self._validate_response(response, "revenue_dashboard", req_id):
             return "❌ Unable to retrieve revenue data."
-        
         return self._format_revenue_dashboard(response.data)
     
     # ==========================================================
@@ -1744,8 +1550,6 @@ class AIOrchestrator:
     # ==========================================================
     
     def _route_aging_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """Handle aging dashboard requests."""
-        # Check if specific dealer
         dealer_name = entity or (context.last_dealer if context else None)
         
         if dealer_name:
@@ -1755,12 +1559,9 @@ class AIOrchestrator:
                 if self._validate_response(response, "aging_dashboard", req_id):
                     return self._format_dealer_aging(response.data, resolved)
         
-        # General aging
-        response = self.analytics.get_pod_aging_analysis()
-        
+        response = self.analytics.get_aging_dashboard()
         if not self._validate_response(response, "aging_dashboard", req_id):
             return "❌ Unable to retrieve aging data."
-        
         return self._format_aging_dashboard(response.data)
     
     # ==========================================================
@@ -1768,19 +1569,15 @@ class AIOrchestrator:
     # ==========================================================
     
     def _route_division_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """Handle division dashboard requests."""
         division_name = entity or (context.last_division if context else None)
-        
         if not division_name:
             return "📊 *DIVISION DASHBOARD*\n\nPlease specify a division name.\n\n*Example:* Division Electronics"
         
         response = self.analytics.get_revenue_by_division(division_name)
-        
         if not self._validate_response(response, "division_dashboard", req_id):
             return f"❌ Unable to retrieve data for division '{division_name}'."
         
         data = response.data
-        
         return f"""📊 *DIVISION DASHBOARD*
 
 Division: {data.get('division', division_name)}
@@ -1793,13 +1590,10 @@ DNs: {data.get('total_dns', 0)}"""
     # ==========================================================
     
     def _route_sales_manager_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """Handle sales manager dashboard requests."""
         sm_name = entity or (context.last_sales_manager if context else None)
-        
         if not sm_name:
             return "👤 *SALES MANAGER DASHBOARD*\n\nPlease specify a sales manager name.\n\n*Example:* Sales Manager Ali"
         
-        # Query analytics for sales manager
         try:
             session = self.session_factory() if self.session_factory else None
             if not session:
@@ -1836,17 +1630,13 @@ Total Revenue: PKR {result.total_revenue or 0:,.0f}"""
     # ==========================================================
     
     def _route_distance_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """Handle distance dashboard requests."""
-        # Check if dealer or city specified
         dealer_name = entity or (context.last_dealer if context else None)
         city_name = entity or (context.last_city if context else None)
         
         if not dealer_name and not city_name:
             return "📍 *DISTANCE DASHBOARD*\n\nPlease specify a dealer or city.\n\n*Examples:*\n• Distance for ZQ Electronics\n• Distance to Haripur"
         
-        # Use warehouse coordinates if available
         try:
-            # Try to get dealer's city
             if dealer_name:
                 response = self.analytics.get_dealer_dashboard(dealer_name)
                 if response and hasattr(response, 'success') and response.success:
@@ -1855,10 +1645,8 @@ Total Revenue: PKR {result.total_revenue or 0:,.0f}"""
             
             if city_name:
                 city_name = city_name.strip().lower()
-                # Basic distance calculation (simplified)
                 import math
                 
-                # Get warehouse coordinates
                 warehouse_coords = {
                     "lahore": (31.5204, 74.3587),
                     "karachi": (24.8607, 67.0011),
@@ -1876,17 +1664,15 @@ Total Revenue: PKR {result.total_revenue or 0:,.0f}"""
                     "mansehra": (34.3300, 73.2000),
                 }
                 
-                # Find closest warehouse
                 if city_name in warehouse_coords:
                     city_coords = warehouse_coords[city_name]
-                    # Calculate distance from all warehouses
                     distances = []
                     for wh_name, wh_coords in warehouse_coords.items():
                         if wh_name != city_name:
                             dist = math.sqrt(
                                 (wh_coords[0] - city_coords[0]) ** 2 + 
                                 (wh_coords[1] - city_coords[1]) ** 2
-                            ) * 111  # Rough conversion to km
+                            ) * 111
                             distances.append((wh_name, dist))
                     
                     distances.sort(key=lambda x: x[1])
@@ -1915,7 +1701,6 @@ Estimated Distance: {nearest[1]:.1f} km
     # ==========================================================
     
     def _validate_response(self, response, service_name: str, req_id: str) -> bool:
-        """Validate analytics response."""
         if response is None:
             logger.error(f"[{req_id}] Response is None for {service_name}")
             return False
@@ -1935,7 +1720,6 @@ Estimated Distance: {nearest[1]:.1f} km
     # ==========================================================
     
     def _truncate_response(self, response: str) -> str:
-        """Truncate response to WhatsApp character limit."""
         if len(response) > MAX_RESPONSE_LENGTH:
             return response[:MAX_RESPONSE_LENGTH - 20] + "\n\n... (truncated)"
         return response
@@ -1956,7 +1740,6 @@ Estimated Distance: {nearest[1]:.1f} km
     # ==========================================================
     
     def _format_dealer_dashboard(self, data: Dict, dealer_name: str) -> str:
-        """Format dealer dashboard for WhatsApp."""
         try:
             profile = data.get("profile", {})
             summary = data.get("summary", {})
@@ -2003,63 +1786,44 @@ Estimated Distance: {nearest[1]:.1f} km
             return f"❌ Unable to format dealer dashboard for {dealer_name}"
     
     def _format_dealer_ranking(self, data: Dict) -> str:
-        """Format dealer ranking for WhatsApp."""
         try:
             dealers = data.get("ranking", []) or data.get("dealers", [])
-            
             if not dealers:
                 return "❌ No dealer data available."
             
-            lines = [
-                "🏆 *DEALER RANKING*",
-                "",
-                "Top 10 Dealers by Revenue:"
-            ]
-            
+            lines = ["🏆 *DEALER RANKING*", "", "Top 10 Dealers by Revenue:"]
             for i, dealer in enumerate(dealers[:10], 1):
                 name = dealer.get("dealer_name", dealer.get("dealer", "Unknown"))
                 revenue = dealer.get("total_revenue", dealer.get("revenue", 0))
                 delivery_rate = dealer.get("delivery_rate", 0)
                 lines.append(f"{i}. {name}")
                 lines.append(f"   PKR {revenue:,.0f} | Delivery: {delivery_rate:.1f}%")
-            
             return self._truncate_response("\n".join(lines))
-            
         except Exception as e:
             logger.error(f"Dealer ranking format error: {e}")
             return "❌ Unable to format dealer ranking"
     
     def _format_dealer_products(self, data: Dict, dealer_name: str) -> str:
-        """Format dealer products for WhatsApp."""
         try:
             products = data.get("products", [])
-            
             if not products:
                 return f"📦 No products found for {dealer_name}"
             
-            lines = [
-                f"📦 *PRODUCTS - {dealer_name}*",
-                ""
-            ]
-            
+            lines = [f"📦 *PRODUCTS - {dealer_name}*", ""]
             for i, product in enumerate(products[:10], 1):
                 name = product.get("product", "Unknown")
                 units = product.get("units", 0)
                 revenue = product.get("revenue", 0)
                 lines.append(f"{i}. {name}")
                 lines.append(f"   Units: {units:,} | Revenue: PKR {revenue:,.0f}")
-            
             if len(products) > 10:
                 lines.append(f"\n*+ {len(products) - 10} more products*")
-            
             return self._truncate_response("\n".join(lines))
-            
         except Exception as e:
             logger.error(f"Dealer products format error: {e}")
             return f"❌ Unable to format products for {dealer_name}"
     
     def _format_warehouse_dashboard(self, data: Dict, warehouse_name: str) -> str:
-        """Format warehouse dashboard for WhatsApp."""
         try:
             summary = data.get("summary", {})
             profile = data.get("profile", {})
@@ -2091,42 +1855,30 @@ Estimated Distance: {nearest[1]:.1f} km
                 f"Pending DNs: {summary.get('pending_dns', 0):,}",
                 f"Pending PODs: {summary.get('pending_pod_dns', 0):,}"
             ]
-            
             return self._truncate_response("\n".join(lines))
-            
         except Exception as e:
             logger.error(f"Warehouse format error: {e}")
             return f"❌ Unable to format warehouse dashboard for {warehouse_name}"
     
     def _format_warehouse_ranking(self, data: Dict) -> str:
-        """Format warehouse ranking for WhatsApp."""
         try:
             warehouses = data.get("ranking", []) or data.get("warehouses", [])
-            
             if not warehouses:
                 return "❌ No warehouse data available."
             
-            lines = [
-                "🏆 *WAREHOUSE RANKING*",
-                "",
-                "Top 10 Warehouses by Revenue:"
-            ]
-            
+            lines = ["🏆 *WAREHOUSE RANKING*", "", "Top 10 Warehouses by Revenue:"]
             for i, warehouse in enumerate(warehouses[:10], 1):
                 name = warehouse.get("warehouse", "Unknown")
                 revenue = warehouse.get("total_revenue", warehouse.get("revenue", 0))
                 dealers = warehouse.get("total_dealers", warehouse.get("dealers", 0))
                 lines.append(f"{i}. {name}")
                 lines.append(f"   PKR {revenue:,.0f} | Dealers: {dealers}")
-            
             return self._truncate_response("\n".join(lines))
-            
         except Exception as e:
             logger.error(f"Warehouse ranking format error: {e}")
             return "❌ Unable to format warehouse ranking"
     
     def _format_warehouse_coverage(self, data: Dict, warehouse_name: str) -> str:
-        """Format warehouse coverage for WhatsApp."""
         try:
             cities = data.get("cities", [])
             dealers = data.get("dealers", [])
@@ -2147,18 +1899,14 @@ Estimated Distance: {nearest[1]:.1f} km
                     lines.append(f"   • {name} ({dns} DNs)")
                 if len(cities) > 10:
                     lines.append(f"   *+ {len(cities) - 10} more*")
-            
             return self._truncate_response("\n".join(lines))
-            
         except Exception as e:
             logger.error(f"Warehouse coverage format error: {e}")
             return f"❌ Unable to format coverage for {warehouse_name}"
     
     def _format_city_dashboard(self, data: Dict, city_name: str) -> str:
-        """Format city dashboard for WhatsApp."""
         try:
             summary = data.get("summary", {})
-            
             total_dns = summary.get("total_dns", 0)
             if total_dns == 0:
                 return f"❌ No data found for {city_name}"
@@ -2183,73 +1931,73 @@ Estimated Distance: {nearest[1]:.1f} km
                 f"Pending DNs: {summary.get('pending_dns', 0)}",
                 f"Pending PODs: {summary.get('pending_pod_dns', 0)}"
             ]
-            
             return self._truncate_response("\n".join(lines))
-            
         except Exception as e:
             logger.error(f"City format error: {e}")
             return f"❌ Unable to format city dashboard for {city_name}"
     
     def _format_city_ranking(self, data: Dict) -> str:
-        """Format city ranking for WhatsApp."""
         try:
             cities = data.get("ranking", []) or data.get("cities", [])
-            
             if not cities:
                 return "❌ No city data available."
             
-            lines = [
-                "🏆 *CITY RANKING*",
-                "",
-                "Top 10 Cities by Revenue:"
-            ]
-            
+            lines = ["🏆 *CITY RANKING*", "", "Top 10 Cities by Revenue:"]
             for i, city in enumerate(cities[:10], 1):
                 name = city.get("city", "Unknown")
                 revenue = city.get("total_revenue", city.get("revenue", 0))
                 dealers = city.get("total_dealers", city.get("dealers", 0))
                 lines.append(f"{i}. {name}")
                 lines.append(f"   PKR {revenue:,.0f} | Dealers: {dealers}")
-            
             return self._truncate_response("\n".join(lines))
-            
         except Exception as e:
             logger.error(f"City ranking format error: {e}")
             return "❌ Unable to format city ranking"
     
     def _format_city_dealers(self, data: Dict, city_name: str) -> str:
-        """Format city dealers for WhatsApp."""
         try:
             dealers = data.get("dealers", [])
-            
             if not dealers:
                 return f"📍 No dealers found in {city_name}"
             
-            lines = [
-                f"📍 *DEALERS IN {city_name.upper()}*",
-                ""
-            ]
-            
+            lines = [f"📍 *DEALERS IN {city_name.upper()}*", ""]
             for i, dealer in enumerate(dealers[:10], 1):
                 name = dealer.get("dealer", "Unknown")
                 revenue = dealer.get("revenue", 0)
                 lines.append(f"{i}. {name}")
                 lines.append(f"   Revenue: PKR {revenue:,.0f}")
-            
             if len(dealers) > 10:
                 lines.append(f"\n*+ {len(dealers) - 10} more dealers*")
-            
             return self._truncate_response("\n".join(lines))
-            
         except Exception as e:
             logger.error(f"City dealers format error: {e}")
             return f"❌ Unable to format dealers for {city_name}"
     
+    def _format_city_products(self, data: Dict, city_name: str) -> str:
+        try:
+            products = data.get("products", [])
+            if not products:
+                return f"📦 No products found in {city_name}"
+            
+            lines = [f"📦 *PRODUCTS IN {city_name.upper()}*", ""]
+            for i, product in enumerate(products[:10], 1):
+                name = product.get("product", "Unknown")
+                units = product.get("units", 0)
+                revenue = product.get("revenue", 0)
+                lines.append(f"{i}. {name}")
+                lines.append(f"   Units: {units:,} | Revenue: PKR {revenue:,.0f}")
+            if len(products) > 10:
+                lines.append(f"\n*+ {len(products) - 10} more products*")
+            return self._truncate_response("\n".join(lines))
+        except Exception as e:
+            logger.error(f"City products format error: {e}")
+            return f"❌ Unable to format products for {city_name}"
+    
     def _format_product_dashboard(self, data: Dict, product_name: str) -> str:
-        """Format product dashboard for WhatsApp."""
         try:
             summary = data.get("summary", {})
             top_dealers = data.get("top_dealers", [])
+            trend = data.get("trend", [])
             
             total_dns = summary.get("dns", 0)
             if total_dns == 0:
@@ -2266,6 +2014,8 @@ Estimated Distance: {nearest[1]:.1f} km
                 f"DNs: {total_dns:,}",
                 f"Dealers: {summary.get('dealers', 0)}",
                 f"Cities: {summary.get('cities', 0)}",
+                f"Warehouses: {summary.get('warehouses', 0)}",
+                f"Divisions: {summary.get('divisions', 0)}",
                 "",
                 "🏆 *Top Dealers*"
             ]
@@ -2275,84 +2025,118 @@ Estimated Distance: {nearest[1]:.1f} km
                 revenue = dealer.get("revenue", 0)
                 lines.append(f"   {i}. {name}: PKR {revenue:,.0f}")
             
-            return self._truncate_response("\n".join(lines))
+            if trend:
+                lines.append("")
+                lines.append("📈 *Trend (Last 6 Months)*")
+                for t in trend[-3:]:
+                    lines.append(f"   • {t.get('month', 'N/A')}: PKR {t.get('revenue', 0):,.0f}")
             
+            return self._truncate_response("\n".join(lines))
         except Exception as e:
             logger.error(f"Product format error: {e}")
             return f"❌ Unable to format product dashboard for {product_name}"
     
     def _format_product_ranking(self, data: Dict) -> str:
-        """Format product ranking for WhatsApp."""
         try:
             products = data.get("ranking", []) or data.get("products", [])
-            
             if not products:
                 return "❌ No product data available."
             
-            lines = [
-                "🏆 *PRODUCT RANKING*",
-                "",
-                "Top 10 Products by Revenue:"
-            ]
-            
+            lines = ["🏆 *PRODUCT RANKING*", "", "Top 10 Products by Revenue:"]
             for i, product in enumerate(products[:10], 1):
                 name = product.get("product", "Unknown")
                 revenue = product.get("revenue", 0)
                 units = product.get("units", 0)
                 lines.append(f"{i}. {name}")
                 lines.append(f"   PKR {revenue:,.0f} | Units: {units:,}")
-            
             return self._truncate_response("\n".join(lines))
-            
         except Exception as e:
             logger.error(f"Product ranking format error: {e}")
             return "❌ Unable to format product ranking"
     
     def _format_dn_dashboard(self, data: Dict, dn_number: str) -> str:
-        """Format DN dashboard for WhatsApp."""
         try:
             record = data.get("record", {})
             status = data.get("status", "unknown")
-            aging_days = data.get("aging_days", 0)
+            aging = data.get("aging", {})
+            validation = data.get("validation", {})
+            timeline = data.get("timeline", {})
             
             dn_no = record.get('dn_number', dn_number)
             dealer_name = record.get('customer_name', 'N/A')
             warehouse = record.get('warehouse', 'N/A')
+            city = record.get('ship_to_city', 'N/A')
+            sales_office = record.get('sales_office', 'N/A')
+            sales_manager = record.get('sales_manager', 'N/A')
+            division = record.get('division', 'N/A')
+            customer_model = record.get('customer_model', 'N/A')
+            material_no = record.get('material_no', 'N/A')
             units = record.get('units', 0)
             amount = record.get('amount', 0)
-            create_date = record.get('dn_create_date', 'N/A')
-            pgi_date = record.get('good_issue_date', 'N/A')
-            pod_date = record.get('pod_date', 'N/A')
+            dealer_code = record.get('dealer_code', 'N/A')
+            customer_code = record.get('customer_code', 'N/A')
+            delivery_status = record.get('delivery_status', 'N/A')
+            pgi_status = record.get('pgi_status', 'N/A')
+            pod_status = record.get('pod_status', 'N/A')
+            pending_flag = record.get('pending_flag', False)
             
             status_emoji = "✅" if status == "delivered" else "🚚" if status == "in_transit" else "⏳"
             status_display = status.upper().replace("_", " ")
+            pending_text = "🔴 Yes" if pending_flag else "🟢 No"
             
             lines = [
                 "📄 *DN TRACKING*",
                 "",
                 f"DN No: {dn_no}",
                 f"Dealer: {dealer_name}",
+                f"Dealer Code: {dealer_code}",
+                f"Customer Code: {customer_code}",
                 f"Warehouse: {warehouse}",
+                f"City: {city}",
+                f"Sales Office: {sales_office}",
+                f"Sales Manager: {sales_manager}",
+                f"Division: {division}",
                 "",
+                "📦 *Products*",
+                f"Model: {customer_model}",
+                f"Material: {material_no}",
+                "",
+                "📊 *Metrics*",
                 f"Units: {units}",
                 f"Revenue: PKR {amount:,.0f}",
                 "",
-                f"Create Date: {create_date}",
-                f"PGI Date: {pgi_date}",
-                f"POD Date: {pod_date}",
+                "📅 *Dates*",
+                f"Create: {timeline.get('created', 'N/A')}",
+                f"PGI: {timeline.get('pgi', 'N/A')}",
+                f"POD: {timeline.get('pod', 'N/A')}",
                 "",
-                f"Status: {status_emoji} {status_display}",
-                f"Aging: {aging_days} days"
+                "⏳ *Aging*",
+                f"Total: {aging.get('total_aging_days', 0)} days",
+                f"PGI Aging: {aging.get('pgi_aging_days', 0)} days",
+                f"POD Aging: {aging.get('pod_aging_days', 0)} days",
+                "",
+                "📋 *Status*",
+                f"Delivery: {delivery_status} {status_emoji}",
+                f"PGI: {pgi_status}",
+                f"POD: {pod_status}",
+                f"Pending: {pending_text}",
+                "",
+                "✅ *Validation*"
             ]
             
-            return self._truncate_response("\n".join(lines))
+            if validation.get("issues"):
+                lines.append("🔴 Issues Found:")
+                for issue in validation.get("issues", [])[:3]:
+                    lines.append(f"   • {issue}")
+            else:
+                lines.append("✅ No issues found")
             
+            return self._truncate_response("\n".join(lines))
         except Exception as e:
             logger.error(f"DN format error: {e}")
             return f"❌ Unable to format DN details for {dn_number}"
     
     def _format_pgi_dashboard(self, data: Dict) -> str:
-        """Format PGI dashboard for WhatsApp."""
         try:
             summary = data.get("summary", {})
             by_dealer = data.get("by_dealer", [])
@@ -2363,7 +2147,9 @@ Estimated Distance: {nearest[1]:.1f} km
                 f"Total DNs: {summary.get('total_dns', 0):,}",
                 f"PGI Completed: {summary.get('pgi_completed', 0):,}",
                 f"PGI Pending: {summary.get('pgi_pending', 0):,}",
+                f"In Transit: {summary.get('in_transit', 0):,}",
                 f"PGI Rate: {summary.get('pgi_rate', 0):.1f}%",
+                f"PGI Aging > 7 Days: {summary.get('pgi_aging_gt_7', 0)}",
                 "",
                 f"Avg Processing: {summary.get('avg_processing_days', 0):.1f} days",
                 "",
@@ -2374,15 +2160,12 @@ Estimated Distance: {nearest[1]:.1f} km
                 name = dealer.get("dealer", "Unknown")
                 rate = dealer.get("pgi_rate", 0)
                 lines.append(f"   {i}. {name}: {rate:.1f}%")
-            
             return self._truncate_response("\n".join(lines))
-            
         except Exception as e:
             logger.error(f"PGI format error: {e}")
             return "❌ Unable to format PGI dashboard"
     
     def _format_pod_dashboard(self, data: Dict) -> str:
-        """Format POD dashboard for WhatsApp."""
         try:
             summary = data.get("summary", {})
             aging = data.get("aging", {})
@@ -2392,9 +2175,11 @@ Estimated Distance: {nearest[1]:.1f} km
                 "✅ *POD DASHBOARD*",
                 "",
                 f"Total DNs: {summary.get('total_dns', 0):,}",
+                f"Delivered DNs: {summary.get('delivered_dns', 0):,}",
                 f"POD Completed: {summary.get('pod_completed', 0):,}",
                 f"POD Pending: {summary.get('pod_pending', 0):,}",
                 f"POD Rate: {summary.get('pod_rate', 0):.1f}%",
+                f"POD Aging > 7 Days: {summary.get('pod_aging_gt_7', 0)}",
                 "",
                 f"Avg POD Days: {summary.get('avg_pod_days', 0):.1f}",
                 "",
@@ -2403,6 +2188,7 @@ Estimated Distance: {nearest[1]:.1f} km
                 f"8-14 Days: {aging.get('days_8_14', 0)}",
                 f"15-30 Days: {aging.get('days_15_30', 0)}",
                 f"30+ Days: {aging.get('days_30_plus', 0)}",
+                f"Total Pending: {aging.get('total_pending', 0)}",
                 "",
                 "🏆 *Top Dealers by POD Rate*"
             ]
@@ -2411,15 +2197,12 @@ Estimated Distance: {nearest[1]:.1f} km
                 name = dealer.get("dealer", "Unknown")
                 rate = dealer.get("pod_rate", 0)
                 lines.append(f"   {i}. {name}: {rate:.1f}%")
-            
             return self._truncate_response("\n".join(lines))
-            
         except Exception as e:
             logger.error(f"POD format error: {e}")
             return "❌ Unable to format POD dashboard"
     
     def _format_pod_aging(self, data: Dict) -> str:
-        """Format POD aging for WhatsApp."""
         try:
             aging = data.get("aging", {})
             critical = data.get("critical", [])
@@ -2447,15 +2230,12 @@ Estimated Distance: {nearest[1]:.1f} km
             
             if len(critical) > 5:
                 lines.append(f"   *+ {len(critical) - 5} more critical*")
-            
             return self._truncate_response("\n".join(lines))
-            
         except Exception as e:
             logger.error(f"POD aging format error: {e}")
             return "❌ Unable to format POD aging"
     
     def _format_delivery_dashboard(self, data: Dict) -> str:
-        """Format delivery dashboard for WhatsApp."""
         try:
             metrics = data.get("metrics", {})
             
@@ -2466,31 +2246,34 @@ Estimated Distance: {nearest[1]:.1f} km
                 f"Delivered: {metrics.get('delivered', 0):,}",
                 f"In Transit: {metrics.get('in_transit', 0):,}",
                 f"Pending PGI: {metrics.get('pending_pgi', 0):,}",
+                f"Pending: {metrics.get('pending', 0):,}",
+                f"Delayed > 7 Days: {metrics.get('delayed_gt_7', 0)}",
                 "",
                 f"Delivery Rate: {metrics.get('delivery_rate', 0):.1f}%",
                 f"PGI Rate: {metrics.get('pgi_rate', 0):.1f}%",
+                f"POD Rate: {metrics.get('pod_rate', 0):.1f}%",
                 "",
                 f"Avg Processing: {metrics.get('avg_processing_days', 0):.1f} days",
                 f"Avg Delivery: {metrics.get('avg_delivery_days', 0):.1f} days"
             ]
-            
             return self._truncate_response("\n".join(lines))
-            
         except Exception as e:
             logger.error(f"Delivery format error: {e}")
             return "❌ Unable to format delivery dashboard"
     
     def _format_executive_dashboard(self, data: Dict) -> str:
-        """Format executive dashboard for WhatsApp."""
         try:
             summary = data.get("summary", {})
             health_score = data.get("health_score", 0)
+            risk_level = data.get("risk_level", "low")
             top_dealers = data.get("top_dealers", [])
             top_warehouses = data.get("top_warehouses", [])
             top_cities = data.get("top_cities", [])
+            top_products = data.get("top_products", [])
             
             health_emoji = "✅" if health_score >= 80 else "⚠️" if health_score >= 60 else "🔴"
             health_status = "Healthy" if health_score >= 80 else "Needs Attention" if health_score >= 60 else "Critical"
+            risk_emoji = self._get_risk_emoji(risk_level)
             
             lines = [
                 "👔 *EXECUTIVE DASHBOARD*",
@@ -2499,53 +2282,66 @@ Estimated Distance: {nearest[1]:.1f} km
                 f"Revenue: PKR {summary.get('total_revenue', 0):,.0f}",
                 f"Units: {summary.get('total_units', 0):,}",
                 f"DNs: {summary.get('total_dns', 0):,}",
+                f"Dealers: {summary.get('total_dealers', 0):,}",
+                f"Warehouses: {summary.get('total_warehouses', 0)}",
+                f"Cities: {summary.get('total_cities', 0)}",
+                f"Products: {summary.get('total_products', 0)}",
                 "",
                 "📈 *KPI*",
                 f"Delivery: {summary.get('delivery_rate', 0):.1f}%",
                 f"PGI: {summary.get('pgi_rate', 0):.1f}%",
                 f"POD: {summary.get('pod_rate', 0):.1f}%",
+                f"Avg PGI Aging: {summary.get('avg_pgi_aging', 0):.1f} days",
+                f"Avg POD Aging: {summary.get('avg_pod_aging', 0):.1f} days",
             ]
             
             if top_dealers:
                 lines.append("")
                 lines.append("🏆 *Top Dealer*")
                 top = top_dealers[0] if top_dealers else {}
-                lines.append(f"   • {top.get('dealer_name', top.get('dealer', 'N/A'))}: PKR {top.get('total_revenue', top.get('revenue', 0)):,.0f}")
+                lines.append(f"   • {top.get('dealer', 'N/A')}: PKR {top.get('revenue', 0):,.0f}")
             
             if top_warehouses:
                 lines.append("")
                 lines.append("🏭 *Top Warehouse*")
                 top = top_warehouses[0] if top_warehouses else {}
-                lines.append(f"   • {top.get('warehouse', 'N/A')}: PKR {top.get('total_revenue', top.get('revenue', 0)):,.0f}")
+                lines.append(f"   • {top.get('warehouse', 'N/A')}: PKR {top.get('revenue', 0):,.0f}")
             
             if top_cities:
                 lines.append("")
                 lines.append("🏙️ *Top City*")
                 top = top_cities[0] if top_cities else {}
-                lines.append(f"   • {top.get('city', 'N/A')}: PKR {top.get('total_revenue', top.get('revenue', 0)):,.0f}")
+                lines.append(f"   • {top.get('city', 'N/A')}: PKR {top.get('revenue', 0):,.0f}")
+            
+            if top_products:
+                lines.append("")
+                lines.append("📦 *Top Product*")
+                top = top_products[0] if top_products else {}
+                lines.append(f"   • {top.get('product', 'N/A')}: PKR {top.get('revenue', 0):,.0f}")
             
             lines.append("")
-            lines.append("📊 *Health Score*")
-            lines.append(f"{health_score}/100 - {health_emoji} {health_status}")
+            lines.append("📊 *Health & Risk*")
+            lines.append(f"Health Score: {health_emoji} {health_score}/100 - {health_status}")
+            lines.append(f"Risk Level: {risk_emoji} {risk_level.upper()} (Score: {data.get('risk_score', 0)})")
             
             return self._truncate_response("\n".join(lines))
-            
         except Exception as e:
             logger.error(f"Executive format error: {e}")
             return "👔 Unable to format executive dashboard"
     
     def _format_control_tower(self, data: Dict) -> str:
-        """Format control tower for WhatsApp."""
         try:
             alerts = data.get("alerts", [])
             critical_count = data.get("critical_count", 0)
             high_count = data.get("high_count", 0)
+            medium_count = data.get("medium_count", 0)
             
             lines = [
                 "🚨 *LOGISTICS CONTROL TOWER*",
                 "",
                 f"Critical Alerts: {critical_count}",
                 f"High Priority: {high_count}",
+                f"Medium Priority: {medium_count}",
                 f"Total Alerts: {len(alerts)}",
                 ""
             ]
@@ -2555,28 +2351,40 @@ Estimated Distance: {nearest[1]:.1f} km
                 for alert in alerts[:5]:
                     severity = alert.get("severity", "low").upper()
                     severity_emoji = "🔴" if severity == "CRITICAL" else "🟠" if severity == "HIGH" else "🟡"
-                    lines.append(f"   {severity_emoji} {alert.get('description', 'Alert')[:60]}")
+                    desc = alert.get('description', 'Alert')
+                    if len(desc) > 60:
+                        desc = desc[:57] + "..."
+                    lines.append(f"   {severity_emoji} {desc}")
                 if len(alerts) > 5:
                     lines.append(f"   *+ {len(alerts) - 5} more alerts*")
+            else:
+                lines.append("✅ No alerts at this time")
             
             return self._truncate_response("\n".join(lines))
-            
         except Exception as e:
             logger.error(f"Control tower format error: {e}")
             return "🚨 Unable to format control tower"
     
     def _format_revenue_dashboard(self, data: Dict) -> str:
-        """Format revenue dashboard for WhatsApp."""
         try:
             trend = data.get("trend", [])
             overall_growth = data.get("overall_growth", 0)
             avg_monthly = data.get("avg_monthly_revenue", 0)
+            total_revenue = data.get("total_revenue", 0)
+            by_division = data.get("by_division", [])
+            top_dealers = data.get("top_dealers", [])
+            top_warehouses = data.get("top_warehouses", [])
+            top_cities = data.get("top_cities", [])
+            
+            growth_emoji = "📈" if overall_growth >= 0 else "📉"
             
             lines = [
                 "💰 *REVENUE DASHBOARD*",
                 "",
-                f"Overall Growth: {overall_growth:.1f}%",
+                f"Total Revenue: PKR {total_revenue:,.0f}",
+                f"Overall Growth: {growth_emoji} {overall_growth:.1f}%",
                 f"Avg Monthly Revenue: PKR {avg_monthly:,.0f}",
+                f"Total Months: {data.get('total_months', 0)}",
                 "",
                 "📈 *Monthly Trend:*"
             ]
@@ -2586,14 +2394,24 @@ Estimated Distance: {nearest[1]:.1f} km
                 revenue = period.get("revenue", 0)
                 lines.append(f"   • {month}: PKR {revenue:,.0f}")
             
-            return self._truncate_response("\n".join(lines))
+            if by_division:
+                lines.append("")
+                lines.append("📊 *Top Divisions:*")
+                for div in by_division[:3]:
+                    lines.append(f"   • {div.get('division', 'N/A')}: PKR {div.get('revenue', 0):,.0f}")
             
+            if top_dealers:
+                lines.append("")
+                lines.append("🏆 *Top Revenue Dealers:*")
+                for d in top_dealers[:2]:
+                    lines.append(f"   • {d.get('dealer', 'N/A')}: PKR {d.get('revenue', 0):,.0f}")
+            
+            return self._truncate_response("\n".join(lines))
         except Exception as e:
             logger.error(f"Revenue format error: {e}")
             return "💰 Unable to format revenue dashboard"
     
     def _format_dealer_aging(self, data: Dict, dealer_name: str) -> str:
-        """Format dealer aging for WhatsApp."""
         try:
             lines = [
                 f"⏳ *DN AGING - {dealer_name}*",
@@ -2607,18 +2425,16 @@ Estimated Distance: {nearest[1]:.1f} km
                 f"Max Aging: {data.get('max_aging_days', 0)} days",
                 f"Avg Aging: {data.get('avg_aging_days', 0):.1f} days"
             ]
-            
             return self._truncate_response("\n".join(lines))
-            
         except Exception as e:
             logger.error(f"Dealer aging format error: {e}")
             return f"❌ Unable to format aging for {dealer_name}"
     
     def _format_aging_dashboard(self, data: Dict) -> str:
-        """Format aging dashboard for WhatsApp."""
         try:
             aging = data.get("aging", {})
-            critical = data.get("critical", [])
+            critical_dealers = data.get("critical_dealers", [])
+            oldest_pending = data.get("oldest_pending", {})
             
             lines = [
                 "⏳ *AGING ANALYSIS*",
@@ -2630,21 +2446,21 @@ Estimated Distance: {nearest[1]:.1f} km
                 "",
                 f"Total Pending: {aging.get('total_pending', 0)}",
                 f"Avg Aging: {aging.get('avg_aging_days', 0):.1f} days",
-                "",
-                "🔴 *Critical (30+ days)*"
+                f"Max Aging: {aging.get('max_aging_days', 0)} days",
             ]
             
-            for item in critical[:5]:
-                dn = item.get('dn_no', 'N/A')
-                dealer = item.get('dealer', 'Unknown')
-                days = item.get('days', 0)
-                lines.append(f"   • {dn} - {dealer} ({days} days)")
+            if oldest_pending:
+                lines.append("")
+                lines.append("🔴 *Oldest Pending DN*")
+                lines.append(f"   • {oldest_pending.get('dn_no', 'N/A')} - {oldest_pending.get('dealer', 'Unknown')} ({oldest_pending.get('days_old', 0)} days)")
             
-            if len(critical) > 5:
-                lines.append(f"   *+ {len(critical) - 5} more critical*")
+            if critical_dealers:
+                lines.append("")
+                lines.append("🏢 *Critical Dealers (30+ days)*")
+                for d in critical_dealers[:5]:
+                    lines.append(f"   • {d.get('dealer', 'Unknown')}: {d.get('count', 0)} DNs, Max {d.get('max_days', 0)} days")
             
             return self._truncate_response("\n".join(lines))
-            
         except Exception as e:
             logger.error(f"Aging format error: {e}")
             return "❌ Unable to format aging dashboard"
@@ -2709,7 +2525,7 @@ def get_orchestrator(session_factory: Optional[Callable[[], Session]] = None) ->
     if _orchestrator is None:
         try:
             _orchestrator = AIOrchestrator(session_factory)
-            logger.info("✅ AI Orchestrator v23.0 initialized")
+            logger.info("✅ AI Orchestrator v24.0 initialized")
         except Exception as e:
             logger.error(f"❌ Failed to initialize AI Orchestrator: {e}")
             _orchestrator = None
@@ -2752,5 +2568,5 @@ __all__ = [
 ]
 
 # ==========================================================
-# END OF FILE - v23.0 PRODUCTION READY
+# END OF FILE - v24.0 PRODUCTION READY
 # ==========================================================
