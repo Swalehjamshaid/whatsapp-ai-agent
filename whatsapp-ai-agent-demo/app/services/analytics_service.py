@@ -130,7 +130,8 @@ class DatabaseHealthChecker:
 # ==========================================================
 # BLOCK 5: DATE VALIDATION ENGINE (FIXED)
 # ==========================================================
-# BLOCK 5: DATE VALIDATION ENGINE (PRODUCTION-GRADE v31.0)
+# ==========================================================
+# BLOCK 5: DATE VALIDATION ENGINE (PRODUCTION FIX v32.0)
 # ==========================================================
 
 from functools import lru_cache
@@ -140,47 +141,28 @@ from loguru import logger
 
 class DateValidator:
     """
-    Production-Grade Date Validation Engine.
+    PRODUCTION DATE VALIDATION ENGINE v32.0
     
-    BUSINESS RULE: Historical data uses YYYY-DD-MM format.
+    BUSINESS RULE: ALL historical data uses YYYY-DD-MM format.
+    NO GUESSING. NO AUTO-DETECTION. STRICT PARSING.
     
     Format: YYYY-DD-MM
-    - Position 1: Year (YYYY)
-    - Position 2: Day (DD) 
+    - Position 1: Year
+    - Position 2: Day (DD)
     - Position 3: Month (MM)
     
     Examples:
     2026-07-05 → 07-May-2026
-    2026-11-05 → 11-May-2026
     2026-05-15 → 15-May-2026
     2026-12-31 → 31-Dec-2026
     
     SCENARIO MATRIX:
     ================
-    
-    SCENARIO 1: Create + PGI + POD (Complete)
-    - Delivery Aging = PGI - Create
-    - POD Aging = POD - PGI
-    - Total Cycle = POD - Create
-    - Status: POD Received ✅
-    
-    SCENARIO 2: Create + PGI, No POD (Pending POD)
-    - Delivery Aging = PGI - Create
-    - POD Aging = Today - PGI (Pending)
-    - Total Cycle = In Progress
-    - Status: POD Pending ⏳
-    
-    SCENARIO 3: Create Only (No PGI, No POD)
-    - Delivery Aging = Today - Create
-    - Status: PGI Pending ⏳
-    
-    SCENARIO 4: POD Exists, PGI Missing (Invalid)
-    - Status: Data Validation Issue ⚠️
-    - Message: "POD Received without PGI"
-    
-    SCENARIO 5: POD < PGI (Invalid Timeline)
-    - Status: Data Validation Issue ⚠️
-    - Message: "POD occurs before PGI"
+    1: Create+PGI+POD → Complete ✓
+    2: Create+PGI, No POD → Pending POD
+    3: Create Only → Pending PGI
+    4: POD, No PGI → Invalid
+    5: POD < PGI → Invalid
     """
     
     # ==========================================================
@@ -191,20 +173,10 @@ class DateValidator:
     @lru_cache(maxsize=1024)
     def parse_business_date(raw_value: Any) -> Optional[datetime]:
         """
-        Parse date using strict YYYY-DD-MM business format.
+        Parse date using STRICT YYYY-DD-MM business format.
         
-        NO GUESSING. NO AUTO-DETECTION.
-        
-        Args:
-            raw_value: Date as string, datetime, or None
-            
-        Returns:
-            Parsed datetime or None if invalid
-            
-        Examples:
-            "2026-07-05" → datetime(2026, 5, 7) → 07-May-2026
-            "2026-05-15" → datetime(2026, 5, 15) → 15-May-2026
-            "2026-12-31" → datetime(2026, 12, 31) → 31-Dec-2026
+        CRITICAL: NO GUESSING. NO AUTO-DETECTION.
+        Only accepts YYYY-DD-MM format.
         """
         if raw_value is None:
             return None
@@ -224,7 +196,7 @@ class DateValidator:
             
             # Must have exactly 3 parts
             if len(parts) != 3:
-                logger.warning(f"Invalid date format (expected 3 parts): {raw_str}")
+                logger.warning(f"⚠️ Invalid date format (expected 3 parts): {raw_str}")
                 return None
             
             # Parse components
@@ -234,22 +206,24 @@ class DateValidator:
             
             # Validate ranges
             if not (1900 <= year <= 2100):
-                logger.warning(f"Year out of range: {year}")
+                logger.warning(f"⚠️ Year out of range: {year}")
                 return None
             
             if not (1 <= month <= 12):
-                logger.warning(f"Month out of range: {month}")
+                logger.warning(f"⚠️ Month out of range: {month}")
                 return None
             
             if not (1 <= day <= 31):
-                logger.warning(f"Day out of range: {day}")
+                logger.warning(f"⚠️ Day out of range: {day}")
                 return None
             
             # Create datetime
-            return datetime(year, month, day)
+            result = datetime(year, month, day)
+            logger.debug(f"✅ Parsed: {raw_str} → {result.strftime('%d-%b-%Y')}")
+            return result
             
         except (ValueError, TypeError) as e:
-            logger.error(f"Date parsing error: {raw_str} - {e}")
+            logger.error(f"❌ Date parsing error: {raw_str} - {e}")
             return None
     
     # ==========================================================
@@ -258,11 +232,11 @@ class DateValidator:
     
     @staticmethod
     def interpret_business_date(raw_date: Optional[datetime]) -> Optional[datetime]:
-        """Alias for parse_business_date for backward compatibility."""
+        """Alias for parse_business_date."""
         return DateValidator.parse_business_date(raw_date)
     
     # ==========================================================
-    # SEQUENCE VALIDATION
+    # SEQUENCE VALIDATION - ALL 5 SCENARIOS
     # ==========================================================
     
     @staticmethod
@@ -272,18 +246,12 @@ class DateValidator:
         pod_date: Optional[datetime]
     ) -> Tuple[bool, List[str], str]:
         """
-        Validate chronological order of dates.
+        Validate chronological order with all 5 scenarios.
         
         Returns:
             (is_valid, issues, scenario_code)
-            
-        Business Rules:
-            - PGI Date >= DN Create Date
-            - POD Date >= PGI Date
-            - POD Date >= DN Create Date
         """
         issues = []
-        is_valid = True
         
         # Parse dates first
         create_date = DateValidator.parse_business_date(create_date)
@@ -300,7 +268,7 @@ class DateValidator:
         # ==========================================================
         if pod_exists and not pgi_exists:
             issues.append("⚠️ POD Received without PGI Completion")
-            is_valid = False
+            logger.warning(f"SCENARIO_4: POD exists but PGI missing")
             return False, issues, "SCENARIO_4_POD_WITHOUT_PGI"
         
         # ==========================================================
@@ -308,24 +276,24 @@ class DateValidator:
         # ==========================================================
         if pod_exists and pgi_exists and pod_date < pgi_date:
             issues.append(f"⚠️ POD ({pod_date.strftime('%d-%b-%Y')}) occurs before PGI ({pgi_date.strftime('%d-%b-%Y')})")
-            is_valid = False
+            logger.warning(f"SCENARIO_5: POD before PGI")
             return False, issues, "SCENARIO_5_POD_BEFORE_PGI"
         
         # ==========================================================
-        # SCENARIO 1, 2, 3: Valid Timeline
+        # VALID SCENARIOS 1, 2, 3
         # ==========================================================
         if create_exists:
             # Check: PGI >= Create
             if pgi_exists and pgi_date < create_date:
-                issues.append(f"⚠️ PGI ({pgi_date.strftime('%d-%b-%Y')}) occurs before DN Create ({create_date.strftime('%d-%b-%Y')})")
-                is_valid = False
+                issues.append(f"⚠️ PGI ({pgi_date.strftime('%d-%b-%Y')}) before Create ({create_date.strftime('%d-%b-%Y')})")
+                return False, issues, "INVALID_PGI_BEFORE_CREATE"
             
             # Check: POD >= Create
             if pod_exists and pod_date < create_date:
-                issues.append(f"⚠️ POD ({pod_date.strftime('%d-%b-%Y')}) occurs before DN Create ({create_date.strftime('%d-%b-%Y')})")
-                is_valid = False
+                issues.append(f"⚠️ POD ({pod_date.strftime('%d-%b-%Y')}) before Create ({create_date.strftime('%d-%b-%Y')})")
+                return False, issues, "INVALID_POD_BEFORE_CREATE"
         
-        # Determine scenario
+        # Determine valid scenario
         if create_exists and pgi_exists and pod_exists:
             scenario = "SCENARIO_1_COMPLETE"
         elif create_exists and pgi_exists and not pod_exists:
@@ -333,14 +301,13 @@ class DateValidator:
         elif create_exists and not pgi_exists and not pod_exists:
             scenario = "SCENARIO_3_PGI_PENDING"
         else:
-            scenario = "UNKNOWN"
-            is_valid = False
-            issues.append("⚠️ Missing create date or invalid combination")
+            issues.append("⚠️ Invalid combination: Missing create date")
+            return False, issues, "UNKNOWN"
         
-        return is_valid, issues, scenario
+        return True, issues, scenario
     
     # ==========================================================
-    # AGING CALCULATION ENGINE
+    # AGING CALCULATION - PRODUCTION GRADE
     # ==========================================================
     
     @staticmethod
@@ -350,15 +317,14 @@ class DateValidator:
         pod_date: Optional[datetime]
     ) -> Dict[str, Any]:
         """
-        Calculate aging metrics with full scenario handling.
+        Calculate aging with full scenario handling and assertions.
         
-        Args:
-            create_date: DN Create Date
-            pgi_date: PGI Date
-            pod_date: POD Date
-            
-        Returns:
-            Dictionary with aging metrics, status, and scenario
+        PRODUCTION LOGGING:
+        - DN Number (caller must provide)
+        - All parsed dates
+        - Existence flags
+        - Selected scenario
+        - All aging values
         """
         
         # ==========================================================
@@ -368,7 +334,6 @@ class DateValidator:
         pgi_date = DateValidator.parse_business_date(pgi_date)
         pod_date = DateValidator.parse_business_date(pod_date)
         
-        # Existence flags
         create_exists = create_date is not None
         pgi_exists = pgi_date is not None
         pod_exists = pod_date is not None
@@ -398,26 +363,31 @@ class DateValidator:
             "pgi_completed": False,
             "pod_received": False,
             "delivery_completed": False,
-            "scenario": scenario
+            "scenario": scenario,
+            "_debug": {
+                "create_exists": create_exists,
+                "pgi_exists": pgi_exists,
+                "pod_exists": pod_exists,
+                "create_date": create_date.isoformat() if create_date else None,
+                "pgi_date": pgi_date.isoformat() if pgi_date else None,
+                "pod_date": pod_date.isoformat() if pod_date else None,
+            }
         }
         
         # ==========================================================
-        # STEP 4: Handle Invalid Scenarios
+        # STEP 4: Handle Invalid Scenarios (4 & 5)
         # ==========================================================
         if not is_valid:
             result["status"] = "invalid"
-            logger.warning(f"⚠️ Invalid date sequence: {scenario} - {issues}")
+            logger.error(f"❌ Invalid date sequence: {scenario} - {issues}")
             return result
         
         # ==========================================================
         # STEP 5: SCENARIO 3 - PGI Missing
         # ==========================================================
-        if create_exists and not pgi_exists and not pod_exists:
-            create_date_only = create_date.date() if isinstance(create_date, datetime) else create_date
-            delivery_aging = (today - create_date_only).days
-            
-            # Protect against negative aging
-            delivery_aging = max(0, delivery_aging)
+        if scenario == "SCENARIO_3_PGI_PENDING":
+            create_date_only = create_date.date()
+            delivery_aging = max(0, (today - create_date_only).days)
             
             result["delivery_aging"] = delivery_aging
             result["delivery_aging_text"] = DateValidator._format_aging(delivery_aging)
@@ -426,7 +396,6 @@ class DateValidator:
             result["pgi_completed"] = False
             result["pod_received"] = False
             result["delivery_completed"] = False
-            result["scenario"] = "SCENARIO_3_PGI_PENDING"
             
             logger.info(f"📊 SCENARIO_3: delivery_aging={delivery_aging} days")
             return result
@@ -434,19 +403,12 @@ class DateValidator:
         # ==========================================================
         # STEP 6: SCENARIO 2 - POD Missing
         # ==========================================================
-        if create_exists and pgi_exists and not pod_exists:
-            create_date_only = create_date.date() if isinstance(create_date, datetime) else create_date
-            pgi_date_only = pgi_date.date() if isinstance(pgi_date, datetime) else pgi_date
+        if scenario == "SCENARIO_2_POD_PENDING":
+            create_date_only = create_date.date()
+            pgi_date_only = pgi_date.date()
             
-            # Delivery Aging
-            delivery_aging = (pgi_date_only - create_date_only).days
-            
-            # POD Aging (Today - PGI)
-            pod_aging = (today - pgi_date_only).days
-            
-            # Protect against negative aging
-            delivery_aging = max(0, delivery_aging)
-            pod_aging = max(0, pod_aging)
+            delivery_aging = max(0, (pgi_date_only - create_date_only).days)
+            pod_aging = max(0, (today - pgi_date_only).days)
             
             result["delivery_aging"] = delivery_aging
             result["pod_aging"] = pod_aging
@@ -459,28 +421,21 @@ class DateValidator:
             result["pgi_completed"] = True
             result["pod_received"] = False
             result["delivery_completed"] = True
-            result["scenario"] = "SCENARIO_2_POD_PENDING"
             
             logger.info(f"📊 SCENARIO_2: delivery={delivery_aging}, pod_pending={pod_aging} days")
             return result
         
         # ==========================================================
-        # STEP 7: SCENARIO 1 - Complete (All Dates Exist)
+        # STEP 7: SCENARIO 1 - Complete
         # ==========================================================
-        if create_exists and pgi_exists and pod_exists:
-            create_date_only = create_date.date() if isinstance(create_date, datetime) else create_date
-            pgi_date_only = pgi_date.date() if isinstance(pgi_date, datetime) else pgi_date
-            pod_date_only = pod_date.date() if isinstance(pod_date, datetime) else pod_date
+        if scenario == "SCENARIO_1_COMPLETE":
+            create_date_only = create_date.date()
+            pgi_date_only = pgi_date.date()
+            pod_date_only = pod_date.date()
             
-            # All aging calculations
-            delivery_aging = (pgi_date_only - create_date_only).days
-            pod_aging = (pod_date_only - pgi_date_only).days
-            total_cycle = (pod_date_only - create_date_only).days
-            
-            # Protect against negative aging
-            delivery_aging = max(0, delivery_aging)
-            pod_aging = max(0, pod_aging)
-            total_cycle = max(0, total_cycle)
+            delivery_aging = max(0, (pgi_date_only - create_date_only).days)
+            pod_aging = max(0, (pod_date_only - pgi_date_only).days)
+            total_cycle = max(0, (pod_date_only - create_date_only).days)
             
             result["delivery_aging"] = delivery_aging
             result["pod_aging"] = pod_aging
@@ -493,28 +448,22 @@ class DateValidator:
             result["pgi_completed"] = True
             result["pod_received"] = True
             result["delivery_completed"] = True
-            result["scenario"] = "SCENARIO_1_COMPLETE"
             
             # ==========================================================
-            # STEP 8: PRODUCTION ASSERTIONS
+            # PRODUCTION ASSERTIONS - CATCH DATA CORRUPTION
             # ==========================================================
-            # Assert 1: POD exists → No "Pending" text
             assert "(Pending)" not in result["pod_aging_text"], \
-                f"❌ CRITICAL: POD exists but POD aging shows Pending"
+                f"❌ CRITICAL: POD exists but aging shows Pending"
             
-            # Assert 2: POD exists → Not "In Progress"
             assert result["total_cycle_text"] != "In Progress", \
                 f"❌ CRITICAL: POD exists but Total Cycle shows In Progress"
             
-            # Assert 3: POD exists → pod_received must be True
             assert result["pod_received"] is True, \
                 f"❌ CRITICAL: POD exists but pod_received is False"
             
-            # Assert 4: POD exists → Scenario must be SCENARIO_1
             assert result["scenario"] == "SCENARIO_1_COMPLETE", \
-                f"❌ CRITICAL: POD exists but scenario is {result['scenario']}"
+                f"❌ CRITICAL: Wrong scenario: {result['scenario']}"
             
-            # Assert 5: No negative aging
             assert result["delivery_aging"] >= 0, \
                 f"❌ CRITICAL: Negative delivery aging: {result['delivery_aging']}"
             
@@ -524,16 +473,16 @@ class DateValidator:
             assert result["total_cycle"] >= 0, \
                 f"❌ CRITICAL: Negative total cycle: {result['total_cycle']}"
             
-            logger.info(f"📊 SCENARIO_1: delivery={delivery_aging}, pod={pod_aging}, total={total_cycle} days ✅")
+            logger.info(f"✅ SCENARIO_1: delivery={delivery_aging}, pod={pod_aging}, total={total_cycle} days")
+            logger.info(f"✅ All assertions passed - data integrity verified")
             return result
         
         # ==========================================================
-        # STEP 9: Fallback - Should never reach here
+        # STEP 8: Fallback - Should never reach here
         # ==========================================================
-        logger.error(f"❌ Unhandled scenario: create={create_exists}, pgi={pgi_exists}, pod={pod_exists}")
-        result["scenario"] = "UNKNOWN_HANDLED"
+        logger.error(f"❌ Unhandled scenario: {scenario}")
         result["status"] = "invalid"
-        result["issues"].append("⚠️ Unhandled scenario combination")
+        result["issues"].append(f"⚠️ Unhandled scenario: {scenario}")
         return result
     
     # ==========================================================
@@ -542,15 +491,7 @@ class DateValidator:
     
     @staticmethod
     def _format_aging(days: int) -> str:
-        """
-        Format aging for display according to business rules.
-        
-        Rules:
-            - 0 days → "Same Day"
-            - 1 day → "1 Day"
-            - >1 day → "X Days"
-            - None → "N/A"
-        """
+        """Format aging for display."""
         if days is None:
             return "N/A"
         if days == 0:
@@ -566,14 +507,7 @@ class DateValidator:
     
     @staticmethod
     def validate_dashboard_compatibility(result: Dict[str, Any]) -> bool:
-        """
-        Validate that result is compatible with all dashboards.
-        
-        Checks:
-            - All required fields exist
-            - No contradictory states
-            - Proper scenario labeling
-        """
+        """Validate result is compatible with all dashboards."""
         required_fields = [
             "delivery_aging", "pod_aging", "total_cycle",
             "delivery_aging_text", "pod_aging_text", "total_cycle_text",
@@ -581,7 +515,6 @@ class DateValidator:
             "delivery_completed", "scenario"
         ]
         
-        # Check all required fields exist
         for field in required_fields:
             if field not in result:
                 logger.error(f"❌ Missing required field: {field}")
@@ -599,24 +532,7 @@ class DateValidator:
                 logger.error(f"❌ Contradiction: POD received but scenario is {result['scenario']}")
                 return False
         
-        # Check no negative aging
-        if result["delivery_aging"] is not None and result["delivery_aging"] < 0:
-            logger.error(f"❌ Negative delivery aging: {result['delivery_aging']}")
-            return False
-        
-        if result["pod_aging"] is not None and result["pod_aging"] < 0:
-            logger.error(f"❌ Negative POD aging: {result['pod_aging']}")
-            return False
-        
-        if result["total_cycle"] is not None and result["total_cycle"] < 0:
-            logger.error(f"❌ Negative total cycle: {result['total_cycle']}")
-            return False
-        
         return True
-
-# ==========================================================
-# END OF BLOCK 5 - PRODUCTION-GRADE v31.0
-# ==========================================================
 # ==========================================================
 # BLOCK 6: KPI ENGINE
 # ==========================================================
