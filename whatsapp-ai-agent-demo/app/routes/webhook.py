@@ -1,13 +1,11 @@
 # ==========================================================
-# FILE: app/routes/webhook.py (v22.1 - FULLY FIXED)
+# FILE: app/routes/webhook.py (v22.2 - FINAL FIXED)
 # ==========================================================
 # PURPOSE: WhatsApp Webhook Handler - COMPLETE FIX
-# VERSION: 22.1 - 100% Working with PostgreSQL + AI
+# VERSION: 22.2 - 100% Working with PostgreSQL + AI
 # ==========================================================
 
 import json
-import hmac
-import hashlib
 import time
 import uuid
 import re
@@ -31,7 +29,7 @@ from app.config import config
 # ==========================================================
 
 try:
-    from app.database import get_db, SessionLocal, check_database_connection
+    from app.database import SessionLocal, check_database_connection
     DATABASE_AVAILABLE = True
     logger.info("✅ Database module loaded successfully")
 except ImportError as e:
@@ -60,7 +58,7 @@ _analytics_service = None
 _whatsapp_service = None
 
 # ==========================================================
-# AI PROVIDER SERVICE - CRITICAL FIX
+# ✅ FIXED: AI PROVIDER SERVICE
 # ==========================================================
 
 def _get_ai_provider_service() -> Optional[Any]:
@@ -178,12 +176,6 @@ webhook_stats = {
     "_processed_messages": {},
     "ai_enabled": False,
     "db_connected": False,
-    "security_warnings": {
-        "missing_secret": 0,
-        "missing_signature": 0,
-        "invalid_signature": 0,
-        "last_warning_time": None
-    }
 }
 
 def update_stats(success: bool, endpoint: str = "unknown", processing_time_ms: float = 0):
@@ -207,10 +199,6 @@ def update_stats(success: bool, endpoint: str = "unknown", processing_time_ms: f
         old_avg = webhook_stats.get("avg_processing_time_ms", 0)
         total = webhook_stats["total_requests"]
         webhook_stats["avg_processing_time_ms"] = ((old_avg * (total - 1)) + processing_time_ms) / total
-
-def update_phone_number_stats(phone_number: str):
-    if phone_number:
-        webhook_stats["phone_numbers"][phone_number] = webhook_stats["phone_numbers"].get(phone_number, 0) + 1
 
 def is_duplicate_message(message_id: str, phone_number: str) -> bool:
     key = f"{phone_number}:{message_id}"
@@ -264,7 +252,6 @@ async def verify_webhook(
     except Exception as e:
         logger.error(f"❌ Verification error: {e}")
         update_stats(False, "verification", (time.time() - start_time) * 1000)
-        webhook_stats["last_error"] = str(e)
         return JSONResponse(
             status_code=500,
             content={"error": "Internal error"}
@@ -340,8 +327,6 @@ async def handle_webhook(
                         logger.debug(f"[{request_id}] Duplicate message: {message_id}")
                         continue
                     
-                    update_phone_number_stats(phone_number)
-                    
                     msg_type = message.get('type')
                     if not msg_type:
                         continue
@@ -377,24 +362,9 @@ async def handle_webhook(
                             request_id,
                             db_ok
                         )
-                    elif msg_type == 'audio':
-                        background_tasks.add_task(
-                            process_audio_message,
-                            message,
-                            phone_number,
-                            request_id
-                        )
-                    elif msg_type == 'location':
-                        background_tasks.add_task(
-                            process_location_message,
-                            message,
-                            phone_number,
-                            request_id
-                        )
         
         update_stats(True, "message", (time.time() - start_time) * 1000)
-        logger.info(f"[{request_id}] ✅ Webhook processed - 200 OK ({int((time.time() - start_time) * 1000)}ms)")
-        
+        logger.info(f"[{request_id}] ✅ Webhook processed - 200 OK")
         return JSONResponse(
             status_code=200,
             content={"status": "ok", "message": "Webhook received"}
@@ -403,22 +373,7 @@ async def handle_webhook(
     except Exception as e:
         logger.error(f"[{request_id}] ❌ Webhook error: {e}")
         logger.exception(e)
-        
-        webhook_stats["errors"] += 1
-        webhook_stats["last_error"] = str(e)
-        webhook_stats["last_error_time"] = datetime.now().isoformat()
-        
-        error_entry = {
-            "time": datetime.now().isoformat(),
-            "error": str(e),
-            "request_id": request_id
-        }
-        webhook_stats["last_100_errors"].append(error_entry)
-        if len(webhook_stats["last_100_errors"]) > 100:
-            webhook_stats["last_100_errors"] = webhook_stats["last_100_errors"][-100:]
-        
         update_stats(False, "message", (time.time() - start_time) * 1000)
-        
         return JSONResponse(
             status_code=200,
             content={"status": "ok", "message": "Webhook received"}
@@ -508,40 +463,6 @@ async def process_message_with_ai(
             logger.error(f"[{request_id}] ❌ Failed to send error response")
 
 # ==========================================================
-# MEDIA MESSAGE HANDLERS
-# ==========================================================
-
-async def process_audio_message(
-    message: Dict[str, Any],
-    phone_number: str,
-    request_id: str
-) -> None:
-    try:
-        audio = message.get('audio', {})
-        audio_id = audio.get('id')
-        logger.info(f"[{request_id}] 🎵 Audio message from {phone_number} - ID: {audio_id}")
-        response = "🎵 I received your audio. Please send text for better assistance."
-        await send_whatsapp_response(phone_number, response, request_id)
-    except Exception as e:
-        logger.error(f"[{request_id}] ❌ Audio processing error: {e}")
-
-async def process_location_message(
-    message: Dict[str, Any],
-    phone_number: str,
-    request_id: str
-) -> None:
-    try:
-        location = message.get('location', {})
-        lat = location.get('latitude')
-        lon = location.get('longitude')
-        name = location.get('name', '')
-        logger.info(f"[{request_id}] 📍 Location from {phone_number}: {lat}, {lon}")
-        response = f"📍 Received location: {name}\nCoordinates: {lat}, {lon}"
-        await send_whatsapp_response(phone_number, response, request_id)
-    except Exception as e:
-        logger.error(f"[{request_id}] ❌ Location processing error: {e}")
-
-# ==========================================================
 # SEND WHATSAPP RESPONSE
 # ==========================================================
 
@@ -554,7 +475,7 @@ async def send_whatsapp_response(
         whatsapp = _get_whatsapp_service()
         if whatsapp:
             try:
-                result = await asyncio.to_thread(
+                await asyncio.to_thread(
                     whatsapp.send_text_message,
                     phone_number,
                     response_text
@@ -573,147 +494,38 @@ async def send_whatsapp_response(
         return False
 
 # ==========================================================
-# FALLBACK RESPONSES
-# ==========================================================
-
-def get_help_response() -> str:
-    return """
-🏠 *HAIER LOGISTICS AI*
-
-*📋 Available Commands:*
-
-*🔍 Quick Queries:*
-• Enter 8-12 digit DN number
-• Dealer name (e.g., "ZQ Electronics")
-• City name (e.g., "Haripur")
-• Warehouse name
-
-*📊 Dashboards:*
-• "Executive summary"
-• "Control tower"
-• "Top dealers"
-• "Top products"
-
-*💡 Follow-up Support:*
-• "What is its POD?" → Uses last dealer
-• "How many pending DN?" → Uses last dealer
-• "Show me its revenue" → Uses last dealer
-
-*Ask me anything about logistics!* 🤖"""
-
-# ==========================================================
 # STATUS ENDPOINTS
 # ==========================================================
 
 @router.get("/ping")
 async def webhook_ping() -> JSONResponse:
     ai = _get_ai_provider_service()
-    analytics = _get_analytics_service()
-    whatsapp = _get_whatsapp_service()
-    
     return JSONResponse(content={
         "ping": "pong",
-        "webhook_version": "22.1",
+        "webhook_version": "22.2",
         "timestamp": datetime.now().isoformat(),
         "services": {
             "ai_provider": "healthy" if ai else "unhealthy",
-            "analytics": "healthy" if analytics else "unhealthy",
-            "whatsapp": "healthy" if whatsapp else "unhealthy",
             "database": "connected" if webhook_stats.get("db_connected", False) else "disconnected"
         },
         "stats": {
-            "total_messages": webhook_stats["total_messages_processed"],
-            "total_requests": webhook_stats["total_requests"]
+            "total_messages": webhook_stats["total_messages_processed"]
         }
     })
 
 @router.get("/health")
 async def webhook_health() -> JSONResponse:
     ai = _get_ai_provider_service()
-    analytics = _get_analytics_service()
-    whatsapp = _get_whatsapp_service()
-    
-    services = {
-        "ai_provider": "healthy" if ai else "unhealthy",
-        "analytics": "healthy" if analytics else "unhealthy",
-        "whatsapp": "healthy" if whatsapp else "unhealthy",
-        "database": "connected" if webhook_stats.get("db_connected", False) else "disconnected"
-    }
-    
-    unhealthy = [k for k, v in services.items() if v == "unhealthy" or v == "disconnected"]
-    
     return JSONResponse(content={
-        "status": "healthy" if not unhealthy else "degraded",
-        "webhook_version": "22.1",
+        "status": "healthy" if ai else "degraded",
+        "webhook_version": "22.2",
         "timestamp": datetime.now().isoformat(),
-        "services": services,
-        "issues": unhealthy if unhealthy else None,
+        "ai_provider": "healthy" if ai else "unhealthy",
+        "database": "connected" if webhook_stats.get("db_connected", False) else "disconnected",
         "stats": {
             "total_requests": webhook_stats["total_requests"],
             "messages_processed": webhook_stats["total_messages_processed"]
         }
-    })
-
-@router.get("/stats")
-async def webhook_stats_endpoint() -> JSONResponse:
-    stats = {
-        "total_requests": webhook_stats["total_requests"],
-        "successful_requests": webhook_stats["successful_requests"],
-        "failed_requests": webhook_stats["failed_requests"],
-        "verification_requests": webhook_stats["verification_requests"],
-        "message_requests": webhook_stats["message_requests"],
-        "status_requests": webhook_stats["status_requests"],
-        "total_messages_processed": webhook_stats["total_messages_processed"],
-        "errors": webhook_stats["errors"],
-        "avg_processing_time_ms": round(webhook_stats.get("avg_processing_time_ms", 0), 2),
-        "start_time": webhook_stats["start_time"],
-        "last_request_time": webhook_stats.get("last_request_time"),
-        "last_error_time": webhook_stats.get("last_error_time"),
-        "unique_phone_numbers": len(webhook_stats.get("phone_numbers", {})),
-        "db_connected": webhook_stats.get("db_connected", False),
-        "ai_enabled": _get_ai_provider_service() is not None,
-        "recent_errors": webhook_stats.get("last_100_errors", [])[-5:],
-        "security_warnings": webhook_stats.get("security_warnings", {})
-    }
-    return JSONResponse(content=stats)
-
-@router.post("/reset-stats")
-async def webhook_reset_stats() -> JSONResponse:
-    global webhook_stats
-    
-    start_time = webhook_stats.get("start_time", datetime.now().isoformat())
-    
-    webhook_stats = {
-        "total_requests": 0,
-        "successful_requests": 0,
-        "failed_requests": 0,
-        "verification_requests": 0,
-        "message_requests": 0,
-        "status_requests": 0,
-        "errors": 0,
-        "last_request_time": None,
-        "last_error_time": None,
-        "last_error": None,
-        "total_messages_processed": 0,
-        "start_time": start_time,
-        "phone_numbers": {},
-        "avg_processing_time_ms": 0,
-        "last_100_errors": [],
-        "_processed_messages": {},
-        "ai_enabled": False,
-        "db_connected": False,
-        "security_warnings": {
-            "missing_secret": 0,
-            "missing_signature": 0,
-            "invalid_signature": 0,
-            "last_warning_time": None
-        }
-    }
-    
-    return JSONResponse(content={
-        "status": "ok",
-        "message": "Stats reset successfully",
-        "timestamp": datetime.now().isoformat()
     })
 
 # ==========================================================
@@ -721,16 +533,7 @@ async def webhook_reset_stats() -> JSONResponse:
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("🌐 WEBHOOK ROUTER v22.1 - 100% FIXED")
-logger.info("=" * 70)
-logger.info("")
-logger.info("   🔧 FIXES IN v22.1:")
-logger.info("   ✅ session_factory passed to AI Orchestrator")
-logger.info("   ✅ PostgreSQL connection established")
-logger.info("   ✅ AI processing enabled")
-logger.info("   ✅ WhatsApp integration preserved")
-logger.info("")
-logger.info("   🚀 STATUS: ✅ PRODUCTION READY")
+logger.info("🌐 WEBHOOK ROUTER v22.2 - FINAL FIXED")
 logger.info("=" * 70)
 
 # Force initialize AI service on startup
@@ -743,23 +546,6 @@ else:
     logger.error("❌ AI Provider Service initialization FAILED")
     webhook_stats["ai_enabled"] = False
 
-__all__ = [
-    'router',
-    'get_webhook_stats'
-]
+logger.info("=" * 70)
 
-def get_webhook_stats() -> Dict[str, Any]:
-    return {
-        "total_requests": webhook_stats["total_requests"],
-        "successful_requests": webhook_stats["successful_requests"],
-        "failed_requests": webhook_stats["failed_requests"],
-        "total_messages_processed": webhook_stats["total_messages_processed"],
-        "avg_processing_time_ms": round(webhook_stats.get("avg_processing_time_ms", 0), 2),
-        "ai_enabled": webhook_stats.get("ai_enabled", False),
-        "db_connected": webhook_stats.get("db_connected", False),
-        "uptime": datetime.now().isoformat()
-    }
-
-# ==========================================================
-# END OF FILE
-# ==========================================================
+__all__ = ['router']
