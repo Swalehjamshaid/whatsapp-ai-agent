@@ -126,9 +126,7 @@ class DatabaseHealthChecker:
             logger.error(f"Table stats error: {e}")
             return {"error": str(e), "status": "unhealthy"}
 
-# ==========================================================
-# BLOCK 5: DATE VALIDATION ENGINE
-# ==========================================================
+
 # ==========================================================
 # BLOCK 5: DATE VALIDATION ENGINE (FIXED)
 # ==========================================================
@@ -181,7 +179,7 @@ class DateValidator:
         pgi_date: Optional[datetime],
         pod_date: Optional[datetime]
     ) -> Dict[str, Any]:
-        """Calculate aging with validation - FIXED"""
+        """Calculate aging with validation - COMPLETE FIX"""
         
         # Convert to datetime if needed
         if create_date and not isinstance(create_date, datetime):
@@ -208,23 +206,33 @@ class DateValidator:
             # DN Aging
             if create_date:
                 create_date_only = create_date.date() if isinstance(create_date, datetime) else create_date
-                if pod_date:
+                if pod_date and pod_date >= create_date:
+                    # Completed - use POD date
                     pod_date_only = pod_date.date() if isinstance(pod_date, datetime) else pod_date
                     result["dn_aging"] = (pod_date_only - create_date_only).days
                 else:
+                    # Not completed - use today
                     result["dn_aging"] = (today - create_date_only).days
             
-            # PGI Aging
+            # PGI Aging: PGI Date - DN Create Date
             if pgi_date and create_date and pgi_date >= create_date:
                 pgi_date_only = pgi_date.date() if isinstance(pgi_date, datetime) else pgi_date
                 create_date_only = create_date.date() if isinstance(create_date, datetime) else create_date
                 result["pgi_aging"] = (pgi_date_only - create_date_only).days
             
-            # POD Aging
+            # POD Aging: POD Date - PGI Date
             if pod_date and pgi_date and pod_date >= pgi_date:
                 pod_date_only = pod_date.date() if isinstance(pod_date, datetime) else pod_date
                 pgi_date_only = pgi_date.date() if isinstance(pgi_date, datetime) else pgi_date
                 result["pod_aging"] = (pod_date_only - pgi_date_only).days
+        else:
+            # Invalid dates - show meaningful warnings
+            if create_date and pgi_date and pgi_date < create_date:
+                issues.append(f"⚠️ PGI Date ({pgi_date.date()}) occurs before DN Create Date ({create_date.date()})")
+            if create_date and pod_date and pod_date < create_date:
+                issues.append(f"⚠️ POD Date ({pod_date.date()}) occurs before DN Create Date ({create_date.date()})")
+            if pgi_date and pod_date and pod_date < pgi_date:
+                issues.append(f"⚠️ POD Date ({pod_date.date()}) occurs before PGI Date ({pgi_date.date()})")
         
         return result
 # ==========================================================
