@@ -1381,11 +1381,6 @@ class AIOrchestrator:
 # ==========================================================
 # BLOCK 22: FORMATTERS - DN Dashboard (FIXED)
 # ==========================================================
-
-    # ==========================================================
-# BLOCK 22: FORMATTERS - DN Dashboard (UPDATED)
-# ==========================================================
-
 def _format_dn_dashboard(self, data: Dict, dn_number: str) -> str:
     try:
         if "error" in data:
@@ -1395,7 +1390,7 @@ def _format_dn_dashboard(self, data: Dict, dn_number: str) -> str:
         status_emoji = "✅" if status in ['Completed', 'Delivered', 'Closed'] else "⏳"
         pending_text = "🔴 Yes" if data.get('pending_flag') else "🟢 No"
         
-        # ✅ Use the NEW field names
+        # ✅ Use the NEW field names from BLOCK 10
         delivery_aging_text = data.get('delivery_aging_text', 'N/A')
         pod_aging_text = data.get('pod_aging_text', 'N/A')
         total_cycle_text = data.get('total_cycle_text', 'N/A')
@@ -1457,6 +1452,7 @@ def _format_dn_dashboard(self, data: Dict, dn_number: str) -> str:
         logger.error(f"DN format error: {e}")
         return f"❌ Unable to format DN details for {dn_number}"
     # ==========================================================
+
 # BLOCK 23: HELP MESSAGE
 # ==========================================================
 
