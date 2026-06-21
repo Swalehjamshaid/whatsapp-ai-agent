@@ -1378,81 +1378,82 @@ class AIOrchestrator:
 
 # ==========================================================
 # BLOCK 22: FORMATTERS
-# ==========================================================
-# BLOCK 22: FORMATTERS - DN Dashboard (FIXED)
-# ==========================================================
-def _format_dn_dashboard(self, data: Dict, dn_number: str) -> str:
-    try:
-        if "error" in data:
-            return f"❌ {data['error']}"
-        
-        status = data.get('delivery_status', 'Unknown')
-        status_emoji = "✅" if status in ['Completed', 'Delivered', 'Closed'] else "⏳"
-        pending_text = "🔴 Yes" if data.get('pending_flag') else "🟢 No"
-        
-        # ✅ Use the NEW field names from BLOCK 10
-        delivery_aging_text = data.get('delivery_aging_text', 'N/A')
-        pod_aging_text = data.get('pod_aging_text', 'N/A')
-        total_cycle_text = data.get('total_cycle_text', 'N/A')
-        
-        # ✅ Get validation issues
-        issues = data.get('issues', [])
-        
-        lines = [
-            "📄 *DN TRACKING*",
-            "",
-            f"DN No: {data.get('dn_number', dn_number)}",
-            f"Dealer: {data.get('customer_name', 'N/A')}",
-            f"Dealer Code: {data.get('dealer_code', 'N/A')}",
-            f"Customer Code: {data.get('customer_code', 'N/A')}",
-            f"Warehouse: {data.get('warehouse', 'N/A')}",
-            f"City: {data.get('ship_to_city', 'N/A')}",
-            f"Sales Office: {data.get('sales_office', 'N/A')}",
-            f"Sales Manager: {data.get('sales_manager', 'N/A')}",
-            f"Division: {data.get('division', 'N/A')}",
-            "",
-            "📦 *Products*",
-            f"Model: {data.get('customer_model', 'N/A')}",
-            f"Material: {data.get('material_no', 'N/A')}",
-            "",
-            "📊 *Metrics*",
-            f"Units: {data.get('units', 0)}",
-            f"Revenue: PKR {data.get('amount', 0):,.0f}",
-            "",
-            "📅 *Dates*",
-            f"Create: {data.get('dn_create_date', 'N/A')}",
-            f"PGI: {data.get('good_issue_date', 'N/A')}",
-            f"POD: {data.get('pod_date', 'N/A')}",
-            "",
-            "⏳ *Aging*",
-            f"Delivery Aging: {delivery_aging_text}",
-            f"POD Aging: {pod_aging_text}",
-            f"Total Cycle: {total_cycle_text}",
-        ]
-        
-        # ✅ Add validation warnings if there are issues
-        if issues:
-            lines.append("")
-            lines.append("⚠ *Data Issue Detected*")
-            for issue in issues:
-                lines.append(f"   {issue}")
-            lines.append("   Please verify source data.")
-        
-        lines.extend([
-            "",
-            "📋 *Status*",
-            f"Delivery: {status} {status_emoji}",
-            f"PGI: {data.get('pgi_status', 'N/A')}",
-            f"POD: {data.get('pod_status', 'N/A')}",
-            f"Pending: {pending_text}"
-        ])
-        
-        return self._truncate_response("\n".join(lines))
-    except Exception as e:
-        logger.error(f"DN format error: {e}")
-        return f"❌ Unable to format DN details for {dn_number}"
     # ==========================================================
+# ==========================================================
+# BLOCK 22: FORMATTERS - DN Dashboard
+# ==========================================================
 
+    def _format_dn_dashboard(self, data: Dict, dn_number: str) -> str:
+        """Format DN dashboard for WhatsApp"""
+        try:
+            if "error" in data:
+                return f"❌ {data['error']}"
+            
+            status = data.get('delivery_status', 'Unknown')
+            status_emoji = "✅" if status in ['Completed', 'Delivered', 'Closed'] else "⏳"
+            pending_text = "🔴 Yes" if data.get('pending_flag') else "🟢 No"
+            
+            # ✅ Use the NEW field names from BLOCK 10
+            delivery_aging_text = data.get('delivery_aging_text', 'N/A')
+            pod_aging_text = data.get('pod_aging_text', 'N/A')
+            total_cycle_text = data.get('total_cycle_text', 'N/A')
+            
+            # ✅ Get validation issues
+            issues = data.get('issues', [])
+            
+            lines = [
+                "📄 *DN TRACKING*",
+                "",
+                f"DN No: {data.get('dn_number', dn_number)}",
+                f"Dealer: {data.get('customer_name', 'N/A')}",
+                f"Dealer Code: {data.get('dealer_code', 'N/A')}",
+                f"Customer Code: {data.get('customer_code', 'N/A')}",
+                f"Warehouse: {data.get('warehouse', 'N/A')}",
+                f"City: {data.get('ship_to_city', 'N/A')}",
+                f"Sales Office: {data.get('sales_office', 'N/A')}",
+                f"Sales Manager: {data.get('sales_manager', 'N/A')}",
+                f"Division: {data.get('division', 'N/A')}",
+                "",
+                "📦 *Products*",
+                f"Model: {data.get('customer_model', 'N/A')}",
+                f"Material: {data.get('material_no', 'N/A')}",
+                "",
+                "📊 *Metrics*",
+                f"Units: {data.get('units', 0)}",
+                f"Revenue: PKR {data.get('amount', 0):,.0f}",
+                "",
+                "📅 *Dates*",
+                f"Create: {data.get('dn_create_date', 'N/A')}",
+                f"PGI: {data.get('good_issue_date', 'N/A')}",
+                f"POD: {data.get('pod_date', 'N/A')}",
+                "",
+                "⏳ *Aging*",
+                f"Delivery Aging: {delivery_aging_text}",
+                f"POD Aging: {pod_aging_text}",
+                f"Total Cycle: {total_cycle_text}",
+            ]
+            
+            # ✅ Add validation warnings if there are issues
+            if issues:
+                lines.append("")
+                lines.append("⚠ *Data Issue Detected*")
+                for issue in issues:
+                    lines.append(f"   {issue}")
+                lines.append("   Please verify source data.")
+            
+            lines.extend([
+                "",
+                "📋 *Status*",
+                f"Delivery: {status} {status_emoji}",
+                f"PGI: {data.get('pgi_status', 'N/A')}",
+                f"POD: {data.get('pod_status', 'N/A')}",
+                f"Pending: {pending_text}"
+            ])
+            
+            return self._truncate_response("\n".join(lines))
+        except Exception as e:
+            logger.error(f"DN format error: {e}")
+            return f"❌ Unable to format DN details for {dn_number}"
 # BLOCK 23: HELP MESSAGE
 # ==========================================================
 
