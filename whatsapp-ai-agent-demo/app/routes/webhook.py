@@ -1,8 +1,8 @@
 # ==========================================================
-# FILE: app/routes/webhook.py (v23.0 - FINAL COMPLETE FIX)
+# FILE: app/routes/webhook.py (v24.0 - COMPLETE PRODUCTION)
 # ==========================================================
-# PURPOSE: WhatsApp Webhook Handler - COMPLETE FIX
-# VERSION: 23.0 - 100% Working with PostgreSQL + AI
+# PURPOSE: WhatsApp Webhook Handler - 100% AI Driven
+# VERSION: 24.0 - ALWAYS Calls AI, No Fallback
 # ==========================================================
 
 import json
@@ -50,15 +50,18 @@ except ImportError as e:
     logger.error(f"❌ Models NOT available: {e}")
 
 # ==========================================================
-# ⚠️ CRITICAL FIX: Import AI Provider FIRST
+# SERVICES
 # ==========================================================
 
 _ai_provider_service = None
 _analytics_service = None
 _whatsapp_service = None
 
-def _get_ai_provider_service():
-    """Get AI Provider with PostgreSQL connection"""
+# ==========================================================
+# ✅ FIXED: AI PROVIDER SERVICE
+# ==========================================================
+
+def _get_ai_provider_service() -> Optional[Any]:
     global _ai_provider_service
     
     if _ai_provider_service is not None:
@@ -66,15 +69,12 @@ def _get_ai_provider_service():
     
     try:
         logger.info("🚀 Initializing AI Provider Service...")
-        
-        # ✅ Import directly
         from app.services.ai_provider_service import get_orchestrator
         
         if not DATABASE_AVAILABLE:
             logger.error("❌ Database not available")
             return None
         
-        # ✅ Create session factory
         def session_factory() -> Session:
             try:
                 return SessionLocal()
@@ -82,27 +82,16 @@ def _get_ai_provider_service():
                 logger.error(f"❌ Session creation failed: {e}")
                 raise
         
-        # ✅ Create orchestrator with session_factory
         logger.info("🔧 Creating AI Orchestrator with session_factory...")
         _ai_provider_service = get_orchestrator(session_factory=session_factory)
         
         if _ai_provider_service:
             logger.info("✅ AI Orchestrator created successfully")
-            
-            # ✅ Test PostgreSQL connection
             try:
                 test_session = session_factory()
                 if MODELS_AVAILABLE:
                     count = test_session.query(DeliveryReport).count()
                     logger.info(f"✅ PostgreSQL connected! Found {count} records")
-                    
-                    # ✅ Test sample DNs
-                    sample = test_session.query(DeliveryReport.dn_no).limit(3).all()
-                    sample_dns = [s[0] for s in sample if s[0]]
-                    if sample_dns:
-                        logger.info(f"✅ Sample DNs: {', '.join(sample_dns[:3])}")
-                    else:
-                        logger.warning("⚠️ No DNs found in database")
                 test_session.close()
             except Exception as e:
                 logger.error(f"❌ PostgreSQL connection test FAILED: {e}")
@@ -118,7 +107,6 @@ def _get_ai_provider_service():
         return None
 
 def _get_analytics_service():
-    """Get Analytics Service with PostgreSQL connection"""
     global _analytics_service
     
     if _analytics_service is not None:
@@ -133,15 +121,7 @@ def _get_analytics_service():
         
         db = SessionLocal()
         _analytics_service = get_analytics_service(db)
-        
-        # ✅ Test connection
-        try:
-            if MODELS_AVAILABLE:
-                count = db.query(DeliveryReport).count()
-                logger.info(f"✅ Analytics connected! Found {count} records")
-        except Exception as e:
-            logger.error(f"❌ Analytics connection test failed: {e}")
-        
+        logger.info("✅ Analytics Service loaded")
         return _analytics_service
         
     except Exception as e:
@@ -149,7 +129,6 @@ def _get_analytics_service():
         return None
 
 def _get_whatsapp_service():
-    """Get WhatsApp Service"""
     global _whatsapp_service
     
     if _whatsapp_service is not None:
@@ -361,7 +340,7 @@ async def handle_webhook(
                     webhook_stats["total_messages_processed"] += 1
                     logger.info(f"[{request_id}] 📨 Message from {phone_number}: '{message_text[:50] if message_text else '[Media]'}'")
                     
-                    # ✅ CRITICAL FIX: Process message with AI
+                    # ✅ PROCESS ALL MESSAGES WITH AI
                     if message_text and message_text.strip():
                         background_tasks.add_task(
                             process_message_with_ai,
@@ -410,8 +389,8 @@ async def process_message_with_ai(
     request_id: str
 ) -> None:
     """
-    ✅ This is the ONLY function that processes messages.
-    ✅ It ALWAYS calls the AI - NO FALLBACK.
+    ✅ ALWAYS calls the AI Orchestrator.
+    ✅ NO FALLBACK - AI handles everything.
     """
     start_time = time.time()
     
@@ -445,11 +424,11 @@ async def process_message_with_ai(
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(
                     ai_provider.process_whatsapp_query,
-                    message_text,      # Question
-                    session_factory,   # ✅ Session factory
-                    phone_number,      # Phone number
-                    None,              # User ID
-                    request_id         # Request ID
+                    message_text,
+                    session_factory,
+                    phone_number,
+                    None,
+                    request_id
                 )
                 
                 try:
@@ -556,6 +535,55 @@ async def send_whatsapp_response(
         return False
 
 # ==========================================================
+# ✅ FIXED: HELP MESSAGE - ONLY FALLBACK
+# ==========================================================
+
+def get_help_response() -> str:
+    return """
+🏠 *HAIER LOGISTICS AI*
+
+*📋 20+ Dashboards Available:*
+
+1️⃣ 🏪 Dealer Dashboard
+2️⃣ 🏭 Warehouse Dashboard
+3️⃣ 🏙️ City Dashboard
+4️⃣ 📦 Product Dashboard
+5️⃣ 📄 DN Dashboard
+6️⃣ 📋 PGI Dashboard
+7️⃣ ✅ POD Dashboard
+8️⃣ 🚚 Delivery Dashboard
+9️⃣ 📍 Distance Dashboard
+🔟 👔 Executive Dashboard
+1️⃣1️⃣ 🚨 Control Tower
+1️⃣2️⃣ 🏆 Dealer Ranking
+1️⃣3️⃣ 🏆 Warehouse Ranking
+1️⃣4️⃣ 🏆 City Ranking
+1️⃣5️⃣ 🏆 Product Ranking
+1️⃣6️⃣ 💰 Revenue Dashboard
+1️⃣7️⃣ 📊 Division Dashboard
+1️⃣8️⃣ 👤 Sales Manager Dashboard
+1️⃣9️⃣ ⏳ Aging Dashboard
+2️⃣0️⃣ 🔄 Follow-up Support
+
+*🔍 Quick Commands:*
+• Enter 8-12 digit DN number
+• Dealer name (e.g., "ZQ Electronics")
+• City name (e.g., "Haripur")
+• Warehouse name (e.g., "Lahore")
+• "Executive summary"
+• "Control tower"
+• "Top dealers"
+• "Help" for menu
+
+*💡 Follow-up Support:*
+• "What is its POD?" → Uses last dealer
+• "How many pending DN?" → Uses last dealer
+• "Show me its revenue" → Uses last dealer
+• "Show aging" → Uses last dealer
+
+*Ask me anything about logistics!* 🤖"""
+
+# ==========================================================
 # STATUS ENDPOINTS
 # ==========================================================
 
@@ -564,11 +592,15 @@ async def webhook_ping() -> JSONResponse:
     ai = _get_ai_provider_service()
     return JSONResponse(content={
         "ping": "pong",
-        "webhook_version": "23.0",
+        "webhook_version": "24.0",
         "timestamp": datetime.now().isoformat(),
         "services": {
             "ai_provider": "healthy" if ai else "unhealthy",
             "database": "connected" if webhook_stats.get("db_connected", False) else "disconnected"
+        },
+        "stats": {
+            "total_messages": webhook_stats["total_messages_processed"],
+            "total_requests": webhook_stats["total_requests"]
         }
     })
 
@@ -577,9 +609,12 @@ async def webhook_health() -> JSONResponse:
     ai = _get_ai_provider_service()
     return JSONResponse(content={
         "status": "healthy" if ai else "degraded",
-        "webhook_version": "23.0",
+        "webhook_version": "24.0",
         "timestamp": datetime.now().isoformat(),
-        "ai_provider": "healthy" if ai else "unhealthy",
+        "services": {
+            "ai_provider": "healthy" if ai else "unhealthy",
+            "database": "connected" if webhook_stats.get("db_connected", False) else "disconnected"
+        },
         "stats": {
             "total_requests": webhook_stats["total_requests"],
             "messages_processed": webhook_stats["total_messages_processed"]
@@ -591,7 +626,7 @@ async def webhook_health() -> JSONResponse:
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("🌐 WEBHOOK ROUTER v23.0 - FINAL COMPLETE FIX")
+logger.info("🌐 WEBHOOK ROUTER v24.0 - COMPLETE PRODUCTION")
 logger.info("=" * 70)
 
 # ✅ Force initialize AI on startup
@@ -612,6 +647,14 @@ try:
         result = db.execute(text("SELECT 1")).scalar()
         logger.info(f"✅ Database connection test: {result}")
         webhook_stats["db_connected"] = True
+        
+        # ✅ Check if table has data
+        if MODELS_AVAILABLE:
+            count = db.query(DeliveryReport).count()
+            logger.info(f"✅ DeliveryReport records: {count}")
+            if count == 0:
+                logger.warning("⚠️ WARNING: delivery_reports table is EMPTY!")
+                logger.warning("⚠️ You need to import data to answer questions.")
         db.close()
 except Exception as e:
     logger.error(f"❌ Database connection test FAILED: {e}")
