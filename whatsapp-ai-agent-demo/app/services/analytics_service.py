@@ -1,8 +1,8 @@
 # ==========================================================
-# FILE: app/services/analytics_service.py (v26.0 - COMPLETE)
+# FILE: app/services/analytics_service.py (v27.0 - FIXED AGING)
 # ==========================================================
 # PURPOSE: PRIMARY ANALYTICS ENGINE - PostgreSQL Only
-# VERSION: 26.0 - 100% PostgreSQL Integration
+# VERSION: 27.0 - Correct Aging Calculations with Validation
 # ==========================================================
 
 from typing import Optional, Dict, Any, List, Tuple
@@ -57,6 +57,133 @@ class AnalyticsResponse:
             "error_id": self.error_id,
             "timestamp": self.timestamp
         }
+
+
+# ==========================================================
+# ✅ DATE VALIDATION ENGINE
+# ==========================================================
+
+class DateValidator:
+    """Validate date sequences for DN, PGI, POD"""
+    
+    @staticmethod
+    def validate_date_sequence(
+        create_date: Optional[datetime],
+        pgi_date: Optional[datetime],
+        pod_date: Optional[datetime]
+    ) -> Tuple[bool, List[str]]:
+        """
+        Validate the chronological order of dates.
+        
+        Rules:
+        - PGI Date >= DN Create Date
+        - POD Date >= PGI Date
+        - POD Date >= DN Create Date
+        
+        Returns:
+        - is_valid: bool
+        - issues: List[str]
+        """
+        issues = []
+        is_valid = True
+        
+        # Convert string dates to datetime if needed
+        if isinstance(create_date, str):
+            create_date = datetime.fromisoformat(create_date) if create_date else None
+        if isinstance(pgi_date, str):
+            pgi_date = datetime.fromisoformat(pgi_date) if pgi_date else None
+        if isinstance(pod_date, str):
+            pod_date = datetime.fromisoformat(pod_date) if pod_date else None
+        
+        # Check: PGI Date >= DN Create Date
+        if pgi_date and create_date:
+            if pgi_date < create_date:
+                issues.append(f"PGI Date ({pgi_date.date()}) occurs before DN Create Date ({create_date.date()})")
+                is_valid = False
+        
+        # Check: POD Date >= DN Create Date
+        if pod_date and create_date:
+            if pod_date < create_date:
+                issues.append(f"POD Date ({pod_date.date()}) occurs before DN Create Date ({create_date.date()})")
+                is_valid = False
+        
+        # Check: POD Date >= PGI Date
+        if pod_date and pgi_date:
+            if pod_date < pgi_date:
+                issues.append(f"POD Date ({pod_date.date()}) occurs before PGI Date ({pgi_date.date()})")
+                is_valid = False
+        
+        return is_valid, issues
+    
+    @staticmethod
+    def calculate_aging(
+        create_date: Optional[datetime],
+        pgi_date: Optional[datetime],
+        pod_date: Optional[datetime]
+    ) -> Dict[str, Any]:
+        """
+        Calculate aging with validation.
+        
+        Returns:
+        {
+            "dn_aging": int or None,
+            "pgi_aging": int or None,
+            "pod_aging": int or None,
+            "is_valid": bool,
+            "issues": List[str],
+            "status": str
+        }
+        """
+        # Convert string dates to datetime if needed
+        if isinstance(create_date, str):
+            create_date = datetime.fromisoformat(create_date) if create_date else None
+        if isinstance(pgi_date, str):
+            pgi_date = datetime.fromisoformat(pgi_date) if pgi_date else None
+        if isinstance(pod_date, str):
+            pod_date = datetime.fromisoformat(pod_date) if pod_date else None
+        
+        # Validate date sequence
+        is_valid, issues = DateValidator.validate_date_sequence(create_date, pgi_date, pod_date)
+        
+        result = {
+            "dn_aging": None,
+            "pgi_aging": None,
+            "pod_aging": None,
+            "is_valid": is_valid,
+            "issues": issues,
+            "status": "valid" if is_valid else "invalid"
+        }
+        
+        # Calculate aging only if dates are valid
+        if is_valid:
+            # DN Aging: POD Date - DN Create Date (if completed) OR Today - DN Create Date (if pending)
+            if create_date:
+                if pod_date:
+                    # Completed - use POD date
+                    dn_aging = (pod_date - create_date).days
+                elif pgi_date:
+                    # In Transit - use PGI date
+                    dn_aging = (datetime.now().date() - create_date.date()).days
+                else:
+                    # Pending - use today
+                    dn_aging = (datetime.now().date() - create_date.date()).days
+                result["dn_aging"] = dn_aging
+            
+            # PGI Aging: PGI Date - DN Create Date
+            if pgi_date and create_date:
+                if pgi_date >= create_date:
+                    result["pgi_aging"] = (pgi_date - create_date).days
+            
+            # POD Aging: POD Date - PGI Date
+            if pod_date and pgi_date:
+                if pod_date >= pgi_date:
+                    result["pod_aging"] = (pod_date - pgi_date).days
+        else:
+            # Invalid dates - show warnings
+            if issues:
+                result["issues"] = issues
+        
+        return result
 
 
 # ==========================================================
@@ -163,32 +290,28 @@ class AnalyticsRepository:
             self.db.close()
     
     # ==========================================================
-    # ✅ DEALER RESOLUTION - PURE POSTGRESQL
+    # ✅ ENTITY RESOLUTION - PURE POSTGRESQL
     # ==========================================================
     
     def resolve_dealer(self, dealer_input: str) -> Optional[str]:
-        """Resolve dealer name using PostgreSQL only"""
         if not dealer_input or not dealer_input.strip():
             return None
         
         dealer_input = dealer_input.strip()
         
         try:
-            # 1. Exact match (case-insensitive)
             result = self.db.query(DeliveryReport.customer_name).filter(
                 func.lower(DeliveryReport.customer_name) == func.lower(dealer_input)
             ).first()
             if result:
                 return result[0]
             
-            # 2. ILIKE match
             result = self.db.query(DeliveryReport.customer_name).filter(
                 DeliveryReport.customer_name.ilike(f"%{dealer_input}%")
             ).first()
             if result:
                 return result[0]
             
-            # 3. Token-based matching
             tokens = dealer_input.split()
             for token in tokens:
                 if len(token) > 2:
@@ -198,7 +321,6 @@ class AnalyticsRepository:
                     if result:
                         return result[0]
             
-            # 4. Fuzzy matching using PostgreSQL
             dealers = self.db.query(
                 func.distinct(DeliveryReport.customer_name)
             ).filter(
@@ -226,33 +348,25 @@ class AnalyticsRepository:
             logger.error(f"Dealer resolution error: {e}")
             return None
     
-    # ==========================================================
-    # ✅ WAREHOUSE RESOLUTION - PURE POSTGRESQL
-    # ==========================================================
-    
     def resolve_warehouse(self, warehouse_input: str) -> Optional[str]:
-        """Resolve warehouse name using PostgreSQL only"""
         if not warehouse_input or not warehouse_input.strip():
             return None
         
         warehouse_input = warehouse_input.strip()
         
         try:
-            # Exact match
             result = self.db.query(DeliveryReport.warehouse).filter(
                 func.lower(DeliveryReport.warehouse) == func.lower(warehouse_input)
             ).first()
             if result:
                 return result[0]
             
-            # ILIKE
             result = self.db.query(DeliveryReport.warehouse).filter(
                 DeliveryReport.warehouse.ilike(f"%{warehouse_input}%")
             ).first()
             if result:
                 return result[0]
             
-            # Token matching
             tokens = warehouse_input.split()
             for token in tokens:
                 if len(token) > 2:
@@ -268,33 +382,25 @@ class AnalyticsRepository:
             logger.error(f"Warehouse resolution error: {e}")
             return None
     
-    # ==========================================================
-    # ✅ CITY RESOLUTION - PURE POSTGRESQL
-    # ==========================================================
-    
     def resolve_city(self, city_input: str) -> Optional[str]:
-        """Resolve city name using PostgreSQL only"""
         if not city_input or not city_input.strip():
             return None
         
         city_input = city_input.strip()
         
         try:
-            # Exact match
             result = self.db.query(DeliveryReport.ship_to_city).filter(
                 func.lower(DeliveryReport.ship_to_city) == func.lower(city_input)
             ).first()
             if result:
                 return result[0]
             
-            # ILIKE
             result = self.db.query(DeliveryReport.ship_to_city).filter(
                 DeliveryReport.ship_to_city.ilike(f"%{city_input}%")
             ).first()
             if result:
                 return result[0]
             
-            # Token matching
             tokens = city_input.split()
             for token in tokens:
                 if len(token) > 2:
@@ -310,33 +416,25 @@ class AnalyticsRepository:
             logger.error(f"City resolution error: {e}")
             return None
     
-    # ==========================================================
-    # ✅ PRODUCT RESOLUTION - PURE POSTGRESQL
-    # ==========================================================
-    
     def resolve_product(self, product_input: str) -> Optional[str]:
-        """Resolve product name using PostgreSQL only"""
         if not product_input or not product_input.strip():
             return None
         
         product_input = product_input.strip()
         
         try:
-            # Check customer_model
             result = self.db.query(DeliveryReport.customer_model).filter(
                 func.lower(DeliveryReport.customer_model) == func.lower(product_input)
             ).first()
             if result and result[0]:
                 return result[0]
             
-            # Check material_no
             result = self.db.query(DeliveryReport.material_no).filter(
                 func.lower(DeliveryReport.material_no) == func.lower(product_input)
             ).first()
             if result and result[0]:
                 return result[0]
             
-            # ILIKE
             result = self.db.query(DeliveryReport.customer_model).filter(
                 DeliveryReport.customer_model.ilike(f"%{product_input}%")
             ).first()
@@ -349,16 +447,10 @@ class AnalyticsRepository:
             logger.error(f"Product resolution error: {e}")
             return None
     
-    # ==========================================================
-    # ✅ DN RESOLUTION - PURE POSTGRESQL
-    # ==========================================================
-    
     def resolve_dn(self, dn_input: str) -> Optional[str]:
-        """Resolve DN number using PostgreSQL only"""
         if not dn_input or not dn_input.strip():
             return None
         
-        # Normalize DN
         normalized = re.sub(r'[^0-9]', '', str(dn_input).strip())
         if len(normalized) < 8 or len(normalized) > 12:
             return None
@@ -376,11 +468,11 @@ class AnalyticsRepository:
             return None
     
     # ==========================================================
-    # 1. DN DASHBOARD
+    # 1. DN DASHBOARD - ✅ FIXED AGING
     # ==========================================================
     
     def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
-        """Complete DN dashboard from PostgreSQL"""
+        """Complete DN dashboard from PostgreSQL with validated aging"""
         try:
             normalized = self.resolve_dn(dn_no)
             if not normalized:
@@ -393,19 +485,12 @@ class AnalyticsRepository:
             if not record:
                 return {"error": f"DN {dn_no} not found"}
             
-            # Calculate aging
-            aging_days = 0
-            pgi_aging_days = 0
-            pod_aging_days = 0
-            
-            if record.dn_create_date:
-                aging_days = (datetime.now().date() - record.dn_create_date).days
-            
-            if record.good_issue_date and record.dn_create_date:
-                pgi_aging_days = (record.good_issue_date - record.dn_create_date).days
-            
-            if record.pod_date and record.good_issue_date:
-                pod_aging_days = (record.pod_date - record.good_issue_date).days
+            # ✅ Calculate aging with validation
+            aging_result = DateValidator.calculate_aging(
+                record.dn_create_date,
+                record.good_issue_date,
+                record.pod_date
+            )
             
             return {
                 "dn_number": record.dn_no,
@@ -428,9 +513,13 @@ class AnalyticsRepository:
                 "pgi_status": record.pgi_status,
                 "pod_status": record.pod_status,
                 "pending_flag": record.pending_flag,
-                "aging_days": aging_days,
-                "pgi_aging_days": pgi_aging_days,
-                "pod_aging_days": pod_aging_days
+                # ✅ Validated aging results
+                "aging": aging_result,
+                "dn_aging": aging_result.get("dn_aging"),
+                "pgi_aging": aging_result.get("pgi_aging"),
+                "pod_aging": aging_result.get("pod_aging"),
+                "aging_is_valid": aging_result.get("is_valid", True),
+                "aging_issues": aging_result.get("issues", [])
             }
             
         except Exception as e:
@@ -442,7 +531,6 @@ class AnalyticsRepository:
     # ==========================================================
     
     def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
-        """Complete dealer dashboard from PostgreSQL"""
         try:
             resolved = self.resolve_dealer(dealer_name)
             if not resolved:
@@ -487,7 +575,7 @@ class AnalyticsRepository:
             risk_level, risk_score = KPIEngine.calculate_risk_level(
                 delivery_rate,
                 pod_rate,
-                0  # avg_aging
+                0
             )
             
             return {
@@ -530,7 +618,6 @@ class AnalyticsRepository:
     # ==========================================================
     
     def get_warehouse_dashboard(self, warehouse_name: str) -> Dict[str, Any]:
-        """Complete warehouse dashboard from PostgreSQL"""
         try:
             resolved = self.resolve_warehouse(warehouse_name)
             if not resolved:
@@ -582,7 +669,6 @@ class AnalyticsRepository:
     # ==========================================================
     
     def get_city_dashboard(self, city_name: str) -> Dict[str, Any]:
-        """Complete city dashboard from PostgreSQL"""
         try:
             resolved = self.resolve_city(city_name)
             if not resolved:
@@ -630,7 +716,6 @@ class AnalyticsRepository:
     # ==========================================================
     
     def get_product_dashboard(self, product_name: str) -> Dict[str, Any]:
-        """Complete product dashboard from PostgreSQL"""
         try:
             resolved = self.resolve_product(product_name)
             if not resolved:
@@ -680,7 +765,6 @@ class AnalyticsRepository:
     # ==========================================================
     
     def get_pgi_dashboard(self) -> Dict[str, Any]:
-        """PGI dashboard from PostgreSQL"""
         try:
             result = self.db.query(
                 func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
@@ -710,7 +794,6 @@ class AnalyticsRepository:
     # ==========================================================
     
     def get_pod_dashboard(self) -> Dict[str, Any]:
-        """POD dashboard from PostgreSQL"""
         try:
             result = self.db.query(
                 func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
@@ -740,7 +823,6 @@ class AnalyticsRepository:
     # ==========================================================
     
     def get_delivery_dashboard(self) -> Dict[str, Any]:
-        """Delivery dashboard from PostgreSQL"""
         try:
             result = self.db.query(
                 func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
@@ -773,7 +855,6 @@ class AnalyticsRepository:
     # ==========================================================
     
     def get_executive_dashboard(self) -> Dict[str, Any]:
-        """Executive dashboard from PostgreSQL"""
         try:
             result = self.db.query(
                 func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
@@ -810,9 +891,7 @@ class AnalyticsRepository:
     # ==========================================================
     
     def get_control_tower_dashboard(self) -> Dict[str, Any]:
-        """Control tower dashboard from PostgreSQL"""
         try:
-            # Pending PGI > 7 days
             pgi_alerts = self.db.query(
                 DeliveryReport.dn_no,
                 DeliveryReport.customer_name,
@@ -823,7 +902,6 @@ class AnalyticsRepository:
                 func.date_part('day', func.now() - DeliveryReport.dn_create_date) > 7
             ).order_by(desc("days_old")).limit(10).all()
             
-            # Pending POD > 7 days
             pod_alerts = self.db.query(
                 DeliveryReport.dn_no,
                 DeliveryReport.customer_name,
@@ -867,16 +945,13 @@ class AnalyticsRepository:
     # ==========================================================
     
     def get_revenue_dashboard(self) -> Dict[str, Any]:
-        """Revenue dashboard from PostgreSQL"""
         try:
-            # Total revenue
             result = self.db.query(
                 func.sum(DeliveryReport.dn_amount).label("total_revenue"),
                 func.sum(DeliveryReport.dn_qty).label("total_units"),
                 func.count(distinct(DeliveryReport.dn_no)).label("total_dns")
             ).first()
             
-            # Revenue by dealer (top 10)
             by_dealer = self.db.query(
                 DeliveryReport.customer_name.label("dealer"),
                 func.sum(DeliveryReport.dn_amount).label("revenue")
@@ -910,7 +985,6 @@ class AnalyticsRepository:
     # ==========================================================
     
     def get_ranking_dashboard(self, limit: int = 10) -> Dict[str, Any]:
-        """Dealer ranking from PostgreSQL"""
         try:
             results = self.db.query(
                 DeliveryReport.customer_name.label("dealer"),
@@ -947,7 +1021,6 @@ class AnalyticsRepository:
     # ==========================================================
     
     def get_aging_dashboard(self) -> Dict[str, Any]:
-        """Aging dashboard from PostgreSQL"""
         try:
             result = self.db.query(
                 func.count(distinct(case((func.date_part('day', func.now() - DeliveryReport.dn_create_date) <= 7, DeliveryReport.dn_no), else_=None))).label("days_0_7"),
@@ -977,18 +1050,12 @@ class AnalyticsRepository:
 # ==========================================================
 
 class AnalyticsService:
-    """Main analytics service - PostgreSQL only"""
-    
     def __init__(self, db: Optional[Session] = None):
         self.repo = AnalyticsRepository(db)
-        logger.info("✅ AnalyticsService v26.0 initialized - PostgreSQL Only")
+        logger.info("✅ AnalyticsService v27.0 initialized - Fixed Aging")
     
     def close(self):
         self.repo.close()
-    
-    # ==========================================================
-    # DEALER METHODS
-    # ==========================================================
     
     def resolve_dealer(self, dealer_name: str) -> Optional[str]:
         return self.repo.resolve_dealer(dealer_name)
@@ -1003,10 +1070,6 @@ class AnalyticsService:
             logger.error(f"Get dealer dashboard failed: {e}")
             return AnalyticsResponse(success=False, error=str(e))
     
-    # ==========================================================
-    # WAREHOUSE METHODS
-    # ==========================================================
-    
     def resolve_warehouse(self, warehouse_name: str) -> Optional[str]:
         return self.repo.resolve_warehouse(warehouse_name)
     
@@ -1019,10 +1082,6 @@ class AnalyticsService:
         except Exception as e:
             logger.error(f"Get warehouse dashboard failed: {e}")
             return AnalyticsResponse(success=False, error=str(e))
-    
-    # ==========================================================
-    # CITY METHODS
-    # ==========================================================
     
     def resolve_city(self, city_name: str) -> Optional[str]:
         return self.repo.resolve_city(city_name)
@@ -1037,10 +1096,6 @@ class AnalyticsService:
             logger.error(f"Get city dashboard failed: {e}")
             return AnalyticsResponse(success=False, error=str(e))
     
-    # ==========================================================
-    # PRODUCT METHODS
-    # ==========================================================
-    
     def resolve_product(self, product_name: str) -> Optional[str]:
         return self.repo.resolve_product(product_name)
     
@@ -1054,10 +1109,6 @@ class AnalyticsService:
             logger.error(f"Get product dashboard failed: {e}")
             return AnalyticsResponse(success=False, error=str(e))
     
-    # ==========================================================
-    # DN METHODS
-    # ==========================================================
-    
     def resolve_dn(self, dn_no: str) -> Optional[str]:
         return self.repo.resolve_dn(dn_no)
     
@@ -1070,10 +1121,6 @@ class AnalyticsService:
         except Exception as e:
             logger.error(f"Get DN dashboard failed: {e}")
             return AnalyticsResponse(success=False, error=str(e))
-    
-    # ==========================================================
-    # DASHBOARD METHODS
-    # ==========================================================
     
     def get_pgi_dashboard(self) -> AnalyticsResponse:
         try:
@@ -1178,11 +1225,12 @@ __all__ = [
     'AnalyticsResponse',
     'AnalyticsRepository',
     'KPIEngine',
+    'DateValidator',
     'get_analytics_service',
     'test_database_connection'
 ]
 
 
 # ==========================================================
-# END OF FILE - v26.0 PRODUCTION READY
+# END OF FILE - v27.0 PRODUCTION READY
 # ==========================================================
