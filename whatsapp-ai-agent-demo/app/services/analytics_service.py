@@ -1220,67 +1220,108 @@ class AnalyticsRepository:
   # ==========================================================
 # BLOCK 10: DN DASHBOARD
 # ==========================================================
-    
+
     def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
-        """Complete DN dashboard from PostgreSQL with business date interpretation"""
-        try:
-            normalized = self.resolver.resolve_dn(dn_no)
-            if not normalized:
-                return {"error": f"DN {dn_no} not found"}
+    """Complete DN dashboard with production logging and validation."""
+    try:
+        normalized = self.resolver.resolve_dn(dn_no)
+        if not normalized:
+            return {"error": f"DN {dn_no} not found"}
+        
+        record = self.db.query(DeliveryReport).filter(
+            cast(DeliveryReport.dn_no, String) == normalized
+        ).first()
+        
+        if not record:
+            return {"error": f"DN {dn_no} not found"}
+        
+        # ✅ Calculate aging
+        aging_result = DateValidator.calculate_aging(
+            record.dn_create_date,
+            record.good_issue_date,
+            record.pod_date
+        )
+        
+        # ==========================================================
+        # PRODUCTION LOGGING - DN NUMBER AND VALUES
+        # ==========================================================
+        logger.info(f"📊 DN {normalized}:")
+        logger.info(f"   Create: {record.dn_create_date}")
+        logger.info(f"   PGI: {record.good_issue_date}")
+        logger.info(f"   POD: {record.pod_date}")
+        logger.info(f"   Scenario: {aging_result.get('scenario')}")
+        logger.info(f"   Delivery Aging: {aging_result.get('delivery_aging_text')}")
+        logger.info(f"   POD Aging: {aging_result.get('pod_aging_text')}")
+        logger.info(f"   Total Cycle: {aging_result.get('total_cycle_text')}")
+        logger.info(f"   pod_received: {aging_result.get('pod_received')}")
+        
+        # ==========================================================
+        # PRODUCTION VALIDATION
+        # ==========================================================
+        if not DateValidator.validate_dashboard_compatibility(aging_result):
+            logger.error(f"❌ Dashboard compatibility validation failed for DN {normalized}")
+            # Continue but log error - don't crash production
+        
+        # ==========================================================
+        # BUILD RESPONSE
+        # ==========================================================
+        response = {
+            "dn_number": record.dn_no,
+            "customer_name": record.customer_name,
+            "dealer_code": record.dealer_code or "",
+            "customer_code": record.customer_code or "",
+            "warehouse": record.warehouse,
+            "ship_to_city": record.ship_to_city,
+            "sales_office": record.sales_office or "",
+            "sales_manager": record.sales_manager or "",
+            "division": record.division or "",
+            "customer_model": record.customer_model or "",
+            "material_no": record.material_no or "",
+            "units": int(record.dn_qty) if record.dn_qty else 0,
+            "amount": float(record.dn_amount) if record.dn_amount else 0,
+            "dn_create_date": record.dn_create_date.isoformat() if record.dn_create_date else None,
+            "good_issue_date": record.good_issue_date.isoformat() if record.good_issue_date else None,
+            "pod_date": record.pod_date.isoformat() if record.pod_date else None,
+            "delivery_status": record.delivery_status,
+            "pgi_status": record.pgi_status,
+            "pod_status": record.pod_status,
+            "pending_flag": record.pending_flag,
             
-            record = self.db.query(DeliveryReport).filter(
-                cast(DeliveryReport.dn_no, String) == normalized
-            ).first()
-            
-            if not record:
-                return {"error": f"DN {dn_no} not found"}
-            
-            # ✅ Calculate aging with business date interpretation
-            aging_result = DateValidator.calculate_aging(
-                record.dn_create_date,
-                record.good_issue_date,
-                record.pod_date
-            )
-            
-            return {
-                "dn_number": record.dn_no,
-                "customer_name": record.customer_name,
-                "dealer_code": record.dealer_code or "",
-                "customer_code": record.customer_code or "",
-                "warehouse": record.warehouse,
-                "ship_to_city": record.ship_to_city,
-                "sales_office": record.sales_office or "",
-                "sales_manager": record.sales_manager or "",
-                "division": record.division or "",
-                "customer_model": record.customer_model or "",
-                "material_no": record.material_no or "",
-                "units": int(record.dn_qty) if record.dn_qty else 0,
-                "amount": float(record.dn_amount) if record.dn_amount else 0,
-                "dn_create_date": record.dn_create_date.isoformat() if record.dn_create_date else None,
-                "good_issue_date": record.good_issue_date.isoformat() if record.good_issue_date else None,
-                "pod_date": record.pod_date.isoformat() if record.pod_date else None,
-                "delivery_status": record.delivery_status,
-                "pgi_status": record.pgi_status,
-                "pod_status": record.pod_status,
-                "pending_flag": record.pending_flag,
-                
-                # ✅ CORRECT AGING FIELDS
-                "delivery_aging": aging_result.get("delivery_aging"),
-                "pod_aging": aging_result.get("pod_aging"),
-                "total_cycle": aging_result.get("total_cycle"),
-                "delivery_aging_text": aging_result.get("delivery_aging_text"),
-                "pod_aging_text": aging_result.get("pod_aging_text"),
-                "total_cycle_text": aging_result.get("total_cycle_text"),
-                "is_valid": aging_result.get("is_valid", True),
-                "issues": aging_result.get("issues", [])
-            }
-            
-        except Exception as e:
-            logger.error(f"Get DN dashboard failed: {e}")
-            return {"error": str(e)}
-
-
-    # ==========================================================
+            # ✅ CORRECT AGING FIELDS - PASS THROUGH WITHOUT MODIFICATION
+            "delivery_aging": aging_result.get("delivery_aging"),
+            "pod_aging": aging_result.get("pod_aging"),
+            "total_cycle": aging_result.get("total_cycle"),
+            "delivery_aging_text": aging_result.get("delivery_aging_text"),
+            "pod_aging_text": aging_result.get("pod_aging_text"),
+            "total_cycle_text": aging_result.get("total_cycle_text"),
+            "is_valid": aging_result.get("is_valid", True),
+            "issues": aging_result.get("issues", []),
+            "scenario": aging_result.get("scenario"),
+            "pod_received": aging_result.get("pod_received"),
+            "pgi_completed": aging_result.get("pgi_completed"),
+            "delivery_completed": aging_result.get("delivery_completed"),
+        }
+        
+        # ==========================================================
+        # FINAL VALIDATION BEFORE RETURN
+        # ==========================================================
+        if response["pod_received"]:
+            assert "(Pending)" not in response["pod_aging_text"], \
+                f"❌ CRITICAL: DN {normalized} - POD received but aging shows Pending"
+            assert response["total_cycle_text"] != "In Progress", \
+                f"❌ CRITICAL: DN {normalized} - POD received but Total Cycle is In Progress"
+            assert response["scenario"] == "SCENARIO_1_COMPLETE", \
+                f"❌ CRITICAL: DN {normalized} - Wrong scenario: {response['scenario']}"
+        
+        logger.info(f"✅ DN {normalized} dashboard built successfully")
+        return response
+        
+    except Exception as e:
+        logger.error(f"❌ Get DN dashboard failed for {dn_no}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {"error": str(e)}
+        # ==========================================================
     # BLOCK 11: DEALER DASHBOARD
     # ==========================================================
     # ==========================================================
