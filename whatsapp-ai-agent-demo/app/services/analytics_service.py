@@ -1,8 +1,8 @@
 # ==========================================================
-# FILE: app/services/analytics_service.py (v27.0 - FIXED AGING)
+# FILE: app/services/analytics_service.py (v28.0 - PRODUCTION)
 # ==========================================================
 # PURPOSE: PRIMARY ANALYTICS ENGINE - PostgreSQL Only
-# VERSION: 27.0 - Correct Aging Calculations with Validation
+# VERSION: 28.0 - Complete PostgreSQL Integration
 # ==========================================================
 
 from typing import Optional, Dict, Any, List, Tuple
@@ -56,6 +56,39 @@ class AnalyticsResponse:
             "error": self.error,
             "error_id": self.error_id,
             "timestamp": self.timestamp
+        }
+
+
+# ==========================================================
+# ✅ DATABASE CONNECTION VALIDATION
+# ==========================================================
+
+def test_database_connection() -> Dict[str, Any]:
+    """
+    Test PostgreSQL connection and return status.
+    This verifies the connection to delivery_reports table.
+    """
+    try:
+        db = SessionLocal()
+        total_records = db.query(DeliveryReport).count()
+        db.close()
+        
+        logger.info(f"✅ PostgreSQL connected! Found {total_records} records in delivery_reports")
+        
+        return {
+            "connected": True,
+            "total_records": total_records,
+            "table_name": "delivery_reports",
+            "status": "healthy",
+            "message": f"Connected successfully. Total Records: {total_records}"
+        }
+    except Exception as e:
+        logger.error(f"❌ Database connection test failed: {e}")
+        return {
+            "connected": False,
+            "error": str(e),
+            "status": "unhealthy",
+            "message": f"Connection failed: {str(e)}"
         }
 
 
@@ -158,14 +191,11 @@ class DateValidator:
         if is_valid:
             # DN Aging: POD Date - DN Create Date (if completed) OR Today - DN Create Date (if pending)
             if create_date:
-                if pod_date:
+                if pod_date and create_date:
                     # Completed - use POD date
                     dn_aging = (pod_date - create_date).days
-                elif pgi_date:
-                    # In Transit - use PGI date
-                    dn_aging = (datetime.now().date() - create_date.date()).days
                 else:
-                    # Pending - use today
+                    # Not completed - use today
                     dn_aging = (datetime.now().date() - create_date.date()).days
                 result["dn_aging"] = dn_aging
             
@@ -184,35 +214,6 @@ class DateValidator:
                 result["issues"] = issues
         
         return result
-
-
-# ==========================================================
-# ✅ DATABASE CONNECTION TEST
-# ==========================================================
-
-def test_database_connection() -> Dict[str, Any]:
-    """
-    Test PostgreSQL connection and return status.
-    This verifies the connection to delivery_reports table.
-    """
-    try:
-        db = SessionLocal()
-        total_records = db.query(DeliveryReport).count()
-        db.close()
-        
-        return {
-            "connected": True,
-            "total_records": total_records,
-            "table_name": "delivery_reports",
-            "status": "healthy"
-        }
-    except Exception as e:
-        logger.error(f"Database connection test failed: {e}")
-        return {
-            "connected": False,
-            "error": str(e),
-            "status": "unhealthy"
-        }
 
 
 # ==========================================================
@@ -294,24 +295,28 @@ class AnalyticsRepository:
     # ==========================================================
     
     def resolve_dealer(self, dealer_input: str) -> Optional[str]:
+        """Resolve dealer name using PostgreSQL only"""
         if not dealer_input or not dealer_input.strip():
             return None
         
         dealer_input = dealer_input.strip()
         
         try:
+            # Exact match
             result = self.db.query(DeliveryReport.customer_name).filter(
                 func.lower(DeliveryReport.customer_name) == func.lower(dealer_input)
             ).first()
             if result:
                 return result[0]
             
+            # ILIKE match
             result = self.db.query(DeliveryReport.customer_name).filter(
                 DeliveryReport.customer_name.ilike(f"%{dealer_input}%")
             ).first()
             if result:
                 return result[0]
             
+            # Token-based matching
             tokens = dealer_input.split()
             for token in tokens:
                 if len(token) > 2:
@@ -321,6 +326,7 @@ class AnalyticsRepository:
                     if result:
                         return result[0]
             
+            # Fuzzy matching
             dealers = self.db.query(
                 func.distinct(DeliveryReport.customer_name)
             ).filter(
@@ -349,6 +355,7 @@ class AnalyticsRepository:
             return None
     
     def resolve_warehouse(self, warehouse_input: str) -> Optional[str]:
+        """Resolve warehouse name using PostgreSQL only"""
         if not warehouse_input or not warehouse_input.strip():
             return None
         
@@ -383,6 +390,7 @@ class AnalyticsRepository:
             return None
     
     def resolve_city(self, city_input: str) -> Optional[str]:
+        """Resolve city name using PostgreSQL only"""
         if not city_input or not city_input.strip():
             return None
         
@@ -417,6 +425,7 @@ class AnalyticsRepository:
             return None
     
     def resolve_product(self, product_input: str) -> Optional[str]:
+        """Resolve product name using PostgreSQL only"""
         if not product_input or not product_input.strip():
             return None
         
@@ -448,6 +457,7 @@ class AnalyticsRepository:
             return None
     
     def resolve_dn(self, dn_input: str) -> Optional[str]:
+        """Resolve DN number using PostgreSQL only"""
         if not dn_input or not dn_input.strip():
             return None
         
@@ -468,7 +478,7 @@ class AnalyticsRepository:
             return None
     
     # ==========================================================
-    # 1. DN DASHBOARD - ✅ FIXED AGING
+    # 1. DN DASHBOARD
     # ==========================================================
     
     def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
@@ -513,7 +523,6 @@ class AnalyticsRepository:
                 "pgi_status": record.pgi_status,
                 "pod_status": record.pod_status,
                 "pending_flag": record.pending_flag,
-                # ✅ Validated aging results
                 "aging": aging_result,
                 "dn_aging": aging_result.get("dn_aging"),
                 "pgi_aging": aging_result.get("pgi_aging"),
@@ -531,6 +540,7 @@ class AnalyticsRepository:
     # ==========================================================
     
     def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
+        """Complete dealer dashboard from PostgreSQL"""
         try:
             resolved = self.resolve_dealer(dealer_name)
             if not resolved:
@@ -618,6 +628,7 @@ class AnalyticsRepository:
     # ==========================================================
     
     def get_warehouse_dashboard(self, warehouse_name: str) -> Dict[str, Any]:
+        """Complete warehouse dashboard from PostgreSQL"""
         try:
             resolved = self.resolve_warehouse(warehouse_name)
             if not resolved:
@@ -669,6 +680,7 @@ class AnalyticsRepository:
     # ==========================================================
     
     def get_city_dashboard(self, city_name: str) -> Dict[str, Any]:
+        """Complete city dashboard from PostgreSQL"""
         try:
             resolved = self.resolve_city(city_name)
             if not resolved:
@@ -716,6 +728,7 @@ class AnalyticsRepository:
     # ==========================================================
     
     def get_product_dashboard(self, product_name: str) -> Dict[str, Any]:
+        """Complete product dashboard from PostgreSQL"""
         try:
             resolved = self.resolve_product(product_name)
             if not resolved:
@@ -765,6 +778,7 @@ class AnalyticsRepository:
     # ==========================================================
     
     def get_pgi_dashboard(self) -> Dict[str, Any]:
+        """PGI dashboard from PostgreSQL"""
         try:
             result = self.db.query(
                 func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
@@ -794,6 +808,7 @@ class AnalyticsRepository:
     # ==========================================================
     
     def get_pod_dashboard(self) -> Dict[str, Any]:
+        """POD dashboard from PostgreSQL"""
         try:
             result = self.db.query(
                 func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
@@ -823,6 +838,7 @@ class AnalyticsRepository:
     # ==========================================================
     
     def get_delivery_dashboard(self) -> Dict[str, Any]:
+        """Delivery dashboard from PostgreSQL"""
         try:
             result = self.db.query(
                 func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
@@ -855,6 +871,7 @@ class AnalyticsRepository:
     # ==========================================================
     
     def get_executive_dashboard(self) -> Dict[str, Any]:
+        """Executive dashboard from PostgreSQL"""
         try:
             result = self.db.query(
                 func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
@@ -891,6 +908,7 @@ class AnalyticsRepository:
     # ==========================================================
     
     def get_control_tower_dashboard(self) -> Dict[str, Any]:
+        """Control tower dashboard from PostgreSQL"""
         try:
             pgi_alerts = self.db.query(
                 DeliveryReport.dn_no,
@@ -945,6 +963,7 @@ class AnalyticsRepository:
     # ==========================================================
     
     def get_revenue_dashboard(self) -> Dict[str, Any]:
+        """Revenue dashboard from PostgreSQL"""
         try:
             result = self.db.query(
                 func.sum(DeliveryReport.dn_amount).label("total_revenue"),
@@ -985,6 +1004,7 @@ class AnalyticsRepository:
     # ==========================================================
     
     def get_ranking_dashboard(self, limit: int = 10) -> Dict[str, Any]:
+        """Dealer ranking from PostgreSQL"""
         try:
             results = self.db.query(
                 DeliveryReport.customer_name.label("dealer"),
@@ -1021,6 +1041,7 @@ class AnalyticsRepository:
     # ==========================================================
     
     def get_aging_dashboard(self) -> Dict[str, Any]:
+        """Aging dashboard from PostgreSQL"""
         try:
             result = self.db.query(
                 func.count(distinct(case((func.date_part('day', func.now() - DeliveryReport.dn_create_date) <= 7, DeliveryReport.dn_no), else_=None))).label("days_0_7"),
@@ -1050,15 +1071,37 @@ class AnalyticsRepository:
 # ==========================================================
 
 class AnalyticsService:
+    """Main analytics service - PostgreSQL only"""
+    
     def __init__(self, db: Optional[Session] = None):
         self.repo = AnalyticsRepository(db)
-        logger.info("✅ AnalyticsService v27.0 initialized - Fixed Aging")
+        logger.info("✅ AnalyticsService v28.0 initialized - PostgreSQL Only")
     
     def close(self):
         self.repo.close()
     
+    # ==========================================================
+    # ENTITY RESOLUTION
+    # ==========================================================
+    
     def resolve_dealer(self, dealer_name: str) -> Optional[str]:
         return self.repo.resolve_dealer(dealer_name)
+    
+    def resolve_warehouse(self, warehouse_name: str) -> Optional[str]:
+        return self.repo.resolve_warehouse(warehouse_name)
+    
+    def resolve_city(self, city_name: str) -> Optional[str]:
+        return self.repo.resolve_city(city_name)
+    
+    def resolve_product(self, product_name: str) -> Optional[str]:
+        return self.repo.resolve_product(product_name)
+    
+    def resolve_dn(self, dn_no: str) -> Optional[str]:
+        return self.repo.resolve_dn(dn_no)
+    
+    # ==========================================================
+    # DASHBOARDS
+    # ==========================================================
     
     def get_dealer_dashboard(self, dealer_name: str) -> AnalyticsResponse:
         try:
@@ -1070,9 +1113,6 @@ class AnalyticsService:
             logger.error(f"Get dealer dashboard failed: {e}")
             return AnalyticsResponse(success=False, error=str(e))
     
-    def resolve_warehouse(self, warehouse_name: str) -> Optional[str]:
-        return self.repo.resolve_warehouse(warehouse_name)
-    
     def get_warehouse_dashboard(self, warehouse_name: str) -> AnalyticsResponse:
         try:
             result = self.repo.get_warehouse_dashboard(warehouse_name)
@@ -1082,9 +1122,6 @@ class AnalyticsService:
         except Exception as e:
             logger.error(f"Get warehouse dashboard failed: {e}")
             return AnalyticsResponse(success=False, error=str(e))
-    
-    def resolve_city(self, city_name: str) -> Optional[str]:
-        return self.repo.resolve_city(city_name)
     
     def get_city_dashboard(self, city_name: str) -> AnalyticsResponse:
         try:
@@ -1096,9 +1133,6 @@ class AnalyticsService:
             logger.error(f"Get city dashboard failed: {e}")
             return AnalyticsResponse(success=False, error=str(e))
     
-    def resolve_product(self, product_name: str) -> Optional[str]:
-        return self.repo.resolve_product(product_name)
-    
     def get_product_dashboard(self, product_name: str) -> AnalyticsResponse:
         try:
             result = self.repo.get_product_dashboard(product_name)
@@ -1108,9 +1142,6 @@ class AnalyticsService:
         except Exception as e:
             logger.error(f"Get product dashboard failed: {e}")
             return AnalyticsResponse(success=False, error=str(e))
-    
-    def resolve_dn(self, dn_no: str) -> Optional[str]:
-        return self.repo.resolve_dn(dn_no)
     
     def get_dn_dashboard(self, dn_no: str) -> AnalyticsResponse:
         try:
@@ -1232,5 +1263,5 @@ __all__ = [
 
 
 # ==========================================================
-# END OF FILE - v27.0 PRODUCTION READY
+# END OF FILE - v28.0 PRODUCTION READY
 # ==========================================================
