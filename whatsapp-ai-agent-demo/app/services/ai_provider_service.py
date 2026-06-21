@@ -1379,148 +1379,6 @@ class AIOrchestrator:
 # ==========================================================
 # BLOCK 22: FORMATTERS
 # ==========================================================
-
-    def _format_dealer_dashboard(self, data: Dict, dealer_name: str) -> str:
-        try:
-            if "error" in data:
-                return f"❌ {data['error']}"
-            
-            lines = [
-                "🏪 *DEALER DASHBOARD*",
-                "",
-                "👤 *Dealer Profile*",
-                f"Name: {dealer_name}",
-                f"Code: {data.get('dealer_code', 'N/A')}",
-                f"City: {data.get('city', 'N/A')}",
-                f"Warehouse: {data.get('warehouse', 'N/A')}",
-                "",
-                "📊 *Business Summary*",
-                f"DNs: {data.get('total_dns', 0):,}",
-                f"Units: {data.get('total_units', 0):,}",
-                f"Revenue: PKR {data.get('total_revenue', 0):,.0f}",
-                "",
-                "📈 *Performance*",
-                f"Delivery Rate: {data.get('delivery_rate', 0):.1f}%",
-                f"PGI Rate: {data.get('pgi_rate', 0):.1f}%",
-                f"POD Rate: {data.get('pod_rate', 0):.1f}%",
-                "",
-                f"Pending DNs: {data.get('pending_dns', 0)}",
-                f"Pending PODs: {data.get('pending_pod_dns', 0)}",
-                "",
-                "⚠️ *Risk*",
-                f"Risk Level: {data.get('risk_level', 'Low')}",
-                f"Health Score: {data.get('health_score', 0)}/100"
-            ]
-            return self._truncate_response("\n".join(lines))
-        except Exception as e:
-            logger.error(f"Dealer format error: {e}")
-            return f"❌ Unable to format dealer dashboard for {dealer_name}"
-    
-    def _format_dealer_ranking(self, data: Dict) -> str:
-        try:
-            if "error" in data:
-                return f"❌ {data['error']}"
-            
-            dealers = data.get("ranking", [])
-            if not dealers:
-                return "❌ No dealer data available."
-            
-            lines = ["🏆 *DEALER RANKING*", "", "Top 10 Dealers by Revenue:"]
-            for i, dealer in enumerate(dealers[:10], 1):
-                name = dealer.get("dealer", "Unknown")
-                revenue = dealer.get("revenue", 0)
-                delivery_rate = dealer.get("delivery_rate", 0)
-                lines.append(f"{i}. {name}")
-                lines.append(f"   PKR {revenue:,.0f} | Delivery: {delivery_rate:.1f}%")
-            return self._truncate_response("\n".join(lines))
-        except Exception as e:
-            logger.error(f"Dealer ranking format error: {e}")
-            return "❌ Unable to format dealer ranking"
-    
-    def _format_warehouse_dashboard(self, data: Dict, warehouse_name: str) -> str:
-        try:
-            if "error" in data:
-                return f"❌ {data['error']}"
-            
-            lines = [
-                "🏭 *WAREHOUSE DASHBOARD*",
-                "",
-                f"Warehouse: {warehouse_name}",
-                f"Code: {data.get('warehouse_code', 'N/A')}",
-                "",
-                "📍 *Coverage*",
-                f"Dealers: {data.get('total_dealers', 0):,}",
-                f"Cities: {data.get('cities_served', 0):,}",
-                "",
-                "📊 *Business*",
-                f"DNs: {data.get('total_dns', 0):,}",
-                f"Units: {data.get('total_units', 0):,}",
-                f"Revenue: PKR {data.get('total_revenue', 0):,.0f}",
-                "",
-                "📈 *Performance*",
-                f"Delivery Rate: {data.get('delivery_rate', 0):.1f}%",
-                "",
-                f"Pending DNs: {data.get('pending_dns', 0):,}",
-                f"Pending PODs: {data.get('pending_pod_dns', 0):,}"
-            ]
-            return self._truncate_response("\n".join(lines))
-        except Exception as e:
-            logger.error(f"Warehouse format error: {e}")
-            return f"❌ Unable to format warehouse dashboard for {warehouse_name}"
-    
-    def _format_city_dashboard(self, data: Dict, city_name: str) -> str:
-        try:
-            if "error" in data:
-                return f"❌ {data['error']}"
-            
-            lines = [
-                "🏙️ *CITY DASHBOARD*",
-                "",
-                f"City: {city_name}",
-                "",
-                "📊 *Business*",
-                f"Dealers: {data.get('total_dealers', 0):,}",
-                f"Warehouses: {data.get('total_warehouses', 0)}",
-                f"DNs: {data.get('total_dns', 0):,}",
-                f"Units: {data.get('total_units', 0):,}",
-                f"Revenue: PKR {data.get('total_revenue', 0):,.0f}",
-                "",
-                "📈 *Performance*",
-                f"Delivery Rate: {data.get('delivery_rate', 0):.1f}%",
-                "",
-                f"Pending DNs: {data.get('pending_dns', 0)}",
-                f"Pending PODs: {data.get('pending_pod_dns', 0)}"
-            ]
-            return self._truncate_response("\n".join(lines))
-        except Exception as e:
-            logger.error(f"City format error: {e}")
-            return f"❌ Unable to format city dashboard for {city_name}"
-    
-    def _format_product_dashboard(self, data: Dict, product_name: str) -> str:
-        try:
-            if "error" in data:
-                return f"❌ {data['error']}"
-            
-            lines = [
-                f"📦 *PRODUCT DASHBOARD*",
-                "",
-                f"Product: {product_name}",
-                "",
-                "📊 *Performance*",
-                f"Revenue: PKR {data.get('revenue', 0):,.0f}",
-                f"Units: {data.get('units', 0):,}",
-                f"DNs: {data.get('dns', 0):,}",
-                f"Dealers: {data.get('dealers', 0)}",
-                f"Cities: {data.get('cities', 0)}",
-                f"Warehouses: {data.get('warehouses', 0)}",
-                "",
-                f"Delivery Rate: {data.get('delivery_rate', 0):.1f}%"
-            ]
-            return self._truncate_response("\n".join(lines))
-        except Exception as e:
-            logger.error(f"Product format error: {e}")
-            return f"❌ Unable to format product dashboard for {product_name}"
-    
     def _format_dn_dashboard(self, data: Dict, dn_number: str) -> str:
         try:
             if "error" in data:
@@ -1529,6 +1387,34 @@ class AIOrchestrator:
             status = data.get('delivery_status', 'Unknown')
             status_emoji = "✅" if status == "Completed" else "🚚" if status == "In Transit" else "⏳"
             pending_text = "🔴 Yes" if data.get('pending_flag') else "🟢 No"
+            
+            # ✅ Get aging from the CORRECT field names
+            dn_aging = data.get('dn_aging')
+            pgi_aging = data.get('pgi_aging')
+            pod_aging = data.get('pod_aging')
+            aging_is_valid = data.get('aging_is_valid', True)
+            aging_issues = data.get('aging_issues', [])
+            
+            # Format aging display
+            aging_lines = []
+            
+            # DN Aging
+            if dn_aging is not None:
+                aging_lines.append(f"DN Aging: {dn_aging} days")
+            else:
+                aging_lines.append("DN Aging: N/A")
+            
+            # PGI Aging
+            if pgi_aging is not None:
+                aging_lines.append(f"PGI Aging: {pgi_aging} days")
+            else:
+                aging_lines.append("PGI Aging: N/A")
+            
+            # POD Aging
+            if pod_aging is not None:
+                aging_lines.append(f"POD Aging: {pod_aging} days")
+            else:
+                aging_lines.append("POD Aging: N/A")
             
             lines = [
                 "📄 *DN TRACKING*",
@@ -1557,181 +1443,33 @@ class AIOrchestrator:
                 f"POD: {data.get('pod_date', 'N/A')}",
                 "",
                 "⏳ *Aging*",
-                f"Total: {data.get('aging_days', 0)} days",
-                f"PGI Aging: {data.get('pgi_aging_days', 0)} days",
-                f"POD Aging: {data.get('pod_aging_days', 0)} days",
+            ]
+            
+            # Add aging lines
+            lines.extend(aging_lines)
+            
+            # ✅ Add validation warnings if dates are invalid
+            if not aging_is_valid and aging_issues:
+                lines.append("")
+                lines.append("⚠ *Data Issue Detected*")
+                for issue in aging_issues:
+                    lines.append(f"   {issue}")
+                lines.append("   Please verify source data.")
+            
+            lines.extend([
                 "",
                 "📋 *Status*",
                 f"Delivery: {status} {status_emoji}",
                 f"PGI: {data.get('pgi_status', 'N/A')}",
                 f"POD: {data.get('pod_status', 'N/A')}",
                 f"Pending: {pending_text}"
-            ]
+            ])
+            
             return self._truncate_response("\n".join(lines))
         except Exception as e:
             logger.error(f"DN format error: {e}")
             return f"❌ Unable to format DN details for {dn_number}"
     
-    def _format_pgi_dashboard(self, data: Dict) -> str:
-        try:
-            if "error" in data:
-                return f"❌ {data['error']}"
-            
-            lines = [
-                "📋 *PGI DASHBOARD*",
-                "",
-                f"Total DNs: {data.get('total_dns', 0):,}",
-                f"PGI Completed: {data.get('pgi_completed', 0):,}",
-                f"PGI Pending: {data.get('pgi_pending', 0):,}",
-                f"In Transit: {data.get('in_transit', 0):,}",
-                f"PGI Rate: {data.get('pgi_rate', 0):.1f}%"
-            ]
-            return self._truncate_response("\n".join(lines))
-        except Exception as e:
-            logger.error(f"PGI format error: {e}")
-            return "❌ Unable to format PGI dashboard"
-    
-    def _format_pod_dashboard(self, data: Dict) -> str:
-        try:
-            if "error" in data:
-                return f"❌ {data['error']}"
-            
-            lines = [
-                "✅ *POD DASHBOARD*",
-                "",
-                f"Total DNs: {data.get('total_dns', 0):,}",
-                f"Delivered DNs: {data.get('delivered_dns', 0):,}",
-                f"POD Completed: {data.get('pod_completed', 0):,}",
-                f"POD Pending: {data.get('pod_pending', 0):,}",
-                f"POD Rate: {data.get('pod_rate', 0):.1f}%"
-            ]
-            return self._truncate_response("\n".join(lines))
-        except Exception as e:
-            logger.error(f"POD format error: {e}")
-            return "❌ Unable to format POD dashboard"
-    
-    def _format_delivery_dashboard(self, data: Dict) -> str:
-        try:
-            if "error" in data:
-                return f"❌ {data['error']}"
-            
-            lines = [
-                "🚚 *DELIVERY DASHBOARD*",
-                "",
-                f"Total DNs: {data.get('total_dns', 0):,}",
-                f"Delivered: {data.get('delivered', 0):,}",
-                f"In Transit: {data.get('in_transit', 0):,}",
-                f"Pending PGI: {data.get('pending_pgi', 0):,}",
-                f"Pending: {data.get('pending', 0):,}",
-                "",
-                f"Delivery Rate: {data.get('delivery_rate', 0):.1f}%",
-                f"PGI Rate: {data.get('pgi_rate', 0):.1f}%"
-            ]
-            return self._truncate_response("\n".join(lines))
-        except Exception as e:
-            logger.error(f"Delivery format error: {e}")
-            return "❌ Unable to format delivery dashboard"
-    
-    def _format_executive_dashboard(self, data: Dict) -> str:
-        try:
-            if "error" in data:
-                return f"❌ {data['error']}"
-            
-            lines = [
-                "👔 *EXECUTIVE DASHBOARD*",
-                "",
-                "💰 *Business*",
-                f"Revenue: PKR {data.get('total_revenue', 0):,.0f}",
-                f"Units: {data.get('total_units', 0):,}",
-                f"DNs: {data.get('total_dns', 0):,}",
-                f"Dealers: {data.get('total_dealers', 0):,}",
-                f"Warehouses: {data.get('total_warehouses', 0)}",
-                f"Cities: {data.get('total_cities', 0)}",
-                "",
-                "📈 *KPI*",
-                f"Delivery Rate: {data.get('delivery_rate', 0):.1f}%",
-                "",
-                f"Pending DNs: {data.get('pending_dns', 0):,}"
-            ]
-            return self._truncate_response("\n".join(lines))
-        except Exception as e:
-            logger.error(f"Executive format error: {e}")
-            return "👔 Unable to format executive dashboard"
-    
-    def _format_control_tower(self, data: Dict) -> str:
-        try:
-            if "error" in data:
-                return f"❌ {data['error']}"
-            
-            alerts = data.get("alerts", [])
-            critical_count = data.get("critical_count", 0)
-            high_count = data.get("high_count", 0)
-            
-            lines = [
-                "🚨 *LOGISTICS CONTROL TOWER*",
-                "",
-                f"Critical Alerts: {critical_count}",
-                f"High Priority: {high_count}",
-                f"Total Alerts: {len(alerts)}",
-                ""
-            ]
-            
-            if alerts:
-                lines.append("*Recent Alerts:*")
-                for alert in alerts[:5]:
-                    severity = alert.get("severity", "low").upper()
-                    severity_emoji = "🔴" if severity == "CRITICAL" else "🟠" if severity == "HIGH" else "🟡"
-                    lines.append(f"   {severity_emoji} {alert.get('description', 'Alert')[:60]}")
-                if len(alerts) > 5:
-                    lines.append(f"   *+ {len(alerts) - 5} more alerts*")
-            return self._truncate_response("\n".join(lines))
-        except Exception as e:
-            logger.error(f"Control tower format error: {e}")
-            return "🚨 Unable to format control tower"
-    
-    def _format_revenue_dashboard(self, data: Dict) -> str:
-        try:
-            if "error" in data:
-                return f"❌ {data['error']}"
-            
-            lines = [
-                "💰 *REVENUE DASHBOARD*",
-                "",
-                f"Total Revenue: PKR {data.get('total_revenue', 0):,.0f}",
-                f"Total Units: {data.get('total_units', 0):,}",
-                f"Total DNs: {data.get('total_dns', 0):,}",
-                "",
-                "🏆 *Top Revenue Dealers:*"
-            ]
-            
-            for dealer in data.get("top_dealers", [])[:5]:
-                lines.append(f"   • {dealer.get('dealer', 'Unknown')}: PKR {dealer.get('revenue', 0):,.0f}")
-            
-            return self._truncate_response("\n".join(lines))
-        except Exception as e:
-            logger.error(f"Revenue format error: {e}")
-            return "💰 Unable to format revenue dashboard"
-    
-    def _format_aging_dashboard(self, data: Dict) -> str:
-        try:
-            if "error" in data:
-                return f"❌ {data['error']}"
-            
-            lines = [
-                "⏳ *AGING ANALYSIS*",
-                "",
-                f"0-7 Days: {data.get('days_0_7', 0)}",
-                f"8-14 Days: {data.get('days_8_14', 0)}",
-                f"15-30 Days: {data.get('days_15_30', 0)}",
-                f"30+ Days: {data.get('days_30_plus', 0)}",
-                "",
-                f"Total Pending: {data.get('total_pending', 0)}"
-            ]
-            return self._truncate_response("\n".join(lines))
-        except Exception as e:
-            logger.error(f"Aging format error: {e}")
-            return "❌ Unable to format aging dashboard"
-
 # ==========================================================
 # BLOCK 23: HELP MESSAGE
 # ==========================================================
