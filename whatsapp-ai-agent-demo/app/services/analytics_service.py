@@ -130,6 +130,8 @@ class DatabaseHealthChecker:
 # ==========================================================
 # BLOCK 5: DATE VALIDATION ENGINE (FIXED)
 # ==========================================================
+# BLOCK 5: DATE VALIDATION ENGINE (COMPLETE FIX)
+# ==========================================================
 
 class DateValidator:
     """Validate date sequences for DN, PGI, POD"""
@@ -179,7 +181,14 @@ class DateValidator:
         pgi_date: Optional[datetime],
         pod_date: Optional[datetime]
     ) -> Dict[str, Any]:
-        """Calculate aging with validation - COMPLETE FIX"""
+        """
+        Calculate aging with validation - COMPLETE FIX
+        
+        Rules:
+        - PGI Aging: ALWAYS calculate if PGI >= Create (even if POD is invalid)
+        - DN Aging: Only if full sequence is valid OR use today if pending
+        - POD Aging: Only if POD >= PGI
+        """
         
         # Convert to datetime if needed
         if create_date and not isinstance(create_date, datetime):
@@ -189,6 +198,7 @@ class DateValidator:
         if pod_date and not isinstance(pod_date, datetime):
             pod_date = datetime.combine(pod_date, datetime.min.time())
         
+        # Validate full sequence
         is_valid, issues = DateValidator.validate_date_sequence(create_date, pgi_date, pod_date)
         
         result = {
@@ -200,39 +210,63 @@ class DateValidator:
             "status": "valid" if is_valid else "invalid"
         }
         
-        if is_valid:
-            today = datetime.now().date()
+        today = datetime.now().date()
+        
+        # ==========================================================
+        # 1. PGI AGING: ALWAYS calculate if PGI >= Create
+        # ==========================================================
+        if pgi_date and create_date:
+            pgi_date_only = pgi_date.date() if isinstance(pgi_date, datetime) else pgi_date
+            create_date_only = create_date.date() if isinstance(create_date, datetime) else create_date
             
-            # DN Aging
-            if create_date:
-                create_date_only = create_date.date() if isinstance(create_date, datetime) else create_date
-                if pod_date and pod_date >= create_date:
+            # Check if PGI >= Create
+            if pgi_date_only >= create_date_only:
+                result["pgi_aging"] = (pgi_date_only - create_date_only).days
+            else:
+                issues.append(f"⚠️ PGI Date ({pgi_date_only}) occurs before DN Create Date ({create_date_only})")
+                result["is_valid"] = False
+        
+        # ==========================================================
+        # 2. DN AGING: Use POD if valid, otherwise use today
+        # ==========================================================
+        if create_date:
+            create_date_only = create_date.date() if isinstance(create_date, datetime) else create_date
+            
+            # Check if POD exists and is valid
+            if pod_date and create_date:
+                pod_date_only = pod_date.date() if isinstance(pod_date, datetime) else pod_date
+                if pod_date_only >= create_date_only:
                     # Completed - use POD date
-                    pod_date_only = pod_date.date() if isinstance(pod_date, datetime) else pod_date
                     result["dn_aging"] = (pod_date_only - create_date_only).days
                 else:
-                    # Not completed - use today
+                    # POD exists but is before Create - invalid
+                    issues.append(f"⚠️ POD Date ({pod_date_only}) occurs before DN Create Date ({create_date_only})")
+                    result["is_valid"] = False
+                    # Still calculate using today
                     result["dn_aging"] = (today - create_date_only).days
+            else:
+                # No POD - use today
+                result["dn_aging"] = (today - create_date_only).days
+        
+        # ==========================================================
+        # 3. POD AGING: Only if POD >= PGI
+        # ==========================================================
+        if pod_date and pgi_date:
+            pod_date_only = pod_date.date() if isinstance(pod_date, datetime) else pod_date
+            pgi_date_only = pgi_date.date() if isinstance(pgi_date, datetime) else pgi_date
             
-            # PGI Aging: PGI Date - DN Create Date
-            if pgi_date and create_date and pgi_date >= create_date:
-                pgi_date_only = pgi_date.date() if isinstance(pgi_date, datetime) else pgi_date
-                create_date_only = create_date.date() if isinstance(create_date, datetime) else create_date
-                result["pgi_aging"] = (pgi_date_only - create_date_only).days
-            
-            # POD Aging: POD Date - PGI Date
-            if pod_date and pgi_date and pod_date >= pgi_date:
-                pod_date_only = pod_date.date() if isinstance(pod_date, datetime) else pod_date
-                pgi_date_only = pgi_date.date() if isinstance(pgi_date, datetime) else pgi_date
+            if pod_date_only >= pgi_date_only:
                 result["pod_aging"] = (pod_date_only - pgi_date_only).days
-        else:
-            # Invalid dates - show meaningful warnings
-            if create_date and pgi_date and pgi_date < create_date:
-                issues.append(f"⚠️ PGI Date ({pgi_date.date()}) occurs before DN Create Date ({create_date.date()})")
-            if create_date and pod_date and pod_date < create_date:
-                issues.append(f"⚠️ POD Date ({pod_date.date()}) occurs before DN Create Date ({create_date.date()})")
-            if pgi_date and pod_date and pod_date < pgi_date:
-                issues.append(f"⚠️ POD Date ({pod_date.date()}) occurs before PGI Date ({pgi_date.date()})")
+            else:
+                issues.append(f"⚠️ POD Date ({pod_date_only}) occurs before PGI Date ({pgi_date_only})")
+                result["is_valid"] = False
+        
+        # ==========================================================
+        # 4. Update status based on issues
+        # ==========================================================
+        if issues:
+            result["status"] = "invalid"
+            result["is_valid"] = False
         
         return result
 # ==========================================================
