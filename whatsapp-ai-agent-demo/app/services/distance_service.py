@@ -1,20 +1,29 @@
 # ==========================================================
 # FILE: app/services/distance_service.py
-# PURPOSE: Distance calculation using geopy - Standalone
+# PURPOSE: Distance calculation using geopy - IMPROVED VERSION
+# VERSION: 2.0 - With City Mapping, Batch Processing & Enhanced Features
 # ==========================================================
 
 from geopy.geocoders import Nominatim
 from geopy.distance import geodesic, great_circle
 from geopy.extra.rate_limiter import RateLimiter
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, List
 from loguru import logger
 import time
 import os
+import re
 
 class DistanceService:
     """
     Distance calculation service using geopy.
-    Standalone - no changes needed to other files.
+    
+    Features:
+    - City name normalization (fixes spelling issues)
+    - Batch distance calculation for multiple dealers
+    - Caching for performance
+    - Country context for better geocoding
+    - Multiple distance types (straight-line, driving estimate)
+    - Coverage analysis for warehouses
     """
     
     _instance = None
@@ -40,11 +49,106 @@ class DistanceService:
                 min_delay_seconds=1
             )
             self.cache = {}
+            
+            # ==========================================================
+            # CITY NAME MAPPING - Fixes spelling issues
+            # ==========================================================
+            self.city_mapping = {
+                # Gilgit region
+                "gilget": "Gilgit",
+                "gilgit": "Gilgit",
+                "gliget": "Gilgit",
+                "gulgit": "Gilgit",
+                
+                # Major cities
+                "islamabad": "Islamabad",
+                "lahore": "Lahore",
+                "karachi": "Karachi",
+                "rawalpindi": "Rawalpindi",
+                "attock": "Attock",
+                "wah cantt": "Wah Cantt",
+                "wah": "Wah Cantt",
+                "jand": "Jand",
+                "kamra cantt": "Kamra Cantt",
+                "kamra": "Kamra Cantt",
+                "sukkur": "Sukkur",
+                "hyderabad": "Hyderabad",
+                "multan": "Multan",
+                "faisalabad": "Faisalabad",
+                "gujranwala": "Gujranwala",
+                "sialkot": "Sialkot",
+                "peshawar": "Peshawar",
+                "quetta": "Quetta",
+                "sahiwal": "Sahiwal",
+                "gujrat": "Gujrat",
+                "sheikhupura": "Sheikhupura",
+                "jhelum": "Jhelum",
+                "mianwali": "Mianwali",
+                "bhalwal": "Bhalwal",
+                "rawalakot": "Rawalakot",
+                "bagh": "Bagh",
+                "muzaffarabad": "Muzaffarabad",
+                "chakwal": "Chakwal",
+                "mandi bahauddin": "Mandi Bahauddin",
+                "sargodha": "Sargodha",
+                "bhakkar": "Bhakkar",
+                "layyah": "Layyah",
+                "muzaffargarh": "Muzaffargarh",
+                "dera ghazi khan": "Dera Ghazi Khan",
+                "khanewal": "Khanewal",
+                "vehari": "Vehari",
+                "pakpattan": "Pakpattan",
+                "okara": "Okara",
+                "sahiwal": "Sahiwal",
+                "kasur": "Kasur",
+                "nankana sahib": "Nankana Sahib",
+                "hafizabad": "Hafizabad",
+                "mandi": "Mandi",
+                "sambrial": "Sambrial",
+                "wazirabad": "Wazirabad",
+            }
+            
+            # ==========================================================
+            # PAKISTAN CITY COORDINATES - Fallback if geocoding fails
+            # ==========================================================
+            self.fallback_coords = {
+                "gilgit": (35.9189, 74.3123),
+                "rawalpindi": (33.5651, 73.0169),
+                "islamabad": (33.6844, 73.0479),
+                "lahore": (31.5204, 74.3587),
+                "karachi": (24.8607, 67.0011),
+                "attock": (33.8886, 72.6641),
+                "wah cantt": (33.7700, 72.7500),
+                "jand": (33.7800, 72.0200),
+                "kamra cantt": (33.7500, 73.0000),
+                "peshawar": (34.0151, 71.5249),
+                "quetta": (30.1798, 66.9750),
+                "multan": (30.1575, 71.5249),
+                "faisalabad": (31.4504, 73.1350),
+                "sialkot": (32.4945, 74.5229),
+                "gujranwala": (32.1627, 74.1883),
+            }
+            
             self._initialized = True
-            logger.info("✅ DistanceService initialized")
+            logger.info("✅ DistanceService initialized with city mapping")
+            logger.info(f"📋 Loaded {len(self.city_mapping)} city name mappings")
+            logger.info(f"📋 Loaded {len(self.fallback_coords)} fallback coordinates")
         except Exception as e:
             logger.error(f"❌ DistanceService initialization failed: {e}")
             self._initialized = False
+    
+    def _normalize_city(self, city: str) -> str:
+        """Normalize city names for better geocoding."""
+        if not city:
+            return city
+        
+        city_lower = city.lower().strip()
+        normalized = self.city_mapping.get(city_lower, city)
+        
+        if normalized != city:
+            logger.info(f"🔍 City name normalized: '{city}' → '{normalized}'")
+        
+        return normalized
     
     def get_coordinates(self, location: str) -> Optional[Tuple[float, float]]:
         """
@@ -59,11 +163,21 @@ class DistanceService:
         if not location:
             return None
         
+        # Normalize city name
+        location = self._normalize_city(location)
+        
         # Check cache first
         cache_key = location.lower().strip()
         if cache_key in self.cache:
             logger.debug(f"📍 Cache hit for: {location}")
             return self.cache[cache_key]
+        
+        # Check fallback coordinates
+        if cache_key in self.fallback_coords:
+            coords = self.fallback_coords[cache_key]
+            logger.info(f"📍 Using fallback coordinates for: {location} → ({coords[0]:.4f}, {coords[1]:.4f})")
+            self.cache[cache_key] = coords
+            return coords
         
         try:
             logger.info(f"🔍 Geocoding: {location}")
@@ -100,6 +214,10 @@ class DistanceService:
         Returns:
             Dict with distance information
         """
+        # Normalize city names
+        origin = self._normalize_city(origin)
+        destination = self._normalize_city(destination)
+        
         # Check cache
         cache_key = f"{origin.lower().strip()}|{destination.lower().strip()}"
         if cache_key in self.cache:
@@ -163,12 +281,17 @@ class DistanceService:
             return result
     
     def calculate_warehouse_distance(self, warehouse: str, dealer_city: str) -> Dict[str, Any]:
-        """Calculate distance from warehouse to dealer city."""
+        """Calculate distance from warehouse to dealer city with normalization."""
         if not warehouse or not dealer_city:
             return {
                 "success": False,
                 "error": "Warehouse and dealer city required"
             }
+        
+        # Normalize both locations
+        warehouse = self._normalize_city(warehouse)
+        dealer_city = self._normalize_city(dealer_city)
+        
         return self.calculate_distance(warehouse, dealer_city)
     
     def get_warehouse_coverage(self, warehouse: str, cities: list) -> Dict[str, Any]:
@@ -185,6 +308,9 @@ class DistanceService:
         if not warehouse or not cities:
             return {"success": False, "error": "Warehouse and cities required"}
         
+        # Normalize warehouse
+        warehouse = self._normalize_city(warehouse)
+        
         distances = []
         total_distance = 0
         max_distance = 0
@@ -193,6 +319,8 @@ class DistanceService:
         for city in cities:
             if not city:
                 continue
+            # Normalize city
+            city = self._normalize_city(city)
             dist = self.calculate_warehouse_distance(warehouse, city)
             if dist.get('success'):
                 distance_km = dist.get('distance_km', 0)
@@ -215,6 +343,83 @@ class DistanceService:
             "min_distance_km": round(min_distance, 1) if min_distance != float('inf') else 0,
             "distances": distances
         }
+    
+    def calculate_distances_for_dealers(self, warehouse: str, dealers: List[Dict]) -> List[Dict]:
+        """
+        Calculate distances for multiple dealers from a warehouse.
+        
+        Args:
+            warehouse: Warehouse location
+            dealers: List of dealer dicts with 'name' and 'city'
+        
+        Returns:
+            List of dealers with distance information added
+        """
+        if not warehouse or not dealers:
+            return []
+        
+        warehouse = self._normalize_city(warehouse)
+        results = []
+        
+        for dealer in dealers:
+            dealer_name = dealer.get('name', 'Unknown')
+            dealer_city = dealer.get('city', '')
+            
+            if not dealer_city:
+                results.append({
+                    **dealer,
+                    'distance_km': None,
+                    'distance_error': 'No city specified'
+                })
+                continue
+            
+            dist = self.calculate_warehouse_distance(warehouse, dealer_city)
+            
+            result = {**dealer}
+            if dist.get('success'):
+                result['distance_km'] = dist.get('distance_km')
+                result['distance_miles'] = dist.get('distance_miles')
+                result['approx_driving_hours'] = dist.get('approx_driving_hours')
+                result['approx_driving_minutes'] = dist.get('approx_driving_minutes')
+            else:
+                result['distance_km'] = None
+                result['distance_error'] = dist.get('error', 'Unknown error')
+            
+            results.append(result)
+        
+        return results
+    
+    def get_nearby_dealers(self, warehouse: str, dealers: List[Dict], max_distance: float = 100) -> List[Dict]:
+        """
+        Get dealers within a certain distance from a warehouse.
+        
+        Args:
+            warehouse: Warehouse location
+            dealers: List of dealer dicts with 'name' and 'city'
+            max_distance: Maximum distance in kilometers
+        
+        Returns:
+            List of dealers within the distance range
+        """
+        results = self.calculate_distances_for_dealers(warehouse, dealers)
+        nearby = [d for d in results if d.get('distance_km') and d['distance_km'] <= max_distance]
+        return sorted(nearby, key=lambda x: x.get('distance_km', float('inf')))
+    
+    def get_farthest_dealers(self, warehouse: str, dealers: List[Dict], limit: int = 10) -> List[Dict]:
+        """
+        Get farthest dealers from a warehouse.
+        
+        Args:
+            warehouse: Warehouse location
+            dealers: List of dealer dicts with 'name' and 'city'
+            limit: Number of dealers to return
+        
+        Returns:
+            List of farthest dealers sorted by distance
+        """
+        results = self.calculate_distances_for_dealers(warehouse, dealers)
+        valid = [d for d in results if d.get('distance_km')]
+        return sorted(valid, key=lambda x: x.get('distance_km', 0), reverse=True)[:limit]
     
     def format_distance_text(self, distance_info: Dict[str, Any]) -> str:
         """
@@ -241,7 +446,12 @@ class DistanceService:
             if driving_hours < 1:
                 lines.append(f"⏱️ Approx Driving: {driving_minutes} minutes")
             else:
-                lines.append(f"⏱️ Approx Driving: {driving_hours:.1f} hours")
+                hours = int(driving_hours)
+                minutes = int((driving_hours - hours) * 60)
+                if minutes > 0:
+                    lines.append(f"⏱️ Approx Driving: {hours}h {minutes}m")
+                else:
+                    lines.append(f"⏱️ Approx Driving: {hours}h")
         
         return "\n".join(lines)
 
@@ -268,24 +478,25 @@ def test_distance():
     service = get_distance_service()
     
     print("=" * 60)
-    print("🧪 TESTING DISTANCE SERVICE")
+    print("🧪 TESTING DISTANCE SERVICE WITH CITY MAPPING")
     print("=" * 60)
     
     # Test 1: Rawalpindi → Attock
     print("\n📏 Test 1: Rawalpindi → Attock")
     result = service.calculate_distance("Rawalpindi", "Attock")
     if result.get('success'):
-        print(f"   Distance: {result['distance_km']} km")
-        print(f"   Driving: {result['approx_driving_hours']} hours")
+        print(f"   ✅ Distance: {result['distance_km']} km")
+        print(f"   ✅ Driving: {result['approx_driving_hours']} hours")
     else:
         print(f"   ❌ Failed: {result.get('error')}")
     
-    # Test 2: Rawalpindi → Wah Cantt
-    print("\n📏 Test 2: Rawalpindi → Wah Cantt")
-    result = service.calculate_distance("Rawalpindi", "Wah Cantt")
+    # Test 2: Rawalpindi → Gilget (mapped to Gilgit)
+    print("\n📏 Test 2: Rawalpindi → Gilget (mapped to Gilgit)")
+    result = service.calculate_distance("Rawalpindi", "Gilget")
     if result.get('success'):
-        print(f"   Distance: {result['distance_km']} km")
-        print(f"   Driving: {result['approx_driving_hours']} hours")
+        print(f"   ✅ Distance: {result['distance_km']} km")
+        print(f"   ✅ Driving: {result['approx_driving_hours']} hours")
+        print(f"   ✅ Normalized destination: {result.get('destination')}")
     else:
         print(f"   ❌ Failed: {result.get('error')}")
     
@@ -293,7 +504,7 @@ def test_distance():
     print("\n📏 Test 3: Warehouse Coverage")
     coverage = service.get_warehouse_coverage(
         "Rawalpindi",
-        ["Attock", "Wah Cantt", "Islamabad", "Lahore"]
+        ["Attock", "Wah Cantt", "Islamabad", "Lahore", "Gilget"]
     )
     if coverage.get('success'):
         print(f"   Total Cities: {coverage['total_cities']}")
@@ -302,6 +513,23 @@ def test_distance():
         print(f"   Closest: {coverage['min_distance_km']} km")
     else:
         print(f"   ❌ Failed: {coverage.get('error')}")
+    
+    # Test 4: Bulk dealer distance calculation
+    print("\n📏 Test 4: Bulk Dealer Distance Calculation")
+    dealers = [
+        {"name": "Dealer 1", "city": "Attock"},
+        {"name": "Dealer 2", "city": "Gilget"},
+        {"name": "Dealer 3", "city": "Lahore"},
+        {"name": "Dealer 4", "city": "Unknown City"},
+    ]
+    results = service.calculate_distances_for_dealers("Rawalpindi", dealers)
+    for dealer in results:
+        name = dealer.get('name')
+        distance = dealer.get('distance_km')
+        if distance:
+            print(f"   {name}: {distance} km")
+        else:
+            print(f"   {name}: ❌ {dealer.get('distance_error', 'Unknown error')}")
     
     print("\n" + "=" * 60)
     print("✅ Test Complete")
