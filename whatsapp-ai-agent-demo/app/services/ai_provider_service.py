@@ -1399,65 +1399,52 @@ class AIOrchestrator:
 # ==========================================================
 # BLOCK 16: ROUTING ENGINE
 # ==========================================================
+# ==========================================================
+# BLOCK 16: ROUTING ENGINE (OPTIMIZED)
+# ==========================================================
 
-    def _route_to_dashboard(self, intent: str, entity: Optional[str], entity_type: Optional[str], context: Optional[ConversationContext], req_id: str) -> Optional[str]:
+    def _route_to_dashboard(self, intent: str, entity: Optional[str], 
+                            entity_type: Optional[str], 
+                            context: Optional[ConversationContext], 
+                            req_id: str) -> Optional[str]:
         if not self.analytics:
             logger.error(f"[{req_id}] Analytics service not available")
             return "⚠️ Analytics service is temporarily unavailable. Please try again later."
         
+        # Route map - clean and maintainable
+        ROUTE_MAP = {
+            "dealer_dashboard": self._route_dealer_dashboard,
+            "dealer_ranking": self._route_dealer_ranking,
+            "dealer_products": self._route_dealer_products,
+            "warehouse_dashboard": self._route_warehouse_dashboard,
+            "warehouse_ranking": self._route_warehouse_ranking,
+            "warehouse_coverage": self._route_warehouse_coverage,
+            "warehouse_products": self._route_warehouse_products,
+            "city_dashboard": self._route_city_dashboard,
+            "city_ranking": self._route_city_ranking,
+            "city_dealers": self._route_city_dealers,
+            "city_products": self._route_city_products,
+            "product_dashboard": self._route_product_dashboard,
+            "product_ranking": self._route_product_ranking,
+            "product_trend": self._route_product_trend,
+            "dn_dashboard": self._route_dn_dashboard,
+            "dn_analytics": self._route_dn_analytics,
+            "pgi_dashboard": self._route_pgi_dashboard,
+            "pod_dashboard": self._route_pod_dashboard,
+            "delivery_dashboard": self._route_delivery_dashboard,
+            "executive_dashboard": self._route_executive_dashboard,
+            "control_tower": self._route_control_tower,
+            "revenue_dashboard": self._route_revenue_dashboard,
+            "aging_dashboard": self._route_aging_dashboard,
+            "division_dashboard": self._route_division_dashboard,
+            "sales_manager_dashboard": self._route_sales_manager_dashboard,
+            "sales_office_dashboard": self._route_sales_office_dashboard,
+        }
+        
         try:
-            if intent == "dealer_dashboard":
-                return self._route_dealer_dashboard(entity, context, req_id)
-            if intent == "dealer_ranking":
-                return self._route_dealer_ranking(req_id)
-            if intent == "dealer_products":
-                return self._route_dealer_products(entity, context, req_id)
-            if intent == "warehouse_dashboard":
-                return self._route_warehouse_dashboard(entity, context, req_id)
-            if intent == "warehouse_ranking":
-                return self._route_warehouse_ranking(req_id)
-            if intent == "warehouse_coverage":
-                return self._route_warehouse_coverage(entity, context, req_id)
-            if intent == "warehouse_products":
-                return self._route_warehouse_products(entity, context, req_id)
-            if intent == "city_dashboard":
-                return self._route_city_dashboard(entity, context, req_id)
-            if intent == "city_ranking":
-                return self._route_city_ranking(req_id)
-            if intent == "city_dealers":
-                return self._route_city_dealers(entity, context, req_id)
-            if intent == "city_products":
-                return self._route_city_products(entity, context, req_id)
-            if intent == "product_dashboard":
-                return self._route_product_dashboard(entity, context, req_id)
-            if intent == "product_ranking":
-                return self._route_product_ranking(req_id)
-            if intent == "product_trend":
-                return self._route_product_trend(entity, context, req_id)
-            if intent == "dn_dashboard":
-                return self._route_dn_dashboard(entity, context, req_id)
-            if intent == "dn_analytics":
-                return self._route_dn_analytics(req_id)
-            if intent == "pgi_dashboard":
-                return self._route_pgi_dashboard(req_id)
-            if intent == "pod_dashboard":
-                return self._route_pod_dashboard(req_id)
-            if intent == "delivery_dashboard":
-                return self._route_delivery_dashboard(req_id)
-            if intent == "executive_dashboard":
-                return self._route_executive_dashboard(req_id)
-            if intent == "control_tower":
-                return self._route_control_tower(req_id)
-            if intent == "revenue_dashboard":
-                return self._route_revenue_dashboard(req_id)
-            if intent == "aging_dashboard":
-                return self._route_aging_dashboard(entity, context, req_id)
-            if intent == "division_dashboard":
-                return self._route_division_dashboard(entity, context, req_id)
-            if intent == "sales_manager_dashboard":
-                return self._route_sales_manager_dashboard(entity, context, req_id)
-            if intent == "sales_office_dashboard":
-                return self._route_sales_office_dashboard(entity, context, req_id)
+            handler = ROUTE_MAP.get(intent)
+            if handler:
+                return handler(entity, context, req_id)
             
             logger.warning(f"[{req_id}] Unhandled intent: {intent}")
             return None
@@ -1467,7 +1454,6 @@ class AIOrchestrator:
             import traceback
             logger.error(traceback.format_exc())
             return f"⚠️ Unable to load {intent.replace('_', ' ').title()}. Please try again."
-
 
 
 # BLOCK 17: ROUTE HANDLERS (FIXED)
