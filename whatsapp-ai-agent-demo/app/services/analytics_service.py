@@ -2177,25 +2177,21 @@ class AnalyticsService:
             self.metrics["total_requests"] += 1
             logger.info(f"🔍 DN Dashboard request for: {dn_no}")
             
-            # Validate input
             if not dn_no or not str(dn_no).strip():
                 self.metrics["failed_requests"] += 1
                 return AnalyticsResponse(success=False, error="DN number is required")
             
-            # Clean DN
             dn_clean = re.sub(r'[^0-9]', '', str(dn_no).strip())
             if len(dn_clean) < 8 or len(dn_clean) > 12:
                 self.metrics["failed_requests"] += 1
                 return AnalyticsResponse(success=False, error=f"Invalid DN format: {dn_no}. Must be 8-12 digits.")
             
-            # Check if repo has the method
             if not hasattr(self.repo, 'get_dn_dashboard'):
                 error_msg = "AnalyticsRepository missing method: get_dn_dashboard"
                 logger.error(f"❌ {error_msg}")
                 self.metrics["failed_requests"] += 1
                 return AnalyticsResponse(success=False, error=error_msg)
             
-            # Get dashboard
             result = self.repo.get_dn_dashboard(dn_clean)
             
             if "error" in result:
@@ -2220,7 +2216,340 @@ class AnalyticsService:
             import traceback
             logger.error(traceback.format_exc())
             return AnalyticsResponse(success=False, error=f"Failed to load DN: {str(e)[:100]}")
+
+    def get_dealer_dashboard(self, dealer_name: str) -> AnalyticsResponse:
+        """
+        Get Dealer Dashboard - Production Grade.
+        BLOCK 28 - FIXED
+        """
+        try:
+            self.metrics["total_requests"] += 1
+            logger.info(f"🔍 Dealer Dashboard request for: {dealer_name}")
+            
+            if not dealer_name or not str(dealer_name).strip():
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error="Dealer name is required")
+            
+            if not hasattr(self.repo, 'get_dealer_dashboard'):
+                error_msg = "AnalyticsRepository missing method: get_dealer_dashboard"
+                logger.error(f"❌ {error_msg}")
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error=error_msg)
+            
+            result = self.repo.get_dealer_dashboard(dealer_name.strip())
+            
+            if "error" in result:
+                self.metrics["failed_requests"] += 1
+                if "suggestions" in result:
+                    return AnalyticsResponse(
+                        success=False, 
+                        error=result["error"],
+                        data={"suggestions": result.get("suggestions", [])}
+                    )
+                logger.error(f"❌ Dealer dashboard error for {dealer_name}: {result['error']}")
+                return AnalyticsResponse(success=False, error=result["error"])
+            
+            self.metrics["successful_requests"] += 1
+            logger.info(f"✅ Dealer dashboard returned successfully for {dealer_name}")
+            return AnalyticsResponse(success=True, data=result)
+            
+        except AttributeError as e:
+            self.metrics["failed_requests"] += 1
+            logger.error(f"❌ AttributeError for {dealer_name}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return AnalyticsResponse(success=False, error=f"Method not found: {str(e)}")
+            
+        except Exception as e:
+            self.metrics["failed_requests"] += 1
+            logger.error(f"❌ Get dealer dashboard failed for {dealer_name}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return AnalyticsResponse(success=False, error=f"Failed to load dealer: {str(e)[:100]}")
+
+    def get_warehouse_dashboard(self, warehouse_name: str) -> AnalyticsResponse:
+        """
+        Get Warehouse Dashboard - Production Grade.
+        BLOCK 28 - FIXED
+        """
+        try:
+            self.metrics["total_requests"] += 1
+            logger.info(f"🔍 Warehouse Dashboard request for: {warehouse_name}")
+            
+            if not warehouse_name or not str(warehouse_name).strip():
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error="Warehouse name is required")
+            
+            if not hasattr(self.repo, 'get_warehouse_dashboard'):
+                error_msg = "AnalyticsRepository missing method: get_warehouse_dashboard"
+                logger.error(f"❌ {error_msg}")
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error=error_msg)
+            
+            result = self.repo.get_warehouse_dashboard(warehouse_name.strip())
+            
+            if "error" in result:
+                self.metrics["failed_requests"] += 1
+                if "suggestions" in result:
+                    return AnalyticsResponse(
+                        success=False, 
+                        error=result["error"],
+                        data={"suggestions": result.get("suggestions", [])}
+                    )
+                logger.error(f"❌ Warehouse dashboard error for {warehouse_name}: {result['error']}")
+                return AnalyticsResponse(success=False, error=result["error"])
+            
+            self.metrics["successful_requests"] += 1
+            logger.info(f"✅ Warehouse dashboard returned successfully for {warehouse_name}")
+            return AnalyticsResponse(success=True, data=result)
+            
+        except AttributeError as e:
+            self.metrics["failed_requests"] += 1
+            logger.error(f"❌ AttributeError for {warehouse_name}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return AnalyticsResponse(success=False, error=f"Method not found: {str(e)}")
+            
+        except Exception as e:
+            self.metrics["failed_requests"] += 1
+            logger.error(f"❌ Get warehouse dashboard failed for {warehouse_name}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return AnalyticsResponse(success=False, error=f"Failed to load warehouse: {str(e)[:100]}")
+
+    def get_city_dashboard(self, city_name: str) -> AnalyticsResponse:
+        """
+        Get City Dashboard - Production Grade.
+        BLOCK 28 - FIXED
+        """
+        try:
+            self.metrics["total_requests"] += 1
+            logger.info(f"🔍 City Dashboard request for: {city_name}")
+            
+            if not city_name or not str(city_name).strip():
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error="City name is required")
+            
+            if not hasattr(self.repo, 'get_city_dashboard'):
+                error_msg = "AnalyticsRepository missing method: get_city_dashboard"
+                logger.error(f"❌ {error_msg}")
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error=error_msg)
+            
+            result = self.repo.get_city_dashboard(city_name.strip())
+            
+            if "error" in result:
+                self.metrics["failed_requests"] += 1
+                if "suggestions" in result:
+                    return AnalyticsResponse(
+                        success=False, 
+                        error=result["error"],
+                        data={"suggestions": result.get("suggestions", [])}
+                    )
+                logger.error(f"❌ City dashboard error for {city_name}: {result['error']}")
+                return AnalyticsResponse(success=False, error=result["error"])
+            
+            self.metrics["successful_requests"] += 1
+            logger.info(f"✅ City dashboard returned successfully for {city_name}")
+            return AnalyticsResponse(success=True, data=result)
+            
+        except AttributeError as e:
+            self.metrics["failed_requests"] += 1
+            logger.error(f"❌ AttributeError for {city_name}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return AnalyticsResponse(success=False, error=f"Method not found: {str(e)}")
+            
+        except Exception as e:
+            self.metrics["failed_requests"] += 1
+            logger.error(f"❌ Get city dashboard failed for {city_name}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return AnalyticsResponse(success=False, error=f"Failed to load city: {str(e)[:100]}")
+
+    def get_product_dashboard(self, product_name: str) -> AnalyticsResponse:
+        """
+        Get Product Dashboard - Production Grade.
+        BLOCK 28 - FIXED
+        """
+        try:
+            self.metrics["total_requests"] += 1
+            logger.info(f"🔍 Product Dashboard request for: {product_name}")
+            
+            if not product_name or not str(product_name).strip():
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error="Product name is required")
+            
+            if not hasattr(self.repo, 'get_product_dashboard'):
+                error_msg = "AnalyticsRepository missing method: get_product_dashboard"
+                logger.error(f"❌ {error_msg}")
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error=error_msg)
+            
+            result = self.repo.get_product_dashboard(product_name.strip())
+            
+            if "error" in result:
+                self.metrics["failed_requests"] += 1
+                if "suggestions" in result:
+                    return AnalyticsResponse(
+                        success=False, 
+                        error=result["error"],
+                        data={"suggestions": result.get("suggestions", [])}
+                    )
+                logger.error(f"❌ Product dashboard error for {product_name}: {result['error']}")
+                return AnalyticsResponse(success=False, error=result["error"])
+            
+            self.metrics["successful_requests"] += 1
+            logger.info(f"✅ Product dashboard returned successfully for {product_name}")
+            return AnalyticsResponse(success=True, data=result)
+            
+        except AttributeError as e:
+            self.metrics["failed_requests"] += 1
+            logger.error(f"❌ AttributeError for {product_name}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return AnalyticsResponse(success=False, error=f"Method not found: {str(e)}")
+            
+        except Exception as e:
+            self.metrics["failed_requests"] += 1
+            logger.error(f"❌ Get product dashboard failed for {product_name}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return AnalyticsResponse(success=False, error=f"Failed to load product: {str(e)[:100]}")
+
+    def get_pgi_dashboard(self) -> AnalyticsResponse:
+        try:
+            self.metrics["total_requests"] += 1
+            if not hasattr(self.repo, 'get_pgi_dashboard'):
+                return AnalyticsResponse(success=False, error="Method not available")
+            result = self.repo.get_pgi_dashboard()
+            if "error" in result:
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error=result["error"])
+            self.metrics["successful_requests"] += 1
+            return AnalyticsResponse(success=True, data=result)
+        except Exception as e:
+            self.metrics["failed_requests"] += 1
+            logger.error(f"PGI dashboard error: {e}")
+            return AnalyticsResponse(success=False, error=str(e))
     
+    def get_pod_dashboard(self) -> AnalyticsResponse:
+        try:
+            self.metrics["total_requests"] += 1
+            if not hasattr(self.repo, 'get_pod_dashboard'):
+                return AnalyticsResponse(success=False, error="Method not available")
+            result = self.repo.get_pod_dashboard()
+            if "error" in result:
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error=result["error"])
+            self.metrics["successful_requests"] += 1
+            return AnalyticsResponse(success=True, data=result)
+        except Exception as e:
+            self.metrics["failed_requests"] += 1
+            logger.error(f"POD dashboard error: {e}")
+            return AnalyticsResponse(success=False, error=str(e))
+    
+    def get_delivery_dashboard(self) -> AnalyticsResponse:
+        try:
+            self.metrics["total_requests"] += 1
+            if not hasattr(self.repo, 'get_delivery_dashboard'):
+                return AnalyticsResponse(success=False, error="Method not available")
+            result = self.repo.get_delivery_dashboard()
+            if "error" in result:
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error=result["error"])
+            self.metrics["successful_requests"] += 1
+            return AnalyticsResponse(success=True, data=result)
+        except Exception as e:
+            self.metrics["failed_requests"] += 1
+            logger.error(f"Delivery dashboard error: {e}")
+            return AnalyticsResponse(success=False, error=str(e))
+
+    def get_executive_dashboard(self) -> AnalyticsResponse:
+        try:
+            self.metrics["total_requests"] += 1
+            if not hasattr(self.repo, 'get_executive_dashboard'):
+                return AnalyticsResponse(success=False, error="Method not available")
+            result = self.repo.get_executive_dashboard()
+            if "error" in result:
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error=result["error"])
+            self.metrics["successful_requests"] += 1
+            return AnalyticsResponse(success=True, data=result)
+        except Exception as e:
+            self.metrics["failed_requests"] += 1
+            logger.error(f"Executive dashboard error: {e}")
+            return AnalyticsResponse(success=False, error=str(e))
+
+    def get_control_tower_dashboard(self) -> AnalyticsResponse:
+        try:
+            self.metrics["total_requests"] += 1
+            if not hasattr(self.repo, 'get_control_tower_dashboard'):
+                return AnalyticsResponse(success=False, error="Method not available")
+            result = self.repo.get_control_tower_dashboard()
+            if "error" in result:
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error=result["error"])
+            self.metrics["successful_requests"] += 1
+            return AnalyticsResponse(success=True, data=result)
+        except Exception as e:
+            self.metrics["failed_requests"] += 1
+            logger.error(f"Control tower error: {e}")
+            return AnalyticsResponse(success=False, error=str(e))
+
+    def get_revenue_dashboard(self) -> AnalyticsResponse:
+        try:
+            self.metrics["total_requests"] += 1
+            if not hasattr(self.repo, 'get_revenue_dashboard'):
+                return AnalyticsResponse(success=False, error="Method not available")
+            result = self.repo.get_revenue_dashboard()
+            if "error" in result:
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error=result["error"])
+            self.metrics["successful_requests"] += 1
+            return AnalyticsResponse(success=True, data=result)
+        except Exception as e:
+            self.metrics["failed_requests"] += 1
+            logger.error(f"Revenue dashboard error: {e}")
+            return AnalyticsResponse(success=False, error=str(e))
+
+    def get_ranking_dashboard(self, limit: int = 10) -> AnalyticsResponse:
+        try:
+            self.metrics["total_requests"] += 1
+            if not hasattr(self.repo, 'get_ranking_dashboard'):
+                return AnalyticsResponse(success=False, error="Method not available")
+            result = self.repo.get_ranking_dashboard(limit)
+            if "error" in result:
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error=result["error"])
+            self.metrics["successful_requests"] += 1
+            return AnalyticsResponse(success=True, data=result)
+        except Exception as e:
+            self.metrics["failed_requests"] += 1
+            logger.error(f"Ranking dashboard error: {e}")
+            return AnalyticsResponse(success=False, error=str(e))
+
+    def get_aging_dashboard(self) -> AnalyticsResponse:
+        try:
+            self.metrics["total_requests"] += 1
+            if not hasattr(self.repo, 'get_aging_dashboard'):
+                return AnalyticsResponse(success=False, error="Method not available")
+            result = self.repo.get_aging_dashboard()
+            if "error" in result:
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error=result["error"])
+            self.metrics["successful_requests"] += 1
+            return AnalyticsResponse(success=True, data=result)
+        except Exception as e:
+            self.metrics["failed_requests"] += 1
+            logger.error(f"Aging dashboard error: {e}")
+            return AnalyticsResponse(success=False, error=str(e))
+
+# ==========================================================
+# END OF BLOCK 28
+# ==========================================================
+
+# ==========================================================
     # ==========================================================
 # BLOCK 29: FOLLOW-UP SUPPORT
 # ==========================================================
