@@ -1011,6 +1011,8 @@ class SearchEngine:
 # ==========================================================
 # BLOCK 8: ENTITY RESOLVER
 # ==========================================================
+# BLOCK 8: ENTITY RESOLVER (FIXED - v2.0)
+# ==========================================================
 
 class EntityResolver:
     """Entity resolution engine using PostgreSQL"""
@@ -1019,7 +1021,18 @@ class EntityResolver:
         self.db = db
     
     def resolve_dealer(self, dealer_input: str) -> Optional[str]:
-        """Resolve dealer name using PostgreSQL only"""
+        """
+        Resolve dealer name using PostgreSQL only.
+        
+        IMPROVED MATCHING STRATEGIES:
+        1. Exact match (case-insensitive)
+        2. ILIKE match (contains)
+        3. Token-based matching (word by word)
+        4. Fuzzy matching with LOWER threshold (0.3)
+        5. Partial word matching
+        6. Common word removal
+        7. First word matching
+        """
         if not dealer_input or not dealer_input.strip():
             return None
         
@@ -1027,23 +1040,29 @@ class EntityResolver:
         start_time = time.time()
         
         try:
-            # 1. Exact match
+            # ==========================================================
+            # STRATEGY 1: Exact match (case-insensitive)
+            # ==========================================================
             result = self.db.query(DeliveryReport.customer_name).filter(
                 func.lower(DeliveryReport.customer_name) == func.lower(dealer_input)
             ).first()
             if result:
-                logger.info(f"Dealer resolved (exact): {result[0]} in {time.time() - start_time:.3f}s")
+                logger.info(f"✅ Dealer resolved (exact): {result[0]} in {time.time() - start_time:.3f}s")
                 return result[0]
             
-            # 2. ILIKE match
+            # ==========================================================
+            # STRATEGY 2: ILIKE match (contains)
+            # ==========================================================
             result = self.db.query(DeliveryReport.customer_name).filter(
                 DeliveryReport.customer_name.ilike(f"%{dealer_input}%")
             ).first()
             if result:
-                logger.info(f"Dealer resolved (ILIKE): {result[0]} in {time.time() - start_time:.3f}s")
+                logger.info(f"✅ Dealer resolved (ILIKE): {result[0]} in {time.time() - start_time:.3f}s")
                 return result[0]
             
-            # 3. Token-based matching
+            # ==========================================================
+            # STRATEGY 3: Token-based matching
+            # ==========================================================
             tokens = dealer_input.split()
             for token in tokens:
                 if len(token) > 2:
@@ -1051,10 +1070,13 @@ class EntityResolver:
                         DeliveryReport.customer_name.ilike(f"%{token}%")
                     ).first()
                     if result:
-                        logger.info(f"Dealer resolved (token): {result[0]} in {time.time() - start_time:.3f}s")
+                        logger.info(f"✅ Dealer resolved (token '{token}'): {result[0]} in {time.time() - start_time:.3f}s")
                         return result[0]
             
-            # 4. Fuzzy matching
+            # ==========================================================
+            # STRATEGY 4: Fuzzy matching with LOWER threshold
+            # ==========================================================
+            # Get all dealers from database
             dealers = self.db.query(
                 func.distinct(DeliveryReport.customer_name)
             ).filter(
@@ -1065,26 +1087,128 @@ class EntityResolver:
             best_match = None
             best_score = 0
             dealer_input_lower = dealer_input.lower()
+            dealer_input_tokens = set(dealer_input_lower.split())
             
             for dealer in dealers:
                 if not dealer[0]:
                     continue
-                dealer_lower = dealer[0].lower()
+                dealer_name = dealer[0]
+                dealer_lower = dealer_name.lower()
+                dealer_tokens = set(dealer_lower.split())
+                
+                # Calculate multiple similarity scores
+                scores = []
+                
+                # 1. Token overlap score
+                if dealer_input_tokens and dealer_tokens:
+                    overlap = len(dealer_input_tokens & dealer_tokens)
+                    token_score = overlap / max(len(dealer_input_tokens), len(dealer_tokens))
+                    scores.append(token_score)
+                
+                # 2. Character overlap score
+                char_overlap = len(set(dealer_input_lower) & set(dealer_lower))
+                char_score = char_overlap / max(len(dealer_input_lower), len(dealer_lower))
+                scores.append(char_score)
+                
+                # 3. Contains score (if one contains the other)
                 if dealer_input_lower in dealer_lower or dealer_lower in dealer_input_lower:
-                    score = len(set(dealer_input_lower) & set(dealer_lower)) / max(len(dealer_input_lower), len(dealer_lower))
-                    if score > best_score and score > 0.6:
-                        best_score = score
-                        best_match = dealer[0]
+                    scores.append(0.8)
+                
+                # 4. Word match score
+                for token in dealer_input_tokens:
+                    if len(token) > 2 and token in dealer_lower:
+                        scores.append(0.7)
+                
+                # Take the best score
+                if scores:
+                    score = max(scores)
+                else:
+                    score = 0
+                
+                # LOWER THRESHOLD: 0.3 (was 0.6)
+                if score > best_score and score > 0.3:
+                    best_score = score
+                    best_match = dealer_name
             
             if best_match:
-                logger.info(f"Dealer resolved (fuzzy): {best_match} in {time.time() - start_time:.3f}s")
+                logger.info(f"✅ Dealer resolved (fuzzy, score={best_score:.2f}): {best_match} in {time.time() - start_time:.3f}s")
                 return best_match
             
-            logger.warning(f"Dealer not found: {dealer_input}")
+            # ==========================================================
+            # STRATEGY 5: Partial word matching with word boundaries
+            # ==========================================================
+            for token in tokens:
+                if len(token) > 2:
+                    # Try to find dealer containing this token as a word
+                    results = self.db.query(
+                        func.distinct(DeliveryReport.customer_name)
+                    ).filter(
+                        or_(
+                            DeliveryReport.customer_name.ilike(f"% {token} %"),
+                            DeliveryReport.customer_name.ilike(f"{token} %"),
+                            DeliveryReport.customer_name.ilike(f"% {token}")
+                        )
+                    ).limit(10).all()
+                    
+                    if results:
+                        logger.info(f"✅ Dealer resolved (partial word '{token}'): {results[0][0]} in {time.time() - start_time:.3f}s")
+                        return results[0][0]
+            
+            # ==========================================================
+            # STRATEGY 6: Remove common words and try again
+            # ==========================================================
+            common_words = ['electronics', 'trading', 'company', 'enterprises', 'store', 'shop', 'sons', 'brothers', 'ltd', 'pvt', 'limited', 'and']
+            cleaned_input = dealer_input.lower()
+            for word in common_words:
+                cleaned_input = cleaned_input.replace(word, '').strip()
+            
+            if cleaned_input and len(cleaned_input) > 2:
+                result = self.db.query(DeliveryReport.customer_name).filter(
+                    DeliveryReport.customer_name.ilike(f"%{cleaned_input}%")
+                ).first()
+                if result:
+                    logger.info(f"✅ Dealer resolved (cleaned '{cleaned_input}'): {result[0]} in {time.time() - start_time:.3f}s")
+                    return result[0]
+            
+            # ==========================================================
+            # STRATEGY 7: Try with first word only
+            # ==========================================================
+            first_word = tokens[0] if tokens else ""
+            if len(first_word) > 2:
+                result = self.db.query(DeliveryReport.customer_name).filter(
+                    DeliveryReport.customer_name.ilike(f"%{first_word}%")
+                ).first()
+                if result:
+                    logger.info(f"✅ Dealer resolved (first word '{first_word}'): {result[0]} in {time.time() - start_time:.3f}s")
+                    return result[0]
+            
+            # ==========================================================
+            # STRATEGY 8: Try with each token individually (last resort)
+            # ==========================================================
+            for token in tokens:
+                if len(token) > 2:
+                    # Try to find dealer where token is a substring
+                    results = self.db.query(
+                        func.distinct(DeliveryReport.customer_name)
+                    ).filter(
+                        DeliveryReport.customer_name.ilike(f"%{token}%")
+                    ).limit(10).all()
+                    
+                    if results:
+                        # Return the first match
+                        logger.info(f"✅ Dealer resolved (substring '{token}'): {results[0][0]} in {time.time() - start_time:.3f}s")
+                        return results[0][0]
+            
+            # ==========================================================
+            # No match found
+            # ==========================================================
+            logger.warning(f"❌ Dealer not found: '{dealer_input}' after all strategies")
             return None
             
         except Exception as e:
-            logger.error(f"Dealer resolution error: {e}")
+            logger.error(f"❌ Dealer resolution error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
     
     def resolve_warehouse(self, warehouse_input: str) -> Optional[str]:
@@ -1210,6 +1334,11 @@ class EntityResolver:
             logger.error(f"DN resolution error: {e}")
             return None
 
+# ==========================================================
+# END OF BLOCK 8
+# ==========================================================
+
+# ==========================================================
 # ==========================================================
 # BLOCK 9: ANALYTICS REPOSITORY
 # ==========================================================
@@ -1378,91 +1507,140 @@ class AnalyticsRepository:
     # ==========================================================
 # BLOCK 11: DEALER DASHBOARD
 # ==========================================================
-    
-    def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
-        """Complete dealer dashboard from PostgreSQL"""
-        try:
-            resolved = self.resolver.resolve_dealer(dealer_name)
-            if not resolved:
-                return {"error": f"Dealer '{dealer_name}' not found"}
+  # ==========================================================
+# BLOCK 11: DEALER DASHBOARD (FIXED)
+# ==========================================================
+
+def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
+    """Complete dealer dashboard from PostgreSQL with improved error handling."""
+    try:
+        logger.info(f"🔍 Searching for dealer: '{dealer_name}'")
+        
+        # ==========================================================
+        # STEP 1: Resolve dealer with detailed logging
+        # ==========================================================
+        resolved = self.resolver.resolve_dealer(dealer_name)
+        
+        if not resolved:
+            # ==========================================================
+            # STEP 2: Try to find similar dealers for suggestions
+            # ==========================================================
+            logger.warning(f"❌ Dealer '{dealer_name}' not found")
             
-            result = self.db.query(
-                DeliveryReport.customer_name.label("dealer_name"),
-                func.max(DeliveryReport.dealer_code).label("dealer_code"),
-                func.max(DeliveryReport.customer_code).label("customer_code"),
-                func.max(DeliveryReport.division).label("division"),
-                func.max(DeliveryReport.warehouse).label("warehouse"),
-                func.max(DeliveryReport.ship_to_city).label("city"),
-                func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
-                func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("total_units"),
-                func.coalesce(func.sum(DeliveryReport.dn_amount), 0).label("total_revenue"),
-                func.count(distinct(case((DeliveryReport.delivery_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("delivered_dns"),
-                func.count(distinct(case((DeliveryReport.pending_flag == True, DeliveryReport.dn_no), else_=None))).label("pending_dns"),
-                func.count(distinct(case((and_(DeliveryReport.delivery_status == 'Completed', DeliveryReport.pod_status != 'Completed'), DeliveryReport.dn_no), else_=None))).label("transit_dns"),
-                func.count(distinct(case((DeliveryReport.pod_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("pod_completed_dns"),
-                func.count(distinct(case((and_(DeliveryReport.delivery_status == 'Completed', DeliveryReport.pod_status != 'Completed'), DeliveryReport.dn_no), else_=None))).label("pending_pod_dns"),
-                func.count(distinct(case((DeliveryReport.good_issue_date.is_(None), DeliveryReport.dn_no), else_=None))).label("pending_pgi_dns"),
-                func.count(distinct(DeliveryReport.customer_model)).label("product_count"),
-                func.count(distinct(DeliveryReport.ship_to_city)).label("city_count")
-            ).filter(
-                DeliveryReport.customer_name == resolved
-            ).group_by(
-                DeliveryReport.customer_name
-            ).first()
-            
-            if not result or result.total_dns == 0:
-                return {"error": f"No data found for {resolved}"}
-            
-            total_dns = result.total_dns or 1
-            delivered_dns = result.delivered_dns or 0
-            transit_dns = result.transit_dns or 0
-            pod_completed = result.pod_completed_dns or 0
-            
-            delivery_rate = KPIEngine.calculate_delivery_rate(delivered_dns, total_dns)
-            pgi_rate = KPIEngine.calculate_pgi_rate(delivered_dns, transit_dns, total_dns)
-            pod_rate = KPIEngine.calculate_pod_rate(pod_completed, delivered_dns) if delivered_dns > 0 else 0
-            
-            risk_level, risk_score = KPIEngine.calculate_risk_level(
-                delivery_rate,
-                pod_rate,
-                0
-            )
+            # Try to find similar dealers
+            similar = self.search.search_dealer(dealer_name, exact=False)
+            if similar:
+                suggestions = [s['dealer_name'] for s in similar[:5]]
+                return {
+                    "error": f"Dealer '{dealer_name}' not found",
+                    "suggestions": suggestions,
+                    "message": f"Did you mean: {', '.join(suggestions[:3])}?",
+                    "hint": "Try typing the exact dealer name or a shorter version"
+                }
             
             return {
-                "dealer_name": resolved,
-                "dealer_code": result.dealer_code or "",
-                "customer_code": result.customer_code or "",
-                "division": result.division or "",
-                "warehouse": result.warehouse or "",
-                "city": result.city or "",
-                "total_dns": total_dns,
-                "total_units": int(result.total_units or 0),
-                "total_revenue": float(result.total_revenue or 0),
-                "delivered_dns": delivered_dns,
-                "pending_dns": result.pending_dns or 0,
-                "transit_dns": transit_dns,
-                "pod_completed_dns": pod_completed,
-                "pending_pod_dns": result.pending_pod_dns or 0,
-                "pending_pgi_dns": result.pending_pgi_dns or 0,
-                "product_count": result.product_count or 0,
-                "city_count": result.city_count or 0,
-                "delivery_rate": delivery_rate,
-                "pgi_rate": pgi_rate,
-                "pod_rate": pod_rate,
-                "health_score": KPIEngine.calculate_health_score({
-                    "delivery_rate": delivery_rate,
-                    "pod_rate": pod_rate,
-                    "avg_aging": 0,
-                    "revenue": float(result.total_revenue or 0)
-                }),
-                "risk_level": risk_level,
-                "risk_score": risk_score
+                "error": f"Dealer '{dealer_name}' not found",
+                "message": "Please check the spelling or try a shorter version",
+                "hint": "Example: Try 'Baz' instead of 'Baz Electronics'"
             }
+        
+        # ==========================================================
+        # STEP 3: Query dealer data
+        # ==========================================================
+        result = self.db.query(
+            DeliveryReport.customer_name.label("dealer_name"),
+            func.max(DeliveryReport.dealer_code).label("dealer_code"),
+            func.max(DeliveryReport.customer_code).label("customer_code"),
+            func.max(DeliveryReport.division).label("division"),
+            func.max(DeliveryReport.warehouse).label("warehouse"),
+            func.max(DeliveryReport.ship_to_city).label("city"),
+            func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
+            func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("total_units"),
+            func.coalesce(func.sum(DeliveryReport.dn_amount), 0).label("total_revenue"),
+            func.count(distinct(case((DeliveryReport.delivery_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("delivered_dns"),
+            func.count(distinct(case((DeliveryReport.pending_flag == True, DeliveryReport.dn_no), else_=None))).label("pending_dns"),
+            func.count(distinct(case((and_(DeliveryReport.delivery_status == 'Completed', DeliveryReport.pod_status != 'Completed'), DeliveryReport.dn_no), else_=None))).label("transit_dns"),
+            func.count(distinct(case((DeliveryReport.pod_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("pod_completed_dns"),
+            func.count(distinct(case((and_(DeliveryReport.delivery_status == 'Completed', DeliveryReport.pod_status != 'Completed'), DeliveryReport.dn_no), else_=None))).label("pending_pod_dns"),
+            func.count(distinct(case((DeliveryReport.good_issue_date.is_(None), DeliveryReport.dn_no), else_=None))).label("pending_pgi_dns"),
+            func.count(distinct(DeliveryReport.customer_model)).label("product_count"),
+            func.count(distinct(DeliveryReport.ship_to_city)).label("city_count")
+        ).filter(
+            DeliveryReport.customer_name == resolved
+        ).group_by(
+            DeliveryReport.customer_name
+        ).first()
+        
+        if not result or result.total_dns == 0:
+            return {"error": f"No data found for dealer '{resolved}'"}
+        
+        # ==========================================================
+        # STEP 4: Calculate KPIs
+        # ==========================================================
+        total_dns = result.total_dns or 1
+        delivered_dns = result.delivered_dns or 0
+        transit_dns = result.transit_dns or 0
+        pod_completed = result.pod_completed_dns or 0
+        
+        delivery_rate = KPIEngine.calculate_delivery_rate(delivered_dns, total_dns)
+        pgi_rate = KPIEngine.calculate_pgi_rate(delivered_dns, transit_dns, total_dns)
+        pod_rate = KPIEngine.calculate_pod_rate(pod_completed, delivered_dns) if delivered_dns > 0 else 0
+        
+        risk_level, risk_score = KPIEngine.calculate_risk_level(
+            delivery_rate,
+            pod_rate,
+            0
+        )
+        
+        # ==========================================================
+        # STEP 5: Build Response
+        # ==========================================================
+        response = {
+            "dealer_name": resolved,
+            "dealer_code": result.dealer_code or "",
+            "customer_code": result.customer_code or "",
+            "division": result.division or "",
+            "warehouse": result.warehouse or "",
+            "city": result.city or "",
+            "total_dns": total_dns,
+            "total_units": int(result.total_units or 0),
+            "total_revenue": float(result.total_revenue or 0),
+            "delivered_dns": delivered_dns,
+            "pending_dns": result.pending_dns or 0,
+            "transit_dns": transit_dns,
+            "pod_completed_dns": pod_completed,
+            "pending_pod_dns": result.pending_pod_dns or 0,
+            "pending_pgi_dns": result.pending_pgi_dns or 0,
+            "product_count": result.product_count or 0,
+            "city_count": result.city_count or 0,
+            "delivery_rate": delivery_rate,
+            "pgi_rate": pgi_rate,
+            "pod_rate": pod_rate,
+            "health_score": KPIEngine.calculate_health_score({
+                "delivery_rate": delivery_rate,
+                "pod_rate": pod_rate,
+                "avg_aging": 0,
+                "revenue": float(result.total_revenue or 0)
+            }),
+            "risk_level": risk_level,
+            "risk_score": risk_score
+        }
+        
+        logger.info(f"✅ Dealer dashboard built successfully for: {resolved}")
+        return response
             
-        except Exception as e:
-            logger.error(f"Get dealer dashboard failed: {e}")
-            return {"error": str(e)}
-    # ==========================================================
+    except Exception as e:
+        logger.error(f"❌ Get dealer dashboard failed for '{dealer_name}': {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {
+            "error": f"Failed to load dealer data: {str(e)[:100]}",
+            "message": "Please try again with a different search term"
+        }
+
+# ==========================================================
+# END OF BLOCK 11 - DEALER DASHBOARD
+# ==========================================================
     # BLOCK 12: WAREHOUSE DASHBOARD
     # ==========================================================
     
