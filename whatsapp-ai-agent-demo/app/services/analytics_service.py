@@ -1063,13 +1063,9 @@ class EntityResolver:
 
 # ==========================================================
 # BLOCK 9: ANALYTICS REPOSITORY (FIXED WITH VALIDATION)
-# ==========================================================
-# ==========================================================
-# BLOCK 9: ANALYTICS REPOSITORY (FIXED - NO CRASH)
-# ==========================================================
 
 # ==========================================================
-# BLOCK 9: ANALYTICS REPOSITORY (UPDATED WITH DEALER 360)
+# BLOCK 9: ANALYTICS REPOSITORY (FIXED)
 # ==========================================================
 
 class AnalyticsRepository:
@@ -1082,18 +1078,24 @@ class AnalyticsRepository:
         self.search = SearchEngine(self.db)
         
         # ==========================================================
-        # ✅ ADD THIS: Initialize Dealer 360 Dashboard
+        # ✅ FIXED: Initialize Dealer 360 Dashboard with error handling
         # ==========================================================
         self._dealer_360 = None
         try:
             from app.services.dealer_analytics_service import Dealer360Dashboard
             self._dealer_360 = Dealer360Dashboard(self.db, self.resolver, self.search)
             logger.info("✅ Dealer360Dashboard initialized")
+        except ImportError as e:
+            logger.warning(f"⚠️ Dealer360Dashboard import error: {e}")
+            self._dealer_360 = None
         except Exception as e:
-            logger.warning(f"⚠️ Dealer360Dashboard not available: {e}")
+            logger.warning(f"⚠️ Dealer360Dashboard init error: {e}")
+            import traceback
+            logger.warning(traceback.format_exc())
+            self._dealer_360 = None
         
         # ==========================================================
-        # STARTUP VALIDATION - Check but DON'T crash
+        # ✅ FIXED: STARTUP VALIDATION - Check but DON'T crash
         # ==========================================================
         required_methods = [
             "get_dealer_dashboard",
@@ -1141,20 +1143,16 @@ class AnalyticsRepository:
             self.db.close()
     
     # ==========================================================
-    # ✅ ADD THIS NEW METHOD
+    # ✅ ADD THIS METHOD
     # ==========================================================
     def get_dealer_360_dashboard(self, dealer_name: str) -> Dict[str, Any]:
-        """
-        Get complete 360° dealer dashboard.
-        BLOCK 9 - NEW METHOD
-        """
+        """Get complete 360° dealer dashboard."""
         if self._dealer_360 is None:
             return {"error": "Dealer 360 dashboard service not available"}
         return self._dealer_360.get_dashboard(dealer_name)
 
 
 
-# ==========================================================
 # BLOCK 10: DN DASHBOARD (FIXED)
 # ==========================================================
 # BLOCK 10: DN DASHBOARD (FIXED - v3.0)
@@ -1289,22 +1287,14 @@ class AnalyticsRepository:
     # ==========================================================
 # BLOCK 11: DEALER DASHBOARD (PRODUCTION-GRADE v4.0 - FIXED)
 # ==========================================================
-# BLOCK 11: DEALER DASHBOARD (UPDATED WITH 360)
+# ==========================================================
+# BLOCK 11: DEALER DASHBOARD (FIXED)
 # ==========================================================
 
     def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         """
-        Complete dealer dashboard - Now supports 360° view.
-        BLOCK 11 - UPDATED
-        
-        Features:
-        - 360° Dashboard with 13 sections
-        - Backward compatibility with legacy format
-        - Dealer resolution with fuzzy matching
-        - Comprehensive KPIs
-        - Distance calculation from warehouse to dealer city
-        - Error handling with suggestions
-        - Production logging with timing
+        Complete dealer dashboard - Supports 360° view with fallback.
+        BLOCK 11 - FIXED
         """
         import time
         start_time = time.time()
@@ -1316,130 +1306,72 @@ class AnalyticsRepository:
             # STEP 1: Try 360 Dashboard first
             # ==========================================================
             if self._dealer_360 is not None:
-                logger.info(f"🔍 Using 360 dashboard for: '{dealer_name}'")
-                result = self._dealer_360.get_dashboard(dealer_name)
-                
-                # If dealer not found, return error with suggestions
-                if "error" in result:
+                try:
+                    logger.info(f"🔍 Using 360 dashboard for: '{dealer_name}'")
+                    result = self._dealer_360.get_dashboard(dealer_name)
+                    
+                    if "error" in result:
+                        return result
+                    
+                    # Mark as 360 dashboard
+                    result['_dashboard_type'] = '360'
+                    logger.info(f"✅ 360 dashboard built successfully for: {dealer_name}")
                     return result
-                
-                # Mark as 360 dashboard for formatter to detect
-                result['_dashboard_type'] = '360'
-                return result
+                except Exception as e:
+                    logger.warning(f"⚠️ 360 dashboard failed, falling back to legacy: {e}")
             
             # ==========================================================
             # STEP 2: Fallback to legacy implementation
             # ==========================================================
             logger.info(f"🔍 Using legacy dashboard for: '{dealer_name}'")
-            return self._get_dealer_dashboard_legacy(dealer_name)
             
-        except Exception as e:
-            logger.error(f"❌ Get dealer dashboard failed for '{dealer_name}': {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return {"error": f"Failed to load dealer data: {str(e)[:100]}"}
-    
-    def _get_dealer_dashboard_legacy(self, dealer_name: str) -> Dict[str, Any]:
-        """
-        Legacy dealer dashboard (backward compatibility).
-        BLOCK 11 - LEGACY FALLBACK
-        """
-        import time
-        start_time = time.time()
-        
-        try:
-            logger.info(f"🔍 Legacy dealer dashboard for: '{dealer_name}'")
-            
-            # ==========================================================
-            # STEP 1: Resolve dealer with detailed logging
-            # ==========================================================
+            # Resolve dealer
             resolved = self.resolver.resolve_dealer(dealer_name)
             
             if not resolved:
-                # ==========================================================
-                # STEP 2: Try to find similar dealers for suggestions
-                # ==========================================================
-                logger.warning(f"❌ Dealer '{dealer_name}' not found")
-                
+                # Try to find similar dealers for suggestions
                 try:
                     similar = self.search.search_dealer(dealer_name, exact=False)
                     if similar and len(similar) > 0:
                         suggestions = [s['dealer_name'] for s in similar[:5]]
-                        logger.info(f"💡 Found {len(suggestions)} suggestions for '{dealer_name}'")
                         return {
                             "error": f"Dealer '{dealer_name}' not found",
                             "suggestions": suggestions,
-                            "message": f"Did you mean: {', '.join(suggestions[:3])}?",
-                            "hint": "Try typing the exact dealer name or a shorter version"
+                            "message": f"Did you mean: {', '.join(suggestions[:3])}?"
                         }
                 except Exception as e:
                     logger.error(f"Search error: {e}")
                 
-                return {
-                    "error": f"Dealer '{dealer_name}' not found",
-                    "message": "Please check the spelling or try a shorter version",
-                    "hint": "Example: Try 'Baz' instead of 'Baz Electronics'"
-                }
+                return {"error": f"Dealer '{dealer_name}' not found"}
             
-            # ==========================================================
-            # STEP 3: Log resolution result
-            # ==========================================================
-            logger.info(f"✅ Dealer resolved: '{resolved}'")
+            # Query dealer data
+            result = self.db.query(
+                DeliveryReport.customer_name.label("dealer_name"),
+                func.max(DeliveryReport.dealer_code).label("dealer_code"),
+                func.max(DeliveryReport.customer_code).label("customer_code"),
+                func.max(DeliveryReport.division).label("division"),
+                func.max(DeliveryReport.warehouse).label("warehouse"),
+                func.max(DeliveryReport.ship_to_city).label("city"),
+                func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
+                func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("total_units"),
+                func.coalesce(func.sum(DeliveryReport.dn_amount), 0).label("total_revenue"),
+                func.count(distinct(case((DeliveryReport.delivery_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("delivered_dns"),
+                func.count(distinct(case((DeliveryReport.pending_flag == True, DeliveryReport.dn_no), else_=None))).label("pending_dns"),
+                func.count(distinct(case((and_(DeliveryReport.delivery_status == 'Completed', DeliveryReport.pod_status != 'Completed'), DeliveryReport.dn_no), else_=None))).label("transit_dns"),
+                func.count(distinct(case((DeliveryReport.pod_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("pod_completed_dns"),
+                func.count(distinct(case((and_(DeliveryReport.delivery_status == 'Completed', DeliveryReport.pod_status != 'Completed'), DeliveryReport.dn_no), else_=None))).label("pending_pod_dns"),
+                func.count(distinct(case((DeliveryReport.good_issue_date.is_(None), DeliveryReport.dn_no), else_=None))).label("pending_pgi_dns"),
+                func.count(distinct(DeliveryReport.customer_model)).label("product_count"),
+                func.count(distinct(DeliveryReport.ship_to_city)).label("city_count")
+            ).filter(
+                DeliveryReport.customer_name == resolved
+            ).group_by(
+                DeliveryReport.customer_name
+            ).first()
             
-            # ==========================================================
-            # STEP 4: Query dealer data
-            # ==========================================================
-            query_start = time.time()
-            
-            try:
-                result = self.db.query(
-                    DeliveryReport.customer_name.label("dealer_name"),
-                    func.max(DeliveryReport.dealer_code).label("dealer_code"),
-                    func.max(DeliveryReport.customer_code).label("customer_code"),
-                    func.max(DeliveryReport.division).label("division"),
-                    func.max(DeliveryReport.warehouse).label("warehouse"),
-                    func.max(DeliveryReport.ship_to_city).label("city"),
-                    func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
-                    func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("total_units"),
-                    func.coalesce(func.sum(DeliveryReport.dn_amount), 0).label("total_revenue"),
-                    func.count(distinct(case((DeliveryReport.delivery_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("delivered_dns"),
-                    func.count(distinct(case((DeliveryReport.pending_flag == True, DeliveryReport.dn_no), else_=None))).label("pending_dns"),
-                    func.count(distinct(case((and_(DeliveryReport.delivery_status == 'Completed', DeliveryReport.pod_status != 'Completed'), DeliveryReport.dn_no), else_=None))).label("transit_dns"),
-                    func.count(distinct(case((DeliveryReport.pod_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("pod_completed_dns"),
-                    func.count(distinct(case((and_(DeliveryReport.delivery_status == 'Completed', DeliveryReport.pod_status != 'Completed'), DeliveryReport.dn_no), else_=None))).label("pending_pod_dns"),
-                    func.count(distinct(case((DeliveryReport.good_issue_date.is_(None), DeliveryReport.dn_no), else_=None))).label("pending_pgi_dns"),
-                    func.count(distinct(DeliveryReport.customer_model)).label("product_count"),
-                    func.count(distinct(DeliveryReport.ship_to_city)).label("city_count")
-                ).filter(
-                    DeliveryReport.customer_name == resolved
-                ).group_by(
-                    DeliveryReport.customer_name
-                ).first()
-                
-                query_time = time.time() - query_start
-                logger.info(f"⏱️ Query execution time: {query_time:.3f}s")
-                
-            except Exception as e:
-                logger.error(f"❌ Query failed for dealer '{resolved}': {e}")
-                return {
-                    "error": f"Database query failed: {str(e)[:100]}",
-                    "message": "Please try again later"
-                }
-            
-            # ==========================================================
-            # STEP 5: Check if data exists
-            # ==========================================================
             if not result or result.total_dns == 0:
-                logger.warning(f"⚠️ No data found for dealer '{resolved}'")
-                return {
-                    "error": f"No data found for dealer '{resolved}'",
-                    "message": "This dealer has no delivery reports",
-                    "hint": "Try another dealer name"
-                }
+                return {"error": f"No data found for dealer '{resolved}'"}
             
-            # ==========================================================
-            # STEP 6: Calculate KPIs
-            # ==========================================================
             total_dns = result.total_dns or 1
             delivered_dns = result.delivered_dns or 0
             transit_dns = result.transit_dns or 0
@@ -1455,9 +1387,6 @@ class AnalyticsRepository:
                 0
             )
             
-            # ==========================================================
-            # STEP 7: Build Response
-            # ==========================================================
             response = {
                 "dealer_name": resolved,
                 "dealer_code": result.dealer_code or "",
@@ -1489,9 +1418,7 @@ class AnalyticsRepository:
                 "risk_score": risk_score
             }
             
-            # ==========================================================
-            # STEP 8: Add distance calculation
-            # ==========================================================
+            # Add distance if available
             try:
                 if result.warehouse and result.city:
                     from app.services.distance_service import get_distance_service
@@ -1516,11 +1443,7 @@ class AnalyticsRepository:
             logger.error(f"❌ Get dealer dashboard failed for '{dealer_name}': {e}")
             import traceback
             logger.error(traceback.format_exc())
-            return {
-                "error": f"Failed to load dealer data: {str(e)[:100]}",
-                "message": "Please try again with a different search term"
-            }
-
+            return {"error": f"Failed to load dealer data: {str(e)[:100]}"}
 ==========================================================
     # ==========================================================
 # BLOCK 12: WAREHOUSE DASHBOARD (FIXED)
@@ -2746,7 +2669,145 @@ class AnalyticsService:
 # ==========================================================
 # END OF BLOCK 28
 # ==========================================================
-    
+   # ==========================================================
+# BLOCK 28: DASHBOARD METHODS (FIXED)
+# ==========================================================
+
+    def get_dealer_360_dashboard(self, dealer_name: str) -> AnalyticsResponse:
+        """
+        Get complete 360° dealer dashboard.
+        BLOCK 28 - FIXED
+        """
+        try:
+            self.metrics["total_requests"] += 1
+            logger.info(f"🔍 Dealer 360 Dashboard request for: {dealer_name}")
+            
+            if not dealer_name or not str(dealer_name).strip():
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error="Dealer name is required")
+            
+            if not hasattr(self.repo, 'get_dealer_360_dashboard'):
+                error_msg = "Dealer 360 dashboard not available"
+                logger.error(f"❌ {error_msg}")
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error=error_msg)
+            
+            result = self.repo.get_dealer_360_dashboard(dealer_name.strip())
+            
+            if "error" in result:
+                self.metrics["failed_requests"] += 1
+                if "suggestions" in result:
+                    return AnalyticsResponse(
+                        success=False, 
+                        error=result["error"],
+                        data={"suggestions": result.get("suggestions", [])}
+                    )
+                return AnalyticsResponse(success=False, error=result["error"])
+            
+            self.metrics["successful_requests"] += 1
+            logger.info(f"✅ Dealer 360 dashboard returned successfully")
+            return AnalyticsResponse(success=True, data=result)
+            
+        except Exception as e:
+            self.metrics["failed_requests"] += 1
+            logger.error(f"❌ Dealer 360 dashboard failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return AnalyticsResponse(success=False, error=str(e))
+
+    def get_dealer_dashboard(self, dealer_name: str) -> AnalyticsResponse:
+        """
+        Get Dealer Dashboard - Production Grade with 360 fallback.
+        BLOCK 28 - FIXED
+        """
+        try:
+            self.metrics["total_requests"] += 1
+            logger.info(f"🔍 Dealer Dashboard request for: {dealer_name}")
+            
+            if not dealer_name or not str(dealer_name).strip():
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error="Dealer name is required")
+            
+            # ✅ Try 360 dashboard first
+            try:
+                if hasattr(self.repo, '_dealer_360') and self.repo._dealer_360 is not None:
+                    result = self.repo.get_dealer_360_dashboard(dealer_name.strip())
+                    
+                    if "error" not in result:
+                        result['_dashboard_type'] = '360'
+                        self.metrics["successful_requests"] += 1
+                        return AnalyticsResponse(success=True, data=result)
+            except Exception as e:
+                logger.warning(f"⚠️ 360 dashboard failed, falling back to legacy: {e}")
+            
+            # ✅ Fallback to legacy
+            if not hasattr(self.repo, 'get_dealer_dashboard'):
+                error_msg = "AnalyticsRepository missing method: get_dealer_dashboard"
+                logger.error(f"❌ {error_msg}")
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error=error_msg)
+            
+            result = self.repo.get_dealer_dashboard(dealer_name.strip())
+            
+            if "error" in result:
+                self.metrics["failed_requests"] += 1
+                if "suggestions" in result:
+                    return AnalyticsResponse(
+                        success=False, 
+                        error=result["error"],
+                        data={"suggestions": result.get("suggestions", [])}
+                    )
+                return AnalyticsResponse(success=False, error=result["error"])
+            
+            self.metrics["successful_requests"] += 1
+            logger.info(f"✅ Dealer dashboard returned successfully")
+            return AnalyticsResponse(success=True, data=result)
+            
+        except Exception as e:
+            self.metrics["failed_requests"] += 1
+            logger.error(f"❌ Dealer dashboard failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return AnalyticsResponse(success=False, error=str(e))
+
+    def get_dn_dashboard(self, dn_no: str) -> AnalyticsResponse:
+        """Get DN Dashboard - Production Grade."""
+        try:
+            self.metrics["total_requests"] += 1
+            logger.info(f"🔍 DN Dashboard request for: {dn_no}")
+            
+            if not dn_no or not str(dn_no).strip():
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error="DN number is required")
+            
+            dn_clean = re.sub(r'[^0-9]', '', str(dn_no).strip())
+            if len(dn_clean) < 8 or len(dn_clean) > 12:
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error=f"Invalid DN format: {dn_no}. Must be 8-12 digits.")
+            
+            if not hasattr(self.repo, 'get_dn_dashboard'):
+                error_msg = "AnalyticsRepository missing method: get_dn_dashboard"
+                logger.error(f"❌ {error_msg}")
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error=error_msg)
+            
+            result = self.repo.get_dn_dashboard(dn_clean)
+            
+            if "error" in result:
+                self.metrics["failed_requests"] += 1
+                logger.error(f"❌ DN dashboard error for {dn_clean}: {result['error']}")
+                return AnalyticsResponse(success=False, error=result["error"])
+            
+            self.metrics["successful_requests"] += 1
+            logger.info(f"✅ DN dashboard returned successfully")
+            return AnalyticsResponse(success=True, data=result)
+            
+        except Exception as e:
+            self.metrics["failed_requests"] += 1
+            logger.error(f"❌ DN dashboard failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return AnalyticsResponse(success=False, error=str(e)) 
     
     # ==========================================================
 # END OF BLOCK 28
