@@ -617,25 +617,39 @@ class AIOrchestrator:
 # ==========================================================
 # BLOCK 11: INTENT DETECTION
 # ==========================================================
+# BLOCK 11: INTENT DETECTION (FIXED v4.0)
+# ==========================================================
 
     def _detect_intent(self, question: str, context: Optional[ConversationContext] = None) -> Tuple[str, Optional[str], Optional[str]]:
+        """
+        Detect intent from user question.
+        BLOCK 11 - FIXED v4.0
+        - DEALER now checked BEFORE CITY in standalone detection
+        - Explicit keywords take priority
+        """
         question_original = question.strip()
         question_lower = question_original.lower()
         
         logger.debug(f"🔍 Detecting intent for: '{question_original}'")
         
-        # 1. HELP
+        # ==========================================================
+        # STEP 1: HELP
+        # ==========================================================
         if question_lower in ["help", "menu", "hi", "hello", "start", "?", "commands"]:
             return "help", None, None
         
-        # 2. FOLLOW-UP
+        # ==========================================================
+        # STEP 2: FOLLOW-UP
+        # ==========================================================
         if context and context.last_intent and context.last_entity:
             followup_intent = self._detect_followup(question_lower, context)
             if followup_intent:
                 logger.info(f"🔄 Follow-up detected: {followup_intent}")
                 return followup_intent, context.last_entity, self._get_entity_type(followup_intent)
         
-        # 3. DN DETECTION (HIGHEST PRIORITY)
+        # ==========================================================
+        # STEP 3: DN DETECTION (HIGHEST PRIORITY)
+        # ==========================================================
         dn_match = re.search(r'\b(\d{8,12})\b', question_original)
         if dn_match:
             dn_number = re.sub(r'\D', '', dn_match.group(1))
@@ -652,18 +666,23 @@ class AIOrchestrator:
                 self.metrics["intent_detection"]["dn_dashboard"] = self.metrics["intent_detection"].get("dn_dashboard", 0) + 1
                 return "dn_dashboard", dn_number, "dn"
         
-        # 4. PRODUCT/MATERIAL DETECTION (BEFORE DEALER)
-        product_match = re.search(r'(?:product|model|material|sku)\s*[:#]?\s*([A-Za-z0-9\-]+)', question_original, re.IGNORECASE)
-        if product_match:
-            entity = product_match.group(1).strip()
-            if len(entity) > 1:
-                resolved = self.resolver.resolve_product(entity)
-                if resolved:
-                    logger.info(f"✅ Detected product: '{resolved}'")
-                    self.metrics["intent_detection"]["product_dashboard"] = self.metrics["intent_detection"].get("product_dashboard", 0) + 1
-                    return "product_dashboard", resolved, "product"
+        # ==========================================================
+        # STEP 4: PRODUCT DETECTION (with explicit keyword)
+        # ==========================================================
+        if "product" in question_lower or "model" in question_lower or "material" in question_lower or "sku" in question_lower:
+            product_match = re.search(r'(?:product|model|material|sku)\s*[:#]?\s*([A-Za-z0-9\-]+)', question_original, re.IGNORECASE)
+            if product_match:
+                entity = product_match.group(1).strip()
+                if len(entity) > 1:
+                    resolved = self.resolver.resolve_product(entity)
+                    if resolved:
+                        logger.info(f"✅ Detected product: '{resolved}'")
+                        self.metrics["intent_detection"]["product_dashboard"] = self.metrics["intent_detection"].get("product_dashboard", 0) + 1
+                        return "product_dashboard", resolved, "product"
         
-        # 5. WAREHOUSE DETECTION (BEFORE DEALER)
+        # ==========================================================
+        # STEP 5: WAREHOUSE DETECTION (with explicit keyword)
+        # ==========================================================
         if "warehouse" in question_lower or "wh " in question_lower:
             wh_match = re.search(r'(?:warehouse|wh)\s+([A-Za-z0-9\s\-]+)', question_original, re.IGNORECASE)
             if wh_match:
@@ -674,6 +693,11 @@ class AIOrchestrator:
                         logger.info(f"✅ Detected warehouse: '{resolved}'")
                         self.metrics["intent_detection"]["warehouse_dashboard"] = self.metrics["intent_detection"].get("warehouse_dashboard", 0) + 1
                         return "warehouse_dashboard", resolved, "warehouse"
+                    else:
+                        # Pass entity for search later
+                        logger.info(f"🔍 Warehouse '{entity}' not found, will search")
+                        self.metrics["intent_detection"]["warehouse_dashboard"] = self.metrics["intent_detection"].get("warehouse_dashboard", 0) + 1
+                        return "warehouse_dashboard", entity, "warehouse"
             
             wh_pattern = re.search(r'^([A-Za-z\s\-]+)\s+warehouse$', question_original, re.IGNORECASE)
             if wh_pattern:
@@ -684,15 +708,21 @@ class AIOrchestrator:
                         logger.info(f"✅ Detected warehouse from pattern: '{resolved}'")
                         self.metrics["intent_detection"]["warehouse_dashboard"] = self.metrics["intent_detection"].get("warehouse_dashboard", 0) + 1
                         return "warehouse_dashboard", resolved, "warehouse"
+                    else:
+                        logger.info(f"🔍 Warehouse '{entity}' not found, will search")
+                        self.metrics["intent_detection"]["warehouse_dashboard"] = self.metrics["intent_detection"].get("warehouse_dashboard", 0) + 1
+                        return "warehouse_dashboard", entity, "warehouse"
             
             if context and context.last_warehouse:
                 logger.info(f"🔄 Using context warehouse: {context.last_warehouse}")
                 self.metrics["intent_detection"]["warehouse_dashboard"] = self.metrics["intent_detection"].get("warehouse_dashboard", 0) + 1
                 return "warehouse_dashboard", context.last_warehouse, "warehouse"
         
-        # 6. CITY DETECTION (BEFORE DEALER)
-        if "city" in question_lower or "in " in question_lower:
-            city_match = re.search(r'(?:city|in)\s+([A-Za-z\s\-]+)', question_original, re.IGNORECASE)
+        # ==========================================================
+        # STEP 6: CITY DETECTION (with explicit keyword ONLY)
+        # ==========================================================
+        if "city" in question_lower or "town" in question_lower:
+            city_match = re.search(r'(?:city|town)\s+([A-Za-z\s\-]+)', question_original, re.IGNORECASE)
             if city_match:
                 entity = city_match.group(1).strip()
                 if len(entity) > 2:
@@ -701,6 +731,10 @@ class AIOrchestrator:
                         logger.info(f"✅ Detected city: '{resolved}'")
                         self.metrics["intent_detection"]["city_dashboard"] = self.metrics["intent_detection"].get("city_dashboard", 0) + 1
                         return "city_dashboard", resolved, "city"
+                    else:
+                        logger.info(f"🔍 City '{entity}' not found, will search")
+                        self.metrics["intent_detection"]["city_dashboard"] = self.metrics["intent_detection"].get("city_dashboard", 0) + 1
+                        return "city_dashboard", entity, "city"
             
             city_pattern = re.search(r'^([A-Za-z\s\-]+)\s+city$', question_original, re.IGNORECASE)
             if city_pattern:
@@ -711,15 +745,21 @@ class AIOrchestrator:
                         logger.info(f"✅ Detected city from pattern: '{resolved}'")
                         self.metrics["intent_detection"]["city_dashboard"] = self.metrics["intent_detection"].get("city_dashboard", 0) + 1
                         return "city_dashboard", resolved, "city"
+                    else:
+                        logger.info(f"🔍 City '{entity}' not found, will search")
+                        self.metrics["intent_detection"]["city_dashboard"] = self.metrics["intent_detection"].get("city_dashboard", 0) + 1
+                        return "city_dashboard", entity, "city"
             
             if context and context.last_city:
                 logger.info(f"🔄 Using context city: {context.last_city}")
                 self.metrics["intent_detection"]["city_dashboard"] = self.metrics["intent_detection"].get("city_dashboard", 0) + 1
                 return "city_dashboard", context.last_city, "city"
         
-        # 7. DEALER DETECTION
-        dealer_keywords = ["dealer", "customer", "party", "sold to"]
-        if any(kw in question_lower for kw in dealer_keywords) or "dealer dashboard" in question_lower:
+        # ==========================================================
+        # STEP 7: DEALER DETECTION (with explicit keywords)
+        # ==========================================================
+        dealer_keywords = ["dealer", "customer", "party", "sold to", "show"]
+        if any(kw in question_lower for kw in dealer_keywords):
             dealer_match = re.search(r'(?:dealer|customer|party|show)\s+([A-Za-z0-9\s&\.\-]+)', question_original, re.IGNORECASE)
             if dealer_match:
                 entity = dealer_match.group(1).strip()
@@ -729,6 +769,10 @@ class AIOrchestrator:
                         logger.info(f"✅ Detected dealer: '{resolved}'")
                         self.metrics["intent_detection"]["dealer_dashboard"] = self.metrics["intent_detection"].get("dealer_dashboard", 0) + 1
                         return "dealer_dashboard", resolved, "dealer"
+                    else:
+                        logger.info(f"🔍 Dealer '{entity}' not found, will search")
+                        self.metrics["intent_detection"]["dealer_dashboard"] = self.metrics["intent_detection"].get("dealer_dashboard", 0) + 1
+                        return "dealer_dashboard", entity, "dealer"
             
             for_match = re.search(r'for\s+([A-Za-z0-9\s&\.\-]+)', question_original, re.IGNORECASE)
             if for_match:
@@ -739,43 +783,68 @@ class AIOrchestrator:
                         logger.info(f"✅ Detected dealer from 'for': '{resolved}'")
                         self.metrics["intent_detection"]["dealer_dashboard"] = self.metrics["intent_detection"].get("dealer_dashboard", 0) + 1
                         return "dealer_dashboard", resolved, "dealer"
+                    else:
+                        logger.info(f"🔍 Dealer '{entity}' not found, will search")
+                        self.metrics["intent_detection"]["dealer_dashboard"] = self.metrics["intent_detection"].get("dealer_dashboard", 0) + 1
+                        return "dealer_dashboard", entity, "dealer"
             
             if context and context.last_dealer:
                 logger.info(f"🔄 Using context dealer: {context.last_dealer}")
                 self.metrics["intent_detection"]["dealer_dashboard"] = self.metrics["intent_detection"].get("dealer_dashboard", 0) + 1
                 return "dealer_dashboard", context.last_dealer, "dealer"
         
-        # 8. STANDALONE - Check in correct priority order
-        if 3 <= len(question_original) <= 50 and not any(c.isdigit() for c in question_original):
-            # Check if it's a product
-            product_resolved = self.resolver.resolve_product(question_original)
-            if product_resolved:
-                logger.info(f"✅ Detected product from standalone: '{product_resolved}'")
-                self.metrics["intent_detection"]["product_dashboard"] = self.metrics["intent_detection"].get("product_dashboard", 0) + 1
-                return "product_dashboard", product_resolved, "product"
+        # ==========================================================
+        # STEP 8: STANDALONE - DEALER FIRST (FIXED!)
+        # ==========================================================
+        # For "New Central Electronics" - this should be DEALER, not CITY!
+        if 3 <= len(question_original) <= 100 and not any(c.isdigit() for c in question_original):
             
-            # Check if it's a warehouse
+            # ==========================================================
+            # STEP 8a: Check DEALER FIRST (was LAST!)
+            # ==========================================================
+            dealer_resolved = self.resolver.resolve_dealer(question_original)
+            if dealer_resolved:
+                logger.info(f"✅ Detected dealer from standalone: '{dealer_resolved}'")
+                self.metrics["intent_detection"]["dealer_dashboard"] = self.metrics["intent_detection"].get("dealer_dashboard", 0) + 1
+                return "dealer_dashboard", dealer_resolved, "dealer"
+            
+            # ==========================================================
+            # STEP 8b: Check WAREHOUSE
+            # ==========================================================
             warehouse_resolved = self.resolver.resolve_warehouse(question_original)
             if warehouse_resolved:
                 logger.info(f"✅ Detected warehouse from standalone: '{warehouse_resolved}'")
                 self.metrics["intent_detection"]["warehouse_dashboard"] = self.metrics["intent_detection"].get("warehouse_dashboard", 0) + 1
                 return "warehouse_dashboard", warehouse_resolved, "warehouse"
             
-            # Check if it's a city
+            # ==========================================================
+            # STEP 8c: Check PRODUCT
+            # ==========================================================
+            product_resolved = self.resolver.resolve_product(question_original)
+            if product_resolved:
+                logger.info(f"✅ Detected product from standalone: '{product_resolved}'")
+                self.metrics["intent_detection"]["product_dashboard"] = self.metrics["intent_detection"].get("product_dashboard", 0) + 1
+                return "product_dashboard", product_resolved, "product"
+            
+            # ==========================================================
+            # STEP 8d: Check CITY LAST! (was SECOND!)
+            # ==========================================================
             city_resolved = self.resolver.resolve_city(question_original)
             if city_resolved:
                 logger.info(f"✅ Detected city from standalone: '{city_resolved}'")
                 self.metrics["intent_detection"]["city_dashboard"] = self.metrics["intent_detection"].get("city_dashboard", 0) + 1
                 return "city_dashboard", city_resolved, "city"
             
-            # Then check dealer
-            dealer_resolved = self.resolver.resolve_dealer(question_original)
-            if dealer_resolved:
-                logger.info(f"✅ Detected dealer from standalone: '{dealer_resolved}'")
-                self.metrics["intent_detection"]["dealer_dashboard"] = self.metrics["intent_detection"].get("dealer_dashboard", 0) + 1
-                return "dealer_dashboard", dealer_resolved, "dealer"
+            # ==========================================================
+            # STEP 8e: If nothing resolved, treat as DEALER (default)
+            # ==========================================================
+            logger.info(f"🔍 Treating standalone as dealer (default): '{question_original}'")
+            self.metrics["intent_detection"]["dealer_dashboard"] = self.metrics["intent_detection"].get("dealer_dashboard", 0) + 1
+            return "dealer_dashboard", question_original, "dealer"
         
-        # 9. DIVISION DETECTION
+        # ==========================================================
+        # STEP 9: DIVISION DETECTION
+        # ==========================================================
         if "division" in question_lower:
             division_match = re.search(r'(?:division|div)\s+([A-Za-z\s\-]+)', question_original, re.IGNORECASE)
             if division_match:
@@ -785,7 +854,9 @@ class AIOrchestrator:
                     self.metrics["intent_detection"]["division_dashboard"] = self.metrics["intent_detection"].get("division_dashboard", 0) + 1
                     return "division_dashboard", entity, "division"
         
-        # 10. SALES MANAGER DETECTION
+        # ==========================================================
+        # STEP 10: SALES MANAGER DETECTION
+        # ==========================================================
         if "sales manager" in question_lower or "sm " in question_lower:
             sm_match = re.search(r'(?:sales manager|sm|manager)\s+([A-Za-z\s\-]+)', question_original, re.IGNORECASE)
             if sm_match:
@@ -795,7 +866,9 @@ class AIOrchestrator:
                     self.metrics["intent_detection"]["sales_manager_dashboard"] = self.metrics["intent_detection"].get("sales_manager_dashboard", 0) + 1
                     return "sales_manager_dashboard", entity, "sales_manager"
         
-        # 11. SALES OFFICE DETECTION
+        # ==========================================================
+        # STEP 11: SALES OFFICE DETECTION
+        # ==========================================================
         if "sales office" in question_lower or "office " in question_lower:
             so_match = re.search(r'(?:sales office|office)\s+([A-Za-z\s\-]+)', question_original, re.IGNORECASE)
             if so_match:
@@ -805,7 +878,9 @@ class AIOrchestrator:
                     self.metrics["intent_detection"]["sales_office_dashboard"] = self.metrics["intent_detection"].get("sales_office_dashboard", 0) + 1
                     return "sales_office_dashboard", entity, "sales_office"
         
-        # 12. PATTERN MATCHING FOR ALL OTHER INTENTS
+        # ==========================================================
+        # STEP 12: PATTERN MATCHING FOR ALL OTHER INTENTS
+        # ==========================================================
         for intent, patterns in INTENT_PATTERNS.items():
             for pattern in patterns:
                 if pattern in question_lower:
@@ -814,16 +889,25 @@ class AIOrchestrator:
                     entity, entity_type = self._extract_entity(question_original, intent)
                     return intent, entity, entity_type
         
-        # 13. FALLBACK - Context
+        # ==========================================================
+        # STEP 13: FALLBACK - Context
+        # ==========================================================
         if context and context.last_intent and context.last_entity:
             logger.info(f"🔄 Using context: {context.last_intent} with entity {context.last_entity}")
             return context.last_intent, context.last_entity, self._get_entity_type(context.last_intent)
         
-        # 14. UNKNOWN - Return help
+        # ==========================================================
+        # STEP 14: UNKNOWN - Return help
+        # ==========================================================
         logger.warning(f"❌ Unknown intent for: '{question_original}'")
         return "help", None, None
 
 # ==========================================================
+# END OF BLOCK 11 - FIXED v4.0
+# ==========================================================
+    
+    
+    # ==========================================================
 # BLOCK 12: FOLLOW-UP DETECTION
 # ==========================================================
 
