@@ -1666,12 +1666,14 @@ class AIOrchestrator:
 
 
 # BLOCK 17: ROUTE HANDLERS (COMPLETE - FIXED)
+
+    # BLOCK 17: ROUTE HANDLERS (COMPLETE - FIXED v10.0)
 # ==========================================================
 
     def _validate_response(self, response, service_name: str, req_id: str) -> Tuple[bool, str, Optional[Dict]]:
         """
         Validate response from analytics service.
-        BLOCK 17 - FIXED v9.0
+        BLOCK 17 - FIXED v10.0
         Returns: (is_valid, error_message, data)
         Supports: AnalyticsResponse, dict, list, None
         """
@@ -1686,25 +1688,38 @@ class AIOrchestrator:
         # Check if response is a dict (direct data response)
         if isinstance(response, dict):
             logger.info(f"[{req_id}] ✅ Response is a dict with {len(response)} keys")
+            logger.info(f"[{req_id}] 📊 Dict keys: {list(response.keys())}")
+            
             if "error" in response:
                 error_msg = response.get("error", "Unknown error")
                 logger.error(f"[{req_id}] ❌ Response contains error: {error_msg}")
                 return False, error_msg, None
+            
             if not response or len(response) == 0:
                 logger.warning(f"[{req_id}] ⚠️ Response is empty dict")
                 return False, "Empty response received", None
-            logger.info(f"[{req_id}] ✅ Valid dict response")
+            
+            # Check if response has required fields
+            required_fields = ['dn_number', 'customer_name', 'warehouse']
+            missing_fields = [f for f in required_fields if f not in response]
+            if missing_fields:
+                logger.warning(f"[{req_id}] ⚠️ Missing fields: {missing_fields}")
+            
+            logger.info(f"[{req_id}] ✅ Valid dict response with {len(response)} keys")
             return True, "", response
         
         # Check if response has success attribute (AnalyticsResponse)
         if hasattr(response, 'success'):
             logger.info(f"[{req_id}] ✅ Response has success attribute")
+            
             if not response.success:
                 error_msg = getattr(response, 'error', 'Unknown error')
                 logger.error(f"[{req_id}] ❌ Response success=False: {error_msg}")
                 return False, error_msg, None
             
             data = getattr(response, 'data', {})
+            logger.info(f"[{req_id}] 📊 Data from AnalyticsResponse: {type(data)}")
+            
             if not data or len(data) == 0:
                 logger.warning(f"[{req_id}] ⚠️ Response data is empty")
                 return False, "No data in response", None
@@ -1713,6 +1728,14 @@ class AIOrchestrator:
                 error_msg = data.get("error", "Unknown error")
                 logger.error(f"[{req_id}] ❌ Data contains error: {error_msg}")
                 return False, error_msg, None
+            
+            # Check if data has required fields
+            if isinstance(data, dict):
+                required_fields = ['dn_number', 'customer_name', 'warehouse']
+                missing_fields = [f for f in required_fields if f not in data]
+                if missing_fields:
+                    logger.warning(f"[{req_id}] ⚠️ Data missing fields: {missing_fields}")
+                    logger.warning(f"[{req_id}] 📊 Data keys: {list(data.keys())}")
             
             logger.info(f"[{req_id}] ✅ Valid AnalyticsResponse with {len(data)} data keys")
             return True, "", data
@@ -1732,7 +1755,7 @@ class AIOrchestrator:
     def _route_dn_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         """
         Handle DN dashboard with complete error handling and retry.
-        BLOCK 17 - FIXED v9.0
+        BLOCK 17 - FIXED v10.0
         """
         import time
         start_time = time.time()
@@ -1779,10 +1802,17 @@ class AIOrchestrator:
             response = self.analytics.get_dn_dashboard(dn_clean)
             logger.info(f"[{req_id}] 📊 Response type: {type(response)}")
             
+            # LOG RAW RESPONSE
+            logger.info(f"[{req_id}] 📊 Raw response: {response}")
+            
             # ==========================================================
             # STEP 3: Validate response
             # ==========================================================
             is_valid, error_msg, data = self._validate_response(response, "DN Dashboard", req_id)
+            
+            # LOG VALIDATED DATA
+            logger.info(f"[{req_id}] 📊 Data keys after validation: {list(data.keys()) if data else 'NO DATA'}")
+            logger.info(f"[{req_id}] 📊 Data preview: {str(data)[:500] if data else 'EMPTY'}")
             
             if not is_valid:
                 logger.error(f"[{req_id}] ❌ Validation failed: {error_msg}")
@@ -1792,9 +1822,13 @@ class AIOrchestrator:
             # STEP 4: Format and return
             # ==========================================================
             logger.info(f"[{req_id}] ✅ Valid data received, formatting...")
+            logger.info(f"[{req_id}] 📊 Data has {len(data)} fields: {list(data.keys())}")
+            
             result = self._format_dn_dashboard(data, dn_clean)
+            
             elapsed = time.time() - start_time
             logger.info(f"[{req_id}] ✅ DN dashboard returned in {elapsed:.3f}s")
+            logger.info(f"[{req_id}] 📊 Result length: {len(result)} characters")
             return result
             
         except Exception as e:
@@ -2173,14 +2207,24 @@ class AIOrchestrator:
 # ==========================================================
 # END OF BLOCK 17
 # ==========================================================
+    
+    
+    # END OF BLOCK 17
+# ==========================================================
 
+# BLOCK 18-22: FORMATTERS (FIXED - Safe handling WITH DISTANCE)
+# ==========================================================
 # BLOCK 18-22: FORMATTERS (FIXED - Safe handling WITH DISTANCE)
 # ==========================================================
 
     def _format_dn_dashboard(self, data: Dict, dn_number: str) -> str:
         """Format DN dashboard - Safe handling of all fields."""
         try:
+            # ADD DEBUG LOGGING
+            logger.info(f"🔍 Formatting DN {dn_number} with data keys: {list(data.keys()) if data else 'EMPTY'}")
+            
             if not data:
+                logger.error(f"❌ No data for DN {dn_number}")
                 return f"❌ No data available for DN {dn_number}"
             
             # Safe get with defaults
@@ -2192,7 +2236,25 @@ class AIOrchestrator:
                     return default
                 return val
             
+            # Get ALL fields with proper logging
+            customer_name = safe_get('customer_name', 'N/A')
+            warehouse = safe_get('warehouse', 'N/A')
+            city = safe_get('ship_to_city', 'N/A')
+            units = safe_get('units', 0)
+            amount = safe_get('amount', 0)
             status = safe_get('delivery_status', 'Unknown')
+            pgi_status = safe_get('pgi_status', 'N/A')
+            pod_status = safe_get('pod_status', 'N/A')
+            
+            # Log what we found
+            logger.info(f"📊 DN {dn_number} data:")
+            logger.info(f"   Customer: {customer_name}")
+            logger.info(f"   Warehouse: {warehouse}")
+            logger.info(f"   City: {city}")
+            logger.info(f"   Units: {units}")
+            logger.info(f"   Amount: {amount}")
+            logger.info(f"   Status: {status}")
+            
             status_emoji = "✅" if status in ['Completed', 'Delivered', 'Closed'] else "⏳"
             pending_text = "🔴 Yes" if data.get('pending_flag') else "🟢 No"
             
@@ -2206,41 +2268,59 @@ class AIOrchestrator:
             if not isinstance(issues, list):
                 issues = []
             
-            amount = data.get('amount', 0)
-            if amount is None:
-                amount = 0
+            # Get dates safely
+            create_date = safe_get('dn_create_date', 'N/A')
+            pgi_date = safe_get('good_issue_date', 'N/A')
+            pod_date = safe_get('pod_date', 'N/A')
+            
+            # Get additional fields
+            dealer_code = safe_get('dealer_code', 'N/A')
+            customer_code = safe_get('customer_code', 'N/A')
+            sales_office = safe_get('sales_office', 'N/A')
+            sales_manager = safe_get('sales_manager', 'N/A')
+            division = safe_get('division', 'N/A')
+            customer_model = safe_get('customer_model', 'N/A')
+            material_no = safe_get('material_no', 'N/A')
             
             lines = [
                 "📄 *DN TRACKING*",
                 "",
                 f"DN No: {safe_get('dn_number', dn_number)}",
-                f"Dealer: {safe_get('customer_name', 'N/A')}",
-                f"Dealer Code: {safe_get('dealer_code', 'N/A')}",
-                f"Customer Code: {safe_get('customer_code', 'N/A')}",
-                f"Warehouse: {safe_get('warehouse', 'N/A')}",
-                f"City: {safe_get('ship_to_city', 'N/A')}",
-                f"Sales Office: {safe_get('sales_office', 'N/A')}",
-                f"Sales Manager: {safe_get('sales_manager', 'N/A')}",
-                f"Division: {safe_get('division', 'N/A')}",
+                f"Dealer: {customer_name}",
+                f"Dealer Code: {dealer_code}",
+                f"Customer Code: {customer_code}",
+                f"Warehouse: {warehouse}",
+                f"City: {city}",
+                f"Sales Office: {sales_office}",
+                f"Sales Manager: {sales_manager}",
+                f"Division: {division}",
                 "",
                 "📦 *Products*",
-                f"Model: {safe_get('customer_model', 'N/A')}",
-                f"Material: {safe_get('material_no', 'N/A')}",
+                f"Model: {customer_model}",
+                f"Material: {material_no}",
                 "",
                 "📊 *Metrics*",
-                f"Units: {safe_get('units', 0)}",
-                f"Revenue: PKR {amount:,.0f}" if amount else f"Revenue: PKR {amount}",
+                f"Units: {units}",
+            ]
+            
+            # Format amount with proper number formatting
+            if amount and amount != 0:
+                lines.append(f"Revenue: PKR {amount:,.0f}")
+            else:
+                lines.append(f"Revenue: PKR {amount}")
+            
+            lines.extend([
                 "",
                 "📅 *Dates*",
-                f"Create: {safe_get('dn_create_date', 'N/A')}",
-                f"PGI: {safe_get('good_issue_date', 'N/A')}",
-                f"POD: {safe_get('pod_date', 'N/A')}",
+                f"Create: {create_date}",
+                f"PGI: {pgi_date}",
+                f"POD: {pod_date}",
                 "",
                 "⏳ *Aging*",
                 f"Delivery Aging: {delivery_aging}",
                 f"POD Aging: {pod_aging}",
                 f"Total Cycle: {total_cycle}",
-            ]
+            ])
             
             if issues:
                 lines.append("")
@@ -2253,15 +2333,21 @@ class AIOrchestrator:
                 "",
                 "📋 *Status*",
                 f"Delivery: {status} {status_emoji}",
-                f"PGI: {safe_get('pgi_status', 'N/A')}",
-                f"POD: {safe_get('pod_status', 'N/A')}",
+                f"PGI: {pgi_status}",
+                f"POD: {pod_status}",
                 f"Pending: {pending_text}"
             ])
             
-            return self._truncate_response("\n".join(lines))
+            # Return full response without truncation for debugging
+            result = "\n".join(lines)
+            logger.info(f"📊 Formatted response length: {len(result)} characters")
+            return result
+            
         except Exception as e:
-            logger.error(f"DN format error: {e}")
-            return f"❌ Unable to format DN details for {dn_number}"
+            logger.error(f"❌ DN format error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return f"❌ Unable to format DN details for {dn_number}: {str(e)}"
 
     def _format_dealer_dashboard(self, data: Dict, dealer_name: str) -> str:
         """
@@ -2782,6 +2868,8 @@ Pending: {pending}"""
 # ==========================================================
 # END OF BLOCK 18-22 - FORMATTERS
 # ==========================================================
+
+
 
 # ==========================================================
 # BLOCK 23: HELP MESSAGE
