@@ -1346,7 +1346,7 @@ class AIOrchestrator:
 # BLOCK 17: ROUTE HANDLERS (FIXED v7.0)
 # ==========================================================
 # ==========================================================
-# BLOCK 17: ROUTE HANDLERS (FIXED v9.0)
+# BLOCK 17: ROUTE HANDLERS (COMPLETE)
 # ==========================================================
 
     def _validate_response(self, response, service_name: str, req_id: str) -> Tuple[bool, str, Optional[Dict]]:
@@ -1486,18 +1486,24 @@ class AIOrchestrator:
 
     def _route_dealer_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         """
-        Handle dealer dashboard with complete error handling and retry.
-        BLOCK 17 - FIXED v9.0
+        Handle dealer dashboard with improved validation and error handling.
+        BLOCK 17 - UPDATED FOR 360 DASHBOARD
+        
+        Features:
+        - 360° Dashboard support
+        - Backward compatibility with legacy format
+        - Typo correction
+        - Suggestions when not found
+        - Production logging with timing
         """
         import time
         start_time = time.time()
         
         logger.info(f"[{req_id}] 🏪 Dealer Dashboard route called")
         logger.info(f"[{req_id}] 📥 Entity: {entity}")
-        logger.info(f"[{req_id}] 📥 Context last_dealer: {context.last_dealer if context else None}")
         
         # ==========================================================
-        # STEP 1: Get dealer name
+        # STEP 1: Get dealer name from entity or context
         # ==========================================================
         dealer_name = entity
         if not dealer_name and context and context.last_dealer:
@@ -1509,7 +1515,9 @@ class AIOrchestrator:
         
         original_dealer_name = dealer_name
         
-        # Clean typos
+        # ==========================================================
+        # STEP 2: Clean typos
+        # ==========================================================
         typo_fixes = {"are ": "", "is ": "", "the ": "", "for ": "", "of ": ""}
         for typo, fix in typo_fixes.items():
             if dealer_name.lower().startswith(typo):
@@ -1521,33 +1529,39 @@ class AIOrchestrator:
             dealer_name = original_dealer_name
         
         # ==========================================================
-        # STEP 2: Verify analytics service - with retry
+        # STEP 3: Verify analytics service
         # ==========================================================
         if self.analytics is None:
-            logger.warning(f"[{req_id}] ⚠️ Analytics is None - attempting reload...")
-            service, response_class = _get_analytics_service()
-            self._analytics = service
-            self._analytics_response = response_class
-            
-            if self.analytics is None:
-                logger.error(f"[{req_id}] ❌ Analytics service still None")
-                return "⚠️ Service temporarily unavailable. Please try again later."
-        
-        if not hasattr(self.analytics, 'get_dealer_dashboard'):
-            logger.error(f"[{req_id}] ❌ get_dealer_dashboard not available")
+            logger.error(f"[{req_id}] ❌ Analytics service is None")
             return "⚠️ Service temporarily unavailable. Please try again later."
+        
+        if not hasattr(self.analytics, 'get_dealer_360_dashboard'):
+            logger.warning(f"[{req_id}] ⚠️ get_dealer_360_dashboard not available, falling back to legacy")
+            if not hasattr(self.analytics, 'get_dealer_dashboard'):
+                logger.error(f"[{req_id}] ❌ get_dealer_dashboard not available")
+                return "⚠️ Service temporarily unavailable. Please try again later."
         
         logger.info(f"[{req_id}] 🔍 Searching for dealer: '{dealer_name}'")
         
         try:
             # ==========================================================
-            # STEP 3: Get dashboard
+            # STEP 4: Get dashboard (try 360 first, fallback to legacy)
             # ==========================================================
-            response = self.analytics.get_dealer_dashboard(dealer_name)
+            response = None
+            
+            # Try 360 dashboard
+            if hasattr(self.analytics, 'get_dealer_360_dashboard'):
+                logger.info(f"[{req_id}] 📊 Using 360 dashboard")
+                response = self.analytics.get_dealer_360_dashboard(dealer_name)
+            else:
+                # Fallback to legacy
+                logger.info(f"[{req_id}] 📊 Using legacy dashboard")
+                response = self.analytics.get_dealer_dashboard(dealer_name)
+            
             logger.info(f"[{req_id}] 📊 Response type: {type(response)}")
             
             # ==========================================================
-            # STEP 4: Validate response
+            # STEP 5: Validate response
             # ==========================================================
             is_valid, error_msg, data = self._validate_response(response, "Dealer Dashboard", req_id)
             
@@ -1562,19 +1576,30 @@ class AIOrchestrator:
                 return f"❌ Unable to retrieve data for '{original_dealer_name}'.\n\n{error_msg}"
             
             # ==========================================================
-            # STEP 5: Check for empty data
+            # STEP 6: Check for empty data
             # ==========================================================
             if data and isinstance(data, dict):
                 total_dns = data.get("total_dns", 0)
-                if total_dns == 0:
+                if total_dns == 0 and data.get('_dashboard_type') != '360':
                     logger.warning(f"[{req_id}] ⚠️ Dealer '{dealer_name}' has 0 transactions")
                     return f"🏪 *DEALER DASHBOARD*\n\n✅ Dealer: {dealer_name}\n\n⚠️ Dealer found but no transactions available."
             
             # ==========================================================
-            # STEP 6: Format and return
+            # STEP 7: Format and return
             # ==========================================================
             logger.info(f"[{req_id}] ✅ Valid data received, formatting...")
-            result = self._format_dealer_dashboard(data, dealer_name)
+            
+            # Check if this is a 360 dashboard
+            if data and isinstance(data, dict) and data.get('_dashboard_type') == '360':
+                # Use 360 formatter
+                from app.services.dealer_analytics_service import format_dealer_360_dashboard
+                result = format_dealer_360_dashboard(data)
+                logger.info(f"[{req_id}] ✅ 360 dashboard formatted")
+            else:
+                # Use legacy formatter
+                result = self._format_dealer_dashboard(data, dealer_name)
+                logger.info(f"[{req_id}] ✅ Legacy dashboard formatted")
+            
             elapsed = time.time() - start_time
             logger.info(f"[{req_id}] ✅ Dealer dashboard returned in {elapsed:.3f}s")
             return result
@@ -1857,6 +1882,11 @@ class AIOrchestrator:
             return "🏢 *SALES OFFICE DASHBOARD*\n\nPlease specify a sales office name."
         return f"🏢 *SALES OFFICE: {so_name.upper()}*\n\nSales office data coming soon."
 
+# ==========================================================
+# END OF BLOCK 17
+# ==========================================================
+    
+# ==========================================================
 # ==========================================================
 # END OF BLOCK 17 - FIXED v9.0
 # ==========================================================
