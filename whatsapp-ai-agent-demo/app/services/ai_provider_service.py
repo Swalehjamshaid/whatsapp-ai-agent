@@ -1284,443 +1284,806 @@ class AIOrchestrator:
 # BLOCK 17: ROUTE HANDLERS
 # ==========================================================
 # ==========================================================
-# BLOCK 17: ROUTE HANDLERS (FIXED v3.0)
+# BLOCK 17: ROUTE HANDLERS (PRODUCTION-GRADE v5.0)
 # ==========================================================
 
     def _route_dealer_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         """
-        Handle dealer dashboard with improved search, suggestions, and typo handling.
-        BLOCK 17 - FIXED v3.0
+        PRODUCTION-GRADE Dealer Dashboard Router
+        
+        Handles:
+        - Typo correction ("are Diamonds" → "Diamonds")
+        - Multi-stage fallback (Exact → Search → Fuzzy)
+        - Detailed logging at each step
+        - Proper error differentiation
+        - Empty data handling
+        - Performance timing
+        
+        Args:
+            entity: Dealer name from intent detection
+            context: Conversation context
+            req_id: Request ID for logging
+        
+        Returns:
+            Formatted dashboard or error message
         """
+        import time
+        
+        # ==========================================================
+        # STEP 1: LOGGING - ENTRY
+        # ==========================================================
+        logger.info(f"[{req_id}] 🏪 _route_dealer_dashboard called")
+        logger.info(f"[{req_id}] 📥 Original entity: '{entity}'")
+        logger.info(f"[{req_id}] 📥 Context last_dealer: '{context.last_dealer if context else None}'")
+        
+        # ==========================================================
+        # STEP 2: GET DEALER NAME
+        # ==========================================================
         dealer_name = entity
         if not dealer_name and context and context.last_dealer:
             dealer_name = context.last_dealer
+            logger.info(f"[{req_id}] 🔄 Using context dealer: '{dealer_name}'")
         
         if not dealer_name:
+            logger.warning(f"[{req_id}] ❌ No dealer name provided")
             return "🏪 *DEALER DASHBOARD*\n\nPlease specify a dealer name.\n\n*Examples:*\n• ZQ Electronics\n• Show dealer ZQ Electronics"
         
-        # ✅ FIX: Clean common typos
         original_dealer_name = dealer_name
+        logger.info(f"[{req_id}] 📝 Original dealer name: '{original_dealer_name}'")
+        
+        # ==========================================================
+        # STEP 3: TYPO CORRECTION
+        # ==========================================================
         typo_fixes = {
-            "are ": "",      # "are Diamonds" → "Diamonds"
-            "is ": "",       # "is Electronics" → "Electronics"
-            "the ": "",      # "the Store" → "Store"
-            "for ": "",      # "for Company" → "Company"
-            "of ": "",       # "of Electronics" → "Electronics"
+            "are ": "",
+            "is ": "",
+            "the ": "",
+            "for ": "",
+            "of ": "",
+            "to ": "",
         }
+        
+        dealer_name_cleaned = dealer_name
         for typo, fix in typo_fixes.items():
-            if dealer_name.lower().startswith(typo):
-                dealer_name = dealer_name[len(typo):].strip()
-                logger.info(f"[{req_id}] 🔍 Fixed typo: '{original_dealer_name}' → '{dealer_name}'")
+            if dealer_name_cleaned.lower().startswith(typo):
+                dealer_name_cleaned = dealer_name_cleaned[len(typo):].strip()
+                logger.info(f"[{req_id}] 🔍 Typo fixed: '{original_dealer_name}' → '{dealer_name_cleaned}'")
                 break
         
-        # If dealer is too short after cleaning, use original
-        if len(dealer_name) < 2:
-            dealer_name = original_dealer_name
+        if len(dealer_name_cleaned) < 2:
+            dealer_name_cleaned = original_dealer_name
+            logger.info(f"[{req_id}] 🔄 Using original name (cleaned too short): '{original_dealer_name}'")
         
-        # ✅ Try to resolve dealer with cleaned name
-        resolved = self.resolver.resolve_dealer(dealer_name)
+        logger.info(f"[{req_id}] 📝 Cleaned dealer name: '{dealer_name_cleaned}'")
         
-        # ✅ If not found, try with original
-        if not resolved and dealer_name != original_dealer_name:
+        # ==========================================================
+        # STEP 4: RESOLUTION - EXACT MATCH
+        # ==========================================================
+        resolution_start = time.time()
+        resolved = None
+        
+        # Try cleaned name first
+        logger.info(f"[{req_id}] 🔍 Attempting exact resolution: '{dealer_name_cleaned}'")
+        resolved = self.resolver.resolve_dealer(dealer_name_cleaned)
+        
+        # If not found, try original name
+        if not resolved and dealer_name_cleaned != original_dealer_name:
+            logger.info(f"[{req_id}] 🔍 Attempting exact resolution with original: '{original_dealer_name}'")
             resolved = self.resolver.resolve_dealer(original_dealer_name)
         
-        # ✅ If still not found, try searching for similar dealers
-        if not resolved:
-            logger.info(f"[{req_id}] 🔍 Dealer '{dealer_name}' not found, searching for similar...")
+        resolution_time = time.time() - resolution_start
+        logger.info(f"[{req_id}] ⏱️ Resolution time: {resolution_time:.3f}s")
+        
+        # ==========================================================
+        # STEP 5: IF RESOLVED - VERIFY AND GET DASHBOARD
+        # ==========================================================
+        if resolved:
+            logger.info(f"[{req_id}] ✅ Dealer resolved: '{resolved}'")
             
-            # Try to find similar dealers using search
-            try:
-                similar = self.analytics.search_dealer(dealer_name, exact=False)
-                if similar and len(similar) > 0:
-                    suggestions = [s['dealer_name'] for s in similar[:5]]
-                    return f"❌ Dealer '{dealer_name}' not found.\n\n💡 Did you mean:\n" + "\n".join([f"• {s}" for s in suggestions[:3]])
-            except Exception as e:
-                logger.error(f"[{req_id}] Search error: {e}")
+            # ==========================================================
+            # STEP 5a: VERIFY DEALER EXISTS
+            # ==========================================================
+            verify_start = time.time()
+            exists = self.analytics.verify_dealer_exists(resolved)
+            verify_time = time.time() - verify_start
+            logger.info(f"[{req_id}] 🔍 Dealer exists check: {exists} (took {verify_time:.3f}s)")
             
-            # Try with individual words
-            tokens = dealer_name.split()
-            for token in tokens:
-                if len(token) > 2 and token.lower() not in ['the', 'and', 'for', 'with']:
-                    resolved = self.resolver.resolve_dealer(token)
-                    if resolved:
-                        logger.info(f"[{req_id}] ✅ Found dealer by token '{token}': {resolved}")
-                        break
+            if not exists:
+                logger.warning(f"[{req_id}] ⚠️ Dealer '{resolved}' verified False - data may be empty")
             
-            if not resolved:
-                return f"❌ Dealer '{original_dealer_name}' not found.\n\n💡 Please check the spelling or try a different dealer name."
-        
-        response = self.analytics.get_dealer_dashboard(resolved)
-        if not self._validate_response(response, "dealer_dashboard", req_id):
-            return f"❌ Unable to retrieve data for '{resolved}'."
-        return self._format_dealer_dashboard(response.data, resolved)
-    
-    def _route_warehouse_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """
-        Handle warehouse dashboard with improved search and suggestions.
-        BLOCK 17 - FIXED v3.0
-        """
-        warehouse_name = entity
-        if not warehouse_name and context and context.last_warehouse:
-            warehouse_name = context.last_warehouse
-        
-        if not warehouse_name:
-            return "🏭 *WAREHOUSE DASHBOARD*\n\nPlease specify a warehouse name.\n\n*Examples:*\n• Lahore warehouse\n• Rawalpindi warehouse"
-        
-        # ✅ Try to resolve warehouse
-        resolved = self.resolver.resolve_warehouse(warehouse_name)
-        
-        # ✅ If not found, try searching for similar warehouses
-        if not resolved:
-            logger.info(f"[{req_id}] 🔍 Warehouse '{warehouse_name}' not found, searching for similar...")
+            # ==========================================================
+            # STEP 5b: GET DASHBOARD
+            # ==========================================================
+            dashboard_start = time.time()
+            response = self.analytics.get_dealer_dashboard(resolved)
+            dashboard_time = time.time() - dashboard_start
+            logger.info(f"[{req_id}] ⏱️ Dashboard generation time: {dashboard_time:.3f}s")
             
-            # Try to find similar warehouses using search
-            try:
-                similar = self.analytics.search_warehouse(warehouse_name)
-                if similar and len(similar) > 0:
-                    suggestions = [s['warehouse'] for s in similar[:5]]
-                    return f"❌ Warehouse '{warehouse_name}' not found.\n\n💡 Did you mean:\n" + "\n".join([f"• {s}" for s in suggestions[:3]])
-            except Exception as e:
-                logger.error(f"[{req_id}] Search error: {e}")
+            # ==========================================================
+            # STEP 5c: LOG RESPONSE
+            # ==========================================================
+            if response:
+                logger.info(f"[{req_id}] 📊 Dashboard response:")
+                logger.info(f"[{req_id}]   - Success: {response.success}")
+                logger.info(f"[{req_id}]   - Error: {getattr(response, 'error', 'None')}")
+                logger.info(f"[{req_id}]   - Data keys: {list(response.data.keys()) if response.data else 'None'}")
+                
+                # Log the full response data (truncated for safety)
+                try:
+                    response_dict = response.to_dict() if hasattr(response, 'to_dict') else response.__dict__
+                    logger.info(f"[{req_id}] 📊 Full response: {str(response_dict)[:500]}")
+                except Exception as e:
+                    logger.warning(f"[{req_id}] Could not log full response: {e}")
             
-            # Try with individual words
-            tokens = warehouse_name.split()
-            for token in tokens:
-                if len(token) > 2:
-                    resolved = self.resolver.resolve_warehouse(token)
-                    if resolved:
-                        break
+            # ==========================================================
+            # STEP 5d: VALIDATE AND FORMAT RESPONSE
+            # ==========================================================
+            if response and hasattr(response, 'success'):
+                if response.success:
+                    # Check if data is empty
+                    if not response.data or len(response.data) == 0:
+                        logger.warning(f"[{req_id}] ⚠️ Dealer '{resolved}' found but no data returned")
+                        return f"🏪 *DEALER DASHBOARD*\n\n✅ Dealer: {resolved}\n\n⚠️ Dealer found but no transactions available.\n\n💡 This dealer may not have any delivery reports in the system."
+                    
+                    # Check if data has essential fields
+                    if isinstance(response.data, dict):
+                        total_dns = response.data.get('total_dns', 0)
+                        if total_dns == 0:
+                            logger.warning(f"[{req_id}] ⚠️ Dealer '{resolved}' has 0 DNs")
+                            return f"🏪 *DEALER DASHBOARD*\n\n✅ Dealer: {resolved}\n\n⚠️ Dealer found but no transactions available.\n\n💡 This dealer has no delivery reports."
+                    
+                    # Format and return
+                    format_start = time.time()
+                    result = self._format_dealer_dashboard(response.data, resolved)
+                    format_time = time.time() - format_start
+                    logger.info(f"[{req_id}] ⏱️ Formatting time: {format_time:.3f}s")
+                    logger.info(f"[{req_id}] ✅ Dashboard returned successfully for '{resolved}'")
+                    return result
+                
+                else:
+                    # Dashboard failed - log error
+                    error_msg = getattr(response, 'error', 'Unknown error')
+                    logger.error(f"[{req_id}] ❌ Dashboard failed for '{resolved}': {error_msg}")
+                    return f"❌ Unable to load dashboard for '{resolved}'.\n\n{error_msg}"
             
-            if not resolved:
-                return f"❌ Warehouse '{warehouse_name}' not found.\n\n💡 Please check the spelling or try a different warehouse name."
+            # Response is None or invalid
+            logger.error(f"[{req_id}] ❌ Invalid response for '{resolved}'")
+            return f"❌ Failed to retrieve data for '{resolved}'. Please try again."
         
-        response = self.analytics.get_warehouse_dashboard(resolved)
-        if not self._validate_response(response, "warehouse_dashboard", req_id):
-            return f"❌ Unable to retrieve data for warehouse '{resolved}'."
-        return self._format_warehouse_dashboard(response.data, resolved)
-    
-    def _route_city_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """
-        Handle city dashboard with improved search and suggestions.
-        BLOCK 17 - FIXED v3.0
-        """
-        city_name = entity
-        if not city_name and context and context.last_city:
-            city_name = context.last_city
-        
-        if not city_name:
-            return "🏙️ *CITY DASHBOARD*\n\nPlease specify a city name.\n\n*Examples:*\n• Haripur\n• Sahiwal"
-        
-        # ✅ Try to resolve city
-        resolved = self.resolver.resolve_city(city_name)
-        
-        # ✅ If not found, try searching for similar cities
-        if not resolved:
-            logger.info(f"[{req_id}] 🔍 City '{city_name}' not found, searching for similar...")
-            
-            # Try to find similar cities using search
-            try:
-                similar = self.analytics.search_city(city_name)
-                if similar and len(similar) > 0:
-                    suggestions = [s['city'] for s in similar[:5]]
-                    return f"❌ City '{city_name}' not found.\n\n💡 Did you mean:\n" + "\n".join([f"• {s}" for s in suggestions[:3]])
-            except Exception as e:
-                logger.error(f"[{req_id}] Search error: {e}")
-            
-            # Try with individual words
-            tokens = city_name.split()
-            for token in tokens:
-                if len(token) > 2:
-                    resolved = self.resolver.resolve_city(token)
-                    if resolved:
-                        break
-            
-            if not resolved:
-                return f"❌ City '{city_name}' not found.\n\n💡 Please check the spelling or try a different city name."
-        
-        response = self.analytics.get_city_dashboard(resolved)
-        if not self._validate_response(response, "city_dashboard", req_id):
-            return f"❌ Unable to retrieve data for city '{resolved}'."
-        return self._format_city_dashboard(response.data, resolved)
-    
-    def _route_product_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """
-        Handle product dashboard with improved search and suggestions.
-        BLOCK 17 - FIXED v3.0
-        """
-        product_name = entity
-        if not product_name and context and context.last_product:
-            product_name = context.last_product
-        
-        if not product_name:
-            return "📦 *PRODUCT DASHBOARD*\n\nPlease specify a product.\n\n*Examples:*\n• HRF-316IPGA\n• Model A123"
-        
-        # ✅ Try to resolve product
-        resolved = self.resolver.resolve_product(product_name)
-        
-        # ✅ If not found, try searching for similar products
-        if not resolved:
-            logger.info(f"[{req_id}] 🔍 Product '{product_name}' not found, searching for similar...")
-            
-            # Try to find similar products using search
-            try:
-                similar = self.analytics.search_product(product_name)
-                if similar and len(similar) > 0:
-                    suggestions = [s['product'] for s in similar[:5]]
-                    return f"❌ Product '{product_name}' not found.\n\n💡 Did you mean:\n" + "\n".join([f"• {s}" for s in suggestions[:3]])
-            except Exception as e:
-                logger.error(f"[{req_id}] Search error: {e}")
-            
-            return f"❌ Product '{product_name}' not found.\n\n💡 Please check the spelling or try a different product name."
-        
-        response = self.analytics.get_product_dashboard(resolved)
-        if not self._validate_response(response, "product_dashboard", req_id):
-            return f"❌ Unable to retrieve data for product '{resolved}'."
-        return self._format_product_dashboard(response.data, resolved)
-    
-    def _route_dn_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """
-        Handle DN dashboard with improved search and suggestions.
-        BLOCK 17 - FIXED v3.0
-        """
-        dn_number = entity or (context.last_dn if context else None)
-        if not dn_number:
-            return "📄 *DN DASHBOARD*\n\nPlease provide a DN number.\n\n*Example:* 6243675570"
-        
-        dn_clean = re.sub(r'\D', '', str(dn_number).strip())
-        if len(dn_clean) < 8 or len(dn_clean) > 12:
-            return f"❌ Invalid DN number: '{dn_number}'\n\nDN numbers must be 8-12 digits."
-        
-        logger.info(f"[{req_id}] 🔍 Looking up DN: {dn_clean}")
+        # ==========================================================
+        # STEP 6: FALLBACK - SEARCH ENGINE
+        # ==========================================================
+        logger.info(f"[{req_id}] 🔍 Dealer not resolved, attempting search...")
         
         try:
-            response = self.analytics.get_dn_dashboard(dn_clean)
+            search_start = time.time()
+            similar = self.analytics.search_dealer(dealer_name_cleaned, exact=False)
+            search_time = time.time() - search_start
+            logger.info(f"[{req_id}] ⏱️ Search time: {search_time:.3f}s")
             
-            if response is None:
-                return f"❌ Unable to retrieve data for DN {dn_clean}.\n\n💡 The system could not process your request."
-            
-            if hasattr(response, 'success'):
-                if not response.success:
-                    error_msg = getattr(response, 'error', 'Unknown error')
-                    return f"❌ Unable to retrieve data for DN {dn_clean}.\n\n{error_msg}"
+            if similar and len(similar) > 0:
+                logger.info(f"[{req_id}] 🔍 Found {len(similar)} similar dealers:")
+                for i, s in enumerate(similar[:5]):
+                    logger.info(f"[{req_id}]   {i+1}. {s.get('dealer_name', 'Unknown')}")
                 
-                data = response.data
-                if data and isinstance(data, dict):
-                    if "error" in data:
-                        return f"❌ {data['error']}"
-                    
-                    # Format and return the dashboard
-                    return self._format_dn_dashboard(data, dn_clean)
-            
-            return f"❌ Unable to retrieve data for DN {dn_clean}."
-            
+                # Try each suggestion
+                for suggestion in similar[:5]:
+                    suggested_name = suggestion.get('dealer_name')
+                    if suggested_name:
+                        resolved = self.resolver.resolve_dealer(suggested_name)
+                        if resolved:
+                            logger.info(f"[{req_id}] ✅ Found via search: '{resolved}'")
+                            response = self.analytics.get_dealer_dashboard(resolved)
+                            
+                            if response and hasattr(response, 'success') and response.success:
+                                if response.data and len(response.data) > 0:
+                                    # Check if data is valid
+                                    if isinstance(response.data, dict) and response.data.get('total_dns', 0) > 0:
+                                        result = self._format_dealer_dashboard(response.data, resolved)
+                                        logger.info(f"[{req_id}] ✅ Dashboard returned via search for '{resolved}'")
+                                        return result
+                                    else:
+                                        logger.warning(f"[{req_id}] ⚠️ Dealer '{resolved}' found via search but has no data")
+                                        return f"🏪 *DEALER DASHBOARD*\n\n✅ Dealer: {resolved}\n\n⚠️ Dealer found but no transactions available.\n\n💡 This dealer has no delivery reports."
+                                else:
+                                    logger.warning(f"[{req_id}] ⚠️ Dealer '{resolved}' found via search but response data is empty")
+                            else:
+                                error_msg = getattr(response, 'error', 'Unknown error')
+                                logger.error(f"[{req_id}] ❌ Dashboard failed for '{resolved}': {error_msg}")
+                                return f"❌ Dealer '{suggested_name}' found but dashboard failed.\n\n{error_msg}"
+                
+                # If none worked, show suggestions
+                suggestions = [s.get('dealer_name') for s in similar[:5] if s.get('dealer_name')]
+                logger.info(f"[{req_id}] 💡 Showing suggestions: {suggestions[:3]}")
+                return f"❌ Dealer '{original_dealer_name}' not found.\n\n💡 Did you mean:\n" + "\n".join([f"• {s}" for s in suggestions[:3]])
+        
         except Exception as e:
-            logger.error(f"[{req_id}] ❌ DN dashboard error: {e}")
-            return f"❌ Error retrieving DN {dn_clean}: {str(e)}"
+            logger.error(f"[{req_id}] ❌ Search error: {e}")
+        
+        # ==========================================================
+        # STEP 7: FALLBACK - FUZZY TOKEN MATCH
+        # ==========================================================
+        logger.info(f"[{req_id}] 🔍 Attempting fuzzy token matching...")
+        
+        tokens = dealer_name_cleaned.split()
+        for token in tokens:
+            if len(token) > 2 and token.lower() not in ['the', 'and', 'for', 'with']:
+                logger.info(f"[{req_id}] 🔍 Trying token: '{token}'")
+                resolved = self.resolver.resolve_dealer(token)
+                if resolved:
+                    logger.info(f"[{req_id}] ✅ Found via token '{token}': '{resolved}'")
+                    response = self.analytics.get_dealer_dashboard(resolved)
+                    
+                    if response and hasattr(response, 'success') and response.success:
+                        if response.data and len(response.data) > 0:
+                            if isinstance(response.data, dict) and response.data.get('total_dns', 0) > 0:
+                                result = self._format_dealer_dashboard(response.data, resolved)
+                                logger.info(f"[{req_id}] ✅ Dashboard returned via token for '{resolved}'")
+                                return result
+                            else:
+                                return f"🏪 *DEALER DASHBOARD*\n\n✅ Dealer: {resolved}\n\n⚠️ Dealer found but no transactions available."
+                        else:
+                            return f"🏪 *DEALER DASHBOARD*\n\n✅ Dealer: {resolved}\n\n⚠️ Dealer found but no transactions available."
+                    else:
+                        error_msg = getattr(response, 'error', 'Unknown error')
+                        logger.error(f"[{req_id}] ❌ Dashboard failed for '{resolved}': {error_msg}")
+                        return f"❌ Dealer '{resolved}' found but dashboard failed.\n\n{error_msg}"
+        
+        # ==========================================================
+        # STEP 8: NO MATCH FOUND
+        # ==========================================================
+        logger.warning(f"[{req_id}] ❌ Dealer '{original_dealer_name}' not found after all strategies")
+        
+        # Try to find suggestions even if no exact match
+        try:
+            suggestions = self.analytics.search_dealer(original_dealer_name, exact=False)
+            if suggestions and len(suggestions) > 0:
+                suggestion_names = [s.get('dealer_name') for s in suggestions[:5] if s.get('dealer_name')]
+                logger.info(f"[{req_id}] 💡 Found suggestions: {suggestion_names[:3]}")
+                return f"❌ Dealer '{original_dealer_name}' not found.\n\n💡 Did you mean:\n" + "\n".join([f"• {s}" for s in suggestion_names[:3]])
+        except Exception as e:
+            logger.error(f"[{req_id}] ❌ Suggestion search error: {e}")
+        
+        return f"❌ Dealer '{original_dealer_name}' not found.\n\n💡 Please check the spelling or try a different dealer name.\n\n📝 Examples:\n• ZQ Electronics\n• Asim Electric"
 
-    def _route_dealer_ranking(self, req_id: str) -> str:
+# ==========================================================
+# END OF BLOCK 17 - PRODUCTION-GRADE v5.0
+# ==========================================================# ==========================================================
+# BLOCK 17: ROUTE HANDLERS (PRODUCTION-GRADE v5.0)
+# ==========================================================
+
+    def _route_dealer_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         """
-        Handle dealer ranking.
-        BLOCK 17 - FIXED
+        PRODUCTION-GRADE Dealer Dashboard Router
+        
+        Handles:
+        - Typo correction ("are Diamonds" → "Diamonds")
+        - Multi-stage fallback (Exact → Search → Fuzzy)
+        - Detailed logging at each step
+        - Proper error differentiation
+        - Empty data handling
+        - Performance timing
+        
+        Args:
+            entity: Dealer name from intent detection
+            context: Conversation context
+            req_id: Request ID for logging
+        
+        Returns:
+            Formatted dashboard or error message
         """
-        response = self.analytics.get_ranking_dashboard(limit=10)
-        if not self._validate_response(response, "dealer_ranking", req_id):
-            return "❌ Unable to retrieve dealer ranking."
-        return self._format_dealer_ranking(response.data)
-    
-    def _route_dealer_products(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """
-        Handle dealer products.
-        BLOCK 17 - FIXED
-        """
-        dealer_name = entity or (context.last_dealer if context else None)
+        import time
+        
+        # ==========================================================
+        # STEP 1: LOGGING - ENTRY
+        # ==========================================================
+        logger.info(f"[{req_id}] 🏪 _route_dealer_dashboard called")
+        logger.info(f"[{req_id}] 📥 Original entity: '{entity}'")
+        logger.info(f"[{req_id}] 📥 Context last_dealer: '{context.last_dealer if context else None}'")
+        
+        # ==========================================================
+        # STEP 2: GET DEALER NAME
+        # ==========================================================
+        dealer_name = entity
+        if not dealer_name and context and context.last_dealer:
+            dealer_name = context.last_dealer
+            logger.info(f"[{req_id}] 🔄 Using context dealer: '{dealer_name}'")
+        
         if not dealer_name:
-            return "📦 *DEALER PRODUCTS*\n\nPlease specify a dealer name."
-        return f"📦 *PRODUCTS FOR {dealer_name.upper()}*\n\nProduct information coming soon."
-    
-    def _route_warehouse_ranking(self, req_id: str) -> str:
-        """
-        Handle warehouse ranking.
-        BLOCK 17 - FIXED
-        """
-        return "🏆 *WAREHOUSE RANKING*\n\nWarehouse ranking coming soon."
-    
-    def _route_warehouse_coverage(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """
-        Handle warehouse coverage.
-        BLOCK 17 - FIXED
-        """
-        warehouse_name = entity or (context.last_warehouse if context else None)
-        if not warehouse_name:
-            return "📍 *WAREHOUSE COVERAGE*\n\nPlease specify a warehouse name."
-        return f"📍 *COVERAGE FOR {warehouse_name.upper()}*\n\nCoverage information coming soon."
-    
-    def _route_warehouse_products(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """
-        Handle warehouse products.
-        BLOCK 17 - FIXED
-        """
-        warehouse_name = entity or (context.last_warehouse if context else None)
-        if not warehouse_name:
-            return "📦 *WAREHOUSE PRODUCTS*\n\nPlease specify a warehouse name."
-        return f"📦 *PRODUCTS IN {warehouse_name.upper()}*\n\nProduct list coming soon."
-    
-    def _route_city_ranking(self, req_id: str) -> str:
-        """
-        Handle city ranking.
-        BLOCK 17 - FIXED
-        """
-        return "🏆 *CITY RANKING*\n\nCity ranking coming soon."
-    
-    def _route_city_dealers(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """
-        Handle city dealers.
-        BLOCK 17 - FIXED
-        """
-        city_name = entity or (context.last_city if context else None)
-        if not city_name:
-            return "📍 *CITY DEALERS*\n\nPlease specify a city name."
-        return f"📍 *DEALERS IN {city_name.upper()}*\n\nDealer list coming soon."
-    
-    def _route_city_products(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """
-        Handle city products.
-        BLOCK 17 - FIXED
-        """
-        city_name = entity or (context.last_city if context else None)
-        if not city_name:
-            return "📦 *CITY PRODUCTS*\n\nPlease specify a city name."
-        return f"📦 *PRODUCTS IN {city_name.upper()}*\n\nProduct list coming soon."
-    
-    def _route_product_ranking(self, req_id: str) -> str:
-        """
-        Handle product ranking.
-        BLOCK 17 - FIXED
-        """
-        return "🏆 *PRODUCT RANKING*\n\nProduct ranking coming soon."
-    
-    def _route_product_trend(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """
-        Handle product trend.
-        BLOCK 17 - FIXED
-        """
-        return "📈 *PRODUCT TREND*\n\nProduct trend coming soon."
-
-    def _route_dn_analytics(self, req_id: str) -> str:
-        """
-        Handle DN analytics.
-        BLOCK 17 - FIXED
-        """
-        return "📊 *DN ANALYTICS*\n\nAnalytics coming soon."
-
-    def _route_pgi_dashboard(self, req_id: str) -> str:
-        """
-        Handle PGI dashboard.
-        BLOCK 17 - FIXED
-        """
-        response = self.analytics.get_pgi_dashboard()
-        if not self._validate_response(response, "pgi_dashboard", req_id):
-            return "❌ Unable to retrieve PGI data."
-        return self._format_pgi_dashboard(response.data)
-    
-    def _route_pod_dashboard(self, req_id: str) -> str:
-        """
-        Handle POD dashboard.
-        BLOCK 17 - FIXED
-        """
-        response = self.analytics.get_pod_dashboard()
-        if not self._validate_response(response, "pod_dashboard", req_id):
-            return "❌ Unable to retrieve POD data."
-        return self._format_pod_dashboard(response.data)
-    
-    def _route_delivery_dashboard(self, req_id: str) -> str:
-        """
-        Handle delivery dashboard.
-        BLOCK 17 - FIXED
-        """
-        response = self.analytics.get_delivery_dashboard()
-        if not self._validate_response(response, "delivery_dashboard", req_id):
-            return "❌ Unable to retrieve delivery data."
-        return self._format_delivery_dashboard(response.data)
-    
-    def _route_executive_dashboard(self, req_id: str) -> str:
-        """
-        Handle executive dashboard.
-        BLOCK 17 - FIXED
-        """
-        response = self.analytics.get_executive_dashboard()
-        if not self._validate_response(response, "executive_dashboard", req_id):
-            return "❌ Unable to retrieve executive data."
-        return self._format_executive_dashboard(response.data)
-    
-    def _route_control_tower(self, req_id: str) -> str:
-        """
-        Handle control tower dashboard.
-        BLOCK 17 - FIXED
-        """
-        response = self.analytics.get_control_tower_dashboard()
-        if not self._validate_response(response, "control_tower", req_id):
-            return "❌ Unable to retrieve control tower data."
-        return self._format_control_tower(response.data)
-    
-    def _route_revenue_dashboard(self, req_id: str) -> str:
-        """
-        Handle revenue dashboard.
-        BLOCK 17 - FIXED
-        """
-        response = self.analytics.get_revenue_dashboard()
-        if not self._validate_response(response, "revenue_dashboard", req_id):
-            return "❌ Unable to retrieve revenue data."
-        return self._format_revenue_dashboard(response.data)
-    
-    def _route_aging_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """
-        Handle aging dashboard.
-        BLOCK 17 - FIXED
-        """
-        response = self.analytics.get_aging_dashboard()
-        if not self._validate_response(response, "aging_dashboard", req_id):
-            return "❌ Unable to retrieve aging data."
-        return self._format_aging_dashboard(response.data)
-    
-    def _route_division_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """
-        Handle division dashboard.
-        BLOCK 17 - FIXED
-        """
-        division_name = entity or (context.last_division if context else None)
-        if not division_name:
-            return "📊 *DIVISION DASHBOARD*\n\nPlease specify a division name."
-        return f"📊 *DIVISION: {division_name.upper()}*\n\nDivision data coming soon."
-    
-    def _route_sales_manager_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """
-        Handle sales manager dashboard.
-        BLOCK 17 - FIXED
-        """
-        sm_name = entity or (context.last_sales_manager if context else None)
-        if not sm_name:
-            return "👤 *SALES MANAGER DASHBOARD*\n\nPlease specify a sales manager name."
-        return f"👤 *SALES MANAGER: {sm_name.upper()}*\n\nSales manager data coming soon."
-    
-    def _route_sales_office_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """
-        Handle sales office dashboard.
-        BLOCK 17 - FIXED
-        """
-        so_name = entity or (context.last_sales_office if context else None)
-        if not so_name:
-            return "🏢 *SALES OFFICE DASHBOARD*\n\nPlease specify a sales office name."
-        return f"🏢 *SALES OFFICE: {so_name.upper()}*\n\nSales office data coming soon."
+            logger.warning(f"[{req_id}] ❌ No dealer name provided")
+            return "🏪 *DEALER DASHBOARD*\n\nPlease specify a dealer name.\n\n*Examples:*\n• ZQ Electronics\n• Show dealer ZQ Electronics"
+        
+        original_dealer_name = dealer_name
+        logger.info(f"[{req_id}] 📝 Original dealer name: '{original_dealer_name}'")
+        
+        # ==========================================================
+        # STEP 3: TYPO CORRECTION
+        # ==========================================================
+        typo_fixes = {
+            "are ": "",
+            "is ": "",
+            "the ": "",
+            "for ": "",
+            "of ": "",
+            "to ": "",
+        }
+        
+        dealer_name_cleaned = dealer_name
+        for typo, fix in typo_fixes.items():
+            if dealer_name_cleaned.lower().startswith(typo):
+                dealer_name_cleaned = dealer_name_cleaned[len(typo):].strip()
+                logger.info(f"[{req_id}] 🔍 Typo fixed: '{original_dealer_name}' → '{dealer_name_cleaned}'")
+                break
+        
+        if len(dealer_name_cleaned) < 2:
+            dealer_name_cleaned = original_dealer_name
+            logger.info(f"[{req_id}] 🔄 Using original name (cleaned too short): '{original_dealer_name}'")
+        
+        logger.info(f"[{req_id}] 📝 Cleaned dealer name: '{dealer_name_cleaned}'")
+        
+        # ==========================================================
+        # STEP 4: RESOLUTION - EXACT MATCH
+        # ==========================================================
+        resolution_start = time.time()
+        resolved = None
+        
+        # Try cleaned name first
+        logger.info(f"[{req_id}] 🔍 Attempting exact resolution: '{dealer_name_cleaned}'")
+        resolved = self.resolver.resolve_dealer(dealer_name_cleaned)
+        
+        # If not found, try original name
+        if not resolved and dealer_name_cleaned != original_dealer_name:
+            logger.info(f"[{req_id}] 🔍 Attempting exact resolution with original: '{original_dealer_name}'")
+            resolved = self.resolver.resolve_dealer(original_dealer_name)
+        
+        resolution_time = time.time() - resolution_start
+        logger.info(f"[{req_id}] ⏱️ Resolution time: {resolution_time:.3f}s")
+        
+        # ==========================================================
+        # STEP 5: IF RESOLVED - VERIFY AND GET DASHBOARD
+        # ==========================================================
+        if resolved:
+            logger.info(f"[{req_id}] ✅ Dealer resolved: '{resolved}'")
+            
+            # ==========================================================
+            # STEP 5a: VERIFY DEALER EXISTS
+            # ==========================================================
+            verify_start = time.time()
+            exists = self.analytics.verify_dealer_exists(resolved)
+            verify_time = time.time() - verify_start
+            logger.info(f"[{req_id}] 🔍 Dealer exists check: {exists} (took {verify_time:.3f}s)")
+            
+            if not exists:
+                logger.warning(f"[{req_id}] ⚠️ Dealer '{resolved}' verified False - data may be empty")
+            
+            # ==========================================================
+            # STEP 5b: GET DASHBOARD
+            # ==========================================================
+            dashboard_start = time.time()
+            response = self.analytics.get_dealer_dashboard(resolved)
+            dashboard_time = time.time() - dashboard_start
+            logger.info(f"[{req_id}] ⏱️ Dashboard generation time: {dashboard_time:.3f}s")
+            
+            # ==========================================================
+            # STEP 5c: LOG RESPONSE
+            # ==========================================================
+            if response:
+                logger.info(f"[{req_id}] 📊 Dashboard response:")
+                logger.info(f"[{req_id}]   - Success: {response.success}")
+                logger.info(f"[{req_id}]   - Error: {getattr(response, 'error', 'None')}")
+                logger.info(f"[{req_id}]   - Data keys: {list(response.data.keys()) if response.data else 'None'}")
+                
+                # Log the full response data (truncated for safety)
+                try:
+                    response_dict = response.to_dict() if hasattr(response, 'to_dict') else response.__dict__
+                    logger.info(f"[{req_id}] 📊 Full response: {str(response_dict)[:500]}")
+                except Exception as e:
+                    logger.warning(f"[{req_id}] Could not log full response: {e}")
+            
+            # ==========================================================
+            # STEP 5d: VALIDATE AND FORMAT RESPONSE
+            # ==========================================================
+            if response and hasattr(response, 'success'):
+                if response.success:
+                    # Check if data is empty
+                    if not response.data or len(response.data) == 0:
+                        logger.warning(f"[{req_id}] ⚠️ Dealer '{resolved}' found but no data returned")
+                        return f"🏪 *DEALER DASHBOARD*\n\n✅ Dealer: {resolved}\n\n⚠️ Dealer found but no transactions available.\n\n💡 This dealer may not have any delivery reports in the system."
+                    
+                    # Check if data has essential fields
+                    if isinstance(response.data, dict):
+                        total_dns = response.data.get('total_dns', 0)
+                        if total_dns == 0:
+                            logger.warning(f"[{req_id}] ⚠️ Dealer '{resolved}' has 0 DNs")
+                            return f"🏪 *DEALER DASHBOARD*\n\n✅ Dealer: {resolved}\n\n⚠️ Dealer found but no transactions available.\n\n💡 This dealer has no delivery reports."
+                    
+                    # Format and return
+                    format_start = time.time()
+                    result = self._format_dealer_dashboard(response.data, resolved)
+                    format_time = time.time() - format_start
+                    logger.info(f"[{req_id}] ⏱️ Formatting time: {format_time:.3f}s")
+                    logger.info(f"[{req_id}] ✅ Dashboard returned successfully for '{resolved}'")
+                    return result
+                
+                else:
+                    # Dashboard failed - log error
+                    error_msg = getattr(response, 'error', 'Unknown error')
+                    logger.error(f"[{req_id}] ❌ Dashboard failed for '{resolved}': {error_msg}")
+                    return f"❌ Unable to load dashboard for '{resolved}'.\n\n{error_msg}"
+            
+            # Response is None or invalid
+            logger.error(f"[{req_id}] ❌ Invalid response for '{resolved}'")
+            return f"❌ Failed to retrieve data for '{resolved}'. Please try again."
+        
+        # ==========================================================
+        # STEP 6: FALLBACK - SEARCH ENGINE
+        # ==========================================================
+        logger.info(f"[{req_id}] 🔍 Dealer not resolved, attempting search...")
+        
+        try:
+            search_start = time.time()
+            similar = self.analytics.search_dealer(dealer_name_cleaned, exact=False)
+            search_time = time.time() - search_start
+            logger.info(f"[{req_id}] ⏱️ Search time: {search_time:.3f}s")
+            
+            if similar and len(similar) > 0:
+                logger.info(f"[{req_id}] 🔍 Found {len(similar)} similar dealers:")
+                for i, s in enumerate(similar[:5]):
+                    logger.info(f"[{req_id}]   {i+1}. {s.get('dealer_name', 'Unknown')}")
+                
+                # Try each suggestion
+                for suggestion in similar[:5]:
+                    suggested_name = suggestion.get('dealer_name')
+                    if suggested_name:
+                        resolved = self.resolver.resolve_dealer(suggested_name)
+                        if resolved:
+                            logger.info(f"[{req_id}] ✅ Found via search: '{resolved}'")
+                            response = self.analytics.get_dealer_dashboard(resolved)
+                            
+                            if response and hasattr(response, 'success') and response.success:
+                                if response.data and len(response.data) > 0:
+                                    # Check if data is valid
+                                    if isinstance(response.data, dict) and response.data.get('total_dns', 0) > 0:
+                                        result = self._format_dealer_dashboard(response.data, resolved)
+                                        logger.info(f"[{req_id}] ✅ Dashboard returned via search for '{resolved}'")
+                                        return result
+                                    else:
+                                        logger.warning(f"[{req_id}] ⚠️ Dealer '{resolved}' found via search but has no data")
+                                        return f"🏪 *DEALER DASHBOARD*\n\n✅ Dealer: {resolved}\n\n⚠️ Dealer found but no transactions available.\n\n💡 This dealer has no delivery reports."
+                                else:
+                                    logger.warning(f"[{req_id}] ⚠️ Dealer '{resolved}' found via search but response data is empty")
+                            else:
+                                error_msg = getattr(response, 'error', 'Unknown error')
+                                logger.error(f"[{req_id}] ❌ Dashboard failed for '{resolved}': {error_msg}")
+                                return f"❌ Dealer '{suggested_name}' found but dashboard failed.\n\n{error_msg}"
+                
+                # If none worked, show suggestions
+                suggestions = [s.get('dealer_name') for s in similar[:5] if s.get('dealer_name')]
+                logger.info(f"[{req_id}] 💡 Showing suggestions: {suggestions[:3]}")
+                return f"❌ Dealer '{original_dealer_name}' not found.\n\n💡 Did you mean:\n" + "\n".join([f"• {s}" for s in suggestions[:3]])
+        
+        except Exception as e:
+            logger.error(f"[{req_id}] ❌ Search error: {e}")
+        
+        # ==========================================================
+        # STEP 7: FALLBACK - FUZZY TOKEN MATCH
+        # ==========================================================
+        logger.info(f"[{req_id}] 🔍 Attempting fuzzy token matching...")
+        
+        tokens = dealer_name_cleaned.split()
+        for token in tokens:
+            if len(token) > 2 and token.lower() not in ['the', 'and', 'for', 'with']:
+                logger.info(f"[{req_id}] 🔍 Trying token: '{token}'")
+                resolved = self.resolver.resolve_dealer(token)
+                if resolved:
+                    logger.info(f"[{req_id}] ✅ Found via token '{token}': '{resolved}'")
+                    response = self.analytics.get_dealer_dashboard(resolved)
+                    
+                    if response and hasattr(response, 'success') and response.success:
+                        if response.data and len(response.data) > 0:
+                            if isinstance(response.data, dict) and response.data.get('total_dns', 0) > 0:
+                                result = self._format_dealer_dashboard(response.data, resolved)
+                                logger.info(f"[{req_id}] ✅ Dashboard returned via token for '{resolved}'")
+                                return result
+                            else:
+                                return f"🏪 *DEALER DASHBOARD*\n\n✅ Dealer: {resolved}\n\n⚠️ Dealer found but no transactions available."
+                        else:
+                            return f"🏪 *DEALER DASHBOARD*\n\n✅ Dealer: {resolved}\n\n⚠️ Dealer found but no transactions available."
+                    else:
+                        error_msg = getattr(response, 'error', 'Unknown error')
+                        logger.error(f"[{req_id}] ❌ Dashboard failed for '{resolved}': {error_msg}")
+                        return f"❌ Dealer '{resolved}' found but dashboard failed.\n\n{error_msg}"
+        
+        # ==========================================================
+        # STEP 8: NO MATCH FOUND
+        # ==========================================================
+        logger.warning(f"[{req_id}] ❌ Dealer '{original_dealer_name}' not found after all strategies")
+        
+        # Try to find suggestions even if no exact match
+        try:
+            suggestions = self.analytics.search_dealer(original_dealer_name, exact=False)
+            if suggestions and len(suggestions) > 0:
+                suggestion_names = [s.get('dealer_name') for s in suggestions[:5] if s.get('dealer_name')]
+                logger.info(f"[{req_id}] 💡 Found suggestions: {suggestion_names[:3]}")
+                return f"❌ Dealer '{original_dealer_name}' not found.\n\n💡 Did you mean:\n" + "\n".join([f"• {s}" for s in suggestion_names[:3]])
+        except Exception as e:
+            logger.error(f"[{req_id}] ❌ Suggestion search error: {e}")
+        
+        return f"❌ Dealer '{original_dealer_name}' not found.\n\n💡 Please check the spelling or try a different dealer name.\n\n📝 Examples:\n• ZQ Electronics\n• Asim Electric"
 
 # ==========================================================
-# END OF BLOCK 17 - FIXED v3.0
-# ==========================================================    
+# END OF BLOCK 17 - PRODUCTION-GRADE v5.0
+# ==========================================================
+    # ==========================================================
+# BLOCK 17: ROUTE HANDLERS (PRODUCTION-GRADE v5.0)
 # ==========================================================
 
+    def _route_dealer_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        """
+        PRODUCTION-GRADE Dealer Dashboard Router
+        
+        Handles:
+        - Typo correction ("are Diamonds" → "Diamonds")
+        - Multi-stage fallback (Exact → Search → Fuzzy)
+        - Detailed logging at each step
+        - Proper error differentiation
+        - Empty data handling
+        - Performance timing
+        
+        Args:
+            entity: Dealer name from intent detection
+            context: Conversation context
+            req_id: Request ID for logging
+        
+        Returns:
+            Formatted dashboard or error message
+        """
+        import time
+        
+        # ==========================================================
+        # STEP 1: LOGGING - ENTRY
+        # ==========================================================
+        logger.info(f"[{req_id}] 🏪 _route_dealer_dashboard called")
+        logger.info(f"[{req_id}] 📥 Original entity: '{entity}'")
+        logger.info(f"[{req_id}] 📥 Context last_dealer: '{context.last_dealer if context else None}'")
+        
+        # ==========================================================
+        # STEP 2: GET DEALER NAME
+        # ==========================================================
+        dealer_name = entity
+        if not dealer_name and context and context.last_dealer:
+            dealer_name = context.last_dealer
+            logger.info(f"[{req_id}] 🔄 Using context dealer: '{dealer_name}'")
+        
+        if not dealer_name:
+            logger.warning(f"[{req_id}] ❌ No dealer name provided")
+            return "🏪 *DEALER DASHBOARD*\n\nPlease specify a dealer name.\n\n*Examples:*\n• ZQ Electronics\n• Show dealer ZQ Electronics"
+        
+        original_dealer_name = dealer_name
+        logger.info(f"[{req_id}] 📝 Original dealer name: '{original_dealer_name}'")
+        
+        # ==========================================================
+        # STEP 3: TYPO CORRECTION
+        # ==========================================================
+        typo_fixes = {
+            "are ": "",
+            "is ": "",
+            "the ": "",
+            "for ": "",
+            "of ": "",
+            "to ": "",
+        }
+        
+        dealer_name_cleaned = dealer_name
+        for typo, fix in typo_fixes.items():
+            if dealer_name_cleaned.lower().startswith(typo):
+                dealer_name_cleaned = dealer_name_cleaned[len(typo):].strip()
+                logger.info(f"[{req_id}] 🔍 Typo fixed: '{original_dealer_name}' → '{dealer_name_cleaned}'")
+                break
+        
+        if len(dealer_name_cleaned) < 2:
+            dealer_name_cleaned = original_dealer_name
+            logger.info(f"[{req_id}] 🔄 Using original name (cleaned too short): '{original_dealer_name}'")
+        
+        logger.info(f"[{req_id}] 📝 Cleaned dealer name: '{dealer_name_cleaned}'")
+        
+        # ==========================================================
+        # STEP 4: RESOLUTION - EXACT MATCH
+        # ==========================================================
+        resolution_start = time.time()
+        resolved = None
+        
+        # Try cleaned name first
+        logger.info(f"[{req_id}] 🔍 Attempting exact resolution: '{dealer_name_cleaned}'")
+        resolved = self.resolver.resolve_dealer(dealer_name_cleaned)
+        
+        # If not found, try original name
+        if not resolved and dealer_name_cleaned != original_dealer_name:
+            logger.info(f"[{req_id}] 🔍 Attempting exact resolution with original: '{original_dealer_name}'")
+            resolved = self.resolver.resolve_dealer(original_dealer_name)
+        
+        resolution_time = time.time() - resolution_start
+        logger.info(f"[{req_id}] ⏱️ Resolution time: {resolution_time:.3f}s")
+        
+        # ==========================================================
+        # STEP 5: IF RESOLVED - VERIFY AND GET DASHBOARD
+        # ==========================================================
+        if resolved:
+            logger.info(f"[{req_id}] ✅ Dealer resolved: '{resolved}'")
+            
+            # ==========================================================
+            # STEP 5a: VERIFY DEALER EXISTS
+            # ==========================================================
+            verify_start = time.time()
+            exists = self.analytics.verify_dealer_exists(resolved)
+            verify_time = time.time() - verify_start
+            logger.info(f"[{req_id}] 🔍 Dealer exists check: {exists} (took {verify_time:.3f}s)")
+            
+            if not exists:
+                logger.warning(f"[{req_id}] ⚠️ Dealer '{resolved}' verified False - data may be empty")
+            
+            # ==========================================================
+            # STEP 5b: GET DASHBOARD
+            # ==========================================================
+            dashboard_start = time.time()
+            response = self.analytics.get_dealer_dashboard(resolved)
+            dashboard_time = time.time() - dashboard_start
+            logger.info(f"[{req_id}] ⏱️ Dashboard generation time: {dashboard_time:.3f}s")
+            
+            # ==========================================================
+            # STEP 5c: LOG RESPONSE
+            # ==========================================================
+            if response:
+                logger.info(f"[{req_id}] 📊 Dashboard response:")
+                logger.info(f"[{req_id}]   - Success: {response.success}")
+                logger.info(f"[{req_id}]   - Error: {getattr(response, 'error', 'None')}")
+                logger.info(f"[{req_id}]   - Data keys: {list(response.data.keys()) if response.data else 'None'}")
+                
+                # Log the full response data (truncated for safety)
+                try:
+                    response_dict = response.to_dict() if hasattr(response, 'to_dict') else response.__dict__
+                    logger.info(f"[{req_id}] 📊 Full response: {str(response_dict)[:500]}")
+                except Exception as e:
+                    logger.warning(f"[{req_id}] Could not log full response: {e}")
+            
+            # ==========================================================
+            # STEP 5d: VALIDATE AND FORMAT RESPONSE
+            # ==========================================================
+            if response and hasattr(response, 'success'):
+                if response.success:
+                    # Check if data is empty
+                    if not response.data or len(response.data) == 0:
+                        logger.warning(f"[{req_id}] ⚠️ Dealer '{resolved}' found but no data returned")
+                        return f"🏪 *DEALER DASHBOARD*\n\n✅ Dealer: {resolved}\n\n⚠️ Dealer found but no transactions available.\n\n💡 This dealer may not have any delivery reports in the system."
+                    
+                    # Check if data has essential fields
+                    if isinstance(response.data, dict):
+                        total_dns = response.data.get('total_dns', 0)
+                        if total_dns == 0:
+                            logger.warning(f"[{req_id}] ⚠️ Dealer '{resolved}' has 0 DNs")
+                            return f"🏪 *DEALER DASHBOARD*\n\n✅ Dealer: {resolved}\n\n⚠️ Dealer found but no transactions available.\n\n💡 This dealer has no delivery reports."
+                    
+                    # Format and return
+                    format_start = time.time()
+                    result = self._format_dealer_dashboard(response.data, resolved)
+                    format_time = time.time() - format_start
+                    logger.info(f"[{req_id}] ⏱️ Formatting time: {format_time:.3f}s")
+                    logger.info(f"[{req_id}] ✅ Dashboard returned successfully for '{resolved}'")
+                    return result
+                
+                else:
+                    # Dashboard failed - log error
+                    error_msg = getattr(response, 'error', 'Unknown error')
+                    logger.error(f"[{req_id}] ❌ Dashboard failed for '{resolved}': {error_msg}")
+                    return f"❌ Unable to load dashboard for '{resolved}'.\n\n{error_msg}"
+            
+            # Response is None or invalid
+            logger.error(f"[{req_id}] ❌ Invalid response for '{resolved}'")
+            return f"❌ Failed to retrieve data for '{resolved}'. Please try again."
+        
+        # ==========================================================
+        # STEP 6: FALLBACK - SEARCH ENGINE
+        # ==========================================================
+        logger.info(f"[{req_id}] 🔍 Dealer not resolved, attempting search...")
+        
+        try:
+            search_start = time.time()
+            similar = self.analytics.search_dealer(dealer_name_cleaned, exact=False)
+            search_time = time.time() - search_start
+            logger.info(f"[{req_id}] ⏱️ Search time: {search_time:.3f}s")
+            
+            if similar and len(similar) > 0:
+                logger.info(f"[{req_id}] 🔍 Found {len(similar)} similar dealers:")
+                for i, s in enumerate(similar[:5]):
+                    logger.info(f"[{req_id}]   {i+1}. {s.get('dealer_name', 'Unknown')}")
+                
+                # Try each suggestion
+                for suggestion in similar[:5]:
+                    suggested_name = suggestion.get('dealer_name')
+                    if suggested_name:
+                        resolved = self.resolver.resolve_dealer(suggested_name)
+                        if resolved:
+                            logger.info(f"[{req_id}] ✅ Found via search: '{resolved}'")
+                            response = self.analytics.get_dealer_dashboard(resolved)
+                            
+                            if response and hasattr(response, 'success') and response.success:
+                                if response.data and len(response.data) > 0:
+                                    # Check if data is valid
+                                    if isinstance(response.data, dict) and response.data.get('total_dns', 0) > 0:
+                                        result = self._format_dealer_dashboard(response.data, resolved)
+                                        logger.info(f"[{req_id}] ✅ Dashboard returned via search for '{resolved}'")
+                                        return result
+                                    else:
+                                        logger.warning(f"[{req_id}] ⚠️ Dealer '{resolved}' found via search but has no data")
+                                        return f"🏪 *DEALER DASHBOARD*\n\n✅ Dealer: {resolved}\n\n⚠️ Dealer found but no transactions available.\n\n💡 This dealer has no delivery reports."
+                                else:
+                                    logger.warning(f"[{req_id}] ⚠️ Dealer '{resolved}' found via search but response data is empty")
+                            else:
+                                error_msg = getattr(response, 'error', 'Unknown error')
+                                logger.error(f"[{req_id}] ❌ Dashboard failed for '{resolved}': {error_msg}")
+                                return f"❌ Dealer '{suggested_name}' found but dashboard failed.\n\n{error_msg}"
+                
+                # If none worked, show suggestions
+                suggestions = [s.get('dealer_name') for s in similar[:5] if s.get('dealer_name')]
+                logger.info(f"[{req_id}] 💡 Showing suggestions: {suggestions[:3]}")
+                return f"❌ Dealer '{original_dealer_name}' not found.\n\n💡 Did you mean:\n" + "\n".join([f"• {s}" for s in suggestions[:3]])
+        
+        except Exception as e:
+            logger.error(f"[{req_id}] ❌ Search error: {e}")
+        
+        # ==========================================================
+        # STEP 7: FALLBACK - FUZZY TOKEN MATCH
+        # ==========================================================
+        logger.info(f"[{req_id}] 🔍 Attempting fuzzy token matching...")
+        
+        tokens = dealer_name_cleaned.split()
+        for token in tokens:
+            if len(token) > 2 and token.lower() not in ['the', 'and', 'for', 'with']:
+                logger.info(f"[{req_id}] 🔍 Trying token: '{token}'")
+                resolved = self.resolver.resolve_dealer(token)
+                if resolved:
+                    logger.info(f"[{req_id}] ✅ Found via token '{token}': '{resolved}'")
+                    response = self.analytics.get_dealer_dashboard(resolved)
+                    
+                    if response and hasattr(response, 'success') and response.success:
+                        if response.data and len(response.data) > 0:
+                            if isinstance(response.data, dict) and response.data.get('total_dns', 0) > 0:
+                                result = self._format_dealer_dashboard(response.data, resolved)
+                                logger.info(f"[{req_id}] ✅ Dashboard returned via token for '{resolved}'")
+                                return result
+                            else:
+                                return f"🏪 *DEALER DASHBOARD*\n\n✅ Dealer: {resolved}\n\n⚠️ Dealer found but no transactions available."
+                        else:
+                            return f"🏪 *DEALER DASHBOARD*\n\n✅ Dealer: {resolved}\n\n⚠️ Dealer found but no transactions available."
+                    else:
+                        error_msg = getattr(response, 'error', 'Unknown error')
+                        logger.error(f"[{req_id}] ❌ Dashboard failed for '{resolved}': {error_msg}")
+                        return f"❌ Dealer '{resolved}' found but dashboard failed.\n\n{error_msg}"
+        
+        # ==========================================================
+        # STEP 8: NO MATCH FOUND
+        # ==========================================================
+        logger.warning(f"[{req_id}] ❌ Dealer '{original_dealer_name}' not found after all strategies")
+        
+        # Try to find suggestions even if no exact match
+        try:
+            suggestions = self.analytics.search_dealer(original_dealer_name, exact=False)
+            if suggestions and len(suggestions) > 0:
+                suggestion_names = [s.get('dealer_name') for s in suggestions[:5] if s.get('dealer_name')]
+                logger.info(f"[{req_id}] 💡 Found suggestions: {suggestion_names[:3]}")
+                return f"❌ Dealer '{original_dealer_name}' not found.\n\n💡 Did you mean:\n" + "\n".join([f"• {s}" for s in suggestion_names[:3]])
+        except Exception as e:
+            logger.error(f"[{req_id}] ❌ Suggestion search error: {e}")
+        
+        return f"❌ Dealer '{original_dealer_name}' not found.\n\n💡 Please check the spelling or try a different dealer name.\n\n📝 Examples:\n• ZQ Electronics\n• Asim Electric"
+
 # ==========================================================
-# BLOCK 19: DN ANALYTICS ROUTE
+# END OF BLOCK 17 - PRODUCTION-GRADE v5.0
 # ==========================================================
+    
+# ==========================================================
+
+
 
     def _route_dn_analytics(self, req_id: str) -> str:
         return "📊 *DN ANALYTICS*\n\nAnalytics coming soon."
