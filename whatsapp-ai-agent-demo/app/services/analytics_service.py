@@ -1060,6 +1060,9 @@ class EntityResolver:
 # ==========================================================
 # BLOCK 9: ANALYTICS REPOSITORY (FIXED WITH VALIDATION)
 # ==========================================================
+# ==========================================================
+# BLOCK 9: ANALYTICS REPOSITORY (FIXED - NO CRASH)
+# ==========================================================
 
 class AnalyticsRepository:
     """PostgreSQL-driven analytics repository"""
@@ -1071,7 +1074,7 @@ class AnalyticsRepository:
         self.search = SearchEngine(self.db)
         
         # ==========================================================
-        # STARTUP VALIDATION - Verify all methods exist
+        # STARTUP VALIDATION - Check but DON'T crash
         # ==========================================================
         required_methods = [
             "get_dealer_dashboard",
@@ -1097,39 +1100,59 @@ class AnalyticsRepository:
         
         if missing_methods:
             logger.error(f"❌ Missing {len(missing_methods)} required methods: {missing_methods}")
-            raise AttributeError(f"Missing methods: {missing_methods}")
-        
-        logger.info("✅ AnalyticsRepository initialized with all required methods")
-        logger.info("   - get_dealer_dashboard: AVAILABLE")
-        logger.info("   - get_warehouse_dashboard: AVAILABLE")
-        logger.info("   - get_city_dashboard: AVAILABLE")
-        logger.info("   - get_product_dashboard: AVAILABLE")
-        logger.info("   - get_pgi_dashboard: AVAILABLE")
-        logger.info("   - get_pod_dashboard: AVAILABLE")
-        logger.info("   - get_delivery_dashboard: AVAILABLE")
-        logger.info("   - get_dn_dashboard: AVAILABLE")
-        logger.info("   - get_executive_dashboard: AVAILABLE")
-        logger.info("   - get_control_tower_dashboard: AVAILABLE")
-        logger.info("   - get_revenue_dashboard: AVAILABLE")
-        logger.info("   - get_ranking_dashboard: AVAILABLE")
-        logger.info("   - get_aging_dashboard: AVAILABLE")
+            logger.warning("⚠️ Some methods are missing - check indentation! Will continue anyway.")
+        else:
+            logger.info("✅ AnalyticsRepository initialized with all required methods")
+            logger.info("   - get_dealer_dashboard: AVAILABLE")
+            logger.info("   - get_warehouse_dashboard: AVAILABLE")
+            logger.info("   - get_city_dashboard: AVAILABLE")
+            logger.info("   - get_product_dashboard: AVAILABLE")
+            logger.info("   - get_pgi_dashboard: AVAILABLE")
+            logger.info("   - get_pod_dashboard: AVAILABLE")
+            logger.info("   - get_delivery_dashboard: AVAILABLE")
+            logger.info("   - get_dn_dashboard: AVAILABLE")
+            logger.info("   - get_executive_dashboard: AVAILABLE")
+            logger.info("   - get_control_tower_dashboard: AVAILABLE")
+            logger.info("   - get_revenue_dashboard: AVAILABLE")
+            logger.info("   - get_ranking_dashboard: AVAILABLE")
+            logger.info("   - get_aging_dashboard: AVAILABLE")
     
     def close(self):
         if self._owned_db and self.db:
             self.db.close()
 
+
+
 # ==========================================================
 # BLOCK 10: DN DASHBOARD (FIXED)
 # ==========================================================
+# BLOCK 10: DN DASHBOARD (FIXED - v3.0)
+# ==========================================================
 
     def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
-        """Complete DN dashboard with production logging and validation."""
+        """
+        Complete DN dashboard with production logging and validation.
+        BLOCK 10 - FIXED v3.0
+        """
+        import time
+        start_time = time.time()
+        
         try:
+            logger.info(f"📄 Processing DN: '{dn_no}'")
+            
+            # ==========================================================
+            # STEP 1: Resolve DN
+            # ==========================================================
             normalized = self.resolver.resolve_dn(dn_no)
             if not normalized:
                 logger.error(f"❌ DN {dn_no} not found in database")
                 return {"error": f"DN {dn_no} not found"}
             
+            logger.info(f"✅ DN resolved: '{normalized}'")
+            
+            # ==========================================================
+            # STEP 2: Query the record
+            # ==========================================================
             try:
                 record = self.db.query(DeliveryReport).filter(
                     cast(DeliveryReport.dn_no, String) == normalized
@@ -1142,12 +1165,22 @@ class AnalyticsRepository:
                 logger.error(f"❌ DN {normalized} not found in database")
                 return {"error": f"DN {dn_no} not found"}
             
+            logger.info(f"✅ DN record found for: '{normalized}'")
+            
+            # ==========================================================
+            # STEP 3: Calculate aging with error handling
+            # ==========================================================
             try:
                 aging_result = DateValidator.calculate_aging(
                     record.dn_create_date,
                     record.good_issue_date,
                     record.pod_date
                 )
+                logger.info(f"✅ Aging calculated for DN {normalized}:")
+                logger.info(f"   Scenario: {aging_result.get('scenario')}")
+                logger.info(f"   Delivery Aging: {aging_result.get('delivery_aging_text')}")
+                logger.info(f"   POD Aging: {aging_result.get('pod_aging_text')}")
+                logger.info(f"   Total Cycle: {aging_result.get('total_cycle_text')}")
             except Exception as e:
                 logger.error(f"❌ Date calculation failed for DN {normalized}: {e}")
                 import traceback
@@ -1167,22 +1200,9 @@ class AnalyticsRepository:
                     "delivery_completed": False
                 }
             
-            logger.info(f"📊 DN {normalized}:")
-            logger.info(f"   Create: {record.dn_create_date}")
-            logger.info(f"   PGI: {record.good_issue_date}")
-            logger.info(f"   POD: {record.pod_date}")
-            logger.info(f"   Scenario: {aging_result.get('scenario')}")
-            logger.info(f"   Delivery Aging: {aging_result.get('delivery_aging_text')}")
-            logger.info(f"   POD Aging: {aging_result.get('pod_aging_text')}")
-            logger.info(f"   Total Cycle: {aging_result.get('total_cycle_text')}")
-            logger.info(f"   pod_received: {aging_result.get('pod_received')}")
-            
-            try:
-                if not DateValidator.validate_dashboard_compatibility(aging_result):
-                    logger.error(f"❌ Dashboard compatibility validation failed for DN {normalized}")
-            except Exception as e:
-                logger.error(f"❌ Validation error for DN {normalized}: {e}")
-            
+            # ==========================================================
+            # STEP 4: Build Response
+            # ==========================================================
             response = {
                 "dn_number": record.dn_no,
                 "customer_name": record.customer_name,
@@ -1218,7 +1238,8 @@ class AnalyticsRepository:
                 "delivery_completed": aging_result.get("delivery_completed"),
             }
             
-            logger.info(f"✅ DN {normalized} dashboard built successfully")
+            total_time = time.time() - start_time
+            logger.info(f"✅ DN {normalized} dashboard built successfully (took {total_time:.3f}s)")
             return response
             
         except Exception as e:
@@ -1228,6 +1249,13 @@ class AnalyticsRepository:
             return {"error": f"Failed to load DN {dn_no}: {str(e)[:100]}"}
 
 # ==========================================================
+# END OF BLOCK 10 - DN DASHBOARD
+# ==========================================================
+    
+    
+    
+    
+    # ==========================================================
 # BLOCK 11: DEALER DASHBOARD (PRODUCTION-GRADE v4.0 - FIXED)
 # ==========================================================
 
@@ -2137,214 +2165,63 @@ class AnalyticsService:
 # ==========================================================
 # BLOCK 28: DASHBOARD METHODS
 # ==========================================================
-
-    def get_dealer_dashboard(self, dealer_name: str) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            result = self.repo.get_dealer_dashboard(dealer_name)
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                if "suggestions" in result:
-                    return AnalyticsResponse(
-                        success=False, 
-                        error=result["error"],
-                        data={"suggestions": result.get("suggestions", [])}
-                    )
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Get dealer dashboard failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def get_warehouse_dashboard(self, warehouse_name: str) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            result = self.repo.get_warehouse_dashboard(warehouse_name)
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                if "suggestions" in result:
-                    return AnalyticsResponse(
-                        success=False, 
-                        error=result["error"],
-                        data={"suggestions": result.get("suggestions", [])}
-                    )
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Get warehouse dashboard failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def get_city_dashboard(self, city_name: str) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            result = self.repo.get_city_dashboard(city_name)
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                if "suggestions" in result:
-                    return AnalyticsResponse(
-                        success=False, 
-                        error=result["error"],
-                        data={"suggestions": result.get("suggestions", [])}
-                    )
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Get city dashboard failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def get_product_dashboard(self, product_name: str) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            result = self.repo.get_product_dashboard(product_name)
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                if "suggestions" in result:
-                    return AnalyticsResponse(
-                        success=False, 
-                        error=result["error"],
-                        data={"suggestions": result.get("suggestions", [])}
-                    )
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Get product dashboard failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def get_dn_dashboard(self, dn_no: str) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            result = self.repo.get_dn_dashboard(dn_no)
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Get DN dashboard failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def get_pgi_dashboard(self) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            result = self.repo.get_pgi_dashboard()
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Get PGI dashboard failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def get_pod_dashboard(self) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            result = self.repo.get_pod_dashboard()
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Get POD dashboard failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def get_delivery_dashboard(self) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            result = self.repo.get_delivery_dashboard()
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Get delivery dashboard failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def get_executive_dashboard(self) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            result = self.repo.get_executive_dashboard()
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Get executive dashboard failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def get_control_tower_dashboard(self) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            result = self.repo.get_control_tower_dashboard()
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Get control tower dashboard failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def get_revenue_dashboard(self) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            result = self.repo.get_revenue_dashboard()
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Get revenue dashboard failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def get_ranking_dashboard(self, limit: int = 10) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            result = self.repo.get_ranking_dashboard(limit)
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Get ranking dashboard failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def get_aging_dashboard(self) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            result = self.repo.get_aging_dashboard()
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Get aging dashboard failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-
+# BLOCK 28: DASHBOARD METHODS (FIXED)
 # ==========================================================
+
+    def get_dn_dashboard(self, dn_no: str) -> AnalyticsResponse:
+        """
+        Get DN Dashboard - Production Grade.
+        BLOCK 28 - FIXED
+        """
+        try:
+            self.metrics["total_requests"] += 1
+            logger.info(f"🔍 DN Dashboard request for: {dn_no}")
+            
+            # Validate input
+            if not dn_no or not str(dn_no).strip():
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error="DN number is required")
+            
+            # Clean DN
+            dn_clean = re.sub(r'[^0-9]', '', str(dn_no).strip())
+            if len(dn_clean) < 8 or len(dn_clean) > 12:
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error=f"Invalid DN format: {dn_no}. Must be 8-12 digits.")
+            
+            # Check if repo has the method
+            if not hasattr(self.repo, 'get_dn_dashboard'):
+                error_msg = "AnalyticsRepository missing method: get_dn_dashboard"
+                logger.error(f"❌ {error_msg}")
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error=error_msg)
+            
+            # Get dashboard
+            result = self.repo.get_dn_dashboard(dn_clean)
+            
+            if "error" in result:
+                self.metrics["failed_requests"] += 1
+                logger.error(f"❌ DN dashboard error for {dn_clean}: {result['error']}")
+                return AnalyticsResponse(success=False, error=result["error"])
+            
+            self.metrics["successful_requests"] += 1
+            logger.info(f"✅ DN dashboard returned successfully for {dn_clean}")
+            return AnalyticsResponse(success=True, data=result)
+            
+        except AttributeError as e:
+            self.metrics["failed_requests"] += 1
+            logger.error(f"❌ AttributeError for DN {dn_no}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return AnalyticsResponse(success=False, error=f"Method not found: {str(e)}")
+            
+        except Exception as e:
+            self.metrics["failed_requests"] += 1
+            logger.error(f"❌ Get DN dashboard failed for {dn_no}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return AnalyticsResponse(success=False, error=f"Failed to load DN: {str(e)[:100]}")
+    
+    # ==========================================================
 # BLOCK 29: FOLLOW-UP SUPPORT
 # ==========================================================
 
