@@ -1,7 +1,7 @@
 # ==========================================================
 # FILE: app/services/dealer_analytics_service.py
 # PURPOSE: Dealer 360° Analytics & Dashboard Engine
-# VERSION: 2.0 - COMPLETE DEALER 360° DASHBOARD
+# VERSION: 2.1 - FIXED: Case-Insensitive + ILIKE Matching
 # ==========================================================
 
 from typing import Optional, Dict, Any, List, Tuple
@@ -48,7 +48,7 @@ PERFORMANCE_GRADES = {
 
 
 # ==========================================================
-# DEALER 360° DASHBOARD BUILDER
+# BLOCK 1: DEALER 360° DASHBOARD CLASS
 # ==========================================================
 
 class Dealer360Dashboard:
@@ -76,7 +76,12 @@ class Dealer360Dashboard:
         self.resolver = resolver
         self.search = search
         self.distance_service = get_distance_service()
-    
+
+
+# ==========================================================
+# BLOCK 2: GET DASHBOARD - MAIN ENTRY POINT
+# ==========================================================
+
     def get_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         """
         Get complete 360° dealer dashboard.
@@ -176,10 +181,10 @@ class Dealer360Dashboard:
             return {"error": f"Failed to load dealer data: {str(e)[:100]}"}
 
 
-    # ==========================================================
-    # SECTION 1: DEALER PROFILE
-    # ==========================================================
-    
+# ==========================================================
+# BLOCK 3: DEALER PROFILE
+# ==========================================================
+
     def _build_profile(self, dealer_name: str, data: Dict) -> Dict[str, Any]:
         """Build dealer profile section."""
         first_dn = data.get('first_dn_date')
@@ -209,10 +214,10 @@ class Dealer360Dashboard:
         return (latest_date - first_date).days + 1
 
 
-    # ==========================================================
-    # SECTION 2: BUSINESS VOLUME
-    # ==========================================================
-    
+# ==========================================================
+# BLOCK 4: BUSINESS VOLUME
+# ==========================================================
+
     def _build_business_volume(self, data: Dict) -> Dict[str, Any]:
         """Build business volume section."""
         total_dns = data.get('total_dns', 0)
@@ -230,10 +235,10 @@ class Dealer360Dashboard:
         }
 
 
-    # ==========================================================
-    # SECTION 3: DELIVERY STATUS
-    # ==========================================================
-    
+# ==========================================================
+# BLOCK 5: DELIVERY STATUS
+# ==========================================================
+
     def _build_delivery_status(self, data: Dict) -> Dict[str, Any]:
         """
         Build delivery status section.
@@ -274,10 +279,10 @@ class Dealer360Dashboard:
         }
 
 
-    # ==========================================================
-    # SECTION 4: POD STATUS
-    # ==========================================================
-    
+# ==========================================================
+# BLOCK 6: POD STATUS
+# ==========================================================
+
     def _build_pod_status(self, data: Dict) -> Dict[str, Any]:
         """Build POD status section."""
         pod_completed = data.get('pod_completed_dns', 0)
@@ -298,10 +303,10 @@ class Dealer360Dashboard:
         }
 
 
-    # ==========================================================
-    # SECTION 5: PGI STATUS
-    # ==========================================================
-    
+# ==========================================================
+# BLOCK 7: PGI STATUS
+# ==========================================================
+
     def _build_pgi_status(self, data: Dict) -> Dict[str, Any]:
         """Build PGI status section."""
         pgi_completed = data.get('pgi_completed_dns', 0)
@@ -322,10 +327,10 @@ class Dealer360Dashboard:
         }
 
 
-    # ==========================================================
-    # SECTION 6: PERFORMANCE KPIs
-    # ==========================================================
-    
+# ==========================================================
+# BLOCK 8: PERFORMANCE KPIs
+# ==========================================================
+
     def _build_performance(self, data: Dict) -> Dict[str, Any]:
         """Build performance KPIs section."""
         total_dns = data.get('total_dns', 0)
@@ -365,10 +370,10 @@ class Dealer360Dashboard:
         return "D"
 
 
-    # ==========================================================
-    # SECTION 7: DISTANCE ANALYTICS
-    # ==========================================================
-    
+# ==========================================================
+# BLOCK 9: DISTANCE ANALYTICS
+# ==========================================================
+
     def _build_distance(self, data: Dict) -> Dict[str, Any]:
         """Build distance analytics section."""
         warehouse = data.get('warehouse')
@@ -404,10 +409,10 @@ class Dealer360Dashboard:
         return "Remote"
 
 
-    # ==========================================================
-    # SECTION 8: PRODUCT ANALYTICS
-    # ==========================================================
-    
+# ==========================================================
+# BLOCK 10: PRODUCT ANALYTICS
+# ==========================================================
+
     def _build_product_analytics(self, dealer_name: str) -> Dict[str, Any]:
         """Build product analytics section."""
         try:
@@ -483,10 +488,10 @@ class Dealer360Dashboard:
             }
 
 
-    # ==========================================================
-    # SECTION 9: CITY ANALYTICS
-    # ==========================================================
-    
+# ==========================================================
+# BLOCK 11: CITY ANALYTICS
+# ==========================================================
+
     def _build_city_analytics(self, dealer_name: str) -> Dict[str, Any]:
         """Build city analytics section."""
         try:
@@ -538,10 +543,10 @@ class Dealer360Dashboard:
             }
 
 
-    # ==========================================================
-    # SECTION 10: AGING ANALYTICS
-    # ==========================================================
-    
+# ==========================================================
+# BLOCK 12: AGING ANALYTICS
+# ==========================================================
+
     def _build_aging_analytics(self, dealer_name: str) -> Dict[str, Any]:
         """Build aging analytics section."""
         try:
@@ -586,10 +591,10 @@ class Dealer360Dashboard:
             }
 
 
-    # ==========================================================
-    # SECTION 11: CONTROL TOWER ALERTS
-    # ==========================================================
-    
+# ==========================================================
+# BLOCK 13: CONTROL TOWER ALERTS
+# ==========================================================
+
     def _build_alerts(self, dashboard: Dict) -> List[Dict[str, Any]]:
         """Build control tower alerts."""
         alerts = []
@@ -676,10 +681,10 @@ class Dealer360Dashboard:
         return alerts
 
 
-    # ==========================================================
-    # SECTION 12: EXECUTIVE SUMMARY
-    # ==========================================================
-    
+# ==========================================================
+# BLOCK 14: EXECUTIVE SUMMARY
+# ==========================================================
+
     def _build_executive_summary(self, dashboard: Dict) -> str:
         """Build executive summary."""
         profile = dashboard.get('profile', {})
@@ -723,7 +728,6 @@ class Dealer360Dashboard:
                     summary_lines.append(f"   • {alert.get('recommendation', 'Review and take action')}")
             else:
                 summary_lines.append("✅ No Critical Alerts - Dealer is performing well")
-                # Add positive recommendation
                 if delivery_rate > 90 and pod_compliance > 90:
                     summary_lines.append("📈 Excellent performance - Maintain current operations")
                 elif delivery_rate > 80:
@@ -734,10 +738,10 @@ class Dealer360Dashboard:
         return "\n".join(summary_lines)
 
 
-    # ==========================================================
-    # SECTION 13: MANAGEMENT INSIGHTS
-    # ==========================================================
-    
+# ==========================================================
+# BLOCK 15: MANAGEMENT INSIGHTS
+# ==========================================================
+
     def _build_insights(self, dashboard: Dict) -> Dict[str, str]:
         """Build management insights."""
         performance = dashboard.get('performance', {})
@@ -757,9 +761,7 @@ class Dealer360Dashboard:
         
         insights = {}
         
-        # ==========================================================
         # TOP STRENGTH
-        # ==========================================================
         strengths = []
         if delivery_rate >= 90:
             strengths.append("✅ Excellent Delivery Performance (90%+)")
@@ -776,9 +778,7 @@ class Dealer360Dashboard:
         
         insights['top_strength'] = strengths[0] if strengths else "✅ Consistent Operations"
         
-        # ==========================================================
         # BIGGEST RISK
-        # ==========================================================
         risks = []
         if delivery_rate < 70:
             risks.append(f"🔴 Low Delivery Rate ({delivery_rate}%) - Affects customer satisfaction")
@@ -795,23 +795,18 @@ class Dealer360Dashboard:
         
         insights['biggest_risk'] = risks[0] if risks else "🟢 No Significant Risks Identified"
         
-        # ==========================================================
         # RECOMMENDED ACTION
-        # ==========================================================
         if alerts:
-            # Prioritize critical alerts
             critical_alerts = [a for a in alerts if a.get('severity') == 'critical']
             if critical_alerts:
                 insights['recommended_action'] = f"🚨 CRITICAL: {critical_alerts[0].get('recommendation', 'Take immediate action')}"
             else:
-                # Use the first high priority alert
                 high_alerts = [a for a in alerts if a.get('severity') == 'high']
                 if high_alerts:
                     insights['recommended_action'] = high_alerts[0].get('recommendation', 'Review and optimize operations')
                 else:
                     insights['recommended_action'] = alerts[0].get('recommendation', 'Review and optimize operations')
         else:
-            # No alerts - positive recommendations
             if delivery_rate < 95:
                 insights['recommended_action'] = "Aim for 95%+ delivery rate to achieve A+ grade"
             elif pod_compliance < 95:
@@ -819,9 +814,7 @@ class Dealer360Dashboard:
             else:
                 insights['recommended_action'] = "Maintain current performance and explore growth opportunities"
         
-        # ==========================================================
         # EXPECTED IMPACT
-        # ==========================================================
         health_score = performance.get('health_score', 0)
         risk_level = performance.get('risk_level', 'Unknown')
         
@@ -843,14 +836,21 @@ class Dealer360Dashboard:
         return insights
 
 
-    # ==========================================================
-    # DATA QUERY
-    # ==========================================================
-    
+# ==========================================================
+# BLOCK 16: DATA QUERY (FIXED - Case-Insensitive + ILIKE)
+# ==========================================================
+
     def _query_all_dealer_data(self, dealer_name: str) -> Dict[str, Any]:
-        """Query all dealer data from database."""
+        """
+        Query all dealer data from database.
+        FIXED: Uses case-insensitive matching with ILIKE fallback.
+        """
         try:
-            # Main query
+            logger.info(f"📊 Querying data for dealer: '{dealer_name}'")
+            
+            # ==========================================================
+            # STEP 1: Try exact match first (case-insensitive)
+            # ==========================================================
             result = self.db.query(
                 DeliveryReport.customer_name.label("dealer_name"),
                 func.max(DeliveryReport.dealer_code).label("dealer_code"),
@@ -873,13 +873,92 @@ class Dealer360Dashboard:
                 func.count(distinct(case((DeliveryReport.good_issue_date.is_(None), DeliveryReport.dn_no), else_=None))).label("pending_pgi_dns"),
                 func.count(distinct(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.dn_no), else_=None))).label("pgi_completed_dns")
             ).filter(
-                DeliveryReport.customer_name == dealer_name
+                func.lower(DeliveryReport.customer_name) == func.lower(dealer_name)  # ← FIX: Case-insensitive
             ).group_by(
                 DeliveryReport.customer_name
             ).first()
             
+            # ==========================================================
+            # STEP 2: If no exact match, try ILIKE (partial match)
+            # ==========================================================
             if not result:
+                logger.info(f"🔍 No exact match for '{dealer_name}', trying ILIKE...")
+                
+                ilike_results = self.db.query(
+                    DeliveryReport.customer_name.label("dealer_name"),
+                    func.max(DeliveryReport.dealer_code).label("dealer_code"),
+                    func.max(DeliveryReport.customer_code).label("customer_code"),
+                    func.max(DeliveryReport.division).label("division"),
+                    func.max(DeliveryReport.sales_office).label("sales_office"),
+                    func.max(DeliveryReport.sales_manager).label("sales_manager"),
+                    func.max(DeliveryReport.warehouse).label("warehouse"),
+                    func.max(DeliveryReport.ship_to_city).label("city"),
+                    func.min(DeliveryReport.dn_create_date).label("first_dn_date"),
+                    func.max(DeliveryReport.dn_create_date).label("latest_dn_date"),
+                    func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
+                    func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("total_units"),
+                    func.coalesce(func.sum(DeliveryReport.dn_amount), 0).label("total_revenue"),
+                    func.count(distinct(case((DeliveryReport.delivery_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("delivered_dns"),
+                    func.count(distinct(case((DeliveryReport.pending_flag == True, DeliveryReport.dn_no), else_=None))).label("pending_dns"),
+                    func.count(distinct(case((and_(DeliveryReport.delivery_status == 'Completed', DeliveryReport.pod_status != 'Completed'), DeliveryReport.dn_no), else_=None))).label("transit_dns"),
+                    func.count(distinct(case((DeliveryReport.pod_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("pod_completed_dns"),
+                    func.count(distinct(case((and_(DeliveryReport.delivery_status == 'Completed', DeliveryReport.pod_status != 'Completed'), DeliveryReport.dn_no), else_=None))).label("pending_pod_dns"),
+                    func.count(distinct(case((DeliveryReport.good_issue_date.is_(None), DeliveryReport.dn_no), else_=None))).label("pending_pgi_dns"),
+                    func.count(distinct(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.dn_no), else_=None))).label("pgi_completed_dns")
+                ).filter(
+                    DeliveryReport.customer_name.ilike(f"%{dealer_name}%")  # ← FIX: ILIKE for partial match
+                ).group_by(
+                    DeliveryReport.customer_name
+                ).first()
+                
+                if ilike_results:
+                    result = ilike_results
+                    logger.info(f"✅ Found dealer via ILIKE: '{result.dealer_name}'")
+                else:
+                    # Try token-based matching
+                    tokens = dealer_name.split()
+                    for token in tokens:
+                        if len(token) > 2:
+                            token_result = self.db.query(
+                                DeliveryReport.customer_name.label("dealer_name"),
+                                func.max(DeliveryReport.dealer_code).label("dealer_code"),
+                                func.max(DeliveryReport.customer_code).label("customer_code"),
+                                func.max(DeliveryReport.division).label("division"),
+                                func.max(DeliveryReport.sales_office).label("sales_office"),
+                                func.max(DeliveryReport.sales_manager).label("sales_manager"),
+                                func.max(DeliveryReport.warehouse).label("warehouse"),
+                                func.max(DeliveryReport.ship_to_city).label("city"),
+                                func.min(DeliveryReport.dn_create_date).label("first_dn_date"),
+                                func.max(DeliveryReport.dn_create_date).label("latest_dn_date"),
+                                func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
+                                func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("total_units"),
+                                func.coalesce(func.sum(DeliveryReport.dn_amount), 0).label("total_revenue"),
+                                func.count(distinct(case((DeliveryReport.delivery_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("delivered_dns"),
+                                func.count(distinct(case((DeliveryReport.pending_flag == True, DeliveryReport.dn_no), else_=None))).label("pending_dns"),
+                                func.count(distinct(case((and_(DeliveryReport.delivery_status == 'Completed', DeliveryReport.pod_status != 'Completed'), DeliveryReport.dn_no), else_=None))).label("transit_dns"),
+                                func.count(distinct(case((DeliveryReport.pod_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("pod_completed_dns"),
+                                func.count(distinct(case((and_(DeliveryReport.delivery_status == 'Completed', DeliveryReport.pod_status != 'Completed'), DeliveryReport.dn_no), else_=None))).label("pending_pod_dns"),
+                                func.count(distinct(case((DeliveryReport.good_issue_date.is_(None), DeliveryReport.dn_no), else_=None))).label("pending_pgi_dns"),
+                                func.count(distinct(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.dn_no), else_=None))).label("pgi_completed_dns")
+                            ).filter(
+                                DeliveryReport.customer_name.ilike(f"%{token}%")
+                            ).group_by(
+                                DeliveryReport.customer_name
+                            ).first()
+                            
+                            if token_result:
+                                result = token_result
+                                logger.info(f"✅ Found dealer via token '{token}': '{result.dealer_name}'")
+                                break
+            
+            if not result:
+                logger.warning(f"❌ No data found for dealer '{dealer_name}'")
                 return {}
+            
+            # ==========================================================
+            # STEP 3: Build data dictionary
+            # ==========================================================
+            logger.info(f"✅ Found data for dealer: '{result.dealer_name}'")
             
             data = {
                 "dealer_code": result.dealer_code,
@@ -910,7 +989,7 @@ class Dealer360Dashboard:
                 DeliveryReport.dn_no,
                 DeliveryReport.dn_amount
             ).filter(
-                DeliveryReport.customer_name == dealer_name,
+                DeliveryReport.customer_name == result.dealer_name,
                 DeliveryReport.dn_amount.isnot(None)
             ).order_by(
                 desc(DeliveryReport.dn_amount)
@@ -928,7 +1007,7 @@ class Dealer360Dashboard:
                 DeliveryReport.dn_no,
                 DeliveryReport.dn_amount
             ).filter(
-                DeliveryReport.customer_name == dealer_name,
+                DeliveryReport.customer_name == result.dealer_name,
                 DeliveryReport.dn_amount.isnot(None),
                 DeliveryReport.dn_amount > 0
             ).order_by(
@@ -958,7 +1037,7 @@ class Dealer360Dashboard:
                         func.extract('day', func.now() - DeliveryReport.good_issue_date)
                     ).label('oldest_pending_pod')
                 ).filter(
-                    DeliveryReport.customer_name == dealer_name,
+                    DeliveryReport.customer_name == result.dealer_name,
                     DeliveryReport.dn_create_date.isnot(None)
                 ).first()
                 
@@ -991,10 +1070,10 @@ class Dealer360Dashboard:
             return {}
 
 
-    # ==========================================================
-    # HELPERS
-    # ==========================================================
-    
+# ==========================================================
+# BLOCK 17: HELPERS
+# ==========================================================
+
     def _handle_not_found(self, dealer_name: str) -> Dict[str, Any]:
         """Handle dealer not found with suggestions."""
         try:
@@ -1016,7 +1095,7 @@ class Dealer360Dashboard:
 
 
 # ==========================================================
-# FACTORY FUNCTION
+# BLOCK 18: FACTORY FUNCTION
 # ==========================================================
 
 def get_dealer_360_dashboard(db: Session, resolver: EntityResolver, search: SearchEngine) -> Dealer360Dashboard:
@@ -1025,7 +1104,7 @@ def get_dealer_360_dashboard(db: Session, resolver: EntityResolver, search: Sear
 
 
 # ==========================================================
-# WHATSAPP FORMATTER
+# BLOCK 19: WHATSAPP FORMATTER
 # ==========================================================
 
 def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
@@ -1044,9 +1123,7 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
     
     lines = []
     
-    # ==========================================================
     # SECTION 1: DEALER PROFILE
-    # ==========================================================
     profile = dashboard.get('profile', {})
     lines.append("🏢 *DEALER 360° DASHBOARD*")
     lines.append("")
@@ -1061,9 +1138,7 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
     lines.append(f"City: {profile.get('city', 'N/A')}")
     lines.append(f"Active Days: {profile.get('total_active_days', 0)}")
     
-    # ==========================================================
     # SECTION 2: BUSINESS VOLUME
-    # ==========================================================
     business = dashboard.get('business_volume', {})
     lines.append("")
     lines.append("💰 *BUSINESS VOLUME*")
@@ -1080,9 +1155,7 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
     if lowest.get('dn_no', 'N/A') != 'N/A':
         lines.append(f"Lowest DN: {lowest.get('dn_no', 'N/A')} (PKR {lowest.get('amount', 0):,.0f})")
     
-    # ==========================================================
     # SECTION 3: DELIVERY STATUS
-    # ==========================================================
     delivery = dashboard.get('delivery_status', {})
     lines.append("")
     lines.append("📦 *DELIVERY STATUS*")
@@ -1091,9 +1164,7 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
     lines.append(f"⏳ Pending PGI: {delivery.get('pending_pgi', 0)} ({delivery.get('pending_pgi_percent', 0)}%)")
     lines.append(f"📊 Total: {delivery.get('total', 0)}")
     
-    # ==========================================================
     # SECTION 4: POD STATUS
-    # ==========================================================
     pod = dashboard.get('pod_status', {})
     lines.append("")
     lines.append("📋 *POD STATUS*")
@@ -1103,9 +1174,7 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
     lines.append(f"Avg POD Days: {pod.get('avg_pod_days', 0)}")
     lines.append(f"Oldest Pending: {pod.get('oldest_pending_pod', 'N/A')}")
     
-    # ==========================================================
     # SECTION 5: PGI STATUS
-    # ==========================================================
     pgi = dashboard.get('pgi_status', {})
     lines.append("")
     lines.append("🚛 *PGI STATUS*")
@@ -1115,9 +1184,7 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
     lines.append(f"Avg PGI Days: {pgi.get('avg_pgi_days', 0)}")
     lines.append(f"Oldest Pending: {pgi.get('oldest_pending_pgi', 'N/A')}")
     
-    # ==========================================================
     # SECTION 6: PERFORMANCE KPIs
-    # ==========================================================
     perf = dashboard.get('performance', {})
     lines.append("")
     lines.append("⚡ *PERFORMANCE*")
@@ -1128,9 +1195,7 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
     lines.append(f"Risk: {perf.get('risk_level', 'Unknown')} ({perf.get('risk_score', 0)}/100)")
     lines.append(f"Grade: {perf.get('performance_grade', 'N/A')}")
     
-    # ==========================================================
     # SECTION 7: DISTANCE ANALYTICS
-    # ==========================================================
     distance = dashboard.get('distance', {})
     if distance.get('road_distance'):
         lines.append("")
@@ -1138,9 +1203,7 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
         lines.append(f"Road: {distance.get('road_distance')} km")
         lines.append(f"Category: {distance.get('distance_category', 'N/A')}")
     
-    # ==========================================================
     # SECTION 8: PRODUCT ANALYTICS
-    # ==========================================================
     products = dashboard.get('products', {})
     lines.append("")
     lines.append("📦 *PRODUCTS*")
@@ -1156,9 +1219,7 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
         for i, p in enumerate(top_5[:5], 1):
             lines.append(f"{i}. {p.get('product', 'N/A')} (PKR {p.get('revenue', 0):,.0f})")
     
-    # ==========================================================
     # SECTION 9: CITY ANALYTICS
-    # ==========================================================
     cities = dashboard.get('cities', {})
     lines.append("")
     lines.append("🏙️ *CITIES*")
@@ -1172,9 +1233,7 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
         for city, revenue in list(revenue_by_city.items())[:3]:
             lines.append(f"• {city}: PKR {revenue:,.0f}")
     
-    # ==========================================================
     # SECTION 10: AGING ANALYTICS
-    # ==========================================================
     aging = dashboard.get('aging', {})
     lines.append("")
     lines.append("⏳ *AGING*")
@@ -1184,9 +1243,7 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
     lines.append(f"Max Delivery Days: {aging.get('max_delivery_days', 0)}")
     lines.append(f"Max POD Days: {aging.get('max_pod_days', 0)}")
     
-    # ==========================================================
     # SECTION 11: CONTROL TOWER ALERTS
-    # ==========================================================
     alerts = dashboard.get('alerts', [])
     if alerts:
         lines.append("")
@@ -1195,9 +1252,7 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
             emoji = "🔴" if alert.get('severity') == 'critical' else "🟠" if alert.get('severity') == 'high' else "🟡"
             lines.append(f"{emoji} {alert.get('message', '')}")
     
-    # ==========================================================
     # SECTION 12: EXECUTIVE SUMMARY
-    # ==========================================================
     summary = dashboard.get('executive_summary', '')
     if summary:
         lines.append("")
@@ -1205,9 +1260,7 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
         for line in summary.split('\n'):
             lines.append(line)
     
-    # ==========================================================
     # SECTION 13: MANAGEMENT INSIGHTS
-    # ==========================================================
     insights = dashboard.get('insights', {})
     if insights:
         lines.append("")
@@ -1231,5 +1284,5 @@ __all__ = [
 ]
 
 # ==========================================================
-# END OF FILE
+# END OF FILE - v2.1 PRODUCTION READY
 # ==========================================================
