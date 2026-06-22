@@ -2206,9 +2206,7 @@ class AnalyticsService:
     def resolve_dn(self, dn_no: str) -> Optional[str]:
         return self.repo.resolver.resolve_dn(dn_no)
 
-# ==========================================================
-# BLOCK 28: DASHBOARD METHODS
-# ==========================================================
+
 # ==========================================================
 # BLOCK 28: DASHBOARD METHODS (COMPLETE)
 # ==========================================================
