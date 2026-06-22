@@ -1258,11 +1258,21 @@ class AnalyticsRepository:
     # ==========================================================
 # BLOCK 11: DEALER DASHBOARD (PRODUCTION-GRADE v4.0 - FIXED)
 # ==========================================================
+# ==========================================================
+# BLOCK 11: DEALER DASHBOARD (PRODUCTION-GRADE v4.0 - WITH DISTANCE)
+# ==========================================================
 
     def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         """
         Complete dealer dashboard from PostgreSQL with improved error handling.
-        BLOCK 11 - FIXED v4.0
+        BLOCK 11 - FIXED v4.0 WITH DISTANCE
+        
+        Features:
+        - Dealer resolution with fuzzy matching
+        - Comprehensive KPIs
+        - Distance calculation from warehouse to dealer city
+        - Error handling with suggestions
+        - Production logging with timing
         """
         import time
         start_time = time.time()
@@ -1270,11 +1280,18 @@ class AnalyticsRepository:
         try:
             logger.info(f"🔍 Searching for dealer: '{dealer_name}'")
             
+            # ==========================================================
+            # STEP 1: Resolve dealer with detailed logging
+            # ==========================================================
             resolved = self.resolver.resolve_dealer(dealer_name)
             
             if not resolved:
+                # ==========================================================
+                # STEP 2: Try to find similar dealers for suggestions
+                # ==========================================================
                 logger.warning(f"❌ Dealer '{dealer_name}' not found")
                 
+                # Try to find similar dealers using search
                 try:
                     similar = self.search.search_dealer(dealer_name, exact=False)
                     if similar and len(similar) > 0:
@@ -1295,8 +1312,14 @@ class AnalyticsRepository:
                     "hint": "Example: Try 'Baz' instead of 'Baz Electronics'"
                 }
             
+            # ==========================================================
+            # STEP 3: Log resolution result
+            # ==========================================================
             logger.info(f"✅ Dealer resolved: '{resolved}'")
             
+            # ==========================================================
+            # STEP 4: Query dealer data
+            # ==========================================================
             query_start = time.time()
             
             try:
@@ -1334,6 +1357,9 @@ class AnalyticsRepository:
                     "message": "Please try again later"
                 }
             
+            # ==========================================================
+            # STEP 5: Check if data exists
+            # ==========================================================
             if not result or result.total_dns == 0:
                 logger.warning(f"⚠️ No data found for dealer '{resolved}'")
                 return {
@@ -1342,6 +1368,9 @@ class AnalyticsRepository:
                     "hint": "Try another dealer name"
                 }
             
+            # ==========================================================
+            # STEP 6: Calculate KPIs
+            # ==========================================================
             total_dns = result.total_dns or 1
             delivered_dns = result.delivered_dns or 0
             transit_dns = result.transit_dns or 0
@@ -1357,6 +1386,9 @@ class AnalyticsRepository:
                 0
             )
             
+            # ==========================================================
+            # STEP 7: Build Response
+            # ==========================================================
             response = {
                 "dealer_name": resolved,
                 "dealer_code": result.dealer_code or "",
@@ -1388,6 +1420,28 @@ class AnalyticsRepository:
                 "risk_score": risk_score
             }
             
+            # ==========================================================
+            # STEP 8: ADD DISTANCE CALCULATION (NEW)
+            # ==========================================================
+            try:
+                if result.warehouse and result.city:
+                    # Import distance service
+                    from app.services.distance_service import get_distance_service
+                    distance_service = get_distance_service()
+                    distance_info = distance_service.calculate_warehouse_distance(
+                        result.warehouse,
+                        result.city
+                    )
+                    if distance_info and distance_info.get('success'):
+                        response['distance_km'] = distance_info.get('distance_km')
+                        response['distance_approx_hours'] = distance_info.get('approx_driving_hours')
+                        response['distance_miles'] = distance_info.get('distance_miles')
+                        response['approx_driving_minutes'] = distance_info.get('approx_driving_minutes')
+                        logger.info(f"📍 Distance: {result.warehouse} → {result.city} = {distance_info.get('distance_km')} km")
+            except Exception as e:
+                logger.error(f"Distance calculation error: {e}")
+                # Continue without distance - don't break the dashboard
+            
             total_time = time.time() - start_time
             logger.info(f"✅ Dealer dashboard built successfully for: {resolved} (took {total_time:.3f}s)")
             return response
@@ -1402,6 +1456,9 @@ class AnalyticsRepository:
             }
 
 # ==========================================================
+# END OF BLOCK 11 - DEALER DASHBOARD
+# ==========================================================
+    # ==========================================================
 # BLOCK 12: WAREHOUSE DASHBOARD (FIXED)
 # ==========================================================
 
