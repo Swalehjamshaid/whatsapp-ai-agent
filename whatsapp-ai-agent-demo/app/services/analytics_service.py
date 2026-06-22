@@ -4,7 +4,11 @@
 # PURPOSE: PRIMARY ANALYTICS ENGINE - PostgreSQL Only
 # VERSION: 30.0 - Complete Production Analytics Engine
 # ==========================================================
+# ==========================================================
+# ADD THIS IMPORT AT THE TOP OF THE FILE
+# ==========================================================
 
+from app.services.dealer_analytics_service import Dealer360Dashboard
 from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime, timedelta
 from loguru import logger
