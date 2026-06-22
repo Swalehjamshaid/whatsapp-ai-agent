@@ -72,6 +72,9 @@ def test_database_connection() -> Dict[str, Any]:
 # ==========================================================
 # BLOCK 5: POSTGRESQL RESOLVER - PURE POSTGRESQL
 # ==========================================================
+# ==========================================================
+# BLOCK 5: POSTGRESQL RESOLVER (FIXED v2.0)
+# ==========================================================
 
 class PostgreSQLResolver:
     """Pure PostgreSQL-based entity resolution"""
@@ -92,11 +95,28 @@ class PostgreSQLResolver:
             return None
     
     def resolve_dealer(self, query: str) -> Optional[str]:
-        """Resolve dealer name from PostgreSQL"""
+        """Resolve dealer name from PostgreSQL with improved fuzzy matching"""
         if not query or not query.strip():
             return None
         
-        cache_key = f"dealer:{query.lower().strip()}"
+        # Clean query - remove common typos
+        query_clean = query.strip()
+        typo_fixes = {
+            "are ": "",
+            "is ": "",
+            "the ": "",
+            "for ": "",
+            "of ": "",
+        }
+        for typo, fix in typo_fixes.items():
+            if query_clean.lower().startswith(typo):
+                query_clean = query_clean[len(typo):].strip()
+                break
+        
+        if not query_clean:
+            query_clean = query.strip()
+        
+        cache_key = f"dealer:{query_clean.lower()}"
         if cache_key in self._cache:
             return self._cache[cache_key]
         
@@ -107,7 +127,7 @@ class PostgreSQLResolver:
         try:
             # Exact match
             result = session.query(self.DeliveryReport.customer_name).filter(
-                func.lower(self.DeliveryReport.customer_name) == func.lower(query)
+                func.lower(self.DeliveryReport.customer_name) == func.lower(query_clean)
             ).first()
             if result:
                 resolved = result[0]
@@ -116,7 +136,7 @@ class PostgreSQLResolver:
             
             # ILIKE match
             result = session.query(self.DeliveryReport.customer_name).filter(
-                self.DeliveryReport.customer_name.ilike(f"%{query}%")
+                self.DeliveryReport.customer_name.ilike(f"%{query_clean}%")
             ).first()
             if result:
                 resolved = result[0]
@@ -124,7 +144,7 @@ class PostgreSQLResolver:
                 return resolved
             
             # Token-based matching
-            tokens = query.split()
+            tokens = query_clean.split()
             for token in tokens:
                 if len(token) > 2 and token.lower() not in ['the', 'and', 'for', 'with']:
                     result = session.query(self.DeliveryReport.customer_name).filter(
@@ -135,7 +155,7 @@ class PostgreSQLResolver:
                         self._cache[cache_key] = resolved
                         return resolved
             
-            # Fuzzy matching
+            # Fuzzy matching with LOWER threshold (0.3 instead of 0.6)
             dealers = session.query(
                 func.distinct(self.DeliveryReport.customer_name)
             ).filter(
@@ -145,20 +165,51 @@ class PostgreSQLResolver:
             
             best_match = None
             best_score = 0
-            query_lower = query.lower()
+            query_lower = query_clean.lower()
+            query_tokens = set(query_lower.split())
             
             for dealer in dealers:
                 if not dealer[0]:
                     continue
-                dealer_lower = dealer[0].lower()
+                dealer_name = dealer[0]
+                dealer_lower = dealer_name.lower()
+                dealer_tokens = set(dealer_lower.split())
+                
+                scores = []
+                
+                # 1. Token overlap score
+                if query_tokens and dealer_tokens:
+                    overlap = len(query_tokens & dealer_tokens)
+                    token_score = overlap / max(len(query_tokens), len(dealer_tokens))
+                    scores.append(token_score)
+                
+                # 2. Character overlap score
+                char_overlap = len(set(query_lower) & set(dealer_lower))
+                char_score = char_overlap / max(len(query_lower), len(dealer_lower))
+                scores.append(char_score)
+                
+                # 3. Contains score
                 if query_lower in dealer_lower or dealer_lower in query_lower:
-                    score = len(set(query_lower) & set(dealer_lower)) / max(len(query_lower), len(dealer_lower))
-                    if score > best_score and score > 0.6:
-                        best_score = score
-                        best_match = dealer[0]
+                    scores.append(0.8)
+                
+                # 4. Word match score
+                for token in query_tokens:
+                    if len(token) > 2 and token in dealer_lower:
+                        scores.append(0.7)
+                
+                if scores:
+                    score = max(scores)
+                else:
+                    score = 0
+                
+                # FIXED: Lower threshold from 0.6 to 0.3
+                if score > best_score and score > 0.3:
+                    best_score = score
+                    best_match = dealer_name
             
             if best_match:
                 self._cache[cache_key] = best_match
+                logger.info(f"✅ Dealer resolved (fuzzy, score={best_score:.2f}): {best_match}")
                 return best_match
             
             return None
@@ -274,7 +325,7 @@ class PostgreSQLResolver:
             session.close()
     
     def resolve_product(self, query: str) -> Optional[str]:
-        """Resolve product name from PostgreSQL - checks both customer_model and material_no"""
+        """Resolve product name from PostgreSQL"""
         if not query or not query.strip():
             return None
         
@@ -364,6 +415,9 @@ class PostgreSQLResolver:
         finally:
             session.close()
 
+# ==========================================================
+# END OF BLOCK 5 - FIXED v2.0
+# ==========================================================
 # ==========================================================
 # BLOCK 6: CONVERSATION CONTEXT
 # ==========================================================
@@ -1203,13 +1257,14 @@ class AIOrchestrator:
 # ==========================================================
 # BLOCK 17: ROUTE HANDLERS
 # ==========================================================
-# BLOCK 17: ROUTE HANDLERS (FIXED - v2.0)
+# ==========================================================
+# BLOCK 17: ROUTE HANDLERS (FIXED v3.0)
 # ==========================================================
 
     def _route_dealer_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         """
-        Handle dealer dashboard with improved search and suggestions.
-        BLOCK 17 - FIXED
+        Handle dealer dashboard with improved search, suggestions, and typo handling.
+        BLOCK 17 - FIXED v3.0
         """
         dealer_name = entity
         if not dealer_name and context and context.last_dealer:
@@ -1218,10 +1273,33 @@ class AIOrchestrator:
         if not dealer_name:
             return "🏪 *DEALER DASHBOARD*\n\nPlease specify a dealer name.\n\n*Examples:*\n• ZQ Electronics\n• Show dealer ZQ Electronics"
         
-        # ✅ Try to resolve dealer
+        # ✅ FIX: Clean common typos
+        original_dealer_name = dealer_name
+        typo_fixes = {
+            "are ": "",      # "are Diamonds" → "Diamonds"
+            "is ": "",       # "is Electronics" → "Electronics"
+            "the ": "",      # "the Store" → "Store"
+            "for ": "",      # "for Company" → "Company"
+            "of ": "",       # "of Electronics" → "Electronics"
+        }
+        for typo, fix in typo_fixes.items():
+            if dealer_name.lower().startswith(typo):
+                dealer_name = dealer_name[len(typo):].strip()
+                logger.info(f"[{req_id}] 🔍 Fixed typo: '{original_dealer_name}' → '{dealer_name}'")
+                break
+        
+        # If dealer is too short after cleaning, use original
+        if len(dealer_name) < 2:
+            dealer_name = original_dealer_name
+        
+        # ✅ Try to resolve dealer with cleaned name
         resolved = self.resolver.resolve_dealer(dealer_name)
         
-        # ✅ If not found, try searching for similar dealers
+        # ✅ If not found, try with original
+        if not resolved and dealer_name != original_dealer_name:
+            resolved = self.resolver.resolve_dealer(original_dealer_name)
+        
+        # ✅ If still not found, try searching for similar dealers
         if not resolved:
             logger.info(f"[{req_id}] 🔍 Dealer '{dealer_name}' not found, searching for similar...")
             
@@ -1237,13 +1315,14 @@ class AIOrchestrator:
             # Try with individual words
             tokens = dealer_name.split()
             for token in tokens:
-                if len(token) > 2:
+                if len(token) > 2 and token.lower() not in ['the', 'and', 'for', 'with']:
                     resolved = self.resolver.resolve_dealer(token)
                     if resolved:
+                        logger.info(f"[{req_id}] ✅ Found dealer by token '{token}': {resolved}")
                         break
             
             if not resolved:
-                return f"❌ Dealer '{dealer_name}' not found.\n\n💡 Please check the spelling or try a different dealer name."
+                return f"❌ Dealer '{original_dealer_name}' not found.\n\n💡 Please check the spelling or try a different dealer name."
         
         response = self.analytics.get_dealer_dashboard(resolved)
         if not self._validate_response(response, "dealer_dashboard", req_id):
@@ -1253,7 +1332,7 @@ class AIOrchestrator:
     def _route_warehouse_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         """
         Handle warehouse dashboard with improved search and suggestions.
-        BLOCK 17 - FIXED
+        BLOCK 17 - FIXED v3.0
         """
         warehouse_name = entity
         if not warehouse_name and context and context.last_warehouse:
@@ -1297,7 +1376,7 @@ class AIOrchestrator:
     def _route_city_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         """
         Handle city dashboard with improved search and suggestions.
-        BLOCK 17 - FIXED
+        BLOCK 17 - FIXED v3.0
         """
         city_name = entity
         if not city_name and context and context.last_city:
@@ -1341,7 +1420,7 @@ class AIOrchestrator:
     def _route_product_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         """
         Handle product dashboard with improved search and suggestions.
-        BLOCK 17 - FIXED
+        BLOCK 17 - FIXED v3.0
         """
         product_name = entity
         if not product_name and context and context.last_product:
@@ -1376,7 +1455,7 @@ class AIOrchestrator:
     def _route_dn_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         """
         Handle DN dashboard with improved search and suggestions.
-        BLOCK 17 - FIXED
+        BLOCK 17 - FIXED v3.0
         """
         dn_number = entity or (context.last_dn if context else None)
         if not dn_number:
@@ -1609,54 +1688,9 @@ class AIOrchestrator:
         return f"🏢 *SALES OFFICE: {so_name.upper()}*\n\nSales office data coming soon."
 
 # ==========================================================
-# END OF BLOCK 17 - FIXED
+# END OF BLOCK 17 - FIXED v3.0
+# ==========================================================    
 # ==========================================================
-
-    
-# ==========================================================
-# BLOCK 18: DN ROUTE HANDLER - ✅ FIXED
-# ==========================================================
-
-    def _route_dn_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """Handle DN dashboard requests - Direct call to analytics"""
-        dn_number = entity or (context.last_dn if context else None)
-        if not dn_number:
-            return "📄 *DN DASHBOARD*\n\nPlease provide a DN number.\n\n*Example:* 6243675570"
-        
-        dn_clean = re.sub(r'\D', '', str(dn_number).strip())
-        if len(dn_clean) < 8 or len(dn_clean) > 12:
-            return f"❌ Invalid DN number: '{dn_number}'\n\nDN numbers must be 8-12 digits."
-        
-        # ✅ FIX: Call analytics directly WITHOUT resolving first
-        logger.info(f"[{req_id}] 🔍 Looking up DN: {dn_clean}")
-        
-        try:
-            response = self.analytics.get_dn_dashboard(dn_clean)
-            
-            # Check if response is valid
-            if response is None:
-                return f"❌ Unable to retrieve data for DN {dn_clean}.\n\n💡 The system could not process your request."
-            
-            # Check if response has success attribute
-            if hasattr(response, 'success'):
-                if not response.success:
-                    error_msg = getattr(response, 'error', 'Unknown error')
-                    return f"❌ Unable to retrieve data for DN {dn_clean}.\n\n{error_msg}"
-                
-                # Check data for errors
-                data = response.data
-                if data and isinstance(data, dict):
-                    if "error" in data:
-                        return f"❌ {data['error']}"
-                    
-                    # Format and return the dashboard
-                    return self._format_dn_dashboard(data, dn_clean)
-            
-            return f"❌ Unable to retrieve data for DN {dn_clean}."
-            
-        except Exception as e:
-            logger.error(f"[{req_id}] ❌ DN dashboard error: {e}")
-            return f"❌ Error retrieving DN {dn_clean}: {str(e)}"
 
 # ==========================================================
 # BLOCK 19: DN ANALYTICS ROUTE
