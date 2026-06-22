@@ -1502,144 +1502,191 @@ class AnalyticsRepository:
             logger.error(traceback.format_exc())
             return {"error": f"Failed to load DN {dn_no}: {str(e)[:100]}"}
         # ==========================================================
-    # BLOCK 11: DEALER DASHBOARD
-    # ==========================================================
-    # ==========================================================
-# BLOCK 11: DEALER DASHBOARD
-# ==========================================================
-  # ==========================================================
+
+ # ==========================================================
 # BLOCK 11: DEALER DASHBOARD (FIXED)
 # ==========================================================
+# BLOCK 11: DEALER DASHBOARD (PRODUCTION-GRADE v3.0 - FIXED)
+# ==========================================================
 
-def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
-    """Complete dealer dashboard from PostgreSQL with improved error handling."""
-    try:
-        logger.info(f"🔍 Searching for dealer: '{dealer_name}'")
+    def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
+        """
+        Complete dealer dashboard from PostgreSQL with improved error handling.
+        BLOCK 11 - FIXED v3.0
         
-        # ==========================================================
-        # STEP 1: Resolve dealer with detailed logging
-        # ==========================================================
-        resolved = self.resolver.resolve_dealer(dealer_name)
+        Args:
+            dealer_name: Name of the dealer to get dashboard for
         
-        if not resolved:
-            # ==========================================================
-            # STEP 2: Try to find similar dealers for suggestions
-            # ==========================================================
-            logger.warning(f"❌ Dealer '{dealer_name}' not found")
+        Returns:
+            Dict containing dealer dashboard data or error
+        """
+        import time
+        start_time = time.time()
+        
+        try:
+            logger.info(f"🔍 Searching for dealer: '{dealer_name}'")
             
-            # Try to find similar dealers
-            similar = self.search.search_dealer(dealer_name, exact=False)
-            if similar:
-                suggestions = [s['dealer_name'] for s in similar[:5]]
+            # ==========================================================
+            # STEP 1: Resolve dealer with detailed logging
+            # ==========================================================
+            resolved = self.resolver.resolve_dealer(dealer_name)
+            
+            if not resolved:
+                # ==========================================================
+                # STEP 2: Try to find similar dealers for suggestions
+                # ==========================================================
+                logger.warning(f"❌ Dealer '{dealer_name}' not found")
+                
+                # Try to find similar dealers using search
+                try:
+                    similar = self.search.search_dealer(dealer_name, exact=False)
+                    if similar and len(similar) > 0:
+                        suggestions = [s['dealer_name'] for s in similar[:5]]
+                        logger.info(f"💡 Found {len(suggestions)} suggestions for '{dealer_name}'")
+                        return {
+                            "error": f"Dealer '{dealer_name}' not found",
+                            "suggestions": suggestions,
+                            "message": f"Did you mean: {', '.join(suggestions[:3])}?",
+                            "hint": "Try typing the exact dealer name or a shorter version"
+                        }
+                except Exception as e:
+                    logger.error(f"Search error: {e}")
+                
                 return {
                     "error": f"Dealer '{dealer_name}' not found",
-                    "suggestions": suggestions,
-                    "message": f"Did you mean: {', '.join(suggestions[:3])}?",
-                    "hint": "Try typing the exact dealer name or a shorter version"
+                    "message": "Please check the spelling or try a shorter version",
+                    "hint": "Example: Try 'Baz' instead of 'Baz Electronics'"
                 }
             
-            return {
-                "error": f"Dealer '{dealer_name}' not found",
-                "message": "Please check the spelling or try a shorter version",
-                "hint": "Example: Try 'Baz' instead of 'Baz Electronics'"
-            }
-        
-        # ==========================================================
-        # STEP 3: Query dealer data
-        # ==========================================================
-        result = self.db.query(
-            DeliveryReport.customer_name.label("dealer_name"),
-            func.max(DeliveryReport.dealer_code).label("dealer_code"),
-            func.max(DeliveryReport.customer_code).label("customer_code"),
-            func.max(DeliveryReport.division).label("division"),
-            func.max(DeliveryReport.warehouse).label("warehouse"),
-            func.max(DeliveryReport.ship_to_city).label("city"),
-            func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
-            func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("total_units"),
-            func.coalesce(func.sum(DeliveryReport.dn_amount), 0).label("total_revenue"),
-            func.count(distinct(case((DeliveryReport.delivery_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("delivered_dns"),
-            func.count(distinct(case((DeliveryReport.pending_flag == True, DeliveryReport.dn_no), else_=None))).label("pending_dns"),
-            func.count(distinct(case((and_(DeliveryReport.delivery_status == 'Completed', DeliveryReport.pod_status != 'Completed'), DeliveryReport.dn_no), else_=None))).label("transit_dns"),
-            func.count(distinct(case((DeliveryReport.pod_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("pod_completed_dns"),
-            func.count(distinct(case((and_(DeliveryReport.delivery_status == 'Completed', DeliveryReport.pod_status != 'Completed'), DeliveryReport.dn_no), else_=None))).label("pending_pod_dns"),
-            func.count(distinct(case((DeliveryReport.good_issue_date.is_(None), DeliveryReport.dn_no), else_=None))).label("pending_pgi_dns"),
-            func.count(distinct(DeliveryReport.customer_model)).label("product_count"),
-            func.count(distinct(DeliveryReport.ship_to_city)).label("city_count")
-        ).filter(
-            DeliveryReport.customer_name == resolved
-        ).group_by(
-            DeliveryReport.customer_name
-        ).first()
-        
-        if not result or result.total_dns == 0:
-            return {"error": f"No data found for dealer '{resolved}'"}
-        
-        # ==========================================================
-        # STEP 4: Calculate KPIs
-        # ==========================================================
-        total_dns = result.total_dns or 1
-        delivered_dns = result.delivered_dns or 0
-        transit_dns = result.transit_dns or 0
-        pod_completed = result.pod_completed_dns or 0
-        
-        delivery_rate = KPIEngine.calculate_delivery_rate(delivered_dns, total_dns)
-        pgi_rate = KPIEngine.calculate_pgi_rate(delivered_dns, transit_dns, total_dns)
-        pod_rate = KPIEngine.calculate_pod_rate(pod_completed, delivered_dns) if delivered_dns > 0 else 0
-        
-        risk_level, risk_score = KPIEngine.calculate_risk_level(
-            delivery_rate,
-            pod_rate,
-            0
-        )
-        
-        # ==========================================================
-        # STEP 5: Build Response
-        # ==========================================================
-        response = {
-            "dealer_name": resolved,
-            "dealer_code": result.dealer_code or "",
-            "customer_code": result.customer_code or "",
-            "division": result.division or "",
-            "warehouse": result.warehouse or "",
-            "city": result.city or "",
-            "total_dns": total_dns,
-            "total_units": int(result.total_units or 0),
-            "total_revenue": float(result.total_revenue or 0),
-            "delivered_dns": delivered_dns,
-            "pending_dns": result.pending_dns or 0,
-            "transit_dns": transit_dns,
-            "pod_completed_dns": pod_completed,
-            "pending_pod_dns": result.pending_pod_dns or 0,
-            "pending_pgi_dns": result.pending_pgi_dns or 0,
-            "product_count": result.product_count or 0,
-            "city_count": result.city_count or 0,
-            "delivery_rate": delivery_rate,
-            "pgi_rate": pgi_rate,
-            "pod_rate": pod_rate,
-            "health_score": KPIEngine.calculate_health_score({
-                "delivery_rate": delivery_rate,
-                "pod_rate": pod_rate,
-                "avg_aging": 0,
-                "revenue": float(result.total_revenue or 0)
-            }),
-            "risk_level": risk_level,
-            "risk_score": risk_score
-        }
-        
-        logger.info(f"✅ Dealer dashboard built successfully for: {resolved}")
-        return response
+            # ==========================================================
+            # STEP 3: Log resolution result
+            # ==========================================================
+            logger.info(f"✅ Dealer resolved: '{resolved}'")
             
-    except Exception as e:
-        logger.error(f"❌ Get dealer dashboard failed for '{dealer_name}': {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return {
-            "error": f"Failed to load dealer data: {str(e)[:100]}",
-            "message": "Please try again with a different search term"
-        }
+            # ==========================================================
+            # STEP 4: Query dealer data
+            # ==========================================================
+            query_start = time.time()
+            
+            try:
+                result = self.db.query(
+                    DeliveryReport.customer_name.label("dealer_name"),
+                    func.max(DeliveryReport.dealer_code).label("dealer_code"),
+                    func.max(DeliveryReport.customer_code).label("customer_code"),
+                    func.max(DeliveryReport.division).label("division"),
+                    func.max(DeliveryReport.warehouse).label("warehouse"),
+                    func.max(DeliveryReport.ship_to_city).label("city"),
+                    func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
+                    func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("total_units"),
+                    func.coalesce(func.sum(DeliveryReport.dn_amount), 0).label("total_revenue"),
+                    func.count(distinct(case((DeliveryReport.delivery_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("delivered_dns"),
+                    func.count(distinct(case((DeliveryReport.pending_flag == True, DeliveryReport.dn_no), else_=None))).label("pending_dns"),
+                    func.count(distinct(case((and_(DeliveryReport.delivery_status == 'Completed', DeliveryReport.pod_status != 'Completed'), DeliveryReport.dn_no), else_=None))).label("transit_dns"),
+                    func.count(distinct(case((DeliveryReport.pod_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("pod_completed_dns"),
+                    func.count(distinct(case((and_(DeliveryReport.delivery_status == 'Completed', DeliveryReport.pod_status != 'Completed'), DeliveryReport.dn_no), else_=None))).label("pending_pod_dns"),
+                    func.count(distinct(case((DeliveryReport.good_issue_date.is_(None), DeliveryReport.dn_no), else_=None))).label("pending_pgi_dns"),
+                    func.count(distinct(DeliveryReport.customer_model)).label("product_count"),
+                    func.count(distinct(DeliveryReport.ship_to_city)).label("city_count")
+                ).filter(
+                    DeliveryReport.customer_name == resolved
+                ).group_by(
+                    DeliveryReport.customer_name
+                ).first()
+                
+                query_time = time.time() - query_start
+                logger.info(f"⏱️ Query execution time: {query_time:.3f}s")
+                
+            except Exception as e:
+                logger.error(f"❌ Query failed for dealer '{resolved}': {e}")
+                return {
+                    "error": f"Database query failed: {str(e)[:100]}",
+                    "message": "Please try again later"
+                }
+            
+            # ==========================================================
+            # STEP 5: Check if data exists
+            # ==========================================================
+            if not result or result.total_dns == 0:
+                logger.warning(f"⚠️ No data found for dealer '{resolved}'")
+                return {
+                    "error": f"No data found for dealer '{resolved}'",
+                    "message": "This dealer has no delivery reports",
+                    "hint": "Try another dealer name"
+                }
+            
+            # ==========================================================
+            # STEP 6: Calculate KPIs
+            # ==========================================================
+            total_dns = result.total_dns or 1
+            delivered_dns = result.delivered_dns or 0
+            transit_dns = result.transit_dns or 0
+            pod_completed = result.pod_completed_dns or 0
+            
+            delivery_rate = KPIEngine.calculate_delivery_rate(delivered_dns, total_dns)
+            pgi_rate = KPIEngine.calculate_pgi_rate(delivered_dns, transit_dns, total_dns)
+            pod_rate = KPIEngine.calculate_pod_rate(pod_completed, delivered_dns) if delivered_dns > 0 else 0
+            
+            risk_level, risk_score = KPIEngine.calculate_risk_level(
+                delivery_rate,
+                pod_rate,
+                0
+            )
+            
+            # ==========================================================
+            # STEP 7: Build Response
+            # ==========================================================
+            response = {
+                "dealer_name": resolved,
+                "dealer_code": result.dealer_code or "",
+                "customer_code": result.customer_code or "",
+                "division": result.division or "",
+                "warehouse": result.warehouse or "",
+                "city": result.city or "",
+                "total_dns": total_dns,
+                "total_units": int(result.total_units or 0),
+                "total_revenue": float(result.total_revenue or 0),
+                "delivered_dns": delivered_dns,
+                "pending_dns": result.pending_dns or 0,
+                "transit_dns": transit_dns,
+                "pod_completed_dns": pod_completed,
+                "pending_pod_dns": result.pending_pod_dns or 0,
+                "pending_pgi_dns": result.pending_pgi_dns or 0,
+                "product_count": result.product_count or 0,
+                "city_count": result.city_count or 0,
+                "delivery_rate": delivery_rate,
+                "pgi_rate": pgi_rate,
+                "pod_rate": pod_rate,
+                "health_score": KPIEngine.calculate_health_score({
+                    "delivery_rate": delivery_rate,
+                    "pod_rate": pod_rate,
+                    "avg_aging": 0,
+                    "revenue": float(result.total_revenue or 0)
+                }),
+                "risk_level": risk_level,
+                "risk_score": risk_score
+            }
+            
+            total_time = time.time() - start_time
+            logger.info(f"✅ Dealer dashboard built successfully for: {resolved} (took {total_time:.3f}s)")
+            return response
+            
+        except Exception as e:
+            logger.error(f"❌ Get dealer dashboard failed for '{dealer_name}': {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {
+                "error": f"Failed to load dealer data: {str(e)[:100]}",
+                "message": "Please try again with a different search term"
+            }
 
 # ==========================================================
 # END OF BLOCK 11 - DEALER DASHBOARD
+# ==========================================================
+
+
+
+
+# ==========================================================
 # ==========================================================
     # BLOCK 12: WAREHOUSE DASHBOARD
     # ==========================================================
