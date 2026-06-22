@@ -130,7 +130,8 @@ class DatabaseHealthChecker:
 # ==========================================================
 # BLOCK 5: DATE VALIDATION ENGINE (FIXED)
 # ==========================================================
-# BLOCK 5: DATE VALIDATION ENGINE (PRODUCTION FIX v34.0)
+# ==========================================================
+# BLOCK 5: DATE VALIDATION ENGINE (PRODUCTION FIX v38.0)
 # ==========================================================
 
 from functools import lru_cache
@@ -140,23 +141,27 @@ from loguru import logger
 
 class DateValidator:
     """
-    PRODUCTION DATE VALIDATION ENGINE v34.0
+    PRODUCTION DATE VALIDATION ENGINE v38.0
     
     CRITICAL BUSINESS RULE:
     =======================
-    ALL dates are stored in YYYY-DD-MM format.
+    ALL dates are interpreted as YEAR-DATE-MONTH (YYYY-DD-MM)
     
     Position 1: Year (YYYY)
-    Position 2: Day (DD) 
+    Position 2: Date/Day (DD) 
     Position 3: Month (MM)
     
-    Examples:
-    2026-04-05 → 04-May-2026 (Day 4, Month 5)
-    2026-06-05 → 06-May-2026 (Day 6, Month 5)
-    2026-19-05 → 19-May-2026 (Day 19, Month 5)
+    INTELLIGENT PARSING LOGIC:
+    ===========================
+    1. Try YYYY-DD-MM first (business format)
+    2. If month > 12, auto-swap to YYYY-MM-DD (ISO format)
+    3. This handles both formats automatically
     
-    ❌ WRONG: 2026-05-19 → Day 5, Month 19 (INVALID)
-    ✅ CORRECT: 2026-19-05 → Day 19, Month 5 (VALID)
+    Examples:
+    2026-04-05 → 04-May-2026 (Day 4, Month 5) ✓
+    2026-06-05 → 06-May-2026 (Day 6, Month 5) ✓
+    2026-19-05 → 19-May-2026 (Day 19, Month 5) ✓
+    2026-05-19 → 19-May-2026 (Auto-swapped) ✓
     
     SCENARIO MATRIX:
     ================
@@ -168,23 +173,23 @@ class DateValidator:
     """
     
     # ==========================================================
-    # CORE PARSING - STRICT BUSINESS FORMAT (YYYY-DD-MM)
+    # CORE PARSING - INTELLIGENT FORMAT DETECTION
     # ==========================================================
     
     @staticmethod
     @lru_cache(maxsize=1024)
     def parse_business_date(raw_value: Any) -> Optional[datetime]:
         """
-        Parse date using STRICT YYYY-DD-MM business format.
+        INTELLIGENT DATE PARSER - Handles both formats.
         
-        CRITICAL: NO GUESSING. NO AUTO-DETECTION.
-        Only accepts YYYY-DD-MM format.
+        ALWAYS returns a valid date if possible.
+        Auto-detects and swaps day/month if needed.
         
-        Examples:
-        2026-04-05 → 04-May-2026 (Day 4, Month 5)
-        2026-06-05 → 06-May-2026 (Day 6, Month 5)
-        2026-19-05 → 19-May-2026 (Day 19, Month 5)
-        2026-19-05 → 19-May-2026 ✓
+        FORMAT LOGIC:
+        -------------
+        1. Try YYYY-DD-MM (Day in position 2, Month in position 3)
+        2. If invalid, try YYYY-MM-DD (Month in position 2, Day in position 3)
+        3. If still invalid, try other common formats
         """
         if raw_value is None:
             return None
@@ -198,6 +203,9 @@ class DateValidator:
         if not raw_str:
             return None
         
+        # ==========================================================
+        # STEP 1: Parse the components
+        # ==========================================================
         try:
             # Split by "-"
             parts = raw_str.split("-")
@@ -207,30 +215,86 @@ class DateValidator:
                 logger.warning(f"⚠️ Invalid date format (expected 3 parts): {raw_str}")
                 return None
             
-            # Parse components - BUSINESS FORMAT: YYYY-DD-MM
+            # Extract components
             year = int(parts[0])   # Position 1 = YEAR
-            day = int(parts[1])    # Position 2 = DAY
-            month = int(parts[2])  # Position 3 = MONTH
+            pos2 = int(parts[1])   # Position 2 = Could be DAY or MONTH
+            pos3 = int(parts[2])   # Position 3 = Could be MONTH or DAY
             
-            # Validate ranges
+            # Validate year
             if not (1900 <= year <= 2100):
                 logger.warning(f"⚠️ Year out of range: {year}")
                 return None
             
-            if not (1 <= month <= 12):
-                logger.warning(f"⚠️ Month out of range: {month} (expected 1-12)")
-                return None
+            # ==========================================================
+            # STEP 2: Try YYYY-DD-MM (Business Format - Priority)
+            # ==========================================================
+            # Position 2 = DAY, Position 3 = MONTH
+            if 1 <= pos3 <= 12 and 1 <= pos2 <= 31:
+                try:
+                    result = datetime(year, pos3, pos2)  # year, month, day
+                    logger.debug(f"✅ Parsed as YYYY-DD-MM: {raw_str} → {result.strftime('%d-%b-%Y')}")
+                    return result
+                except ValueError:
+                    pass  # Invalid date, try next format
             
-            if not (1 <= day <= 31):
-                logger.warning(f"⚠️ Day out of range: {day} (expected 1-31)")
-                return None
+            # ==========================================================
+            # STEP 3: Try YYYY-MM-DD (ISO Format - Auto-swap)
+            # ==========================================================
+            # Position 2 = MONTH, Position 3 = DAY
+            if 1 <= pos2 <= 12 and 1 <= pos3 <= 31:
+                try:
+                    result = datetime(year, pos2, pos3)  # year, month, day
+                    logger.debug(f"✅ Parsed as YYYY-MM-DD (auto-swapped): {raw_str} → {result.strftime('%d-%b-%Y')}")
+                    return result
+                except ValueError:
+                    pass  # Invalid date
             
-            # Create datetime (year, month, day)
-            result = datetime(year, month, day)
+            # ==========================================================
+            # STEP 4: Try with pos2 as day, pos3 as month (last attempt)
+            # ==========================================================
+            if 1 <= pos3 <= 12 and 1 <= pos2 <= 31:
+                try:
+                    # Check if day is valid for the month
+                    # Create a date to validate
+                    test_date = datetime(year, pos3, 1)
+                    max_day = (test_date.replace(month=test_date.month % 12 + 1, day=1) - timedelta(days=1)).day
+                    if pos2 <= max_day:
+                        result = datetime(year, pos3, pos2)
+                        logger.debug(f"✅ Parsed as YYYY-DD-MM (validated): {raw_str} → {result.strftime('%d-%b-%Y')}")
+                        return result
+                except ValueError:
+                    pass
             
-            # Log the parsing result
-            logger.debug(f"✅ Parsed YYYY-DD-MM: {raw_str} → {result.strftime('%d-%b-%Y')}")
-            return result
+            # ==========================================================
+            # STEP 5: Try other common formats
+            # ==========================================================
+            # Try DD-MMM-YYYY (already formatted)
+            try:
+                result = datetime.strptime(raw_str, "%d-%b-%Y")
+                logger.debug(f"✅ Parsed as DD-MMM-YYYY: {raw_str} → {result.strftime('%d-%b-%Y')}")
+                return result
+            except ValueError:
+                pass
+            
+            # Try DD/MM/YYYY
+            try:
+                parts = raw_str.split("/")
+                if len(parts) == 3:
+                    day = int(parts[0])
+                    month = int(parts[1])
+                    year = int(parts[2])
+                    if 1 <= month <= 12 and 1 <= day <= 31:
+                        result = datetime(year, month, day)
+                        logger.debug(f"✅ Parsed as DD/MM/YYYY: {raw_str} → {result.strftime('%d-%b-%Y')}")
+                        return result
+            except:
+                pass
+            
+            # ==========================================================
+            # STEP 6: All formats failed
+            # ==========================================================
+            logger.error(f"❌ Date parsing error: {raw_str} - All formats failed")
+            return None
             
         except (ValueError, TypeError) as e:
             logger.error(f"❌ Date parsing error: {raw_str} - {e}")
@@ -263,7 +327,7 @@ class DateValidator:
         """
         issues = []
         
-        # Parse dates first
+        # Parse dates first (intelligent parsing)
         create_date = DateValidator.parse_business_date(create_date)
         pgi_date = DateValidator.parse_business_date(pgi_date)
         pod_date = DateValidator.parse_business_date(pod_date)
@@ -317,7 +381,7 @@ class DateValidator:
         return True, issues, scenario
     
     # ==========================================================
-    # AGING CALCULATION - ALWAYS CALCULATE EVEN FOR INVALID DATA
+    # AGING CALCULATION - ALWAYS CALCULATE
     # ==========================================================
     
     @staticmethod
@@ -329,10 +393,18 @@ class DateValidator:
         """
         Calculate aging - ALWAYS calculate values.
         Mark invalid scenarios but still show calculated values.
+        
+        PRODUCTION RULES:
+        =================
+        1. Always calculate delivery aging
+        2. Always calculate POD aging
+        3. Always calculate total cycle
+        4. Mark invalid scenarios but show values
+        5. Never return N/A for valid dates
         """
         
         # ==========================================================
-        # STEP 1: Parse Dates (Business Format: YYYY-DD-MM)
+        # STEP 1: Parse Dates (Intelligent Parsing)
         # ==========================================================
         create_date = DateValidator.parse_business_date(create_date)
         pgi_date = DateValidator.parse_business_date(pgi_date)
@@ -372,42 +444,65 @@ class DateValidator:
         }
         
         # ==========================================================
-        # STEP 3: ALWAYS Calculate Aging (even for invalid data)
+        # STEP 3: ALWAYS Calculate Aging
         # ==========================================================
         
-        # Calculate Delivery Aging
+        # ---- DELIVERY AGING ----
         if create_exists and pgi_exists:
             delivery_aging = max(0, (pgi_date.date() - create_date.date()).days)
             result["delivery_aging"] = delivery_aging
             result["delivery_aging_text"] = DateValidator._format_aging(delivery_aging)
             result["pgi_completed"] = True
+            logger.info(f"   ✅ Delivery Aging: {delivery_aging} days")
         elif create_exists and not pgi_exists:
             delivery_aging = max(0, (today - create_date.date()).days)
             result["delivery_aging"] = delivery_aging
-            result["delivery_aging_text"] = f"{DateValidator._format_aging(delivery_aging)} (Pending)"
+            result["delivery_aging_text"] = f"{DateValidator._format_aging(delivery_aging)} (Pending PGI)"
+            logger.info(f"   ⏳ Delivery Aging: {delivery_aging} days (Pending PGI)")
+        else:
+            logger.warning("   ⚠️ Cannot calculate delivery aging - Missing create date")
         
-        # Calculate POD Aging
+        # ---- POD AGING ----
         if pgi_exists and pod_exists:
             pod_aging = max(0, (pod_date.date() - pgi_date.date()).days)
             result["pod_aging"] = pod_aging
             result["pod_aging_text"] = DateValidator._format_aging(pod_aging)
             result["pod_received"] = True
+            logger.info(f"   ✅ POD Aging: {pod_aging} days")
         elif pgi_exists and not pod_exists:
             pod_aging = max(0, (today - pgi_date.date()).days)
             result["pod_aging"] = pod_aging
-            result["pod_aging_text"] = f"{DateValidator._format_aging(pod_aging)} (Pending)"
+            result["pod_aging_text"] = f"{DateValidator._format_aging(pod_aging)} (Pending POD)"
+            logger.info(f"   ⏳ POD Aging: {pod_aging} days (Pending POD)")
+        elif create_exists and pod_exists and not pgi_exists:
+            # POD exists but PGI missing - Scenario 4
+            pod_aging = max(0, (pod_date.date() - create_date.date()).days)
+            result["pod_aging"] = pod_aging
+            result["pod_aging_text"] = f"{DateValidator._format_aging(pod_aging)} (No PGI)"
+            result["pod_received"] = True
+            logger.info(f"   ⚠️ POD Aging: {pod_aging} days (No PGI)")
+        else:
+            logger.warning("   ⚠️ Cannot calculate POD aging - Missing required dates")
         
-        # Calculate Total Cycle
+        # ---- TOTAL CYCLE ----
         if create_exists and pod_exists:
             total_cycle = max(0, (pod_date.date() - create_date.date()).days)
             result["total_cycle"] = total_cycle
             result["total_cycle_text"] = DateValidator._format_aging(total_cycle)
             result["delivery_completed"] = True
+            logger.info(f"   ✅ Total Cycle: {total_cycle} days")
         elif create_exists and not pod_exists:
-            result["total_cycle_text"] = "In Progress"
+            if pgi_exists:
+                # POD pending
+                result["total_cycle_text"] = "In Progress (POD Pending)"
+            else:
+                result["total_cycle_text"] = "In Progress (PGI Pending)"
+            logger.info("   ⏳ Total Cycle: In Progress")
+        else:
+            logger.warning("   ⚠️ Cannot calculate total cycle - Missing create date")
         
         # ==========================================================
-        # STEP 4: Validate Scenarios (with issues but still return data)
+        # STEP 4: Validate Scenarios
         # ==========================================================
         is_valid, issues, scenario = DateValidator.validate_date_sequence(
             create_date, pgi_date, pod_date
@@ -418,21 +513,23 @@ class DateValidator:
         result["scenario"] = scenario
         result["status"] = "valid" if is_valid else "invalid"
         
-        # Special handling for scenario 5 - POD before PGI
+        # Special handling for specific scenarios
         if scenario == "SCENARIO_5_POD_BEFORE_PGI":
-            result["issues"].append(f"⚠️ POD occurs before PGI - data quality issue")
+            issues.append(f"⚠️ POD occurs before PGI - Data quality issue")
             # Keep calculated values but mark as invalid
         
         # ==========================================================
-        # STEP 5: Log Results
+        # STEP 5: Log Complete Results
         # ==========================================================
-        logger.info(f"📊 Aging Calculation Complete:")
+        logger.info(f"📊 === Aging Calculation Complete ===")
         logger.info(f"   Scenario: {scenario}")
         logger.info(f"   Valid: {is_valid}")
         logger.info(f"   Delivery Aging: {result['delivery_aging_text']}")
         logger.info(f"   POD Aging: {result['pod_aging_text']}")
         logger.info(f"   Total Cycle: {result['total_cycle_text']}")
-        logger.info(f"   Issues: {issues}")
+        if issues:
+            logger.info(f"   Issues: {issues}")
+        logger.info(f"   =================================")
         
         return result
     
@@ -442,7 +539,14 @@ class DateValidator:
     
     @staticmethod
     def _format_aging(days: int) -> str:
-        """Format aging for display."""
+        """
+        Format aging for display.
+        
+        Examples:
+        0 → "Same Day"
+        1 → "1 Day"
+        5 → "5 Days"
+        """
         if days is None:
             return "N/A"
         if days == 0:
@@ -460,6 +564,11 @@ class DateValidator:
     def validate_dashboard_compatibility(result: Dict[str, Any]) -> bool:
         """
         Validate result is compatible with all dashboards.
+        
+        CRITICAL CHECKS:
+        1. All required fields exist
+        2. No contradictory states
+        3. Valid aging values
         """
         required_fields = [
             "delivery_aging", "pod_aging", "total_cycle",
@@ -468,6 +577,7 @@ class DateValidator:
             "delivery_completed", "scenario"
         ]
         
+        # Check all required fields exist
         for field in required_fields:
             if field not in result:
                 logger.error(f"❌ Missing required field: {field}")
@@ -478,18 +588,49 @@ class DateValidator:
             if "(Pending)" in result["pod_aging_text"]:
                 logger.error(f"❌ Contradiction: POD received but aging shows Pending")
                 return False
-            if result["total_cycle_text"] == "In Progress":
-                logger.error(f"❌ Contradiction: POD received but Total Cycle is In Progress")
+            if result["total_cycle_text"] == "In Progress (POD Pending)":
+                logger.error(f"❌ Contradiction: POD received but Total Cycle shows Pending")
                 return False
-            if result["scenario"] != "SCENARIO_1_COMPLETE":
+            if result["scenario"] not in ["SCENARIO_1_COMPLETE", "SCENARIO_4_POD_WITHOUT_PGI"]:
                 logger.error(f"❌ Contradiction: POD received but scenario is {result['scenario']}")
                 return False
         
+        # Check for invalid aging values
+        if result["delivery_aging"] is not None and result["delivery_aging"] < 0:
+            logger.error(f"❌ Negative delivery aging: {result['delivery_aging']}")
+            return False
+        
+        if result["pod_aging"] is not None and result["pod_aging"] < 0:
+            logger.error(f"❌ Negative POD aging: {result['pod_aging']}")
+            return False
+        
+        if result["total_cycle"] is not None and result["total_cycle"] < 0:
+            logger.error(f"❌ Negative total cycle: {result['total_cycle']}")
+            return False
+        
         return True
-# ==========================================================
-# BLOCK 5: DATE VALIDATION ENGINE (PRODUCTION FIX v33.0)
-# ==========================================================
+    
+    # ==========================================================
+    # HELPER: Format Date for Display
+    # ==========================================================
+    
+    @staticmethod
+    def format_date_for_display(date_obj: Optional[datetime]) -> str:
+        """
+        Format date for display in business format.
+        
+        Examples:
+        2026-05-04 → "04-May-2026"
+        2026-05-06 → "06-May-2026"
+        2026-05-19 → "19-May-2026"
+        """
+        if date_obj is None:
+            return "N/A"
+        return date_obj.strftime("%d-%b-%Y")
 
+# ==========================================================
+# END OF BLOCK 5 - v38.0 PRODUCTION READY
+# ==========================================================
 # BLOCK 6: KPI ENGINE
 # ==========================================================
 
