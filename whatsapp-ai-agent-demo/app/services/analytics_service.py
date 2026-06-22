@@ -1064,6 +1064,10 @@ class EntityResolver:
 # BLOCK 9: ANALYTICS REPOSITORY (FIXED - NO CRASH)
 # ==========================================================
 
+# ==========================================================
+# BLOCK 9: ANALYTICS REPOSITORY (UPDATED WITH DEALER 360)
+# ==========================================================
+
 class AnalyticsRepository:
     """PostgreSQL-driven analytics repository"""
     
@@ -1072,6 +1076,17 @@ class AnalyticsRepository:
         self._owned_db = db is None
         self.resolver = EntityResolver(self.db)
         self.search = SearchEngine(self.db)
+        
+        # ==========================================================
+        # ✅ ADD THIS: Initialize Dealer 360 Dashboard
+        # ==========================================================
+        self._dealer_360 = None
+        try:
+            from app.services.dealer_analytics_service import Dealer360Dashboard
+            self._dealer_360 = Dealer360Dashboard(self.db, self.resolver, self.search)
+            logger.info("✅ Dealer360Dashboard initialized")
+        except Exception as e:
+            logger.warning(f"⚠️ Dealer360Dashboard not available: {e}")
         
         # ==========================================================
         # STARTUP VALIDATION - Check but DON'T crash
@@ -1120,6 +1135,18 @@ class AnalyticsRepository:
     def close(self):
         if self._owned_db and self.db:
             self.db.close()
+    
+    # ==========================================================
+    # ✅ ADD THIS NEW METHOD
+    # ==========================================================
+    def get_dealer_360_dashboard(self, dealer_name: str) -> Dict[str, Any]:
+        """
+        Get complete 360° dealer dashboard.
+        BLOCK 9 - NEW METHOD
+        """
+        if self._dealer_360 is None:
+            return {"error": "Dealer 360 dashboard service not available"}
+        return self._dealer_360.get_dashboard(dealer_name)
 
 
 
@@ -1258,16 +1285,17 @@ class AnalyticsRepository:
     # ==========================================================
 # BLOCK 11: DEALER DASHBOARD (PRODUCTION-GRADE v4.0 - FIXED)
 # ==========================================================
-# ==========================================================
-# BLOCK 11: DEALER DASHBOARD (PRODUCTION-GRADE v4.0 - WITH DISTANCE)
+# BLOCK 11: DEALER DASHBOARD (UPDATED WITH 360)
 # ==========================================================
 
     def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         """
-        Complete dealer dashboard from PostgreSQL with improved error handling.
-        BLOCK 11 - FIXED v4.0 WITH DISTANCE
+        Complete dealer dashboard - Now supports 360° view.
+        BLOCK 11 - UPDATED
         
         Features:
+        - 360° Dashboard with 13 sections
+        - Backward compatibility with legacy format
         - Dealer resolution with fuzzy matching
         - Comprehensive KPIs
         - Distance calculation from warehouse to dealer city
@@ -1281,6 +1309,44 @@ class AnalyticsRepository:
             logger.info(f"🔍 Searching for dealer: '{dealer_name}'")
             
             # ==========================================================
+            # STEP 1: Try 360 Dashboard first
+            # ==========================================================
+            if self._dealer_360 is not None:
+                logger.info(f"🔍 Using 360 dashboard for: '{dealer_name}'")
+                result = self._dealer_360.get_dashboard(dealer_name)
+                
+                # If dealer not found, return error with suggestions
+                if "error" in result:
+                    return result
+                
+                # Mark as 360 dashboard for formatter to detect
+                result['_dashboard_type'] = '360'
+                return result
+            
+            # ==========================================================
+            # STEP 2: Fallback to legacy implementation
+            # ==========================================================
+            logger.info(f"🔍 Using legacy dashboard for: '{dealer_name}'")
+            return self._get_dealer_dashboard_legacy(dealer_name)
+            
+        except Exception as e:
+            logger.error(f"❌ Get dealer dashboard failed for '{dealer_name}': {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {"error": f"Failed to load dealer data: {str(e)[:100]}"}
+    
+    def _get_dealer_dashboard_legacy(self, dealer_name: str) -> Dict[str, Any]:
+        """
+        Legacy dealer dashboard (backward compatibility).
+        BLOCK 11 - LEGACY FALLBACK
+        """
+        import time
+        start_time = time.time()
+        
+        try:
+            logger.info(f"🔍 Legacy dealer dashboard for: '{dealer_name}'")
+            
+            # ==========================================================
             # STEP 1: Resolve dealer with detailed logging
             # ==========================================================
             resolved = self.resolver.resolve_dealer(dealer_name)
@@ -1291,7 +1357,6 @@ class AnalyticsRepository:
                 # ==========================================================
                 logger.warning(f"❌ Dealer '{dealer_name}' not found")
                 
-                # Try to find similar dealers using search
                 try:
                     similar = self.search.search_dealer(dealer_name, exact=False)
                     if similar and len(similar) > 0:
@@ -1421,11 +1486,10 @@ class AnalyticsRepository:
             }
             
             # ==========================================================
-            # STEP 8: ADD DISTANCE CALCULATION (NEW)
+            # STEP 8: Add distance calculation
             # ==========================================================
             try:
                 if result.warehouse and result.city:
-                    # Import distance service
                     from app.services.distance_service import get_distance_service
                     distance_service = get_distance_service()
                     distance_info = distance_service.calculate_warehouse_distance(
@@ -1437,13 +1501,11 @@ class AnalyticsRepository:
                         response['distance_approx_hours'] = distance_info.get('approx_driving_hours')
                         response['distance_miles'] = distance_info.get('distance_miles')
                         response['approx_driving_minutes'] = distance_info.get('approx_driving_minutes')
-                        logger.info(f"📍 Distance: {result.warehouse} → {result.city} = {distance_info.get('distance_km')} km")
             except Exception as e:
                 logger.error(f"Distance calculation error: {e}")
-                # Continue without distance - don't break the dashboard
             
             total_time = time.time() - start_time
-            logger.info(f"✅ Dealer dashboard built successfully for: {resolved} (took {total_time:.3f}s)")
+            logger.info(f"✅ Legacy dealer dashboard built successfully for: {resolved} (took {total_time:.3f}s)")
             return response
             
         except Exception as e:
@@ -1455,9 +1517,7 @@ class AnalyticsRepository:
                 "message": "Please try again with a different search term"
             }
 
-# ==========================================================
-# END OF BLOCK 11 - DEALER DASHBOARD
-# ==========================================================
+==========================================================
     # ==========================================================
 # BLOCK 12: WAREHOUSE DASHBOARD (FIXED)
 # ==========================================================
@@ -2222,8 +2282,64 @@ class AnalyticsService:
 # ==========================================================
 # BLOCK 28: DASHBOARD METHODS
 # ==========================================================
-# BLOCK 28: DASHBOARD METHODS (FIXED)
 # ==========================================================
+# BLOCK 28: DASHBOARD METHODS (COMPLETE)
+# ==========================================================
+
+    def get_dealer_360_dashboard(self, dealer_name: str) -> AnalyticsResponse:
+        """
+        Get complete 360° dealer dashboard.
+        BLOCK 28 - NEW METHOD
+        
+        Returns:
+            AnalyticsResponse with 360° dealer dashboard data
+        """
+        try:
+            self.metrics["total_requests"] += 1
+            logger.info(f"🔍 Dealer 360 Dashboard request for: {dealer_name}")
+            
+            if not dealer_name or not str(dealer_name).strip():
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error="Dealer name is required")
+            
+            # Check if repo has the method
+            if not hasattr(self.repo, 'get_dealer_360_dashboard'):
+                error_msg = "Dealer 360 dashboard not available"
+                logger.error(f"❌ {error_msg}")
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error=error_msg)
+            
+            # Get dashboard
+            result = self.repo.get_dealer_360_dashboard(dealer_name.strip())
+            
+            if "error" in result:
+                self.metrics["failed_requests"] += 1
+                if "suggestions" in result:
+                    return AnalyticsResponse(
+                        success=False, 
+                        error=result["error"],
+                        data={"suggestions": result.get("suggestions", [])}
+                    )
+                logger.error(f"❌ Dealer 360 dashboard error for {dealer_name}: {result['error']}")
+                return AnalyticsResponse(success=False, error=result["error"])
+            
+            self.metrics["successful_requests"] += 1
+            logger.info(f"✅ Dealer 360 dashboard returned successfully for {dealer_name}")
+            return AnalyticsResponse(success=True, data=result)
+            
+        except AttributeError as e:
+            self.metrics["failed_requests"] += 1
+            logger.error(f"❌ AttributeError for {dealer_name}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return AnalyticsResponse(success=False, error=f"Method not found: {str(e)}")
+            
+        except Exception as e:
+            self.metrics["failed_requests"] += 1
+            logger.error(f"❌ Get dealer 360 dashboard failed for {dealer_name}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return AnalyticsResponse(success=False, error=f"Failed to load dealer: {str(e)[:100]}")
 
     def get_dn_dashboard(self, dn_no: str) -> AnalyticsResponse:
         """
@@ -2287,6 +2403,27 @@ class AnalyticsService:
                 self.metrics["failed_requests"] += 1
                 return AnalyticsResponse(success=False, error="Dealer name is required")
             
+            # Try 360 dashboard first
+            if hasattr(self.repo, 'get_dealer_360_dashboard'):
+                logger.info(f"🔍 Using 360 dashboard for: {dealer_name}")
+                result = self.repo.get_dealer_360_dashboard(dealer_name.strip())
+                
+                if "error" in result:
+                    self.metrics["failed_requests"] += 1
+                    if "suggestions" in result:
+                        return AnalyticsResponse(
+                            success=False, 
+                            error=result["error"],
+                            data={"suggestions": result.get("suggestions", [])}
+                        )
+                    return AnalyticsResponse(success=False, error=result["error"])
+                
+                # Mark as 360 dashboard
+                result['_dashboard_type'] = '360'
+                self.metrics["successful_requests"] += 1
+                return AnalyticsResponse(success=True, data=result)
+            
+            # Fallback to legacy
             if not hasattr(self.repo, 'get_dealer_dashboard'):
                 error_msg = "AnalyticsRepository missing method: get_dealer_dashboard"
                 logger.error(f"❌ {error_msg}")
@@ -2603,6 +2740,11 @@ class AnalyticsService:
             return AnalyticsResponse(success=False, error=str(e))
 
 # ==========================================================
+# END OF BLOCK 28
+# ==========================================================
+    
+    
+    # ==========================================================
 # END OF BLOCK 28
 # ==========================================================
 
