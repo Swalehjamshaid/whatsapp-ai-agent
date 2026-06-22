@@ -657,6 +657,8 @@ ENTITY_PATTERNS = {
 # ==========================================================
 # BLOCK 10: MAIN AI ROUTER (FIXED v4.0)
 # ==========================================================
+# BLOCK 10: MAIN AI ROUTER (FIXED v5.0 - NO CRASH)
+# ==========================================================
 
 class AIOrchestrator:
     def __init__(self, session_factory: Optional[Callable[[], Session]] = None):
@@ -685,18 +687,24 @@ class AIOrchestrator:
         logger.info("AI Router v27.0 - Initializing...")
         logger.info("=" * 70)
         
-        # Initialize analytics
-        self._init_analytics()
+        # ✅ Initialize analytics - don't crash on failure
+        try:
+            self._init_analytics()
+        except Exception as e:
+            logger.error(f"❌ Analytics init failed: {e}")
         
-        # Startup diagnostics - VERIFY ALL METHODS
-        self._verify_analytics_methods()
+        # ✅ Verify methods - don't crash on failure
+        try:
+            self._verify_analytics_methods()
+        except Exception as e:
+            logger.error(f"❌ Method verification failed: {e}")
         
         logger.info("=" * 70)
         logger.info("AI Router v27.0 - PostgreSQL-Driven Production")
         logger.info("=" * 70)
     
     def _init_analytics(self):
-        """Initialize analytics service with retry."""
+        """Initialize analytics service with retry - DON'T CRASH"""
         for attempt in range(3):
             try:
                 logger.info(f"🔄 Attempt {attempt + 1}/3 to initialize analytics...")
@@ -719,7 +727,7 @@ class AIOrchestrator:
         logger.error("❌ All attempts to initialize analytics failed!")
     
     def _verify_analytics_methods(self):
-        """Verify all required analytics methods exist - FAIL FAST"""
+        """Verify all required analytics methods exist - LOG BUT DON'T CRASH"""
         if not self.analytics:
             logger.error("❌ Analytics service is None - cannot verify methods")
             return
@@ -747,26 +755,26 @@ class AIOrchestrator:
         
         if missing_methods:
             logger.error(f"❌ Missing {len(missing_methods)} required methods: {missing_methods}")
-            logger.error("💡 Check analytics_service.py for missing methods")
-            # FAIL FAST - raise exception
-            raise AttributeError(f"Missing required analytics methods: {missing_methods}")
         else:
             logger.info("✅ All required methods available!")
     
     @property
     def analytics(self):
-        """Get analytics service with lazy loading."""
+        """Get analytics service with lazy loading and retry."""
         if self._analytics is None:
             logger.warning("⚠️ Analytics service is None - attempting to reload...")
-            service, response_class = _get_analytics_service()
-            self._analytics = service
-            self._analytics_response = response_class
-            
-            if self._analytics is None:
-                logger.error("❌ Analytics service still None after reload")
-            else:
-                logger.info("✅ Analytics service reloaded successfully")
-                self._verify_analytics_methods()
+            try:
+                service, response_class = _get_analytics_service()
+                self._analytics = service
+                self._analytics_response = response_class
+                
+                if self._analytics is None:
+                    logger.error("❌ Analytics service still None after reload")
+                else:
+                    logger.info("✅ Analytics service reloaded successfully")
+                    self._verify_analytics_methods()
+            except Exception as e:
+                logger.error(f"❌ Reload failed: {e}")
         
         return self._analytics
     
@@ -775,7 +783,6 @@ class AIOrchestrator:
         if self._resolver is None:
             self._resolver = PostgreSQLResolver(self.session_factory)
         return self._resolver
-
 # ==========================================================
 # BLOCK 11: INTENT DETECTION (FIXED v5.0)
 # ==========================================================
@@ -1338,11 +1345,14 @@ class AIOrchestrator:
 # ==========================================================
 # BLOCK 17: ROUTE HANDLERS (FIXED v7.0)
 # ==========================================================
+# ==========================================================
+# BLOCK 17: ROUTE HANDLERS (FIXED v9.0)
+# ==========================================================
 
     def _validate_response(self, response, service_name: str, req_id: str) -> Tuple[bool, str, Optional[Dict]]:
         """
         Validate response from analytics service.
-        BLOCK 17 - FIXED v7.0
+        BLOCK 17 - FIXED v9.0
         Returns: (is_valid, error_message, data)
         Supports: AnalyticsResponse, dict, list, None
         """
@@ -1402,8 +1412,8 @@ class AIOrchestrator:
 
     def _route_dn_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         """
-        Handle DN dashboard with complete error handling.
-        BLOCK 17 - FIXED v7.0
+        Handle DN dashboard with complete error handling and retry.
+        BLOCK 17 - FIXED v9.0
         """
         import time
         start_time = time.time()
@@ -1426,35 +1436,47 @@ class AIOrchestrator:
         
         logger.info(f"[{req_id}] 🔍 Looking up DN: {dn_clean}")
         
-        try:
-            # Check if analytics has the method
-            if not hasattr(self.analytics, 'get_dn_dashboard'):
-                logger.error(f"[{req_id}] ❌ get_dn_dashboard not available")
+        # ==========================================================
+        # STEP 1: Verify analytics service - with retry
+        # ==========================================================
+        if self.analytics is None:
+            logger.warning(f"[{req_id}] ⚠️ Analytics is None - attempting reload...")
+            service, response_class = _get_analytics_service()
+            self._analytics = service
+            self._analytics_response = response_class
+            
+            if self.analytics is None:
+                logger.error(f"[{req_id}] ❌ Analytics service still None")
                 return "⚠️ Service temporarily unavailable. Please try again later."
-            
-            # Get dashboard
+        
+        if not hasattr(self.analytics, 'get_dn_dashboard'):
+            logger.error(f"[{req_id}] ❌ get_dn_dashboard not available")
+            return "⚠️ Service temporarily unavailable. Please try again later."
+        
+        try:
+            # ==========================================================
+            # STEP 2: Get dashboard
+            # ==========================================================
             response = self.analytics.get_dn_dashboard(dn_clean)
-            logger.info(f"[{req_id}] 📊 Dashboard response received: {type(response)}")
+            logger.info(f"[{req_id}] 📊 Response type: {type(response)}")
             
-            # Validate response
+            # ==========================================================
+            # STEP 3: Validate response
+            # ==========================================================
             is_valid, error_msg, data = self._validate_response(response, "DN Dashboard", req_id)
             
             if not is_valid:
                 logger.error(f"[{req_id}] ❌ Validation failed: {error_msg}")
                 return f"❌ Unable to retrieve data for DN {dn_clean}.\n\n{error_msg}"
             
-            # Format and return
+            # ==========================================================
+            # STEP 4: Format and return
+            # ==========================================================
             logger.info(f"[{req_id}] ✅ Valid data received, formatting...")
             result = self._format_dn_dashboard(data, dn_clean)
             elapsed = time.time() - start_time
             logger.info(f"[{req_id}] ✅ DN dashboard returned in {elapsed:.3f}s")
             return result
-            
-        except AttributeError as e:
-            logger.error(f"[{req_id}] ❌ AttributeError: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return f"❌ Service error: Method not available. Please try again."
             
         except Exception as e:
             logger.error(f"[{req_id}] ❌ DN dashboard error: {e}")
@@ -1464,8 +1486,8 @@ class AIOrchestrator:
 
     def _route_dealer_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         """
-        Handle dealer dashboard with complete error handling.
-        BLOCK 17 - FIXED v8.0
+        Handle dealer dashboard with complete error handling and retry.
+        BLOCK 17 - FIXED v9.0
         """
         import time
         start_time = time.time()
@@ -1499,11 +1521,17 @@ class AIOrchestrator:
             dealer_name = original_dealer_name
         
         # ==========================================================
-        # STEP 2: Verify analytics service
+        # STEP 2: Verify analytics service - with retry
         # ==========================================================
         if self.analytics is None:
-            logger.error(f"[{req_id}] ❌ Analytics service is None")
-            return "⚠️ Service temporarily unavailable. Please try again later."
+            logger.warning(f"[{req_id}] ⚠️ Analytics is None - attempting reload...")
+            service, response_class = _get_analytics_service()
+            self._analytics = service
+            self._analytics_response = response_class
+            
+            if self.analytics is None:
+                logger.error(f"[{req_id}] ❌ Analytics service still None")
+                return "⚠️ Service temporarily unavailable. Please try again later."
         
         if not hasattr(self.analytics, 'get_dealer_dashboard'):
             logger.error(f"[{req_id}] ❌ get_dealer_dashboard not available")
@@ -1829,6 +1857,9 @@ class AIOrchestrator:
             return "🏢 *SALES OFFICE DASHBOARD*\n\nPlease specify a sales office name."
         return f"🏢 *SALES OFFICE: {so_name.upper()}*\n\nSales office data coming soon."
 
+# ==========================================================
+# END OF BLOCK 17 - FIXED v9.0
+# ==========================================================
 # ==========================================================
 # BLOCK 18-22: FORMATTERS (FIXED - Safe handling)
 # ==========================================================
@@ -2413,32 +2444,68 @@ Pending: {pending}"""
 # ==========================================================
 # BLOCK 24: SINGLETON & WRAPPER FUNCTIONS
 # ==========================================================
+# ==========================================================
+# BLOCK 24: SINGLETON & WRAPPER FUNCTIONS (FIXED v3.0)
+# ==========================================================
 
     def _truncate_response(self, response: str) -> str:
+        """Truncate response if too long."""
         if len(response) > MAX_RESPONSE_LENGTH:
             return response[:MAX_RESPONSE_LENGTH - 20] + "\n\n... (truncated)"
         return response
+
 
 # ==========================================================
 # SINGLETON & WRAPPER FUNCTIONS
 # ==========================================================
 
 _orchestrator = None
+_initialization_attempts = 0
+_MAX_INIT_ATTEMPTS = 3
 
 def get_orchestrator(session_factory: Optional[Callable[[], Session]] = None) -> AIOrchestrator:
-    global _orchestrator
-    if _orchestrator is None:
-        try:
-            _orchestrator = AIOrchestrator(session_factory=session_factory)
-            logger.info("✅ AI Orchestrator v27.0 initialized")
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize AI Orchestrator: {e}")
-            _orchestrator = None
-    else:
-        if session_factory and not _orchestrator.session_factory:
-            _orchestrator.session_factory = session_factory
-            _orchestrator._resolver = None
-    return _orchestrator
+    """
+    Get or create AI Orchestrator singleton with retry logic.
+    BLOCK 24 - FIXED v3.0
+    """
+    global _orchestrator, _initialization_attempts
+    
+    if _orchestrator is not None:
+        return _orchestrator
+    
+    # If we've tried too many times, don't keep trying
+    if _initialization_attempts >= _MAX_INIT_ATTEMPTS:
+        logger.error(f"❌ Max initialization attempts ({_MAX_INIT_ATTEMPTS}) reached")
+        return None
+    
+    _initialization_attempts += 1
+    logger.info(f"🔄 Initializing AI Orchestrator (attempt {_initialization_attempts}/{_MAX_INIT_ATTEMPTS})...")
+    
+    try:
+        _orchestrator = AIOrchestrator(session_factory=session_factory)
+        logger.info("✅ AI Orchestrator v27.0 initialized successfully")
+        _initialization_attempts = 0  # Reset on success
+        return _orchestrator
+        
+    except AttributeError as e:
+        logger.error(f"❌ AttributeError during initialization: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        
+        # Check if analytics service is the issue
+        if "analytics" in str(e).lower() or "method" in str(e).lower():
+            logger.warning("⚠️ Analytics service issue detected - will retry on next request")
+        
+        _orchestrator = None
+        return None
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize AI Orchestrator: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        _orchestrator = None
+        return None
+
 
 def process_whatsapp_query(
     question: str,
@@ -2447,16 +2514,104 @@ def process_whatsapp_query(
     user_id: Optional[str] = None,
     request_id: Optional[str] = None
 ) -> str:
+    """
+    Process WhatsApp query with fallback and recovery.
+    BLOCK 24 - FIXED v3.0
+    """
+    global _orchestrator, _initialization_attempts
+    
+    # Validate input
+    if not question or not question.strip():
+        return "Please provide a valid question. Type 'help' for menu."
+    
+    # Get orchestrator
     orchestrator = get_orchestrator(session_factory)
+    
+    # If orchestrator is None, try to reset and retry once
+    if orchestrator is None:
+        logger.warning("⚠️ Orchestrator is None - attempting emergency reset...")
+        
+        # Reset and try one more time
+        _orchestrator = None
+        _initialization_attempts = 0
+        
+        try:
+            orchestrator = AIOrchestrator(session_factory=session_factory)
+            _orchestrator = orchestrator
+            logger.info("✅ Emergency reset successful")
+        except Exception as e:
+            logger.error(f"❌ Emergency reset failed: {e}")
+            _orchestrator = None
+            return "⚠️ AI service is currently unavailable. Please try again later."
+    
+    # Final check
     if orchestrator is None:
         return "⚠️ AI service is currently unavailable. Please try again later."
-    return orchestrator.process_whatsapp_query(
-        question=question,
-        session_factory=session_factory,
-        phone_number=phone_number,
-        user_id=user_id,
-        request_id=request_id
-    )
+    
+    # Process the query
+    try:
+        return orchestrator.process_whatsapp_query(
+            question=question,
+            session_factory=session_factory,
+            phone_number=phone_number,
+            user_id=user_id,
+            request_id=request_id
+        )
+    except Exception as e:
+        logger.error(f"❌ Error processing query: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return f"⚠️ Error processing your request. Please try again later."
+
+
+def reset_orchestrator() -> None:
+    """
+    Reset the orchestrator singleton (useful for testing or recovery).
+    BLOCK 24 - FIXED v3.0
+    """
+    global _orchestrator, _initialization_attempts
+    _orchestrator = None
+    _initialization_attempts = 0
+    logger.info("🔄 Orchestrator reset successfully")
+
+
+def get_orchestrator_status() -> Dict[str, Any]:
+    """
+    Get current orchestrator status for diagnostics.
+    BLOCK 24 - FIXED v3.0
+    """
+    global _orchestrator, _initialization_attempts
+    
+    return {
+        "orchestrator_initialized": _orchestrator is not None,
+        "initialization_attempts": _initialization_attempts,
+        "max_attempts": _MAX_INIT_ATTEMPTS,
+        "analytics_available": hasattr(_orchestrator, 'analytics') if _orchestrator else False,
+        "has_analytics": _orchestrator.analytics is not None if _orchestrator else False,
+        "conversation_count": len(_orchestrator.conversation_cache) if _orchestrator else 0,
+        "metrics": _orchestrator.metrics if _orchestrator else {}
+    }
+
+
+# ==========================================================
+# EXPOSE HELPER FUNCTIONS
+# ==========================================================
+
+# These are available for debugging and monitoring
+__all__ = [
+    'AIOrchestrator',
+    'PostgreSQLResolver',
+    'ConversationContext',
+    'get_orchestrator',
+    'process_whatsapp_query',
+    'reset_orchestrator',
+    'get_orchestrator_status',
+    'test_database_connection'
+]
+
+# ==========================================================
+# END OF BLOCK 24 - FIXED v3.0
+# ==========================================================
 
 # ==========================================================
 # BLOCK 25: EXPORTS
