@@ -2207,6 +2207,101 @@ class AIOrchestrator:
 # ==========================================================
 # END OF BLOCK 17
 # ==========================================================
+# ==========================================================
+# BLOCK 17.5: DEBUG HELPER (NEW)
+# ==========================================================
+
+def debug_dn_data(dn_number: str) -> Dict[str, Any]:
+    """
+    Debug function to check DN data directly from database.
+    Use this to verify what data is actually available.
+    
+    Args:
+        dn_number: The DN number to look up
+        
+    Returns:
+        Dict with all DN data fields or error message
+        
+    Example:
+        >>> from app.services.ai_provider_service import debug_dn_data
+        >>> result = debug_dn_data("6243614941")
+        >>> print(result)
+    """
+    from app.database import SessionLocal
+    from app.models import DeliveryReport
+    from sqlalchemy import cast, String
+    from loguru import logger
+    
+    try:
+        logger.info(f"🔍 Debug lookup for DN: {dn_number}")
+        
+        # Clean DN number
+        dn_clean = re.sub(r'[^0-9]', '', str(dn_number).strip())
+        if len(dn_clean) < 8 or len(dn_clean) > 12:
+            return {
+                "error": f"Invalid DN format: {dn_number}",
+                "message": "DN numbers must be 8-12 digits"
+            }
+        
+        # Query database
+        db = SessionLocal()
+        record = db.query(DeliveryReport).filter(
+            cast(DeliveryReport.dn_no, String) == dn_clean
+        ).first()
+        db.close()
+        
+        if not record:
+            logger.warning(f"❌ DN {dn_clean} not found in database")
+            return {
+                "error": f"DN {dn_clean} not found",
+                "dn_number": dn_clean,
+                "found": False
+            }
+        
+        # Build dict with all fields
+        data = {
+            "found": True,
+            "dn_number": record.dn_no,
+            "customer_name": record.customer_name,
+            "dealer_code": record.dealer_code,
+            "customer_code": record.customer_code,
+            "warehouse": record.warehouse,
+            "ship_to_city": record.ship_to_city,
+            "sales_office": record.sales_office,
+            "sales_manager": record.sales_manager,
+            "division": record.division,
+            "customer_model": record.customer_model,
+            "material_no": record.material_no,
+            "dn_qty": record.dn_qty,
+            "dn_amount": record.dn_amount,
+            "dn_create_date": str(record.dn_create_date) if record.dn_create_date else None,
+            "good_issue_date": str(record.good_issue_date) if record.good_issue_date else None,
+            "pod_date": str(record.pod_date) if record.pod_date else None,
+            "delivery_status": record.delivery_status,
+            "pgi_status": record.pgi_status,
+            "pod_status": record.pod_status,
+            "pending_flag": record.pending_flag,
+        }
+        
+        logger.info(f"✅ DN {dn_clean} found with {len(data)} fields")
+        return data
+        
+    except Exception as e:
+        logger.error(f"❌ Debug DN error for {dn_number}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {
+            "error": str(e),
+            "dn_number": dn_number,
+            "found": False,
+            "traceback": traceback.format_exc()
+        }
+
+# ==========================================================
+# END OF BLOCK 17.5
+# ==========================================================
+
+
     
     
     # END OF BLOCK 17
