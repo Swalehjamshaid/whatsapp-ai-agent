@@ -24,6 +24,7 @@ from app.models import DeliveryReport
 from app.database import SessionLocal, check_database_connection
 
 # ==========================================================
+# ==========================================================
 # BLOCK 2: LAZY IMPORTS (FIXED v4.0 - WITH AI CHECK)
 # ==========================================================
 
@@ -44,7 +45,7 @@ def _get_analytics_service():
         
         logger.info("✅ Analytics service imported successfully")
         
-        # Get service instance
+        # Get service instance - THIS SHOULD RETURN THE REAL SERVICE
         service = get_analytics_service()
         
         if service is None:
@@ -56,7 +57,7 @@ def _get_analytics_service():
                 logger.info("✅ AnalyticsService created manually")
             except Exception as e:
                 logger.error(f"❌ Manual creation failed: {e}")
-                return None, None
+                return _create_fallback_analytics(), None
         
         # Log service type for debugging
         logger.info(f"📊 Service type: {type(service)}")
@@ -82,13 +83,26 @@ def _get_analytics_service():
                 missing.append(method)
                 logger.error(f"   ❌ {method}: MISSING")
         
+        # LOG WHAT SERVICE WE'RE USING
+        if hasattr(service, 'repo'):
+            logger.info("📊 Service has 'repo' attribute - using real AnalyticsService")
+        else:
+            logger.warning("⚠️ Service is likely fallback - checking methods...")
+        
         if missing:
             logger.error(f"❌ Missing {len(missing)} methods: {missing}")
-            # ✅ FIX: Don't return None - use fallback
+            # FIX: Don't return None - use fallback
             logger.warning("⚠️ Creating fallback analytics service...")
             return _create_fallback_analytics(), AnalyticsResponse
         
         logger.info("✅ All required methods available")
+        
+        # Check if service is the real one or fallback
+        if hasattr(service, 'repo') and hasattr(service, 'get_dn_dashboard'):
+            logger.info("✅ Using REAL analytics service")
+        else:
+            logger.warning("⚠️ Using fallback analytics service - data may be limited")
+        
         return service, AnalyticsResponse
         
     except ImportError as e:
@@ -220,6 +234,9 @@ def _create_fallback_analytics():
     
     return FallbackAnalytics()
 
+# ==========================================================
+# END OF BLOCK 2 - FIXED v4.0
+# ==========================================================
 # ==========================================================
 # END OF BLOCK 2 - FIXED v4.0
 # ==========================================================
@@ -968,6 +985,10 @@ ENTITY_PATTERNS = {
 # ==========================================================
 # BLOCK 10: MAIN AI ROUTER (FIXED v5.0 - NO CRASH)
 # ==========================================================
+# ==========================================================
+# ==========================================================
+# BLOCK 10: MAIN AI ROUTER (FIXED v5.0 - NO CRASH)
+# ==========================================================
 
 class AIOrchestrator:
     def __init__(self, session_factory: Optional[Callable[[], Session]] = None):
@@ -993,7 +1014,7 @@ class AIOrchestrator:
         }
 
         # ==========================================================
-        # ✅ WHATSAPP TOKEN VALIDATION ON STARTUP
+        # WHATSAPP TOKEN VALIDATION ON STARTUP
         # ==========================================================
         try:
             from app.config import config
@@ -1015,13 +1036,13 @@ class AIOrchestrator:
         logger.info("AI Router v28.0 - Initializing...")
         logger.info("=" * 70)
         
-        # ✅ Initialize analytics - don't crash on failure
+        # Initialize analytics - don't crash on failure
         try:
             self._init_analytics()
         except Exception as e:
             logger.error(f"❌ Analytics init failed: {e}")
         
-        # ✅ Verify methods - don't crash on failure
+        # Verify methods - don't crash on failure
         try:
             self._verify_analytics_methods()
         except Exception as e:
@@ -1044,6 +1065,15 @@ class AIOrchestrator:
                 
                 if self._analytics is not None:
                     logger.info(f"✅ Analytics service initialized on attempt {attempt + 1}")
+                    # Verify the service is real, not fallback
+                    if hasattr(self._analytics, 'get_dealer_dashboard'):
+                        logger.info("✅ Dealer dashboard method available")
+                    else:
+                        logger.warning("⚠️ Dealer dashboard method missing - using fallback")
+                    if hasattr(self._analytics, 'get_dn_dashboard'):
+                        logger.info("✅ DN dashboard method available")
+                    else:
+                        logger.warning("⚠️ DN dashboard method missing - using fallback")
                     return
                 else:
                     logger.warning(f"⚠️ Analytics service None on attempt {attempt + 1}")
@@ -1112,6 +1142,8 @@ class AIOrchestrator:
             self._resolver = PostgreSQLResolver(self.session_factory)
         return self._resolver
 
+# ==========================================================
+# END OF BLOCK 10
 # ==========================================================
 # BLOCK 11: INTENT DETECTION (FIXED v5.0)
 # ==========================================================
@@ -1666,8 +1698,8 @@ class AIOrchestrator:
 
 
 # BLOCK 17: ROUTE HANDLERS (COMPLETE - FIXED)
-
-    # BLOCK 17: ROUTE HANDLERS (COMPLETE - FIXED v10.0)
+# ==========================================================
+# BLOCK 17: ROUTE HANDLERS (COMPLETE - FIXED)
 # ==========================================================
 
     def _validate_response(self, response, service_name: str, req_id: str) -> Tuple[bool, str, Optional[Dict]]:
@@ -1883,32 +1915,51 @@ class AIOrchestrator:
             # STEP 2: Get dashboard (try 360 first, fallback to legacy)
             # ==========================================================
             response = None
+            data = None
             
             # Try 360 dashboard
             if hasattr(self.analytics, 'get_dealer_360_dashboard'):
                 logger.info(f"[{req_id}] 📊 Using 360 dashboard")
                 response = self.analytics.get_dealer_360_dashboard(dealer_name)
-            elif hasattr(self.analytics, 'get_dealer_dashboard'):
-                logger.info(f"[{req_id}] 📊 Using legacy dashboard")
-                response = self.analytics.get_dealer_dashboard(dealer_name)
-            else:
-                logger.error(f"[{req_id}] ❌ No dealer dashboard method available")
-                return "⚠️ Service temporarily unavailable. Please try again later."
+                logger.info(f"[{req_id}] 📊 Response type: {type(response)}")
+                
+                # Check if response is AnalyticsResponse or dict
+                if hasattr(response, 'success') and response.success:
+                    data = response.data if hasattr(response, 'data') else {}
+                    logger.info(f"[{req_id}] 📊 360 dashboard returned successfully")
+                elif isinstance(response, dict) and not response.get('error'):
+                    data = response
+                    logger.info(f"[{req_id}] 📊 360 dashboard returned as dict")
+                else:
+                    logger.warning(f"[{req_id}] ⚠️ 360 dashboard failed, falling back to legacy")
+                    response = None
             
-            logger.info(f"[{req_id}] 📊 Response type: {type(response)}")
+            # Fallback to legacy
+            if response is None or (hasattr(response, 'success') and not response.success):
+                if hasattr(self.analytics, 'get_dealer_dashboard'):
+                    logger.info(f"[{req_id}] 📊 Using legacy dashboard")
+                    response = self.analytics.get_dealer_dashboard(dealer_name)
+                    if hasattr(response, 'success') and response.success:
+                        data = response.data if hasattr(response, 'data') else {}
+                    elif isinstance(response, dict) and not response.get('error'):
+                        data = response
+                else:
+                    logger.error(f"[{req_id}] ❌ No dealer dashboard method available")
+                    return "⚠️ Service temporarily unavailable. Please try again later."
             
             # ==========================================================
             # STEP 3: Validate response
             # ==========================================================
-            is_valid, error_msg, data = self._validate_response(response, "Dealer Dashboard", req_id)
-            
-            if not is_valid:
-                if data and isinstance(data, dict) and "suggestions" in data:
+            if not data or (isinstance(data, dict) and data.get('error')):
+                error_msg = data.get('error', 'Unknown error') if isinstance(data, dict) else 'No data'
+                logger.error(f"[{req_id}] ❌ No data received: {error_msg}")
+                
+                # Check for suggestions
+                if isinstance(data, dict) and "suggestions" in data:
                     suggestions = data.get("suggestions", [])
                     if suggestions:
                         return f"❌ Dealer '{original_dealer_name}' not found.\n\n💡 Did you mean:\n" + "\n".join([f"• {s}" for s in suggestions[:3]])
                 
-                logger.error(f"[{req_id}] ❌ Validation failed: {error_msg}")
                 return f"❌ Unable to retrieve data for '{original_dealer_name}'.\n\n{error_msg}"
             
             # ==========================================================
@@ -1916,15 +1967,28 @@ class AIOrchestrator:
             # ==========================================================
             logger.info(f"[{req_id}] ✅ Valid data received, formatting...")
             
-            if data and isinstance(data, dict) and data.get('_dashboard_type') == '360':
-                from app.services.dealer_analytics_service import format_dealer_360_dashboard
-                result = format_dealer_360_dashboard(data)
+            # Check if it's a 360 dashboard
+            if isinstance(data, dict) and data.get('_dashboard_type') == '360':
+                try:
+                    from app.services.dealer_analytics_service import format_dealer_360_dashboard
+                    result = format_dealer_360_dashboard(data)
+                except ImportError as e:
+                    logger.error(f"[{req_id}] ❌ Import error: {e}")
+                    # Fallback to legacy formatter
+                    result = self._format_dealer_dashboard(data, dealer_name)
             else:
+                # Use the formatter method
                 result = self._format_dealer_dashboard(data, dealer_name)
             
             elapsed = time.time() - start_time
             logger.info(f"[{req_id}] ✅ Dealer dashboard returned in {elapsed:.3f}s")
             return result
+            
+        except AttributeError as e:
+            logger.error(f"[{req_id}] ❌ AttributeError: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return f"❌ Error retrieving dealer data: {str(e)}"
             
         except Exception as e:
             logger.error(f"[{req_id}] ❌ Dealer dashboard error: {e}")
@@ -2207,6 +2271,9 @@ class AIOrchestrator:
 # ==========================================================
 # END OF BLOCK 17
 # ==========================================================
+
+# END OF BLOCK 17
+# ==========================================================
 # ==========================================================
 # BLOCK 17.5: DEBUG HELPER (NEW)
 # ==========================================================
@@ -2444,10 +2511,14 @@ def debug_dn_data(dn_number: str) -> Dict[str, Any]:
             logger.error(traceback.format_exc())
             return f"❌ Unable to format DN details for {dn_number}: {str(e)}"
 
+    # ==========================================================
+    # ADD THIS MISSING METHOD - _format_dealer_dashboard
+    # ==========================================================
+
     def _format_dealer_dashboard(self, data: Dict, dealer_name: str) -> str:
         """
         Format dealer dashboard - Safe handling WITH DISTANCE.
-        BLOCK 18-22 - UPDATED WITH DISTANCE
+        BLOCK 18-22 - ADDED
         """
         try:
             if not data:
@@ -2481,7 +2552,7 @@ def debug_dn_data(dn_number: str) -> Dict[str, Any]:
                 revenue = 0
             
             # ==========================================================
-            # GET DISTANCE INFORMATION (NEW)
+            # GET DISTANCE INFORMATION
             # ==========================================================
             distance_km = data.get('distance_km')
             distance_hours = data.get('distance_approx_hours')
@@ -2500,7 +2571,7 @@ def debug_dn_data(dn_number: str) -> Dict[str, Any]:
             ]
             
             # ==========================================================
-            # ADD DISTANCE SECTION IF AVAILABLE (NEW)
+            # ADD DISTANCE SECTION IF AVAILABLE
             # ==========================================================
             if distance_km:
                 lines.append("")
@@ -2553,9 +2624,12 @@ def debug_dn_data(dn_number: str) -> Dict[str, Any]:
             ])
             
             return self._truncate_response("\n".join(lines))
+            
         except Exception as e:
             logger.error(f"Dealer format error: {e}")
-            return f"❌ Unable to format dealer data for {dealer_name}"
+            import traceback
+            logger.error(traceback.format_exc())
+            return f"❌ Unable to format dealer data for {dealer_name}: {str(e)}"
 
     def _format_warehouse_dashboard(self, data: Dict, warehouse_name: str) -> str:
         """
@@ -2960,6 +3034,8 @@ Pending: {pending}"""
             logger.error(f"Aging format error: {e}")
             return "❌ Unable to format aging data"
 
+# ==========================================================
+# END OF BLOCK 18-22 - FORMATTERS
 # ==========================================================
 # END OF BLOCK 18-22 - FORMATTERS
 # ==========================================================
