@@ -1,8 +1,8 @@
 # ==========================================================
-# FILE: app/services/analytics_service.py (v29.0 - PRODUCTION)
+# FILE: app/services/analytics_service.py (v30.0 - PRODUCTION)
 # ==========================================================
 # PURPOSE: PRIMARY ANALYTICS ENGINE - PostgreSQL Only
-# VERSION: 29.0 - Complete Production Analytics Engine
+# VERSION: 30.0 - Complete Production Analytics Engine
 # ==========================================================
 
 from typing import Optional, Dict, Any, List, Tuple
@@ -126,10 +126,6 @@ class DatabaseHealthChecker:
             logger.error(f"Table stats error: {e}")
             return {"error": str(e), "status": "unhealthy"}
 
-
-# ==========================================================
-# BLOCK 5: DATE VALIDATION ENGINE (FIXED)
-# ==========================================================
 # ==========================================================
 # BLOCK 5: DATE VALIDATION ENGINE (PRODUCTION FIX v38.0)
 # ==========================================================
@@ -156,143 +152,54 @@ class DateValidator:
     1. Try YYYY-DD-MM first (business format)
     2. If month > 12, auto-swap to YYYY-MM-DD (ISO format)
     3. This handles both formats automatically
-    
-    Examples:
-    2026-04-05 → 04-May-2026 (Day 4, Month 5) ✓
-    2026-06-05 → 06-May-2026 (Day 6, Month 5) ✓
-    2026-19-05 → 19-May-2026 (Day 19, Month 5) ✓
-    2026-05-19 → 19-May-2026 (Auto-swapped) ✓
-    
-    SCENARIO MATRIX:
-    ================
-    1: Create+PGI+POD → Complete ✓ (SCENARIO_1_COMPLETE)
-    2: Create+PGI, No POD → Pending POD (SCENARIO_2_POD_PENDING)
-    3: Create Only → Pending PGI (SCENARIO_3_PGI_PENDING)
-    4: POD, No PGI → Invalid (SCENARIO_4_POD_WITHOUT_PGI)
-    5: POD < PGI → Invalid (SCENARIO_5_POD_BEFORE_PGI)
     """
-    
-    # ==========================================================
-    # CORE PARSING - INTELLIGENT FORMAT DETECTION
-    # ==========================================================
     
     @staticmethod
     @lru_cache(maxsize=1024)
     def parse_business_date(raw_value: Any) -> Optional[datetime]:
-        """
-        INTELLIGENT DATE PARSER - Handles both formats.
-        
-        ALWAYS returns a valid date if possible.
-        Auto-detects and swaps day/month if needed.
-        
-        FORMAT LOGIC:
-        -------------
-        1. Try YYYY-DD-MM (Day in position 2, Month in position 3)
-        2. If invalid, try YYYY-MM-DD (Month in position 2, Day in position 3)
-        3. If still invalid, try other common formats
-        """
+        """Parse date using INTELLIGENT format detection."""
         if raw_value is None:
             return None
         
-        # Handle datetime input
         if isinstance(raw_value, datetime):
             return raw_value
         
-        # Convert to string
         raw_str = str(raw_value).strip()
         if not raw_str:
             return None
         
-        # ==========================================================
-        # STEP 1: Parse the components
-        # ==========================================================
         try:
-            # Split by "-"
             parts = raw_str.split("-")
-            
-            # Must have exactly 3 parts
             if len(parts) != 3:
                 logger.warning(f"⚠️ Invalid date format (expected 3 parts): {raw_str}")
                 return None
             
-            # Extract components
-            year = int(parts[0])   # Position 1 = YEAR
-            pos2 = int(parts[1])   # Position 2 = Could be DAY or MONTH
-            pos3 = int(parts[2])   # Position 3 = Could be MONTH or DAY
+            year = int(parts[0])
+            pos2 = int(parts[1])
+            pos3 = int(parts[2])
             
-            # Validate year
             if not (1900 <= year <= 2100):
                 logger.warning(f"⚠️ Year out of range: {year}")
                 return None
             
-            # ==========================================================
-            # STEP 2: Try YYYY-DD-MM (Business Format - Priority)
-            # ==========================================================
-            # Position 2 = DAY, Position 3 = MONTH
+            # Try YYYY-DD-MM first
             if 1 <= pos3 <= 12 and 1 <= pos2 <= 31:
                 try:
-                    result = datetime(year, pos3, pos2)  # year, month, day
+                    result = datetime(year, pos3, pos2)
                     logger.debug(f"✅ Parsed as YYYY-DD-MM: {raw_str} → {result.strftime('%d-%b-%Y')}")
                     return result
                 except ValueError:
-                    pass  # Invalid date, try next format
+                    pass
             
-            # ==========================================================
-            # STEP 3: Try YYYY-MM-DD (ISO Format - Auto-swap)
-            # ==========================================================
-            # Position 2 = MONTH, Position 3 = DAY
+            # Try YYYY-MM-DD (auto-swap)
             if 1 <= pos2 <= 12 and 1 <= pos3 <= 31:
                 try:
-                    result = datetime(year, pos2, pos3)  # year, month, day
+                    result = datetime(year, pos2, pos3)
                     logger.debug(f"✅ Parsed as YYYY-MM-DD (auto-swapped): {raw_str} → {result.strftime('%d-%b-%Y')}")
                     return result
                 except ValueError:
-                    pass  # Invalid date
-            
-            # ==========================================================
-            # STEP 4: Try with pos2 as day, pos3 as month (last attempt)
-            # ==========================================================
-            if 1 <= pos3 <= 12 and 1 <= pos2 <= 31:
-                try:
-                    # Check if day is valid for the month
-                    # Create a date to validate
-                    test_date = datetime(year, pos3, 1)
-                    max_day = (test_date.replace(month=test_date.month % 12 + 1, day=1) - timedelta(days=1)).day
-                    if pos2 <= max_day:
-                        result = datetime(year, pos3, pos2)
-                        logger.debug(f"✅ Parsed as YYYY-DD-MM (validated): {raw_str} → {result.strftime('%d-%b-%Y')}")
-                        return result
-                except ValueError:
                     pass
             
-            # ==========================================================
-            # STEP 5: Try other common formats
-            # ==========================================================
-            # Try DD-MMM-YYYY (already formatted)
-            try:
-                result = datetime.strptime(raw_str, "%d-%b-%Y")
-                logger.debug(f"✅ Parsed as DD-MMM-YYYY: {raw_str} → {result.strftime('%d-%b-%Y')}")
-                return result
-            except ValueError:
-                pass
-            
-            # Try DD/MM/YYYY
-            try:
-                parts = raw_str.split("/")
-                if len(parts) == 3:
-                    day = int(parts[0])
-                    month = int(parts[1])
-                    year = int(parts[2])
-                    if 1 <= month <= 12 and 1 <= day <= 31:
-                        result = datetime(year, month, day)
-                        logger.debug(f"✅ Parsed as DD/MM/YYYY: {raw_str} → {result.strftime('%d-%b-%Y')}")
-                        return result
-            except:
-                pass
-            
-            # ==========================================================
-            # STEP 6: All formats failed
-            # ==========================================================
             logger.error(f"❌ Date parsing error: {raw_str} - All formats failed")
             return None
             
@@ -300,18 +207,10 @@ class DateValidator:
             logger.error(f"❌ Date parsing error: {raw_str} - {e}")
             return None
     
-    # ==========================================================
-    # BACKWARD COMPATIBILITY
-    # ==========================================================
-    
     @staticmethod
     def interpret_business_date(raw_date: Optional[datetime]) -> Optional[datetime]:
         """Alias for parse_business_date."""
         return DateValidator.parse_business_date(raw_date)
-    
-    # ==========================================================
-    # SEQUENCE VALIDATION - ALL 5 SCENARIOS
-    # ==========================================================
     
     @staticmethod
     def validate_date_sequence(
@@ -319,55 +218,39 @@ class DateValidator:
         pgi_date: Optional[datetime],
         pod_date: Optional[datetime]
     ) -> Tuple[bool, List[str], str]:
-        """
-        Validate chronological order with all 5 scenarios.
-        
-        Returns:
-            (is_valid, issues, scenario_code)
-        """
+        """Validate chronological order with all 5 scenarios."""
         issues = []
         
-        # Parse dates first (intelligent parsing)
         create_date = DateValidator.parse_business_date(create_date)
         pgi_date = DateValidator.parse_business_date(pgi_date)
         pod_date = DateValidator.parse_business_date(pod_date)
         
-        # Determine existence
         create_exists = create_date is not None
         pgi_exists = pgi_date is not None
         pod_exists = pod_date is not None
         
-        # ==========================================================
         # SCENARIO 4: POD Exists, PGI Missing
-        # ==========================================================
         if pod_exists and not pgi_exists:
             issues.append("⚠️ POD Received without PGI Completion")
             logger.warning(f"SCENARIO_4: POD exists but PGI missing")
             return False, issues, "SCENARIO_4_POD_WITHOUT_PGI"
         
-        # ==========================================================
         # SCENARIO 5: POD < PGI
-        # ==========================================================
         if pod_exists and pgi_exists and pod_date < pgi_date:
             issues.append(f"⚠️ POD ({pod_date.strftime('%d-%b-%Y')}) occurs before PGI ({pgi_date.strftime('%d-%b-%Y')})")
             logger.warning(f"SCENARIO_5: POD before PGI")
             return False, issues, "SCENARIO_5_POD_BEFORE_PGI"
         
-        # ==========================================================
         # VALID SCENARIOS 1, 2, 3
-        # ==========================================================
         if create_exists:
-            # Check: PGI >= Create
             if pgi_exists and pgi_date < create_date:
                 issues.append(f"⚠️ PGI ({pgi_date.strftime('%d-%b-%Y')}) before Create ({create_date.strftime('%d-%b-%Y')})")
                 return False, issues, "INVALID_PGI_BEFORE_CREATE"
             
-            # Check: POD >= Create
             if pod_exists and pod_date < create_date:
                 issues.append(f"⚠️ POD ({pod_date.strftime('%d-%b-%Y')}) before Create ({create_date.strftime('%d-%b-%Y')})")
                 return False, issues, "INVALID_POD_BEFORE_CREATE"
         
-        # Determine valid scenario
         if create_exists and pgi_exists and pod_exists:
             scenario = "SCENARIO_1_COMPLETE"
         elif create_exists and pgi_exists and not pod_exists:
@@ -380,32 +263,14 @@ class DateValidator:
         
         return True, issues, scenario
     
-    # ==========================================================
-    # AGING CALCULATION - ALWAYS CALCULATE
-    # ==========================================================
-    
     @staticmethod
     def calculate_aging(
         create_date: Optional[datetime],
         pgi_date: Optional[datetime],
         pod_date: Optional[datetime]
     ) -> Dict[str, Any]:
-        """
-        Calculate aging - ALWAYS calculate values.
-        Mark invalid scenarios but still show calculated values.
+        """Calculate aging - ALWAYS calculate values."""
         
-        PRODUCTION RULES:
-        =================
-        1. Always calculate delivery aging
-        2. Always calculate POD aging
-        3. Always calculate total cycle
-        4. Mark invalid scenarios but show values
-        5. Never return N/A for valid dates
-        """
-        
-        # ==========================================================
-        # STEP 1: Parse Dates (Intelligent Parsing)
-        # ==========================================================
         create_date = DateValidator.parse_business_date(create_date)
         pgi_date = DateValidator.parse_business_date(pgi_date)
         pod_date = DateValidator.parse_business_date(pod_date)
@@ -416,9 +281,6 @@ class DateValidator:
         
         today = datetime.now().date()
         
-        # ==========================================================
-        # STEP 2: Initialize Result
-        # ==========================================================
         result = {
             "delivery_aging": None,
             "pod_aging": None,
@@ -433,77 +295,48 @@ class DateValidator:
             "pod_received": False,
             "delivery_completed": False,
             "scenario": "UNKNOWN",
-            "_debug": {
-                "create_exists": create_exists,
-                "pgi_exists": pgi_exists,
-                "pod_exists": pod_exists,
-                "create_date": create_date.strftime('%d-%b-%Y') if create_date else None,
-                "pgi_date": pgi_date.strftime('%d-%b-%Y') if pgi_date else None,
-                "pod_date": pod_date.strftime('%d-%b-%Y') if pod_date else None,
-            }
         }
         
-        # ==========================================================
-        # STEP 3: ALWAYS Calculate Aging
-        # ==========================================================
-        
-        # ---- DELIVERY AGING ----
+        # Calculate Delivery Aging
         if create_exists and pgi_exists:
             delivery_aging = max(0, (pgi_date.date() - create_date.date()).days)
             result["delivery_aging"] = delivery_aging
             result["delivery_aging_text"] = DateValidator._format_aging(delivery_aging)
             result["pgi_completed"] = True
-            logger.info(f"   ✅ Delivery Aging: {delivery_aging} days")
         elif create_exists and not pgi_exists:
             delivery_aging = max(0, (today - create_date.date()).days)
             result["delivery_aging"] = delivery_aging
             result["delivery_aging_text"] = f"{DateValidator._format_aging(delivery_aging)} (Pending PGI)"
-            logger.info(f"   ⏳ Delivery Aging: {delivery_aging} days (Pending PGI)")
-        else:
-            logger.warning("   ⚠️ Cannot calculate delivery aging - Missing create date")
         
-        # ---- POD AGING ----
+        # Calculate POD Aging
         if pgi_exists and pod_exists:
             pod_aging = max(0, (pod_date.date() - pgi_date.date()).days)
             result["pod_aging"] = pod_aging
             result["pod_aging_text"] = DateValidator._format_aging(pod_aging)
             result["pod_received"] = True
-            logger.info(f"   ✅ POD Aging: {pod_aging} days")
         elif pgi_exists and not pod_exists:
             pod_aging = max(0, (today - pgi_date.date()).days)
             result["pod_aging"] = pod_aging
             result["pod_aging_text"] = f"{DateValidator._format_aging(pod_aging)} (Pending POD)"
-            logger.info(f"   ⏳ POD Aging: {pod_aging} days (Pending POD)")
         elif create_exists and pod_exists and not pgi_exists:
-            # POD exists but PGI missing - Scenario 4
             pod_aging = max(0, (pod_date.date() - create_date.date()).days)
             result["pod_aging"] = pod_aging
             result["pod_aging_text"] = f"{DateValidator._format_aging(pod_aging)} (No PGI)"
             result["pod_received"] = True
-            logger.info(f"   ⚠️ POD Aging: {pod_aging} days (No PGI)")
-        else:
-            logger.warning("   ⚠️ Cannot calculate POD aging - Missing required dates")
         
-        # ---- TOTAL CYCLE ----
+        # Calculate Total Cycle
         if create_exists and pod_exists:
             total_cycle = max(0, (pod_date.date() - create_date.date()).days)
             result["total_cycle"] = total_cycle
             result["total_cycle_text"] = DateValidator._format_aging(total_cycle)
             result["delivery_completed"] = True
-            logger.info(f"   ✅ Total Cycle: {total_cycle} days")
         elif create_exists and not pod_exists:
             if pgi_exists:
-                # POD pending
                 result["total_cycle_text"] = "In Progress (POD Pending)"
             else:
                 result["total_cycle_text"] = "In Progress (PGI Pending)"
-            logger.info("   ⏳ Total Cycle: In Progress")
-        else:
-            logger.warning("   ⚠️ Cannot calculate total cycle - Missing create date")
         
-        # ==========================================================
-        # STEP 4: Validate Scenarios
-        # ==========================================================
+        # Validate Scenarios
         is_valid, issues, scenario = DateValidator.validate_date_sequence(
             create_date, pgi_date, pod_date
         )
@@ -513,40 +346,16 @@ class DateValidator:
         result["scenario"] = scenario
         result["status"] = "valid" if is_valid else "invalid"
         
-        # Special handling for specific scenarios
         if scenario == "SCENARIO_5_POD_BEFORE_PGI":
             issues.append(f"⚠️ POD occurs before PGI - Data quality issue")
-            # Keep calculated values but mark as invalid
         
-        # ==========================================================
-        # STEP 5: Log Complete Results
-        # ==========================================================
-        logger.info(f"📊 === Aging Calculation Complete ===")
-        logger.info(f"   Scenario: {scenario}")
-        logger.info(f"   Valid: {is_valid}")
-        logger.info(f"   Delivery Aging: {result['delivery_aging_text']}")
-        logger.info(f"   POD Aging: {result['pod_aging_text']}")
-        logger.info(f"   Total Cycle: {result['total_cycle_text']}")
-        if issues:
-            logger.info(f"   Issues: {issues}")
-        logger.info(f"   =================================")
+        logger.info(f"📊 Aging: {scenario} | Delivery: {result['delivery_aging_text']} | POD: {result['pod_aging_text']} | Total: {result['total_cycle_text']}")
         
         return result
     
-    # ==========================================================
-    # AGING FORMATTER
-    # ==========================================================
-    
     @staticmethod
     def _format_aging(days: int) -> str:
-        """
-        Format aging for display.
-        
-        Examples:
-        0 → "Same Day"
-        1 → "1 Day"
-        5 → "5 Days"
-        """
+        """Format aging for display."""
         if days is None:
             return "N/A"
         if days == 0:
@@ -556,20 +365,9 @@ class DateValidator:
         else:
             return f"{days} Days"
     
-    # ==========================================================
-    # DASHBOARD COMPATIBILITY VALIDATOR
-    # ==========================================================
-    
     @staticmethod
     def validate_dashboard_compatibility(result: Dict[str, Any]) -> bool:
-        """
-        Validate result is compatible with all dashboards.
-        
-        CRITICAL CHECKS:
-        1. All required fields exist
-        2. No contradictory states
-        3. Valid aging values
-        """
+        """Validate result is compatible with all dashboards."""
         required_fields = [
             "delivery_aging", "pod_aging", "total_cycle",
             "delivery_aging_text", "pod_aging_text", "total_cycle_text",
@@ -577,13 +375,11 @@ class DateValidator:
             "delivery_completed", "scenario"
         ]
         
-        # Check all required fields exist
         for field in required_fields:
             if field not in result:
                 logger.error(f"❌ Missing required field: {field}")
                 return False
         
-        # Check for contradictory states
         if result["pod_received"]:
             if "(Pending)" in result["pod_aging_text"]:
                 logger.error(f"❌ Contradiction: POD received but aging shows Pending")
@@ -595,41 +391,8 @@ class DateValidator:
                 logger.error(f"❌ Contradiction: POD received but scenario is {result['scenario']}")
                 return False
         
-        # Check for invalid aging values
-        if result["delivery_aging"] is not None and result["delivery_aging"] < 0:
-            logger.error(f"❌ Negative delivery aging: {result['delivery_aging']}")
-            return False
-        
-        if result["pod_aging"] is not None and result["pod_aging"] < 0:
-            logger.error(f"❌ Negative POD aging: {result['pod_aging']}")
-            return False
-        
-        if result["total_cycle"] is not None and result["total_cycle"] < 0:
-            logger.error(f"❌ Negative total cycle: {result['total_cycle']}")
-            return False
-        
         return True
-    
-    # ==========================================================
-    # HELPER: Format Date for Display
-    # ==========================================================
-    
-    @staticmethod
-    def format_date_for_display(date_obj: Optional[datetime]) -> str:
-        """
-        Format date for display in business format.
-        
-        Examples:
-        2026-05-04 → "04-May-2026"
-        2026-05-06 → "06-May-2026"
-        2026-05-19 → "19-May-2026"
-        """
-        if date_obj is None:
-            return "N/A"
-        return date_obj.strftime("%d-%b-%Y")
 
-# ==========================================================
-# END OF BLOCK 5 - v38.0 PRODUCTION READY
 # ==========================================================
 # BLOCK 6: KPI ENGINE
 # ==========================================================
@@ -751,7 +514,6 @@ class SearchEngine:
                     DeliveryReport.customer_name.ilike(f"%{query_clean}%")
                 ).limit(SEARCH_LIMIT).all()
             
-            # If no results and not exact, try token-based
             if not results and not exact:
                 tokens = query_clean.split()
                 for token in tokens:
@@ -1009,9 +771,7 @@ class SearchEngine:
             return False
 
 # ==========================================================
-# BLOCK 8: ENTITY RESOLVER
-# ==========================================================
-# BLOCK 8: ENTITY RESOLVER (FIXED - v2.0)
+# BLOCK 8: ENTITY RESOLVER (FIXED - v3.0)
 # ==========================================================
 
 class EntityResolver:
@@ -1021,18 +781,7 @@ class EntityResolver:
         self.db = db
     
     def resolve_dealer(self, dealer_input: str) -> Optional[str]:
-        """
-        Resolve dealer name using PostgreSQL only.
-        
-        IMPROVED MATCHING STRATEGIES:
-        1. Exact match (case-insensitive)
-        2. ILIKE match (contains)
-        3. Token-based matching (word by word)
-        4. Fuzzy matching with LOWER threshold (0.3)
-        5. Partial word matching
-        6. Common word removal
-        7. First word matching
-        """
+        """Resolve dealer name using PostgreSQL with 8 strategies."""
         if not dealer_input or not dealer_input.strip():
             return None
         
@@ -1040,9 +789,7 @@ class EntityResolver:
         start_time = time.time()
         
         try:
-            # ==========================================================
-            # STRATEGY 1: Exact match (case-insensitive)
-            # ==========================================================
+            # STRATEGY 1: Exact match
             result = self.db.query(DeliveryReport.customer_name).filter(
                 func.lower(DeliveryReport.customer_name) == func.lower(dealer_input)
             ).first()
@@ -1050,9 +797,7 @@ class EntityResolver:
                 logger.info(f"✅ Dealer resolved (exact): {result[0]} in {time.time() - start_time:.3f}s")
                 return result[0]
             
-            # ==========================================================
-            # STRATEGY 2: ILIKE match (contains)
-            # ==========================================================
+            # STRATEGY 2: ILIKE match
             result = self.db.query(DeliveryReport.customer_name).filter(
                 DeliveryReport.customer_name.ilike(f"%{dealer_input}%")
             ).first()
@@ -1060,9 +805,7 @@ class EntityResolver:
                 logger.info(f"✅ Dealer resolved (ILIKE): {result[0]} in {time.time() - start_time:.3f}s")
                 return result[0]
             
-            # ==========================================================
             # STRATEGY 3: Token-based matching
-            # ==========================================================
             tokens = dealer_input.split()
             for token in tokens:
                 if len(token) > 2:
@@ -1073,10 +816,7 @@ class EntityResolver:
                         logger.info(f"✅ Dealer resolved (token '{token}'): {result[0]} in {time.time() - start_time:.3f}s")
                         return result[0]
             
-            # ==========================================================
-            # STRATEGY 4: Fuzzy matching with LOWER threshold
-            # ==========================================================
-            # Get all dealers from database
+            # STRATEGY 4: Fuzzy matching with LOWER threshold (0.3)
             dealers = self.db.query(
                 func.distinct(DeliveryReport.customer_name)
             ).filter(
@@ -1096,36 +836,33 @@ class EntityResolver:
                 dealer_lower = dealer_name.lower()
                 dealer_tokens = set(dealer_lower.split())
                 
-                # Calculate multiple similarity scores
                 scores = []
                 
-                # 1. Token overlap score
+                # Token overlap score
                 if dealer_input_tokens and dealer_tokens:
                     overlap = len(dealer_input_tokens & dealer_tokens)
                     token_score = overlap / max(len(dealer_input_tokens), len(dealer_tokens))
                     scores.append(token_score)
                 
-                # 2. Character overlap score
+                # Character overlap score
                 char_overlap = len(set(dealer_input_lower) & set(dealer_lower))
                 char_score = char_overlap / max(len(dealer_input_lower), len(dealer_lower))
                 scores.append(char_score)
                 
-                # 3. Contains score (if one contains the other)
+                # Contains score
                 if dealer_input_lower in dealer_lower or dealer_lower in dealer_input_lower:
                     scores.append(0.8)
                 
-                # 4. Word match score
+                # Word match score
                 for token in dealer_input_tokens:
                     if len(token) > 2 and token in dealer_lower:
                         scores.append(0.7)
                 
-                # Take the best score
                 if scores:
                     score = max(scores)
                 else:
                     score = 0
                 
-                # LOWER THRESHOLD: 0.3 (was 0.6)
                 if score > best_score and score > 0.3:
                     best_score = score
                     best_match = dealer_name
@@ -1134,12 +871,9 @@ class EntityResolver:
                 logger.info(f"✅ Dealer resolved (fuzzy, score={best_score:.2f}): {best_match} in {time.time() - start_time:.3f}s")
                 return best_match
             
-            # ==========================================================
-            # STRATEGY 5: Partial word matching with word boundaries
-            # ==========================================================
+            # STRATEGY 5: Partial word matching
             for token in tokens:
                 if len(token) > 2:
-                    # Try to find dealer containing this token as a word
                     results = self.db.query(
                         func.distinct(DeliveryReport.customer_name)
                     ).filter(
@@ -1154,9 +888,7 @@ class EntityResolver:
                         logger.info(f"✅ Dealer resolved (partial word '{token}'): {results[0][0]} in {time.time() - start_time:.3f}s")
                         return results[0][0]
             
-            # ==========================================================
-            # STRATEGY 6: Remove common words and try again
-            # ==========================================================
+            # STRATEGY 6: Remove common words
             common_words = ['electronics', 'trading', 'company', 'enterprises', 'store', 'shop', 'sons', 'brothers', 'ltd', 'pvt', 'limited', 'and']
             cleaned_input = dealer_input.lower()
             for word in common_words:
@@ -1170,9 +902,7 @@ class EntityResolver:
                     logger.info(f"✅ Dealer resolved (cleaned '{cleaned_input}'): {result[0]} in {time.time() - start_time:.3f}s")
                     return result[0]
             
-            # ==========================================================
-            # STRATEGY 7: Try with first word only
-            # ==========================================================
+            # STRATEGY 7: First word only
             first_word = tokens[0] if tokens else ""
             if len(first_word) > 2:
                 result = self.db.query(DeliveryReport.customer_name).filter(
@@ -1182,12 +912,9 @@ class EntityResolver:
                     logger.info(f"✅ Dealer resolved (first word '{first_word}'): {result[0]} in {time.time() - start_time:.3f}s")
                     return result[0]
             
-            # ==========================================================
-            # STRATEGY 8: Try with each token individually (last resort)
-            # ==========================================================
+            # STRATEGY 8: Substring matching
             for token in tokens:
                 if len(token) > 2:
-                    # Try to find dealer where token is a substring
                     results = self.db.query(
                         func.distinct(DeliveryReport.customer_name)
                     ).filter(
@@ -1195,13 +922,9 @@ class EntityResolver:
                     ).limit(10).all()
                     
                     if results:
-                        # Return the first match
                         logger.info(f"✅ Dealer resolved (substring '{token}'): {results[0][0]} in {time.time() - start_time:.3f}s")
                         return results[0][0]
             
-            # ==========================================================
-            # No match found
-            # ==========================================================
             logger.warning(f"❌ Dealer not found: '{dealer_input}' after all strategies")
             return None
             
@@ -1335,12 +1058,7 @@ class EntityResolver:
             return None
 
 # ==========================================================
-# END OF BLOCK 8
-# ==========================================================
-
-# ==========================================================
-# ==========================================================
-# BLOCK 9: ANALYTICS REPOSITORY
+# BLOCK 9: ANALYTICS REPOSITORY (FIXED WITH VALIDATION)
 # ==========================================================
 
 class AnalyticsRepository:
@@ -1351,17 +1069,58 @@ class AnalyticsRepository:
         self._owned_db = db is None
         self.resolver = EntityResolver(self.db)
         self.search = SearchEngine(self.db)
-        logger.info("✅ AnalyticsRepository initialized with PostgreSQL")
+        
+        # ==========================================================
+        # STARTUP VALIDATION - Verify all methods exist
+        # ==========================================================
+        required_methods = [
+            "get_dealer_dashboard",
+            "get_warehouse_dashboard",
+            "get_city_dashboard",
+            "get_product_dashboard",
+            "get_pgi_dashboard",
+            "get_pod_dashboard",
+            "get_delivery_dashboard",
+            "get_executive_dashboard",
+            "get_control_tower_dashboard",
+            "get_revenue_dashboard",
+            "get_ranking_dashboard",
+            "get_aging_dashboard",
+            "get_dn_dashboard"
+        ]
+        
+        missing_methods = []
+        for method in required_methods:
+            if not hasattr(self, method):
+                missing_methods.append(method)
+                logger.error(f"❌ Missing method: {method}")
+        
+        if missing_methods:
+            logger.error(f"❌ Missing {len(missing_methods)} required methods: {missing_methods}")
+            raise AttributeError(f"Missing methods: {missing_methods}")
+        
+        logger.info("✅ AnalyticsRepository initialized with all required methods")
+        logger.info("   - get_dealer_dashboard: AVAILABLE")
+        logger.info("   - get_warehouse_dashboard: AVAILABLE")
+        logger.info("   - get_city_dashboard: AVAILABLE")
+        logger.info("   - get_product_dashboard: AVAILABLE")
+        logger.info("   - get_pgi_dashboard: AVAILABLE")
+        logger.info("   - get_pod_dashboard: AVAILABLE")
+        logger.info("   - get_delivery_dashboard: AVAILABLE")
+        logger.info("   - get_dn_dashboard: AVAILABLE")
+        logger.info("   - get_executive_dashboard: AVAILABLE")
+        logger.info("   - get_control_tower_dashboard: AVAILABLE")
+        logger.info("   - get_revenue_dashboard: AVAILABLE")
+        logger.info("   - get_ranking_dashboard: AVAILABLE")
+        logger.info("   - get_aging_dashboard: AVAILABLE")
     
     def close(self):
         if self._owned_db and self.db:
             self.db.close()
-    
-    # ==========================================================
-    # BLOCK 10: DN DASHBOARD
-      # ==========================================================
-    # BLOCK 10: DN DASHBOARD (FIXED)
-    # ==========================================================
+
+# ==========================================================
+# BLOCK 10: DN DASHBOARD (FIXED)
+# ==========================================================
 
     def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
         """Complete DN dashboard with production logging and validation."""
@@ -1371,7 +1130,6 @@ class AnalyticsRepository:
                 logger.error(f"❌ DN {dn_no} not found in database")
                 return {"error": f"DN {dn_no} not found"}
             
-            # Query the record
             try:
                 record = self.db.query(DeliveryReport).filter(
                     cast(DeliveryReport.dn_no, String) == normalized
@@ -1384,7 +1142,6 @@ class AnalyticsRepository:
                 logger.error(f"❌ DN {normalized} not found in database")
                 return {"error": f"DN {dn_no} not found"}
             
-            # ✅ Calculate aging with error handling
             try:
                 aging_result = DateValidator.calculate_aging(
                     record.dn_create_date,
@@ -1395,7 +1152,6 @@ class AnalyticsRepository:
                 logger.error(f"❌ Date calculation failed for DN {normalized}: {e}")
                 import traceback
                 logger.error(traceback.format_exc())
-                # Return partial data with error in aging
                 aging_result = {
                     "delivery_aging": None,
                     "pod_aging": None,
@@ -1411,9 +1167,6 @@ class AnalyticsRepository:
                     "delivery_completed": False
                 }
             
-            # ==========================================================
-            # PRODUCTION LOGGING - DN NUMBER AND VALUES
-            # ==========================================================
             logger.info(f"📊 DN {normalized}:")
             logger.info(f"   Create: {record.dn_create_date}")
             logger.info(f"   PGI: {record.good_issue_date}")
@@ -1424,20 +1177,12 @@ class AnalyticsRepository:
             logger.info(f"   Total Cycle: {aging_result.get('total_cycle_text')}")
             logger.info(f"   pod_received: {aging_result.get('pod_received')}")
             
-            # ==========================================================
-            # PRODUCTION VALIDATION
-            # ==========================================================
             try:
                 if not DateValidator.validate_dashboard_compatibility(aging_result):
                     logger.error(f"❌ Dashboard compatibility validation failed for DN {normalized}")
-                    # Continue but log error - don't crash production
             except Exception as e:
                 logger.error(f"❌ Validation error for DN {normalized}: {e}")
-                # Continue - don't crash
             
-            # ==========================================================
-            # BUILD RESPONSE
-            # ==========================================================
             response = {
                 "dn_number": record.dn_no,
                 "customer_name": record.customer_name,
@@ -1459,8 +1204,6 @@ class AnalyticsRepository:
                 "pgi_status": record.pgi_status,
                 "pod_status": record.pod_status,
                 "pending_flag": record.pending_flag,
-                
-                # ✅ CORRECT AGING FIELDS - PASS THROUGH WITHOUT MODIFICATION
                 "delivery_aging": aging_result.get("delivery_aging"),
                 "pod_aging": aging_result.get("pod_aging"),
                 "total_cycle": aging_result.get("total_cycle"),
@@ -1475,24 +1218,6 @@ class AnalyticsRepository:
                 "delivery_completed": aging_result.get("delivery_completed"),
             }
             
-            # ==========================================================
-            # FINAL VALIDATION BEFORE RETURN (with error handling)
-            # ==========================================================
-            try:
-                if response.get("pod_received"):
-                    if "(Pending)" in response.get("pod_aging_text", ""):
-                        logger.error(f"❌ CRITICAL: DN {normalized} - POD received but aging shows Pending")
-                        response["issues"].append("Data inconsistency: POD received but aging shows Pending")
-                    if response.get("total_cycle_text") == "In Progress":
-                        logger.error(f"❌ CRITICAL: DN {normalized} - POD received but Total Cycle is In Progress")
-                        response["issues"].append("Data inconsistency: POD received but Total Cycle is In Progress")
-                    if response.get("scenario") != "SCENARIO_1_COMPLETE":
-                        logger.error(f"❌ CRITICAL: DN {normalized} - Wrong scenario: {response['scenario']}")
-                        response["issues"].append(f"Data inconsistency: Wrong scenario: {response['scenario']}")
-            except Exception as e:
-                logger.error(f"❌ Final validation error for DN {normalized}: {e}")
-                # Don't crash - return what we have
-            
             logger.info(f"✅ DN {normalized} dashboard built successfully")
             return response
             
@@ -1501,24 +1226,15 @@ class AnalyticsRepository:
             import traceback
             logger.error(traceback.format_exc())
             return {"error": f"Failed to load DN {dn_no}: {str(e)[:100]}"}
-        # ==========================================================
 
- # ==========================================================
-# BLOCK 11: DEALER DASHBOARD (FIXED)
 # ==========================================================
-# BLOCK 11: DEALER DASHBOARD (PRODUCTION-GRADE v3.0 - FIXED)
+# BLOCK 11: DEALER DASHBOARD (PRODUCTION-GRADE v4.0 - FIXED)
 # ==========================================================
 
     def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         """
         Complete dealer dashboard from PostgreSQL with improved error handling.
-        BLOCK 11 - FIXED v3.0
-        
-        Args:
-            dealer_name: Name of the dealer to get dashboard for
-        
-        Returns:
-            Dict containing dealer dashboard data or error
+        BLOCK 11 - FIXED v4.0
         """
         import time
         start_time = time.time()
@@ -1526,18 +1242,11 @@ class AnalyticsRepository:
         try:
             logger.info(f"🔍 Searching for dealer: '{dealer_name}'")
             
-            # ==========================================================
-            # STEP 1: Resolve dealer with detailed logging
-            # ==========================================================
             resolved = self.resolver.resolve_dealer(dealer_name)
             
             if not resolved:
-                # ==========================================================
-                # STEP 2: Try to find similar dealers for suggestions
-                # ==========================================================
                 logger.warning(f"❌ Dealer '{dealer_name}' not found")
                 
-                # Try to find similar dealers using search
                 try:
                     similar = self.search.search_dealer(dealer_name, exact=False)
                     if similar and len(similar) > 0:
@@ -1558,14 +1267,8 @@ class AnalyticsRepository:
                     "hint": "Example: Try 'Baz' instead of 'Baz Electronics'"
                 }
             
-            # ==========================================================
-            # STEP 3: Log resolution result
-            # ==========================================================
             logger.info(f"✅ Dealer resolved: '{resolved}'")
             
-            # ==========================================================
-            # STEP 4: Query dealer data
-            # ==========================================================
             query_start = time.time()
             
             try:
@@ -1603,9 +1306,6 @@ class AnalyticsRepository:
                     "message": "Please try again later"
                 }
             
-            # ==========================================================
-            # STEP 5: Check if data exists
-            # ==========================================================
             if not result or result.total_dns == 0:
                 logger.warning(f"⚠️ No data found for dealer '{resolved}'")
                 return {
@@ -1614,9 +1314,6 @@ class AnalyticsRepository:
                     "hint": "Try another dealer name"
                 }
             
-            # ==========================================================
-            # STEP 6: Calculate KPIs
-            # ==========================================================
             total_dns = result.total_dns or 1
             delivered_dns = result.delivered_dns or 0
             transit_dns = result.transit_dns or 0
@@ -1632,9 +1329,6 @@ class AnalyticsRepository:
                 0
             )
             
-            # ==========================================================
-            # STEP 7: Build Response
-            # ==========================================================
             response = {
                 "dealer_name": resolved,
                 "dealer_code": result.dealer_code or "",
@@ -1680,22 +1374,25 @@ class AnalyticsRepository:
             }
 
 # ==========================================================
-# END OF BLOCK 11 - DEALER DASHBOARD
+# BLOCK 12: WAREHOUSE DASHBOARD (FIXED)
 # ==========================================================
 
-
-
-
-# ==========================================================
-# ==========================================================
-    # BLOCK 12: WAREHOUSE DASHBOARD
-    # ==========================================================
-    
     def get_warehouse_dashboard(self, warehouse_name: str) -> Dict[str, Any]:
-        """Complete warehouse dashboard from PostgreSQL"""
+        """Complete warehouse dashboard from PostgreSQL with suggestions."""
         try:
+            logger.info(f"🔍 Searching for warehouse: '{warehouse_name}'")
             resolved = self.resolver.resolve_warehouse(warehouse_name)
+            
             if not resolved:
+                logger.warning(f"❌ Warehouse '{warehouse_name}' not found")
+                similar = self.search.search_warehouse(warehouse_name)
+                if similar:
+                    suggestions = [s['warehouse'] for s in similar[:5]]
+                    return {
+                        "error": f"Warehouse '{warehouse_name}' not found",
+                        "suggestions": suggestions,
+                        "message": f"Did you mean: {', '.join(suggestions[:3])}?"
+                    }
                 return {"error": f"Warehouse '{warehouse_name}' not found"}
             
             result = self.db.query(
@@ -1738,16 +1435,27 @@ class AnalyticsRepository:
         except Exception as e:
             logger.error(f"Get warehouse dashboard failed: {e}")
             return {"error": str(e)}
-    
-    # ==========================================================
-    # BLOCK 13: CITY DASHBOARD
-    # ==========================================================
-    
+
+# ==========================================================
+# BLOCK 13: CITY DASHBOARD (FIXED)
+# ==========================================================
+
     def get_city_dashboard(self, city_name: str) -> Dict[str, Any]:
-        """Complete city dashboard from PostgreSQL"""
+        """Complete city dashboard from PostgreSQL with suggestions."""
         try:
+            logger.info(f"🔍 Searching for city: '{city_name}'")
             resolved = self.resolver.resolve_city(city_name)
+            
             if not resolved:
+                logger.warning(f"❌ City '{city_name}' not found")
+                similar = self.search.search_city(city_name)
+                if similar:
+                    suggestions = [s['city'] for s in similar[:5]]
+                    return {
+                        "error": f"City '{city_name}' not found",
+                        "suggestions": suggestions,
+                        "message": f"Did you mean: {', '.join(suggestions[:3])}?"
+                    }
                 return {"error": f"City '{city_name}' not found"}
             
             result = self.db.query(
@@ -1786,16 +1494,27 @@ class AnalyticsRepository:
         except Exception as e:
             logger.error(f"Get city dashboard failed: {e}")
             return {"error": str(e)}
-    
-    # ==========================================================
-    # BLOCK 14: PRODUCT DASHBOARD
-    # ==========================================================
-    
+
+# ==========================================================
+# BLOCK 14: PRODUCT DASHBOARD (FIXED)
+# ==========================================================
+
     def get_product_dashboard(self, product_name: str) -> Dict[str, Any]:
-        """Complete product dashboard from PostgreSQL"""
+        """Complete product dashboard from PostgreSQL with suggestions."""
         try:
+            logger.info(f"🔍 Searching for product: '{product_name}'")
             resolved = self.resolver.resolve_product(product_name)
+            
             if not resolved:
+                logger.warning(f"❌ Product '{product_name}' not found")
+                similar = self.search.search_product(product_name)
+                if similar:
+                    suggestions = [s['product'] for s in similar[:5]]
+                    return {
+                        "error": f"Product '{product_name}' not found",
+                        "suggestions": suggestions,
+                        "message": f"Did you mean: {', '.join(suggestions[:3])}?"
+                    }
                 return {"error": f"Product '{product_name}' not found"}
             
             result = self.db.query(
@@ -1836,11 +1555,11 @@ class AnalyticsRepository:
         except Exception as e:
             logger.error(f"Get product dashboard failed: {e}")
             return {"error": str(e)}
-    
-    # ==========================================================
-    # BLOCK 15: PGI DASHBOARD
-    # ==========================================================
-    
+
+# ==========================================================
+# BLOCK 15: PGI DASHBOARD
+# ==========================================================
+
     def get_pgi_dashboard(self) -> Dict[str, Any]:
         """PGI dashboard from PostgreSQL"""
         try:
@@ -1866,11 +1585,11 @@ class AnalyticsRepository:
         except Exception as e:
             logger.error(f"Get PGI dashboard failed: {e}")
             return {"error": str(e)}
-    
-    # ==========================================================
-    # BLOCK 16: POD DASHBOARD
-    # ==========================================================
-    
+
+# ==========================================================
+# BLOCK 16: POD DASHBOARD
+# ==========================================================
+
     def get_pod_dashboard(self) -> Dict[str, Any]:
         """POD dashboard from PostgreSQL"""
         try:
@@ -1896,11 +1615,11 @@ class AnalyticsRepository:
         except Exception as e:
             logger.error(f"Get POD dashboard failed: {e}")
             return {"error": str(e)}
-    
-    # ==========================================================
-    # BLOCK 17: DELIVERY DASHBOARD
-    # ==========================================================
-    
+
+# ==========================================================
+# BLOCK 17: DELIVERY DASHBOARD
+# ==========================================================
+
     def get_delivery_dashboard(self) -> Dict[str, Any]:
         """Delivery dashboard from PostgreSQL"""
         try:
@@ -1929,11 +1648,11 @@ class AnalyticsRepository:
         except Exception as e:
             logger.error(f"Get delivery dashboard failed: {e}")
             return {"error": str(e)}
-    
-    # ==========================================================
-    # BLOCK 18: EXECUTIVE DASHBOARD
-    # ==========================================================
-    
+
+# ==========================================================
+# BLOCK 18: EXECUTIVE DASHBOARD
+# ==========================================================
+
     def get_executive_dashboard(self) -> Dict[str, Any]:
         """Executive dashboard from PostgreSQL"""
         try:
@@ -1966,11 +1685,11 @@ class AnalyticsRepository:
         except Exception as e:
             logger.error(f"Get executive dashboard failed: {e}")
             return {"error": str(e)}
-    
-    # ==========================================================
-    # BLOCK 19: CONTROL TOWER DASHBOARD
-    # ==========================================================
-    
+
+# ==========================================================
+# BLOCK 19: CONTROL TOWER DASHBOARD
+# ==========================================================
+
     def get_control_tower_dashboard(self) -> Dict[str, Any]:
         """Control tower dashboard from PostgreSQL"""
         try:
@@ -2021,11 +1740,11 @@ class AnalyticsRepository:
         except Exception as e:
             logger.error(f"Get control tower dashboard failed: {e}")
             return {"error": str(e)}
-    
-    # ==========================================================
-    # BLOCK 20: REVENUE DASHBOARD
-    # ==========================================================
-    
+
+# ==========================================================
+# BLOCK 20: REVENUE DASHBOARD
+# ==========================================================
+
     def get_revenue_dashboard(self) -> Dict[str, Any]:
         """Revenue dashboard from PostgreSQL"""
         try:
@@ -2062,11 +1781,11 @@ class AnalyticsRepository:
         except Exception as e:
             logger.error(f"Get revenue dashboard failed: {e}")
             return {"error": str(e)}
-    
-    # ==========================================================
-    # BLOCK 21: RANKING DASHBOARD
-    # ==========================================================
-    
+
+# ==========================================================
+# BLOCK 21: RANKING DASHBOARD
+# ==========================================================
+
     def get_ranking_dashboard(self, limit: int = 10) -> Dict[str, Any]:
         """Dealer ranking from PostgreSQL"""
         try:
@@ -2099,11 +1818,11 @@ class AnalyticsRepository:
         except Exception as e:
             logger.error(f"Get ranking dashboard failed: {e}")
             return {"error": str(e)}
-    
-    # ==========================================================
-    # BLOCK 22: AGING DASHBOARD
-    # ==========================================================
-    
+
+# ==========================================================
+# BLOCK 22: AGING DASHBOARD
+# ==========================================================
+
     def get_aging_dashboard(self) -> Dict[str, Any]:
         """Aging dashboard from PostgreSQL"""
         try:
@@ -2128,11 +1847,11 @@ class AnalyticsRepository:
         except Exception as e:
             logger.error(f"Get aging dashboard failed: {e}")
             return {"error": str(e)}
-    
-    # ==========================================================
-    # BLOCK 23: FOLLOW-UP SUPPORT
-    # ==========================================================
-    
+
+# ==========================================================
+# BLOCK 23: FOLLOW-UP SUPPORT
+# ==========================================================
+
     def get_followup_data(self, context: Dict[str, Any], question: str) -> Dict[str, Any]:
         """Handle follow-up questions using context"""
         try:
@@ -2144,7 +1863,6 @@ class AnalyticsRepository:
             
             question_lower = question.lower()
             
-            # Revenue follow-up
             if any(word in question_lower for word in ["revenue", "amount", "value", "worth"]):
                 if last_intent == "dealer_dashboard":
                     return self.get_dealer_dashboard(last_entity)
@@ -2157,7 +1875,6 @@ class AnalyticsRepository:
                 elif last_intent == "dn_dashboard":
                     return self.get_dn_dashboard(last_entity)
             
-            # POD follow-up
             if any(word in question_lower for word in ["pod", "proof of delivery"]):
                 if last_intent == "dealer_dashboard":
                     return self.get_dealer_dashboard(last_entity)
@@ -2166,7 +1883,6 @@ class AnalyticsRepository:
                 elif last_intent == "warehouse_dashboard":
                     return self.get_warehouse_dashboard(last_entity)
             
-            # PGI follow-up
             if any(word in question_lower for word in ["pgi", "goods issue"]):
                 if last_intent == "dealer_dashboard":
                     return self.get_dealer_dashboard(last_entity)
@@ -2175,7 +1891,6 @@ class AnalyticsRepository:
                 elif last_intent == "warehouse_dashboard":
                     return self.get_warehouse_dashboard(last_entity)
             
-            # Units follow-up
             if any(word in question_lower for word in ["units", "quantity", "qty", "pieces"]):
                 if last_intent == "dealer_dashboard":
                     return self.get_dealer_dashboard(last_entity)
@@ -2184,7 +1899,6 @@ class AnalyticsRepository:
                 elif last_intent == "warehouse_dashboard":
                     return self.get_warehouse_dashboard(last_entity)
             
-            # DN count follow-up
             if any(word in question_lower for word in ["dn", "delivery note", "order"]):
                 if last_intent == "dealer_dashboard":
                     return self.get_dealer_dashboard(last_entity)
@@ -2193,33 +1907,28 @@ class AnalyticsRepository:
                 elif last_intent == "city_dashboard":
                     return self.get_city_dashboard(last_entity)
             
-            # Products follow-up
             if any(word in question_lower for word in ["products", "product", "models"]):
                 if last_intent == "dealer_dashboard":
                     return {"message": "Product list for this dealer is available"}
                 elif last_intent == "city_dashboard":
                     return {"message": "Product list for this city is available"}
             
-            # Ranking follow-up
             if any(word in question_lower for word in ["rank", "ranking", "top", "best"]):
                 if last_intent == "dealer_dashboard":
                     return self.get_ranking_dashboard(10)
             
-            # Aging follow-up
             if any(word in question_lower for word in ["aging", "old", "delay", "overdue"]):
                 if last_intent == "dealer_dashboard":
                     return self.get_aging_dashboard()
                 elif last_intent == "dn_dashboard":
                     return self.get_dn_dashboard(last_entity)
             
-            # Pending follow-up
             if any(word in question_lower for word in ["pending", "not completed", "waiting"]):
                 if last_intent == "dealer_dashboard":
                     return self.get_dealer_dashboard(last_entity)
                 elif last_intent == "warehouse_dashboard":
                     return self.get_warehouse_dashboard(last_entity)
             
-            # Performance follow-up
             if any(word in question_lower for word in ["performance", "status", "health"]):
                 if last_intent == "dealer_dashboard":
                     return self.get_dealer_dashboard(last_entity)
@@ -2250,15 +1959,15 @@ class AnalyticsService:
             "cache_hits": 0,
             "cache_misses": 0
         }
-        logger.info("✅ AnalyticsService v29.0 initialized - PostgreSQL Only")
+        logger.info("✅ AnalyticsService v30.0 initialized - PostgreSQL Only")
     
     def close(self):
         self.repo.close()
-    
-    # ==========================================================
-    # BLOCK 25: SEARCH METHODS
-    # ==========================================================
-    
+
+# ==========================================================
+# BLOCK 25: SEARCH METHODS
+# ==========================================================
+
     def search_dn(self, query: str, exact: bool = False) -> AnalyticsResponse:
         try:
             self.metrics["total_requests"] += 1
@@ -2346,11 +2055,11 @@ class AnalyticsService:
             self.metrics["failed_requests"] += 1
             logger.error(f"Sales manager search failed: {e}")
             return AnalyticsResponse(success=False, error=str(e))
-    
-    # ==========================================================
-    # BLOCK 26: VERIFICATION METHODS
-    # ==========================================================
-    
+
+# ==========================================================
+# BLOCK 26: VERIFICATION METHODS
+# ==========================================================
+
     def verify_dn_exists(self, dn_no: str) -> AnalyticsResponse:
         try:
             self.metrics["total_requests"] += 1
@@ -2405,11 +2114,11 @@ class AnalyticsService:
             self.metrics["failed_requests"] += 1
             logger.error(f"Product verification failed: {e}")
             return AnalyticsResponse(success=False, error=str(e))
-    
-    # ==========================================================
-    # BLOCK 27: ENTITY RESOLUTION
-    # ==========================================================
-    
+
+# ==========================================================
+# BLOCK 27: ENTITY RESOLUTION
+# ==========================================================
+
     def resolve_dealer(self, dealer_name: str) -> Optional[str]:
         return self.repo.resolver.resolve_dealer(dealer_name)
     
@@ -2424,17 +2133,23 @@ class AnalyticsService:
     
     def resolve_dn(self, dn_no: str) -> Optional[str]:
         return self.repo.resolver.resolve_dn(dn_no)
-    
-    # ==========================================================
-    # BLOCK 28: DASHBOARD METHODS
-    # ==========================================================
-    
+
+# ==========================================================
+# BLOCK 28: DASHBOARD METHODS
+# ==========================================================
+
     def get_dealer_dashboard(self, dealer_name: str) -> AnalyticsResponse:
         try:
             self.metrics["total_requests"] += 1
             result = self.repo.get_dealer_dashboard(dealer_name)
             if "error" in result:
                 self.metrics["failed_requests"] += 1
+                if "suggestions" in result:
+                    return AnalyticsResponse(
+                        success=False, 
+                        error=result["error"],
+                        data={"suggestions": result.get("suggestions", [])}
+                    )
                 return AnalyticsResponse(success=False, error=result["error"])
             self.metrics["successful_requests"] += 1
             return AnalyticsResponse(success=True, data=result)
@@ -2449,6 +2164,12 @@ class AnalyticsService:
             result = self.repo.get_warehouse_dashboard(warehouse_name)
             if "error" in result:
                 self.metrics["failed_requests"] += 1
+                if "suggestions" in result:
+                    return AnalyticsResponse(
+                        success=False, 
+                        error=result["error"],
+                        data={"suggestions": result.get("suggestions", [])}
+                    )
                 return AnalyticsResponse(success=False, error=result["error"])
             self.metrics["successful_requests"] += 1
             return AnalyticsResponse(success=True, data=result)
@@ -2463,6 +2184,12 @@ class AnalyticsService:
             result = self.repo.get_city_dashboard(city_name)
             if "error" in result:
                 self.metrics["failed_requests"] += 1
+                if "suggestions" in result:
+                    return AnalyticsResponse(
+                        success=False, 
+                        error=result["error"],
+                        data={"suggestions": result.get("suggestions", [])}
+                    )
                 return AnalyticsResponse(success=False, error=result["error"])
             self.metrics["successful_requests"] += 1
             return AnalyticsResponse(success=True, data=result)
@@ -2477,6 +2204,12 @@ class AnalyticsService:
             result = self.repo.get_product_dashboard(product_name)
             if "error" in result:
                 self.metrics["failed_requests"] += 1
+                if "suggestions" in result:
+                    return AnalyticsResponse(
+                        success=False, 
+                        error=result["error"],
+                        data={"suggestions": result.get("suggestions", [])}
+                    )
                 return AnalyticsResponse(success=False, error=result["error"])
             self.metrics["successful_requests"] += 1
             return AnalyticsResponse(success=True, data=result)
@@ -2610,11 +2343,11 @@ class AnalyticsService:
             self.metrics["failed_requests"] += 1
             logger.error(f"Get aging dashboard failed: {e}")
             return AnalyticsResponse(success=False, error=str(e))
-    
-    # ==========================================================
-    # BLOCK 29: FOLLOW-UP SUPPORT
-    # ==========================================================
-    
+
+# ==========================================================
+# BLOCK 29: FOLLOW-UP SUPPORT
+# ==========================================================
+
     def get_followup_data(self, context: Dict[str, Any], question: str) -> AnalyticsResponse:
         try:
             self.metrics["total_requests"] += 1
@@ -2659,5 +2392,5 @@ __all__ = [
 ]
 
 # ==========================================================
-# END OF FILE - v29.0 PRODUCTION READY
+# END OF FILE - v30.0 PRODUCTION READY
 # ==========================================================
