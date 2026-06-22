@@ -1863,6 +1863,9 @@ class AIOrchestrator:
 # ==========================================================
 # BLOCK 18-22: FORMATTERS (FIXED - Safe handling)
 # ==========================================================
+# ==========================================================
+# BLOCK 18-22: FORMATTERS (FIXED - Safe handling WITH DISTANCE)
+# ==========================================================
 
     def _format_dn_dashboard(self, data: Dict, dn_number: str) -> str:
         """Format DN dashboard - Safe handling of all fields."""
@@ -1951,7 +1954,10 @@ class AIOrchestrator:
             return f"❌ Unable to format DN details for {dn_number}"
 
     def _format_dealer_dashboard(self, data: Dict, dealer_name: str) -> str:
-        """Format dealer dashboard - Safe handling."""
+        """
+        Format dealer dashboard - Safe handling WITH DISTANCE.
+        BLOCK 18-22 - UPDATED WITH DISTANCE
+        """
         try:
             if not data:
                 return f"❌ No data available for dealer {dealer_name}"
@@ -1983,6 +1989,14 @@ class AIOrchestrator:
             if revenue is None:
                 revenue = 0
             
+            # ==========================================================
+            # GET DISTANCE INFORMATION (NEW)
+            # ==========================================================
+            distance_km = data.get('distance_km')
+            distance_hours = data.get('distance_approx_hours')
+            distance_miles = data.get('distance_miles')
+            distance_minutes = data.get('approx_driving_minutes')
+            
             lines = [
                 "🏢 *DEALER DASHBOARD*",
                 "",
@@ -1992,6 +2006,34 @@ class AIOrchestrator:
                 f"Division: {safe_get('division', 'N/A')}",
                 f"Warehouse: {safe_get('warehouse', 'N/A')}",
                 f"City: {safe_get('city', 'N/A')}",
+            ]
+            
+            # ==========================================================
+            # ADD DISTANCE SECTION IF AVAILABLE (NEW)
+            # ==========================================================
+            if distance_km:
+                lines.append("")
+                lines.append("📍 *Distance*")
+                lines.append(f"Warehouse → Dealer: {distance_km:.1f} km")
+                if distance_miles:
+                    lines.append(f"Warehouse → Dealer: {distance_miles:.1f} miles")
+                if distance_minutes:
+                    if distance_minutes < 60:
+                        lines.append(f"⏱️ Approx Driving: {distance_minutes} minutes")
+                    else:
+                        lines.append(f"⏱️ Approx Driving: {distance_minutes // 60}h {distance_minutes % 60}m")
+                elif distance_hours:
+                    if distance_hours < 1:
+                        lines.append(f"⏱️ Approx Driving: {int(distance_hours * 60)} minutes")
+                    else:
+                        hours = int(distance_hours)
+                        minutes = int((distance_hours - hours) * 60)
+                        if minutes > 0:
+                            lines.append(f"⏱️ Approx Driving: {hours}h {minutes}m")
+                        else:
+                            lines.append(f"⏱️ Approx Driving: {hours}h")
+            
+            lines.extend([
                 "",
                 "📊 *Metrics*",
                 f"Total DNs: {total_dns}",
@@ -2017,7 +2059,7 @@ class AIOrchestrator:
                 "",
                 f"📌 Products: {safe_get('product_count', 0)}",
                 f"📍 Cities: {safe_get('city_count', 0)}"
-            ]
+            ])
             
             return self._truncate_response("\n".join(lines))
         except Exception as e:
@@ -2025,7 +2067,10 @@ class AIOrchestrator:
             return f"❌ Unable to format dealer data for {dealer_name}"
 
     def _format_warehouse_dashboard(self, data: Dict, warehouse_name: str) -> str:
-        """Format warehouse dashboard - Safe handling."""
+        """
+        Format warehouse dashboard - Safe handling WITH DISTANCE COVERAGE.
+        BLOCK 18-22 - UPDATED WITH DISTANCE
+        """
         try:
             if not data:
                 return f"❌ No data available for warehouse {warehouse_name}"
@@ -2046,6 +2091,14 @@ class AIOrchestrator:
             if revenue is None:
                 revenue = 0
             
+            # ==========================================================
+            # GET DISTANCE COVERAGE INFORMATION (NEW)
+            # ==========================================================
+            avg_distance = data.get('avg_distance_km')
+            max_distance = data.get('max_distance_km')
+            min_distance = data.get('min_distance_km')
+            distance_info = data.get('distance_info', [])
+            
             lines = [
                 "🏭 *WAREHOUSE DASHBOARD*",
                 "",
@@ -2061,12 +2114,35 @@ class AIOrchestrator:
                 f"Total Dealers: {safe_get('total_dealers', 0)}",
                 f"Cities Served: {safe_get('cities_served', 0)}",
                 f"Product Count: {safe_get('product_count', 0)}",
+            ]
+            
+            # ==========================================================
+            # ADD DISTANCE COVERAGE SECTION IF AVAILABLE (NEW)
+            # ==========================================================
+            if avg_distance:
+                lines.append("")
+                lines.append("📍 *Distance Coverage*")
+                lines.append(f"Average Distance: {avg_distance:.1f} km")
+                if min_distance:
+                    lines.append(f"Closest City: {min_distance:.1f} km")
+                if max_distance:
+                    lines.append(f"Farthest City: {max_distance:.1f} km")
+                
+                if distance_info:
+                    lines.append("")
+                    lines.append("📌 *Top Cities by Distance*")
+                    for item in distance_info[:5]:
+                        city = item.get('city', 'Unknown')
+                        dist = item.get('distance_km', 0)
+                        lines.append(f"• {city}: {dist:.1f} km")
+            
+            lines.extend([
                 "",
                 "📦 *Delivery Status*",
                 f"Delivered: {delivered} ({delivery_rate}%)",
                 f"Pending: {pending}",
                 f"Pending POD: {safe_get('pending_pod_dns', 0)}"
-            ]
+            ])
             
             return self._truncate_response("\n".join(lines))
         except Exception as e:
@@ -2394,6 +2470,15 @@ Pending: {pending}"""
             return "❌ Unable to format aging data"
 
 # ==========================================================
+# END OF BLOCK 18-22 - FORMATTERS
+# ==========================================================
+    
+    
+    
+    
+    
+    
+    # ==========================================================
 # BLOCK 23: HELP MESSAGE
 # ==========================================================
 
