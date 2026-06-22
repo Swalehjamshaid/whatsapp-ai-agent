@@ -256,14 +256,30 @@ def test_database_connection() -> Dict[str, Any]:
 # ==========================================================
 # BLOCK 5: POSTGRESQL RESOLVER (FIXED v3.0)
 # ==========================================================
+# ==========================================================
+# BLOCK 5: POSTGRESQL RESOLVER (FIXED v4.0 - CONFIGURABLE)
+# ==========================================================
 
 class PostgreSQLResolver:
-    """Pure PostgreSQL-based entity resolution"""
+    """Pure PostgreSQL-based entity resolution with configurable thresholds"""
     
     def __init__(self, session_factory: Optional[Callable[[], Session]] = None):
         self.session_factory = session_factory
         self._cache = TTLCache(maxsize=2000, ttl=3600)
         self.DeliveryReport = DeliveryReport
+        
+        # Load configuration
+        try:
+            from app.core.config import settings
+            self.fuzzy_threshold = getattr(settings, 'FUZZY_MATCH_THRESHOLD', 0.3)
+            self.max_fuzzy_results = getattr(settings, 'MAX_FUZZY_RESULTS', 1000)
+        except ImportError:
+            # Fallback to defaults if config not available
+            self.fuzzy_threshold = 0.3
+            self.max_fuzzy_results = 1000
+            logger.warning("⚠️ Config not available, using default fuzzy threshold: 0.3")
+        
+        logger.info(f"✅ PostgreSQLResolver initialized with fuzzy threshold: {self.fuzzy_threshold}")
     
     def _get_session(self) -> Optional[Session]:
         if not self.session_factory:
@@ -276,7 +292,7 @@ class PostgreSQLResolver:
             return None
     
     def resolve_dealer(self, query: str) -> Optional[str]:
-        """Resolve dealer name with fuzzy threshold 0.3"""
+        """Resolve dealer name with configurable fuzzy threshold"""
         if not query or not query.strip():
             return None
         
@@ -300,7 +316,7 @@ class PostgreSQLResolver:
             return None
         
         try:
-            # Exact match
+            # STRATEGY 1: Exact match
             result = session.query(self.DeliveryReport.customer_name).filter(
                 func.lower(self.DeliveryReport.customer_name) == func.lower(query_clean)
             ).first()
@@ -309,7 +325,7 @@ class PostgreSQLResolver:
                 self._cache[cache_key] = resolved
                 return resolved
             
-            # ILIKE match
+            # STRATEGY 2: ILIKE match
             result = session.query(self.DeliveryReport.customer_name).filter(
                 self.DeliveryReport.customer_name.ilike(f"%{query_clean}%")
             ).first()
@@ -318,7 +334,7 @@ class PostgreSQLResolver:
                 self._cache[cache_key] = resolved
                 return resolved
             
-            # Token-based matching
+            # STRATEGY 3: Token-based matching
             tokens = query_clean.split()
             for token in tokens:
                 if len(token) > 2 and token.lower() not in ['the', 'and', 'for', 'with']:
@@ -330,13 +346,13 @@ class PostgreSQLResolver:
                         self._cache[cache_key] = resolved
                         return resolved
             
-            # Fuzzy matching with threshold 0.3
+            # STRATEGY 4: Fuzzy matching with configurable threshold
             dealers = session.query(
                 func.distinct(self.DeliveryReport.customer_name)
             ).filter(
                 self.DeliveryReport.customer_name.isnot(None),
                 self.DeliveryReport.customer_name != ''
-            ).limit(1000).all()
+            ).limit(self.max_fuzzy_results).all()
             
             best_match = None
             best_score = 0
@@ -352,18 +368,22 @@ class PostgreSQLResolver:
                 
                 scores = []
                 
+                # Token overlap score
                 if query_tokens and dealer_tokens:
                     overlap = len(query_tokens & dealer_tokens)
                     token_score = overlap / max(len(query_tokens), len(dealer_tokens))
                     scores.append(token_score)
                 
+                # Character overlap score
                 char_overlap = len(set(query_lower) & set(dealer_lower))
                 char_score = char_overlap / max(len(query_lower), len(dealer_lower))
                 scores.append(char_score)
                 
+                # Contains score
                 if query_lower in dealer_lower or dealer_lower in query_lower:
                     scores.append(0.8)
                 
+                # Word match score
                 for token in query_tokens:
                     if len(token) > 2 and token in dealer_lower:
                         scores.append(0.7)
@@ -373,7 +393,8 @@ class PostgreSQLResolver:
                 else:
                     score = 0
                 
-                if score > best_score and score > 0.3:
+                # Use configurable threshold
+                if score > best_score and score > self.fuzzy_threshold:
                     best_score = score
                     best_match = dealer_name
             
@@ -381,6 +402,25 @@ class PostgreSQLResolver:
                 self._cache[cache_key] = best_match
                 logger.info(f"✅ Dealer resolved (fuzzy, score={best_score:.2f}): {best_match}")
                 return best_match
+            
+            # STRATEGY 5: Partial word matching
+            for token in tokens:
+                if len(token) > 2:
+                    results = session.query(
+                        func.distinct(self.DeliveryReport.customer_name)
+                    ).filter(
+                        or_(
+                            self.DeliveryReport.customer_name.ilike(f"% {token} %"),
+                            self.DeliveryReport.customer_name.ilike(f"{token} %"),
+                            self.DeliveryReport.customer_name.ilike(f"% {token}")
+                        )
+                    ).limit(10).all()
+                    
+                    if results:
+                        resolved = results[0][0]
+                        self._cache[cache_key] = resolved
+                        logger.info(f"✅ Dealer resolved (partial word '{token}'): {resolved}")
+                        return resolved
             
             return None
             
@@ -575,6 +615,9 @@ class PostgreSQLResolver:
         finally:
             session.close()
 
+# ==========================================================
+# END OF BLOCK 5 - FIXED v4.0
+# ==========================================================
 # ==========================================================
 # BLOCK 6: CONVERSATION CONTEXT
 # ==========================================================
