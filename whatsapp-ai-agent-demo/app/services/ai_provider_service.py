@@ -24,7 +24,6 @@ from app.models import DeliveryReport
 from app.database import SessionLocal, check_database_connection
 
 # ==========================================================
-# ==========================================================
 # BLOCK 2: LAZY IMPORTS (FIXED v4.0 - WITH AI CHECK)
 # ==========================================================
 
@@ -45,7 +44,7 @@ def _get_analytics_service():
         
         logger.info("✅ Analytics service imported successfully")
         
-        # Get service instance - THIS SHOULD RETURN THE REAL SERVICE
+        # Get service instance
         service = get_analytics_service()
         
         if service is None:
@@ -82,12 +81,6 @@ def _get_analytics_service():
             else:
                 missing.append(method)
                 logger.error(f"   ❌ {method}: MISSING")
-        
-        # LOG WHAT SERVICE WE'RE USING
-        if hasattr(service, 'repo'):
-            logger.info("📊 Service has 'repo' attribute - using real AnalyticsService")
-        else:
-            logger.warning("⚠️ Service is likely fallback - checking methods...")
         
         if missing:
             logger.error(f"❌ Missing {len(missing)} methods: {missing}")
@@ -234,9 +227,6 @@ def _create_fallback_analytics():
     
     return FallbackAnalytics()
 
-# ==========================================================
-# END OF BLOCK 2 - FIXED v4.0
-# ==========================================================
 # ==========================================================
 # END OF BLOCK 2 - FIXED v4.0
 # ==========================================================
@@ -985,10 +975,6 @@ ENTITY_PATTERNS = {
 # ==========================================================
 # BLOCK 10: MAIN AI ROUTER (FIXED v5.0 - NO CRASH)
 # ==========================================================
-# ==========================================================
-# ==========================================================
-# BLOCK 10: MAIN AI ROUTER (FIXED v5.0 - NO CRASH)
-# ==========================================================
 
 class AIOrchestrator:
     def __init__(self, session_factory: Optional[Callable[[], Session]] = None):
@@ -1014,7 +1000,7 @@ class AIOrchestrator:
         }
 
         # ==========================================================
-        # WHATSAPP TOKEN VALIDATION ON STARTUP
+        # ✅ WHATSAPP TOKEN VALIDATION ON STARTUP
         # ==========================================================
         try:
             from app.config import config
@@ -1036,13 +1022,13 @@ class AIOrchestrator:
         logger.info("AI Router v28.0 - Initializing...")
         logger.info("=" * 70)
         
-        # Initialize analytics - don't crash on failure
+        # ✅ Initialize analytics - don't crash on failure
         try:
             self._init_analytics()
         except Exception as e:
             logger.error(f"❌ Analytics init failed: {e}")
         
-        # Verify methods - don't crash on failure
+        # ✅ Verify methods - don't crash on failure
         try:
             self._verify_analytics_methods()
         except Exception as e:
@@ -1142,8 +1128,6 @@ class AIOrchestrator:
             self._resolver = PostgreSQLResolver(self.session_factory)
         return self._resolver
 
-# ==========================================================
-# END OF BLOCK 10
 # ==========================================================
 # BLOCK 11: INTENT DETECTION (FIXED v5.0)
 # ==========================================================
@@ -1697,8 +1681,6 @@ class AIOrchestrator:
             return f"⚠️ Unable to load {intent.replace('_', ' ').title()}. Please try again."
 
 
-# BLOCK 17: ROUTE HANDLERS (COMPLETE - FIXED)
-# ==========================================================
 # BLOCK 17: ROUTE HANDLERS (COMPLETE - FIXED)
 # ==========================================================
 
@@ -2272,110 +2254,6 @@ class AIOrchestrator:
 # END OF BLOCK 17
 # ==========================================================
 
-# END OF BLOCK 17
-# ==========================================================
-# ==========================================================
-# BLOCK 17.5: DEBUG HELPER (NEW)
-# ==========================================================
-
-def debug_dn_data(dn_number: str) -> Dict[str, Any]:
-    """
-    Debug function to check DN data directly from database.
-    Use this to verify what data is actually available.
-    
-    Args:
-        dn_number: The DN number to look up
-        
-    Returns:
-        Dict with all DN data fields or error message
-        
-    Example:
-        >>> from app.services.ai_provider_service import debug_dn_data
-        >>> result = debug_dn_data("6243614941")
-        >>> print(result)
-    """
-    from app.database import SessionLocal
-    from app.models import DeliveryReport
-    from sqlalchemy import cast, String
-    from loguru import logger
-    
-    try:
-        logger.info(f"🔍 Debug lookup for DN: {dn_number}")
-        
-        # Clean DN number
-        dn_clean = re.sub(r'[^0-9]', '', str(dn_number).strip())
-        if len(dn_clean) < 8 or len(dn_clean) > 12:
-            return {
-                "error": f"Invalid DN format: {dn_number}",
-                "message": "DN numbers must be 8-12 digits"
-            }
-        
-        # Query database
-        db = SessionLocal()
-        record = db.query(DeliveryReport).filter(
-            cast(DeliveryReport.dn_no, String) == dn_clean
-        ).first()
-        db.close()
-        
-        if not record:
-            logger.warning(f"❌ DN {dn_clean} not found in database")
-            return {
-                "error": f"DN {dn_clean} not found",
-                "dn_number": dn_clean,
-                "found": False
-            }
-        
-        # Build dict with all fields
-        data = {
-            "found": True,
-            "dn_number": record.dn_no,
-            "customer_name": record.customer_name,
-            "dealer_code": record.dealer_code,
-            "customer_code": record.customer_code,
-            "warehouse": record.warehouse,
-            "ship_to_city": record.ship_to_city,
-            "sales_office": record.sales_office,
-            "sales_manager": record.sales_manager,
-            "division": record.division,
-            "customer_model": record.customer_model,
-            "material_no": record.material_no,
-            "dn_qty": record.dn_qty,
-            "dn_amount": record.dn_amount,
-            "dn_create_date": str(record.dn_create_date) if record.dn_create_date else None,
-            "good_issue_date": str(record.good_issue_date) if record.good_issue_date else None,
-            "pod_date": str(record.pod_date) if record.pod_date else None,
-            "delivery_status": record.delivery_status,
-            "pgi_status": record.pgi_status,
-            "pod_status": record.pod_status,
-            "pending_flag": record.pending_flag,
-        }
-        
-        logger.info(f"✅ DN {dn_clean} found with {len(data)} fields")
-        return data
-        
-    except Exception as e:
-        logger.error(f"❌ Debug DN error for {dn_number}: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return {
-            "error": str(e),
-            "dn_number": dn_number,
-            "found": False,
-            "traceback": traceback.format_exc()
-        }
-
-# ==========================================================
-# END OF BLOCK 17.5
-# ==========================================================
-
-
-    
-    
-    # END OF BLOCK 17
-# ==========================================================
-
-# BLOCK 18-22: FORMATTERS (FIXED - Safe handling WITH DISTANCE)
-# ==========================================================
 # BLOCK 18-22: FORMATTERS (FIXED - Safe handling WITH DISTANCE)
 # ==========================================================
 
@@ -3037,10 +2915,6 @@ Pending: {pending}"""
 # ==========================================================
 # END OF BLOCK 18-22 - FORMATTERS
 # ==========================================================
-# END OF BLOCK 18-22 - FORMATTERS
-# ==========================================================
-
-
 
 # ==========================================================
 # BLOCK 23: HELP MESSAGE
