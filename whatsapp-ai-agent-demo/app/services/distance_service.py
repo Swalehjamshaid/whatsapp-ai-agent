@@ -1,7 +1,7 @@
 # ==========================================================
 # FILE: app/services/distance_service.py
-# PURPOSE: Distance calculation using geopy - IMPROVED VERSION
-# VERSION: 2.0 - With City Mapping, Batch Processing & Enhanced Features
+# PURPOSE: Distance calculation using geopy + OpenRouteService
+# VERSION: 3.0 - WITH ROAD DISTANCE
 # ==========================================================
 
 from geopy.geocoders import Nominatim
@@ -12,18 +12,19 @@ from loguru import logger
 import time
 import os
 import re
+import requests
+import json
 
 class DistanceService:
     """
-    Distance calculation service using geopy.
+    Distance calculation service with ROAD DISTANCE support.
     
     Features:
-    - City name normalization (fixes spelling issues)
-    - Batch distance calculation for multiple dealers
+    - Road distance using OpenRouteService API (FREE)
+    - Fallback to air distance if API fails
+    - City name normalization
+    - Batch processing
     - Caching for performance
-    - Country context for better geocoding
-    - Multiple distance types (straight-line, driving estimate)
-    - Coverage analysis for warehouses
     """
     
     _instance = None
@@ -49,6 +50,13 @@ class DistanceService:
                 min_delay_seconds=1
             )
             self.cache = {}
+            
+            # ==========================================================
+            # OPENROUTESERVICE API - For road distance
+            # ==========================================================
+            # Get free API key from: https://openrouteservice.org/
+            self.ors_api_key = os.getenv("OPENROUTE_API_KEY", "")
+            self.ors_base_url = "https://api.openrouteservice.org/v2/directions/driving-car"
             
             # ==========================================================
             # CITY NAME MAPPING - Fixes spelling issues
@@ -99,7 +107,6 @@ class DistanceService:
                 "vehari": "Vehari",
                 "pakpattan": "Pakpattan",
                 "okara": "Okara",
-                "sahiwal": "Sahiwal",
                 "kasur": "Kasur",
                 "nankana sahib": "Nankana Sahib",
                 "hafizabad": "Hafizabad",
@@ -109,7 +116,7 @@ class DistanceService:
             }
             
             # ==========================================================
-            # PAKISTAN CITY COORDINATES - Fallback if geocoding fails
+            # FALLBACK COORDINATES - If geocoding fails
             # ==========================================================
             self.fallback_coords = {
                 "gilgit": (35.9189, 74.3123),
@@ -130,9 +137,16 @@ class DistanceService:
             }
             
             self._initialized = True
-            logger.info("✅ DistanceService initialized with city mapping")
+            logger.info("✅ DistanceService initialized")
             logger.info(f"📋 Loaded {len(self.city_mapping)} city name mappings")
             logger.info(f"📋 Loaded {len(self.fallback_coords)} fallback coordinates")
+            
+            if self.ors_api_key:
+                logger.info("✅ OpenRouteService API key configured - ROAD DISTANCE AVAILABLE")
+            else:
+                logger.warning("⚠️ No OpenRouteService API key - using air distance only")
+                logger.warning("   Get free API key: https://openrouteservice.org/")
+                
         except Exception as e:
             logger.error(f"❌ DistanceService initialization failed: {e}")
             self._initialized = False
@@ -151,22 +165,13 @@ class DistanceService:
         return normalized
     
     def get_coordinates(self, location: str) -> Optional[Tuple[float, float]]:
-        """
-        Get latitude and longitude for a location.
-        
-        Args:
-            location: Location name (e.g., "Rawalpindi, Pakistan")
-        
-        Returns:
-            Tuple of (latitude, longitude) or None
-        """
+        """Get latitude and longitude for a location."""
         if not location:
             return None
         
-        # Normalize city name
         location = self._normalize_city(location)
         
-        # Check cache first
+        # Check cache
         cache_key = location.lower().strip()
         if cache_key in self.cache:
             logger.debug(f"📍 Cache hit for: {location}")
@@ -182,7 +187,6 @@ class DistanceService:
         try:
             logger.info(f"🔍 Geocoding: {location}")
             
-            # Add country context for better results
             search_location = location
             if "pakistan" not in location.lower() and len(location.split()) < 3:
                 search_location = f"{location}, Pakistan"
@@ -203,9 +207,68 @@ class DistanceService:
             logger.error(f"❌ Geocoding error for {location}: {e}")
             return None
     
+    def get_road_distance(self, origin: str, destination: str) -> Optional[Dict[str, Any]]:
+        """
+        Get road distance using OpenRouteService API.
+        
+        Args:
+            origin: Origin location
+            destination: Destination location
+        
+        Returns:
+            Dict with distance, duration, or None if fails
+        """
+        if not self.ors_api_key:
+            logger.warning("⚠️ No OpenRouteService API key - cannot get road distance")
+            return None
+        
+        try:
+            # Get coordinates
+            origin_coords = self.get_coordinates(origin)
+            dest_coords = self.get_coordinates(destination)
+            
+            if not origin_coords or not dest_coords:
+                return None
+            
+            # OpenRouteService expects: longitude,latitude
+            origin_point = f"{origin_coords[1]},{origin_coords[0]}"
+            dest_point = f"{dest_coords[1]},{dest_coords[0]}"
+            
+            url = f"{self.ors_base_url}?api_key={self.ors_api_key}&start={origin_point}&end={dest_point}"
+            
+            logger.info(f"🚗 Getting road distance: {origin} → {destination}")
+            
+            response = requests.get(url, timeout=10)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if 'features' in data and len(data['features']) > 0:
+                    properties = data['features'][0]['properties']
+                    summary = properties.get('summary', {})
+                    
+                    distance_km = summary.get('distance', 0) / 1000  # meters to km
+                    duration_min = summary.get('duration', 0) / 60   # seconds to minutes
+                    
+                    return {
+                        "success": True,
+                        "distance_km": round(distance_km, 1),
+                        "duration_min": round(duration_min, 0),
+                        "duration_hours": round(duration_min / 60, 1),
+                        "source": "OpenRouteService"
+                    }
+            else:
+                logger.warning(f"⚠️ OpenRouteService API error: {response.status_code}")
+                
+        except requests.Timeout:
+            logger.warning("⚠️ OpenRouteService request timed out")
+        except Exception as e:
+            logger.error(f"❌ OpenRouteService error: {e}")
+        
+        return None
+    
     def calculate_distance(self, origin: str, destination: str) -> Dict[str, Any]:
         """
-        Calculate distance between two locations.
+        Calculate distance between two locations (ROAD DISTANCE PREFERRED).
         
         Args:
             origin: Origin location (e.g., "Rawalpindi")
@@ -229,6 +292,32 @@ class DistanceService:
         try:
             logger.info(f"📏 Calculating distance: {origin} → {destination}")
             
+            # ==========================================================
+            # STEP 1: Try OpenRouteService for road distance
+            # ==========================================================
+            road_dist = self.get_road_distance(origin, destination)
+            
+            if road_dist and road_dist.get('success'):
+                result = {
+                    "success": True,
+                    "origin": origin,
+                    "destination": destination,
+                    "distance_km": road_dist['distance_km'],
+                    "distance_miles": round(road_dist['distance_km'] * 0.621371, 1),
+                    "approx_driving_minutes": int(road_dist['duration_min']),
+                    "approx_driving_hours": road_dist['duration_hours'],
+                    "distance_type": "road",
+                    "source": "OpenRouteService"
+                }
+                self.cache[cache_key] = result
+                logger.info(f"✅ Road distance: {origin} → {destination} = {result['distance_km']} km")
+                return result
+            
+            # ==========================================================
+            # STEP 2: Fallback to air distance
+            # ==========================================================
+            logger.info(f"📏 Using air distance fallback: {origin} → {destination}")
+            
             origin_coords = self.get_coordinates(origin)
             dest_coords = self.get_coordinates(destination)
             
@@ -242,13 +331,9 @@ class DistanceService:
                 self.cache[cache_key] = result
                 return result
             
-            # Calculate multiple distance types
             geodesic_dist = geodesic(origin_coords, dest_coords).kilometers
-            great_circle_dist = great_circle(origin_coords, dest_coords).kilometers
-            
-            # Rough driving estimate (1.3x straight-line for roads)
-            approx_driving = geodesic_dist * 1.3
-            avg_speed = 50  # km/h average driving speed
+            approx_driving = geodesic_dist * 1.3  # Rough estimate
+            avg_speed = 50
             
             result = {
                 "success": True,
@@ -258,15 +343,15 @@ class DistanceService:
                 "destination_coords": {"lat": dest_coords[0], "lng": dest_coords[1]},
                 "distance_km": round(geodesic_dist, 1),
                 "distance_miles": round(geodesic_dist * 0.621371, 1),
-                "straight_line_km": round(great_circle_dist, 1),
                 "approx_driving_km": round(approx_driving, 1),
                 "approx_driving_hours": round(approx_driving / avg_speed, 1),
                 "approx_driving_minutes": int((approx_driving / avg_speed) * 60),
-                "from_cache": False
+                "distance_type": "air",
+                "source": "Haversine (fallback)"
             }
             
             self.cache[cache_key] = result
-            logger.info(f"✅ Distance: {origin} → {destination} = {result['distance_km']} km")
+            logger.info(f"✅ Air distance (fallback): {origin} → {destination} = {result['distance_km']} km")
             return result
             
         except Exception as e:
@@ -281,34 +366,23 @@ class DistanceService:
             return result
     
     def calculate_warehouse_distance(self, warehouse: str, dealer_city: str) -> Dict[str, Any]:
-        """Calculate distance from warehouse to dealer city with normalization."""
+        """Calculate distance from warehouse to dealer city."""
         if not warehouse or not dealer_city:
             return {
                 "success": False,
                 "error": "Warehouse and dealer city required"
             }
         
-        # Normalize both locations
         warehouse = self._normalize_city(warehouse)
         dealer_city = self._normalize_city(dealer_city)
         
         return self.calculate_distance(warehouse, dealer_city)
     
     def get_warehouse_coverage(self, warehouse: str, cities: list) -> Dict[str, Any]:
-        """
-        Calculate distances from warehouse to multiple cities.
-        
-        Args:
-            warehouse: Warehouse location
-            cities: List of city names
-        
-        Returns:
-            Dict with coverage information
-        """
+        """Calculate distances from warehouse to multiple cities."""
         if not warehouse or not cities:
             return {"success": False, "error": "Warehouse and cities required"}
         
-        # Normalize warehouse
         warehouse = self._normalize_city(warehouse)
         
         distances = []
@@ -319,7 +393,6 @@ class DistanceService:
         for city in cities:
             if not city:
                 continue
-            # Normalize city
             city = self._normalize_city(city)
             dist = self.calculate_warehouse_distance(warehouse, city)
             if dist.get('success'):
@@ -327,7 +400,8 @@ class DistanceService:
                 distances.append({
                     "city": city,
                     "distance_km": distance_km,
-                    "driving_hours": dist.get('approx_driving_hours', 0)
+                    "driving_hours": dist.get('approx_driving_hours', 0),
+                    "distance_type": dist.get('distance_type', 'unknown')
                 })
                 total_distance += distance_km
                 max_distance = max(max_distance, distance_km)
@@ -345,16 +419,7 @@ class DistanceService:
         }
     
     def calculate_distances_for_dealers(self, warehouse: str, dealers: List[Dict]) -> List[Dict]:
-        """
-        Calculate distances for multiple dealers from a warehouse.
-        
-        Args:
-            warehouse: Warehouse location
-            dealers: List of dealer dicts with 'name' and 'city'
-        
-        Returns:
-            List of dealers with distance information added
-        """
+        """Calculate distances for multiple dealers from a warehouse."""
         if not warehouse or not dealers:
             return []
         
@@ -381,6 +446,7 @@ class DistanceService:
                 result['distance_miles'] = dist.get('distance_miles')
                 result['approx_driving_hours'] = dist.get('approx_driving_hours')
                 result['approx_driving_minutes'] = dist.get('approx_driving_minutes')
+                result['distance_type'] = dist.get('distance_type', 'unknown')
             else:
                 result['distance_km'] = None
                 result['distance_error'] = dist.get('error', 'Unknown error')
@@ -390,57 +456,37 @@ class DistanceService:
         return results
     
     def get_nearby_dealers(self, warehouse: str, dealers: List[Dict], max_distance: float = 100) -> List[Dict]:
-        """
-        Get dealers within a certain distance from a warehouse.
-        
-        Args:
-            warehouse: Warehouse location
-            dealers: List of dealer dicts with 'name' and 'city'
-            max_distance: Maximum distance in kilometers
-        
-        Returns:
-            List of dealers within the distance range
-        """
+        """Get dealers within a certain distance from a warehouse."""
         results = self.calculate_distances_for_dealers(warehouse, dealers)
         nearby = [d for d in results if d.get('distance_km') and d['distance_km'] <= max_distance]
         return sorted(nearby, key=lambda x: x.get('distance_km', float('inf')))
     
     def get_farthest_dealers(self, warehouse: str, dealers: List[Dict], limit: int = 10) -> List[Dict]:
-        """
-        Get farthest dealers from a warehouse.
-        
-        Args:
-            warehouse: Warehouse location
-            dealers: List of dealer dicts with 'name' and 'city'
-            limit: Number of dealers to return
-        
-        Returns:
-            List of farthest dealers sorted by distance
-        """
+        """Get farthest dealers from a warehouse."""
         results = self.calculate_distances_for_dealers(warehouse, dealers)
         valid = [d for d in results if d.get('distance_km')]
         return sorted(valid, key=lambda x: x.get('distance_km', 0), reverse=True)[:limit]
     
     def format_distance_text(self, distance_info: Dict[str, Any]) -> str:
-        """
-        Format distance information for WhatsApp message.
-        
-        Args:
-            distance_info: Result from calculate_distance()
-        
-        Returns:
-            Formatted text for display
-        """
+        """Format distance information for WhatsApp message."""
         if not distance_info or not distance_info.get('success'):
             return ""
         
         distance_km = distance_info.get('distance_km', 0)
         driving_hours = distance_info.get('approx_driving_hours', 0)
         driving_minutes = distance_info.get('approx_driving_minutes', 0)
+        distance_type = distance_info.get('distance_type', 'unknown')
+        source = distance_info.get('source', '')
         
         lines = []
         lines.append(f"📍 *Distance*")
         lines.append(f"Warehouse → Dealer: {distance_km:.1f} km")
+        
+        # Show road vs air indicator
+        if distance_type == "road":
+            lines.append(f"   🚗 Road distance (accurate)")
+        else:
+            lines.append(f"   ✈️ Approximate (air distance)")
         
         if driving_hours:
             if driving_hours < 1:
@@ -455,8 +501,9 @@ class DistanceService:
         
         return "\n".join(lines)
 
+
 # ==========================================================
-# SINGLETON INSTANCE - Easy import
+# SINGLETON INSTANCE
 # ==========================================================
 
 _distance_service = None
@@ -478,7 +525,7 @@ def test_distance():
     service = get_distance_service()
     
     print("=" * 60)
-    print("🧪 TESTING DISTANCE SERVICE WITH CITY MAPPING")
+    print("🧪 TESTING DISTANCE SERVICE (ROAD DISTANCE)")
     print("=" * 60)
     
     # Test 1: Rawalpindi → Attock
@@ -486,50 +533,33 @@ def test_distance():
     result = service.calculate_distance("Rawalpindi", "Attock")
     if result.get('success'):
         print(f"   ✅ Distance: {result['distance_km']} km")
-        print(f"   ✅ Driving: {result['approx_driving_hours']} hours")
+        print(f"   ✅ Type: {result.get('distance_type', 'unknown')}")
+        print(f"   ✅ Source: {result.get('source', 'unknown')}")
+        print(f"   ✅ Driving: {result.get('approx_driving_hours', 0)} hours")
     else:
         print(f"   ❌ Failed: {result.get('error')}")
     
-    # Test 2: Rawalpindi → Gilget (mapped to Gilgit)
-    print("\n📏 Test 2: Rawalpindi → Gilget (mapped to Gilgit)")
-    result = service.calculate_distance("Rawalpindi", "Gilget")
+    # Test 2: Rawalpindi → Gilgit
+    print("\n📏 Test 2: Rawalpindi → Gilgit")
+    result = service.calculate_distance("Rawalpindi", "Gilgit")
     if result.get('success'):
         print(f"   ✅ Distance: {result['distance_km']} km")
-        print(f"   ✅ Driving: {result['approx_driving_hours']} hours")
-        print(f"   ✅ Normalized destination: {result.get('destination')}")
+        print(f"   ✅ Type: {result.get('distance_type', 'unknown')}")
+        print(f"   ✅ Source: {result.get('source', 'unknown')}")
+        print(f"   ✅ Driving: {result.get('approx_driving_hours', 0)} hours")
     else:
         print(f"   ❌ Failed: {result.get('error')}")
     
-    # Test 3: Multiple cities
-    print("\n📏 Test 3: Warehouse Coverage")
-    coverage = service.get_warehouse_coverage(
-        "Rawalpindi",
-        ["Attock", "Wah Cantt", "Islamabad", "Lahore", "Gilget"]
-    )
-    if coverage.get('success'):
-        print(f"   Total Cities: {coverage['total_cities']}")
-        print(f"   Average Distance: {coverage['average_distance_km']} km")
-        print(f"   Farthest: {coverage['max_distance_km']} km")
-        print(f"   Closest: {coverage['min_distance_km']} km")
+    # Test 3: Rawalpindi → Lahore
+    print("\n📏 Test 3: Rawalpindi → Lahore")
+    result = service.calculate_distance("Rawalpindi", "Lahore")
+    if result.get('success'):
+        print(f"   ✅ Distance: {result['distance_km']} km")
+        print(f"   ✅ Type: {result.get('distance_type', 'unknown')}")
+        print(f"   ✅ Source: {result.get('source', 'unknown')}")
+        print(f"   ✅ Driving: {result.get('approx_driving_hours', 0)} hours")
     else:
-        print(f"   ❌ Failed: {coverage.get('error')}")
-    
-    # Test 4: Bulk dealer distance calculation
-    print("\n📏 Test 4: Bulk Dealer Distance Calculation")
-    dealers = [
-        {"name": "Dealer 1", "city": "Attock"},
-        {"name": "Dealer 2", "city": "Gilget"},
-        {"name": "Dealer 3", "city": "Lahore"},
-        {"name": "Dealer 4", "city": "Unknown City"},
-    ]
-    results = service.calculate_distances_for_dealers("Rawalpindi", dealers)
-    for dealer in results:
-        name = dealer.get('name')
-        distance = dealer.get('distance_km')
-        if distance:
-            print(f"   {name}: {distance} km")
-        else:
-            print(f"   {name}: ❌ {dealer.get('distance_error', 'Unknown error')}")
+        print(f"   ❌ Failed: {result.get('error')}")
     
     print("\n" + "=" * 60)
     print("✅ Test Complete")
