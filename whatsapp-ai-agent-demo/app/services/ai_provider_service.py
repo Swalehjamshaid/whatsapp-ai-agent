@@ -22,18 +22,60 @@ from sqlalchemy import func, cast, String, and_, or_
 from app.models import DeliveryReport
 from app.database import SessionLocal, check_database_connection
 
+
+
 # ==========================================================
-# BLOCK 2: LAZY IMPORTS
+# BLOCK 2: LAZY IMPORTS (FIXED)
 # ==========================================================
 
 def _get_analytics_service():
+    """Lazy load analytics service with diagnostics."""
     try:
         from app.services.analytics_service import get_analytics_service, AnalyticsResponse
-        return get_analytics_service(), AnalyticsResponse
-    except ImportError:
-        logger.warning("⚠️ analytics_service not available")
+        
+        logger.info("✅ Analytics service imported successfully")
+        
+        # Get service instance
+        service = get_analytics_service()
+        
+        if service is None:
+            logger.error("❌ Analytics service returned None")
+            return None, None
+        
+        # Verify critical methods exist
+        required_methods = [
+            "get_dealer_dashboard",
+            "get_dn_dashboard",
+            "get_warehouse_dashboard",
+            "get_city_dashboard",
+            "get_product_dashboard"
+        ]
+        
+        missing = []
+        for method in required_methods:
+            if hasattr(service, method):
+                logger.info(f"   ✅ {method}: AVAILABLE")
+            else:
+                missing.append(method)
+                logger.error(f"   ❌ {method}: MISSING")
+        
+        if missing:
+            logger.error(f"❌ Missing methods: {missing}")
+            # Return service anyway - it might work
+            return service, AnalyticsResponse
+        
+        return service, AnalyticsResponse
+        
+    except ImportError as e:
+        logger.error(f"❌ Import error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return None, None
-
+    except Exception as e:
+        logger.error(f"❌ Error loading analytics service: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return None, None
 # ==========================================================
 # BLOCK 3: CONFIGURATION
 # ==========================================================
@@ -1232,133 +1274,19 @@ class AIOrchestrator:
 
 # ==========================================================
 # BLOCK 17: ROUTE HANDLERS (FIXED v5.0)
+    # ==========================================================
+# _route_dealer_dashboard - FIXED v6.0
 # ==========================================================
-
-    def _validate_response(self, response, service_name: str, req_id: str) -> Tuple[bool, str, Optional[Dict]]:
-        """
-        Validate response from analytics service.
-        BLOCK 17 - FIXED v5.0
-        Returns: (is_valid, error_message, data)
-        """
-        logger.info(f"[{req_id}] 🔍 Validating {service_name} response")
-        
-        # Check if response is None
-        if response is None:
-            logger.error(f"[{req_id}] ❌ Response is None for {service_name}")
-            return False, "No response received from service", None
-        
-        # Check if response is a dict (direct data response)
-        if isinstance(response, dict):
-            logger.info(f"[{req_id}] ✅ Response is a dict")
-            if "error" in response:
-                error_msg = response.get("error", "Unknown error")
-                logger.error(f"[{req_id}] ❌ Response contains error: {error_msg}")
-                return False, error_msg, None
-            if not response or len(response) == 0:
-                logger.warning(f"[{req_id}] ⚠️ Response is empty dict")
-                return False, "Empty response received", None
-            logger.info(f"[{req_id}] ✅ Valid dict response with {len(response)} keys")
-            return True, "", response
-        
-        # Check if response has success attribute (AnalyticsResponse)
-        if hasattr(response, 'success'):
-            logger.info(f"[{req_id}] ✅ Response has success attribute")
-            if not response.success:
-                error_msg = getattr(response, 'error', 'Unknown error')
-                logger.error(f"[{req_id}] ❌ Response success=False: {error_msg}")
-                return False, error_msg, None
-            
-            data = getattr(response, 'data', {})
-            if not data or len(data) == 0:
-                logger.warning(f"[{req_id}] ⚠️ Response data is empty")
-                return False, "No data in response", None
-            
-            if isinstance(data, dict) and "error" in data:
-                error_msg = data.get("error", "Unknown error")
-                logger.error(f"[{req_id}] ❌ Data contains error: {error_msg}")
-                return False, error_msg, None
-            
-            logger.info(f"[{req_id}] ✅ Valid AnalyticsResponse with {len(data)} data keys")
-            return True, "", data
-        
-        # Check if response is a list
-        if isinstance(response, list):
-            logger.info(f"[{req_id}] ✅ Response is a list with {len(response)} items")
-            if len(response) == 0:
-                logger.warning(f"[{req_id}] ⚠️ Response list is empty")
-                return False, "Empty list response", None
-            return True, "", {"results": response}
-        
-        # Unknown response type
-        logger.error(f"[{req_id}] ❌ Unknown response type: {type(response)}")
-        return False, f"Unexpected response type: {type(response).__name__}", None
-
-    def _route_dn_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """
-        Handle DN dashboard with improved validation and error handling.
-        BLOCK 17 - FIXED v5.0
-        """
-        import time
-        start_time = time.time()
-        
-        logger.info(f"[{req_id}] 📄 DN Dashboard route called")
-        logger.info(f"[{req_id}] 📥 Entity: {entity}")
-        logger.info(f"[{req_id}] 📥 Context last_dn: {context.last_dn if context else None}")
-        
-        dn_number = entity or (context.last_dn if context else None)
-        
-        if not dn_number:
-            logger.warning(f"[{req_id}] ❌ No DN number provided")
-            return "📄 *DN DASHBOARD*\n\nPlease provide a DN number.\n\n*Example:* 6243675570"
-        
-        # Clean DN
-        dn_clean = re.sub(r'\D', '', str(dn_number).strip())
-        if len(dn_clean) < 8 or len(dn_clean) > 12:
-            logger.warning(f"[{req_id}] ❌ Invalid DN format: {dn_number}")
-            return f"❌ Invalid DN number: '{dn_number}'\n\nDN numbers must be 8-12 digits."
-        
-        logger.info(f"[{req_id}] 🔍 Looking up DN: {dn_clean}")
-        
-        try:
-            # Check if analytics has the method
-            if not hasattr(self.analytics, 'get_dn_dashboard'):
-                logger.error(f"[{req_id}] ❌ get_dn_dashboard not available")
-                return "⚠️ Service temporarily unavailable. Please try again later."
-            
-            # Get dashboard
-            response = self.analytics.get_dn_dashboard(dn_clean)
-            logger.info(f"[{req_id}] 📊 Dashboard response received: {type(response)}")
-            
-            # Validate response
-            is_valid, error_msg, data = self._validate_response(response, "DN Dashboard", req_id)
-            
-            if not is_valid:
-                logger.error(f"[{req_id}] ❌ Validation failed: {error_msg}")
-                return f"❌ Unable to retrieve data for DN {dn_clean}.\n\n{error_msg}"
-            
-            # Format and return
-            logger.info(f"[{req_id}] ✅ Valid data received, formatting...")
-            result = self._format_dn_dashboard(data, dn_clean)
-            elapsed = time.time() - start_time
-            logger.info(f"[{req_id}] ✅ DN dashboard returned in {elapsed:.3f}s")
-            return result
-            
-        except AttributeError as e:
-            logger.error(f"[{req_id}] ❌ AttributeError: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return f"❌ Service error: Method not available. Please try again."
-            
-        except Exception as e:
-            logger.error(f"[{req_id}] ❌ DN dashboard error: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return f"❌ Error retrieving DN {dn_clean}: {str(e)[:100]}"
 
     def _route_dealer_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         """
         Handle dealer dashboard with improved validation and error handling.
-        BLOCK 17 - FIXED v5.0
+        BLOCK 17 - FIXED v6.0
+        
+        Fixes:
+        - Proper analytics service initialization check with retry
+        - Automatic reload if method missing
+        - Better error messages
         """
         import time
         start_time = time.time()
@@ -1367,6 +1295,44 @@ class AIOrchestrator:
         logger.info(f"[{req_id}] 📥 Entity: {entity}")
         logger.info(f"[{req_id}] 📥 Context last_dealer: {context.last_dealer if context else None}")
         
+        # ==========================================================
+        # STEP 1: Ensure analytics service is available
+        # ==========================================================
+        if self.analytics is None:
+            logger.warning(f"[{req_id}] ⚠️ Analytics service is None - reloading...")
+            self._analytics = None
+            self._analytics_response = None
+            # Force reload
+            if self.analytics is None:
+                logger.error(f"[{req_id}] ❌ Analytics service still None after reload")
+                return "⚠️ Service temporarily unavailable. Please try again later."
+            logger.info(f"[{req_id}] ✅ Analytics service reloaded successfully")
+        
+        # ==========================================================
+        # STEP 2: Check if get_dealer_dashboard exists - retry if not
+        # ==========================================================
+        if not hasattr(self.analytics, 'get_dealer_dashboard'):
+            logger.warning(f"[{req_id}] ⚠️ get_dealer_dashboard not found - attempting reload...")
+            # Force reload analytics
+            self._analytics = None
+            self._analytics_response = None
+            if self.analytics is None:
+                logger.error(f"[{req_id}] ❌ Reload failed")
+                return "⚠️ Service temporarily unavailable. Please try again later."
+            
+            # Check again after reload
+            if not hasattr(self.analytics, 'get_dealer_dashboard'):
+                logger.error(f"[{req_id}] ❌ get_dealer_dashboard still not available after reload")
+                # Log available methods for debugging
+                available_methods = [m for m in dir(self.analytics) if not m.startswith('_')]
+                logger.error(f"[{req_id}] Available methods: {available_methods}")
+                return "⚠️ Service temporarily unavailable. Please try again later."
+            
+            logger.info(f"[{req_id}] ✅ get_dealer_dashboard now available after reload")
+        
+        # ==========================================================
+        # STEP 3: Get dealer name
+        # ==========================================================
         dealer_name = entity
         if not dealer_name and context and context.last_dealer:
             dealer_name = context.last_dealer
@@ -1391,16 +1357,27 @@ class AIOrchestrator:
         logger.info(f"[{req_id}] 🔍 Searching for dealer: '{dealer_name}'")
         
         try:
-            # Check if analytics has the method
-            if not hasattr(self.analytics, 'get_dealer_dashboard'):
-                logger.error(f"[{req_id}] ❌ get_dealer_dashboard not available")
-                return "⚠️ Service temporarily unavailable. Please try again later."
+            # ==========================================================
+            # STEP 4: Get dashboard with try/except
+            # ==========================================================
+            try:
+                response = self.analytics.get_dealer_dashboard(dealer_name)
+                logger.info(f"[{req_id}] 📊 Dashboard response received: {type(response)}")
+            except AttributeError as e:
+                logger.error(f"[{req_id}] ❌ AttributeError: {e}")
+                # One more retry with reload
+                self._analytics = None
+                self._analytics_response = None
+                if self.analytics is None:
+                    return "⚠️ Service temporarily unavailable. Please try again later."
+                response = self.analytics.get_dealer_dashboard(dealer_name)
+            except Exception as e:
+                logger.error(f"[{req_id}] ❌ Error: {e}")
+                return f"❌ Error retrieving data: {str(e)[:100]}"
             
-            # Get dashboard
-            response = self.analytics.get_dealer_dashboard(dealer_name)
-            logger.info(f"[{req_id}] 📊 Dashboard response received: {type(response)}")
-            
-            # Validate response
+            # ==========================================================
+            # STEP 5: Validate response
+            # ==========================================================
             is_valid, error_msg, data = self._validate_response(response, "Dealer Dashboard", req_id)
             
             if not is_valid:
@@ -1413,25 +1390,23 @@ class AIOrchestrator:
                 logger.error(f"[{req_id}] ❌ Validation failed: {error_msg}")
                 return f"❌ Unable to retrieve data for '{original_dealer_name}'.\n\n{error_msg}"
             
-            # Check if data has transactions
+            # ==========================================================
+            # STEP 6: Check if data has transactions
+            # ==========================================================
             if data and isinstance(data, dict):
                 total_dns = data.get("total_dns", 0)
                 if total_dns == 0:
                     logger.warning(f"[{req_id}] ⚠️ Dealer '{dealer_name}' has 0 transactions")
                     return f"🏪 *DEALER DASHBOARD*\n\n✅ Dealer: {dealer_name}\n\n⚠️ Dealer found but no transactions available."
             
-            # Format and return
+            # ==========================================================
+            # STEP 7: Format and return
+            # ==========================================================
             logger.info(f"[{req_id}] ✅ Valid data received, formatting...")
             result = self._format_dealer_dashboard(data, dealer_name)
             elapsed = time.time() - start_time
             logger.info(f"[{req_id}] ✅ Dealer dashboard returned in {elapsed:.3f}s")
             return result
-            
-        except AttributeError as e:
-            logger.error(f"[{req_id}] ❌ AttributeError: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return f"❌ Service error: Method not available. Please try again."
             
         except Exception as e:
             logger.error(f"[{req_id}] ❌ Dealer dashboard error: {e}")
@@ -1439,279 +1414,10 @@ class AIOrchestrator:
             logger.error(traceback.format_exc())
             return f"❌ Error retrieving dealer data: {str(e)[:100]}"
 
-    def _route_warehouse_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """Handle warehouse dashboard with improved validation."""
-        import time
-        start_time = time.time()
-        
-        logger.info(f"[{req_id}] 🏭 Warehouse Dashboard route called")
-        logger.info(f"[{req_id}] 📥 Entity: {entity}")
-        
-        warehouse_name = entity
-        if not warehouse_name and context and context.last_warehouse:
-            warehouse_name = context.last_warehouse
-        
-        if not warehouse_name:
-            return "🏭 *WAREHOUSE DASHBOARD*\n\nPlease specify a warehouse name.\n\n*Examples:*\n• Lahore warehouse\n• Rawalpindi warehouse"
-        
-        logger.info(f"[{req_id}] 🔍 Searching for warehouse: '{warehouse_name}'")
-        
-        try:
-            if not hasattr(self.analytics, 'get_warehouse_dashboard'):
-                return "⚠️ Service temporarily unavailable. Please try again later."
-            
-            response = self.analytics.get_warehouse_dashboard(warehouse_name)
-            is_valid, error_msg, data = self._validate_response(response, "Warehouse Dashboard", req_id)
-            
-            if not is_valid:
-                if data and isinstance(data, dict) and "suggestions" in data:
-                    suggestions = data.get("suggestions", [])
-                    if suggestions:
-                        return f"❌ Warehouse '{warehouse_name}' not found.\n\n💡 Did you mean:\n" + "\n".join([f"• {s}" for s in suggestions[:3]])
-                return f"❌ Unable to retrieve data for warehouse '{warehouse_name}'.\n\n{error_msg}"
-            
-            result = self._format_warehouse_dashboard(data, warehouse_name)
-            elapsed = time.time() - start_time
-            logger.info(f"[{req_id}] ✅ Warehouse dashboard returned in {elapsed:.3f}s")
-            return result
-            
-        except Exception as e:
-            logger.error(f"[{req_id}] ❌ Warehouse dashboard error: {e}")
-            return f"❌ Error retrieving warehouse data: {str(e)[:100]}"
-
-    def _route_city_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """Handle city dashboard with improved validation."""
-        import time
-        start_time = time.time()
-        
-        logger.info(f"[{req_id}] 🏙️ City Dashboard route called")
-        logger.info(f"[{req_id}] 📥 Entity: {entity}")
-        
-        city_name = entity
-        if not city_name and context and context.last_city:
-            city_name = context.last_city
-        
-        if not city_name:
-            return "🏙️ *CITY DASHBOARD*\n\nPlease specify a city name.\n\n*Examples:*\n• Haripur\n• Sahiwal"
-        
-        logger.info(f"[{req_id}] 🔍 Searching for city: '{city_name}'")
-        
-        try:
-            if not hasattr(self.analytics, 'get_city_dashboard'):
-                return "⚠️ Service temporarily unavailable. Please try again later."
-            
-            response = self.analytics.get_city_dashboard(city_name)
-            is_valid, error_msg, data = self._validate_response(response, "City Dashboard", req_id)
-            
-            if not is_valid:
-                if data and isinstance(data, dict) and "suggestions" in data:
-                    suggestions = data.get("suggestions", [])
-                    if suggestions:
-                        return f"❌ City '{city_name}' not found.\n\n💡 Did you mean:\n" + "\n".join([f"• {s}" for s in suggestions[:3]])
-                return f"❌ Unable to retrieve data for city '{city_name}'.\n\n{error_msg}"
-            
-            result = self._format_city_dashboard(data, city_name)
-            elapsed = time.time() - start_time
-            logger.info(f"[{req_id}] ✅ City dashboard returned in {elapsed:.3f}s")
-            return result
-            
-        except Exception as e:
-            logger.error(f"[{req_id}] ❌ City dashboard error: {e}")
-            return f"❌ Error retrieving city data: {str(e)[:100]}"
-
-    def _route_product_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """Handle product dashboard with improved validation."""
-        import time
-        start_time = time.time()
-        
-        logger.info(f"[{req_id}] 📦 Product Dashboard route called")
-        logger.info(f"[{req_id}] 📥 Entity: {entity}")
-        
-        product_name = entity
-        if not product_name and context and context.last_product:
-            product_name = context.last_product
-        
-        if not product_name:
-            return "📦 *PRODUCT DASHBOARD*\n\nPlease specify a product.\n\n*Examples:*\n• HRF-316IPGA\n• Model A123"
-        
-        logger.info(f"[{req_id}] 🔍 Searching for product: '{product_name}'")
-        
-        try:
-            if not hasattr(self.analytics, 'get_product_dashboard'):
-                return "⚠️ Service temporarily unavailable. Please try again later."
-            
-            response = self.analytics.get_product_dashboard(product_name)
-            is_valid, error_msg, data = self._validate_response(response, "Product Dashboard", req_id)
-            
-            if not is_valid:
-                if data and isinstance(data, dict) and "suggestions" in data:
-                    suggestions = data.get("suggestions", [])
-                    if suggestions:
-                        return f"❌ Product '{product_name}' not found.\n\n💡 Did you mean:\n" + "\n".join([f"• {s}" for s in suggestions[:3]])
-                return f"❌ Unable to retrieve data for product '{product_name}'.\n\n{error_msg}"
-            
-            result = self._format_product_dashboard(data, product_name)
-            elapsed = time.time() - start_time
-            logger.info(f"[{req_id}] ✅ Product dashboard returned in {elapsed:.3f}s")
-            return result
-            
-        except Exception as e:
-            logger.error(f"[{req_id}] ❌ Product dashboard error: {e}")
-            return f"❌ Error retrieving product data: {str(e)[:100]}"
-
-    def _route_dealer_ranking(self, req_id: str) -> str:
-        """Handle dealer ranking."""
-        try:
-            response = self.analytics.get_ranking_dashboard(limit=10)
-            is_valid, error_msg, data = self._validate_response(response, "Dealer Ranking", req_id)
-            if not is_valid:
-                return f"❌ Unable to retrieve dealer ranking.\n\n{error_msg}"
-            return self._format_dealer_ranking(data)
-        except Exception as e:
-            logger.error(f"[{req_id}] ❌ Dealer ranking error: {e}")
-            return f"❌ Error retrieving dealer ranking: {str(e)[:100]}"
-    
-    def _route_dealer_products(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        dealer_name = entity or (context.last_dealer if context else None)
-        if not dealer_name:
-            return "📦 *DEALER PRODUCTS*\n\nPlease specify a dealer name."
-        return f"📦 *PRODUCTS FOR {dealer_name.upper()}*\n\nProduct information coming soon."
-    
-    def _route_warehouse_ranking(self, req_id: str) -> str:
-        return "🏆 *WAREHOUSE RANKING*\n\nWarehouse ranking coming soon."
-    
-    def _route_warehouse_coverage(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        warehouse_name = entity or (context.last_warehouse if context else None)
-        if not warehouse_name:
-            return "📍 *WAREHOUSE COVERAGE*\n\nPlease specify a warehouse name."
-        return f"📍 *COVERAGE FOR {warehouse_name.upper()}*\n\nCoverage information coming soon."
-    
-    def _route_warehouse_products(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        warehouse_name = entity or (context.last_warehouse if context else None)
-        if not warehouse_name:
-            return "📦 *WAREHOUSE PRODUCTS*\n\nPlease specify a warehouse name."
-        return f"📦 *PRODUCTS IN {warehouse_name.upper()}*\n\nProduct list coming soon."
-    
-    def _route_city_ranking(self, req_id: str) -> str:
-        return "🏆 *CITY RANKING*\n\nCity ranking coming soon."
-    
-    def _route_city_dealers(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        city_name = entity or (context.last_city if context else None)
-        if not city_name:
-            return "📍 *CITY DEALERS*\n\nPlease specify a city name."
-        return f"📍 *DEALERS IN {city_name.upper()}*\n\nDealer list coming soon."
-    
-    def _route_city_products(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        city_name = entity or (context.last_city if context else None)
-        if not city_name:
-            return "📦 *CITY PRODUCTS*\n\nPlease specify a city name."
-        return f"📦 *PRODUCTS IN {city_name.upper()}*\n\nProduct list coming soon."
-    
-    def _route_product_ranking(self, req_id: str) -> str:
-        return "🏆 *PRODUCT RANKING*\n\nProduct ranking coming soon."
-    
-    def _route_product_trend(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        return "📈 *PRODUCT TREND*\n\nProduct trend coming soon."
-
-    def _route_dn_analytics(self, req_id: str) -> str:
-        return "📊 *DN ANALYTICS*\n\nAnalytics coming soon."
-
-    def _route_pgi_dashboard(self, req_id: str) -> str:
-        try:
-            response = self.analytics.get_pgi_dashboard()
-            is_valid, error_msg, data = self._validate_response(response, "PGI Dashboard", req_id)
-            if not is_valid:
-                return f"❌ Unable to retrieve PGI data.\n\n{error_msg}"
-            return self._format_pgi_dashboard(data)
-        except Exception as e:
-            logger.error(f"[{req_id}] ❌ PGI dashboard error: {e}")
-            return f"❌ Error retrieving PGI data: {str(e)[:100]}"
-    
-    def _route_pod_dashboard(self, req_id: str) -> str:
-        try:
-            response = self.analytics.get_pod_dashboard()
-            is_valid, error_msg, data = self._validate_response(response, "POD Dashboard", req_id)
-            if not is_valid:
-                return f"❌ Unable to retrieve POD data.\n\n{error_msg}"
-            return self._format_pod_dashboard(data)
-        except Exception as e:
-            logger.error(f"[{req_id}] ❌ POD dashboard error: {e}")
-            return f"❌ Error retrieving POD data: {str(e)[:100]}"
-    
-    def _route_delivery_dashboard(self, req_id: str) -> str:
-        try:
-            response = self.analytics.get_delivery_dashboard()
-            is_valid, error_msg, data = self._validate_response(response, "Delivery Dashboard", req_id)
-            if not is_valid:
-                return f"❌ Unable to retrieve delivery data.\n\n{error_msg}"
-            return self._format_delivery_dashboard(data)
-        except Exception as e:
-            logger.error(f"[{req_id}] ❌ Delivery dashboard error: {e}")
-            return f"❌ Error retrieving delivery data: {str(e)[:100]}"
-    
-    def _route_executive_dashboard(self, req_id: str) -> str:
-        try:
-            response = self.analytics.get_executive_dashboard()
-            is_valid, error_msg, data = self._validate_response(response, "Executive Dashboard", req_id)
-            if not is_valid:
-                return f"❌ Unable to retrieve executive data.\n\n{error_msg}"
-            return self._format_executive_dashboard(data)
-        except Exception as e:
-            logger.error(f"[{req_id}] ❌ Executive dashboard error: {e}")
-            return f"❌ Error retrieving executive data: {str(e)[:100]}"
-    
-    def _route_control_tower(self, req_id: str) -> str:
-        try:
-            response = self.analytics.get_control_tower_dashboard()
-            is_valid, error_msg, data = self._validate_response(response, "Control Tower", req_id)
-            if not is_valid:
-                return f"❌ Unable to retrieve control tower data.\n\n{error_msg}"
-            return self._format_control_tower(data)
-        except Exception as e:
-            logger.error(f"[{req_id}] ❌ Control tower error: {e}")
-            return f"❌ Error retrieving control tower data: {str(e)[:100]}"
-    
-    def _route_revenue_dashboard(self, req_id: str) -> str:
-        try:
-            response = self.analytics.get_revenue_dashboard()
-            is_valid, error_msg, data = self._validate_response(response, "Revenue Dashboard", req_id)
-            if not is_valid:
-                return f"❌ Unable to retrieve revenue data.\n\n{error_msg}"
-            return self._format_revenue_dashboard(data)
-        except Exception as e:
-            logger.error(f"[{req_id}] ❌ Revenue dashboard error: {e}")
-            return f"❌ Error retrieving revenue data: {str(e)[:100]}"
-    
-    def _route_aging_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        try:
-            response = self.analytics.get_aging_dashboard()
-            is_valid, error_msg, data = self._validate_response(response, "Aging Dashboard", req_id)
-            if not is_valid:
-                return f"❌ Unable to retrieve aging data.\n\n{error_msg}"
-            return self._format_aging_dashboard(data)
-        except Exception as e:
-            logger.error(f"[{req_id}] ❌ Aging dashboard error: {e}")
-            return f"❌ Error retrieving aging data: {str(e)[:100]}"
-    
-    def _route_division_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        division_name = entity or (context.last_division if context else None)
-        if not division_name:
-            return "📊 *DIVISION DASHBOARD*\n\nPlease specify a division name."
-        return f"📊 *DIVISION: {division_name.upper()}*\n\nDivision data coming soon."
-    
-    def _route_sales_manager_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        sm_name = entity or (context.last_sales_manager if context else None)
-        if not sm_name:
-            return "👤 *SALES MANAGER DASHBOARD*\n\nPlease specify a sales manager name."
-        return f"👤 *SALES MANAGER: {sm_name.upper()}*\n\nSales manager data coming soon."
-    
-    def _route_sales_office_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        so_name = entity or (context.last_sales_office if context else None)
-        if not so_name:
-            return "🏢 *SALES OFFICE DASHBOARD*\n\nPlease specify a sales office name."
-        return f"🏢 *SALES OFFICE: {so_name.upper()}*\n\nSales office data coming soon."
-
 # ==========================================================
+# END OF FIXED _route_dealer_dashboard
+# ==========================================================
+## ==========================================================
 # BLOCK 18-22: FORMATTERS (FIXED - Safe handling)
 # ==========================================================
 
