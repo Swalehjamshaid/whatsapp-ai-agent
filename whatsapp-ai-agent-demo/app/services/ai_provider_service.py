@@ -1,13 +1,14 @@
 # ==========================================================
-# FILE: app/services/ai_provider_service.py (v27.0 - PRODUCTION READY)
-# ==========================================================
+# FILE: app/services/ai_provider_service.py (v28.0 - PRODUCTION READY)
 # PURPOSE: POSTGRESQL-DRIVEN AI ROUTER
-# VERSION: 27.0 - Fixed ALL Dashboard Loading Issues
+# VERSION: 28.0 - Fixed WhatsApp Token & Config Alignment
 # ==========================================================
 
 import time
 import uuid
 import re
+import os
+import requests
 from typing import Optional, Callable, Any, Dict, List, Tuple
 from dataclasses import dataclass, field
 from cachetools import TTLCache, LRUCache
@@ -23,10 +24,7 @@ from app.models import DeliveryReport
 from app.database import SessionLocal, check_database_connection
 
 # ==========================================================
-# BLOCK 2: LAZY IMPORTS (FIXED v4.0)
-# ==========================================================
-# ==========================================================
-# BLOCK 2: LAZY IMPORTS (FIXED v4.0)
+# BLOCK 2: LAZY IMPORTS (FIXED v4.0 - WITH AI CHECK)
 # ==========================================================
 
 def _get_analytics_service():
@@ -35,6 +33,13 @@ def _get_analytics_service():
     BLOCK 2 - FIXED v4.0
     """
     try:
+        from app.config import config
+        
+        # Check if AI analysis is enabled
+        if not getattr(config, 'AI_ANALYSIS_ENABLED', True):
+            logger.warning("⚠️ AI_ANALYSIS_ENABLED is False, using fallback analytics")
+            return _create_fallback_analytics(), None
+        
         from app.services.analytics_service import get_analytics_service, AnalyticsResponse
         
         logger.info("✅ Analytics service imported successfully")
@@ -218,15 +223,157 @@ def _create_fallback_analytics():
 # ==========================================================
 # END OF BLOCK 2 - FIXED v4.0
 # ==========================================================
+
 # ==========================================================
-# BLOCK 3: CONFIGURATION
+# BLOCK 3: CONFIGURATION (ALIGNED WITH app/config.py)
 # ==========================================================
 
-CACHE_TTL_SECONDS = 300
-CONTEXT_TTL_SECONDS = 1800
-MAX_RESPONSE_LENGTH = 2500
-QUERY_TIMEOUT_SECONDS = 10
-MAX_RETRY_ATTEMPTS = 3
+from app.config import config
+
+# Use config values with fallbacks
+CACHE_TTL_SECONDS = getattr(config, 'CACHE_TTL', 300)
+CONTEXT_TTL_SECONDS = getattr(config, 'CACHE_TTL_SESSION', 1800)
+MAX_RESPONSE_LENGTH = 2500  # Keep as constant
+QUERY_TIMEOUT_SECONDS = getattr(config, 'AI_TIMEOUT_SECONDS', 10)
+MAX_RETRY_ATTEMPTS = getattr(config, 'AI_MAX_RETRIES', 3)
+
+# AI Provider settings
+AI_PROVIDER = getattr(config, 'AI_PROVIDER', 'groq')
+AI_FALLBACK_PROVIDER = getattr(config, 'AI_FALLBACK_PROVIDER', 'deepseek')
+AI_ANALYSIS_ENABLED = getattr(config, 'AI_ANALYSIS_ENABLED', True)
+AI_FALLBACK_TO_RULE_BASED = getattr(config, 'AI_FALLBACK_TO_RULE_BASED', True)
+
+# Fuzzy matching settings
+FUZZY_MATCH_THRESHOLD = float(os.getenv('FUZZY_MATCH_THRESHOLD', '0.3'))
+MAX_FUZZY_RESULTS = int(os.getenv('MAX_FUZZY_RESULTS', '1000'))
+
+# WhatsApp settings
+WHATSAPP_ACCESS_TOKEN = getattr(config, 'WHATSAPP_ACCESS_TOKEN', '')
+WHATSAPP_PHONE_NUMBER_ID = getattr(config, 'WHATSAPP_PHONE_NUMBER_ID', '')
+WHATSAPP_API_VERSION = getattr(config, 'WHATSAPP_API_VERSION', 'v25.0')
+WHATSAPP_API_URL = getattr(config, 'WHATSAPP_API_URL', 'https://graph.facebook.com')
+
+logger.info("=" * 70)
+logger.info("📋 AI Provider Configuration Loaded:")
+logger.info(f"   CACHE_TTL: {CACHE_TTL_SECONDS}s")
+logger.info(f"   CONTEXT_TTL: {CONTEXT_TTL_SECONDS}s")
+logger.info(f"   AI_PROVIDER: {AI_PROVIDER}")
+logger.info(f"   AI_FALLBACK: {AI_FALLBACK_PROVIDER}")
+logger.info(f"   AI_ANALYSIS_ENABLED: {AI_ANALYSIS_ENABLED}")
+logger.info(f"   FUZZY_THRESHOLD: {FUZZY_MATCH_THRESHOLD}")
+logger.info("=" * 70)
+
+# ==========================================================
+# END OF BLOCK 3
+# ==========================================================
+
+# ==========================================================
+# BLOCK 3.5: WHATSAPP TOKEN VALIDATION (NEW)
+# ==========================================================
+
+def validate_whatsapp_token() -> Dict[str, Any]:
+    """
+    Validate WhatsApp access token from config.
+    Returns validation result with status.
+    """
+    token = getattr(config, 'WHATSAPP_ACCESS_TOKEN', '')
+    phone_id = getattr(config, 'WHATSAPP_PHONE_NUMBER_ID', '')
+    
+    if not token:
+        logger.error("❌ WHATSAPP_ACCESS_TOKEN not configured")
+        return {
+            "valid": False,
+            "error": "WHATSAPP_ACCESS_TOKEN not configured",
+            "message": "Please set WHATSAPP_ACCESS_TOKEN in environment variables"
+        }
+    
+    if not phone_id:
+        logger.error("❌ WHATSAPP_PHONE_NUMBER_ID not configured")
+        return {
+            "valid": False,
+            "error": "WHATSAPP_PHONE_NUMBER_ID not configured",
+            "message": "Please set WHATSAPP_PHONE_NUMBER_ID in environment variables"
+        }
+    
+    try:
+        api_version = getattr(config, 'WHATSAPP_API_VERSION', 'v25.0')
+        api_url = getattr(config, 'WHATSAPP_API_URL', 'https://graph.facebook.com')
+        
+        # Test token by calling /me
+        url = f"{api_url}/{api_version}/me?access_token={token}"
+        response = requests.get(url, timeout=5)
+        
+        if response.status_code == 200:
+            data = response.json()
+            logger.info(f"✅ WhatsApp token valid for app: {data.get('name')} (ID: {data.get('id')})")
+            return {
+                "valid": True,
+                "app_id": data.get("id"),
+                "app_name": data.get("name"),
+                "message": "Token is valid"
+            }
+        else:
+            error = response.json().get("error", {})
+            error_code = error.get("code")
+            error_msg = error.get("message", "Unknown error")
+            
+            logger.error(f"❌ WhatsApp token invalid: {error_code} - {error_msg}")
+            
+            if error_code == 131005:
+                return {
+                    "valid": False,
+                    "error": error_msg,
+                    "error_code": error_code,
+                    "message": "Access denied. Please regenerate your WhatsApp access token.",
+                    "action": "Go to Meta Developer Console → WhatsApp → API Setup → Generate new token"
+                }
+            elif error_code == 190:
+                return {
+                    "valid": False,
+                    "error": error_msg,
+                    "error_code": error_code,
+                    "message": "Token expired or invalid. Please regenerate your WhatsApp access token.",
+                    "action": "Go to Meta Developer Console → WhatsApp → API Setup → Generate new token"
+                }
+            else:
+                return {
+                    "valid": False,
+                    "error": error_msg,
+                    "error_code": error_code,
+                    "message": f"Token validation failed: {error_msg}",
+                    "action": "Check your WhatsApp configuration and regenerate token if needed"
+                }
+                
+    except requests.Timeout:
+        logger.error("❌ WhatsApp token validation timeout")
+        return {
+            "valid": False,
+            "error": "Timeout",
+            "message": "Connection to Meta API timed out. Check your internet connection."
+        }
+    except Exception as e:
+        logger.error(f"❌ WhatsApp token validation error: {e}")
+        return {
+            "valid": False,
+            "error": str(e),
+            "message": f"Error validating token: {str(e)}"
+        }
+
+def get_whatsapp_config() -> Dict[str, Any]:
+    """Get WhatsApp configuration from app.config"""
+    return {
+        "access_token": getattr(config, 'WHATSAPP_ACCESS_TOKEN', ''),
+        "phone_number_id": getattr(config, 'WHATSAPP_PHONE_NUMBER_ID', ''),
+        "business_account_id": getattr(config, 'WHATSAPP_BUSINESS_ACCOUNT_ID', ''),
+        "verify_token": getattr(config, 'WHATSAPP_VERIFY_TOKEN', ''),
+        "api_version": getattr(config, 'WHATSAPP_API_VERSION', 'v25.0'),
+        "api_url": getattr(config, 'WHATSAPP_API_URL', 'https://graph.facebook.com'),
+        "message_timeout": getattr(config, 'WHATSAPP_MESSAGE_TIMEOUT', 60)
+    }
+
+# ==========================================================
+# END OF BLOCK 3.5
+# ==========================================================
 
 # ==========================================================
 # BLOCK 4: DATABASE CONNECTION TEST
@@ -254,9 +401,6 @@ def test_database_connection() -> Dict[str, Any]:
         }
 
 # ==========================================================
-# BLOCK 5: POSTGRESQL RESOLVER (FIXED v3.0)
-# ==========================================================
-# ==========================================================
 # BLOCK 5: POSTGRESQL RESOLVER (FIXED v4.0 - CONFIGURABLE)
 # ==========================================================
 
@@ -268,18 +412,15 @@ class PostgreSQLResolver:
         self._cache = TTLCache(maxsize=2000, ttl=3600)
         self.DeliveryReport = DeliveryReport
         
-        # Load configuration
+        # Load configuration from app.config
         try:
-            from app.core.config import settings
-            self.fuzzy_threshold = getattr(settings, 'FUZZY_MATCH_THRESHOLD', 0.3)
-            self.max_fuzzy_results = getattr(settings, 'MAX_FUZZY_RESULTS', 1000)
-        except ImportError:
-            # Fallback to defaults if config not available
+            self.fuzzy_threshold = float(os.getenv('FUZZY_MATCH_THRESHOLD', '0.3'))
+            self.max_fuzzy_results = int(os.getenv('MAX_FUZZY_RESULTS', '1000'))
+            logger.info(f"✅ Fuzzy threshold: {self.fuzzy_threshold}, Max results: {self.max_fuzzy_results}")
+        except Exception as e:
             self.fuzzy_threshold = 0.3
             self.max_fuzzy_results = 1000
-            logger.warning("⚠️ Config not available, using default fuzzy threshold: 0.3")
-        
-        logger.info(f"✅ PostgreSQLResolver initialized with fuzzy threshold: {self.fuzzy_threshold}")
+            logger.warning(f"⚠️ Config load error: {e}, using defaults")
     
     def _get_session(self) -> Optional[Session]:
         if not self.session_factory:
@@ -618,6 +759,7 @@ class PostgreSQLResolver:
 # ==========================================================
 # END OF BLOCK 5 - FIXED v4.0
 # ==========================================================
+
 # ==========================================================
 # BLOCK 6: CONVERSATION CONTEXT
 # ==========================================================
@@ -824,8 +966,6 @@ ENTITY_PATTERNS = {
 }
 
 # ==========================================================
-# BLOCK 10: MAIN AI ROUTER (FIXED v4.0)
-# ==========================================================
 # BLOCK 10: MAIN AI ROUTER (FIXED v5.0 - NO CRASH)
 # ==========================================================
 
@@ -851,9 +991,28 @@ class AIOrchestrator:
             "cache_hits": 0,
             "cache_misses": 0
         }
-        
+
+        # ==========================================================
+        # ✅ WHATSAPP TOKEN VALIDATION ON STARTUP
+        # ==========================================================
+        try:
+            from app.config import config
+            if getattr(config, 'WHATSAPP_ACCESS_TOKEN', ''):
+                logger.info("🔍 Validating WhatsApp token...")
+                validation = validate_whatsapp_token()
+                if validation.get('valid'):
+                    logger.info(f"✅ WhatsApp token valid: {validation.get('app_name')}")
+                else:
+                    logger.warning(f"⚠️ WhatsApp token invalid: {validation.get('message')}")
+                    if validation.get('action'):
+                        logger.warning(f"   Action: {validation.get('action')}")
+            else:
+                logger.warning("⚠️ WHATSAPP_ACCESS_TOKEN not configured")
+        except Exception as e:
+            logger.error(f"❌ WhatsApp validation error: {e}")
+
         logger.info("=" * 70)
-        logger.info("AI Router v27.0 - Initializing...")
+        logger.info("AI Router v28.0 - Initializing...")
         logger.info("=" * 70)
         
         # ✅ Initialize analytics - don't crash on failure
@@ -869,7 +1028,7 @@ class AIOrchestrator:
             logger.error(f"❌ Method verification failed: {e}")
         
         logger.info("=" * 70)
-        logger.info("AI Router v27.0 - PostgreSQL-Driven Production")
+        logger.info("AI Router v28.0 - PostgreSQL-Driven Production")
         logger.info("=" * 70)
     
     def _init_analytics(self):
@@ -952,6 +1111,7 @@ class AIOrchestrator:
         if self._resolver is None:
             self._resolver = PostgreSQLResolver(self.session_factory)
         return self._resolver
+
 # ==========================================================
 # BLOCK 11: INTENT DETECTION (FIXED v5.0)
 # ==========================================================
@@ -1394,6 +1554,15 @@ class AIOrchestrator:
         request_id: Optional[str] = None
     ) -> str:
         start_time = time.time()
+        
+        # ==========================================================
+        # ✅ AI ENABLED CHECK
+        # ==========================================================
+        from app.config import config
+        if not getattr(config, 'AI_ANALYSIS_ENABLED', True):
+            logger.warning("⚠️ AI_ANALYSIS_ENABLED is False, using rule-based responses")
+            return "⚠️ AI service is currently disabled. Please contact support."
+        
         req_id = request_id or str(uuid.uuid4())[:8]
         self._current_request_id = req_id
         self.metrics["total_requests"] += 1
@@ -1439,9 +1608,6 @@ class AIOrchestrator:
             logger.exception(f"[{req_id}] ❌ ERROR: {e}")
             return f"⚠️ Unable to process request. Please try again or type 'help'."
 
-# ==========================================================
-# BLOCK 16: ROUTING ENGINE
-# ==========================================================
 # ==========================================================
 # BLOCK 16: ROUTING ENGINE (OPTIMIZED)
 # ==========================================================
@@ -1499,8 +1665,6 @@ class AIOrchestrator:
             return f"⚠️ Unable to load {intent.replace('_', ' ').title()}. Please try again."
 
 
-# BLOCK 17: ROUTE HANDLERS (FIXED)
-# ==========================================================
 # BLOCK 17: ROUTE HANDLERS (COMPLETE - FIXED)
 # ==========================================================
 
@@ -2009,9 +2173,6 @@ class AIOrchestrator:
 # ==========================================================
 # END OF BLOCK 17
 # ==========================================================
-
-    
-
 
 # BLOCK 18-22: FORMATTERS (FIXED - Safe handling WITH DISTANCE)
 # ==========================================================
@@ -2621,13 +2782,8 @@ Pending: {pending}"""
 # ==========================================================
 # END OF BLOCK 18-22 - FORMATTERS
 # ==========================================================
-    
-    
-    
-    
-    
-    
-    # ==========================================================
+
+# ==========================================================
 # BLOCK 23: HELP MESSAGE
 # ==========================================================
 
@@ -2676,9 +2832,6 @@ Pending: {pending}"""
 *Ask me anything about logistics!* 🤖"""
 
 # ==========================================================
-# BLOCK 24: SINGLETON & WRAPPER FUNCTIONS
-# ==========================================================
-# ==========================================================
 # BLOCK 24: SINGLETON & WRAPPER FUNCTIONS (FIXED v3.0)
 # ==========================================================
 
@@ -2717,7 +2870,7 @@ def get_orchestrator(session_factory: Optional[Callable[[], Session]] = None) ->
     
     try:
         _orchestrator = AIOrchestrator(session_factory=session_factory)
-        logger.info("✅ AI Orchestrator v27.0 initialized successfully")
+        logger.info("✅ AI Orchestrator v28.0 initialized successfully")
         _initialization_attempts = 0  # Reset on success
         return _orchestrator
         
@@ -2828,23 +2981,78 @@ def get_orchestrator_status() -> Dict[str, Any]:
 
 
 # ==========================================================
-# EXPOSE HELPER FUNCTIONS
+# BLOCK 24.5: WHATSAPP TOKEN HEALTH CHECK (NEW)
 # ==========================================================
 
-# These are available for debugging and monitoring
-__all__ = [
-    'AIOrchestrator',
-    'PostgreSQLResolver',
-    'ConversationContext',
-    'get_orchestrator',
-    'process_whatsapp_query',
-    'reset_orchestrator',
-    'get_orchestrator_status',
-    'test_database_connection'
-]
+def get_whatsapp_health_status() -> Dict[str, Any]:
+    """
+    Get WhatsApp token health status for monitoring.
+    """
+    from app.config import config
+    
+    token = getattr(config, 'WHATSAPP_ACCESS_TOKEN', '')
+    phone_id = getattr(config, 'WHATSAPP_PHONE_NUMBER_ID', '')
+    
+    status = {
+        "token_configured": bool(token),
+        "phone_id_configured": bool(phone_id),
+        "api_version": getattr(config, 'WHATSAPP_API_VERSION', 'v25.0'),
+        "environment": getattr(config, 'ENVIRONMENT', 'unknown')
+    }
+    
+    if token and phone_id:
+        validation = validate_whatsapp_token()
+        status["token_valid"] = validation.get("valid", False)
+        status["token_details"] = validation
+    else:
+        status["token_valid"] = False
+        status["error"] = "Token or Phone ID not configured"
+    
+    return status
+
+def check_whatsapp_token_health() -> Dict[str, Any]:
+    """
+    Quick health check for WhatsApp token.
+    Returns simple status for monitoring endpoints.
+    """
+    try:
+        from app.config import config
+        token = getattr(config, 'WHATSAPP_ACCESS_TOKEN', '')
+        phone_id = getattr(config, 'WHATSAPP_PHONE_NUMBER_ID', '')
+        
+        if not token or not phone_id:
+            return {
+                "status": "error",
+                "message": "WhatsApp configuration incomplete",
+                "token_configured": bool(token),
+                "phone_configured": bool(phone_id)
+            }
+        
+        validation = validate_whatsapp_token()
+        
+        if validation.get('valid'):
+            return {
+                "status": "ok",
+                "message": "WhatsApp token is valid",
+                "app_id": validation.get('app_id'),
+                "app_name": validation.get('app_name')
+            }
+        else:
+            return {
+                "status": "error",
+                "message": validation.get('message', 'Token invalid'),
+                "error_code": validation.get('error_code'),
+                "action": validation.get('action')
+            }
+            
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Health check failed: {str(e)}"
+        }
 
 # ==========================================================
-# END OF BLOCK 24 - FIXED v3.0
+# END OF BLOCK 24.5
 # ==========================================================
 
 # ==========================================================
@@ -2857,9 +3065,15 @@ __all__ = [
     'ConversationContext',
     'get_orchestrator',
     'process_whatsapp_query',
-    'test_database_connection'
+    'reset_orchestrator',
+    'get_orchestrator_status',
+    'test_database_connection',
+    'validate_whatsapp_token',
+    'get_whatsapp_config',
+    'get_whatsapp_health_status',
+    'check_whatsapp_token_health'
 ]
 
 # ==========================================================
-# END OF FILE - v27.0 PRODUCTION READY
+# END OF FILE - v28.0 PRODUCTION READY
 # ==========================================================
