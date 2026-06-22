@@ -1119,8 +1119,14 @@ class AIOrchestrator:
 # ==========================================================
 # BLOCK 17: ROUTE HANDLERS
 # ==========================================================
+# BLOCK 17: ROUTE HANDLERS (FIXED - v2.0)
+# ==========================================================
 
     def _route_dealer_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        """
+        Handle dealer dashboard with improved search and suggestions.
+        BLOCK 17 - FIXED
+        """
         dealer_name = entity
         if not dealer_name and context and context.last_dealer:
             dealer_name = context.last_dealer
@@ -1128,63 +1134,87 @@ class AIOrchestrator:
         if not dealer_name:
             return "🏪 *DEALER DASHBOARD*\n\nPlease specify a dealer name.\n\n*Examples:*\n• ZQ Electronics\n• Show dealer ZQ Electronics"
         
-        if entity:
-            resolved = self.resolver.resolve_dealer(entity)
-            if resolved:
-                dealer_name = resolved
-            else:
-                return f"❌ Dealer '{entity}' not found.\n\n💡 Please check the spelling or try a different dealer name."
+        # ✅ Try to resolve dealer
+        resolved = self.resolver.resolve_dealer(dealer_name)
         
-        response = self.analytics.get_dealer_dashboard(dealer_name)
+        # ✅ If not found, try searching for similar dealers
+        if not resolved:
+            logger.info(f"[{req_id}] 🔍 Dealer '{dealer_name}' not found, searching for similar...")
+            
+            # Try to find similar dealers using search
+            try:
+                similar = self.analytics.search_dealer(dealer_name, exact=False)
+                if similar and len(similar) > 0:
+                    suggestions = [s['dealer_name'] for s in similar[:5]]
+                    return f"❌ Dealer '{dealer_name}' not found.\n\n💡 Did you mean:\n" + "\n".join([f"• {s}" for s in suggestions[:3]])
+            except Exception as e:
+                logger.error(f"[{req_id}] Search error: {e}")
+            
+            # Try with individual words
+            tokens = dealer_name.split()
+            for token in tokens:
+                if len(token) > 2:
+                    resolved = self.resolver.resolve_dealer(token)
+                    if resolved:
+                        break
+            
+            if not resolved:
+                return f"❌ Dealer '{dealer_name}' not found.\n\n💡 Please check the spelling or try a different dealer name."
+        
+        response = self.analytics.get_dealer_dashboard(resolved)
         if not self._validate_response(response, "dealer_dashboard", req_id):
-            return f"❌ Unable to retrieve data for '{dealer_name}'."
-        return self._format_dealer_dashboard(response.data, dealer_name)
-    
-    def _route_dealer_ranking(self, req_id: str) -> str:
-        response = self.analytics.get_ranking_dashboard(limit=10)
-        if not self._validate_response(response, "dealer_ranking", req_id):
-            return "❌ Unable to retrieve dealer ranking."
-        return self._format_dealer_ranking(response.data)
-    
-    def _route_dealer_products(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        dealer_name = entity or (context.last_dealer if context else None)
-        if not dealer_name:
-            return "📦 *DEALER PRODUCTS*\n\nPlease specify a dealer name."
-        return f"📦 *PRODUCTS FOR {dealer_name.upper()}*\n\nProduct information coming soon."
+            return f"❌ Unable to retrieve data for '{resolved}'."
+        return self._format_dealer_dashboard(response.data, resolved)
     
     def _route_warehouse_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        """
+        Handle warehouse dashboard with improved search and suggestions.
+        BLOCK 17 - FIXED
+        """
         warehouse_name = entity
         if not warehouse_name and context and context.last_warehouse:
             warehouse_name = context.last_warehouse
         
         if not warehouse_name:
-            return "🏭 *WAREHOUSE DASHBOARD*\n\nPlease specify a warehouse name.\n\n*Examples:*\n• Lahore warehouse\n• Sahiwal"
+            return "🏭 *WAREHOUSE DASHBOARD*\n\nPlease specify a warehouse name.\n\n*Examples:*\n• Lahore warehouse\n• Rawalpindi warehouse"
         
+        # ✅ Try to resolve warehouse
         resolved = self.resolver.resolve_warehouse(warehouse_name)
+        
+        # ✅ If not found, try searching for similar warehouses
         if not resolved:
-            return f"❌ Warehouse '{warehouse_name}' not found."
+            logger.info(f"[{req_id}] 🔍 Warehouse '{warehouse_name}' not found, searching for similar...")
+            
+            # Try to find similar warehouses using search
+            try:
+                similar = self.analytics.search_warehouse(warehouse_name)
+                if similar and len(similar) > 0:
+                    suggestions = [s['warehouse'] for s in similar[:5]]
+                    return f"❌ Warehouse '{warehouse_name}' not found.\n\n💡 Did you mean:\n" + "\n".join([f"• {s}" for s in suggestions[:3]])
+            except Exception as e:
+                logger.error(f"[{req_id}] Search error: {e}")
+            
+            # Try with individual words
+            tokens = warehouse_name.split()
+            for token in tokens:
+                if len(token) > 2:
+                    resolved = self.resolver.resolve_warehouse(token)
+                    if resolved:
+                        break
+            
+            if not resolved:
+                return f"❌ Warehouse '{warehouse_name}' not found.\n\n💡 Please check the spelling or try a different warehouse name."
         
         response = self.analytics.get_warehouse_dashboard(resolved)
         if not self._validate_response(response, "warehouse_dashboard", req_id):
             return f"❌ Unable to retrieve data for warehouse '{resolved}'."
         return self._format_warehouse_dashboard(response.data, resolved)
     
-    def _route_warehouse_ranking(self, req_id: str) -> str:
-        return "🏆 *WAREHOUSE RANKING*\n\nWarehouse ranking coming soon."
-    
-    def _route_warehouse_coverage(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        warehouse_name = entity or (context.last_warehouse if context else None)
-        if not warehouse_name:
-            return "📍 *WAREHOUSE COVERAGE*\n\nPlease specify a warehouse name."
-        return f"📍 *COVERAGE FOR {warehouse_name.upper()}*\n\nCoverage information coming soon."
-    
-    def _route_warehouse_products(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        warehouse_name = entity or (context.last_warehouse if context else None)
-        if not warehouse_name:
-            return "📦 *WAREHOUSE PRODUCTS*\n\nPlease specify a warehouse name."
-        return f"📦 *PRODUCTS IN {warehouse_name.upper()}*\n\nProduct list coming soon."
-    
     def _route_city_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        """
+        Handle city dashboard with improved search and suggestions.
+        BLOCK 17 - FIXED
+        """
         city_name = entity
         if not city_name and context and context.last_city:
             city_name = context.last_city
@@ -1192,31 +1222,43 @@ class AIOrchestrator:
         if not city_name:
             return "🏙️ *CITY DASHBOARD*\n\nPlease specify a city name.\n\n*Examples:*\n• Haripur\n• Sahiwal"
         
+        # ✅ Try to resolve city
         resolved = self.resolver.resolve_city(city_name)
+        
+        # ✅ If not found, try searching for similar cities
         if not resolved:
-            return f"❌ City '{city_name}' not found."
+            logger.info(f"[{req_id}] 🔍 City '{city_name}' not found, searching for similar...")
+            
+            # Try to find similar cities using search
+            try:
+                similar = self.analytics.search_city(city_name)
+                if similar and len(similar) > 0:
+                    suggestions = [s['city'] for s in similar[:5]]
+                    return f"❌ City '{city_name}' not found.\n\n💡 Did you mean:\n" + "\n".join([f"• {s}" for s in suggestions[:3]])
+            except Exception as e:
+                logger.error(f"[{req_id}] Search error: {e}")
+            
+            # Try with individual words
+            tokens = city_name.split()
+            for token in tokens:
+                if len(token) > 2:
+                    resolved = self.resolver.resolve_city(token)
+                    if resolved:
+                        break
+            
+            if not resolved:
+                return f"❌ City '{city_name}' not found.\n\n💡 Please check the spelling or try a different city name."
         
         response = self.analytics.get_city_dashboard(resolved)
         if not self._validate_response(response, "city_dashboard", req_id):
             return f"❌ Unable to retrieve data for city '{resolved}'."
         return self._format_city_dashboard(response.data, resolved)
     
-    def _route_city_ranking(self, req_id: str) -> str:
-        return "🏆 *CITY RANKING*\n\nCity ranking coming soon."
-    
-    def _route_city_dealers(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        city_name = entity or (context.last_city if context else None)
-        if not city_name:
-            return "📍 *CITY DEALERS*\n\nPlease specify a city name."
-        return f"📍 *DEALERS IN {city_name.upper()}*\n\nDealer list coming soon."
-    
-    def _route_city_products(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        city_name = entity or (context.last_city if context else None)
-        if not city_name:
-            return "📦 *CITY PRODUCTS*\n\nPlease specify a city name."
-        return f"📦 *PRODUCTS IN {city_name.upper()}*\n\nProduct list coming soon."
-    
     def _route_product_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        """
+        Handle product dashboard with improved search and suggestions.
+        BLOCK 17 - FIXED
+        """
         product_name = entity
         if not product_name and context and context.last_product:
             product_name = context.last_product
@@ -1224,21 +1266,269 @@ class AIOrchestrator:
         if not product_name:
             return "📦 *PRODUCT DASHBOARD*\n\nPlease specify a product.\n\n*Examples:*\n• HRF-316IPGA\n• Model A123"
         
+        # ✅ Try to resolve product
         resolved = self.resolver.resolve_product(product_name)
+        
+        # ✅ If not found, try searching for similar products
         if not resolved:
-            return f"❌ Product '{product_name}' not found."
+            logger.info(f"[{req_id}] 🔍 Product '{product_name}' not found, searching for similar...")
+            
+            # Try to find similar products using search
+            try:
+                similar = self.analytics.search_product(product_name)
+                if similar and len(similar) > 0:
+                    suggestions = [s['product'] for s in similar[:5]]
+                    return f"❌ Product '{product_name}' not found.\n\n💡 Did you mean:\n" + "\n".join([f"• {s}" for s in suggestions[:3]])
+            except Exception as e:
+                logger.error(f"[{req_id}] Search error: {e}")
+            
+            return f"❌ Product '{product_name}' not found.\n\n💡 Please check the spelling or try a different product name."
         
         response = self.analytics.get_product_dashboard(resolved)
         if not self._validate_response(response, "product_dashboard", req_id):
             return f"❌ Unable to retrieve data for product '{resolved}'."
         return self._format_product_dashboard(response.data, resolved)
     
+    def _route_dn_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        """
+        Handle DN dashboard with improved search and suggestions.
+        BLOCK 17 - FIXED
+        """
+        dn_number = entity or (context.last_dn if context else None)
+        if not dn_number:
+            return "📄 *DN DASHBOARD*\n\nPlease provide a DN number.\n\n*Example:* 6243675570"
+        
+        dn_clean = re.sub(r'\D', '', str(dn_number).strip())
+        if len(dn_clean) < 8 or len(dn_clean) > 12:
+            return f"❌ Invalid DN number: '{dn_number}'\n\nDN numbers must be 8-12 digits."
+        
+        logger.info(f"[{req_id}] 🔍 Looking up DN: {dn_clean}")
+        
+        try:
+            response = self.analytics.get_dn_dashboard(dn_clean)
+            
+            if response is None:
+                return f"❌ Unable to retrieve data for DN {dn_clean}.\n\n💡 The system could not process your request."
+            
+            if hasattr(response, 'success'):
+                if not response.success:
+                    error_msg = getattr(response, 'error', 'Unknown error')
+                    return f"❌ Unable to retrieve data for DN {dn_clean}.\n\n{error_msg}"
+                
+                data = response.data
+                if data and isinstance(data, dict):
+                    if "error" in data:
+                        return f"❌ {data['error']}"
+                    
+                    # Format and return the dashboard
+                    return self._format_dn_dashboard(data, dn_clean)
+            
+            return f"❌ Unable to retrieve data for DN {dn_clean}."
+            
+        except Exception as e:
+            logger.error(f"[{req_id}] ❌ DN dashboard error: {e}")
+            return f"❌ Error retrieving DN {dn_clean}: {str(e)}"
+
+    def _route_dealer_ranking(self, req_id: str) -> str:
+        """
+        Handle dealer ranking.
+        BLOCK 17 - FIXED
+        """
+        response = self.analytics.get_ranking_dashboard(limit=10)
+        if not self._validate_response(response, "dealer_ranking", req_id):
+            return "❌ Unable to retrieve dealer ranking."
+        return self._format_dealer_ranking(response.data)
+    
+    def _route_dealer_products(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        """
+        Handle dealer products.
+        BLOCK 17 - FIXED
+        """
+        dealer_name = entity or (context.last_dealer if context else None)
+        if not dealer_name:
+            return "📦 *DEALER PRODUCTS*\n\nPlease specify a dealer name."
+        return f"📦 *PRODUCTS FOR {dealer_name.upper()}*\n\nProduct information coming soon."
+    
+    def _route_warehouse_ranking(self, req_id: str) -> str:
+        """
+        Handle warehouse ranking.
+        BLOCK 17 - FIXED
+        """
+        return "🏆 *WAREHOUSE RANKING*\n\nWarehouse ranking coming soon."
+    
+    def _route_warehouse_coverage(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        """
+        Handle warehouse coverage.
+        BLOCK 17 - FIXED
+        """
+        warehouse_name = entity or (context.last_warehouse if context else None)
+        if not warehouse_name:
+            return "📍 *WAREHOUSE COVERAGE*\n\nPlease specify a warehouse name."
+        return f"📍 *COVERAGE FOR {warehouse_name.upper()}*\n\nCoverage information coming soon."
+    
+    def _route_warehouse_products(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        """
+        Handle warehouse products.
+        BLOCK 17 - FIXED
+        """
+        warehouse_name = entity or (context.last_warehouse if context else None)
+        if not warehouse_name:
+            return "📦 *WAREHOUSE PRODUCTS*\n\nPlease specify a warehouse name."
+        return f"📦 *PRODUCTS IN {warehouse_name.upper()}*\n\nProduct list coming soon."
+    
+    def _route_city_ranking(self, req_id: str) -> str:
+        """
+        Handle city ranking.
+        BLOCK 17 - FIXED
+        """
+        return "🏆 *CITY RANKING*\n\nCity ranking coming soon."
+    
+    def _route_city_dealers(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        """
+        Handle city dealers.
+        BLOCK 17 - FIXED
+        """
+        city_name = entity or (context.last_city if context else None)
+        if not city_name:
+            return "📍 *CITY DEALERS*\n\nPlease specify a city name."
+        return f"📍 *DEALERS IN {city_name.upper()}*\n\nDealer list coming soon."
+    
+    def _route_city_products(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        """
+        Handle city products.
+        BLOCK 17 - FIXED
+        """
+        city_name = entity or (context.last_city if context else None)
+        if not city_name:
+            return "📦 *CITY PRODUCTS*\n\nPlease specify a city name."
+        return f"📦 *PRODUCTS IN {city_name.upper()}*\n\nProduct list coming soon."
+    
     def _route_product_ranking(self, req_id: str) -> str:
+        """
+        Handle product ranking.
+        BLOCK 17 - FIXED
+        """
         return "🏆 *PRODUCT RANKING*\n\nProduct ranking coming soon."
     
     def _route_product_trend(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        """
+        Handle product trend.
+        BLOCK 17 - FIXED
+        """
         return "📈 *PRODUCT TREND*\n\nProduct trend coming soon."
 
+    def _route_dn_analytics(self, req_id: str) -> str:
+        """
+        Handle DN analytics.
+        BLOCK 17 - FIXED
+        """
+        return "📊 *DN ANALYTICS*\n\nAnalytics coming soon."
+
+    def _route_pgi_dashboard(self, req_id: str) -> str:
+        """
+        Handle PGI dashboard.
+        BLOCK 17 - FIXED
+        """
+        response = self.analytics.get_pgi_dashboard()
+        if not self._validate_response(response, "pgi_dashboard", req_id):
+            return "❌ Unable to retrieve PGI data."
+        return self._format_pgi_dashboard(response.data)
+    
+    def _route_pod_dashboard(self, req_id: str) -> str:
+        """
+        Handle POD dashboard.
+        BLOCK 17 - FIXED
+        """
+        response = self.analytics.get_pod_dashboard()
+        if not self._validate_response(response, "pod_dashboard", req_id):
+            return "❌ Unable to retrieve POD data."
+        return self._format_pod_dashboard(response.data)
+    
+    def _route_delivery_dashboard(self, req_id: str) -> str:
+        """
+        Handle delivery dashboard.
+        BLOCK 17 - FIXED
+        """
+        response = self.analytics.get_delivery_dashboard()
+        if not self._validate_response(response, "delivery_dashboard", req_id):
+            return "❌ Unable to retrieve delivery data."
+        return self._format_delivery_dashboard(response.data)
+    
+    def _route_executive_dashboard(self, req_id: str) -> str:
+        """
+        Handle executive dashboard.
+        BLOCK 17 - FIXED
+        """
+        response = self.analytics.get_executive_dashboard()
+        if not self._validate_response(response, "executive_dashboard", req_id):
+            return "❌ Unable to retrieve executive data."
+        return self._format_executive_dashboard(response.data)
+    
+    def _route_control_tower(self, req_id: str) -> str:
+        """
+        Handle control tower dashboard.
+        BLOCK 17 - FIXED
+        """
+        response = self.analytics.get_control_tower_dashboard()
+        if not self._validate_response(response, "control_tower", req_id):
+            return "❌ Unable to retrieve control tower data."
+        return self._format_control_tower(response.data)
+    
+    def _route_revenue_dashboard(self, req_id: str) -> str:
+        """
+        Handle revenue dashboard.
+        BLOCK 17 - FIXED
+        """
+        response = self.analytics.get_revenue_dashboard()
+        if not self._validate_response(response, "revenue_dashboard", req_id):
+            return "❌ Unable to retrieve revenue data."
+        return self._format_revenue_dashboard(response.data)
+    
+    def _route_aging_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        """
+        Handle aging dashboard.
+        BLOCK 17 - FIXED
+        """
+        response = self.analytics.get_aging_dashboard()
+        if not self._validate_response(response, "aging_dashboard", req_id):
+            return "❌ Unable to retrieve aging data."
+        return self._format_aging_dashboard(response.data)
+    
+    def _route_division_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        """
+        Handle division dashboard.
+        BLOCK 17 - FIXED
+        """
+        division_name = entity or (context.last_division if context else None)
+        if not division_name:
+            return "📊 *DIVISION DASHBOARD*\n\nPlease specify a division name."
+        return f"📊 *DIVISION: {division_name.upper()}*\n\nDivision data coming soon."
+    
+    def _route_sales_manager_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        """
+        Handle sales manager dashboard.
+        BLOCK 17 - FIXED
+        """
+        sm_name = entity or (context.last_sales_manager if context else None)
+        if not sm_name:
+            return "👤 *SALES MANAGER DASHBOARD*\n\nPlease specify a sales manager name."
+        return f"👤 *SALES MANAGER: {sm_name.upper()}*\n\nSales manager data coming soon."
+    
+    def _route_sales_office_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        """
+        Handle sales office dashboard.
+        BLOCK 17 - FIXED
+        """
+        so_name = entity or (context.last_sales_office if context else None)
+        if not so_name:
+            return "🏢 *SALES OFFICE DASHBOARD*\n\nPlease specify a sales office name."
+        return f"🏢 *SALES OFFICE: {so_name.upper()}*\n\nSales office data coming soon."
+
+# ==========================================================
+# END OF BLOCK 17 - FIXED
+# ==========================================================
+
+    
 # ==========================================================
 # BLOCK 18: DN ROUTE HANDLER - ✅ FIXED
 # ==========================================================
