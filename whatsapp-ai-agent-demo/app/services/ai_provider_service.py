@@ -27,20 +27,33 @@ from app.database import SessionLocal, check_database_connection
 # ==========================================================
 # BLOCK 2: LAZY IMPORTS (FIXED)
 # ==========================================================
+# BLOCK 2: LAZY IMPORTS (FIXED v3.0 - FORCE LOAD)
+# ==========================================================
 
 def _get_analytics_service():
-    """Lazy load analytics service with diagnostics."""
+    """
+    Force load analytics service with comprehensive error handling.
+    BLOCK 2 - FIXED v3.0
+    """
     try:
+        # Force import
         from app.services.analytics_service import get_analytics_service, AnalyticsResponse
         
         logger.info("✅ Analytics service imported successfully")
         
-        # Get service instance
+        # Get service instance - THIS MUST WORK
         service = get_analytics_service()
         
         if service is None:
             logger.error("❌ Analytics service returned None")
-            return None, None
+            # Try to create manually
+            try:
+                from app.services.analytics_service import AnalyticsService
+                service = AnalyticsService()
+                logger.info("✅ AnalyticsService created manually")
+            except Exception as e:
+                logger.error(f"❌ Manual creation failed: {e}")
+                return None, None
         
         # Verify critical methods exist
         required_methods = [
@@ -48,7 +61,9 @@ def _get_analytics_service():
             "get_dn_dashboard",
             "get_warehouse_dashboard",
             "get_city_dashboard",
-            "get_product_dashboard"
+            "get_product_dashboard",
+            "search_dealer",
+            "verify_dealer_exists"
         ]
         
         missing = []
@@ -60,17 +75,29 @@ def _get_analytics_service():
                 logger.error(f"   ❌ {method}: MISSING")
         
         if missing:
-            logger.error(f"❌ Missing methods: {missing}")
-            # Return service anyway - it might work
-            return service, AnalyticsResponse
+            logger.error(f"❌ Missing {len(missing)} methods: {missing}")
+            return service, AnalyticsResponse  # Return anyway - might work
         
+        logger.info("✅ All required methods available")
         return service, AnalyticsResponse
         
     except ImportError as e:
         logger.error(f"❌ Import error: {e}")
         import traceback
         logger.error(traceback.format_exc())
-        return None, None
+        
+        # Try fallback import
+        try:
+            import sys
+            sys.path.insert(0, '/app')
+            from app.services.analytics_service import get_analytics_service, AnalyticsResponse
+            service = get_analytics_service()
+            logger.info("✅ Fallback import successful")
+            return service, AnalyticsResponse
+        except Exception as e2:
+            logger.error(f"❌ Fallback import failed: {e2}")
+            return None, None
+            
     except Exception as e:
         logger.error(f"❌ Error loading analytics service: {e}")
         import traceback
@@ -641,6 +668,9 @@ ENTITY_PATTERNS = {
 # ==========================================================
 # BLOCK 10: MAIN AI ROUTER
 # ==========================================================
+# ==========================================================
+# BLOCK 10: MAIN AI ROUTER (FIXED v3.0 - FORCE INIT)
+# ==========================================================
 
 class AIOrchestrator:
     def __init__(self, session_factory: Optional[Callable[[], Session]] = None):
@@ -664,6 +694,40 @@ class AIOrchestrator:
             "cache_hits": 0,
             "cache_misses": 0
         }
+        
+        # ==========================================================
+        # FORCE INITIALIZATION - Try multiple times
+        # ==========================================================
+        logger.info("=" * 70)
+        logger.info("AI Router v26.0 - Initializing...")
+        logger.info("=" * 70)
+        
+        # Try to initialize analytics
+        success = False
+        for attempt in range(3):
+            logger.info(f"🔄 Attempt {attempt + 1}/3 to initialize analytics...")
+            try:
+                # Force reload
+                self._analytics = None
+                self._analytics_response = None
+                service, response_class = _get_analytics_service()
+                self._analytics = service
+                self._analytics_response = response_class
+                
+                if self._analytics is not None:
+                    logger.info(f"✅ Analytics service initialized on attempt {attempt + 1}")
+                    success = True
+                    break
+                else:
+                    logger.warning(f"⚠️ Analytics service None on attempt {attempt + 1}")
+                    time.sleep(1)
+            except Exception as e:
+                logger.error(f"❌ Attempt {attempt + 1} failed: {e}")
+                time.sleep(1)
+        
+        if not success:
+            logger.error("❌ All attempts to initialize analytics failed!")
+            logger.error("   ⚠️ Service will not work properly!")
         
         # Startup diagnostics
         self._verify_analytics_methods()
@@ -697,14 +761,26 @@ class AIOrchestrator:
                 logger.error(f"   ❌ {method}: MISSING")
         
         if missing:
-            logger.error(f"⚠️ Missing methods: {missing}")
+            logger.error(f"⚠️ Missing {len(missing)} methods: {missing}")
+            logger.error("   💡 Check analytics_service.py for missing methods")
+        else:
+            logger.info("✅ All required methods available!")
     
     @property
     def analytics(self):
+        """Get analytics service with lazy loading and retry"""
         if self._analytics is None:
+            logger.warning("⚠️ Analytics service is None - attempting to reload...")
             service, response_class = _get_analytics_service()
             self._analytics = service
             self._analytics_response = response_class
+            
+            if self._analytics is None:
+                logger.error("❌ Analytics service still None after reload")
+            else:
+                logger.info("✅ Analytics service reloaded successfully")
+                self._verify_analytics_methods()
+        
         return self._analytics
     
     @property
@@ -712,7 +788,6 @@ class AIOrchestrator:
         if self._resolver is None:
             self._resolver = PostgreSQLResolver(self.session_factory)
         return self._resolver
-
 # ==========================================================
 # BLOCK 11: INTENT DETECTION (FIXED v5.0)
 # ==========================================================
@@ -1274,19 +1349,14 @@ class AIOrchestrator:
 
 # ==========================================================
 # BLOCK 17: ROUTE HANDLERS (FIXED v5.0)
-    # ==========================================================
-# _route_dealer_dashboard - FIXED v6.0
+# ==========================================================
+# _route_dealer_dashboard - FORCE RETRY v7.0
 # ==========================================================
 
     def _route_dealer_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         """
-        Handle dealer dashboard with improved validation and error handling.
-        BLOCK 17 - FIXED v6.0
-        
-        Fixes:
-        - Proper analytics service initialization check with retry
-        - Automatic reload if method missing
-        - Better error messages
+        Handle dealer dashboard with FORCE RETRY.
+        BLOCK 17 - FIXED v7.0
         """
         import time
         start_time = time.time()
@@ -1296,39 +1366,43 @@ class AIOrchestrator:
         logger.info(f"[{req_id}] 📥 Context last_dealer: {context.last_dealer if context else None}")
         
         # ==========================================================
-        # STEP 1: Ensure analytics service is available
+        # STEP 1: FORCE ANALYTICS LOAD - Try multiple times
         # ==========================================================
-        if self.analytics is None:
-            logger.warning(f"[{req_id}] ⚠️ Analytics service is None - reloading...")
-            self._analytics = None
-            self._analytics_response = None
-            # Force reload
+        for attempt in range(3):
             if self.analytics is None:
-                logger.error(f"[{req_id}] ❌ Analytics service still None after reload")
-                return "⚠️ Service temporarily unavailable. Please try again later."
-            logger.info(f"[{req_id}] ✅ Analytics service reloaded successfully")
+                logger.warning(f"[{req_id}] ⚠️ Analytics is None - retry {attempt + 1}/3")
+                self._analytics = None
+                self._analytics_response = None
+                # Force reload
+                service, response_class = _get_analytics_service()
+                self._analytics = service
+                self._analytics_response = response_class
+                time.sleep(0.5)
+            else:
+                break
+        
+        if self.analytics is None:
+            logger.error(f"[{req_id}] ❌ Analytics service unavailable after 3 attempts")
+            return "⚠️ Service temporarily unavailable. Please try again later."
         
         # ==========================================================
-        # STEP 2: Check if get_dealer_dashboard exists - retry if not
+        # STEP 2: FORCE METHOD CHECK - Try multiple times
         # ==========================================================
         if not hasattr(self.analytics, 'get_dealer_dashboard'):
-            logger.warning(f"[{req_id}] ⚠️ get_dealer_dashboard not found - attempting reload...")
-            # Force reload analytics
+            logger.warning(f"[{req_id}] ⚠️ get_dealer_dashboard not found - reloading...")
             self._analytics = None
             self._analytics_response = None
-            if self.analytics is None:
-                logger.error(f"[{req_id}] ❌ Reload failed")
+            
+            # Try to reload
+            service, response_class = _get_analytics_service()
+            self._analytics = service
+            self._analytics_response = response_class
+            
+            if self.analytics is None or not hasattr(self.analytics, 'get_dealer_dashboard'):
+                logger.error(f"[{req_id}] ❌ get_dealer_dashboard still not available")
                 return "⚠️ Service temporarily unavailable. Please try again later."
             
-            # Check again after reload
-            if not hasattr(self.analytics, 'get_dealer_dashboard'):
-                logger.error(f"[{req_id}] ❌ get_dealer_dashboard still not available after reload")
-                # Log available methods for debugging
-                available_methods = [m for m in dir(self.analytics) if not m.startswith('_')]
-                logger.error(f"[{req_id}] Available methods: {available_methods}")
-                return "⚠️ Service temporarily unavailable. Please try again later."
-            
-            logger.info(f"[{req_id}] ✅ get_dealer_dashboard now available after reload")
+            logger.info(f"[{req_id}] ✅ get_dealer_dashboard now available")
         
         # ==========================================================
         # STEP 3: Get dealer name
@@ -1358,22 +1432,10 @@ class AIOrchestrator:
         
         try:
             # ==========================================================
-            # STEP 4: Get dashboard with try/except
+            # STEP 4: Get dashboard
             # ==========================================================
-            try:
-                response = self.analytics.get_dealer_dashboard(dealer_name)
-                logger.info(f"[{req_id}] 📊 Dashboard response received: {type(response)}")
-            except AttributeError as e:
-                logger.error(f"[{req_id}] ❌ AttributeError: {e}")
-                # One more retry with reload
-                self._analytics = None
-                self._analytics_response = None
-                if self.analytics is None:
-                    return "⚠️ Service temporarily unavailable. Please try again later."
-                response = self.analytics.get_dealer_dashboard(dealer_name)
-            except Exception as e:
-                logger.error(f"[{req_id}] ❌ Error: {e}")
-                return f"❌ Error retrieving data: {str(e)[:100]}"
+            response = self.analytics.get_dealer_dashboard(dealer_name)
+            logger.info(f"[{req_id}] 📊 Dashboard response received: {type(response)}")
             
             # ==========================================================
             # STEP 5: Validate response
@@ -1381,7 +1443,6 @@ class AIOrchestrator:
             is_valid, error_msg, data = self._validate_response(response, "Dealer Dashboard", req_id)
             
             if not is_valid:
-                # Check if we have suggestions
                 if data and isinstance(data, dict) and "suggestions" in data:
                     suggestions = data.get("suggestions", [])
                     if suggestions:
@@ -1415,6 +1476,10 @@ class AIOrchestrator:
             return f"❌ Error retrieving dealer data: {str(e)[:100]}"
 
 # ==========================================================
+# END OF FIXED _route_dealer_dashboard
+# ==========================================================
+    
+    # ==========================================================
 # END OF FIXED _route_dealer_dashboard
 # ==========================================================
 ## ==========================================================
