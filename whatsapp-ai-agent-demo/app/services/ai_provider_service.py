@@ -1235,32 +1235,77 @@ class AIOrchestrator:
 # ==========================================================
 # BLOCK 12: SINGLETON & WRAPPER FUNCTIONS
 # ==========================================================
+# ==========================================================
+# BLOCK 12: SINGLETON & WRAPPER FUNCTIONS (FIXED v4.0)
+# ==========================================================
 
 _orchestrator = None
 _initialization_attempts = 0
 _MAX_INIT_ATTEMPTS = 3
 
 def get_orchestrator(session_factory: Optional[Callable[[], Session]] = None) -> Optional[AIOrchestrator]:
-    """Get or create AI Orchestrator singleton."""
+    """
+    Get or create AI Orchestrator singleton with detailed error logging.
+    BLOCK 12 - FIXED v4.0 - PRODUCTION GRADE
+    """
     global _orchestrator, _initialization_attempts
     
+    # If already initialized, return it
     if _orchestrator is not None:
+        logger.info("✅ Returning existing orchestrator instance")
         return _orchestrator
     
+    # Check max attempts
     if _initialization_attempts >= _MAX_INIT_ATTEMPTS:
         logger.error(f"❌ Max initialization attempts ({_MAX_INIT_ATTEMPTS}) reached")
+        logger.error("   💡 Restart the service to reset")
         return None
     
     _initialization_attempts += 1
     logger.info(f"🔄 Initializing AI Orchestrator (attempt {_initialization_attempts}/{_MAX_INIT_ATTEMPTS})...")
     
     try:
+        # Log before initialization
+        logger.info("📌 Attempting to create AIOrchestrator...")
+        
         _orchestrator = AIOrchestrator(session_factory=session_factory)
+        
+        # Verify orchestrator was created
+        if _orchestrator is None:
+            logger.error("❌ AIOrchestrator creation returned None")
+            return None
+        
+        # Verify analytics is available
+        if not hasattr(_orchestrator, 'analytics'):
+            logger.error("❌ Orchestrator missing 'analytics' attribute")
+            _orchestrator = None
+            return None
+        
+        if _orchestrator.analytics is None:
+            logger.error("❌ Orchestrator analytics is None")
+            logger.warning("⚠️ Analytics service failed to initialize")
+            # Don't fail completely - we can still use fallback
+            
         logger.info("✅ AI Orchestrator v30.0 initialized successfully")
+        logger.info(f"📊 Analytics available: {_orchestrator.analytics is not None}")
+        
         _initialization_attempts = 0
         return _orchestrator
+        
+    except ImportError as e:
+        logger.error(f"❌ ImportError during initialization: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        logger.error("   💡 Check that all required services are installed")
+        _orchestrator = None
+        return None
+        
     except Exception as e:
         logger.error(f"❌ Failed to initialize AI Orchestrator: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        logger.error(f"   💡 Error type: {type(e).__name__}")
+        logger.error(f"   💡 Error message: {str(e)}")
         _orchestrator = None
         return None
 
@@ -1272,27 +1317,61 @@ def process_whatsapp_query(
     user_id: Optional[str] = None,
     request_id: Optional[str] = None
 ) -> str:
-    """Process WhatsApp query with all services integrated."""
+    """
+    Process WhatsApp query with all services integrated.
+    BLOCK 12 - FIXED v4.0 - PRODUCTION GRADE
+    """
     global _orchestrator
     
+    # Validate input
     if not question or not question.strip():
         return "Please provide a valid question. Type 'help' for menu."
     
+    # Get orchestrator
+    logger.info(f"📥 Processing: '{question[:100]}'")
+    logger.info("🔍 Getting orchestrator instance...")
+    
     orchestrator = get_orchestrator(session_factory)
     
+    # Check orchestrator
     if orchestrator is None:
+        logger.error("❌ Orchestrator is None - service initialization failed")
+        
+        # Try emergency reset
+        logger.info("🔄 Attempting emergency reset...")
+        reset_orchestrator()
+        
+        try:
+            orchestrator = AIOrchestrator(session_factory=session_factory)
+            _orchestrator = orchestrator
+            logger.info("✅ Emergency reset successful")
+        except Exception as e:
+            logger.error(f"❌ Emergency reset failed: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return "⚠️ AI service is currently unavailable. Please try again later."
+    
+    # Final check
+    if orchestrator is None:
+        logger.error("❌ Orchestrator still None after emergency reset")
         return "⚠️ AI service is currently unavailable. Please try again later."
     
+    # Process the query
     try:
-        return orchestrator.process_whatsapp_query(
+        logger.info("✅ Orchestrator acquired, processing query...")
+        result = orchestrator.process_whatsapp_query(
             question=question,
             session_factory=session_factory,
             phone_number=phone_number,
             user_id=user_id,
             request_id=request_id
         )
+        return result
+        
     except Exception as e:
         logger.error(f"❌ Error processing query: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return f"⚠️ Error processing your request. Please try again later."
 
 
@@ -1304,6 +1383,20 @@ def reset_orchestrator() -> None:
     logger.info("🔄 Orchestrator reset successfully")
 
 
+def get_orchestrator_status() -> Dict[str, Any]:
+    """Get current orchestrator status for diagnostics."""
+    global _orchestrator, _initialization_attempts
+    
+    return {
+        "orchestrator_initialized": _orchestrator is not None,
+        "initialization_attempts": _initialization_attempts,
+        "max_attempts": _MAX_INIT_ATTEMPTS,
+        "analytics_available": hasattr(_orchestrator, 'analytics') and _orchestrator.analytics is not None if _orchestrator else False,
+        "distance_available": hasattr(_orchestrator, 'distance_service') and _orchestrator.distance_service is not None if _orchestrator else False,
+        "dealer_analytics_available": hasattr(_orchestrator, 'dealer_analytics') and _orchestrator.dealer_analytics is not None if _orchestrator else False,
+        "conversation_count": len(_orchestrator.conversation_cache) if _orchestrator else 0,
+        "metrics": _orchestrator.metrics if _orchestrator else {}
+    }
 # ==========================================================
 # BLOCK 13: EXPORTS
 # ==========================================================
