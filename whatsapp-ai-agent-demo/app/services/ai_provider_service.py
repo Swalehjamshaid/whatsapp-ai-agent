@@ -16,12 +16,15 @@ from loguru import logger
 from sqlalchemy.orm import Session
 from sqlalchemy import func, cast, String, and_, or_, text
 
+
+
 # ==========================================================
 # BLOCK 1: POSTGRESQL IMPORTS - THE SOURCE OF TRUTH
 # ==========================================================
 
 from app.models import DeliveryReport
 from app.database import SessionLocal, check_database_connection
+from sqlalchemy import func, cast, String, and_, or_, text, distinct
 
 # ==========================================================
 # BLOCK 1.5: SERVICE IMPORTS - LAZY LOADING
@@ -113,106 +116,278 @@ def _create_response_class():
 # ==========================================================
 # SECTION 2.3: POSTGRESQL HEALTH ENGINE
 # ==========================================================
+# ==========================================================
+# BLOCK 2.3: POSTGRESQL HEALTH ENGINE (HOTFIX v14.0)
+# ==========================================================
 
 def _validate_postgresql_health() -> Dict[str, Any]:
     """
     Comprehensive PostgreSQL health validation.
-    Returns detailed health status.
+    
+    CRITICAL: Only fail on critical issues.
+    Optional columns generate warnings, NOT errors.
+    
+    Critical Issues (FAIL):
+    - Database connection failed
+    - Table 'delivery_reports' missing
+    - Total records = 0
+    - dn_no column missing/has no data
+    - customer_name column missing/has no data
+    - warehouse column missing/has no data
+    - ship_to_city column missing/has no data
+    
+    Optional Issues (WARNINGS):
+    - dealer_code empty
+    - customer_code empty
+    - warehouse_code empty
+    - sales_manager empty
+    - sales_office empty
+    - division empty
+    - delivery_status empty
+    - pgi_status empty
+    - pod_status empty
+    - pending_flag empty
+    
+    Statistics errors (WARNINGS):
+    - COUNT DISTINCT queries should not fail health
     """
     global _analytics_health_status
     
     result = {
+        "status": "unknown",
         "connected": False,
-        "healthy": False,
-        "total_records": 0,
-        "total_dns": 0,
-        "total_dealers": 0,
-        "total_warehouses": 0,
-        "total_cities": 0,
-        "columns_validated": [],
-        "errors": []
+        "table_exists": False,
+        "record_count": 0,
+        "critical_columns": {},
+        "optional_columns": {},
+        "statistics": {},
+        "errors": [],
+        "warnings": [],
+        "database_version": None,
+        "timestamp": datetime.now().isoformat()
     }
     
     try:
         db = SessionLocal()
         
-        # Validate table exists - check record count
+        # Get database version (optional)
+        try:
+            version = db.execute(text("SELECT version()")).scalar()
+            result["database_version"] = version.split()[1] if version else "Unknown"
+            logger.info(f"📌 PostgreSQL Version: {result['database_version']}")
+        except Exception as e:
+            result["warnings"].append(f"Could not get database version: {str(e)}")
+        
+        # ==========================================================
+        # CRITICAL: Check table exists
+        # ==========================================================
         try:
             total_records = db.query(DeliveryReport).count()
-            result["total_records"] = total_records
-            if total_records > 0:
-                result["columns_validated"].append("table_exists")
+            result["record_count"] = total_records
+            result["table_exists"] = True
+            result["connected"] = True
+            logger.info(f"✅ Table 'delivery_reports' exists with {total_records} records")
         except Exception as e:
             result["errors"].append(f"Table validation failed: {str(e)}")
+            result["status"] = "critical"
             db.close()
+            _analytics_health_status["errors"] = result["errors"]
             return result
         
+        # ==========================================================
+        # CRITICAL: Check if any data exists
+        # ==========================================================
         if total_records == 0:
             result["errors"].append("No records found in delivery_reports table")
+            result["status"] = "critical"
             db.close()
+            _analytics_health_status["errors"] = result["errors"]
             return result
         
-        # Validate columns have data
-        columns_to_check = [
-            ("customer_name", "customer_name IS NOT NULL AND customer_name != ''"),
-            ("dealer_code", "dealer_code IS NOT NULL AND dealer_code != ''"),
-            ("customer_code", "customer_code IS NOT NULL AND customer_code != ''"),
-            ("warehouse", "warehouse IS NOT NULL AND warehouse != ''"),
-            ("ship_to_city", "ship_to_city IS NOT NULL AND ship_to_city != ''"),
-            ("dn_no", "dn_no IS NOT NULL AND dn_no != ''"),
-            ("dn_qty", "dn_qty IS NOT NULL"),
-            ("dn_amount", "dn_amount IS NOT NULL")
+        # ==========================================================
+        # CRITICAL COLUMNS - Service FAILS if these are missing
+        # ==========================================================
+        critical_columns = [
+            "dn_no", "customer_name", "warehouse", "ship_to_city"
         ]
         
-        for col_name, condition in columns_to_check:
+        for col in critical_columns:
             try:
-                count = db.query(DeliveryReport).filter(text(condition)).count()
+                # Check if column has any non-null data
+                count = db.query(DeliveryReport).filter(
+                    getattr(DeliveryReport, col).isnot(None)
+                ).count()
+                
+                result["critical_columns"][col] = {
+                    "exists": True,
+                    "non_null_count": count,
+                    "has_data": count > 0
+                }
+                
                 if count > 0:
-                    result["columns_validated"].append(f"{col_name}_exists")
+                    logger.info(f"✅ Critical column '{col}' validated ({count} non-null values)")
                 else:
-                    result["errors"].append(f"Column '{col_name}' has no valid data")
+                    result["errors"].append(f"Critical column '{col}' has all NULL values")
+                    logger.error(f"❌ Critical column '{col}' has all NULL values")
+                    
             except Exception as e:
-                result["errors"].append(f"Column '{col_name}' validation failed: {str(e)}")
+                result["critical_columns"][col] = {
+                    "exists": False,
+                    "non_null_count": 0,
+                    "has_data": False
+                }
+                result["errors"].append(f"Critical column '{col}' missing: {str(e)}")
+                logger.error(f"❌ Critical column '{col}' missing: {str(e)}")
         
-        # Get statistics
+        # ==========================================================
+        # OPTIONAL COLUMNS - WARNINGS ONLY, NOT ERRORS (FIXED)
+        # ==========================================================
+        optional_columns = [
+            "dealer_code", "customer_code", "warehouse_code",
+            "customer_model", "material_no", "sales_office",
+            "sales_manager", "division", "delivery_status",
+            "pgi_status", "pod_status", "pending_flag"
+        ]
+        
+        for col in optional_columns:
+            try:
+                count = db.query(DeliveryReport).filter(
+                    getattr(DeliveryReport, col).isnot(None)
+                ).count()
+                
+                result["optional_columns"][col] = {
+                    "exists": True,
+                    "non_null_count": count,
+                    "has_data": count > 0
+                }
+                
+                if count == 0:
+                    # WARNING only - NOT an error
+                    result["warnings"].append(f"Optional column '{col}' has all NULL values")
+                    logger.warning(f"⚠️ Optional column '{col}' has all NULL values")
+                    
+            except Exception as e:
+                result["optional_columns"][col] = {
+                    "exists": False,
+                    "non_null_count": 0,
+                    "has_data": False
+                }
+                # WARNING only - NOT an error
+                result["warnings"].append(f"Optional column '{col}' missing: {str(e)}")
+                logger.warning(f"⚠️ Optional column '{col}' missing: {str(e)}")
+        
+        # ==========================================================
+        # STATISTICS - WARNINGS ONLY, NEVER FAIL HEALTH (FIXED)
+        # ==========================================================
         try:
-            result["total_dns"] = db.query(func.count(distinct(DeliveryReport.dn_no))).scalar() or 0
-            result["total_dealers"] = db.query(func.count(distinct(DeliveryReport.customer_name))).scalar() or 0
-            result["total_warehouses"] = db.query(func.count(distinct(DeliveryReport.warehouse))).scalar() or 0
-            result["total_cities"] = db.query(func.count(distinct(DeliveryReport.ship_to_city))).scalar() or 0
+            # Try to get statistics - if this fails, it's a WARNING, not an error
+            stats = {
+                "total_dns": 0,
+                "total_dealers": 0,
+                "total_warehouses": 0,
+                "total_cities": 0,
+                "total_products": 0
+            }
+            
+            try:
+                stats["total_dns"] = db.query(func.count(distinct(DeliveryReport.dn_no))).scalar() or 0
+                logger.info(f"📦 Total DNs: {stats['total_dns']}")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not count DNs: {e}")
+                result["warnings"].append(f"DN count failed: {str(e)}")
+            
+            try:
+                stats["total_dealers"] = db.query(func.count(distinct(DeliveryReport.customer_name))).scalar() or 0
+                logger.info(f"🏪 Total Dealers: {stats['total_dealers']}")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not count dealers: {e}")
+                result["warnings"].append(f"Dealer count failed: {str(e)}")
+            
+            try:
+                stats["total_warehouses"] = db.query(func.count(distinct(DeliveryReport.warehouse))).scalar() or 0
+                logger.info(f"🏭 Total Warehouses: {stats['total_warehouses']}")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not count warehouses: {e}")
+                result["warnings"].append(f"Warehouse count failed: {str(e)}")
+            
+            try:
+                stats["total_cities"] = db.query(func.count(distinct(DeliveryReport.ship_to_city))).scalar() or 0
+                logger.info(f"🏙️ Total Cities: {stats['total_cities']}")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not count cities: {e}")
+                result["warnings"].append(f"City count failed: {str(e)}")
+            
+            try:
+                stats["total_products"] = db.query(func.count(distinct(DeliveryReport.customer_model))).scalar() or 0
+                logger.info(f"📦 Total Products: {stats['total_products']}")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not count products: {e}")
+                result["warnings"].append(f"Product count failed: {str(e)}")
+            
+            result["statistics"] = stats
+            
         except Exception as e:
-            result["errors"].append(f"Statistics query failed: {str(e)}")
+            result["warnings"].append(f"Statistics query failed: {str(e)}")
+            logger.warning(f"⚠️ Statistics query failed: {str(e)}")
         
         db.close()
         
-        # Determine health
-        result["connected"] = True
-        result["healthy"] = (
-            result["total_records"] > 0 and
-            len(result["errors"]) == 0 and
-            len(result["columns_validated"]) >= 6
-        )
+        # ==========================================================
+        # DETERMINE STATUS - Only CRITICAL on actual failures
+        # ==========================================================
+        critical_errors = len([e for e in result["errors"] if "critical" in e.lower()])
+        critical_missing = len([c for c in result["critical_columns"].values() if not c.get("exists", False)])
+        has_critical = any([c.get("has_data", False) == False for c in result["critical_columns"].values()])
         
-        # Update global status
+        if not result["connected"]:
+            result["status"] = "critical"
+        elif not result["table_exists"]:
+            result["status"] = "critical"
+        elif result["record_count"] == 0:
+            result["status"] = "critical"
+        elif critical_errors > 0 or critical_missing > 0:
+            result["status"] = "critical"
+        elif has_critical:
+            result["status"] = "critical"
+        elif len(result["warnings"]) > 5:
+            result["status"] = "degraded"
+        else:
+            result["status"] = "healthy"
+        
+        # ==========================================================
+        # UPDATE GLOBAL STATUS
+        # ==========================================================
         _analytics_health_status.update({
-            "initialized": True,
+            "initialized": result["status"] != "critical",
             "database_connected": result["connected"],
-            "total_records": result["total_records"],
-            "total_dns": result["total_dns"],
-            "total_dealers": result["total_dealers"],
-            "total_warehouses": result["total_warehouses"],
-            "total_cities": result["total_cities"],
+            "status": result["status"],
+            "total_records": result["record_count"],
+            "total_dns": result["statistics"].get("total_dns", 0),
+            "total_dealers": result["statistics"].get("total_dealers", 0),
+            "total_warehouses": result["statistics"].get("total_warehouses", 0),
+            "total_cities": result["statistics"].get("total_cities", 0),
             "last_check": datetime.now().isoformat(),
-            "errors": result["errors"]
+            "errors": result["errors"],
+            "warnings": result["warnings"]
         })
+        
+        logger.info(f"✅ Database Health Status: {result['status'].upper()}")
+        
+        if result["warnings"]:
+            logger.warning(f"⚠️ {len(result['warnings'])} warnings detected")
         
         return result
         
     except Exception as e:
-        result["errors"].append(f"Database connection failed: {str(e)}")
-        _analytics_health_status["errors"].append(str(e))
+        error_msg = f"Database connection failed: {str(e)}"
+        result["errors"].append(error_msg)
+        result["status"] = "critical"
+        logger.error(f"❌ {error_msg}")
+        
+        _analytics_health_status["errors"] = result["errors"]
+        _analytics_health_status["status"] = "critical"
+        
         return result
-
 # ==========================================================
 # SECTION 2.4: ERROR RESPONSE (NO DUMMY DATA)
 # ==========================================================
@@ -287,16 +462,20 @@ def _create_error_response(error_msg: str, error_type: str = "SERVICE_INITIALIZA
 # ==========================================================
 # SECTION 2.5: MAIN ANALYTICS LOADER
 # ==========================================================
+# ==========================================================
+# BLOCK 2.5: MAIN ANALYTICS LOADER (HOTFIX v14.0)
+# ==========================================================
 
 def _get_analytics_service():
     """
     Load analytics service with comprehensive validation.
-    BLOCK 2 - PRODUCTION GRADE v13.0
-    ALWAYS returns valid service or structured error.
-    NEVER returns dummy data.
+    BLOCK 2.5 - HOTFIX v14.0 - PRODUCTION GRADE
+    
+    CRITICAL FIX: Health check warnings do NOT block analytics.
+    Only critical failures block analytics.
     """
     logger.info("=" * 70)
-    logger.info("🔍 ANALYTICS SERVICE LOADER - PRODUCTION GRADE v13.0")
+    logger.info("🔍 ANALYTICS SERVICE LOADER - HOTFIX v14.0")
     logger.info("=" * 70)
     
     # ==========================================================
@@ -323,22 +502,25 @@ def _get_analytics_service():
     
     logger.info(f"📌 PostgreSQL Health Check:")
     logger.info(f"   ✅ Connected: {health['connected']}")
-    logger.info(f"   ✅ Healthy: {health['healthy']}")
-    logger.info(f"   📊 Total Records: {health['total_records']}")
-    logger.info(f"   📦 Total DNs: {health['total_dns']}")
-    logger.info(f"   🏪 Total Dealers: {health['total_dealers']}")
-    logger.info(f"   🏭 Total Warehouses: {health['total_warehouses']}")
-    logger.info(f"   🏙️ Total Cities: {health['total_cities']}")
+    logger.info(f"   ✅ Status: {health['status']}")
+    logger.info(f"   📊 Total Records: {health['record_count']}")
+    logger.info(f"   📦 Total DNs: {health['statistics'].get('total_dns', 0)}")
+    logger.info(f"   🏪 Total Dealers: {health['statistics'].get('total_dealers', 0)}")
+    logger.info(f"   🏭 Total Warehouses: {health['statistics'].get('total_warehouses', 0)}")
+    logger.info(f"   🏙️ Total Cities: {health['statistics'].get('total_cities', 0)}")
     
-    if not health['healthy']:
-        error_msg = f"PostgreSQL health check failed: {', '.join(health['errors'])}"
+    if health['warnings']:
+        logger.warning(f"⚠️ {len(health['warnings'])} warnings detected (non-critical)")
+        for warning in health['warnings'][:3]:
+            logger.warning(f"   • {warning}")
+    
+    # ==========================================================
+    # CRITICAL: Only fail on critical status
+    # ==========================================================
+    if health['status'] == 'critical':
+        error_msg = f"PostgreSQL health check failed (CRITICAL): {', '.join(health['errors'])}"
         logger.error(f"❌ {error_msg}")
         return _create_error_response(error_msg, "DATABASE_UNHEALTHY")
-    
-    if health['total_records'] == 0:
-        error_msg = "No records found in delivery_reports table"
-        logger.error(f"❌ {error_msg}")
-        return _create_error_response(error_msg, "NO_DATA")
     
     # ==========================================================
     # VALIDATION 3: Import Analytics Service
