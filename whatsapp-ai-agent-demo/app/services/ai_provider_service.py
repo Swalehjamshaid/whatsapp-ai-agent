@@ -27,20 +27,21 @@ from app.database import SessionLocal, check_database_connection
 # BLOCK 2: LAZY IMPORTS (FIXED v4.0 - WITH AI CHECK)
 # ==========================================================
 # ==========================================================
-# BLOCK 2: LAZY IMPORTS (FIXED v7.0 - PRODUCTION READY)
+# BLOCK 2: LAZY IMPORTS (FIXED v8.0 - PRODUCTION GRADE)
 # ==========================================================
 
 def _get_analytics_service():
     """
-    Load analytics service with comprehensive diagnostics.
-    BLOCK 2 - FIXED v7.0 - FORCES REAL ANALYTICS
+    Load analytics service with comprehensive validation.
+    BLOCK 2 - FIXED v8.0 - PRODUCTION GRADE
+    Raises detailed errors instead of silent fallback.
     """
     logger.info("=" * 70)
-    logger.info("🔍 ANALYTICS SERVICE DIAGNOSTICS")
+    logger.info("🔍 ANALYTICS SERVICE LOADER - PRODUCTION GRADE")
     logger.info("=" * 70)
     
     # ==========================================================
-    # DIAGNOSTIC 1: Check AI Analysis Enabled
+    # VALIDATION 1: Check AI Analysis Enabled
     # ==========================================================
     try:
         from app.config import config
@@ -48,16 +49,15 @@ def _get_analytics_service():
         logger.info(f"📌 AI_ANALYSIS_ENABLED: {ai_enabled}")
         
         if not ai_enabled:
-            logger.error("❌ AI_ANALYSIS_ENABLED is False")
-            logger.error("   💡 Set AI_ANALYSIS_ENABLED=True in config")
-            logger.info("=" * 70)
-            return _create_fallback_analytics(), None
+            error_msg = "AI_ANALYSIS_ENABLED is False. Set to True in config."
+            logger.error(f"❌ {error_msg}")
+            raise RuntimeError(error_msg)
     except Exception as e:
-        logger.error(f"❌ Config import failed: {e}")
-        return _create_fallback_analytics(), None
+        logger.error(f"❌ Config validation failed: {e}")
+        raise
     
     # ==========================================================
-    # DIAGNOSTIC 2: Test Database Connection
+    # VALIDATION 2: Test Database Connection
     # ==========================================================
     try:
         from app.database import SessionLocal
@@ -66,7 +66,7 @@ def _get_analytics_service():
         
         db = SessionLocal()
         
-        # Full database statistics
+        # Test connection and get statistics
         total_records = db.query(DeliveryReport).count()
         total_dns = db.query(func.count(distinct(DeliveryReport.dn_no))).scalar()
         total_dealers = db.query(func.count(distinct(DeliveryReport.customer_name))).scalar()
@@ -75,80 +75,60 @@ def _get_analytics_service():
         
         db.close()
         
-        logger.info(f"📌 Database connected. Found {total_records} records in delivery_reports")
-        logger.info(f"   📊 Total DNs: {total_dns}")
+        logger.info(f"📌 PostgreSQL Connection: SUCCESS")
+        logger.info(f"   📊 Total Records: {total_records}")
+        logger.info(f"   📦 Total DNs: {total_dns}")
         logger.info(f"   🏪 Total Dealers: {total_dealers}")
         logger.info(f"   🏭 Total Warehouses: {total_warehouses}")
         logger.info(f"   🏙️ Total Cities: {total_cities}")
         
         if total_records == 0:
-            logger.error("❌ Database has ZERO records! Add data to see analytics.")
-            logger.info("=" * 70)
-            return _create_fallback_analytics(), None
+            logger.warning("⚠️ Database has ZERO records - dashboards will show zeros")
+            logger.warning("   💡 Insert data into delivery_reports table")
             
     except Exception as e:
-        logger.error(f"❌ Database connection test failed: {e}")
+        error_msg = f"Database connection failed: {str(e)}"
+        logger.error(f"❌ {error_msg}")
         import traceback
         logger.error(traceback.format_exc())
-        logger.info("=" * 70)
-        return _create_fallback_analytics(), None
+        raise RuntimeError(error_msg)
     
     # ==========================================================
-    # DIAGNOSTIC 3: Import Analytics Service
+    # VALIDATION 3: Import Analytics Service
     # ==========================================================
     try:
         from app.services.analytics_service import get_analytics_service, AnalyticsResponse
         logger.info("✅ Analytics service imported successfully")
     except ImportError as e:
-        logger.error(f"❌ Analytics service import error: {e}")
+        error_msg = f"Analytics service import failed: {str(e)}"
+        logger.error(f"❌ {error_msg}")
         import traceback
         logger.error(traceback.format_exc())
-        logger.info("=" * 70)
-        return _create_fallback_analytics(), None
+        raise RuntimeError(error_msg)
     
     # ==========================================================
-    # DIAGNOSTIC 4: Get Service Instance - FORCE REAL SERVICE
+    # VALIDATION 4: Get Service Instance
     # ==========================================================
     try:
         service = get_analytics_service()
         
-        # CRITICAL FIX: If service is None, create it manually
         if service is None:
-            logger.error("❌ Analytics service returned None - Creating manually...")
-            try:
-                from app.services.analytics_service import AnalyticsService
-                service = AnalyticsService()
-                logger.info("✅ AnalyticsService created manually")
-            except Exception as e:
-                logger.error(f"❌ Manual creation failed: {e}")
-                logger.info("=" * 70)
-                return _create_fallback_analytics(), None
-        
-        # CRITICAL FIX: Check if service is real or fallback
-        if hasattr(service, 'repo') and hasattr(service, 'get_dealer_360_dashboard'):
-            logger.info("✅ Using REAL AnalyticsService")
-        else:
-            logger.warning("⚠️ Service appears to be fallback - creating REAL service")
-            try:
-                from app.services.analytics_service import AnalyticsService
-                service = AnalyticsService()
-                logger.info("✅ REAL AnalyticsService created successfully")
-            except Exception as e:
-                logger.error(f"❌ Failed to create REAL service: {e}")
-                return _create_fallback_analytics(), None
+            error_msg = "Analytics service returned None"
+            logger.error(f"❌ {error_msg}")
+            raise RuntimeError(error_msg)
         
         logger.info(f"📊 Service type: {type(service)}")
         logger.info(f"📊 Service class: {service.__class__.__name__}")
         
     except Exception as e:
-        logger.error(f"❌ Failed to get analytics service: {e}")
+        error_msg = f"Failed to get analytics service: {str(e)}"
+        logger.error(f"❌ {error_msg}")
         import traceback
         logger.error(traceback.format_exc())
-        logger.info("=" * 70)
-        return _create_fallback_analytics(), None
+        raise RuntimeError(error_msg)
     
     # ==========================================================
-    # DIAGNOSTIC 5: Verify Required Methods
+    # VALIDATION 5: Verify Required Methods
     # ==========================================================
     required_methods = [
         "get_dn_dashboard",
@@ -175,15 +155,14 @@ def _get_analytics_service():
             logger.error(f"   ❌ {method}: MISSING")
     
     if missing_methods:
-        logger.error(f"❌ Missing {len(missing_methods)} methods: {missing_methods}")
-        logger.warning("⚠️ Creating fallback analytics due to missing methods")
-        logger.info("=" * 70)
-        return _create_fallback_analytics(), AnalyticsResponse
+        error_msg = f"Missing {len(missing_methods)} required methods: {missing_methods}"
+        logger.error(f"❌ {error_msg}")
+        raise RuntimeError(error_msg)
     
     logger.info(f"✅ All {len(available_methods)} required methods available")
     
     # ==========================================================
-    # DIAGNOSTIC 6: Test a Sample Query
+    # VALIDATION 6: Test a Sample Query
     # ==========================================================
     try:
         test_dealers = service.search_dealer("test", exact=False)
@@ -199,9 +178,10 @@ def _get_analytics_service():
             logger.info(f"✅ Dealer search test: {type(test_dealers)}")
     except Exception as e:
         logger.warning(f"⚠️ Dealer search test failed: {e}")
+        logger.warning("   Continuing initialization...")
     
     # ==========================================================
-    # DIAGNOSTIC 7: Get Sample Data
+    # VALIDATION 7: Get Sample Data
     # ==========================================================
     try:
         from app.database import SessionLocal
@@ -212,15 +192,17 @@ def _get_analytics_service():
         if sample:
             logger.info(f"✅ Sample DN: {sample[0]} for Dealer: {sample[1]}")
         else:
-            logger.warning("⚠️ No sample data found")
+            logger.warning("⚠️ No sample data found - database may be empty")
     except Exception as e:
         logger.warning(f"⚠️ Sample query failed: {e}")
     
     logger.info("=" * 70)
-    logger.info("✅ Analytics service initialized - USING REAL POSTGRESQL DATA")
+    logger.info("✅ Analytics service initialized successfully")
+    logger.info("✅ Service is ready to serve REAL PostgreSQL data")
     logger.info("=" * 70)
     
     return service, AnalyticsResponse
+
 # ==========================================================
 # END OF BLOCK 2 - FIXED v5.0
 # ==========================================================
