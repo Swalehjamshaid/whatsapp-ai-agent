@@ -1283,15 +1283,16 @@ class AnalyticsRepository:
     
     # ==========================================================
 # BLOCK 11: DEALER DASHBOARD (PRODUCTION-GRADE v4.0 - FIXED)
+#==========================================================
+
 # ==========================================================
-# ==========================================================
-# BLOCK 11: DEALER DASHBOARD (FIXED)
+# BLOCK 11: DEALER DASHBOARD (PRODUCTION-GRADE v5.0 - FIXED)
 # ==========================================================
 
     def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         """
         Complete dealer dashboard - Supports 360° view with fallback.
-        BLOCK 11 - FIXED
+        BLOCK 11 - FIXED: Removed MAX() from text fields, uses DISTINCT ON.
         """
         import time
         start_time = time.time()
@@ -1318,7 +1319,7 @@ class AnalyticsRepository:
                     logger.warning(f"⚠️ 360 dashboard failed, falling back to legacy: {e}")
             
             # ==========================================================
-            # STEP 2: Fallback to legacy implementation
+            # STEP 2: Fallback to legacy implementation (FIXED)
             # ==========================================================
             logger.info(f"🔍 Using legacy dashboard for: '{dealer_name}'")
             
@@ -1341,14 +1342,29 @@ class AnalyticsRepository:
                 
                 return {"error": f"Dealer '{dealer_name}' not found"}
             
-            # Query dealer data
-            result = self.db.query(
-                DeliveryReport.customer_name.label("dealer_name"),
-                func.max(DeliveryReport.dealer_code).label("dealer_code"),
-                func.max(DeliveryReport.customer_code).label("customer_code"),
-                func.max(DeliveryReport.division).label("division"),
-                func.max(DeliveryReport.warehouse).label("warehouse"),
-                func.max(DeliveryReport.ship_to_city).label("city"),
+            # ==========================================================
+            # STEP 3: Get dealer profile using DISTINCT ON (FIXED)
+            # ==========================================================
+            # Get the latest record for this dealer
+            profile_result = self.db.query(
+                DeliveryReport.dealer_code,
+                DeliveryReport.customer_code,
+                DeliveryReport.division,
+                DeliveryReport.warehouse,
+                DeliveryReport.ship_to_city,
+                DeliveryReport.sales_office,
+                DeliveryReport.sales_manager
+            ).filter(
+                func.lower(DeliveryReport.customer_name) == func.lower(resolved)
+            ).order_by(
+                DeliveryReport.customer_name,
+                DeliveryReport.dn_create_date.desc()
+            ).first()
+            
+            # ==========================================================
+            # STEP 4: Query dealer metrics
+            # ==========================================================
+            metrics_result = self.db.query(
                 func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
                 func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("total_units"),
                 func.coalesce(func.sum(DeliveryReport.dn_amount), 0).label("total_revenue"),
@@ -1361,18 +1377,19 @@ class AnalyticsRepository:
                 func.count(distinct(DeliveryReport.customer_model)).label("product_count"),
                 func.count(distinct(DeliveryReport.ship_to_city)).label("city_count")
             ).filter(
-                DeliveryReport.customer_name == resolved
-            ).group_by(
-                DeliveryReport.customer_name
+                func.lower(DeliveryReport.customer_name) == func.lower(resolved)
             ).first()
             
-            if not result or result.total_dns == 0:
+            if not metrics_result or metrics_result.total_dns == 0:
                 return {"error": f"No data found for dealer '{resolved}'"}
             
-            total_dns = result.total_dns or 1
-            delivered_dns = result.delivered_dns or 0
-            transit_dns = result.transit_dns or 0
-            pod_completed = result.pod_completed_dns or 0
+            # ==========================================================
+            # STEP 5: Build response with profile data
+            # ==========================================================
+            total_dns = metrics_result.total_dns or 1
+            delivered_dns = metrics_result.delivered_dns or 0
+            transit_dns = metrics_result.transit_dns or 0
+            pod_completed = metrics_result.pod_completed_dns or 0
             
             delivery_rate = KPIEngine.calculate_delivery_rate(delivered_dns, total_dns)
             pgi_rate = KPIEngine.calculate_pgi_rate(delivered_dns, transit_dns, total_dns)
@@ -1386,22 +1403,27 @@ class AnalyticsRepository:
             
             response = {
                 "dealer_name": resolved,
-                "dealer_code": result.dealer_code or "",
-                "customer_code": result.customer_code or "",
-                "division": result.division or "",
-                "warehouse": result.warehouse or "",
-                "city": result.city or "",
+                # Profile data from DISTINCT ON
+                "dealer_code": profile_result[0] if profile_result else "",
+                "customer_code": profile_result[1] if profile_result else "",
+                "division": profile_result[2] if profile_result else "",
+                "warehouse": profile_result[3] if profile_result else "",
+                "city": profile_result[4] if profile_result else "",
+                "sales_office": profile_result[5] if profile_result else "",
+                "sales_manager": profile_result[6] if profile_result else "",
+                # Metrics
                 "total_dns": total_dns,
-                "total_units": int(result.total_units or 0),
-                "total_revenue": float(result.total_revenue or 0),
+                "total_units": int(metrics_result.total_units or 0),
+                "total_revenue": float(metrics_result.total_revenue or 0),
                 "delivered_dns": delivered_dns,
-                "pending_dns": result.pending_dns or 0,
+                "pending_dns": metrics_result.pending_dns or 0,
                 "transit_dns": transit_dns,
                 "pod_completed_dns": pod_completed,
-                "pending_pod_dns": result.pending_pod_dns or 0,
-                "pending_pgi_dns": result.pending_pgi_dns or 0,
-                "product_count": result.product_count or 0,
-                "city_count": result.city_count or 0,
+                "pending_pod_dns": metrics_result.pending_pod_dns or 0,
+                "pending_pgi_dns": metrics_result.pending_pgi_dns or 0,
+                "product_count": metrics_result.product_count or 0,
+                "city_count": metrics_result.city_count or 0,
+                # KPIs
                 "delivery_rate": delivery_rate,
                 "pgi_rate": pgi_rate,
                 "pod_rate": pod_rate,
@@ -1409,20 +1431,22 @@ class AnalyticsRepository:
                     "delivery_rate": delivery_rate,
                     "pod_rate": pod_rate,
                     "avg_aging": 0,
-                    "revenue": float(result.total_revenue or 0)
+                    "revenue": float(metrics_result.total_revenue or 0)
                 }),
                 "risk_level": risk_level,
                 "risk_score": risk_score
             }
             
-            # Add distance if available
+            # ==========================================================
+            # STEP 6: Add distance if available
+            # ==========================================================
             try:
-                if result.warehouse and result.city:
+                if profile_result and profile_result[3] and profile_result[4]:
                     from app.services.distance_service import get_distance_service
                     distance_service = get_distance_service()
                     distance_info = distance_service.calculate_warehouse_distance(
-                        result.warehouse,
-                        result.city
+                        profile_result[3],  # warehouse
+                        profile_result[4]   # city
                     )
                     if distance_info and distance_info.get('success'):
                         response['distance_km'] = distance_info.get('distance_km')
@@ -1441,7 +1465,8 @@ class AnalyticsRepository:
             import traceback
             logger.error(traceback.format_exc())
             return {"error": f"Failed to load dealer data: {str(e)[:100]}"}
-==========================================================
+
+    
     # ==========================================================
 # BLOCK 12: WAREHOUSE DASHBOARD (FIXED)
 # ==========================================================
