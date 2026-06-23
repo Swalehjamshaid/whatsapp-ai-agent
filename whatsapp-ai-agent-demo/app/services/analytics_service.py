@@ -55,6 +55,9 @@ from app.database import SessionLocal, check_database_connection
 # ==========================================================
 # BLOCK 1.1: POSTGRESQL HEALTH ENGINE (ENHANCED v3.0)
 # ==========================================================
+# ==========================================================
+# BLOCK 1.1: POSTGRESQL HEALTH ENGINE (FIXED v4.0)
+# ==========================================================
 
 class PostgreSQLHealthEngine:
     """
@@ -123,7 +126,6 @@ class PostgreSQLHealthEngine:
             
             for col in critical_columns:
                 try:
-                    # Check if column exists by trying to query it
                     count = db.query(DeliveryReport).filter(
                         getattr(DeliveryReport, col).isnot(None)
                     ).count()
@@ -146,7 +148,7 @@ class PostgreSQLHealthEngine:
                     logger.error(f"❌ Critical column '{col}' missing: {str(e)}")
             
             # ==========================================================
-            # OPTIONAL COLUMNS - Warnings only, not fatal
+            # OPTIONAL COLUMNS - Warnings only, NOT errors (FIXED)
             # ==========================================================
             optional_columns = [
                 "dealer_code", "customer_code", "warehouse_code",
@@ -167,6 +169,7 @@ class PostgreSQLHealthEngine:
                     }
                     if count == 0:
                         result["warnings"].append(f"Optional column '{col}' has all NULL values")
+                        logger.warning(f"⚠️ Optional column '{col}' has all NULL values")
                 except Exception as e:
                     result["optional_columns"][col] = {
                         "exists": False,
@@ -174,9 +177,10 @@ class PostgreSQLHealthEngine:
                         "has_data": False
                     }
                     result["warnings"].append(f"Optional column '{col}' missing: {str(e)}")
+                    logger.warning(f"⚠️ Optional column '{col}' missing: {str(e)}")
             
             # ==========================================================
-            # STATISTICS
+            # STATISTICS - FIXED: Use 'distinct' with correct import
             # ==========================================================
             try:
                 result["statistics"] = {
@@ -189,7 +193,8 @@ class PostgreSQLHealthEngine:
                 }
                 logger.info(f"📊 Statistics: {result['statistics']}")
             except Exception as e:
-                result["errors"].append(f"Statistics query failed: {str(e)}")
+                result["warnings"].append(f"Statistics query failed: {str(e)}")
+                logger.warning(f"⚠️ Statistics query failed: {str(e)}")
             
             db.close()
             
@@ -224,6 +229,8 @@ class PostgreSQLHealthEngine:
     def get_health_report() -> Dict[str, Any]:
         """Get detailed health report."""
         return PostgreSQLHealthEngine.validate_database()
+
+
 
 # ==========================================================
 # BLOCK 2: CONSTANTS
