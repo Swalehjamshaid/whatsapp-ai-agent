@@ -1,7 +1,7 @@
 # ==========================================================
-# FILE: app/services/ai_provider_service.py (v30.0 - FULLY INTEGRATED)
-# PURPOSE: COMPLETE AI ORCHESTRATION WITH ALL SERVICES
-# VERSION: 30.0 - Full Integration with Analytics, Distance, Dealer Analytics
+# FILE: app/services/ai_provider_service.py (v31.0 - ENTERPRISE)
+# PURPOSE: PRODUCTION-GRADE AI ORCHESTRATION WITH POSTGRESQL
+# VERSION: 31.0 - Enterprise Refactoring - No Dummy Data
 # ==========================================================
 
 import time
@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from cachetools import TTLCache, LRUCache
 from loguru import logger
 from sqlalchemy.orm import Session
-from sqlalchemy import func, cast, String, and_, or_
+from sqlalchemy import func, cast, String, and_, or_, text
 
 # ==========================================================
 # BLOCK 1: POSTGRESQL IMPORTS - THE SOURCE OF TRUTH
@@ -24,9 +24,10 @@ from app.models import DeliveryReport
 from app.database import SessionLocal, check_database_connection
 
 # ==========================================================
-# BLOCK 1.5: SERVICE IMPORTS - FULL INTEGRATION
+# BLOCK 1.5: SERVICE IMPORTS - LAZY LOADING
 # ==========================================================
 
+# Analytics Service - Import at module level
 try:
     from app.services.analytics_service import get_analytics_service, AnalyticsResponse
     logger.info("✅ Analytics service imported successfully")
@@ -35,311 +36,378 @@ except ImportError as e:
     get_analytics_service = None
     AnalyticsResponse = None
 
+# Distance Service - Import at module level
 try:
-    from app.services.distance_service import DistanceService
+    from app.services.distance_service import DistanceService, get_distance_service
     logger.info("✅ Distance service imported successfully")
 except ImportError as e:
     logger.error(f"❌ Distance service import failed: {e}")
     DistanceService = None
+    get_distance_service = None
 
-try:
-    from app.services.dealer_analytics_service import DealerAnalyticsService, format_dealer_360_dashboard
-    logger.info("✅ Dealer Analytics service imported successfully")
-except ImportError as e:
-    logger.error(f"❌ Dealer Analytics service import failed: {e}")
-    DealerAnalyticsService = None
-    format_dealer_360_dashboard = None
+# Dealer Analytics - LAZY LOADING (imported only when needed)
+# This prevents circular imports
+DealerAnalyticsService = None
+format_dealer_360_dashboard = None
+
+def _get_dealer_analytics_service():
+    """Lazy load DealerAnalyticsService to prevent circular imports."""
+    global DealerAnalyticsService, format_dealer_360_dashboard
+    
+    if DealerAnalyticsService is None:
+        try:
+            from app.services.dealer_analytics_service import DealerAnalyticsService as _DealerAnalyticsService
+            from app.services.dealer_analytics_service import format_dealer_360_dashboard as _format_dealer_360_dashboard
+            DealerAnalyticsService = _DealerAnalyticsService
+            format_dealer_360_dashboard = _format_dealer_360_dashboard
+            logger.info("✅ Dealer Analytics service loaded lazily")
+        except ImportError as e:
+            logger.error(f"❌ Dealer Analytics service import failed: {e}")
+            DealerAnalyticsService = None
+            format_dealer_360_dashboard = None
+    
+    return DealerAnalyticsService, format_dealer_360_dashboard
+
 
 # ==========================================================
-# BLOCK 2: ANALYTICS SERVICE LOADER (FIXED v10.0)
+# BLOCK 2: ANALYTICS SERVICE LOADER (PRODUCTION GRADE v13.0)
 # ==========================================================
+
+import threading
+from datetime import datetime
+import traceback as tb
+
 # ==========================================================
-# BLOCK 2: ANALYTICS SERVICE LOADER (EMERGENCY FIX v12.0)
+# SECTION 2.1: GLOBALS & LOCKS
+# ==========================================================
+
+_analytics_service_instance = None
+_analytics_service_lock = threading.Lock()
+_analytics_health_status = {
+    "initialized": False,
+    "database_connected": False,
+    "total_records": 0,
+    "total_dns": 0,
+    "total_dealers": 0,
+    "total_warehouses": 0,
+    "total_cities": 0,
+    "last_check": None,
+    "errors": []
+}
+
+# ==========================================================
+# SECTION 2.2: RESPONSE CLASS
 # ==========================================================
 
 def _create_response_class():
-    """Create a dummy response class for fallback."""
-    class DummyResponse:
-        def __init__(self, data=None, success=True, error=None):
+    """Create response class for analytics service."""
+    class AnalyticsResponse:
+        def __init__(self, data=None, success=True, error=None, error_id=None):
             self.data = data or {}
             self.success = success
             self.error = error
-    return DummyResponse
+            self.error_id = error_id or str(uuid.uuid4())[:8]
+            self.timestamp = datetime.now().isoformat()
+    return AnalyticsResponse
 
+# ==========================================================
+# SECTION 2.3: POSTGRESQL HEALTH ENGINE
+# ==========================================================
 
-def _get_guaranteed_analytics():
+def _validate_postgresql_health() -> Dict[str, Any]:
     """
-    EMERGENCY: ALWAYS returns a working analytics service.
-    NEVER returns None.
+    Comprehensive PostgreSQL health validation.
+    Returns detailed health status.
     """
-    logger.info("🔧 EMERGENCY: Getting guaranteed analytics service...")
+    global _analytics_health_status
     
-    # ATTEMPT 1: Get from analytics_service.py
+    result = {
+        "connected": False,
+        "healthy": False,
+        "total_records": 0,
+        "total_dns": 0,
+        "total_dealers": 0,
+        "total_warehouses": 0,
+        "total_cities": 0,
+        "columns_validated": [],
+        "errors": []
+    }
+    
     try:
-        from app.services.analytics_service import get_analytics_service
-        service = get_analytics_service()
-        if service is not None:
-            logger.info("✅ Got analytics service from get_analytics_service()")
-            return service
-        else:
-            logger.error("❌ get_analytics_service() returned None")
-    except ImportError as e:
-        logger.error(f"❌ ImportError in get_analytics_service: {e}")
+        db = SessionLocal()
+        
+        # Validate table exists - check record count
+        try:
+            total_records = db.query(DeliveryReport).count()
+            result["total_records"] = total_records
+            if total_records > 0:
+                result["columns_validated"].append("table_exists")
+        except Exception as e:
+            result["errors"].append(f"Table validation failed: {str(e)}")
+            db.close()
+            return result
+        
+        if total_records == 0:
+            result["errors"].append("No records found in delivery_reports table")
+            db.close()
+            return result
+        
+        # Validate columns have data
+        columns_to_check = [
+            ("customer_name", "customer_name IS NOT NULL AND customer_name != ''"),
+            ("dealer_code", "dealer_code IS NOT NULL AND dealer_code != ''"),
+            ("customer_code", "customer_code IS NOT NULL AND customer_code != ''"),
+            ("warehouse", "warehouse IS NOT NULL AND warehouse != ''"),
+            ("ship_to_city", "ship_to_city IS NOT NULL AND ship_to_city != ''"),
+            ("dn_no", "dn_no IS NOT NULL AND dn_no != ''"),
+            ("dn_qty", "dn_qty IS NOT NULL"),
+            ("dn_amount", "dn_amount IS NOT NULL")
+        ]
+        
+        for col_name, condition in columns_to_check:
+            try:
+                count = db.query(DeliveryReport).filter(text(condition)).count()
+                if count > 0:
+                    result["columns_validated"].append(f"{col_name}_exists")
+                else:
+                    result["errors"].append(f"Column '{col_name}' has no valid data")
+            except Exception as e:
+                result["errors"].append(f"Column '{col_name}' validation failed: {str(e)}")
+        
+        # Get statistics
+        try:
+            result["total_dns"] = db.query(func.count(distinct(DeliveryReport.dn_no))).scalar() or 0
+            result["total_dealers"] = db.query(func.count(distinct(DeliveryReport.customer_name))).scalar() or 0
+            result["total_warehouses"] = db.query(func.count(distinct(DeliveryReport.warehouse))).scalar() or 0
+            result["total_cities"] = db.query(func.count(distinct(DeliveryReport.ship_to_city))).scalar() or 0
+        except Exception as e:
+            result["errors"].append(f"Statistics query failed: {str(e)}")
+        
+        db.close()
+        
+        # Determine health
+        result["connected"] = True
+        result["healthy"] = (
+            result["total_records"] > 0 and
+            len(result["errors"]) == 0 and
+            len(result["columns_validated"]) >= 6
+        )
+        
+        # Update global status
+        _analytics_health_status.update({
+            "initialized": True,
+            "database_connected": result["connected"],
+            "total_records": result["total_records"],
+            "total_dns": result["total_dns"],
+            "total_dealers": result["total_dealers"],
+            "total_warehouses": result["total_warehouses"],
+            "total_cities": result["total_cities"],
+            "last_check": datetime.now().isoformat(),
+            "errors": result["errors"]
+        })
+        
+        return result
+        
     except Exception as e:
-        logger.error(f"❌ get_analytics_service() failed: {e}")
+        result["errors"].append(f"Database connection failed: {str(e)}")
+        _analytics_health_status["errors"].append(str(e))
+        return result
+
+# ==========================================================
+# SECTION 2.4: ERROR RESPONSE (NO DUMMY DATA)
+# ==========================================================
+
+def _create_error_response(error_msg: str, error_type: str = "SERVICE_INITIALIZATION_FAILED"):
+    """
+    Create structured error response when service cannot be initialized.
+    NEVER returns fake/dummy data.
+    """
+    error_id = str(uuid.uuid4())[:8]
     
-    # ATTEMPT 2: Create directly from AnalyticsService
-    try:
-        from app.services.analytics_service import AnalyticsService
-        service = AnalyticsService()
-        logger.info("✅ Created AnalyticsService directly")
-        return service
-    except ImportError as e:
-        logger.error(f"❌ AnalyticsService ImportError: {e}")
-    except Exception as e:
-        logger.error(f"❌ AnalyticsService creation failed: {e}")
-    
-    # ATTEMPT 3: Create from local file
-    try:
-        from app.services.analytics_service import AnalyticsService
-        import sys
-        import importlib
-        importlib.reload(sys.modules['app.services.analytics_service'])
-        service = AnalyticsService()
-        logger.info("✅ Created AnalyticsService after reload")
-        return service
-    except Exception as e:
-        logger.error(f"❌ Reload creation failed: {e}")
-    
-    # ULTIMATE FALLBACK: Dummy service that returns mock data
-    logger.warning("⚠️ Using DUMMY analytics service - Real data not available")
-    
-    class DummyAnalytics:
-        def get_dn_dashboard(self, dn_no):
-            logger.warning(f"⚠️ DUMMY: get_dn_dashboard({dn_no})")
+    class ErrorResponse:
+        def __init__(self):
+            self.error = error_msg
+            self.error_id = error_id
+            self.error_type = error_type
+            self.success = False
+        
+        def _error_result(self, entity=None, entity_type=None):
             return {
-                "dn_number": dn_no,
-                "customer_name": "Test Dealer - Data Missing",
-                "dealer_code": "N/A",
-                "customer_code": "N/A",
-                "warehouse": "N/A",
-                "ship_to_city": "N/A",
-                "sales_office": "N/A",
-                "sales_manager": "N/A",
-                "division": "N/A",
-                "customer_model": "N/A",
-                "material_no": "N/A",
-                "units": 0,
-                "amount": 0,
-                "dn_create_date": "N/A",
-                "good_issue_date": "N/A",
-                "pod_date": "N/A",
-                "delivery_status": "Unknown",
-                "pgi_status": "N/A",
-                "pod_status": "N/A",
-                "pending_flag": False,
-                "delivery_aging_text": "N/A",
-                "pod_aging_text": "N/A",
-                "total_cycle_text": "N/A",
-                "error": f"DN {dn_no} not found in database",
-                "hint": "Please add data to delivery_reports table"
+                "error": self.error,
+                "error_id": self.error_id,
+                "error_type": self.error_type,
+                "entity": entity,
+                "entity_type": entity_type,
+                "suggested_action": "Check PostgreSQL connection, verify data exists, and restart service",
+                "timestamp": datetime.now().isoformat()
             }
+        
+        def get_dn_dashboard(self, dn_no):
+            return self._error_result(entity=dn_no, entity_type="dn")
         
         def get_dealer_dashboard(self, dealer_name):
-            logger.warning(f"⚠️ DUMMY: get_dealer_dashboard({dealer_name})")
-            return {
-                "dealer_name": dealer_name,
-                "dealer_code": "N/A",
-                "customer_code": "N/A",
-                "division": "N/A",
-                "warehouse": "N/A",
-                "city": "N/A",
-                "total_dns": 0,
-                "total_units": 0,
-                "total_revenue": 0,
-                "delivered_dns": 0,
-                "pending_dns": 0,
-                "transit_dns": 0,
-                "delivery_rate": 0,
-                "pgi_rate": 0,
-                "pod_rate": 0,
-                "health_score": 0,
-                "risk_level": "Unknown",
-                "error": f"No data found for dealer '{dealer_name}'"
-            }
+            return self._error_result(entity=dealer_name, entity_type="dealer")
         
         def get_warehouse_dashboard(self, warehouse_name):
-            return {"warehouse": warehouse_name, "error": "Service unavailable"}
+            return self._error_result(entity=warehouse_name, entity_type="warehouse")
         
         def get_city_dashboard(self, city_name):
-            return {"city_name": city_name, "error": "Service unavailable"}
+            return self._error_result(entity=city_name, entity_type="city")
         
         def get_product_dashboard(self, product_name):
-            return {"product": product_name, "error": "Service unavailable"}
+            return self._error_result(entity=product_name, entity_type="product")
         
-        def search_dn(self, query): return []
-        def search_dealer(self, query): return []
-        def search_warehouse(self, query): return []
-        def search_city(self, query): return []
-        def search_product(self, query): return []
-        def verify_dn_exists(self, dn_no): return False
-        def verify_dealer_exists(self, dealer_name): return False
+        def search_dn(self, *args, **kwargs):
+            return []
+        
+        def search_dealer(self, *args, **kwargs):
+            return []
+        
+        def search_warehouse(self, *args, **kwargs):
+            return []
+        
+        def search_city(self, *args, **kwargs):
+            return []
+        
+        def search_product(self, *args, **kwargs):
+            return []
+        
+        def verify_dn_exists(self, *args, **kwargs):
+            return False
+        
+        def verify_dealer_exists(self, *args, **kwargs):
+            return False
+        
         def get_dealer_360_dashboard(self, dealer_name):
-            return {"error": f"No data found for dealer '{dealer_name}'"}
+            return self._error_result(entity=dealer_name, entity_type="dealer")
     
-    logger.warning("⚠️ Returning DUMMY analytics service")
-    return DummyAnalytics()
+    logger.error(f"❌ Returning error response: {error_msg} (ID: {error_id})")
+    return ErrorResponse(), None
 
+# ==========================================================
+# SECTION 2.5: MAIN ANALYTICS LOADER
+# ==========================================================
 
 def _get_analytics_service():
     """
     Load analytics service with comprehensive validation.
-    BLOCK 2 - EMERGENCY FIX v12.0 - PRODUCTION GRADE
-    ALWAYS returns valid service and response class. NEVER returns None.
+    BLOCK 2 - PRODUCTION GRADE v13.0
+    ALWAYS returns valid service or structured error.
+    NEVER returns dummy data.
     """
     logger.info("=" * 70)
-    logger.info("🔍 ANALYTICS SERVICE LOADER - EMERGENCY FIX v12.0")
+    logger.info("🔍 ANALYTICS SERVICE LOADER - PRODUCTION GRADE v13.0")
     logger.info("=" * 70)
     
     # ==========================================================
-    # STEP 1: Get guaranteed service
+    # VALIDATION 1: Check AI Analysis Enabled
     # ==========================================================
     try:
-        service = _get_guaranteed_analytics()
+        from app.config import config
+        ai_enabled = getattr(config, 'AI_ANALYSIS_ENABLED', True)
+        logger.info(f"📌 AI_ANALYSIS_ENABLED: {ai_enabled}")
+        
+        if not ai_enabled:
+            error_msg = "AI_ANALYSIS_ENABLED is False"
+            logger.error(f"❌ {error_msg}")
+            logger.error("   💡 Set AI_ANALYSIS_ENABLED=True in config")
+            return _create_error_response(error_msg, "AI_DISABLED")
+    except Exception as e:
+        logger.error(f"❌ Config validation failed: {e}")
+        return _create_error_response(f"Config validation failed: {str(e)}", "CONFIG_ERROR")
+    
+    # ==========================================================
+    # VALIDATION 2: PostgreSQL Health Check
+    # ==========================================================
+    health = _validate_postgresql_health()
+    
+    logger.info(f"📌 PostgreSQL Health Check:")
+    logger.info(f"   ✅ Connected: {health['connected']}")
+    logger.info(f"   ✅ Healthy: {health['healthy']}")
+    logger.info(f"   📊 Total Records: {health['total_records']}")
+    logger.info(f"   📦 Total DNs: {health['total_dns']}")
+    logger.info(f"   🏪 Total Dealers: {health['total_dealers']}")
+    logger.info(f"   🏭 Total Warehouses: {health['total_warehouses']}")
+    logger.info(f"   🏙️ Total Cities: {health['total_cities']}")
+    
+    if not health['healthy']:
+        error_msg = f"PostgreSQL health check failed: {', '.join(health['errors'])}"
+        logger.error(f"❌ {error_msg}")
+        return _create_error_response(error_msg, "DATABASE_UNHEALTHY")
+    
+    if health['total_records'] == 0:
+        error_msg = "No records found in delivery_reports table"
+        logger.error(f"❌ {error_msg}")
+        return _create_error_response(error_msg, "NO_DATA")
+    
+    # ==========================================================
+    # VALIDATION 3: Import Analytics Service
+    # ==========================================================
+    if get_analytics_service is None:
+        error_msg = "Analytics service not available (import failed)"
+        logger.error(f"❌ {error_msg}")
+        return _create_error_response(error_msg, "IMPORT_ERROR")
+    
+    # ==========================================================
+    # VALIDATION 4: Get Service Instance
+    # ==========================================================
+    try:
+        service = get_analytics_service()
+        
+        if service is None:
+            error_msg = "Analytics service returned None"
+            logger.error(f"❌ {error_msg}")
+            return _create_error_response(error_msg, "SERVICE_NONE")
+        
         logger.info(f"📊 Service type: {type(service)}")
         logger.info(f"📊 Service class: {service.__class__.__name__}")
         
-        # Verify service has required methods
-        required_methods = [
-            "get_dn_dashboard",
-            "get_dealer_dashboard",
-            "get_warehouse_dashboard",
-            "get_city_dashboard",
-            "get_product_dashboard",
-            "search_dn",
-            "search_dealer",
-            "search_warehouse",
-            "search_city",
-            "search_product",
-            "verify_dn_exists",
-            "verify_dealer_exists",
-        ]
-        
-        missing_methods = []
-        for method in required_methods:
-            if hasattr(service, method):
-                logger.info(f"   ✅ {method}: AVAILABLE")
-            else:
-                missing_methods.append(method)
-                logger.warning(f"   ⚠️ {method}: MISSING")
-        
-        if missing_methods:
-            logger.warning(f"⚠️ Missing {len(missing_methods)} methods - using available methods")
-        
-        logger.info("=" * 70)
-        logger.info("✅ Analytics service initialized successfully")
-        logger.info("✅ Service is ready to serve data")
-        logger.info("=" * 70)
-        
-        return service, _create_response_class()
-        
     except Exception as e:
-        logger.error(f"❌ Failed to get analytics service: {e}")
+        error_msg = f"Failed to get analytics service: {str(e)}"
+        logger.error(f"❌ {error_msg}")
         import traceback
         logger.error(traceback.format_exc())
-        
-        # ULTIMATE FALLBACK
-        logger.warning("⚠️ Using ULTIMATE FALLBACK analytics service")
-        fallback = _create_fallback_analytics()
-        return fallback, _create_response_class()
-
-
-def _create_fallback_analytics():
-    """Create fallback analytics with clear error messages."""
-    logger.warning("⚠️ Creating FALLBACK analytics service")
+        return _create_error_response(error_msg, "SERVICE_ERROR")
     
-    class FallbackAnalytics:
-        def get_dn_dashboard(self, dn_no):
-            return {
-                "dn_number": dn_no,
-                "customer_name": "Data Not Available",
-                "warehouse": "N/A",
-                "ship_to_city": "N/A",
-                "units": 0,
-                "amount": 0,
-                "delivery_status": "Unknown",
-                "pgi_status": "N/A",
-                "pod_status": "N/A",
-                "dn_create_date": "N/A",
-                "good_issue_date": "N/A",
-                "pod_date": "N/A",
-                "delivery_aging_text": "N/A",
-                "pod_aging_text": "N/A",
-                "total_cycle_text": "N/A",
-                "pending_flag": False,
-                "error": f"DN {dn_no} not found. Please add data to delivery_reports table.",
-                "hint": "Run: INSERT INTO delivery_reports (...) VALUES (...)"
-            }
-        
-        def get_dealer_dashboard(self, dealer_name):
-            return {
-                "dealer_name": dealer_name,
-                "error": f"No data found for dealer '{dealer_name}'",
-                "total_dns": 0,
-                "total_revenue": 0,
-                "delivery_rate": 0
-            }
-        
-        def get_warehouse_dashboard(self, warehouse_name):
-            return {
-                "warehouse": warehouse_name,
-                "error": f"No data found for warehouse '{warehouse_name}'",
-                "total_dns": 0,
-                "total_revenue": 0
-            }
-        
-        def get_city_dashboard(self, city_name):
-            return {
-                "city_name": city_name,
-                "error": f"No data found for city '{city_name}'",
-                "total_dns": 0,
-                "total_revenue": 0
-            }
-        
-        def get_product_dashboard(self, product_name):
-            return {
-                "product": product_name,
-                "error": f"No data found for product '{product_name}'",
-                "revenue": 0,
-                "units": 0
-            }
-        
-        def search_dn(self, query): return []
-        def search_dealer(self, query): return []
-        def search_warehouse(self, query): return []
-        def search_city(self, query): return []
-        def search_product(self, query): return []
-        def verify_dn_exists(self, dn_no): return False
-        def verify_dealer_exists(self, dealer_name): return False
-        def get_dealer_360_dashboard(self, dealer_name):
-            return {
-                "error": f"No data found for dealer '{dealer_name}'",
-                "profile": {
-                    "dealer_name": dealer_name,
-                    "dealer_code": "N/A",
-                    "warehouse": "N/A",
-                    "city": "N/A"
-                },
-                "business_volume": {
-                    "total_dns": 0,
-                    "total_units": 0,
-                    "total_revenue": 0
-                }
-            }
+    # ==========================================================
+    # VALIDATION 5: Verify Required Methods
+    # ==========================================================
+    required_methods = [
+        "get_dn_dashboard",
+        "get_dealer_dashboard",
+        "get_warehouse_dashboard",
+        "get_city_dashboard",
+        "get_product_dashboard",
+        "search_dn",
+        "search_dealer",
+        "search_warehouse",
+        "search_city",
+        "search_product",
+        "verify_dn_exists",
+        "verify_dealer_exists",
+    ]
     
-    return FallbackAnalytics()
-
-
+    logger.info("🔍 Verifying analytics methods:")
+    missing_methods = []
+    
+    for method in required_methods:
+        if hasattr(service, method):
+            logger.info(f"   ✅ {method}: AVAILABLE")
+        else:
+            missing_methods.append(method)
+            logger.error(f"   ❌ {method}: MISSING")
+    
+    if missing_methods:
+        error_msg = f"Missing {len(missing_methods)} required methods: {missing_methods}"
+        logger.error(f"❌ {error_msg}")
+        return _create_error_response(error_msg, "METHODS_MISSING")
+    
+    logger.info("=" * 70)
+    logger.info("✅ Analytics service initialized successfully")
+    logger.info("✅ Service is ready to serve REAL PostgreSQL data")
+    logger.info("=" * 70)
+    
+    return service, AnalyticsResponse
 
 
 # ==========================================================
@@ -359,18 +427,39 @@ MAX_FUZZY_RESULTS = int(os.getenv('MAX_FUZZY_RESULTS', '1000'))
 
 
 # ==========================================================
-# BLOCK 4: POSTGRESQL RESOLVER
+# BLOCK 4: POSTGRESQL RESOLVER (ENHANCED v5.0)
 # ==========================================================
 
 class PostgreSQLResolver:
-    """Pure PostgreSQL-based entity resolution."""
+    """
+    Pure PostgreSQL-based entity resolution with caching.
+    Enhanced with strict routing priority.
+    """
     
     def __init__(self, session_factory: Optional[Callable[[], Session]] = None):
         self.session_factory = session_factory or SessionLocal
-        self._cache = TTLCache(maxsize=2000, ttl=3600)
         self.DeliveryReport = DeliveryReport
+        
+        # Caches with TTL 300 seconds
+        self.dn_cache = TTLCache(maxsize=2000, ttl=300)
+        self.dealer_cache = TTLCache(maxsize=2000, ttl=300)
+        self.warehouse_cache = TTLCache(maxsize=2000, ttl=300)
+        self.city_cache = TTLCache(maxsize=2000, ttl=300)
+        self.product_cache = TTLCache(maxsize=2000, ttl=300)
+        
         self.fuzzy_threshold = FUZZY_MATCH_THRESHOLD
         self.max_fuzzy_results = MAX_FUZZY_RESULTS
+        
+        # Stats
+        self.stats = {
+            "dn_lookups": 0,
+            "dealer_lookups": 0,
+            "warehouse_lookups": 0,
+            "city_lookups": 0,
+            "product_lookups": 0,
+            "cache_hits": 0,
+            "cache_misses": 0
+        }
     
     def _get_session(self) -> Optional[Session]:
         try:
@@ -379,206 +468,628 @@ class PostgreSQLResolver:
             logger.error(f"Session creation failed: {e}")
             return None
     
-    def resolve_dealer(self, query: str) -> Optional[str]:
+    def _update_stats(self, entity_type: str, cache_hit: bool = False):
+        """Update resolver statistics."""
+        if entity_type == "dn":
+            self.stats["dn_lookups"] += 1
+        elif entity_type == "dealer":
+            self.stats["dealer_lookups"] += 1
+        elif entity_type == "warehouse":
+            self.stats["warehouse_lookups"] += 1
+        elif entity_type == "city":
+            self.stats["city_lookups"] += 1
+        elif entity_type == "product":
+            self.stats["product_lookups"] += 1
+        
+        if cache_hit:
+            self.stats["cache_hits"] += 1
+        else:
+            self.stats["cache_misses"] += 1
+    
+    # ==========================================================
+    # DN RESOLUTION (HARDENED)
+    # ==========================================================
+    
+    def resolve_dn(self, query: str) -> Dict[str, Any]:
+        """
+        Resolve DN number with hardened support for multiple data types.
+        
+        Supports:
+        - VARCHAR (string)
+        - INTEGER (int)
+        - BIGINT (long)
+        - NUMERIC (decimal)
+        
+        Normalizes:
+        - 6243684514
+        - 6243684514.0
+        -  6243684514
+        """
+        self.stats["dn_lookups"] += 1
+        
+        if not query:
+            return {"entity": None, "entity_type": "dn", "found": False, "error": "Empty query"}
+        
+        # Normalize DN
+        raw = str(query).strip()
+        # Remove decimal if present
+        if '.' in raw:
+            raw = raw.split('.')[0]
+        # Remove any non-numeric characters
+        normalized = re.sub(r'[^0-9]', '', raw)
+        
+        # Validate length (8-12 digits)
+        if len(normalized) < 8 or len(normalized) > 12:
+            return {
+                "entity": None,
+                "entity_type": "dn",
+                "found": False,
+                "error": f"Invalid DN format: {query} (must be 8-12 digits)",
+                "normalized": normalized
+            }
+        
+        # Check cache
+        cache_key = f"dn:{normalized}"
+        if cache_key in self.dn_cache:
+            self.stats["cache_hits"] += 1
+            logger.debug(f"DN cache hit: {normalized}")
+            result = self.dn_cache[cache_key]
+            result["from_cache"] = True
+            return result
+        
+        self.stats["cache_misses"] += 1
+        
+        session = self._get_session()
+        if not session:
+            return {
+                "entity": None,
+                "entity_type": "dn",
+                "found": False,
+                "error": "Database session unavailable",
+                "normalized": normalized
+            }
+        
+        try:
+            # Query with cast to handle different data types
+            result = session.query(DeliveryReport.dn_no).filter(
+                cast(DeliveryReport.dn_no, String) == normalized
+            ).first()
+            session.close()
+            
+            if result:
+                resolved = result[0]
+                response = {
+                    "entity": resolved,
+                    "entity_type": "dn",
+                    "found": True,
+                    "normalized": normalized,
+                    "match_type": "exact",
+                    "confidence": 1.0,
+                    "resolution_strategy": "exact_match"
+                }
+                self.dn_cache[cache_key] = response
+                logger.info(f"✅ DN resolved: {resolved}")
+                return response
+            
+            # Try partial match
+            try:
+                session = self._get_session()
+                results = session.query(DeliveryReport.dn_no).filter(
+                    DeliveryReport.dn_no.like(f"%{normalized}%")
+                ).limit(5).all()
+                session.close()
+                
+                if results:
+                    suggestions = [r[0] for r in results]
+                    response = {
+                        "entity": None,
+                        "entity_type": "dn",
+                        "found": False,
+                        "normalized": normalized,
+                        "suggestions": suggestions[:3],
+                        "error": f"DN {normalized} not found. Did you mean one of these?"
+                    }
+                    self.dn_cache[cache_key] = response
+                    return response
+            except Exception as e:
+                logger.warning(f"Partial DN search failed: {e}")
+            
+            response = {
+                "entity": None,
+                "entity_type": "dn",
+                "found": False,
+                "normalized": normalized,
+                "error": f"DN {normalized} not found in database"
+            }
+            self.dn_cache[cache_key] = response
+            return response
+            
+        except Exception as e:
+            logger.error(f"DN resolution error: {e}")
+            return {
+                "entity": None,
+                "entity_type": "dn",
+                "found": False,
+                "error": f"Database error: {str(e)}"
+            }
+    
+    # ==========================================================
+    # DEALER RESOLUTION
+    # ==========================================================
+    
+    def resolve_dealer(self, query: str) -> Dict[str, Any]:
         """Resolve dealer name with multiple strategies."""
+        self.stats["dealer_lookups"] += 1
+        
         if not query or not query.strip():
-            return None
+            return {"entity": None, "entity_type": "dealer", "found": False, "error": "Empty query"}
         
         query_clean = query.strip()
         cache_key = f"dealer:{query_clean.lower()}"
         
-        if cache_key in self._cache:
-            return self._cache[cache_key]
+        # Check cache
+        if cache_key in self.dealer_cache:
+            self.stats["cache_hits"] += 1
+            result = self.dealer_cache[cache_key]
+            result["from_cache"] = True
+            return result
+        
+        self.stats["cache_misses"] += 1
         
         session = self._get_session()
         if not session:
-            return None
+            return {"entity": None, "entity_type": "dealer", "found": False, "error": "Database session unavailable"}
         
         try:
             # STRATEGY 1: Exact match
-            result = session.query(self.DeliveryReport.customer_name).filter(
-                func.lower(self.DeliveryReport.customer_name) == func.lower(query_clean)
+            result = session.query(DeliveryReport.customer_name).filter(
+                func.lower(DeliveryReport.customer_name) == func.lower(query_clean)
             ).first()
             if result:
                 resolved = result[0]
-                self._cache[cache_key] = resolved
-                return resolved
+                response = {
+                    "entity": resolved,
+                    "entity_type": "dealer",
+                    "found": True,
+                    "match_type": "exact",
+                    "confidence": 1.0,
+                    "resolution_strategy": "exact_match"
+                }
+                self.dealer_cache[cache_key] = response
+                session.close()
+                logger.info(f"✅ Dealer resolved (exact): {resolved}")
+                return response
             
             # STRATEGY 2: ILIKE match
-            result = session.query(self.DeliveryReport.customer_name).filter(
-                self.DeliveryReport.customer_name.ilike(f"%{query_clean}%")
+            result = session.query(DeliveryReport.customer_name).filter(
+                DeliveryReport.customer_name.ilike(f"%{query_clean}%")
             ).first()
             if result:
                 resolved = result[0]
-                self._cache[cache_key] = resolved
-                return resolved
+                response = {
+                    "entity": resolved,
+                    "entity_type": "dealer",
+                    "found": True,
+                    "match_type": "partial",
+                    "confidence": 0.85,
+                    "resolution_strategy": "ilike_match"
+                }
+                self.dealer_cache[cache_key] = response
+                session.close()
+                logger.info(f"✅ Dealer resolved (ILIKE): {resolved}")
+                return response
             
             # STRATEGY 3: Token-based matching
             tokens = query_clean.split()
             for token in tokens:
-                if len(token) > 2:
-                    result = session.query(self.DeliveryReport.customer_name).filter(
-                        self.DeliveryReport.customer_name.ilike(f"%{token}%")
+                if len(token) > 2 and token.lower() not in ['the', 'and', 'for', 'with']:
+                    result = session.query(DeliveryReport.customer_name).filter(
+                        DeliveryReport.customer_name.ilike(f"%{token}%")
                     ).first()
                     if result:
                         resolved = result[0]
-                        self._cache[cache_key] = resolved
-                        return resolved
+                        response = {
+                            "entity": resolved,
+                            "entity_type": "dealer",
+                            "found": True,
+                            "match_type": "token",
+                            "confidence": 0.75,
+                            "resolution_strategy": f"token_match_{token}",
+                            "matched_token": token
+                        }
+                        self.dealer_cache[cache_key] = response
+                        session.close()
+                        logger.info(f"✅ Dealer resolved (token '{token}'): {resolved}")
+                        return response
             
-            return None
+            # STRATEGY 4: Suggestions
+            try:
+                similar = session.query(DeliveryReport.customer_name).filter(
+                    DeliveryReport.customer_name.ilike(f"%{query_clean[:3]}%")
+                ).limit(5).all()
+                session.close()
+                
+                if similar:
+                    suggestions = [s[0] for s in similar if s[0]]
+                    response = {
+                        "entity": None,
+                        "entity_type": "dealer",
+                        "found": False,
+                        "suggestions": suggestions[:3],
+                        "error": f"Dealer '{query_clean}' not found. Did you mean one of these?"
+                    }
+                    self.dealer_cache[cache_key] = response
+                    return response
+            except Exception as e:
+                logger.warning(f"Similar dealer search failed: {e}")
+            
+            session.close()
+            response = {
+                "entity": None,
+                "entity_type": "dealer",
+                "found": False,
+                "error": f"Dealer '{query_clean}' not found in database"
+            }
+            self.dealer_cache[cache_key] = response
+            return response
             
         except Exception as e:
             logger.error(f"Dealer resolution error: {e}")
-            return None
-        finally:
-            session.close()
+            return {"entity": None, "entity_type": "dealer", "found": False, "error": str(e)}
     
-    def resolve_warehouse(self, query: str) -> Optional[str]:
+    # ==========================================================
+    # WAREHOUSE RESOLUTION
+    # ==========================================================
+    
+    def resolve_warehouse(self, query: str) -> Dict[str, Any]:
         """Resolve warehouse name."""
-        if not query or not query.strip():
-            return None
+        self.stats["warehouse_lookups"] += 1
         
-        cache_key = f"warehouse:{query.lower().strip()}"
-        if cache_key in self._cache:
-            return self._cache[cache_key]
+        if not query or not query.strip():
+            return {"entity": None, "entity_type": "warehouse", "found": False, "error": "Empty query"}
+        
+        query_clean = query.strip()
+        cache_key = f"warehouse:{query_clean.lower()}"
+        
+        if cache_key in self.warehouse_cache:
+            self.stats["cache_hits"] += 1
+            result = self.warehouse_cache[cache_key]
+            result["from_cache"] = True
+            return result
+        
+        self.stats["cache_misses"] += 1
         
         session = self._get_session()
         if not session:
-            return None
+            return {"entity": None, "entity_type": "warehouse", "found": False, "error": "Database session unavailable"}
         
         try:
-            result = session.query(self.DeliveryReport.warehouse).filter(
-                func.lower(self.DeliveryReport.warehouse) == func.lower(query)
+            # Try exact match
+            result = session.query(DeliveryReport.warehouse).filter(
+                func.lower(DeliveryReport.warehouse) == func.lower(query_clean)
             ).first()
-            if result:
+            if result and result[0]:
                 resolved = result[0]
-                self._cache[cache_key] = resolved
-                return resolved
+                response = {
+                    "entity": resolved,
+                    "entity_type": "warehouse",
+                    "found": True,
+                    "match_type": "exact",
+                    "confidence": 1.0,
+                    "resolution_strategy": "exact_match"
+                }
+                self.warehouse_cache[cache_key] = response
+                session.close()
+                logger.info(f"✅ Warehouse resolved: {resolved}")
+                return response
             
-            result = session.query(self.DeliveryReport.warehouse).filter(
-                self.DeliveryReport.warehouse.ilike(f"%{query}%")
+            # Try ILIKE
+            result = session.query(DeliveryReport.warehouse).filter(
+                DeliveryReport.warehouse.ilike(f"%{query_clean}%")
             ).first()
-            if result:
+            if result and result[0]:
                 resolved = result[0]
-                self._cache[cache_key] = resolved
-                return resolved
+                response = {
+                    "entity": resolved,
+                    "entity_type": "warehouse",
+                    "found": True,
+                    "match_type": "partial",
+                    "confidence": 0.85,
+                    "resolution_strategy": "ilike_match"
+                }
+                self.warehouse_cache[cache_key] = response
+                session.close()
+                logger.info(f"✅ Warehouse resolved (ILIKE): {resolved}")
+                return response
             
-            return None
+            session.close()
+            response = {
+                "entity": None,
+                "entity_type": "warehouse",
+                "found": False,
+                "error": f"Warehouse '{query_clean}' not found in database"
+            }
+            self.warehouse_cache[cache_key] = response
+            return response
             
         except Exception as e:
             logger.error(f"Warehouse resolution error: {e}")
-            return None
-        finally:
-            session.close()
+            return {"entity": None, "entity_type": "warehouse", "found": False, "error": str(e)}
     
-    def resolve_city(self, query: str) -> Optional[str]:
+    # ==========================================================
+    # CITY RESOLUTION
+    # ==========================================================
+    
+    def resolve_city(self, query: str) -> Dict[str, Any]:
         """Resolve city name."""
-        if not query or not query.strip():
-            return None
+        self.stats["city_lookups"] += 1
         
-        cache_key = f"city:{query.lower().strip()}"
-        if cache_key in self._cache:
-            return self._cache[cache_key]
+        if not query or not query.strip():
+            return {"entity": None, "entity_type": "city", "found": False, "error": "Empty query"}
+        
+        query_clean = query.strip()
+        cache_key = f"city:{query_clean.lower()}"
+        
+        if cache_key in self.city_cache:
+            self.stats["cache_hits"] += 1
+            result = self.city_cache[cache_key]
+            result["from_cache"] = True
+            return result
+        
+        self.stats["cache_misses"] += 1
         
         session = self._get_session()
         if not session:
-            return None
+            return {"entity": None, "entity_type": "city", "found": False, "error": "Database session unavailable"}
         
         try:
-            result = session.query(self.DeliveryReport.ship_to_city).filter(
-                func.lower(self.DeliveryReport.ship_to_city) == func.lower(query)
+            result = session.query(DeliveryReport.ship_to_city).filter(
+                func.lower(DeliveryReport.ship_to_city) == func.lower(query_clean)
             ).first()
-            if result:
+            if result and result[0]:
                 resolved = result[0]
-                self._cache[cache_key] = resolved
-                return resolved
+                response = {
+                    "entity": resolved,
+                    "entity_type": "city",
+                    "found": True,
+                    "match_type": "exact",
+                    "confidence": 1.0,
+                    "resolution_strategy": "exact_match"
+                }
+                self.city_cache[cache_key] = response
+                session.close()
+                logger.info(f"✅ City resolved: {resolved}")
+                return response
             
-            result = session.query(self.DeliveryReport.ship_to_city).filter(
-                self.DeliveryReport.ship_to_city.ilike(f"%{query}%")
+            result = session.query(DeliveryReport.ship_to_city).filter(
+                DeliveryReport.ship_to_city.ilike(f"%{query_clean}%")
             ).first()
-            if result:
+            if result and result[0]:
                 resolved = result[0]
-                self._cache[cache_key] = resolved
-                return resolved
+                response = {
+                    "entity": resolved,
+                    "entity_type": "city",
+                    "found": True,
+                    "match_type": "partial",
+                    "confidence": 0.85,
+                    "resolution_strategy": "ilike_match"
+                }
+                self.city_cache[cache_key] = response
+                session.close()
+                logger.info(f"✅ City resolved (ILIKE): {resolved}")
+                return response
             
-            return None
+            session.close()
+            response = {
+                "entity": None,
+                "entity_type": "city",
+                "found": False,
+                "error": f"City '{query_clean}' not found in database"
+            }
+            self.city_cache[cache_key] = response
+            return response
             
         except Exception as e:
             logger.error(f"City resolution error: {e}")
-            return None
-        finally:
-            session.close()
+            return {"entity": None, "entity_type": "city", "found": False, "error": str(e)}
     
-    def resolve_product(self, query: str) -> Optional[str]:
+    # ==========================================================
+    # PRODUCT RESOLUTION
+    # ==========================================================
+    
+    def resolve_product(self, query: str) -> Dict[str, Any]:
         """Resolve product name."""
-        if not query or not query.strip():
-            return None
+        self.stats["product_lookups"] += 1
         
-        cache_key = f"product:{query.lower().strip()}"
-        if cache_key in self._cache:
-            return self._cache[cache_key]
+        if not query or not query.strip():
+            return {"entity": None, "entity_type": "product", "found": False, "error": "Empty query"}
+        
+        query_clean = query.strip()
+        cache_key = f"product:{query_clean.lower()}"
+        
+        if cache_key in self.product_cache:
+            self.stats["cache_hits"] += 1
+            result = self.product_cache[cache_key]
+            result["from_cache"] = True
+            return result
+        
+        self.stats["cache_misses"] += 1
         
         session = self._get_session()
         if not session:
-            return None
+            return {"entity": None, "entity_type": "product", "found": False, "error": "Database session unavailable"}
         
         try:
-            result = session.query(self.DeliveryReport.customer_model).filter(
-                func.lower(self.DeliveryReport.customer_model) == func.lower(query)
+            # Try customer_model first
+            result = session.query(DeliveryReport.customer_model).filter(
+                func.lower(DeliveryReport.customer_model) == func.lower(query_clean)
             ).first()
             if result and result[0]:
                 resolved = result[0]
-                self._cache[cache_key] = resolved
-                return resolved
+                response = {
+                    "entity": resolved,
+                    "entity_type": "product",
+                    "found": True,
+                    "match_type": "exact",
+                    "confidence": 1.0,
+                    "resolution_strategy": "exact_match_model"
+                }
+                self.product_cache[cache_key] = response
+                session.close()
+                logger.info(f"✅ Product resolved (model): {resolved}")
+                return response
             
-            result = session.query(self.DeliveryReport.customer_model).filter(
-                self.DeliveryReport.customer_model.ilike(f"%{query}%")
+            # Try material_no
+            result = session.query(DeliveryReport.material_no).filter(
+                func.lower(DeliveryReport.material_no) == func.lower(query_clean)
             ).first()
             if result and result[0]:
                 resolved = result[0]
-                self._cache[cache_key] = resolved
-                return resolved
+                response = {
+                    "entity": resolved,
+                    "entity_type": "product",
+                    "found": True,
+                    "match_type": "exact",
+                    "confidence": 1.0,
+                    "resolution_strategy": "exact_match_material"
+                }
+                self.product_cache[cache_key] = response
+                session.close()
+                logger.info(f"✅ Product resolved (material): {resolved}")
+                return response
             
-            return None
+            # Try ILIKE on customer_model
+            result = session.query(DeliveryReport.customer_model).filter(
+                DeliveryReport.customer_model.ilike(f"%{query_clean}%")
+            ).first()
+            if result and result[0]:
+                resolved = result[0]
+                response = {
+                    "entity": resolved,
+                    "entity_type": "product",
+                    "found": True,
+                    "match_type": "partial",
+                    "confidence": 0.85,
+                    "resolution_strategy": "ilike_match_model"
+                }
+                self.product_cache[cache_key] = response
+                session.close()
+                logger.info(f"✅ Product resolved (ILIKE model): {resolved}")
+                return response
+            
+            session.close()
+            response = {
+                "entity": None,
+                "entity_type": "product",
+                "found": False,
+                "error": f"Product '{query_clean}' not found in database"
+            }
+            self.product_cache[cache_key] = response
+            return response
             
         except Exception as e:
             logger.error(f"Product resolution error: {e}")
-            return None
-        finally:
-            session.close()
+            return {"entity": None, "entity_type": "product", "found": False, "error": str(e)}
     
-    def resolve_dn(self, query: str) -> Optional[str]:
-        """Resolve DN number."""
+    # ==========================================================
+    # UNIVERSAL ENTITY RESOLVER
+    # ==========================================================
+    
+    def resolve_entity(self, query: str) -> Dict[str, Any]:
+        """
+        Universal entity resolver with strict priority ordering.
+        
+        Priority Order:
+        1. DN (8-12 digits)
+        2. Warehouse
+        3. City
+        4. Product
+        5. Dealer (last priority)
+        """
         if not query or not query.strip():
-            return None
+            return {"entity": None, "entity_type": "unknown", "found": False}
         
-        normalized = re.sub(r'[^0-9]', '', str(query).strip())
-        if len(normalized) < 8 or len(normalized) > 12:
-            return None
+        query_clean = query.strip()
+        logger.info(f"🔍 Universal entity resolution for: '{query_clean}'")
         
-        cache_key = f"dn:{normalized}"
-        if cache_key in self._cache:
-            return self._cache[cache_key]
+        # ==========================================================
+        # PRIORITY 1: DN Resolution
+        # ==========================================================
+        dn_match = re.search(r'\b(\d{8,12})\b', query_clean)
+        if dn_match:
+            result = self.resolve_dn(dn_match.group(1))
+            if result.get('found'):
+                logger.info(f"✅ Entity resolved as DN: {result.get('entity')}")
+                return result
         
-        session = self._get_session()
-        if not session:
-            return None
+        # ==========================================================
+        # PRIORITY 2: Warehouse Resolution
+        # ==========================================================
+        warehouse_keywords = ['warehouse', 'wh', 'depot', 'godown', 'distribution center']
+        if any(kw in query_clean.lower() for kw in warehouse_keywords):
+            result = self.resolve_warehouse(query_clean)
+            if result.get('found'):
+                logger.info(f"✅ Entity resolved as Warehouse: {result.get('entity')}")
+                return result
         
-        try:
-            result = session.query(self.DeliveryReport.dn_no).filter(
-                cast(self.DeliveryReport.dn_no, String) == normalized
-            ).first()
-            if result:
-                resolved = result[0]
-                self._cache[cache_key] = resolved
-                return resolved
-            return None
-            
-        except Exception as e:
-            logger.error(f"DN resolution error: {e}")
-            return None
-        finally:
-            session.close()
+        # ==========================================================
+        # PRIORITY 3: City Resolution
+        # ==========================================================
+        city_keywords = ['city', 'town', 'district', 'region']
+        if any(kw in query_clean.lower() for kw in city_keywords):
+            result = self.resolve_city(query_clean)
+            if result.get('found'):
+                logger.info(f"✅ Entity resolved as City: {result.get('entity')}")
+                return result
+        
+        # ==========================================================
+        # PRIORITY 4: Product Resolution
+        # ==========================================================
+        product_keywords = [
+            'refrigerator', 'fridge', 'freezer', 'ac', 'air conditioner',
+            'washing machine', 'washer', 'led', 'tv', 'television',
+            'microwave', 'oven', 'water dispenser', 'cooler', 'heater'
+        ]
+        if any(kw in query_clean.lower() for kw in product_keywords):
+            result = self.resolve_product(query_clean)
+            if result.get('found'):
+                logger.info(f"✅ Entity resolved as Product: {result.get('entity')}")
+                return result
+        
+        # ==========================================================
+        # PRIORITY 5: Dealer Resolution (LAST)
+        # ==========================================================
+        result = self.resolve_dealer(query_clean)
+        if result.get('found'):
+            logger.info(f"✅ Entity resolved as Dealer: {result.get('entity')}")
+            return result
+        
+        # ==========================================================
+        # NO MATCH FOUND
+        # ==========================================================
+        logger.warning(f"❌ No entity resolved for: '{query_clean}'")
+        return {
+            "entity": None,
+            "entity_type": "unknown",
+            "found": False,
+            "error": f"No entity found for '{query_clean}'"
+        }
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get resolver statistics."""
+        return {
+            "dn_lookups": self.stats["dn_lookups"],
+            "dealer_lookups": self.stats["dealer_lookups"],
+            "warehouse_lookups": self.stats["warehouse_lookups"],
+            "city_lookups": self.stats["city_lookups"],
+            "product_lookups": self.stats["product_lookups"],
+            "cache_hits": self.stats["cache_hits"],
+            "cache_misses": self.stats["cache_misses"],
+            "cache_hit_ratio": round(
+                self.stats["cache_hits"] / (self.stats["cache_hits"] + self.stats["cache_misses"]) * 100,
+                1
+            ) if (self.stats["cache_hits"] + self.stats["cache_misses"]) > 0 else 0
+        }
 
 
 # ==========================================================
@@ -595,13 +1106,28 @@ class ConversationContext:
     last_city: Optional[str] = None
     last_dn: Optional[str] = None
     last_product: Optional[str] = None
+    last_distance: Optional[Dict] = None
     message_count: int = 0
     created_at: float = field(default_factory=time.time)
     last_updated: float = field(default_factory=time.time)
+    confidence: float = 0.0
+    is_valid: bool = True
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "last_dealer": self.last_dealer,
+            "last_warehouse": self.last_warehouse,
+            "last_city": self.last_city,
+            "last_dn": self.last_dn,
+            "last_product": self.last_product,
+            "last_intent": self.last_intent,
+            "phone_number": self.phone_number,
+            "message_count": self.message_count
+        }
 
 
 # ==========================================================
-# BLOCK 6: INTENT CLASSIFIER
+# BLOCK 6: INTENT CLASSIFIER (ENHANCED v5.0)
 # ==========================================================
 
 @dataclass
@@ -611,39 +1137,89 @@ class IntentResult:
     entity_type: Optional[str] = None
     entity_value: Optional[str] = None
     raw_query: str = ""
+    normalized_query: str = ""
 
 class IntentClassifier:
-    """Enhanced intent classifier with priority-based routing."""
+    """
+    Enhanced intent classifier with strict priority-based routing.
+    
+    PRIORITY ORDER:
+    1. DN Number (8-12 digits)
+    2. Warehouse (explicit keywords)
+    3. City (explicit keywords)
+    4. Product (product keywords)
+    5. Dealer (last priority)
+    6. Distance Query
+    7. General AI Query
+    
+    NEVER allows: Warehouse→Dealer, City→Dealer, Product→Dealer
+    """
+    
+    # ==========================================================
+    # KEYWORD DEFINITIONS
+    # ==========================================================
     
     PRODUCT_KEYWORDS = {
         'refrigerator': 0.95, 'fridge': 0.95, 'freezer': 0.95,
-        'ac': 0.95, 'air conditioner': 0.95,
-        'washing machine': 0.95, 'washer': 0.90,
-        'led': 0.90, 'tv': 0.90, 'television': 0.90,
-        'microwave': 0.95, 'oven': 0.90,
-        'water dispenser': 0.95, 'cooler': 0.90,
+        'deep freezer': 0.95, 'ac': 0.95, 'air conditioner': 0.95,
+        'washing machine': 0.95, 'washer': 0.90, 'led': 0.90,
+        'tv': 0.90, 'television': 0.90, 'microwave': 0.95,
+        'oven': 0.90, 'water dispenser': 0.95, 'cooler': 0.90,
+        'heater': 0.90, 'generator': 0.85
+    }
+    
+    WAREHOUSE_KEYWORDS = {
+        'warehouse': 0.95, 'wh': 0.90, 'depot': 0.90,
+        'distribution center': 0.90, 'godown': 0.85
+    }
+    
+    CITY_KEYWORDS = {
+        'city': 0.95, 'town': 0.85, 'district': 0.85,
+        'region': 0.80, 'area': 0.70
     }
     
     DEALER_INDICATORS = {
         'electronics': 0.70, 'trading': 0.60,
         'enterprise': 0.60, 'corporation': 0.60,
         'industries': 0.60, 'traders': 0.60,
+        'house': 0.50, 'store': 0.50, 'mart': 0.50,
+        'company': 0.50
     }
     
-    WAREHOUSE_KEYWORDS = {
-        'warehouse': 0.95, 'wh': 0.90, 'depot': 0.90,
+    DISTANCE_KEYWORDS = {
+        'distance': 0.95, 'from': 0.90, 'to': 0.90,
+        'between': 0.90, 'drive': 0.85, 'driving': 0.85,
+        'travel': 0.85, 'km': 0.80, 'miles': 0.80
     }
     
-    CITY_KEYWORDS = {
-        'city': 0.95, 'town': 0.85, 'district': 0.85,
-    }
+    # ==========================================================
+    # PATTERNS
+    # ==========================================================
+    
+    DN_PATTERN = re.compile(r'\b(\d{8,12})\b')
+    WAREHOUSE_PATTERN = re.compile(r'(?:warehouse|wh|depot|godown)\s+([A-Za-z0-9\s\-&]+)', re.IGNORECASE)
+    CITY_PATTERN = re.compile(r'(?:city|town|district|region)\s+([A-Za-z\s\-]+)', re.IGNORECASE)
+    DISTANCE_PATTERN = re.compile(r'(?:distance|from|to|between)\s+([A-Za-z\s\-]+)\s+(?:to|and|from)\s+([A-Za-z\s\-]+)', re.IGNORECASE)
+    
+    # ==========================================================
+    # INITIALIZATION
+    # ==========================================================
     
     def __init__(self, resolver: PostgreSQLResolver):
         self.resolver = resolver
         self._cache = TTLCache(maxsize=1000, ttl=300)
+        self._stats = {
+            "total_classifications": 0,
+            "intent_counts": {},
+            "confidence_sum": 0
+        }
+    
+    # ==========================================================
+    # MAIN CLASSIFY METHOD
+    # ==========================================================
     
     def classify(self, query: str, context: Optional[ConversationContext] = None) -> IntentResult:
-        """Classify intent with priority-based routing."""
+        """Classify intent with strict priority-based routing."""
         if not query or not query.strip():
             return IntentResult(intent="help", confidence=1.0, raw_query=query)
         
@@ -651,123 +1227,282 @@ class IntentClassifier:
         query_lower = query_clean.lower()
         cache_key = f"intent:{query_lower}"
         
+        # Check cache
         if cache_key in self._cache:
             cached = self._cache[cache_key]
             if cached.confidence > 0.5:
+                self._stats["total_classifications"] += 1
                 return cached
         
+        # Classify with priority
         result = self._classify_with_priority(query_clean, query_lower, context)
+        
+        # Cache result
         self._cache[cache_key] = result
+        
+        # Update stats
+        self._stats["total_classifications"] += 1
+        self._stats["intent_counts"][result.intent] = self._stats["intent_counts"].get(result.intent, 0) + 1
+        self._stats["confidence_sum"] += result.confidence
+        
         return result
     
+    # ==========================================================
+    # PRIORITY CLASSIFICATION
+    # ==========================================================
+    
     def _classify_with_priority(self, query: str, query_lower: str, context: Optional[ConversationContext]) -> IntentResult:
-        """Classify intent with strict priority order."""
+        """
+        Classify intent with strict priority order.
         
-        # PRIORITY 1: DN Number
-        dn_match = re.search(r'\b(\d{8,12})\b', query)
+        PRIORITY 1: DN Number
+        PRIORITY 2: Warehouse
+        PRIORITY 3: City
+        PRIORITY 4: Product
+        PRIORITY 5: Dealer (LAST)
+        PRIORITY 6: Distance Query
+        PRIORITY 7: Context Fallback
+        """
+        
+        # ==========================================================
+        # PRIORITY 1: DN SEARCH
+        # ==========================================================
+        dn_match = self.DN_PATTERN.search(query)
         if dn_match:
+            dn_number = dn_match.group(1)
+            result = self.resolver.resolve_dn(dn_number)
+            if result.get('found'):
+                return IntentResult(
+                    intent="dn_dashboard",
+                    confidence=1.0,
+                    entity_type="dn",
+                    entity_value=result.get('entity'),
+                    raw_query=query,
+                    normalized_query=dn_number
+                )
+            # Still route to DN dashboard with the number they provided
             return IntentResult(
                 intent="dn_dashboard",
-                confidence=1.0,
+                confidence=0.9,
                 entity_type="dn",
-                entity_value=dn_match.group(1),
-                raw_query=query
+                entity_value=dn_number,
+                raw_query=query,
+                normalized_query=dn_number
             )
         
-        # PRIORITY 2: Warehouse
-        for keyword in self.WAREHOUSE_KEYWORDS:
+        # ==========================================================
+        # PRIORITY 2: WAREHOUSE
+        # ==========================================================
+        for keyword, confidence in self.WAREHOUSE_KEYWORDS.items():
             if keyword in query_lower:
-                warehouse_match = re.search(rf'(?:{keyword})\s+([A-Za-z0-9\s\-&]+)', query, re.IGNORECASE)
+                warehouse_match = self.WAREHOUSE_PATTERN.search(query)
                 if warehouse_match:
                     warehouse_name = warehouse_match.group(1).strip()
-                    resolved = self.resolver.resolve_warehouse(warehouse_name)
-                    return IntentResult(
-                        intent="warehouse_dashboard",
-                        confidence=0.95,
-                        entity_type="warehouse",
-                        entity_value=resolved or warehouse_name,
-                        raw_query=query
-                    )
+                    if len(warehouse_name) > 1:
+                        result = self.resolver.resolve_warehouse(warehouse_name)
+                        if result.get('found'):
+                            return IntentResult(
+                                intent="warehouse_dashboard",
+                                confidence=confidence,
+                                entity_type="warehouse",
+                                entity_value=result.get('entity'),
+                                raw_query=query,
+                                normalized_query=warehouse_name
+                            )
+                        else:
+                            # Still route to warehouse dashboard
+                            return IntentResult(
+                                intent="warehouse_dashboard",
+                                confidence=confidence * 0.8,
+                                entity_type="warehouse",
+                                entity_value=warehouse_name,
+                                raw_query=query,
+                                normalized_query=warehouse_name
+                            )
         
-        # PRIORITY 3: City
-        for keyword in self.CITY_KEYWORDS:
+        # ==========================================================
+        # PRIORITY 3: CITY
+        # ==========================================================
+        for keyword, confidence in self.CITY_KEYWORDS.items():
             if keyword in query_lower:
-                city_match = re.search(rf'(?:{keyword})\s+([A-Za-z\s\-]+)', query, re.IGNORECASE)
+                city_match = self.CITY_PATTERN.search(query)
                 if city_match:
                     city_name = city_match.group(1).strip()
-                    resolved = self.resolver.resolve_city(city_name)
-                    return IntentResult(
-                        intent="city_dashboard",
-                        confidence=0.95,
-                        entity_type="city",
-                        entity_value=resolved or city_name,
-                        raw_query=query
-                    )
+                    if len(city_name) > 1:
+                        result = self.resolver.resolve_city(city_name)
+                        if result.get('found'):
+                            return IntentResult(
+                                intent="city_dashboard",
+                                confidence=confidence,
+                                entity_type="city",
+                                entity_value=result.get('entity'),
+                                raw_query=query,
+                                normalized_query=city_name
+                            )
+                        else:
+                            return IntentResult(
+                                intent="city_dashboard",
+                                confidence=confidence * 0.8,
+                                entity_type="city",
+                                entity_value=city_name,
+                                raw_query=query,
+                                normalized_query=city_name
+                            )
         
-        # PRIORITY 4: Product
-        for keyword, confidence in self.PRODUCT_KEYWORDS.items():
+        # ==========================================================
+        # PRIORITY 4: PRODUCT
+        # ==========================================================
+        best_product_match = None
+        best_product_score = 0
+        
+        for keyword, score in self.PRODUCT_KEYWORDS.items():
             if keyword in query_lower:
-                resolved = self.resolver.resolve_product(keyword)
+                if score > best_product_score:
+                    best_product_score = score
+                    best_product_match = keyword
+        
+        if best_product_match:
+            result = self.resolver.resolve_product(best_product_match)
+            if result.get('found'):
                 return IntentResult(
                     intent="product_dashboard",
-                    confidence=confidence,
+                    confidence=best_product_score,
                     entity_type="product",
-                    entity_value=resolved or keyword,
-                    raw_query=query
+                    entity_value=result.get('entity'),
+                    raw_query=query,
+                    normalized_query=best_product_match
+                )
+            else:
+                return IntentResult(
+                    intent="product_dashboard",
+                    confidence=best_product_score * 0.8,
+                    entity_type="product",
+                    entity_value=best_product_match,
+                    raw_query=query,
+                    normalized_query=best_product_match
                 )
         
-        # PRIORITY 5: Dealer (last priority)
+        # ==========================================================
+        # PRIORITY 5: DEALER (LAST)
+        # ==========================================================
+        # Check for dealer indicators
         dealer_score = 0
         for keyword, score in self.DEALER_INDICATORS.items():
             if keyword in query_lower:
                 dealer_score = max(dealer_score, score)
         
         if dealer_score > 0.3:
-            resolved = self.resolver.resolve_dealer(query)
-            if resolved:
+            result = self.resolver.resolve_dealer(query)
+            if result.get('found'):
                 return IntentResult(
                     intent="dealer_dashboard",
                     confidence=dealer_score,
                     entity_type="dealer",
-                    entity_value=resolved,
-                    raw_query=query
+                    entity_value=result.get('entity'),
+                    raw_query=query,
+                    normalized_query=query
                 )
         
-        # Try standalone detection
+        # Try standalone entity detection with correct priority
         if len(query) > 2 and not any(c.isdigit() for c in query):
-            # Try product first
-            product_resolved = self.resolver.resolve_product(query)
-            if product_resolved:
+            # Try warehouse first
+            warehouse_result = self.resolver.resolve_warehouse(query)
+            if warehouse_result.get('found'):
+                return IntentResult(
+                    intent="warehouse_dashboard",
+                    confidence=0.7,
+                    entity_type="warehouse",
+                    entity_value=warehouse_result.get('entity'),
+                    raw_query=query,
+                    normalized_query=query
+                )
+            
+            # Try city
+            city_result = self.resolver.resolve_city(query)
+            if city_result.get('found'):
+                return IntentResult(
+                    intent="city_dashboard",
+                    confidence=0.7,
+                    entity_type="city",
+                    entity_value=city_result.get('entity'),
+                    raw_query=query,
+                    normalized_query=query
+                )
+            
+            # Try product
+            product_result = self.resolver.resolve_product(query)
+            if product_result.get('found'):
                 return IntentResult(
                     intent="product_dashboard",
                     confidence=0.7,
                     entity_type="product",
-                    entity_value=product_resolved,
-                    raw_query=query
+                    entity_value=product_result.get('entity'),
+                    raw_query=query,
+                    normalized_query=query
                 )
             
-            # Try dealer last
-            dealer_resolved = self.resolver.resolve_dealer(query)
-            if dealer_resolved:
+            # Finally dealer (LAST)
+            dealer_result = self.resolver.resolve_dealer(query)
+            if dealer_result.get('found'):
                 return IntentResult(
                     intent="dealer_dashboard",
                     confidence=0.6,
                     entity_type="dealer",
-                    entity_value=dealer_resolved,
-                    raw_query=query
+                    entity_value=dealer_result.get('entity'),
+                    raw_query=query,
+                    normalized_query=query
                 )
         
-        # Context fallback
-        if context and context.last_intent:
+        # ==========================================================
+        # PRIORITY 6: DISTANCE QUERY
+        # ==========================================================
+        distance_match = self.DISTANCE_PATTERN.search(query)
+        if distance_match:
+            origin = distance_match.group(1).strip()
+            destination = distance_match.group(2).strip()
+            if origin and destination:
+                return IntentResult(
+                    intent="distance_query",
+                    confidence=0.85,
+                    entity_type="distance",
+                    entity_value=f"{origin} to {destination}",
+                    raw_query=query,
+                    normalized_query=f"{origin}|{destination}"
+                )
+        
+        # ==========================================================
+        # PRIORITY 7: CONTEXT FALLBACK
+        # ==========================================================
+        if context and context.last_intent and context.last_entity:
             return IntentResult(
                 intent=context.last_intent,
                 confidence=0.5,
-                entity_type=context.last_entity,
-                entity_value=context.last_dealer or context.last_entity,
-                raw_query=query
+                entity_type="context",
+                entity_value=context.last_entity,
+                raw_query=query,
+                normalized_query=query
             )
         
-        return IntentResult(intent="help", confidence=1.0, raw_query=query)
+        # ==========================================================
+        # DEFAULT: HELP
+        # ==========================================================
+        return IntentResult(
+            intent="help",
+            confidence=0.5,
+            raw_query=query,
+            normalized_query=query
+        )
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get classifier statistics."""
+        return {
+            "total_classifications": self._stats["total_classifications"],
+            "intent_counts": self._stats["intent_counts"],
+            "average_confidence": round(
+                self._stats["confidence_sum"] / self._stats["total_classifications"],
+                2
+            ) if self._stats["total_classifications"] > 0 else 0
+        }
 
 
 # ==========================================================
@@ -775,7 +1510,10 @@ class IntentClassifier:
 # ==========================================================
 
 class AIOrchestrator:
-    """Complete AI Orchestrator with all services integrated."""
+    """
+    Complete AI Orchestrator with all services integrated.
+    Enterprise Production Grade.
+    """
     
     def __init__(self, session_factory: Optional[Callable[[], Session]] = None):
         self.session_factory = session_factory or SessionLocal
@@ -790,26 +1528,33 @@ class AIOrchestrator:
         
         # Caches
         self.response_cache = TTLCache(maxsize=2000, ttl=CACHE_TTL_SECONDS)
+        self.failure_cache = TTLCache(maxsize=400, ttl=60)
+        self.fast_cache = LRUCache(maxsize=1000)
         self.conversation_cache: Dict[str, ConversationContext] = {}
+        self._current_request_id: Optional[str] = None
         
         # Metrics
         self.metrics = {
             "total_requests": 0,
+            "successful_requests": 0,
+            "failed_requests": 0,
             "intent_detection": {},
+            "entity_resolution": {},
             "errors": 0,
             "cache_hits": 0,
-            "cache_misses": 0
+            "cache_misses": 0,
+            "avg_response_time": 0
         }
         
         logger.info("=" * 70)
-        logger.info("AI Router v30.0 - FULLY INTEGRATED")
+        logger.info("AI Router v31.0 - ENTERPRISE PRODUCTION")
         logger.info("=" * 70)
         
         # Initialize all services
         self._init_services()
         
         logger.info("=" * 70)
-        logger.info("✅ AI Router v30.0 initialized successfully")
+        logger.info("✅ AI Router v31.0 initialized successfully")
         logger.info("✅ All services integrated and ready")
         logger.info("=" * 70)
     
@@ -838,7 +1583,7 @@ class AIOrchestrator:
             logger.error(f"❌ Classifier init failed: {e}")
             self._classifier = None
         
-        # 4. Distance Service
+        # 4. Distance Service (lazy)
         try:
             if DistanceService:
                 self._distance_service = DistanceService(self.session_factory)
@@ -849,10 +1594,11 @@ class AIOrchestrator:
             logger.error(f"❌ Distance service init failed: {e}")
             self._distance_service = None
         
-        # 5. Dealer Analytics Service
+        # 5. Dealer Analytics (lazy loaded)
         try:
+            DealerAnalyticsService, _ = _get_dealer_analytics_service()
             if DealerAnalyticsService:
-                self._dealer_analytics = DealerAnalyticsService(self.session_factory)
+                self._dealer_analytics = DealerAnalyticsService(self.session_factory, self.resolver, None)
                 logger.info("✅ Dealer Analytics service initialized")
             else:
                 logger.warning("⚠️ Dealer Analytics service not available")
@@ -880,13 +1626,22 @@ class AIOrchestrator:
                 time.sleep(1)
         
         logger.error("❌ All attempts to initialize analytics failed!")
-        # Create fallback as last resort
-        self._analytics = _create_fallback_analytics()
-        self._analytics_response = _create_response_class()
-        logger.warning("⚠️ Using fallback analytics service")
+        # Do NOT create fallback - return structured error
+        self._analytics = None
     
     @property
     def analytics(self):
+        """Get analytics service with lazy reload."""
+        if self._analytics is None:
+            logger.warning("⚠️ Analytics service is None - attempting to reload...")
+            try:
+                service, response_class = _get_analytics_service()
+                self._analytics = service
+                self._analytics_response = response_class
+                if self._analytics is None:
+                    logger.error("❌ Analytics service still None after reload")
+            except Exception as e:
+                logger.error(f"❌ Reload failed: {e}")
         return self._analytics
     
     @property
@@ -906,6 +1661,7 @@ class AIOrchestrator:
         if self._distance_service is None and DistanceService:
             try:
                 self._distance_service = DistanceService(self.session_factory)
+                logger.info("✅ Distance service initialized (lazy)")
             except Exception as e:
                 logger.error(f"Distance service init failed: {e}")
                 self._distance_service = None
@@ -913,9 +1669,14 @@ class AIOrchestrator:
     
     @property
     def dealer_analytics(self):
-        if self._dealer_analytics is None and DealerAnalyticsService:
+        if self._dealer_analytics is None:
             try:
-                self._dealer_analytics = DealerAnalyticsService(self.session_factory)
+                DealerAnalyticsService, _ = _get_dealer_analytics_service()
+                if DealerAnalyticsService:
+                    self._dealer_analytics = DealerAnalyticsService(self.session_factory, self.resolver, None)
+                    logger.info("✅ Dealer Analytics service initialized (lazy)")
+                else:
+                    logger.warning("⚠️ Dealer Analytics service not available")
             except Exception as e:
                 logger.error(f"Dealer Analytics init failed: {e}")
                 self._dealer_analytics = None
@@ -949,6 +1710,7 @@ class AIOrchestrator:
         context.last_entity = entity
         context.message_count += 1
         context.last_updated = time.time()
+        context.confidence = 0.9
         
         if entity_type == "dealer":
             context.last_dealer = entity
@@ -987,6 +1749,28 @@ class AIOrchestrator:
         
         return True, "", {"data": response}
     
+    def _create_error_response(self, error_msg: str, error_type: str, entity: str = None, entity_type: str = None) -> str:
+        """Create structured error response."""
+        error_id = str(uuid.uuid4())[:8]
+        
+        response = (
+            f"❌ *{error_type.replace('_', ' ').title()}*\n\n"
+            f"{error_msg}\n\n"
+        )
+        
+        if entity:
+            response += f"🔍 Entity: {entity}\n"
+        if entity_type:
+            response += f"📊 Type: {entity_type}\n"
+        
+        response += (
+            f"🆔 Tracking ID: {error_id}\n\n"
+            f"💡 *Suggested Action:*\n"
+            f"Please check the input and try again. If the issue persists, contact support."
+        )
+        
+        return response
+    
     def _truncate_response(self, response: str) -> str:
         """Truncate response if too long."""
         if len(response) > MAX_RESPONSE_LENGTH:
@@ -1006,7 +1790,10 @@ class AIOrchestrator:
         user_id: Optional[str] = None,
         request_id: Optional[str] = None
     ) -> str:
-        """Process WhatsApp query with full service integration."""
+        """
+        Process WhatsApp query with full service integration.
+        Enterprise Production Grade.
+        """
         start_time = time.time()
         
         if not getattr(config, 'AI_ANALYSIS_ENABLED', True):
@@ -1025,6 +1812,17 @@ class AIOrchestrator:
         
         try:
             context = self._load_context(phone_number)
+            
+            # Check if analytics is available
+            if self.analytics is None:
+                error_msg = "Analytics service is not available. Please check the database connection."
+                logger.error(f"[{req_id}] ❌ {error_msg}")
+                return self._create_error_response(
+                    error_msg,
+                    "SERVICE_UNAVAILABLE",
+                    question,
+                    "unknown"
+                )
             
             # Classify intent
             intent_result = self.classifier.classify(question.strip(), context)
@@ -1049,9 +1847,14 @@ class AIOrchestrator:
                     phone_number,
                     intent_result.intent,
                     intent_result.entity_type or "unknown",
-                    intent_result.entity_value
+                    intent_result.entity_value or "unknown"
                 )
                 elapsed = time.time() - start_time
+                self.metrics["avg_response_time"] = (
+                    (self.metrics["avg_response_time"] * (self.metrics["successful_requests"]) + elapsed) /
+                    (self.metrics["successful_requests"] + 1)
+                )
+                self.metrics["successful_requests"] += 1
                 logger.info(f"[{req_id}] ✅ Completed in {elapsed:.3f}s")
                 return result
             
@@ -1059,8 +1862,14 @@ class AIOrchestrator:
             
         except Exception as e:
             self.metrics["errors"] += 1
+            self.metrics["failed_requests"] += 1
             logger.exception(f"[{req_id}] ❌ ERROR: {e}")
-            return f"⚠️ Unable to process request. Please try again or type 'help'."
+            return self._create_error_response(
+                f"An unexpected error occurred: {str(e)[:100]}",
+                "PROCESSING_ERROR",
+                question,
+                "unknown"
+            )
 
 
 # ==========================================================
@@ -1073,7 +1882,12 @@ class AIOrchestrator:
                             req_id: str) -> Optional[str]:
         """Route to appropriate dashboard with full service integration."""
         if not self.analytics:
-            return "⚠️ Analytics service is temporarily unavailable. Please try again later."
+            return self._create_error_response(
+                "Analytics service is not available",
+                "SERVICE_UNAVAILABLE",
+                entity,
+                entity_type
+            )
         
         ROUTE_MAP = {
             "dn_dashboard": self._route_dn_dashboard,
@@ -1081,6 +1895,7 @@ class AIOrchestrator:
             "warehouse_dashboard": self._route_warehouse_dashboard,
             "city_dashboard": self._route_city_dashboard,
             "product_dashboard": self._route_product_dashboard,
+            "distance_query": self._route_distance_query,
         }
         
         try:
@@ -1090,23 +1905,26 @@ class AIOrchestrator:
             return None
         except Exception as e:
             logger.error(f"[{req_id}] Routing error: {e}")
-            return f"⚠️ Unable to load {intent.replace('_', ' ').title()}."
+            return self._create_error_response(
+                f"Routing error: {str(e)[:100]}",
+                "ROUTING_ERROR",
+                entity,
+                entity_type
+            )
 
 
 # ==========================================================
 # BLOCK 10: ROUTE HANDLERS WITH SERVICE INTEGRATION
 # ==========================================================
+
     def _route_dn_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         """
         Handle DN dashboard with complete validation and error handling.
-        BLOCK 10 - FIXED v5.0 - PRODUCTION GRADE
         """
         import time
         start_time = time.time()
         
         logger.info(f"[{req_id}] 📄 DN Dashboard route called")
-        logger.info(f"[{req_id}] 📥 Entity: {entity}")
-        logger.info(f"[{req_id}] 📥 Context last_dn: {context.last_dn if context else None}")
         
         dn_number = entity or (context.last_dn if context else None)
         
@@ -1118,7 +1936,12 @@ class AIOrchestrator:
         
         # Validate DN format (8-12 digits)
         if len(dn_clean) < 8 or len(dn_clean) > 12:
-            return f"❌ Invalid DN number: '{dn_number}'\n\nDN numbers must be 8-12 digits."
+            return self._create_error_response(
+                f"Invalid DN number: '{dn_number}'. DN numbers must be 8-12 digits.",
+                "INVALID_DN",
+                dn_number,
+                "dn"
+            )
         
         logger.info(f"[{req_id}] 🔍 Looking up DN: {dn_clean}")
         
@@ -1126,21 +1949,20 @@ class AIOrchestrator:
         # STEP 1: Verify Analytics Service
         # ==========================================================
         if self.analytics is None:
-            logger.warning(f"[{req_id}] ⚠️ Analytics is None - attempting reload...")
-            try:
-                service, response_class = _get_analytics_service()
-                self._analytics = service
-                self._analytics_response = response_class
-                if self.analytics is None:
-                    logger.error(f"[{req_id}] ❌ Analytics service still None")
-                    return "⚠️ Service temporarily unavailable. Please try again later."
-            except Exception as e:
-                logger.error(f"[{req_id}] ❌ Analytics reload failed: {e}")
-                return "⚠️ Service temporarily unavailable. Please try again later."
+            return self._create_error_response(
+                "Analytics service is not available",
+                "SERVICE_UNAVAILABLE",
+                dn_clean,
+                "dn"
+            )
         
         if not hasattr(self.analytics, 'get_dn_dashboard'):
-            logger.error(f"[{req_id}] ❌ get_dn_dashboard not available")
-            return "⚠️ Service temporarily unavailable. Please try again later."
+            return self._create_error_response(
+                "DN dashboard method not available",
+                "METHOD_UNAVAILABLE",
+                dn_clean,
+                "dn"
+            )
         
         # ==========================================================
         # STEP 2: Get DN Dashboard
@@ -1150,195 +1972,506 @@ class AIOrchestrator:
             response = self.analytics.get_dn_dashboard(dn_clean)
             logger.info(f"[{req_id}] 📊 Response type: {type(response)}")
             
-            # LOG RAW RESPONSE FOR DEBUGGING
-            logger.info(f"[{req_id}] 📊 Raw response: {str(response)[:500]}")
-            
             # ==========================================================
             # STEP 3: Validate Response
             # ==========================================================
             is_valid, error_msg, data = self._validate_response(response, "DN Dashboard", req_id)
             
-            # LOG VALIDATED DATA
-            logger.info(f"[{req_id}] 📊 Validation result: is_valid={is_valid}")
-            if data:
-                logger.info(f"[{req_id}] 📊 Data keys: {list(data.keys()) if isinstance(data, dict) else 'NOT DICT'}")
-            else:
-                logger.info(f"[{req_id}] 📊 Data is None or empty")
-            
             if not is_valid:
-                # Check if this is a "not found" error with suggestions
-                if data and isinstance(data, dict) and "suggestions" in data:
-                    suggestions = data.get("suggestions", [])
-                    if suggestions:
-                        return f"❌ DN '{dn_number}' not found.\n\n💡 Did you mean:\n" + "\n".join([f"• {s}" for s in suggestions[:3]])
-                
                 logger.error(f"[{req_id}] ❌ Validation failed: {error_msg}")
-                return f"❌ Unable to retrieve data for DN {dn_number}.\n\n{error_msg}"
+                return self._create_error_response(
+                    error_msg,
+                    "DN_NOT_FOUND",
+                    dn_clean,
+                    "dn"
+                )
             
             # ==========================================================
             # STEP 4: Format and Return
             # ==========================================================
             logger.info(f"[{req_id}] ✅ Valid data received, formatting...")
             
-            # Check if data has required fields
-            if data and isinstance(data, dict):
-                required_fields = ['dn_number', 'customer_name']
-                missing_fields = [f for f in required_fields if f not in data]
-                if missing_fields:
-                    logger.warning(f"[{req_id}] ⚠️ Missing fields: {missing_fields}")
-                    logger.warning(f"[{req_id}] 📊 Available keys: {list(data.keys())}")
-            
             result = self._format_dn_dashboard(data, dn_clean)
             
             elapsed = time.time() - start_time
             logger.info(f"[{req_id}] ✅ DN dashboard returned in {elapsed:.3f}s")
-            logger.info(f"[{req_id}] 📊 Result length: {len(result)} characters")
             return result
             
         except Exception as e:
             logger.error(f"[{req_id}] ❌ DN dashboard error: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return f"❌ Error retrieving DN {dn_number}: {str(e)[:100]}"
+            return self._create_error_response(
+                f"Error retrieving DN: {str(e)[:100]}",
+                "DN_ERROR",
+                dn_clean,
+                "dn"
+            )
+
+    def _route_dealer_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        """Handle dealer dashboard with full service integration."""
+        import time
+        start_time = time.time()
+        
+        dealer_name = entity or (context.last_dealer if context else None)
+        
+        if not dealer_name:
+            return "🏪 *DEALER DASHBOARD*\n\nPlease specify a dealer name."
+        
+        original_name = dealer_name
+        
+        if self.analytics is None:
+            return self._create_error_response(
+                "Analytics service is not available",
+                "SERVICE_UNAVAILABLE",
+                dealer_name,
+                "dealer"
+            )
+        
+        logger.info(f"[{req_id}] 🔍 Searching for dealer: '{dealer_name}'")
+        
+        try:
+            # ==========================================================
+            # STEP 1: Get Dealer 360 Dashboard
+            # ==========================================================
+            data = None
+            
+            if self.dealer_analytics:
+                try:
+                    logger.info(f"[{req_id}] 📊 Getting 360 dashboard for: {dealer_name}")
+                    response = self.dealer_analytics.get_dashboard(dealer_name)
+                    
+                    if isinstance(response, dict) and not response.get('error'):
+                        data = response
+                        logger.info(f"[{req_id}] ✅ 360 dashboard retrieved")
+                    elif hasattr(response, 'success') and response.success:
+                        data = response.data if hasattr(response, 'data') else {}
+                        logger.info(f"[{req_id}] ✅ 360 dashboard retrieved from response")
+                except Exception as e:
+                    logger.warning(f"[{req_id}] ⚠️ 360 dashboard failed: {e}")
+            
+            # ==========================================================
+            # STEP 2: Add Distance Information
+            # ==========================================================
+            if data and self.distance_service:
+                try:
+                    profile = data.get('profile', {})
+                    warehouse = profile.get('warehouse')
+                    city = profile.get('city')
+                    if warehouse and city and warehouse != 'Not Set' and city != 'Not Set':
+                        distance_info = self.distance_service.calculate_warehouse_distance(warehouse, city)
+                        if distance_info and distance_info.get('success'):
+                            data['distance_km'] = distance_info.get('distance_km')
+                            data['approx_driving_minutes'] = distance_info.get('approx_driving_minutes')
+                            data['approx_driving_hours'] = distance_info.get('approx_driving_hours')
+                            data['distance_type'] = distance_info.get('distance_type', 'unknown')
+                            logger.info(f"[{req_id}] ✅ Distance: {distance_info.get('distance_km')} km")
+                except Exception as e:
+                    logger.warning(f"[{req_id}] ⚠️ Distance calculation failed: {e}")
+            
+            # ==========================================================
+            # STEP 3: Fallback to Legacy Analytics
+            # ==========================================================
+            if not data:
+                try:
+                    logger.info(f"[{req_id}] 📊 Using legacy analytics for: {dealer_name}")
+                    response = self.analytics.get_dealer_dashboard(dealer_name)
+                    if hasattr(response, 'success') and response.success:
+                        data = response.data if hasattr(response, 'data') else {}
+                    elif isinstance(response, dict) and not response.get('error'):
+                        data = response
+                except Exception as e:
+                    logger.warning(f"[{req_id}] ⚠️ Legacy dashboard failed: {e}")
+            
+            # ==========================================================
+            # STEP 4: Validate and Format
+            # ==========================================================
+            if not data or (isinstance(data, dict) and data.get('error')):
+                error = data.get('error', 'No data') if isinstance(data, dict) else 'No data'
+                return self._create_error_response(
+                    f"Dealer '{original_name}' not found: {error}",
+                    "DEALER_NOT_FOUND",
+                    original_name,
+                    "dealer"
+                )
+            
+            # Use 360 formatter if available
+            if data.get('_dashboard_type') == '360' or 'profile' in data:
+                try:
+                    _, format_func = _get_dealer_analytics_service()
+                    if format_func:
+                        result = format_func(data)
+                        elapsed = time.time() - start_time
+                        logger.info(f"[{req_id}] ✅ 360 dashboard returned in {elapsed:.3f}s")
+                        return result
+                except Exception as e:
+                    logger.warning(f"[{req_id}] ⚠️ 360 formatter failed: {e}")
+            
+            result = self._format_dealer_dashboard(data, dealer_name)
+            elapsed = time.time() - start_time
+            logger.info(f"[{req_id}] ✅ Dealer dashboard returned in {elapsed:.3f}s")
+            return result
+            
+        except Exception as e:
+            logger.error(f"[{req_id}] ❌ Dealer dashboard error: {e}")
+            return self._create_error_response(
+                f"Error retrieving dealer data: {str(e)[:100]}",
+                "DEALER_ERROR",
+                original_name,
+                "dealer"
+            )
+
+    def _route_warehouse_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        """Handle warehouse dashboard with coverage integration."""
+        import time
+        start_time = time.time()
+        
+        warehouse_name = entity or (context.last_warehouse if context else None)
+        
+        if not warehouse_name:
+            return "🏭 *WAREHOUSE DASHBOARD*\n\nPlease specify a warehouse name."
+        
+        if self.analytics is None:
+            return self._create_error_response(
+                "Analytics service is not available",
+                "SERVICE_UNAVAILABLE",
+                warehouse_name,
+                "warehouse"
+            )
+        
+        try:
+            if not hasattr(self.analytics, 'get_warehouse_dashboard'):
+                return self._create_error_response(
+                    "Warehouse dashboard method not available",
+                    "METHOD_UNAVAILABLE",
+                    warehouse_name,
+                    "warehouse"
+                )
+            
+            response = self.analytics.get_warehouse_dashboard(warehouse_name)
+            is_valid, error_msg, data = self._validate_response(response, "Warehouse Dashboard", req_id)
+            
+            if not is_valid:
+                return self._create_error_response(
+                    error_msg,
+                    "WAREHOUSE_NOT_FOUND",
+                    warehouse_name,
+                    "warehouse"
+                )
+            
+            # Add distance coverage information
+            if data and self.distance_service:
+                try:
+                    coverage = self.distance_service.get_warehouse_coverage(warehouse_name)
+                    if coverage and coverage.get('success'):
+                        data['avg_distance_km'] = coverage.get('average_distance_km')
+                        data['max_distance_km'] = coverage.get('max_distance_km')
+                        data['min_distance_km'] = coverage.get('min_distance_km')
+                        data['distance_info'] = coverage.get('cities', [])
+                        logger.info(f"[{req_id}] ✅ Coverage info added")
+                except Exception as e:
+                    logger.warning(f"[{req_id}] ⚠️ Coverage info failed: {e}")
+            
+            result = self._format_warehouse_dashboard(data, warehouse_name)
+            elapsed = time.time() - start_time
+            logger.info(f"[{req_id}] ✅ Warehouse dashboard returned in {elapsed:.3f}s")
+            return result
+            
+        except Exception as e:
+            logger.error(f"[{req_id}] ❌ Warehouse dashboard error: {e}")
+            return self._create_error_response(
+                f"Error retrieving warehouse data: {str(e)[:100]}",
+                "WAREHOUSE_ERROR",
+                warehouse_name,
+                "warehouse"
+            )
+
+    def _route_city_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        """Handle city dashboard."""
+        import time
+        start_time = time.time()
+        
+        city_name = entity or (context.last_city if context else None)
+        
+        if not city_name:
+            return "🏙️ *CITY DASHBOARD*\n\nPlease specify a city name."
+        
+        if self.analytics is None:
+            return self._create_error_response(
+                "Analytics service is not available",
+                "SERVICE_UNAVAILABLE",
+                city_name,
+                "city"
+            )
+        
+        try:
+            if not hasattr(self.analytics, 'get_city_dashboard'):
+                return self._create_error_response(
+                    "City dashboard method not available",
+                    "METHOD_UNAVAILABLE",
+                    city_name,
+                    "city"
+                )
+            
+            response = self.analytics.get_city_dashboard(city_name)
+            is_valid, error_msg, data = self._validate_response(response, "City Dashboard", req_id)
+            
+            if not is_valid:
+                return self._create_error_response(
+                    error_msg,
+                    "CITY_NOT_FOUND",
+                    city_name,
+                    "city"
+                )
+            
+            result = self._format_city_dashboard(data, city_name)
+            elapsed = time.time() - start_time
+            logger.info(f"[{req_id}] ✅ City dashboard returned in {elapsed:.3f}s")
+            return result
+            
+        except Exception as e:
+            logger.error(f"[{req_id}] ❌ City dashboard error: {e}")
+            return self._create_error_response(
+                f"Error retrieving city data: {str(e)[:100]}",
+                "CITY_ERROR",
+                city_name,
+                "city"
+            )
+
+    def _route_product_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        """Handle product dashboard."""
+        import time
+        start_time = time.time()
+        
+        product_name = entity or (context.last_product if context else None)
+        
+        if not product_name:
+            return "📦 *PRODUCT DASHBOARD*\n\nPlease specify a product."
+        
+        if self.analytics is None:
+            return self._create_error_response(
+                "Analytics service is not available",
+                "SERVICE_UNAVAILABLE",
+                product_name,
+                "product"
+            )
+        
+        try:
+            if not hasattr(self.analytics, 'get_product_dashboard'):
+                return self._create_error_response(
+                    "Product dashboard method not available",
+                    "METHOD_UNAVAILABLE",
+                    product_name,
+                    "product"
+                )
+            
+            response = self.analytics.get_product_dashboard(product_name)
+            is_valid, error_msg, data = self._validate_response(response, "Product Dashboard", req_id)
+            
+            if not is_valid:
+                return self._create_error_response(
+                    error_msg,
+                    "PRODUCT_NOT_FOUND",
+                    product_name,
+                    "product"
+                )
+            
+            result = self._format_product_dashboard(data, product_name)
+            elapsed = time.time() - start_time
+            logger.info(f"[{req_id}] ✅ Product dashboard returned in {elapsed:.3f}s")
+            return result
+            
+        except Exception as e:
+            logger.error(f"[{req_id}] ❌ Product dashboard error: {e}")
+            return self._create_error_response(
+                f"Error retrieving product data: {str(e)[:100]}",
+                "PRODUCT_ERROR",
+                product_name,
+                "product"
+            )
+
+    def _route_distance_query(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        """Handle distance query."""
+        import time
+        start_time = time.time()
+        
+        if not entity:
+            return "📍 *DISTANCE QUERY*\n\nPlease specify origin and destination.\n\n*Example:* Distance Lahore to Karachi"
+        
+        try:
+            # Parse origin and destination
+            parts = entity.split(' to ')
+            if len(parts) != 2:
+                parts = entity.split(' from ')
+            if len(parts) != 2:
+                parts = entity.split(' between ')
+            
+            if len(parts) != 2:
+                return "📍 *DISTANCE QUERY*\n\nPlease specify origin and destination.\n\n*Example:* Distance Lahore to Karachi"
+            
+            origin = parts[0].strip()
+            destination = parts[1].strip()
+            
+            if not self.distance_service:
+                return "📍 *DISTANCE QUERY*\n\nDistance service is not available. Please try again later."
+            
+            logger.info(f"[{req_id}] 📍 Calculating distance: {origin} → {destination}")
+            
+            result = self.distance_service.calculate_distance(origin, destination)
+            
+            if not result.get('success'):
+                return f"📍 *DISTANCE QUERY*\n\nUnable to calculate distance between '{origin}' and '{destination}'.\n\n{result.get('error', 'Unknown error')}"
+            
+            distance_km = result.get('distance_km', 0)
+            distance_miles = result.get('distance_miles', 0)
+            driving_hours = result.get('approx_driving_hours', 0)
+            driving_minutes = result.get('approx_driving_minutes', 0)
+            distance_type = result.get('distance_type', 'unknown')
+            
+            lines = [
+                "📍 *DISTANCE CALCULATION*",
+                "",
+                f"🛫 From: {origin}",
+                f"🛬 To: {destination}",
+                "",
+                f"📏 Distance: {distance_km:.1f} km ({distance_miles:.1f} miles)",
+                "",
+            ]
+            
+            if distance_type == "road":
+                lines.append("🚗 *Road Distance* (accurate)")
+            else:
+                lines.append("✈️ *Air Distance* (approximate)")
+            
+            if driving_hours:
+                if driving_hours < 1:
+                    lines.append(f"⏱️ Approx Driving: {driving_minutes} minutes")
+                else:
+                    hours = int(driving_hours)
+                    minutes = int((driving_hours - hours) * 60)
+                    if minutes > 0:
+                        lines.append(f"⏱️ Approx Driving: {hours}h {minutes}m")
+                    else:
+                        lines.append(f"⏱️ Approx Driving: {hours}h")
+            
+            elapsed = time.time() - start_time
+            logger.info(f"[{req_id}] ✅ Distance query returned in {elapsed:.3f}s")
+            return "\n".join(lines)
+            
+        except Exception as e:
+            logger.error(f"[{req_id}] ❌ Distance query error: {e}")
+            return self._create_error_response(
+                f"Error calculating distance: {str(e)[:100]}",
+                "DISTANCE_ERROR",
+                entity,
+                "distance"
+            )
+
+
 # ==========================================================
 # BLOCK 11: FORMATTERS WITH DISTANCE SUPPORT
 # ==========================================================
+
     def _format_dn_dashboard(self, data: Dict, dn_number: str) -> str:
-        """
-        Format DN dashboard - Complete production version.
-        BLOCK 11 - FIXED v6.0 - PRODUCTION GRADE
-        """
+        """Format DN dashboard - production grade."""
         try:
-            # ADD DEBUG LOGGING
-            logger.info(f"🔍 Formatting DN {dn_number} with data type: {type(data)}")
-            
             if not data:
-                logger.error(f"❌ No data for DN {dn_number}")
-                return f"❌ No data available for DN {dn_number}"
+                return self._create_error_response(
+                    f"No data available for DN {dn_number}",
+                    "DN_NOT_FOUND",
+                    dn_number,
+                    "dn"
+                )
             
-            if isinstance(data, dict):
-                logger.info(f"📊 Data keys: {list(data.keys())}")
-            else:
-                logger.warning(f"⚠️ Data is not a dict: {type(data)}")
-                return f"❌ Invalid data format for DN {dn_number}"
-            
-            # ==========================================================
-            # Safe get with defaults
-            # ==========================================================
-            def safe_get(key, default="N/A"):
+            def safe_get(key, default=""):
                 val = data.get(key, default)
-                if val is None:
-                    return default
-                if isinstance(val, str) and val == "":
-                    return default
-                return val
+                return default if val is None or val == "" else val
             
-            # ==========================================================
-            # Get ALL fields with proper logging
-            # ==========================================================
-            customer_name = safe_get('customer_name', 'N/A')
-            dealer_code = safe_get('dealer_code', 'N/A')
-            customer_code = safe_get('customer_code', 'N/A')
-            warehouse = safe_get('warehouse', 'N/A')
-            city = safe_get('ship_to_city', 'N/A')
-            sales_office = safe_get('sales_office', 'N/A')
-            sales_manager = safe_get('sales_manager', 'N/A')
-            division = safe_get('division', 'N/A')
-            customer_model = safe_get('customer_model', 'N/A')
-            material_no = safe_get('material_no', 'N/A')
+            # Get all fields with proper defaults
+            customer_name = safe_get('customer_name', 'Unknown Dealer')
+            dealer_code = safe_get('dealer_code', '')
+            customer_code = safe_get('customer_code', '')
+            warehouse = safe_get('warehouse', 'Unknown Warehouse')
+            city = safe_get('ship_to_city', 'Unknown City')
+            sales_office = safe_get('sales_office', '')
+            sales_manager = safe_get('sales_manager', '')
+            division = safe_get('division', '')
+            customer_model = safe_get('customer_model', '')
+            material_no = safe_get('material_no', '')
             
             units = safe_get('units', 0)
             amount = safe_get('amount', 0)
             status = safe_get('delivery_status', 'Unknown')
-            pgi_status = safe_get('pgi_status', 'N/A')
-            pod_status = safe_get('pod_status', 'N/A')
+            pgi_status = safe_get('pgi_status', '')
+            pod_status = safe_get('pod_status', '')
             
-            # Get dates
-            create_date = safe_get('dn_create_date', 'N/A')
-            pgi_date = safe_get('good_issue_date', 'N/A')
-            pod_date = safe_get('pod_date', 'N/A')
+            create_date = safe_get('dn_create_date', '')
+            pgi_date = safe_get('good_issue_date', '')
+            pod_date = safe_get('pod_date', '')
             
-            # Get aging
-            delivery_aging = safe_get('delivery_aging_text', 'N/A')
-            pod_aging = safe_get('pod_aging_text', 'N/A')
-            total_cycle = safe_get('total_cycle_text', 'N/A')
+            delivery_aging = safe_get('delivery_aging_text', '')
+            pod_aging = safe_get('pod_aging_text', '')
+            total_cycle = safe_get('total_cycle_text', '')
             
-            # Status flags
             pending_flag = data.get('pending_flag', False)
             pending_text = "🔴 Yes" if pending_flag else "🟢 No"
             
-            # Status emoji
             status_emoji = "✅" if status in ['Completed', 'Delivered', 'Closed'] else "⏳"
             
-            # ==========================================================
-            # Log what we found
-            # ==========================================================
-            logger.info(f"📊 DN {dn_number} data:")
-            logger.info(f"   Customer: {customer_name}")
-            logger.info(f"   Warehouse: {warehouse}")
-            logger.info(f"   City: {city}")
-            logger.info(f"   Units: {units}")
-            logger.info(f"   Amount: {amount}")
-            logger.info(f"   Status: {status}")
-            logger.info(f"   PGI: {pgi_status}")
-            logger.info(f"   POD: {pod_status}")
-            
-            # ==========================================================
-            # Build formatted response
-            # ==========================================================
             lines = [
                 "📄 *DN TRACKING*",
                 "",
                 f"DN No: {safe_get('dn_number', dn_number)}",
                 f"Dealer: {customer_name}",
-                f"Dealer Code: {dealer_code}",
-                f"Customer Code: {customer_code}",
-                f"Warehouse: {warehouse}",
-                f"City: {city}",
-                f"Sales Office: {sales_office}",
-                f"Sales Manager: {sales_manager}",
-                f"Division: {division}",
+            ]
+            
+            if dealer_code:
+                lines.append(f"Dealer Code: {dealer_code}")
+            if customer_code:
+                lines.append(f"Customer Code: {customer_code}")
+            
+            lines.append(f"Warehouse: {warehouse}")
+            lines.append(f"City: {city}")
+            
+            if sales_office:
+                lines.append(f"Sales Office: {sales_office}")
+            if sales_manager:
+                lines.append(f"Sales Manager: {sales_manager}")
+            if division:
+                lines.append(f"Division: {division}")
+            
+            lines.extend([
                 "",
                 "📦 *Products*",
-                f"Model: {customer_model}",
-                f"Material: {material_no}",
+                f"Model: {customer_model if customer_model else 'N/A'}",
+                f"Material: {material_no if material_no else 'N/A'}",
                 "",
                 "📊 *Metrics*",
                 f"Units: {units}",
-            ]
+            ])
             
-            # Format amount with proper number formatting
-            if amount and amount != 0 and amount != "N/A":
-                try:
-                    amount_float = float(amount)
-                    lines.append(f"Revenue: PKR {amount_float:,.0f}")
-                except (ValueError, TypeError):
-                    lines.append(f"Revenue: PKR {amount}")
+            if amount and amount != 0:
+                lines.append(f"Revenue: PKR {amount:,.0f}")
             else:
-                lines.append(f"Revenue: PKR {amount}")
+                lines.append("Revenue: PKR 0")
             
             lines.extend([
                 "",
                 "📅 *Dates*",
-                f"Create: {create_date}",
-                f"PGI: {pgi_date}",
-                f"POD: {pod_date}",
+                f"Create: {create_date if create_date else 'N/A'}",
+                f"PGI: {pgi_date if pgi_date else 'N/A'}",
+                f"POD: {pod_date if pod_date else 'N/A'}",
                 "",
                 "⏳ *Aging*",
-                f"Delivery Aging: {delivery_aging}",
-                f"POD Aging: {pod_aging}",
-                f"Total Cycle: {total_cycle}",
+                f"Delivery Aging: {delivery_aging if delivery_aging else 'N/A'}",
+                f"POD Aging: {pod_aging if pod_aging else 'N/A'}",
+                f"Total Cycle: {total_cycle if total_cycle else 'N/A'}",
                 "",
                 "📋 *Status*",
                 f"Delivery: {status} {status_emoji}",
-                f"PGI: {pgi_status}",
-                f"POD: {pod_status}",
+                f"PGI: {pgi_status if pgi_status else 'N/A'}",
+                f"POD: {pod_status if pod_status else 'N/A'}",
                 f"Pending: {pending_text}"
             ])
             
-            # ==========================================================
-            # Check for issues/warnings
-            # ==========================================================
             issues = data.get('issues', [])
             if issues and isinstance(issues, list):
                 lines.append("")
@@ -1346,22 +2479,279 @@ class AIOrchestrator:
                 for issue in issues[:3]:
                     lines.append(f"   {issue}")
             
-            # ==========================================================
-            # Return formatted response
-            # ==========================================================
-            result = "\n".join(lines)
-            logger.info(f"📊 Formatted response length: {len(result)} characters")
-            return result
+            return "\n".join(lines)
             
         except Exception as e:
-            logger.error(f"❌ DN format error for {dn_number}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return f"❌ Unable to format DN details for {dn_number}: {str(e)}"
+            logger.error(f"DN format error for {dn_number}: {e}")
+            return self._create_error_response(
+                f"Error formatting DN details: {str(e)[:100]}",
+                "FORMAT_ERROR",
+                dn_number,
+                "dn"
+            )
+
+    def _format_dealer_dashboard(self, data: Dict, dealer_name: str) -> str:
+        """Format dealer dashboard with distance information."""
+        try:
+            if not data:
+                return self._create_error_response(
+                    f"No data available for dealer {dealer_name}",
+                    "DEALER_NOT_FOUND",
+                    dealer_name,
+                    "dealer"
+                )
+            
+            def safe_get(key, default=""):
+                val = data.get(key, default)
+                return default if val is None or val == "" else val
+            
+            revenue = data.get('total_revenue', 0)
+            delivery_rate = safe_get('delivery_rate', 0)
+            total_dns = safe_get('total_dns', 0)
+            total_units = safe_get('total_units', 0)
+            delivered = safe_get('delivered_dns', 0)
+            pending = safe_get('pending_dns', 0)
+            transit = safe_get('transit_dns', 0)
+            
+            lines = [
+                "🏢 *DEALER DASHBOARD*",
+                "",
+                f"Dealer: {safe_get('dealer_name', dealer_name)}",
+                f"Dealer Code: {safe_get('dealer_code', 'Not Set')}",
+                f"Customer Code: {safe_get('customer_code', 'Not Set')}",
+                f"Division: {safe_get('division', 'Not Set')}",
+                f"Warehouse: {safe_get('warehouse', 'Not Set')}",
+                f"City: {safe_get('city', 'Not Set')}",
+                "",
+                "📊 *Metrics*",
+                f"Total DNs: {total_dns}",
+                f"Total Units: {total_units}",
+                f"Total Revenue: PKR {revenue:,.0f}" if revenue else f"Total Revenue: PKR {revenue}",
+                "",
+                "📦 *Delivery Status*",
+                f"Delivered: {delivered}",
+                f"In Transit: {transit}",
+                f"Pending: {pending}",
+                f"Delivery Rate: {delivery_rate}%",
+            ]
+            
+            # Add distance information if available
+            distance_km = data.get('distance_km')
+            if distance_km:
+                lines.append("")
+                lines.append("📍 *Distance*")
+                lines.append(f"Warehouse → Dealer: {distance_km:.1f} km")
+                
+                approx_minutes = data.get('approx_driving_minutes')
+                if approx_minutes:
+                    if approx_minutes < 60:
+                        lines.append(f"⏱️ Approx Driving: {approx_minutes} minutes")
+                    else:
+                        hours = int(approx_minutes // 60)
+                        minutes = int(approx_minutes % 60)
+                        lines.append(f"⏱️ Approx Driving: {hours}h {minutes}m")
+            
+            return self._truncate_response("\n".join(lines))
+            
+        except Exception as e:
+            logger.error(f"Dealer format error: {e}")
+            return self._create_error_response(
+                f"Error formatting dealer data: {str(e)[:100]}",
+                "FORMAT_ERROR",
+                dealer_name,
+                "dealer"
+            )
+
+    def _format_warehouse_dashboard(self, data: Dict, warehouse_name: str) -> str:
+        """Format warehouse dashboard with coverage information."""
+        try:
+            if not data:
+                return self._create_error_response(
+                    f"No data available for warehouse {warehouse_name}",
+                    "WAREHOUSE_NOT_FOUND",
+                    warehouse_name,
+                    "warehouse"
+                )
+            
+            def safe_get(key, default=""):
+                val = data.get(key, default)
+                return default if val is None or val == "" else val
+            
+            revenue = data.get('total_revenue', 0)
+            
+            lines = [
+                "🏭 *WAREHOUSE DASHBOARD*",
+                "",
+                f"Warehouse: {safe_get('warehouse', warehouse_name)}",
+                f"Warehouse Code: {safe_get('warehouse_code', '')}",
+                "",
+                "📊 *Metrics*",
+                f"Total DNs: {safe_get('total_dns', 0)}",
+                f"Total Revenue: PKR {revenue:,.0f}" if revenue else f"Total Revenue: PKR {revenue}",
+                f"Total Dealers: {safe_get('total_dealers', 0)}",
+                f"Cities Served: {safe_get('cities_served', 0)}",
+                "",
+                "📦 *Delivery Status*",
+                f"Delivered: {safe_get('delivered_dns', 0)} ({safe_get('delivery_rate', 0)}%)",
+                f"Pending: {safe_get('pending_dns', 0)}",
+                f"Pending POD: {safe_get('pending_pod_dns', 0)}",
+            ]
+            
+            # Add distance coverage
+            avg_distance = data.get('avg_distance_km')
+            if avg_distance:
+                lines.append("")
+                lines.append("📍 *Distance Coverage*")
+                lines.append(f"Average Distance: {avg_distance:.1f} km")
+                
+                max_distance = data.get('max_distance_km')
+                if max_distance:
+                    lines.append(f"Farthest City: {max_distance:.1f} km")
+                
+                min_distance = data.get('min_distance_km')
+                if min_distance:
+                    lines.append(f"Closest City: {min_distance:.1f} km")
+                
+                distance_info = data.get('distance_info', [])
+                if distance_info:
+                    lines.append("")
+                    lines.append("📌 *Top Cities by Distance*")
+                    for item in distance_info[:5]:
+                        city = item.get('city', 'Unknown')
+                        dist = item.get('distance_km', 0)
+                        lines.append(f"• {city}: {dist:.1f} km")
+            
+            return self._truncate_response("\n".join(lines))
+            
+        except Exception as e:
+            logger.error(f"Warehouse format error: {e}")
+            return self._create_error_response(
+                f"Error formatting warehouse data: {str(e)[:100]}",
+                "FORMAT_ERROR",
+                warehouse_name,
+                "warehouse"
+            )
+
+    def _format_city_dashboard(self, data: Dict, city_name: str) -> str:
+        """Format city dashboard."""
+        try:
+            if not data:
+                return self._create_error_response(
+                    f"No data available for city {city_name}",
+                    "CITY_NOT_FOUND",
+                    city_name,
+                    "city"
+                )
+            
+            def safe_get(key, default=""):
+                val = data.get(key, default)
+                return default if val is None or val == "" else val
+            
+            revenue = data.get('total_revenue', 0)
+            
+            lines = [
+                "🏙️ *CITY DASHBOARD*",
+                "",
+                f"City: {safe_get('city_name', city_name)}",
+                "",
+                "📊 *Metrics*",
+                f"Total DNs: {safe_get('total_dns', 0)}",
+                f"Total Revenue: PKR {revenue:,.0f}" if revenue else f"Total Revenue: PKR {revenue}",
+                f"Total Dealers: {safe_get('total_dealers', 0)}",
+                f"Total Warehouses: {safe_get('total_warehouses', 0)}",
+                "",
+                f"📦 Delivery Rate: {safe_get('delivery_rate', 0)}%"
+            ]
+            
+            return self._truncate_response("\n".join(lines))
+            
+        except Exception as e:
+            logger.error(f"City format error: {e}")
+            return self._create_error_response(
+                f"Error formatting city data: {str(e)[:100]}",
+                "FORMAT_ERROR",
+                city_name,
+                "city"
+            )
+
+    def _format_product_dashboard(self, data: Dict, product_name: str) -> str:
+        """Format product dashboard."""
+        try:
+            if not data:
+                return self._create_error_response(
+                    f"No data available for product {product_name}",
+                    "PRODUCT_NOT_FOUND",
+                    product_name,
+                    "product"
+                )
+            
+            def safe_get(key, default=""):
+                val = data.get(key, default)
+                return default if val is None or val == "" else val
+            
+            revenue = data.get('revenue', 0)
+            
+            lines = [
+                "📦 *PRODUCT DASHBOARD*",
+                "",
+                f"Product: {safe_get('product', product_name)}",
+                "",
+                "📊 *Metrics*",
+                f"Total Revenue: PKR {revenue:,.0f}" if revenue else f"Total Revenue: PKR {revenue}",
+                f"Total Units: {safe_get('units', 0)}",
+                f"Total DNs: {safe_get('dns', 0)}",
+                "",
+                "📍 *Distribution*",
+                f"Dealers: {safe_get('dealers', 0)}",
+                f"Cities: {safe_get('cities', 0)}",
+                f"Warehouses: {safe_get('warehouses', 0)}",
+                "",
+                f"📦 Delivery Rate: {safe_get('delivery_rate', 0)}%"
+            ]
+            
+            return self._truncate_response("\n".join(lines))
+            
+        except Exception as e:
+            logger.error(f"Product format error: {e}")
+            return self._create_error_response(
+                f"Error formatting product data: {str(e)[:100]}",
+                "FORMAT_ERROR",
+                product_name,
+                "product"
+            )
+
+    def _get_help_message(self) -> str:
+        """Get help message."""
+        return """🏠 *HAIER LOGISTICS AI*
+
+📋 *Available Dashboards:*
+
+1️⃣ 🏪 Dealer Dashboard
+2️⃣ 🏭 Warehouse Dashboard
+3️⃣ 🏙️ City Dashboard
+4️⃣ 📦 Product Dashboard
+5️⃣ 📄 DN Dashboard
+6️⃣ 📋 PGI Dashboard
+7️⃣ ✅ POD Dashboard
+8️⃣ 🚚 Delivery Dashboard
+9️⃣ 👔 Executive Dashboard
+🔟 🚨 Control Tower
+1️⃣1️⃣ 📍 Distance Calculator
+
+🔍 *Quick Commands:*
+• Enter 8-12 digit DN number
+• Dealer name (e.g., "Pakistan Electronics")
+• Product name (e.g., "Refrigerator")
+• City name (e.g., "Lahore City")
+• Warehouse name (e.g., "Rawalpindi warehouse")
+• Distance Lahore to Karachi
+• "Help" for menu
+
+*Ask me anything about logistics!* 🤖"""
+
+
 # ==========================================================
 # BLOCK 12: SINGLETON & WRAPPER FUNCTIONS
-# ==========================================================
-# BLOCK 12: SINGLETON & WRAPPER FUNCTIONS (FIXED v4.0)
 # ==========================================================
 
 _orchestrator = None
@@ -1369,68 +2759,28 @@ _initialization_attempts = 0
 _MAX_INIT_ATTEMPTS = 3
 
 def get_orchestrator(session_factory: Optional[Callable[[], Session]] = None) -> Optional[AIOrchestrator]:
-    """
-    Get or create AI Orchestrator singleton with detailed error logging.
-    BLOCK 12 - FIXED v4.0 - PRODUCTION GRADE
-    """
+    """Get or create AI Orchestrator singleton."""
     global _orchestrator, _initialization_attempts
     
-    # If already initialized, return it
     if _orchestrator is not None:
-        logger.info("✅ Returning existing orchestrator instance")
         return _orchestrator
     
-    # Check max attempts
     if _initialization_attempts >= _MAX_INIT_ATTEMPTS:
         logger.error(f"❌ Max initialization attempts ({_MAX_INIT_ATTEMPTS}) reached")
-        logger.error("   💡 Restart the service to reset")
         return None
     
     _initialization_attempts += 1
     logger.info(f"🔄 Initializing AI Orchestrator (attempt {_initialization_attempts}/{_MAX_INIT_ATTEMPTS})...")
     
     try:
-        # Log before initialization
-        logger.info("📌 Attempting to create AIOrchestrator...")
-        
         _orchestrator = AIOrchestrator(session_factory=session_factory)
-        
-        # Verify orchestrator was created
-        if _orchestrator is None:
-            logger.error("❌ AIOrchestrator creation returned None")
-            return None
-        
-        # Verify analytics is available
-        if not hasattr(_orchestrator, 'analytics'):
-            logger.error("❌ Orchestrator missing 'analytics' attribute")
-            _orchestrator = None
-            return None
-        
-        if _orchestrator.analytics is None:
-            logger.error("❌ Orchestrator analytics is None")
-            logger.warning("⚠️ Analytics service failed to initialize")
-            # Don't fail completely - we can still use fallback
-            
-        logger.info("✅ AI Orchestrator v30.0 initialized successfully")
-        logger.info(f"📊 Analytics available: {_orchestrator.analytics is not None}")
-        
+        logger.info("✅ AI Orchestrator v31.0 initialized successfully")
         _initialization_attempts = 0
         return _orchestrator
-        
-    except ImportError as e:
-        logger.error(f"❌ ImportError during initialization: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        logger.error("   💡 Check that all required services are installed")
-        _orchestrator = None
-        return None
-        
     except Exception as e:
         logger.error(f"❌ Failed to initialize AI Orchestrator: {e}")
         import traceback
         logger.error(traceback.format_exc())
-        logger.error(f"   💡 Error type: {type(e).__name__}")
-        logger.error(f"   💡 Error message: {str(e)}")
         _orchestrator = None
         return None
 
@@ -1444,55 +2794,26 @@ def process_whatsapp_query(
 ) -> str:
     """
     Process WhatsApp query with all services integrated.
-    BLOCK 12 - FIXED v4.0 - PRODUCTION GRADE
+    Enterprise Production Grade.
     """
     global _orchestrator
     
-    # Validate input
     if not question or not question.strip():
         return "Please provide a valid question. Type 'help' for menu."
     
-    # Get orchestrator
-    logger.info(f"📥 Processing: '{question[:100]}'")
-    logger.info("🔍 Getting orchestrator instance...")
-    
     orchestrator = get_orchestrator(session_factory)
     
-    # Check orchestrator
     if orchestrator is None:
-        logger.error("❌ Orchestrator is None - service initialization failed")
-        
-        # Try emergency reset
-        logger.info("🔄 Attempting emergency reset...")
-        reset_orchestrator()
-        
-        try:
-            orchestrator = AIOrchestrator(session_factory=session_factory)
-            _orchestrator = orchestrator
-            logger.info("✅ Emergency reset successful")
-        except Exception as e:
-            logger.error(f"❌ Emergency reset failed: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return "⚠️ AI service is currently unavailable. Please try again later."
-    
-    # Final check
-    if orchestrator is None:
-        logger.error("❌ Orchestrator still None after emergency reset")
         return "⚠️ AI service is currently unavailable. Please try again later."
     
-    # Process the query
     try:
-        logger.info("✅ Orchestrator acquired, processing query...")
-        result = orchestrator.process_whatsapp_query(
+        return orchestrator.process_whatsapp_query(
             question=question,
             session_factory=session_factory,
             phone_number=phone_number,
             user_id=user_id,
             request_id=request_id
         )
-        return result
-        
     except Exception as e:
         logger.error(f"❌ Error processing query: {e}")
         import traceback
@@ -1512,19 +2833,32 @@ def get_orchestrator_status() -> Dict[str, Any]:
     """Get current orchestrator status for diagnostics."""
     global _orchestrator, _initialization_attempts
     
+    if _orchestrator is None:
+        return {
+            "orchestrator_initialized": False,
+            "initialization_attempts": _initialization_attempts,
+            "max_attempts": _MAX_INIT_ATTEMPTS,
+            "analytics_available": False,
+            "distance_available": False,
+            "dealer_analytics_available": False,
+            "conversation_count": 0,
+            "metrics": {}
+        }
+    
     return {
-        "orchestrator_initialized": _orchestrator is not None,
+        "orchestrator_initialized": True,
         "initialization_attempts": _initialization_attempts,
         "max_attempts": _MAX_INIT_ATTEMPTS,
-        "analytics_available": hasattr(_orchestrator, 'analytics') and _orchestrator.analytics is not None if _orchestrator else False,
-        "distance_available": hasattr(_orchestrator, 'distance_service') and _orchestrator.distance_service is not None if _orchestrator else False,
-        "dealer_analytics_available": hasattr(_orchestrator, 'dealer_analytics') and _orchestrator.dealer_analytics is not None if _orchestrator else False,
+        "analytics_available": hasattr(_orchestrator, 'analytics') and _orchestrator.analytics is not None,
+        "distance_available": hasattr(_orchestrator, 'distance_service') and _orchestrator.distance_service is not None,
+        "dealer_analytics_available": hasattr(_orchestrator, 'dealer_analytics') and _orchestrator.dealer_analytics is not None,
         "conversation_count": len(_orchestrator.conversation_cache) if _orchestrator else 0,
+        "resolver_stats": _orchestrator.resolver.get_stats() if _orchestrator and hasattr(_orchestrator, 'resolver') else {},
+        "classifier_stats": _orchestrator.classifier.get_stats() if _orchestrator and hasattr(_orchestrator, 'classifier') else {},
         "metrics": _orchestrator.metrics if _orchestrator else {}
     }
 
 
-# ==========================================================
 # ==========================================================
 # BLOCK 13: EXPORTS
 # ==========================================================
@@ -1538,8 +2872,9 @@ __all__ = [
     'get_orchestrator',
     'process_whatsapp_query',
     'reset_orchestrator',
+    'get_orchestrator_status',
 ]
 
 # ==========================================================
-# END OF FILE - v30.0 FULLY INTEGRATED
+# END OF FILE - v31.0 ENTERPRISE PRODUCTION
 # ==========================================================
