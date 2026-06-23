@@ -1803,7 +1803,7 @@ class AnalyticsRepository:
 def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
     """
     Complete dealer dashboard - PostgreSQL only.
-    FIXED: Enhanced dealer resolution with multiple strategies.
+    FIXED: Enhanced dealer resolution with multiple strategies including ILIKE.
     """
     import time
     start_time = time.time()
@@ -1815,15 +1815,13 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
             return {"error": "Dealer name is required"}
         
         dealer_name_clean = dealer_name.strip()
-        
-        # ==========================================================
-        # STEP 1: RESOLVE DEALER WITH MULTIPLE STRATEGIES
-        # ==========================================================
         resolved = None
         match_type = "none"
         confidence = 0.0
         
+        # ==========================================================
         # STRATEGY 1: Exact match (case insensitive)
+        # ==========================================================
         logger.info(f"📌 Strategy 1: Exact match for '{dealer_name_clean}'")
         result = self.db.query(DeliveryReport.customer_name).filter(
             func.lower(DeliveryReport.customer_name) == func.lower(dealer_name_clean)
@@ -1832,9 +1830,11 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
             resolved = result[0]
             match_type = "exact"
             confidence = 1.0
-            logger.info(f"✅ Strategy 1 found: '{resolved}' (exact match)")
+            logger.info(f"✅ Strategy 1 found: '{resolved}'")
         
-        # STRATEGY 2: ILIKE match (contains)
+        # ==========================================================
+        # STRATEGY 2: ILIKE match (CONTAINS) - CRITICAL FIX!
+        # ==========================================================
         if not resolved:
             logger.info(f"📌 Strategy 2: ILIKE match for '{dealer_name_clean}'")
             result = self.db.query(DeliveryReport.customer_name).filter(
@@ -1846,7 +1846,9 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
                 confidence = 0.85
                 logger.info(f"✅ Strategy 2 found: '{resolved}' (ILIKE match)")
         
+        # ==========================================================
         # STRATEGY 3: Token-based matching
+        # ==========================================================
         if not resolved:
             logger.info(f"📌 Strategy 3: Token-based matching")
             tokens = dealer_name_clean.split()
@@ -1862,7 +1864,9 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
                         logger.info(f"✅ Strategy 3 found: '{resolved}' (token: '{token}')")
                         break
         
+        # ==========================================================
         # STRATEGY 4: First word match
+        # ==========================================================
         if not resolved:
             logger.info(f"📌 Strategy 4: First word match")
             first_word = dealer_name_clean.split()[0] if dealer_name_clean.split() else ""
@@ -1876,10 +1880,28 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
                     confidence = 0.65
                     logger.info(f"✅ Strategy 4 found: '{resolved}' (first word: '{first_word}')")
         
-        # STRATEGY 5: Character overlap (fuzzy)
+        # ==========================================================
+        # STRATEGY 5: Last word match
+        # ==========================================================
         if not resolved:
-            logger.info(f"📌 Strategy 5: Fuzzy match")
-            # Get all unique dealer names
+            logger.info(f"📌 Strategy 5: Last word match")
+            words = dealer_name_clean.split()
+            last_word = words[-1] if words else ""
+            if len(last_word) > 2:
+                result = self.db.query(DeliveryReport.customer_name).filter(
+                    DeliveryReport.customer_name.ilike(f"%{last_word}%")
+                ).first()
+                if result:
+                    resolved = result[0]
+                    match_type = f"last_word_{last_word}"
+                    confidence = 0.65
+                    logger.info(f"✅ Strategy 5 found: '{resolved}' (last word: '{last_word}')")
+        
+        # ==========================================================
+        # STRATEGY 6: Character overlap (fuzzy)
+        # ==========================================================
+        if not resolved:
+            logger.info(f"📌 Strategy 6: Fuzzy match")
             dealers = self.db.query(
                 func.distinct(DeliveryReport.customer_name)
             ).filter(
@@ -1899,11 +1921,9 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
                 dealer_lower = dealer_name.lower()
                 dealer_chars = set(dealer_lower)
                 
-                # Character overlap score
                 overlap = len(query_chars & dealer_chars)
                 score = overlap / max(len(query_chars), len(dealer_chars))
                 
-                # Bonus for substring match
                 if query_lower in dealer_lower or dealer_lower in query_lower:
                     score += 0.3
                 
@@ -1915,39 +1935,35 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
                 resolved = best_match
                 match_type = "fuzzy"
                 confidence = min(best_score, 1.0)
-                logger.info(f"✅ Strategy 5 found: '{resolved}' (fuzzy score: {best_score:.2f})")
+                logger.info(f"✅ Strategy 6 found: '{resolved}' (fuzzy score: {best_score:.2f})")
         
         # ==========================================================
-        # STEP 2: CHECK IF DEALER WAS FOUND
+        # CHECK IF DEALER WAS FOUND
         # ==========================================================
         if not resolved:
             logger.warning(f"❌ Dealer '{dealer_name_clean}' not found in database")
             
-            # Try to find similar dealers for suggestions
-            try:
-                similar = self.db.query(
-                    func.distinct(DeliveryReport.customer_name)
-                ).filter(
-                    DeliveryReport.customer_name.ilike(f"%{dealer_name_clean[:3]}%")
-                ).limit(10).all()
-                
-                if similar:
-                    suggestions = [s[0] for s in similar if s[0] and s[0] != dealer_name_clean]
-                    if suggestions:
-                        return {
-                            "error": f"Dealer '{dealer_name}' not found",
-                            "suggestions": suggestions[:5],
-                            "message": f"Did you mean: {', '.join(suggestions[:3])}?"
-                        }
-            except Exception as e:
-                logger.warning(f"Similar dealer search failed: {e}")
+            similar = self.db.query(
+                func.distinct(DeliveryReport.customer_name)
+            ).filter(
+                DeliveryReport.customer_name.ilike(f"%{dealer_name_clean[:3]}%")
+            ).limit(10).all()
+            
+            if similar:
+                suggestions = [s[0] for s in similar if s[0] and s[0] != dealer_name_clean]
+                if suggestions:
+                    return {
+                        "error": f"Dealer '{dealer_name}' not found",
+                        "suggestions": suggestions[:5],
+                        "message": f"Did you mean: {', '.join(suggestions[:3])}?"
+                    }
             
             return {"error": f"Dealer '{dealer_name}' not found"}
         
         logger.info(f"✅ Dealer resolved: '{resolved}' (Match: {match_type}, Confidence: {confidence})")
         
         # ==========================================================
-        # STEP 3: GET DEALER PROFILE
+        # GET DEALER PROFILE
         # ==========================================================
         profile_result = self.db.query(
             DeliveryReport.dealer_code,
@@ -1964,7 +1980,7 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         ).first()
         
         # ==========================================================
-        # STEP 4: QUERY DEALER METRICS
+        # QUERY DEALER METRICS
         # ==========================================================
         metrics_result = self.db.query(
             func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
@@ -1978,12 +1994,9 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         ).first()
         
         # ==========================================================
-        # STEP 5: CHECK IF METRICS EXIST
+        # BUILD RESPONSE
         # ==========================================================
         if not metrics_result or metrics_result.total_dns == 0:
-            logger.warning(f"⚠️ No delivery data found for dealer '{resolved}'")
-            
-            # Return profile with zero metrics
             return {
                 "dealer_name": resolved,
                 "dealer_code": profile_result[0] if profile_result and profile_result[0] else "",
@@ -2000,13 +2013,9 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
                 "pending_dns": 0,
                 "transit_dns": 0,
                 "delivery_rate": 0,
-                "_warning": f"No delivery data found for dealer '{resolved}'",
-                "_suggestion": f"Check if there are DNs for '{resolved}' in the database"
+                "_warning": f"No delivery data found for dealer '{resolved}'"
             }
         
-        # ==========================================================
-        # STEP 6: BUILD RESPONSE
-        # ==========================================================
         total_dns = metrics_result.total_dns or 0
         delivered_dns = metrics_result.delivered_dns or 0
         transit_dns = metrics_result.transit_dns or 0
@@ -2043,7 +2052,6 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         import traceback
         logger.error(traceback.format_exc())
         return {"error": f"Failed to load dealer data: {str(e)[:100]}"}
-
 # ==========================================================
 # BLOCK 12: WAREHOUSE DASHBOARD
 # ==========================================================
