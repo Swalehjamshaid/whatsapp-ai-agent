@@ -1288,17 +1288,22 @@ class AnalyticsRepository:
 # ==========================================================
 # BLOCK 11: DEALER DASHBOARD (PRODUCTION-GRADE v5.0 - FIXED)
 # ==========================================================
+# BLOCK 11: DEALER DASHBOARD (FIXED v6.0 - PRODUCTION GRADE)
+# ==========================================================
 
     def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         """
-        Complete dealer dashboard - Supports 360° view with fallback.
-        BLOCK 11 - FIXED: Removed MAX() from text fields, uses DISTINCT ON.
+        Complete dealer dashboard - PRODUCTION GRADE.
+        BLOCK 11 - FIXED v6.0
         """
         import time
         start_time = time.time()
         
         try:
             logger.info(f"🔍 Searching for dealer: '{dealer_name}'")
+            
+            if not dealer_name or not dealer_name.strip():
+                return {"error": "Dealer name is required"}
             
             # ==========================================================
             # STEP 1: Try 360 Dashboard first
@@ -1309,21 +1314,17 @@ class AnalyticsRepository:
                     result = self._dealer_360.get_dashboard(dealer_name)
                     
                     if "error" in result:
+                        logger.warning(f"⚠️ 360 dashboard returned error: {result['error']}")
+                    else:
+                        result['_dashboard_type'] = '360'
+                        logger.info(f"✅ 360 dashboard built successfully for: {dealer_name}")
                         return result
-                    
-                    # Mark as 360 dashboard
-                    result['_dashboard_type'] = '360'
-                    logger.info(f"✅ 360 dashboard built successfully for: {dealer_name}")
-                    return result
                 except Exception as e:
                     logger.warning(f"⚠️ 360 dashboard failed, falling back to legacy: {e}")
             
             # ==========================================================
-            # STEP 2: Fallback to legacy implementation (FIXED)
+            # STEP 2: Resolve dealer
             # ==========================================================
-            logger.info(f"🔍 Using legacy dashboard for: '{dealer_name}'")
-            
-            # Resolve dealer
             resolved = self.resolver.resolve_dealer(dealer_name)
             
             if not resolved:
@@ -1343,9 +1344,8 @@ class AnalyticsRepository:
                 return {"error": f"Dealer '{dealer_name}' not found"}
             
             # ==========================================================
-            # STEP 3: Get dealer profile using DISTINCT ON (FIXED)
+            # STEP 3: Get dealer profile using DISTINCT ON
             # ==========================================================
-            # Get the latest record for this dealer
             profile_result = self.db.query(
                 DeliveryReport.dealer_code,
                 DeliveryReport.customer_code,
@@ -1384,9 +1384,9 @@ class AnalyticsRepository:
                 return {"error": f"No data found for dealer '{resolved}'"}
             
             # ==========================================================
-            # STEP 5: Build response with profile data
+            # STEP 5: Build response
             # ==========================================================
-            total_dns = metrics_result.total_dns or 1
+            total_dns = metrics_result.total_dns or 0
             delivered_dns = metrics_result.delivered_dns or 0
             transit_dns = metrics_result.transit_dns or 0
             pod_completed = metrics_result.pod_completed_dns or 0
@@ -1403,15 +1403,13 @@ class AnalyticsRepository:
             
             response = {
                 "dealer_name": resolved,
-                # Profile data from DISTINCT ON
-                "dealer_code": profile_result[0] if profile_result else "",
-                "customer_code": profile_result[1] if profile_result else "",
-                "division": profile_result[2] if profile_result else "",
-                "warehouse": profile_result[3] if profile_result else "",
-                "city": profile_result[4] if profile_result else "",
-                "sales_office": profile_result[5] if profile_result else "",
-                "sales_manager": profile_result[6] if profile_result else "",
-                # Metrics
+                "dealer_code": profile_result[0] if profile_result and profile_result[0] else "Not Set",
+                "customer_code": profile_result[1] if profile_result and profile_result[1] else "Not Set",
+                "division": profile_result[2] if profile_result and profile_result[2] else "Not Set",
+                "warehouse": profile_result[3] if profile_result and profile_result[3] else "Not Set",
+                "city": profile_result[4] if profile_result and profile_result[4] else "Not Set",
+                "sales_office": profile_result[5] if profile_result and profile_result[5] else "Not Set",
+                "sales_manager": profile_result[6] if profile_result and profile_result[6] else "Not Set",
                 "total_dns": total_dns,
                 "total_units": int(metrics_result.total_units or 0),
                 "total_revenue": float(metrics_result.total_revenue or 0),
@@ -1423,7 +1421,6 @@ class AnalyticsRepository:
                 "pending_pgi_dns": metrics_result.pending_pgi_dns or 0,
                 "product_count": metrics_result.product_count or 0,
                 "city_count": metrics_result.city_count or 0,
-                # KPIs
                 "delivery_rate": delivery_rate,
                 "pgi_rate": pgi_rate,
                 "pod_rate": pod_rate,
@@ -1445,8 +1442,8 @@ class AnalyticsRepository:
                     from app.services.distance_service import get_distance_service
                     distance_service = get_distance_service()
                     distance_info = distance_service.calculate_warehouse_distance(
-                        profile_result[3],  # warehouse
-                        profile_result[4]   # city
+                        profile_result[3],
+                        profile_result[4]
                     )
                     if distance_info and distance_info.get('success'):
                         response['distance_km'] = distance_info.get('distance_km')
@@ -1457,7 +1454,7 @@ class AnalyticsRepository:
                 logger.error(f"Distance calculation error: {e}")
             
             total_time = time.time() - start_time
-            logger.info(f"✅ Legacy dealer dashboard built successfully for: {resolved} (took {total_time:.3f}s)")
+            logger.info(f"✅ Dealer dashboard built for: {resolved} (took {total_time:.3f}s)")
             return response
             
         except Exception as e:
@@ -1465,7 +1462,6 @@ class AnalyticsRepository:
             import traceback
             logger.error(traceback.format_exc())
             return {"error": f"Failed to load dealer data: {str(e)[:100]}"}
-
     
     # ==========================================================
 # BLOCK 12: WAREHOUSE DASHBOARD (FIXED)
@@ -2061,94 +2057,99 @@ class AnalyticsService:
 # ==========================================================
 # BLOCK 25: SEARCH METHODS
 # ==========================================================
+# BLOCK 25: SEARCH DN (FIXED - PRODUCTION GRADE)
+# ==========================================================
 
     def search_dn(self, query: str, exact: bool = False) -> AnalyticsResponse:
+        """
+        Search for DNs in PostgreSQL with exact and partial support.
+        BLOCK 25 - FIXED v2.0 - PRODUCTION GRADE
+        """
         try:
             self.metrics["total_requests"] += 1
-            result = self.repo.search.search_dn(query, exact)
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data={"results": result, "total": len(result)})
+            
+            if not query or not query.strip():
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(
+                    success=False,
+                    error="DN number is required",
+                    data={"results": [], "total": 0}
+                )
+            
+            # Clean query - remove non-numeric characters
+            query_clean = re.sub(r'[^0-9]', '', str(query).strip())
+            
+            if len(query_clean) < 8 or len(query_clean) > 12:
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(
+                    success=False,
+                    error=f"Invalid DN format: {query}. Must be 8-12 digits.",
+                    data={"results": [], "total": 0}
+                )
+            
+            try:
+                if exact:
+                    results = self.db.query(DeliveryReport).filter(
+                        cast(DeliveryReport.dn_no, String) == query_clean
+                    ).limit(SEARCH_LIMIT).all()
+                else:
+                    results = self.db.query(DeliveryReport).filter(
+                        DeliveryReport.dn_no.like(f"%{query_clean}%")
+                    ).limit(SEARCH_LIMIT).all()
+                
+                if not results:
+                    self.metrics["failed_requests"] += 1
+                    return AnalyticsResponse(
+                        success=False,
+                        error=f"DN {query_clean} not found in delivery_reports table.",
+                        data={"results": [], "total": 0}
+                    )
+                
+                formatted_results = []
+                for r in results:
+                    formatted_results.append({
+                        "dn_no": r.dn_no,
+                        "customer_name": r.customer_name,
+                        "dealer_code": r.dealer_code,
+                        "customer_code": r.customer_code,
+                        "warehouse": r.warehouse,
+                        "city": r.ship_to_city,
+                        "dn_qty": r.dn_qty,
+                        "dn_amount": r.dn_amount,
+                        "dn_create_date": r.dn_create_date.isoformat() if r.dn_create_date else None,
+                        "good_issue_date": r.good_issue_date.isoformat() if r.good_issue_date else None,
+                        "pod_date": r.pod_date.isoformat() if r.pod_date else None,
+                        "delivery_status": r.delivery_status,
+                        "pgi_status": r.pgi_status,
+                        "pod_status": r.pod_status,
+                        "pending_flag": r.pending_flag
+                    })
+                
+                self.metrics["successful_requests"] += 1
+                return AnalyticsResponse(
+                    success=True,
+                    data={"results": formatted_results, "total": len(formatted_results)}
+                )
+                
+            except Exception as e:
+                error_msg = f"DN search query failed: {str(e)}"
+                logger.error(f"❌ {error_msg}")
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(
+                    success=False,
+                    error=error_msg,
+                    data={"results": [], "total": 0}
+                )
+                
         except Exception as e:
+            error_msg = f"DN search failed: {str(e)}"
+            logger.error(f"❌ {error_msg}")
             self.metrics["failed_requests"] += 1
-            logger.error(f"DN search failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def search_dealer(self, query: str, exact: bool = False) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            result = self.repo.search.search_dealer(query, exact)
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data={"results": result, "total": len(result)})
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Dealer search failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def search_warehouse(self, query: str) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            result = self.repo.search.search_warehouse(query)
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data={"results": result, "total": len(result)})
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Warehouse search failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def search_city(self, query: str) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            result = self.repo.search.search_city(query)
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data={"results": result, "total": len(result)})
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"City search failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def search_product(self, query: str) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            result = self.repo.search.search_product(query)
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data={"results": result, "total": len(result)})
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Product search failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def search_division(self, query: str) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            result = self.repo.search.search_division(query)
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data={"results": result, "total": len(result)})
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Division search failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def search_sales_office(self, query: str) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            result = self.repo.search.search_sales_office(query)
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data={"results": result, "total": len(result)})
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Sales office search failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def search_sales_manager(self, query: str) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            result = self.repo.search.search_sales_manager(query)
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data={"results": result, "total": len(result)})
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Sales manager search failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
+            return AnalyticsResponse(
+                success=False,
+                error=error_msg,
+                data={"results": [], "total": 0}
+            )
 
 # ==========================================================
 # BLOCK 26: VERIFICATION METHODS
@@ -2708,10 +2709,11 @@ class AnalyticsService:
             return AnalyticsResponse(success=False, error=str(e))
 
 # ==========================================================
-# BLOCK 30: FACTORY FUNCTION
-#
+
 # ==========================================================
 # BLOCK 30: FACTORY FUNCTION (FIXED v5.0 - NEVER RETURNS NONE)
+# ==========================================================
+# BLOCK 30: FACTORY FUNCTION (FIXED v6.0 - PRODUCTION GRADE)
 # ==========================================================
 
 _analytics_service = None
@@ -2720,20 +2722,21 @@ _MAX_ANALYTICS_INIT_ATTEMPTS = 3
 
 def get_analytics_service(db: Optional[Session] = None) -> AnalyticsService:
     """
-    Get or create AnalyticsService singleton with diagnostics.
-    BLOCK 30 - FIXED v5.0 - NEVER RETURNS NONE
+    Get or create AnalyticsService singleton with validation.
+    BLOCK 30 - FIXED v6.0 - PRODUCTION GRADE
+    ALWAYS returns AnalyticsService, NEVER None.
     """
     global _analytics_service, _analytics_initialization_attempts
     
     logger.info("=" * 60)
-    logger.info("🔍 ANALYTICS SERVICE FACTORY")
+    logger.info("🔍 ANALYTICS SERVICE INITIALIZATION")
     logger.info("=" * 60)
     
     # ==========================================================
     # Check if service already exists
     # ==========================================================
     if _analytics_service is not None:
-        logger.info(f"✅ AnalyticsService already initialized")
+        logger.info("✅ AnalyticsService already initialized")
         return _analytics_service
     
     # ==========================================================
@@ -2749,7 +2752,7 @@ def get_analytics_service(db: Optional[Session] = None) -> AnalyticsService:
     logger.info(f"📌 Attempt {_analytics_initialization_attempts}/{_MAX_ANALYTICS_INIT_ATTEMPTS}")
     
     # ==========================================================
-    # Test Database Connection
+    # VALIDATION: Test Database Connection
     # ==========================================================
     try:
         from app.database import SessionLocal
@@ -2759,14 +2762,28 @@ def get_analytics_service(db: Optional[Session] = None) -> AnalyticsService:
         test_db = SessionLocal()
         total_records = test_db.query(DeliveryReport).count()
         total_dns = test_db.query(func.count(distinct(DeliveryReport.dn_no))).scalar()
+        total_dealers = test_db.query(func.count(distinct(DeliveryReport.customer_name))).scalar()
+        total_warehouses = test_db.query(func.count(distinct(DeliveryReport.warehouse))).scalar()
+        total_cities = test_db.query(func.count(distinct(DeliveryReport.ship_to_city))).scalar()
         test_db.close()
         
-        logger.info(f"📌 Database: {total_records} records, {total_dns} DNs")
+        logger.info("✅ PostgreSQL Validation: SUCCESS")
+        logger.info(f"   📊 Total Records: {total_records}")
+        logger.info(f"   📦 Total DNs: {total_dns}")
+        logger.info(f"   🏪 Total Dealers: {total_dealers}")
+        logger.info(f"   🏭 Total Warehouses: {total_warehouses}")
+        logger.info(f"   🏙️ Total Cities: {total_cities}")
         
         if total_records == 0:
-            logger.warning("⚠️ Database has ZERO records")
+            logger.warning("⚠️ Database has ZERO records - dashboards will show zeros")
+            logger.warning("   💡 Insert data into delivery_reports table")
+            
     except Exception as e:
-        logger.error(f"❌ Database test failed: {e}")
+        error_msg = f"Database validation failed: {str(e)}"
+        logger.error(f"❌ {error_msg}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise RuntimeError(error_msg)
     
     # ==========================================================
     # Create Analytics Service - NEVER RETURN NONE
@@ -2788,7 +2805,10 @@ def get_analytics_service(db: Optional[Session] = None) -> AnalyticsService:
             "get_dealer_360_dashboard",
             "get_dealer_dashboard",
             "get_dn_dashboard",
-            "search_dealer"
+            "search_dealer",
+            "get_warehouse_dashboard",
+            "get_city_dashboard",
+            "get_product_dashboard"
         ]
         
         logger.info("🔍 Verifying critical methods:")
@@ -2796,7 +2816,9 @@ def get_analytics_service(db: Optional[Session] = None) -> AnalyticsService:
             if hasattr(service, method):
                 logger.info(f"   ✅ {method}: AVAILABLE")
             else:
+                error_msg = f"Critical method missing: {method}"
                 logger.error(f"   ❌ {method}: MISSING")
+                raise RuntimeError(error_msg)
         
         # ==========================================================
         # Test Query
@@ -2808,13 +2830,14 @@ def get_analytics_service(db: Optional[Session] = None) -> AnalyticsService:
             logger.warning(f"⚠️ Search test failed: {e}")
         
         logger.info("=" * 60)
-        logger.info("✅ AnalyticsService ready")
+        logger.info("✅ AnalyticsService initialized successfully")
         logger.info("=" * 60)
         
         return service
         
     except Exception as e:
-        logger.error(f"❌ Failed to create AnalyticsService: {e}")
+        error_msg = f"Failed to create AnalyticsService: {str(e)}"
+        logger.error(f"❌ {error_msg}")
         import traceback
         logger.error(traceback.format_exc())
         
@@ -2828,10 +2851,6 @@ def get_analytics_service(db: Optional[Session] = None) -> AnalyticsService:
             # Absolute last resort
             _analytics_service = AnalyticsService()
             return _analytics_service
-
-
-==========================================================
-
 # ==========================================================
 # BLOCK 31: EXPORTS
 # ==========================================================
