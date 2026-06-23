@@ -1,7 +1,7 @@
 # ==========================================================
 # FILE: app/services/distance_service.py
 # PURPOSE: Distance calculation using geopy + OpenRouteService
-# VERSION: 3.0 - WITH ROAD DISTANCE
+# VERSION: 3.1 - FIXED: Warehouse Mapping + Fallback Coordinates
 # ==========================================================
 
 from geopy.geocoders import Nominatim
@@ -14,6 +14,22 @@ import os
 import re
 import requests
 import json
+
+
+# ==========================================================
+# BLOCK 1: DISTANCE SERVICE CLASS
+# ==========================================================
+# ATTRIBUTES:
+# - _instance: Class variable for singleton pattern
+# - _initialized: Boolean flag for singleton initialization
+# - geolocator: Nominatim geocoder instance
+# - geocode: Rate-limited geocoding function
+# - cache: Dictionary for caching distance results
+# - ors_api_key: OpenRouteService API key from environment
+# - ors_base_url: OpenRouteService API base URL
+# - city_mapping: Dictionary mapping city name variations
+# - fallback_coords: Dictionary of fallback coordinates
+# ==========================================================
 
 class DistanceService:
     """
@@ -59,8 +75,15 @@ class DistanceService:
             self.ors_base_url = "https://api.openrouteservice.org/v2/directions/driving-car"
             
             # ==========================================================
-            # CITY NAME MAPPING - Fixes spelling issues
+            # BLOCK 2: CITY NAME MAPPING
             # ==========================================================
+            # ATTRIBUTES:
+            # - city_mapping: Dictionary mapping name variations to standard city names
+            #   Keys: "wh-khi-01", "karachi", "khi", "chn", "marhaba", etc.
+            #   Values: "Karachi", "Lahore", "Islamabad", etc.
+            # PURPOSE: Fixes spelling issues and maps warehouse codes to cities
+            # ==========================================================
+            
             self.city_mapping = {
                 # Gilgit region
                 "gilget": "Gilgit",
@@ -113,27 +136,77 @@ class DistanceService:
                 "mandi": "Mandi",
                 "sambrial": "Sambrial",
                 "wazirabad": "Wazirabad",
+                
+                # ==========================================================
+                # WAREHOUSE MAPPINGS - CRITICAL FOR DISTANCE
+                # ==========================================================
+                "wh-khi-01": "Karachi",
+                "wh khi 01": "Karachi",
+                "whkhi01": "Karachi",
+                "khi": "Karachi",
+                "wh-lhe-01": "Lahore",
+                "wh-lhe-02": "Lahore",
+                "wh-isb-01": "Islamabad",
+                "wh-rwp-01": "Rawalpindi",
+                "wh-pew-01": "Peshawar",
+                
+                # Dealer name mappings
+                "chn": "Karachi",
+                "marhaba": "Karachi",
+                "marhaba electronics": "Karachi",
+                "marhaba electronics chn": "Karachi",
             }
             
             # ==========================================================
-            # FALLBACK COORDINATES - If geocoding fails
+            # BLOCK 3: FALLBACK COORDINATES
             # ==========================================================
+            # ATTRIBUTES:
+            # - fallback_coords: Dictionary of latitude/longitude coordinates
+            #   Keys: "karachi", "hyderabad", "wh-khi-01", "khi", "chn", etc.
+            #   Values: (latitude, longitude) tuples
+            # PURPOSE: Provides coordinates when geocoding fails
+            # ==========================================================
+            
             self.fallback_coords = {
+                # Major cities
                 "gilgit": (35.9189, 74.3123),
                 "rawalpindi": (33.5651, 73.0169),
                 "islamabad": (33.6844, 73.0479),
                 "lahore": (31.5204, 74.3587),
                 "karachi": (24.8607, 67.0011),
+                "hyderabad": (25.3925, 68.3737),
+                "multan": (30.1575, 71.5249),
+                "faisalabad": (31.4504, 73.1350),
+                "peshawar": (34.0151, 71.5249),
+                "quetta": (30.1798, 66.9750),
+                "sialkot": (32.4945, 74.5229),
+                "gujranwala": (32.1627, 74.1883),
                 "attock": (33.8886, 72.6641),
                 "wah cantt": (33.7700, 72.7500),
                 "jand": (33.7800, 72.0200),
                 "kamra cantt": (33.7500, 73.0000),
-                "peshawar": (34.0151, 71.5249),
-                "quetta": (30.1798, 66.9750),
-                "multan": (30.1575, 71.5249),
-                "faisalabad": (31.4504, 73.1350),
-                "sialkot": (32.4945, 74.5229),
-                "gujranwala": (32.1627, 74.1883),
+                "sukkur": (27.7051, 68.8578),
+                "sahiwal": (30.6659, 73.1089),
+                "gujrat": (32.5736, 74.0750),
+                "sheikhupura": (31.7131, 73.9783),
+                "jhelum": (32.9345, 73.7310),
+                "mianwali": (32.5769, 71.5253),
+                "sargodha": (32.0836, 72.6711),
+                "dera ghazi khan": (30.0500, 70.6333),
+                "okara": (30.8081, 73.4454),
+                "kasur": (31.1189, 74.4500),
+                
+                # ==========================================================
+                # WAREHOUSE COORDINATES - CRITICAL FOR DISTANCE
+                # ==========================================================
+                "wh-khi-01": (24.8607, 67.0011),
+                "wh khi 01": (24.8607, 67.0011),
+                "whkhi01": (24.8607, 67.0011),
+                "khi": (24.8607, 67.0011),
+                "chn": (24.8607, 67.0011),
+                "marhaba": (24.8607, 67.0011),
+                "marhaba electronics": (24.8607, 67.0011),
+                "marhaba electronics chn": (24.8607, 67.0011),
             }
             
             self._initialized = True
@@ -150,20 +223,62 @@ class DistanceService:
         except Exception as e:
             logger.error(f"❌ DistanceService initialization failed: {e}")
             self._initialized = False
-    
+
+
+# ==========================================================
+# BLOCK 4: NORMALIZE CITY METHOD
+# ==========================================================
+# ATTRIBUTES:
+# - Input: city (string)
+# - Output: normalized city name (string)
+# - Purpose: Standardizes city names for geocoding
+# - Uses: city_mapping dictionary
+# ==========================================================
+
     def _normalize_city(self, city: str) -> str:
         """Normalize city names for better geocoding."""
         if not city:
             return city
         
+        # Log original for debugging
+        logger.debug(f"🔍 Normalizing: '{city}'")
+        
         city_lower = city.lower().strip()
         normalized = self.city_mapping.get(city_lower, city)
+        
+        # Handle warehouse codes
+        if city_lower.startswith('wh-') or city_lower.startswith('wh '):
+            # Extract city from warehouse code (e.g., WH-KHI-01 → Karachi)
+            parts = city_lower.replace('wh-', '').replace('wh ', '').split('-')
+            if parts:
+                city_code = parts[0].upper()
+                if city_code in ['KHI', 'LHE', 'ISB', 'RWP', 'PEW']:
+                    mapping = {
+                        'KHI': 'Karachi',
+                        'LHE': 'Lahore', 
+                        'ISB': 'Islamabad',
+                        'RWP': 'Rawalpindi',
+                        'PEW': 'Peshawar'
+                    }
+                    normalized = mapping.get(city_code, normalized)
+                    logger.info(f"🔍 Warehouse code '{city_code}' → '{normalized}'")
         
         if normalized != city:
             logger.info(f"🔍 City name normalized: '{city}' → '{normalized}'")
         
         return normalized
-    
+
+
+# ==========================================================
+# BLOCK 5: GET COORDINATES METHOD
+# ==========================================================
+# ATTRIBUTES:
+# - Input: location (string)
+# - Output: (latitude, longitude) tuple or None
+# - Purpose: Gets coordinates for a location
+# - Uses: cache, fallback_coords, geocode
+# ==========================================================
+
     def get_coordinates(self, location: str) -> Optional[Tuple[float, float]]:
         """Get latitude and longitude for a location."""
         if not location:
@@ -206,7 +321,18 @@ class DistanceService:
         except Exception as e:
             logger.error(f"❌ Geocoding error for {location}: {e}")
             return None
-    
+
+
+# ==========================================================
+# BLOCK 6: GET ROAD DISTANCE METHOD
+# ==========================================================
+# ATTRIBUTES:
+# - Input: origin (string), destination (string)
+# - Output: Dict with distance, duration, or None
+# - Purpose: Gets road distance using OpenRouteService API
+# - Uses: ors_api_key, get_coordinates
+# ==========================================================
+
     def get_road_distance(self, origin: str, destination: str) -> Optional[Dict[str, Any]]:
         """
         Get road distance using OpenRouteService API.
@@ -265,7 +391,19 @@ class DistanceService:
             logger.error(f"❌ OpenRouteService error: {e}")
         
         return None
-    
+
+
+# ==========================================================
+# BLOCK 7: CALCULATE DISTANCE METHOD
+# ==========================================================
+# ATTRIBUTES:
+# - Input: origin (string), destination (string)
+# - Output: Dict with distance information
+# - Purpose: Main distance calculation entry point
+# - Uses: get_road_distance, get_coordinates, geodesic
+# - Returns: success, distance_km, distance_miles, driving_time, distance_type
+# ==========================================================
+
     def calculate_distance(self, origin: str, destination: str) -> Dict[str, Any]:
         """
         Calculate distance between two locations (ROAD DISTANCE PREFERRED).
@@ -364,7 +502,18 @@ class DistanceService:
             }
             self.cache[cache_key] = result
             return result
-    
+
+
+# ==========================================================
+# BLOCK 8: WAREHOUSE DISTANCE METHOD
+# ==========================================================
+# ATTRIBUTES:
+# - Input: warehouse (string), dealer_city (string)
+# - Output: Dict with distance information
+# - Purpose: Calculates distance from warehouse to dealer city
+# - Uses: calculate_distance
+# ==========================================================
+
     def calculate_warehouse_distance(self, warehouse: str, dealer_city: str) -> Dict[str, Any]:
         """Calculate distance from warehouse to dealer city."""
         if not warehouse or not dealer_city:
@@ -377,7 +526,18 @@ class DistanceService:
         dealer_city = self._normalize_city(dealer_city)
         
         return self.calculate_distance(warehouse, dealer_city)
-    
+
+
+# ==========================================================
+# BLOCK 9: WAREHOUSE COVERAGE METHOD
+# ==========================================================
+# ATTRIBUTES:
+# - Input: warehouse (string), cities (list)
+# - Output: Dict with coverage information
+# - Purpose: Calculates distances to multiple cities
+# - Uses: calculate_warehouse_distance
+# ==========================================================
+
     def get_warehouse_coverage(self, warehouse: str, cities: list) -> Dict[str, Any]:
         """Calculate distances from warehouse to multiple cities."""
         if not warehouse or not cities:
@@ -417,7 +577,18 @@ class DistanceService:
             "min_distance_km": round(min_distance, 1) if min_distance != float('inf') else 0,
             "distances": distances
         }
-    
+
+
+# ==========================================================
+# BLOCK 10: CALCULATE DISTANCES FOR DEALERS METHOD
+# ==========================================================
+# ATTRIBUTES:
+# - Input: warehouse (string), dealers (List[Dict])
+# - Output: List of dealers with distances
+# - Purpose: Calculates distances for multiple dealers
+# - Uses: calculate_warehouse_distance
+# ==========================================================
+
     def calculate_distances_for_dealers(self, warehouse: str, dealers: List[Dict]) -> List[Dict]:
         """Calculate distances for multiple dealers from a warehouse."""
         if not warehouse or not dealers:
@@ -454,19 +625,51 @@ class DistanceService:
             results.append(result)
         
         return results
-    
+
+
+# ==========================================================
+# BLOCK 11: GET NEARBY DEALERS METHOD
+# ==========================================================
+# ATTRIBUTES:
+# - Input: warehouse (string), dealers (List[Dict]), max_distance (float)
+# - Output: List of nearby dealers
+# - Purpose: Filters dealers within max_distance
+# - Uses: calculate_distances_for_dealers
+# ==========================================================
+
     def get_nearby_dealers(self, warehouse: str, dealers: List[Dict], max_distance: float = 100) -> List[Dict]:
         """Get dealers within a certain distance from a warehouse."""
         results = self.calculate_distances_for_dealers(warehouse, dealers)
         nearby = [d for d in results if d.get('distance_km') and d['distance_km'] <= max_distance]
         return sorted(nearby, key=lambda x: x.get('distance_km', float('inf')))
-    
+
+
+# ==========================================================
+# BLOCK 12: GET FARTHEST DEALERS METHOD
+# ==========================================================
+# ATTRIBUTES:
+# - Input: warehouse (string), dealers (List[Dict]), limit (int)
+# - Output: List of farthest dealers
+# - Purpose: Returns farthest dealers from warehouse
+# - Uses: calculate_distances_for_dealers
+# ==========================================================
+
     def get_farthest_dealers(self, warehouse: str, dealers: List[Dict], limit: int = 10) -> List[Dict]:
         """Get farthest dealers from a warehouse."""
         results = self.calculate_distances_for_dealers(warehouse, dealers)
         valid = [d for d in results if d.get('distance_km')]
         return sorted(valid, key=lambda x: x.get('distance_km', 0), reverse=True)[:limit]
-    
+
+
+# ==========================================================
+# BLOCK 13: FORMAT DISTANCE TEXT METHOD
+# ==========================================================
+# ATTRIBUTES:
+# - Input: distance_info (Dict)
+# - Output: Formatted string for WhatsApp
+# - Purpose: Formats distance for display
+# ==========================================================
+
     def format_distance_text(self, distance_info: Dict[str, Any]) -> str:
         """Format distance information for WhatsApp message."""
         if not distance_info or not distance_info.get('success'):
@@ -503,7 +706,11 @@ class DistanceService:
 
 
 # ==========================================================
-# SINGLETON INSTANCE
+# BLOCK 14: SINGLETON INSTANCE
+# ==========================================================
+# ATTRIBUTES:
+# - _distance_service: Global singleton instance
+# - get_distance_service(): Factory function
 # ==========================================================
 
 _distance_service = None
@@ -517,7 +724,10 @@ def get_distance_service() -> DistanceService:
 
 
 # ==========================================================
-# QUICK TEST FUNCTION
+# BLOCK 15: TEST FUNCTION
+# ==========================================================
+# ATTRIBUTES:
+# - test_distance(): Test function for debugging
 # ==========================================================
 
 def test_distance():
@@ -571,7 +781,10 @@ if __name__ == "__main__":
 
 
 # ==========================================================
-# EXPORTS
+# BLOCK 16: EXPORTS
+# ==========================================================
+# ATTRIBUTES:
+# - __all__: List of exported functions/classes
 # ==========================================================
 
 __all__ = [
@@ -581,5 +794,5 @@ __all__ = [
 ]
 
 # ==========================================================
-# END OF FILE
+# END OF FILE - v3.1 PRODUCTION READY
 # ==========================================================
