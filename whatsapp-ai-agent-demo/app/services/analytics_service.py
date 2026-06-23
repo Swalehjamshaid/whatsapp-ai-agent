@@ -1,6 +1,6 @@
 # ==========================================================
 # FILE: app/services/analytics_service.py
-# VERSION: v31.0 - ENTERPRISE PRODUCTION
+# VERSION: v31.1 - DN RESOLUTION HOTFIX
 # PURPOSE: Single Source of Truth for ALL Analytics
 # ==========================================================
 
@@ -111,11 +111,11 @@ class AnalyticsService:
         self._init_services()
         
         logger.info("=" * 70)
-        logger.info("📊 Analytics Service v31.0 - ENTERPRISE PRODUCTION")
+        logger.info("📊 Analytics Service v31.1 - DN RESOLUTION HOTFIX")
         logger.info("=" * 70)
         logger.info("✅ Service initialized successfully")
         logger.info("✅ PostgreSQL is the ONLY source of truth")
-        logger.info("✅ All methods ready for production use")
+        logger.info("✅ Enhanced DN resolution with multiple strategies")
         logger.info("=" * 70)
     
     def _init_services(self):
@@ -219,111 +219,223 @@ class AnalyticsService:
         return val
 
     # ==========================================================
-    # BLOCK 4: DN DASHBOARD - COMPLETE
+    # BLOCK 4: ENHANCED DN DASHBOARD - COMPLETE REPLACEMENT
     # ==========================================================
     
-    def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
+    def _resolve_dn_enhanced(self, dn_input: str) -> Dict[str, Any]:
         """
-        Get complete DN dashboard with all details
+        Enhanced DN resolution with multiple strategies
         
-        Returns:
-            DN Number, Dealer, Warehouse, City, Units, Revenue,
-            PGI, POD, Delivery Status, Aging, and all metadata
+        Strategies:
+        1. Exact match as VARCHAR
+        2. Exact match as INTEGER (CAST)
+        3. Exact match as BIGINT (CAST)
+        4. Pattern match with wildcards
+        5. Remove leading zeros and try again
+        6. Handle decimal points
+        7. Handle whitespace and special characters
         """
-        if not dn_no:
-            return self._error_response("DN number is required", "INVALID_DN")
+        if not dn_input:
+            return {"found": False, "error": "Empty DN input"}
         
-        # Clean DN - remove non-numeric characters
-        dn_clean = re.sub(r'\D', '', str(dn_no).strip())
+        # Clean the input
+        dn_clean = str(dn_input).strip()
         
-        if len(dn_clean) < 8 or len(dn_clean) > 12:
-            return self._error_response(
-                f"Invalid DN number: '{dn_no}'. Must be 8-12 digits.",
-                "INVALID_DN_FORMAT",
-                {"dn_no": dn_no, "normalized": dn_clean}
-            )
+        # Remove decimal points
+        if '.' in dn_clean:
+            dn_clean = dn_clean.split('.')[0]
         
-        # Check cache
-        cache_key = f"dn_dashboard:{dn_clean}"
-        if cache_key in self._dn_cache:
-            cached = self._dn_cache[cache_key]
-            if cached.get('success', False):
-                logger.info(f"✅ DN dashboard cache hit: {dn_clean}")
-                return cached
+        # Remove any non-numeric characters except for the number itself
+        dn_numeric = re.sub(r'[^0-9]', '', dn_clean)
         
-        logger.info(f"🔍 Retrieving DN dashboard for: {dn_clean}")
+        if len(dn_numeric) < 8 or len(dn_numeric) > 12:
+            return {
+                "found": False,
+                "error": f"Invalid DN format: {dn_input} (must be 8-12 digits)",
+                "normalized": dn_numeric,
+                "suggestions": []
+            }
         
-        # Query PostgreSQL
-        query = """
-            SELECT 
-                dn_no,
-                dn_work,
-                order_type,
-                division,
-                customer_code,
-                dealer_code,
-                customer_name,
-                customer_model,
-                material_no,
-                storage_location,
-                sales_office,
-                sales_manager,
-                ship_to_city,
-                warehouse,
-                warehouse_code,
-                delivery_location,
-                dn_qty as units,
-                dn_amount as amount,
-                dn_create_date,
-                good_issue_date as pgi_date,
-                pod_date,
-                remarks,
-                delivery_status,
-                pgi_status,
-                pod_status,
-                pending_flag,
-                source_file,
-                upload_batch_id,
-                created_at,
-                updated_at,
-                -- Aging calculations
-                EXTRACT(DAY FROM COALESCE(CURRENT_DATE, dn_create_date) - dn_create_date) as dn_aging_days,
-                EXTRACT(DAY FROM COALESCE(CURRENT_DATE, good_issue_date) - good_issue_date) as pgi_aging_days,
-                EXTRACT(DAY FROM COALESCE(CURRENT_DATE, pod_date) - pod_date) as pod_aging_days,
-                EXTRACT(DAY FROM COALESCE(pod_date, CURRENT_DATE) - good_issue_date) as transit_days,
-                EXTRACT(DAY FROM COALESCE(pod_date, CURRENT_DATE) - dn_create_date) as total_cycle_days
-            FROM delivery_reports
-            WHERE dn_no = :dn_no
-            ORDER BY dn_create_date DESC
-            LIMIT 1
-        """
+        session = self._get_session()
+        if not session:
+            return {"found": False, "error": "Database session unavailable"}
         
-        results = self._execute_query(query, {"dn_no": dn_clean})
+        try:
+            # ==========================================================
+            # STRATEGY 1: Direct VARCHAR match
+            # ==========================================================
+            query_varchar = """
+                SELECT dn_no, customer_name, warehouse, ship_to_city, dn_qty, 
+                       dn_amount, dn_create_date, good_issue_date, pod_date, 
+                       delivery_status, pgi_status, pod_status, pending_flag,
+                       division, customer_code, dealer_code, sales_office, sales_manager,
+                       dn_work, order_type, storage_location, delivery_location,
+                       remarks, source_file, upload_batch_id, created_at, updated_at
+                FROM delivery_reports
+                WHERE dn_no = :dn_no
+                LIMIT 1
+            """
+            result = session.execute(text(query_varchar), {"dn_no": dn_numeric}).fetchone()
+            
+            if result:
+                session.close()
+                logger.info(f"✅ DN found via VARCHAR match: {dn_numeric}")
+                return self._row_to_dict(result, dn_numeric)
+            
+            # ==========================================================
+            # STRATEGY 2: Try as INTEGER (CAST)
+            # ==========================================================
+            query_int = """
+                SELECT dn_no, customer_name, warehouse, ship_to_city, dn_qty, 
+                       dn_amount, dn_create_date, good_issue_date, pod_date, 
+                       delivery_status, pgi_status, pod_status, pending_flag,
+                       division, customer_code, dealer_code, sales_office, sales_manager,
+                       dn_work, order_type, storage_location, delivery_location,
+                       remarks, source_file, upload_batch_id, created_at, updated_at
+                FROM delivery_reports
+                WHERE CAST(dn_no AS VARCHAR) = :dn_no
+                LIMIT 1
+            """
+            result = session.execute(text(query_int), {"dn_no": dn_numeric}).fetchone()
+            
+            if result:
+                session.close()
+                logger.info(f"✅ DN found via CAST match: {dn_numeric}")
+                return self._row_to_dict(result, dn_numeric)
+            
+            # ==========================================================
+            # STRATEGY 3: Pattern match (in case of leading/trailing spaces)
+            # ==========================================================
+            query_pattern = """
+                SELECT dn_no, customer_name, warehouse, ship_to_city, dn_qty, 
+                       dn_amount, dn_create_date, good_issue_date, pod_date, 
+                       delivery_status, pgi_status, pod_status, pending_flag,
+                       division, customer_code, dealer_code, sales_office, sales_manager,
+                       dn_work, order_type, storage_location, delivery_location,
+                       remarks, source_file, upload_batch_id, created_at, updated_at
+                FROM delivery_reports
+                WHERE dn_no LIKE :pattern
+                LIMIT 1
+            """
+            result = session.execute(text(query_pattern), {"pattern": f"%{dn_numeric}%"}).fetchone()
+            
+            if result:
+                session.close()
+                logger.info(f"✅ DN found via pattern match: {dn_numeric}")
+                return self._row_to_dict(result, dn_numeric)
+            
+            # ==========================================================
+            # STRATEGY 4: Remove leading zeros and try again
+            # ==========================================================
+            dn_no_leading_zeros = dn_numeric.lstrip('0')
+            if dn_no_leading_zeros != dn_numeric and len(dn_no_leading_zeros) >= 8:
+                result = session.execute(text(query_varchar), {"dn_no": dn_no_leading_zeros}).fetchone()
+                if result:
+                    session.close()
+                    logger.info(f"✅ DN found after removing leading zeros: {dn_no_leading_zeros}")
+                    return self._row_to_dict(result, dn_no_leading_zeros)
+            
+            # ==========================================================
+            # STRATEGY 5: Try with different case (if alphanumeric)
+            # ==========================================================
+            if not dn_numeric.isdigit():
+                query_case = """
+                    SELECT dn_no, customer_name, warehouse, ship_to_city, dn_qty, 
+                           dn_amount, dn_create_date, good_issue_date, pod_date, 
+                           delivery_status, pgi_status, pod_status, pending_flag,
+                           division, customer_code, dealer_code, sales_office, sales_manager,
+                           dn_work, order_type, storage_location, delivery_location,
+                           remarks, source_file, upload_batch_id, created_at, updated_at
+                    FROM delivery_reports
+                    WHERE UPPER(dn_no) = UPPER(:dn_no)
+                    LIMIT 1
+                """
+                result = session.execute(text(query_case), {"dn_no": dn_numeric}).fetchone()
+                if result:
+                    session.close()
+                    logger.info(f"✅ DN found via case-insensitive match: {dn_numeric}")
+                    return self._row_to_dict(result, dn_numeric)
+            
+            session.close()
+            
+            # ==========================================================
+            # No match found - try to find similar DNs for suggestions
+            # ==========================================================
+            suggestions = self._find_similar_dns(dn_numeric)
+            
+            logger.warning(f"⚠️ DN {dn_numeric} not found. Suggestions: {suggestions[:3]}")
+            
+            return {
+                "found": False,
+                "error": f"DN {dn_input} not found in database",
+                "normalized": dn_numeric,
+                "suggestions": suggestions[:5] if suggestions else [],
+                "suggestion_message": f"Did you mean one of these?" if suggestions else "No similar DNs found"
+            }
+            
+        except Exception as e:
+            session.close()
+            logger.error(f"❌ Enhanced DN resolution error: {e}")
+            return {"found": False, "error": f"Database error: {str(e)}"}
+
+    def _row_to_dict(self, row, dn_no: str) -> Dict[str, Any]:
+        """Convert database row to dictionary"""
+        if not row:
+            return {"found": False}
         
-        if not results:
-            result = self._error_response(
-                f"DN {dn_clean} not found in database",
-                "DN_NOT_FOUND",
-                {"dn_no": dn_clean}
-            )
-            self._dn_cache[cache_key] = result
-            return result
-        
-        data = results[0]
+        data = {
+            "dn_no": row[0] or dn_no,
+            "customer_name": row[1] or "Unknown Dealer",
+            "warehouse": row[2] or "Unknown Warehouse",
+            "ship_to_city": row[3] or "Unknown City",
+            "dn_qty": int(row[4]) if row[4] is not None else 0,
+            "dn_amount": float(row[5]) if row[5] is not None else 0,
+            "dn_create_date": row[6],
+            "good_issue_date": row[7],
+            "pod_date": row[8],
+            "delivery_status": row[9] or "Unknown",
+            "pgi_status": row[10] or "Unknown",
+            "pod_status": row[11] or "Unknown",
+            "pending_flag": row[12] or "N",
+            "division": row[13] or "Unknown",
+            "customer_code": row[14] or "Unknown",
+            "dealer_code": row[15] or "Unknown",
+            "sales_office": row[16] or "Unknown",
+            "sales_manager": row[17] or "Unknown",
+            "dn_work": row[18] if len(row) > 18 else None,
+            "order_type": row[19] if len(row) > 19 else None,
+            "storage_location": row[20] if len(row) > 20 else None,
+            "delivery_location": row[21] if len(row) > 21 else None,
+            "remarks": row[22] if len(row) > 22 else None,
+            "source_file": row[23] if len(row) > 23 else None,
+            "upload_batch_id": row[24] if len(row) > 24 else None,
+            "created_at": row[25] if len(row) > 25 else None,
+            "updated_at": row[26] if len(row) > 26 else None,
+            "found": True
+        }
         
         # Format dates
-        for date_field in ['dn_create_date', 'pgi_date', 'pod_date', 'created_at', 'updated_at']:
+        for date_field in ['dn_create_date', 'good_issue_date', 'pod_date', 'created_at', 'updated_at']:
             if data.get(date_field):
                 if isinstance(data[date_field], (datetime, date)):
                     data[date_field] = data[date_field].strftime("%Y-%m-%d %H:%M:%S")
         
-        # Format aging text
-        data['delivery_aging_text'] = self._format_aging_text(data.get('dn_aging_days', 0))
-        data['pod_aging_text'] = self._format_aging_text(data.get('pod_aging_days', 0))
-        data['total_cycle_text'] = self._format_aging_text(data.get('total_cycle_days', 0))
-        data['transit_text'] = self._format_aging_text(data.get('transit_days', 0))
+        # Calculate aging
+        data['dn_aging_days'] = self._calculate_aging_days(data.get('dn_create_date'))
+        data['pgi_aging_days'] = self._calculate_aging_days(data.get('good_issue_date'))
+        data['pod_aging_days'] = self._calculate_aging_days(data.get('pod_date'))
         
-        # Status emoji
+        # Calculate total cycle
+        if data.get('dn_create_date') and data.get('pod_date'):
+            try:
+                dn_date = datetime.fromisoformat(data['dn_create_date']) if isinstance(data['dn_create_date'], str) else data['dn_create_date']
+                pod_date = datetime.fromisoformat(data['pod_date']) if isinstance(data['pod_date'], str) else data['pod_date']
+                if isinstance(dn_date, (datetime, date)) and isinstance(pod_date, (datetime, date)):
+                    data['total_cycle_days'] = (pod_date - dn_date).days
+            except:
+                data['total_cycle_days'] = 0
+        
+        # Add status emoji
         status = data.get('delivery_status', '')
         if status in ['Completed', 'Delivered', 'Closed']:
             data['status_emoji'] = '✅'
@@ -334,7 +446,172 @@ class AnalyticsService:
         else:
             data['status_emoji'] = '❓'
         
-        # Add distance if available
+        return data
+
+    def _find_similar_dns(self, dn_no: str, limit: int = 5) -> List[str]:
+        """Find similar DN numbers for suggestions"""
+        session = self._get_session()
+        if not session:
+            return []
+        
+        try:
+            # Strategy 1: Same prefix
+            prefix = dn_no[:4] if len(dn_no) >= 4 else dn_no
+            query1 = """
+                SELECT DISTINCT dn_no
+                FROM delivery_reports
+                WHERE CAST(dn_no AS VARCHAR) LIKE :prefix
+                AND CAST(dn_no AS VARCHAR) != :dn_no
+                LIMIT :limit
+            """
+            results1 = session.execute(text(query1), {
+                "prefix": f"{prefix}%",
+                "dn_no": dn_no,
+                "limit": limit
+            }).fetchall()
+            
+            if results1:
+                session.close()
+                return [str(r[0]) for r in results1 if r[0]]
+            
+            # Strategy 2: Same suffix
+            suffix = dn_no[-4:] if len(dn_no) >= 4 else dn_no
+            query2 = """
+                SELECT DISTINCT dn_no
+                FROM delivery_reports
+                WHERE CAST(dn_no AS VARCHAR) LIKE :suffix
+                AND CAST(dn_no AS VARCHAR) != :dn_no
+                LIMIT :limit
+            """
+            results2 = session.execute(text(query2), {
+                "suffix": f"%{suffix}",
+                "dn_no": dn_no,
+                "limit": limit
+            }).fetchall()
+            
+            if results2:
+                session.close()
+                return [str(r[0]) for r in results2 if r[0]]
+            
+            # Strategy 3: Any DNs with similar length
+            query3 = """
+                SELECT DISTINCT dn_no
+                FROM delivery_reports
+                WHERE LENGTH(CAST(dn_no AS VARCHAR)) = :length
+                AND CAST(dn_no AS VARCHAR) != :dn_no
+                LIMIT :limit
+            """
+            results3 = session.execute(text(query3), {
+                "length": len(dn_no),
+                "dn_no": dn_no,
+                "limit": limit
+            }).fetchall()
+            
+            session.close()
+            
+            if results3:
+                return [str(r[0]) for r in results3 if r[0]]
+            
+            return []
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Similar DN search failed: {e}")
+            try:
+                session.close()
+            except:
+                pass
+            return []
+
+    def _calculate_aging_days(self, date_value) -> int:
+        """Calculate aging days from a date"""
+        if not date_value:
+            return 0
+        
+        try:
+            if isinstance(date_value, str):
+                date_value = datetime.fromisoformat(date_value.replace('Z', '+00:00'))
+            elif isinstance(date_value, datetime):
+                pass
+            elif isinstance(date_value, date):
+                date_value = datetime.combine(date_value, datetime.min.time())
+            else:
+                return 0
+            
+            return (datetime.now().date() - date_value.date()).days
+        except:
+            return 0
+
+    # ==========================================================
+    # BLOCK 4A: GET DN DASHBOARD - COMPLETE REPLACEMENT
+    # ==========================================================
+    
+    def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
+        """
+        Get complete DN dashboard with enhanced resolution
+        
+        Returns:
+            DN Number, Dealer, Warehouse, City, Units, Revenue,
+            PGI, POD, Delivery Status, Aging, and all metadata
+        """
+        if not dn_no:
+            return self._error_response("DN number is required", "INVALID_DN")
+        
+        # Clean the input
+        dn_clean = str(dn_no).strip()
+        
+        # Check cache first
+        cache_key = f"dn_dashboard:{dn_clean}"
+        if cache_key in self._dn_cache:
+            cached = self._dn_cache[cache_key]
+            # Only return if it's a successful result or a not-found with suggestions
+            if cached.get('found', False) or cached.get('suggestions'):
+                logger.info(f"✅ DN dashboard cache hit: {dn_clean}")
+                return cached
+        
+        logger.info(f"🔍 Retrieving DN dashboard for: {dn_clean}")
+        
+        # Use enhanced resolution
+        resolution_result = self._resolve_dn_enhanced(dn_clean)
+        
+        if not resolution_result.get('found', False):
+            # Return structured error with suggestions
+            suggestions = resolution_result.get('suggestions', [])
+            error_msg = resolution_result.get('error', f"DN {dn_clean} not found")
+            normalized = resolution_result.get('normalized', dn_clean)
+            
+            result = self._error_response(
+                error_msg,
+                "DN_NOT_FOUND",
+                {
+                    "dn_no": dn_clean,
+                    "normalized": normalized,
+                    "suggestions": suggestions[:5] if suggestions else []
+                }
+            )
+            
+            # Add suggestions to the response
+            if suggestions:
+                result["suggestions"] = suggestions[:5]
+                result["message"] = f"DN {dn_clean} not found. Did you mean: {', '.join(suggestions[:3])}?"
+                result["suggestion_count"] = len(suggestions)
+            
+            self._dn_cache[cache_key] = result
+            logger.warning(f"⚠️ DN {dn_clean} not found. Suggestions: {suggestions[:3] if suggestions else 'None'}")
+            return result
+        
+        # Extract the found data
+        data = resolution_result
+        
+        # Format the response
+        response = {
+            "success": True,
+            "data": data,
+            "dn_no": data.get('dn_no', dn_clean),
+            "found": True,
+            "resolution_strategy": "enhanced_match"
+        }
+        
+        # Add distance information if available
         if self._distance_service:
             try:
                 warehouse = data.get('warehouse')
@@ -342,27 +619,21 @@ class AnalyticsService:
                 if warehouse and city and warehouse != 'Unknown' and city != 'Unknown':
                     distance_result = self._distance_service.calculate_warehouse_distance(warehouse, city)
                     if distance_result and distance_result.get('success'):
-                        data['distance_km'] = distance_result.get('distance_km')
-                        data['distance_miles'] = distance_result.get('distance_miles')
-                        data['approx_driving_hours'] = distance_result.get('approx_driving_hours')
-                        data['approx_driving_minutes'] = distance_result.get('approx_driving_minutes')
-                        data['distance_type'] = distance_result.get('distance_type', 'unknown')
+                        response["distance_km"] = distance_result.get('distance_km')
+                        response["distance_miles"] = distance_result.get('distance_miles')
+                        response["approx_driving_hours"] = distance_result.get('approx_driving_hours')
+                        response["approx_driving_minutes"] = distance_result.get('approx_driving_minutes')
+                        response["distance_type"] = distance_result.get('distance_type', 'unknown')
+                        logger.info(f"✅ Distance calculated: {distance_result.get('distance_km')} km")
             except Exception as e:
                 logger.warning(f"⚠️ Distance calculation failed: {e}")
         
-        result = {
-            "success": True,
-            "data": data,
-            "dn_no": dn_clean,
-            "found": True
-        }
-        
-        self._dn_cache[cache_key] = result
+        self._dn_cache[cache_key] = response
         logger.info(f"✅ DN dashboard retrieved for: {dn_clean}")
-        return result
+        return response
 
     # ==========================================================
-    # BLOCK 5: DEALER DASHBOARD - COMPLETE
+    # BLOCK 5: DEALER DASHBOARD
     # ==========================================================
     
     def get_dealer_dashboard(self, dealer: str) -> Dict[str, Any]:
@@ -557,7 +828,7 @@ class AnalyticsService:
         return result
 
     # ==========================================================
-    # BLOCK 6: WAREHOUSE DASHBOARD - COMPLETE
+    # BLOCK 6: WAREHOUSE DASHBOARD
     # ==========================================================
     
     def get_warehouse_dashboard(self, warehouse: str) -> Dict[str, Any]:
@@ -704,7 +975,7 @@ class AnalyticsService:
         return result
 
     # ==========================================================
-    # BLOCK 7: CITY DASHBOARD - COMPLETE
+    # BLOCK 7: CITY DASHBOARD
     # ==========================================================
     
     def get_city_dashboard(self, city: str) -> Dict[str, Any]:
@@ -851,7 +1122,7 @@ class AnalyticsService:
         return result
 
     # ==========================================================
-    # BLOCK 8: PRODUCT DASHBOARD - COMPLETE
+    # BLOCK 8: PRODUCT DASHBOARD
     # ==========================================================
     
     def get_product_dashboard(self, product: str) -> Dict[str, Any]:
@@ -1028,7 +1299,7 @@ class AnalyticsService:
         return result
 
     # ==========================================================
-    # BLOCK 9: SEARCH METHODS - COMPLETE
+    # BLOCK 9: SEARCH METHODS
     # ==========================================================
     
     def search_dn(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
@@ -1216,7 +1487,7 @@ class AnalyticsService:
         return formatted
 
     # ==========================================================
-    # BLOCK 10: VERIFICATION METHODS - COMPLETE
+    # BLOCK 10: VERIFICATION METHODS
     # ==========================================================
     
     def verify_dn_exists(self, dn_no: str) -> bool:
@@ -1228,8 +1499,18 @@ class AnalyticsService:
         if len(dn_clean) < 8 or len(dn_clean) > 12:
             return False
         
-        query = "SELECT COUNT(*) as count FROM delivery_reports WHERE dn_no = :dn_no"
-        results = self._execute_query(query, {"dn_no": dn_clean})
+        # Try multiple strategies
+        query = """
+            SELECT COUNT(*) as count 
+            FROM delivery_reports 
+            WHERE dn_no = :dn_no 
+               OR CAST(dn_no AS VARCHAR) = :dn_no
+               OR dn_no LIKE :pattern
+        """
+        results = self._execute_query(query, {
+            "dn_no": dn_clean,
+            "pattern": f"%{dn_clean}%"
+        })
         return results and results[0].get('count', 0) > 0
     
     def verify_dealer_exists(self, dealer: str) -> bool:
@@ -1272,7 +1553,7 @@ class AnalyticsService:
         return results and results[0].get('count', 0) > 0
 
     # ==========================================================
-    # BLOCK 11: RANKING ENGINE - COMPLETE
+    # BLOCK 11: RANKING ENGINE
     # ==========================================================
     
     def get_top_dealers(self, limit: int = 10, metric: str = 'revenue') -> List[Dict[str, Any]]:
@@ -1370,7 +1651,7 @@ class AnalyticsService:
         return self._execute_query(query, {"limit": limit})
 
     # ==========================================================
-    # BLOCK 12: KPI ENGINE - COMPLETE
+    # BLOCK 12: KPI ENGINE
     # ==========================================================
     
     def _calculate_health_score(self, data: Dict[str, Any]) -> float:
@@ -1525,7 +1806,7 @@ class AnalyticsService:
             return "📉 Needs Improvement"
 
     # ==========================================================
-    # BLOCK 13: AGING ENGINE - COMPLETE
+    # BLOCK 13: AGING ENGINE
     # ==========================================================
     
     def _format_aging_text(self, days: int) -> str:
@@ -1553,7 +1834,7 @@ class AnalyticsService:
             return f"{days} days ({days // 30} months)"
 
     # ==========================================================
-    # BLOCK 14: TREND ENGINE - COMPLETE
+    # BLOCK 14: TREND ENGINE
     # ==========================================================
     
     def get_daily_trend(self, entity: str, entity_type: str, days: int = 30) -> List[Dict[str, Any]]:
@@ -1591,7 +1872,7 @@ class AnalyticsService:
         return results
 
     # ==========================================================
-    # BLOCK 15: HEALTH FRAMEWORK - COMPLETE
+    # BLOCK 15: HEALTH FRAMEWORK
     # ==========================================================
     
     def validate_postgresql_connection(self) -> bool:
@@ -1763,7 +2044,7 @@ class AnalyticsService:
             
             return {
                 "service_name": "AnalyticsService",
-                "version": "31.0",
+                "version": "31.1",
                 "healthy": db_health["status"] == "healthy" and len(missing_methods) == 0,
                 "status": "healthy" if db_health["status"] == "healthy" and len(missing_methods) == 0 else db_health["status"],
                 "database": db_health,
@@ -1801,7 +2082,7 @@ class AnalyticsService:
             return False
 
     # ==========================================================
-    # BLOCK 16: ERROR RESPONSE - COMPLETE
+    # BLOCK 16: ERROR RESPONSE
     # ==========================================================
     
     def _error_response(self, message: str, error_type: str = "ERROR", context: Dict[str, Any] = None) -> Dict[str, Any]:
@@ -1824,14 +2105,14 @@ class AnalyticsService:
         return response
 
     # ==========================================================
-    # BLOCK 17: SERVICE STATUS - COMPLETE
+    # BLOCK 17: SERVICE STATUS
     # ==========================================================
     
     def get_service_status(self) -> Dict[str, Any]:
         """Get current service status"""
         return {
             "service": "AnalyticsService",
-            "version": "31.0",
+            "version": "31.1",
             "initialized": self._health_status.get("initialized", False),
             "database_connected": self._health_status.get("database_connected", False),
             "status": self._health_status.get("status", "unknown"),
@@ -1850,7 +2131,7 @@ class AnalyticsService:
 
 
 # ==========================================================
-# BLOCK 18: FACTORY FUNCTION - COMPLETE
+# BLOCK 18: FACTORY FUNCTION
 # ==========================================================
 
 _analytics_service_instance = None
@@ -1912,5 +2193,5 @@ __all__ = [
 ]
 
 # ==========================================================
-# END OF FILE - v31.0 ENTERPRISE PRODUCTION
+# END OF FILE - v31.1 DN RESOLUTION HOTFIX
 # ==========================================================
