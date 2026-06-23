@@ -89,16 +89,14 @@ class Dealer360Dashboard:
 # ==========================================================
 # BLOCK 2: GET DASHBOARD - MAIN ENTRY POINT
 # ==========================================================
+# ==========================================================
+# BLOCK 2: GET DASHBOARD - MAIN ENTRY POINT (FIXED)
+# ==========================================================
 
     def get_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         """
         Get complete 360° dealer dashboard.
-        
-        Args:
-            dealer_name: Name of the dealer
-        
-        Returns:
-            Dict with all dashboard sections
+        FIXED: Returns FULL dashboard even when dealer has no DNs.
         """
         import time
         start_time = time.time()
@@ -129,40 +127,32 @@ class Dealer360Dashboard:
             query_time = time.time() - query_start
             logger.info(f"⏱️ Query time: {query_time:.3f}s")
             
-            if not data or data.get('total_dns', 0) == 0:
-                # Still return profile if dealer exists but has no DNs
-                return {
-                    "profile": dealer_profile,
-                    "error": f"No delivery data found for dealer '{resolved}'",
-                    "message": "This dealer has no delivery reports"
-                }
-            
             # ==========================================================
-            # STEP 4: Merge profile with data
+            # STEP 4: Merge profile with data (ALWAYS DO THIS)
             # ==========================================================
             data.update(dealer_profile)
             
             # ==========================================================
-            # STEP 5: Build all sections
+            # STEP 5: Build ALL sections (EVEN IF NO DNs)
             # ==========================================================
             dashboard = {}
             
-            # Section 1: Dealer Profile (FIXED - uses master data)
+            # Section 1: Dealer Profile (uses master data)
             dashboard['profile'] = self._build_profile(resolved, data)
             
-            # Section 2: Business Volume
+            # Section 2: Business Volume (shows zeros if no data)
             dashboard['business_volume'] = self._build_business_volume(data)
             
-            # Section 3: Delivery Status
+            # Section 3: Delivery Status (shows zeros if no data)
             dashboard['delivery_status'] = self._build_delivery_status(data)
             
-            # Section 4: POD Status
+            # Section 4: POD Status (shows zeros if no data)
             dashboard['pod_status'] = self._build_pod_status(data)
             
-            # Section 5: PGI Status
+            # Section 5: PGI Status (shows zeros if no data)
             dashboard['pgi_status'] = self._build_pgi_status(data)
             
-            # Section 6: Performance KPIs
+            # Section 6: Performance KPIs (shows zeros if no data)
             dashboard['performance'] = self._build_performance(data)
             
             # Section 7: Distance Analytics
@@ -186,6 +176,11 @@ class Dealer360Dashboard:
             # Section 13: Management Insights
             dashboard['insights'] = self._build_insights(dashboard)
             
+            # Add warning if no data
+            if data.get('total_dns', 0) == 0:
+                dashboard['_warning'] = f"No delivery data found for '{resolved}'"
+                dashboard['_suggestion'] = "Add Delivery Notes to see analytics"
+            
             # Add timestamp
             dashboard['generated_at'] = datetime.now().isoformat()
             
@@ -199,8 +194,6 @@ class Dealer360Dashboard:
             import traceback
             logger.error(traceback.format_exc())
             return {"error": f"Failed to load dealer data: {str(e)[:100]}"}
-
-
 # ==========================================================
 # BLOCK 2.5: GET DEALER PROFILE FROM MASTER TABLE
 # ==========================================================
