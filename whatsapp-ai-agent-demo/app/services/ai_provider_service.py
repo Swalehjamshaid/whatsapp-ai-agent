@@ -53,25 +53,14 @@ except ImportError as e:
 # ==========================================================
 # BLOCK 2: ANALYTICS SERVICE LOADER (FIXED v10.0)
 # ==========================================================
-
-def _create_response_class():
-    """Create a dummy response class for fallback."""
-    class DummyResponse:
-        def __init__(self, data=None, success=True, error=None):
-            self.data = data or {}
-            self.success = success
-            self.error = error
-    
-    return DummyResponse
-
 def _get_analytics_service():
     """
     Load analytics service with comprehensive validation.
-    BLOCK 2 - FIXED v10.0 - PRODUCTION GRADE
+    BLOCK 2 - FIXED v11.0 - PRODUCTION GRADE
     ALWAYS returns valid service and response class.
     """
     logger.info("=" * 70)
-    logger.info("🔍 ANALYTICS SERVICE LOADER - PRODUCTION GRADE v10.0")
+    logger.info("🔍 ANALYTICS SERVICE LOADER - PRODUCTION GRADE v11.0")
     logger.info("=" * 70)
     
     # ==========================================================
@@ -139,7 +128,7 @@ def _get_analytics_service():
     # VALIDATION 3: Import Analytics Service
     # ==========================================================
     if get_analytics_service is None:
-        logger.error("❌ Analytics service not available")
+        logger.error("❌ Analytics service not available - import failed")
         fallback = _create_fallback_analytics()
         return fallback, _create_response_class()
     
@@ -148,7 +137,9 @@ def _get_analytics_service():
     # ==========================================================
     service = None
     try:
+        logger.info("🔄 Calling get_analytics_service()...")
         service = get_analytics_service()
+        logger.info(f"📊 Service returned: {service}")
         
         if service is None:
             logger.error("❌ Analytics service returned None")
@@ -159,11 +150,20 @@ def _get_analytics_service():
                 logger.info("✅ AnalyticsService created manually")
             except Exception as e:
                 logger.error(f"❌ Manual creation failed: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
                 fallback = _create_fallback_analytics()
                 return fallback, AnalyticsResponse or _create_response_class()
         
         logger.info(f"📊 Service type: {type(service)}")
         logger.info(f"📊 Service class: {service.__class__.__name__}")
+        
+    except ImportError as e:
+        logger.error(f"❌ ImportError in get_analytics_service: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        fallback = _create_fallback_analytics()
+        return fallback, AnalyticsResponse or _create_response_class()
         
     except Exception as e:
         logger.error(f"❌ Failed to get analytics service: {e}")
@@ -192,16 +192,21 @@ def _get_analytics_service():
     
     logger.info("🔍 Verifying analytics methods:")
     missing_methods = []
+    available_methods = []
     
     for method in required_methods:
         if hasattr(service, method):
+            available_methods.append(method)
             logger.info(f"   ✅ {method}: AVAILABLE")
         else:
             missing_methods.append(method)
             logger.error(f"   ❌ {method}: MISSING")
     
     if missing_methods:
-        logger.warning(f"⚠️ Missing {len(missing_methods)} methods - using available methods")
+        logger.warning(f"⚠️ Missing {len(missing_methods)} methods: {missing_methods}")
+        logger.warning("⚠️ Using available methods only")
+    else:
+        logger.info(f"✅ All {len(available_methods)} required methods available")
     
     logger.info("=" * 70)
     logger.info("✅ Analytics service initialized successfully")
@@ -209,73 +214,6 @@ def _get_analytics_service():
     logger.info("=" * 70)
     
     return service, AnalyticsResponse or _create_response_class()
-
-def _create_fallback_analytics():
-    """Create fallback analytics with clear error messages."""
-    # ... (existing fallback implementation) ...
-    class FallbackAnalytics:
-        def get_dn_dashboard(self, dn_no):
-            return {
-                "dn_number": dn_no,
-                "error": f"DN {dn_no} not found",
-                "hint": "Please add data to delivery_reports table"
-            }
-        
-        def get_dealer_dashboard(self, dealer_name):
-            return {
-                "dealer_name": dealer_name,
-                "error": f"No data found for dealer '{dealer_name}'",
-                "total_dns": 0,
-                "total_revenue": 0,
-                "delivery_rate": 0
-            }
-        
-        def get_warehouse_dashboard(self, warehouse_name):
-            return {
-                "warehouse": warehouse_name,
-                "error": f"No data found for warehouse '{warehouse_name}'",
-                "total_dns": 0,
-                "total_revenue": 0
-            }
-        
-        def get_city_dashboard(self, city_name):
-            return {
-                "city_name": city_name,
-                "error": f"No data found for city '{city_name}'",
-                "total_dns": 0,
-                "total_revenue": 0
-            }
-        
-        def get_product_dashboard(self, product_name):
-            return {
-                "product": product_name,
-                "error": f"No data found for product '{product_name}'",
-                "revenue": 0,
-                "units": 0
-            }
-        
-        def search_dn(self, query):
-            return []
-        
-        def search_dealer(self, query):
-            return []
-        
-        def search_warehouse(self, query):
-            return []
-        
-        def search_city(self, query):
-            return []
-        
-        def search_product(self, query):
-            return []
-        
-        def verify_dn_exists(self, dn_no):
-            return False
-        
-        def verify_dealer_exists(self, dealer_name):
-            return False
-    
-    return FallbackAnalytics()
 
 
 # ==========================================================
