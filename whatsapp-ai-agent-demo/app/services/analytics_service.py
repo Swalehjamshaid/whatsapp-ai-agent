@@ -1507,6 +1507,10 @@ def get_orchestrator_status() -> Dict[str, Any]:
 # BLOCK 13: EXPORTS
 # ==========================================================
 
+# ==========================================================
+# BLOCK 13: EXPORTS (UPDATED)
+# ==========================================================
+
 __all__ = [
     'AIOrchestrator',
     'PostgreSQLResolver',
@@ -1517,8 +1521,151 @@ __all__ = [
     'process_whatsapp_query',
     'reset_orchestrator',
     'get_orchestrator_status',
+    # NEW EXPORTS FROM BLOCK 14
+    'check_analytics_health',
+    'force_reload_analytics',
+    'get_service_diagnostics',
 ]
 
+# ==========================================================
+# END OF FILE - v30.0 FULLY INTEGRATED
+# ==========================================================
+# ==========================================================
+# BLOCK 14: ANALYTICS SERVICE FALLBACK & HEALTH CHECK
+# ==========================================================
+
+def check_analytics_health() -> Dict[str, Any]:
+    """
+    Check the health of the analytics service.
+    Returns detailed status for debugging.
+    """
+    global _orchestrator
+    
+    result = {
+        "timestamp": time.time(),
+        "service_available": False,
+        "orchestrator_initialized": False,
+        "analytics_initialized": False,
+        "analytics_type": None,
+        "methods_available": [],
+        "methods_missing": [],
+        "database_connected": False,
+        "total_records": 0,
+        "has_fallback": False,
+        "errors": []
+    }
+    
+    # Check orchestrator
+    if _orchestrator is not None:
+        result["orchestrator_initialized"] = True
+        result["analytics_initialized"] = _orchestrator.analytics is not None
+        result["analytics_type"] = str(type(_orchestrator.analytics)) if _orchestrator.analytics else "None"
+        
+        # Check if using fallback
+        if _orchestrator.analytics:
+            result["has_fallback"] = "Fallback" in str(type(_orchestrator.analytics))
+            
+            # Check available methods
+            methods = [
+                "get_dn_dashboard", "get_dealer_dashboard", "get_warehouse_dashboard",
+                "get_city_dashboard", "get_product_dashboard", "search_dn",
+                "search_dealer", "search_warehouse", "search_city", "search_product",
+                "verify_dn_exists", "verify_dealer_exists"
+            ]
+            for method in methods:
+                if hasattr(_orchestrator.analytics, method):
+                    result["methods_available"].append(method)
+                else:
+                    result["methods_missing"].append(method)
+    
+    # Check database
+    try:
+        db = SessionLocal()
+        total = db.query(DeliveryReport).count()
+        db.close()
+        result["database_connected"] = True
+        result["total_records"] = total
+        if total == 0:
+            result["errors"].append("Database has ZERO records - insert data first")
+    except Exception as e:
+        result["database_connected"] = False
+        result["errors"].append(f"Database connection failed: {str(e)}")
+    
+    result["service_available"] = (
+        result["orchestrator_initialized"] and 
+        result["analytics_initialized"] and
+        result["database_connected"] and
+        result["total_records"] > 0
+    )
+    
+    return result
+
+
+def force_reload_analytics() -> Dict[str, Any]:
+    """
+    Force reload the analytics service.
+    Use this if the service is stuck in a bad state.
+    """
+    global _orchestrator
+    
+    result = {
+        "success": False,
+        "message": "",
+        "old_analytics": None,
+        "new_analytics": None
+    }
+    
+    if _orchestrator is None:
+        result["message"] = "Orchestrator not initialized - cannot reload"
+        return result
+    
+    # Store old analytics
+    result["old_analytics"] = str(type(_orchestrator.analytics)) if _orchestrator.analytics else "None"
+    
+    try:
+        # Reset analytics
+        _orchestrator._analytics = None
+        _orchestrator._analytics_response = None
+        
+        # Reload
+        service, response_class = _get_analytics_service()
+        _orchestrator._analytics = service
+        _orchestrator._analytics_response = response_class
+        
+        result["new_analytics"] = str(type(_orchestrator.analytics)) if _orchestrator.analytics else "None"
+        result["success"] = _orchestrator.analytics is not None
+        result["message"] = "Analytics service reloaded successfully" if result["success"] else "Analytics service reload failed"
+        
+    except Exception as e:
+        result["message"] = f"Reload failed: {str(e)}"
+        result["success"] = False
+    
+    return result
+
+
+def get_service_diagnostics() -> Dict[str, Any]:
+    """
+    Get complete service diagnostics.
+    Use this to debug service issues.
+    """
+    import sys
+    
+    diagnostics = {
+        "python_version": sys.version,
+        "service_status": get_orchestrator_status() if 'get_orchestrator_status' in globals() else {},
+        "analytics_health": check_analytics_health() if 'check_analytics_health' in globals() else {},
+        "import_status": {
+            "analytics_service": get_analytics_service is not None,
+            "distance_service": DistanceService is not None,
+            "dealer_analytics_service": DealerAnalyticsService is not None,
+        },
+        "config": {
+            "AI_ANALYSIS_ENABLED": AI_ANALYSIS_ENABLED,
+            "CACHE_TTL_SECONDS": CACHE_TTL_SECONDS,
+        }
+    }
+    
+    return diagnostics
 # ==========================================================
 # END OF FILE - v30.0 FULLY INTEGRATED
 # ==========================================================
