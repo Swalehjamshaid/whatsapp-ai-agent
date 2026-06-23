@@ -173,11 +173,14 @@ logger.info("ℹ️ Using DeliveryReport for dealer data (no DealerMaster table)
 # ==========================================================
 # BLOCK 2.5: GET DEALER PROFILE FROM MASTER TABLE
 # ==========================================================
+# ==========================================================
+# BLOCK 2.5: GET DEALER PROFILE FROM DELIVERY REPORT
+# ==========================================================
 
     def _get_dealer_profile(self, dealer_name: str) -> Dict[str, Any]:
         """
-        Get dealer profile from master table.
-        FIXED: Uses DealerMaster table instead of DeliveryReport aggregates.
+        Get dealer profile from DeliveryReport table.
+        FIXED: Uses DeliveryReport instead of DealerMaster.
         """
         profile = {
             "dealer_code": 'N/A',
@@ -190,36 +193,43 @@ logger.info("ℹ️ Using DeliveryReport for dealer data (no DealerMaster table)
             "region": 'N/A'
         }
         
-        if HAS_DEALER_MASTER:
-            try:
-                # Query DealerMaster table
-                dealer = self.db.query(DealerMaster).filter(
-                    func.lower(DealerMaster.dealer_name) == func.lower(dealer_name)
-                ).first()
-                
-                if dealer:
-                    profile = {
-                        "dealer_code": dealer.dealer_code or 'N/A',
-                        "customer_code": dealer.customer_code or 'N/A',
-                        "division": dealer.division or 'N/A',
-                        "sales_office": dealer.sales_office or 'N/A',
-                        "sales_manager": dealer.sales_manager or 'N/A',
-                        "warehouse": dealer.warehouse or 'N/A',
-                        "city": dealer.city or 'N/A',
-                        "region": dealer.region or 'N/A'
-                    }
-                    logger.info(f"✅ Found dealer in master table: {dealer.dealer_code}")
-                else:
-                    logger.warning(f"⚠️ Dealer not found in master table: {dealer_name}")
+        try:
+            # Query DeliveryReport for dealer info
+            result = self.db.query(
+                func.max(DeliveryReport.dealer_code).label("dealer_code"),
+                func.max(DeliveryReport.customer_code).label("customer_code"),
+                func.max(DeliveryReport.division).label("division"),
+                func.max(DeliveryReport.sales_office).label("sales_office"),
+                func.max(DeliveryReport.sales_manager).label("sales_manager"),
+                func.max(DeliveryReport.warehouse).label("warehouse"),
+                func.max(DeliveryReport.ship_to_city).label("city")
+            ).filter(
+                func.lower(DeliveryReport.customer_name) == func.lower(dealer_name)
+            ).first()
+            
+            if result:
+                profile = {
+                    "dealer_code": result.dealer_code or 'N/A',
+                    "customer_code": result.customer_code or 'N/A',
+                    "division": result.division or 'N/A',
+                    "sales_office": result.sales_office or 'N/A',
+                    "sales_manager": result.sales_manager or 'N/A',
+                    "warehouse": result.warehouse or 'N/A',
+                    "city": result.city or 'N/A',
+                    "region": 'N/A'
+                }
+                logger.info(f"✅ Found dealer profile from DeliveryReport: {profile['dealer_code']}")
+            else:
+                logger.warning(f"⚠️ No profile found for dealer: {dealer_name}")
                     
-            except Exception as e:
-                logger.error(f"Error querying DealerMaster: {e}")
-        else:
-            logger.warning("⚠️ DealerMaster model not available - using fallback")
+        except Exception as e:
+            logger.error(f"Error querying DeliveryReport for dealer profile: {e}")
         
         return profile
 
-
+# ==========================================================
+# BLOCK 3: DEALER PROFILE
+# ==========================================================
 # ==========================================================
 # BLOCK 3: DEALER PROFILE
 # ==========================================================
@@ -243,18 +253,9 @@ logger.info("ℹ️ Using DeliveryReport for dealer data (no DealerMaster table)
             "first_dn_date": first_dn.isoformat() if first_dn else 'N/A',
             "latest_dn_date": latest_dn.isoformat() if latest_dn else 'N/A',
             "total_active_days": self._calculate_active_days(first_dn, latest_dn),
-            # Add source info for debugging
-            "_profile_source": "master_table" if data.get('dealer_code') != 'N/A' else "fallback"
         }
         
         return profile
-    
-    def _calculate_active_days(self, first_date: Optional[datetime], latest_date: Optional[datetime]) -> int:
-        """Calculate total active days."""
-        if not first_date or not latest_date:
-            return 0
-        return (latest_date - first_date).days + 1
-
 
 # ==========================================================
 # BLOCK 4: BUSINESS VOLUME
@@ -1115,13 +1116,13 @@ def get_dealer_360_dashboard(db: Session, resolver: EntityResolver, search: Sear
 # BLOCK 19: WHATSAPP FORMATTER (UPDATED)
 # ==========================================================
 # ==========================================================
-# BLOCK 19: WHATSAPP FORMATTER (FIXED - ALWAYS SHOWS DISTANCE)
+# BLOCK 19: WHATSAPP FORMATTER (FIXED - NO DEALERMASTER)
 # ==========================================================
 
 def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
     """
     Format 360° dashboard for WhatsApp display.
-    FIXED: Always shows distance section with clear messages.
+    FIXED: Works without DealerMaster table.
     """
     if not dashboard:
         return "❌ No data available"
@@ -1150,10 +1151,6 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
     lines.append(f"City: {profile.get('city', 'N/A')}")
     lines.append(f"Region: {profile.get('region', 'N/A')}")
     lines.append(f"Active Days: {profile.get('total_active_days', 0)}")
-    
-    source = profile.get('_profile_source', '')
-    if source:
-        lines.append(f"📌 Source: {source}")
     
     # SECTION 2: BUSINESS VOLUME
     business = dashboard.get('business_volume', {})
@@ -1220,11 +1217,10 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
     lines.append(f"Performance Grade: {perf.get('performance_grade', 'N/A')}")
     
     # ==========================================================
-    # SECTION 7: DISTANCE ANALYTICS (FIXED - ALWAYS SHOWS)
+    # SECTION 7: DISTANCE ANALYTICS (ALWAYS SHOWS)
     # ==========================================================
     distance = dashboard.get('distance', {})
     
-    # ALWAYS show distance section
     lines.append("")
     lines.append("📍 *DISTANCE*")
     
@@ -1234,7 +1230,6 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
     lines.append(f"Warehouse: {warehouse}")
     lines.append(f"Dealer City: {dealer_city}")
     
-    # Check if we have real location data
     if warehouse != 'N/A' and dealer_city != 'N/A':
         road_distance = distance.get('road_distance')
         if road_distance:
@@ -1259,13 +1254,7 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
             lines.append("   💡 Check if distance service is configured")
     else:
         lines.append("📌 Distance: N/A")
-        if warehouse == 'N/A' and dealer_city == 'N/A':
-            lines.append("   ⚠️ Missing warehouse and city data")
-        elif warehouse == 'N/A':
-            lines.append("   ⚠️ Missing warehouse data")
-        elif dealer_city == 'N/A':
-            lines.append("   ⚠️ Missing dealer city data")
-        lines.append("   💡 Add location data to DealerMaster table")
+        lines.append("   💡 Add warehouse and city to DeliveryReport data")
     
     # SECTION 8: PRODUCT ANALYTICS
     products = dashboard.get('products', {})
@@ -1336,7 +1325,7 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
         lines.append(f"🎯 Action: {insights.get('recommended_action', 'N/A')}")
         lines.append(f"📈 Impact: {insights.get('expected_impact', 'N/A')}")
     
-    # SECTION 14: WARNINGS (if any)
+    # SECTION 14: WARNINGS
     warning = dashboard.get('_warning')
     if warning:
         lines.append("")
@@ -1346,6 +1335,7 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
             lines.append(f"💡 {suggestion}")
     
     return "\n".join(lines)
+
 # ==========================================================
 # EXPORTS
 # ==========================================================
