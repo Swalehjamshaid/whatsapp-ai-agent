@@ -2709,9 +2709,9 @@ class AnalyticsService:
 
 # ==========================================================
 # BLOCK 30: FACTORY FUNCTION
+#
 # ==========================================================
-# ==========================================================
-# BLOCK 30: FACTORY FUNCTION (FIXED v5.0 - WITH DIAGNOSTICS)
+# BLOCK 30: FACTORY FUNCTION (FIXED v5.0 - NEVER RETURNS NONE)
 # ==========================================================
 
 _analytics_service = None
@@ -2720,179 +2720,117 @@ _MAX_ANALYTICS_INIT_ATTEMPTS = 3
 
 def get_analytics_service(db: Optional[Session] = None) -> AnalyticsService:
     """
-    Get or create AnalyticsService singleton with diagnostics and retry.
-    BLOCK 30 - FIXED v5.0 - WITH COMPLETE DIAGNOSTICS
+    Get or create AnalyticsService singleton with diagnostics.
+    BLOCK 30 - FIXED v5.0 - NEVER RETURNS NONE
     """
     global _analytics_service, _analytics_initialization_attempts
     
     logger.info("=" * 60)
-    logger.info("🔍 ANALYTICS SERVICE FACTORY DIAGNOSTICS")
+    logger.info("🔍 ANALYTICS SERVICE FACTORY")
     logger.info("=" * 60)
     
     # ==========================================================
-    # DIAGNOSTIC 1: Check if service already exists
+    # Check if service already exists
     # ==========================================================
     if _analytics_service is not None:
-        logger.info(f"✅ AnalyticsService already initialized (instance: {id(_analytics_service)})")
-        logger.info("=" * 60)
+        logger.info(f"✅ AnalyticsService already initialized")
         return _analytics_service
     
     # ==========================================================
-    # DIAGNOSTIC 2: Check initialization attempts
+    # Check initialization attempts
     # ==========================================================
     if _analytics_initialization_attempts >= _MAX_ANALYTICS_INIT_ATTEMPTS:
-        logger.error(f"❌ Max initialization attempts ({_MAX_ANALYTICS_INIT_ATTEMPTS}) reached")
-        logger.warning("⚠️ Creating a new instance anyway to prevent None")
-        logger.info("=" * 60)
+        logger.error(f"❌ Max attempts ({_MAX_ANALYTICS_INIT_ATTEMPTS}) reached")
+        logger.warning("⚠️ Creating new instance anyway")
         _analytics_service = AnalyticsService(db)
         return _analytics_service
     
     _analytics_initialization_attempts += 1
-    logger.info(f"📌 Initialization attempt {_analytics_initialization_attempts}/{_MAX_ANALYTICS_INIT_ATTEMPTS}")
+    logger.info(f"📌 Attempt {_analytics_initialization_attempts}/{_MAX_ANALYTICS_INIT_ATTEMPTS}")
     
     # ==========================================================
-    # DIAGNOSTIC 3: Test Database Connection
+    # Test Database Connection
     # ==========================================================
     try:
         from app.database import SessionLocal
+        from app.models import DeliveryReport
+        from sqlalchemy import func
+        
         test_db = SessionLocal()
         total_records = test_db.query(DeliveryReport).count()
+        total_dns = test_db.query(func.count(distinct(DeliveryReport.dn_no))).scalar()
         test_db.close()
-        logger.info(f"📌 Database connected. Found {total_records} records in delivery_reports")
+        
+        logger.info(f"📌 Database: {total_records} records, {total_dns} DNs")
         
         if total_records == 0:
-            logger.warning("⚠️ Database has ZERO records! Analytics will return zeros.")
-            logger.warning("   💡 Insert data into delivery_reports table")
+            logger.warning("⚠️ Database has ZERO records")
     except Exception as e:
-        logger.error(f"❌ Database connection test failed: {e}")
-        logger.warning("⚠️ Proceeding with analytics service creation anyway")
+        logger.error(f"❌ Database test failed: {e}")
     
     # ==========================================================
-    # DIAGNOSTIC 4: Check if db session is valid
-    # ==========================================================
-    try:
-        if db is not None:
-            logger.info(f"📌 External session provided: {type(db)}")
-        else:
-            logger.info("📌 No external session provided - using internal session")
-    except Exception as e:
-        logger.warning(f"⚠️ Session check failed: {e}")
-    
-    # ==========================================================
-    # DIAGNOSTIC 5: Create Analytics Service
+    # Create Analytics Service - NEVER RETURN NONE
     # ==========================================================
     try:
         logger.info("🔄 Creating AnalyticsService...")
         service = AnalyticsService(db)
-        logger.info(f"✅ AnalyticsService created successfully (instance: {id(service)})")
+        logger.info(f"✅ AnalyticsService created")
         logger.info(f"📊 Service type: {type(service)}")
         logger.info(f"📊 Service class: {service.__class__.__name__}")
         
-        # Store in global
         _analytics_service = service
-        _analytics_initialization_attempts = 0  # Reset on success
+        _analytics_initialization_attempts = 0
         
         # ==========================================================
-        # DIAGNOSTIC 6: Verify Service Methods
+        # Verify Critical Methods
         # ==========================================================
-        required_methods = [
-            "search_dealer",
-            "search_dn",
-            "search_warehouse",
-            "search_city",
-            "search_product",
-            "verify_dealer_exists",
-            "verify_dn_exists",
+        critical_methods = [
+            "get_dealer_360_dashboard",
             "get_dealer_dashboard",
-            "get_warehouse_dashboard",
-            "get_city_dashboard",
-            "get_product_dashboard",
             "get_dn_dashboard",
-            "get_pgi_dashboard",
-            "get_pod_dashboard",
-            "get_delivery_dashboard",
-            "get_executive_dashboard",
-            "get_control_tower_dashboard",
-            "get_revenue_dashboard",
-            "get_ranking_dashboard",
-            "get_aging_dashboard"
+            "search_dealer"
         ]
         
-        logger.info("🔍 Verifying analytics methods:")
-        missing_methods = []
-        available_methods = []
-        
-        for method in required_methods:
+        logger.info("🔍 Verifying critical methods:")
+        for method in critical_methods:
             if hasattr(service, method):
-                available_methods.append(method)
-                if method in ["search_dealer", "get_dealer_dashboard", "get_dn_dashboard"]:
-                    logger.info(f"   ✅ {method}: AVAILABLE (CRITICAL)")
-                else:
-                    logger.info(f"   ✅ {method}: AVAILABLE")
+                logger.info(f"   ✅ {method}: AVAILABLE")
             else:
-                missing_methods.append(method)
                 logger.error(f"   ❌ {method}: MISSING")
         
-        if missing_methods:
-            logger.error(f"❌ Missing {len(missing_methods)} methods: {missing_methods}")
-        else:
-            logger.info(f"✅ All {len(available_methods)} required methods available")
-        
         # ==========================================================
-        # DIAGNOSTIC 7: Check repo initialization
-        # ==========================================================
-        if hasattr(service, 'repo'):
-            logger.info(f"📊 Repository type: {type(service.repo)}")
-            if hasattr(service.repo, 'search'):
-                logger.info("✅ Repository has search engine")
-            if hasattr(service.repo, 'resolver'):
-                logger.info("✅ Repository has entity resolver")
-        else:
-            logger.warning("⚠️ Service has no 'repo' attribute")
-        
-        # ==========================================================
-        # DIAGNOSTIC 8: Test a sample query
+        # Test Query
         # ==========================================================
         try:
-            test_dealers = service.search_dealer("test", exact=False)
-            if test_dealers and hasattr(test_dealers, 'success'):
-                logger.info(f"✅ Dealer search test: success={test_dealers.success}")
-                if test_dealers.success and test_dealers.data:
-                    logger.info(f"   Found {len(test_dealers.data.get('results', []))} results")
-            elif isinstance(test_dealers, dict):
-                results_count = len(test_dealers.get('data', {}).get('results', []))
-                logger.info(f"✅ Dealer search test: returned {results_count} results")
-            else:
-                logger.info(f"✅ Dealer search test: {type(test_dealers)}")
+            test = service.search_dealer("test", exact=False)
+            logger.info(f"✅ Dealer search test: {type(test)}")
         except Exception as e:
-            logger.warning(f"⚠️ Dealer search test failed: {e}")
+            logger.warning(f"⚠️ Search test failed: {e}")
         
         logger.info("=" * 60)
-        logger.info("✅ AnalyticsService initialization complete")
+        logger.info("✅ AnalyticsService ready")
         logger.info("=" * 60)
         
         return service
         
-    except AttributeError as e:
-        logger.error(f"❌ AttributeError during initialization: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        
-        # Check if analytics service is the issue
-        if "analytics" in str(e).lower() or "method" in str(e).lower():
-            logger.warning("⚠️ Analytics service issue detected - will retry on next request")
-        
-        _analytics_service = None
-        logger.info("=" * 60)
-        return None
-        
     except Exception as e:
-        logger.error(f"❌ Failed to initialize AnalyticsService: {e}")
+        logger.error(f"❌ Failed to create AnalyticsService: {e}")
         import traceback
         logger.error(traceback.format_exc())
-        _analytics_service = None
-        logger.info("=" * 60)
-        return None
+        
+        # CRITICAL FIX: ALWAYS return an instance, never None
+        logger.warning("⚠️ Creating fallback AnalyticsService instance...")
+        try:
+            _analytics_service = AnalyticsService(db)
+            return _analytics_service
+        except Exception as e2:
+            logger.error(f"❌ Even fallback creation failed: {e2}")
+            # Absolute last resort
+            _analytics_service = AnalyticsService()
+            return _analytics_service
+
+
+==========================================================
 
 # ==========================================================
 # BLOCK 31: EXPORTS
