@@ -58,33 +58,9 @@ PERFORMANCE_GRADES = {
 # ==========================================================
 # BLOCK 1: DEALER 360° DASHBOARD CLASS
 # ==========================================================
-
-class Dealer360Dashboard:
-    """
-    Complete Dealer 360° Dashboard with all analytics.
-    
-    Sections:
-    1. Dealer Profile (FIXED - Joins DealerMaster)
-    2. Business Volume
-    3. Delivery Status
-    4. POD Status
-    5. PGI Status
-    6. Performance KPIs
-    7. Distance Analytics
-    8. Product Analytics
-    9. City Analytics
-    10. Aging Analytics
-    11. Control Tower Alerts
-    12. Executive Summary
-    13. Management Insights
-    """
-    
-    def __init__(self, db: Session, resolver: EntityResolver, search: SearchEngine):
-        self.db = db
-        self.resolver = resolver
-        self.search = search
-        self.distance_service = get_distance_service()
-
+# No DealerMaster - using DeliveryReport only
+HAS_DEALER_MASTER = False
+logger.info("ℹ️ Using DeliveryReport for dealer data (no DealerMaster table)")
 
 # ==========================================================
 # BLOCK 2: GET DASHBOARD - MAIN ENTRY POINT
