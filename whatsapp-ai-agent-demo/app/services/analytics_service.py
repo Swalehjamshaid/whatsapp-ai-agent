@@ -1692,6 +1692,9 @@ class AnalyticsRepository:
 # ==========================================================
 # BLOCK 10: DN DASHBOARD
 # ==========================================================
+    # ==========================================================
+    # BLOCK 10: DN DASHBOARD
+    # ==========================================================
 
     def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
         """
@@ -1704,7 +1707,7 @@ class AnalyticsRepository:
             logger.info(f"📄 Processing DN: '{dn_no}'")
             
             # Normalize DN
-            normalized = self.resolver._normalize_dn(dn_no)
+            normalized = re.sub(r'[^0-9]', '', str(dn_no).strip())
             
             if len(normalized) < 8 or len(normalized) > 12:
                 return {"error": f"Invalid DN format: {dn_no}. Must be 8-12 digits."}
@@ -1796,7 +1799,6 @@ class AnalyticsRepository:
         except Exception as e:
             logger.error(f"❌ Get DN dashboard failed: {e}")
             return {"error": f"Failed to load DN: {str(e)[:100]}"}
-
 # ==========================================================
 # BLOCK 11: DEALER DASHBOARD
 # ==========================================================
@@ -2056,6 +2058,10 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
 # BLOCK 12: WAREHOUSE DASHBOARD
 # ==========================================================
 
+       # ==========================================================
+    # BLOCK 12: WAREHOUSE DASHBOARD
+    # ==========================================================
+
     def get_warehouse_dashboard(self, warehouse_name: str) -> Dict[str, Any]:
         """Complete warehouse dashboard - PostgreSQL only."""
         try:
@@ -2120,10 +2126,13 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         except Exception as e:
             logger.error(f"Get warehouse dashboard failed: {e}")
             return {"error": str(e)}
-
 # ==========================================================
 # BLOCK 13: CITY DASHBOARD
 # ==========================================================
+
+     # ==========================================================
+    # BLOCK 13: CITY DASHBOARD
+    # ==========================================================
 
     def get_city_dashboard(self, city_name: str) -> Dict[str, Any]:
         """Complete city dashboard - PostgreSQL only."""
@@ -2177,11 +2186,13 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
             
         except Exception as e:
             logger.error(f"Get city dashboard failed: {e}")
-            return {"error": str(e)}
+            return {"error": str(e)}   
 
 # ==========================================================
 # BLOCK 14: PRODUCT DASHBOARD
-# ==========================================================
+    # ==========================================================
+    # BLOCK 14: PRODUCT DASHBOARD
+    # ==========================================================
 
     def get_product_dashboard(self, product_name: str) -> Dict[str, Any]:
         """Complete product dashboard - PostgreSQL only."""
@@ -2240,7 +2251,6 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         except Exception as e:
             logger.error(f"Get product dashboard failed: {e}")
             return {"error": str(e)}
-
 # ==========================================================
 # BLOCK 15: PGI DASHBOARD
 # ==========================================================
@@ -2507,6 +2517,9 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
 # ==========================================================
 # BLOCK 22: AGING DASHBOARD
 # ==========================================================
+    # ==========================================================
+    # BLOCK 22: AGING DASHBOARD
+    # ==========================================================
 
     def get_aging_dashboard(self) -> Dict[str, Any]:
         """Aging dashboard - PostgreSQL only."""
@@ -2532,6 +2545,8 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         except Exception as e:
             logger.error(f"Get aging dashboard failed: {e}")
             return {"error": str(e)}
+    
+        
 
 # ==========================================================
 # BLOCK 23: DEALER 360 DASHBOARD
