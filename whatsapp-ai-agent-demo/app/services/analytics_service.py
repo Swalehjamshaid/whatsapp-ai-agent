@@ -2763,92 +2763,115 @@ class AnalyticsService:
     # ==========================================================
     # BLOCK 27: ENTITY RESOLUTION
     # ==========================================================
-    def get_dealer_360_dashboard(self, dealer_name: str) -> Dict[str, Any]:
-    """Get complete 360° dealer dashboard with fallback to legacy."""
-    if self._dealer_360 is None:
-        logger.warning("⚠️ Dealer360Dashboard not available, falling back to legacy")
-        return self.get_dealer_dashboard(dealer_name)
-    
-    try:
-        result = self._dealer_360.get_dashboard(dealer_name)
-        if result and "error" not in result:
-            result['_dashboard_type'] = '360'
-            logger.info(f"✅ 360 dashboard retrieved for: {dealer_name}")
-            return result
-        else:
-            error = result.get('error') if result else 'No result'
-            logger.warning(f"⚠️ 360 dashboard failed: {error}, falling back to legacy")
-            return self.get_dealer_dashboard(dealer_name)
-    except Exception as e:
-        logger.warning(f"⚠️ 360 dashboard exception: {e}, falling back to legacy")
-        import traceback
-        logger.warning(traceback.format_exc())
-        return self.get_dealer_dashboard(dealer_name)
-    
+
     # ==========================================================
+    # BLOCK 27: DEALER 360 DASHBOARD
+    # ==========================================================
+    
+    def get_dealer_360_dashboard(self, dealer_name: str) -> AnalyticsResponse:
+        """Get complete 360° dealer dashboard with fallback to legacy."""
+        try:
+            self.metrics["total_requests"] += 1
+            logger.info(f"🔍 Dealer 360 Dashboard request for: {dealer_name}")
+            
+            if not dealer_name or not str(dealer_name).strip():
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error="Dealer name is required")
+            
+            if not hasattr(self.repo, 'get_dealer_360_dashboard'):
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error="Dealer 360 dashboard not available")
+            
+            result = self.repo.get_dealer_360_dashboard(dealer_name.strip())
+            
+            if "error" in result:
+                self.metrics["failed_requests"] += 1
+                if "suggestions" in result:
+                    return AnalyticsResponse(
+                        success=False, 
+                        error=result["error"],
+                        data={"suggestions": result.get("suggestions", [])}
+                    )
+                return AnalyticsResponse(success=False, error=result["error"])
+            
+            result['_dashboard_type'] = '360'
+            self.metrics["successful_requests"] += 1
+            logger.info(f"✅ 360 dashboard returned successfully for: {dealer_name}")
+            return AnalyticsResponse(success=True, data=result)
+            
+        except Exception as e:
+            self.metrics["failed_requests"] += 1
+            logger.error(f"❌ Dealer 360 dashboard error for {dealer_name}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return AnalyticsResponse(success=False, error=f"Failed to load dealer: {str(e)[:100]}")
+
+
+    
+        # ==========================================================
     # BLOCK 28: DASHBOARD METHODS
     # ==========================================================
+        # ==========================================================
+    # BLOCK 28: DEALER DASHBOARD
+    # ==========================================================
+    
     def get_dealer_dashboard(self, dealer_name: str) -> AnalyticsResponse:
-    """Get Dealer Dashboard - PostgreSQL only."""
-    try:
-        self.metrics["total_requests"] += 1
-        logger.info(f"🔍 Dealer Dashboard request for: {dealer_name}")
-        
-        if not dealer_name or not str(dealer_name).strip():
+        """Get Dealer Dashboard - PostgreSQL only."""
+        try:
+            self.metrics["total_requests"] += 1
+            logger.info(f"🔍 Dealer Dashboard request for: {dealer_name}")
+            
+            if not dealer_name or not str(dealer_name).strip():
+                self.metrics["failed_requests"] += 1
+                return AnalyticsResponse(success=False, error="Dealer name is required")
+            
+            # Try 360 dashboard first
+            if hasattr(self.repo, 'get_dealer_360_dashboard'):
+                try:
+                    logger.info(f"📊 Attempting 360 dashboard for: {dealer_name}")
+                    result = self.repo.get_dealer_360_dashboard(dealer_name.strip())
+                    if "error" not in result:
+                        result['_dashboard_type'] = '360'
+                        self.metrics["successful_requests"] += 1
+                        logger.info(f"✅ 360 dashboard returned successfully for: {dealer_name}")
+                        return AnalyticsResponse(success=True, data=result)
+                    else:
+                        logger.warning(f"⚠️ 360 dashboard returned error: {result.get('error')}")
+                except Exception as e:
+                    logger.warning(f"⚠️ 360 dashboard failed, falling back: {e}")
+            
+            # Fallback to legacy
+            if not hasattr(self.repo, 'get_dealer_dashboard'):
+                self.metrics["failed_requests"] += 1
+                error_msg = "Dealer dashboard not available"
+                logger.error(f"❌ {error_msg}")
+                return AnalyticsResponse(success=False, error=error_msg)
+            
+            logger.info(f"📊 Using legacy dealer dashboard for: {dealer_name}")
+            result = self.repo.get_dealer_dashboard(dealer_name.strip())
+            
+            if "error" in result:
+                self.metrics["failed_requests"] += 1
+                if "suggestions" in result:
+                    logger.info(f"💡 Suggestions found for: {dealer_name}")
+                    return AnalyticsResponse(
+                        success=False, 
+                        error=result["error"],
+                        data={"suggestions": result.get("suggestions", [])}
+                    )
+                logger.error(f"❌ Dealer dashboard error for {dealer_name}: {result.get('error')}")
+                return AnalyticsResponse(success=False, error=result["error"])
+            
+            self.metrics["successful_requests"] += 1
+            logger.info(f"✅ Dealer dashboard returned successfully for: {dealer_name}")
+            return AnalyticsResponse(success=True, data=result)
+            
+        except Exception as e:
             self.metrics["failed_requests"] += 1
-            return AnalyticsResponse(success=False, error="Dealer name is required")
-        
-        # Try 360 dashboard first
-        if hasattr(self.repo, 'get_dealer_360_dashboard'):
-            try:
-                logger.info(f"📊 Attempting 360 dashboard for: {dealer_name}")
-                result = self.repo.get_dealer_360_dashboard(dealer_name.strip())
-                if "error" not in result:
-                    result['_dashboard_type'] = '360'
-                    self.metrics["successful_requests"] += 1
-                    logger.info(f"✅ 360 dashboard returned successfully for: {dealer_name}")
-                    return AnalyticsResponse(success=True, data=result)
-                else:
-                    logger.warning(f"⚠️ 360 dashboard returned error: {result.get('error')}")
-            except Exception as e:
-                logger.warning(f"⚠️ 360 dashboard failed, falling back: {e}")
-        
-        # Fallback to legacy
-        if not hasattr(self.repo, 'get_dealer_dashboard'):
-            self.metrics["failed_requests"] += 1
-            error_msg = "Dealer dashboard not available"
-            logger.error(f"❌ {error_msg}")
-            return AnalyticsResponse(success=False, error=error_msg)
-        
-        logger.info(f"📊 Using legacy dealer dashboard for: {dealer_name}")
-        result = self.repo.get_dealer_dashboard(dealer_name.strip())
-        
-        if "error" in result:
-            self.metrics["failed_requests"] += 1
-            if "suggestions" in result:
-                logger.info(f"💡 Suggestions found for: {dealer_name}")
-                return AnalyticsResponse(
-                    success=False, 
-                    error=result["error"],
-                    data={"suggestions": result.get("suggestions", [])}
-                )
-            logger.error(f"❌ Dealer dashboard error for {dealer_name}: {result.get('error')}")
-            return AnalyticsResponse(success=False, error=result["error"])
-        
-        self.metrics["successful_requests"] += 1
-        logger.info(f"✅ Dealer dashboard returned successfully for: {dealer_name}")
-        return AnalyticsResponse(success=True, data=result)
-        
-    except Exception as e:
-        self.metrics["failed_requests"] += 1
-        logger.error(f"❌ Dealer dashboard error for {dealer_name}: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return AnalyticsResponse(success=False, error=f"Failed to load dealer data: {str(e)[:100]}")
-
-
-
-
+            logger.error(f"❌ Dealer dashboard error for {dealer_name}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return AnalyticsResponse(success=False, error=f"Failed to load dealer data: {str(e)[:100]}")
 # ==========================================================
 # BLOCK 29: FACTORY FUNCTION (FIXED v9.0)
 # ==========================================================
