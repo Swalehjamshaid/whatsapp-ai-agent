@@ -1229,6 +1229,9 @@ class AnalyticsRepository:
     # ==========================================================
     # BLOCK 10: DN DASHBOARD
     # ==========================================================
+    # ==========================================================
+    # BLOCK 10: DN DASHBOARD
+    # ==========================================================
     
     def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
         """Complete DN dashboard - PostgreSQL only."""
@@ -1237,6 +1240,7 @@ class AnalyticsRepository:
         
         try:
             logger.info(f"📄 Processing DN: '{dn_no}'")
+            
             normalized = re.sub(r'[^0-9]', '', str(dn_no).strip())
             if len(normalized) < 8 or len(normalized) > 12:
                 return {"error": f"Invalid DN format: {dn_no}. Must be 8-12 digits."}
@@ -1491,7 +1495,8 @@ class AnalyticsRepository:
             logger.error(f"❌ Get dealer dashboard failed: {e}")
             return {"error": f"Failed to load dealer data: {str(e)[:100]}"}
     
-    # ==========================================================
+    
+       # ==========================================================
     # BLOCK 12: WAREHOUSE DASHBOARD
     # ==========================================================
     
@@ -1558,6 +1563,9 @@ class AnalyticsRepository:
     # ==========================================================
     # BLOCK 13: CITY DASHBOARD
     # ==========================================================
+     # ==========================================================
+    # BLOCK 13: CITY DASHBOARD
+    # ==========================================================
     
     def get_city_dashboard(self, city_name: str) -> Dict[str, Any]:
         """Complete city dashboard - PostgreSQL only."""
@@ -1608,8 +1616,9 @@ class AnalyticsRepository:
         except Exception as e:
             logger.error(f"Get city dashboard failed: {e}")
             return {"error": str(e)}
-    
     # ==========================================================
+    # BLOCK 14: PRODUCT DASHBOARD
+       # ==========================================================
     # BLOCK 14: PRODUCT DASHBOARD
     # ==========================================================
     
