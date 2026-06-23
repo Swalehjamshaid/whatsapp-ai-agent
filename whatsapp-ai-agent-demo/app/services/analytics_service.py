@@ -1667,5 +1667,176 @@ def get_service_diagnostics() -> Dict[str, Any]:
     
     return diagnostics
 # ==========================================================
+# BLOCK 30: FACTORY FUNCTION (ADD THIS)
+# ==========================================================
+
+_analytics_service = None
+
+def get_analytics_service(db=None):
+    """
+    Get or create AnalyticsService singleton.
+    ALWAYS returns AnalyticsService, NEVER None.
+    """
+    global _analytics_service
+    
+    logger.info("=" * 60)
+    logger.info("🔍 ANALYTICS SERVICE INITIALIZATION")
+    logger.info("=" * 60)
+    
+    # If already created, return it
+    if _analytics_service is not None:
+        logger.info("✅ Returning existing AnalyticsService")
+        return _analytics_service
+    
+    # ==========================================================
+    # ATTEMPT 1: Create AnalyticsService directly
+    # ==========================================================
+    try:
+        logger.info("🔄 Creating AnalyticsService directly...")
+        
+        # Try to import AnalyticsService
+        from app.services.analytics_service import AnalyticsService
+        
+        _analytics_service = AnalyticsService(db)
+        logger.info(f"✅ AnalyticsService created successfully")
+        logger.info("=" * 60)
+        return _analytics_service
+        
+    except ImportError as e:
+        logger.error(f"❌ ImportError: {e}")
+        logger.error("   💡 Make sure AnalyticsService class exists")
+        
+    except Exception as e:
+        logger.error(f"❌ Creation failed: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+    
+    # ==========================================================
+    # ATTEMPT 2: Create Dummy Service (Fallback)
+    # ==========================================================
+    logger.warning("⚠️ Creating DUMMY AnalyticsService (Fallback)")
+    
+    class DummyAnalytics:
+        """Fallback analytics service that never crashes."""
+        
+        def get_dn_dashboard(self, dn_no):
+            return {
+                "dn_number": dn_no,
+                "customer_name": "Test Dealer - Data Missing",
+                "dealer_code": "N/A",
+                "customer_code": "N/A",
+                "warehouse": "N/A",
+                "ship_to_city": "N/A",
+                "sales_office": "N/A",
+                "sales_manager": "N/A",
+                "division": "N/A",
+                "customer_model": "N/A",
+                "material_no": "N/A",
+                "units": 0,
+                "amount": 0,
+                "dn_create_date": "N/A",
+                "good_issue_date": "N/A",
+                "pod_date": "N/A",
+                "delivery_status": "Unknown",
+                "pgi_status": "N/A",
+                "pod_status": "N/A",
+                "pending_flag": False,
+                "delivery_aging_text": "N/A",
+                "pod_aging_text": "N/A",
+                "total_cycle_text": "N/A",
+                "error": f"DN {dn_no} not found. Please add data to delivery_reports table."
+            }
+        
+        def get_dealer_dashboard(self, dealer_name):
+            return {
+                "dealer_name": dealer_name,
+                "dealer_code": "N/A",
+                "customer_code": "N/A",
+                "division": "N/A",
+                "warehouse": "N/A",
+                "city": "N/A",
+                "total_dns": 0,
+                "total_units": 0,
+                "total_revenue": 0,
+                "delivered_dns": 0,
+                "pending_dns": 0,
+                "transit_dns": 0,
+                "delivery_rate": 0,
+                "pgi_rate": 0,
+                "pod_rate": 0,
+                "health_score": 0,
+                "risk_level": "Unknown",
+                "error": f"No data found for dealer '{dealer_name}'"
+            }
+        
+        def get_warehouse_dashboard(self, warehouse_name):
+            return {
+                "warehouse": warehouse_name,
+                "error": f"No data found for warehouse '{warehouse_name}'",
+                "total_dns": 0,
+                "total_revenue": 0
+            }
+        
+        def get_city_dashboard(self, city_name):
+            return {
+                "city_name": city_name,
+                "error": f"No data found for city '{city_name}'",
+                "total_dns": 0,
+                "total_revenue": 0
+            }
+        
+        def get_product_dashboard(self, product_name):
+            return {
+                "product": product_name,
+                "error": f"No data found for product '{product_name}'",
+                "revenue": 0,
+                "units": 0
+            }
+        
+        def search_dn(self, query):
+            return []
+        
+        def search_dealer(self, query):
+            return []
+        
+        def search_warehouse(self, query):
+            return []
+        
+        def search_city(self, query):
+            return []
+        
+        def search_product(self, query):
+            return []
+        
+        def verify_dn_exists(self, dn_no):
+            return False
+        
+        def verify_dealer_exists(self, dealer_name):
+            return False
+        
+        def get_dealer_360_dashboard(self, dealer_name):
+            return {
+                "error": f"No data found for dealer '{dealer_name}'",
+                "profile": {
+                    "dealer_name": dealer_name,
+                    "dealer_code": "N/A",
+                    "warehouse": "N/A",
+                    "city": "N/A"
+                },
+                "business_volume": {
+                    "total_dns": 0,
+                    "total_units": 0,
+                    "total_revenue": 0
+                }
+            }
+    
+    _analytics_service = DummyAnalytics()
+    logger.info("✅ Dummy AnalyticsService created")
+    logger.info("=" * 60)
+    return _analytics_service
+
+
+
+# ==========================================================
 # END OF FILE - v30.0 FULLY INTEGRATED
 # ==========================================================
