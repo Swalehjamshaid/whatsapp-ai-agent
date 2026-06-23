@@ -58,118 +58,35 @@ PERFORMANCE_GRADES = {
 # ==========================================================
 # BLOCK 1: DEALER 360° DASHBOARD CLASS
 # ==========================================================
-# No DealerMaster - using DeliveryReport only
-HAS_DEALER_MASTER = False
-logger.info("ℹ️ Using DeliveryReport for dealer data (no DealerMaster table)")
-
 # ==========================================================
-# BLOCK 2: GET DASHBOARD - MAIN ENTRY POINT
-# ==========================================================
-# ==========================================================
-# BLOCK 2: GET DASHBOARD - MAIN ENTRY POINT (FIXED)
+# BLOCK 1: DEALER 360° DASHBOARD CLASS
 # ==========================================================
 
-    def get_dashboard(self, dealer_name: str) -> Dict[str, Any]:
-        """
-        Get complete 360° dealer dashboard.
-        FIXED: Returns FULL dashboard even when dealer has no DNs.
-        """
-        import time
-        start_time = time.time()
-        
-        try:
-            logger.info(f"🔍 Building 360° dashboard for: '{dealer_name}'")
-            
-            # ==========================================================
-            # STEP 1: Resolve dealer
-            # ==========================================================
-            resolved = self.resolver.resolve_dealer(dealer_name)
-            
-            if not resolved:
-                return self._handle_not_found(dealer_name)
-            
-            logger.info(f"✅ Dealer resolved: '{resolved}'")
-            
-            # ==========================================================
-            # STEP 2: Get Dealer Profile from Master Table
-            # ==========================================================
-            dealer_profile = self._get_dealer_profile(resolved)
-            
-            # ==========================================================
-            # STEP 3: Query all delivery data
-            # ==========================================================
-            query_start = time.time()
-            data = self._query_all_dealer_data(resolved)
-            query_time = time.time() - query_start
-            logger.info(f"⏱️ Query time: {query_time:.3f}s")
-            
-            # ==========================================================
-            # STEP 4: Merge profile with data (ALWAYS DO THIS)
-            # ==========================================================
-            data.update(dealer_profile)
-            
-            # ==========================================================
-            # STEP 5: Build ALL sections (EVEN IF NO DNs)
-            # ==========================================================
-            dashboard = {}
-            
-            # Section 1: Dealer Profile (uses master data)
-            dashboard['profile'] = self._build_profile(resolved, data)
-            
-            # Section 2: Business Volume (shows zeros if no data)
-            dashboard['business_volume'] = self._build_business_volume(data)
-            
-            # Section 3: Delivery Status (shows zeros if no data)
-            dashboard['delivery_status'] = self._build_delivery_status(data)
-            
-            # Section 4: POD Status (shows zeros if no data)
-            dashboard['pod_status'] = self._build_pod_status(data)
-            
-            # Section 5: PGI Status (shows zeros if no data)
-            dashboard['pgi_status'] = self._build_pgi_status(data)
-            
-            # Section 6: Performance KPIs (shows zeros if no data)
-            dashboard['performance'] = self._build_performance(data)
-            
-            # Section 7: Distance Analytics
-            dashboard['distance'] = self._build_distance(data)
-            
-            # Section 8: Product Analytics
-            dashboard['products'] = self._build_product_analytics(resolved)
-            
-            # Section 9: City Analytics
-            dashboard['cities'] = self._build_city_analytics(resolved)
-            
-            # Section 10: Aging Analytics
-            dashboard['aging'] = self._build_aging_analytics(resolved)
-            
-            # Section 11: Control Tower Alerts
-            dashboard['alerts'] = self._build_alerts(dashboard)
-            
-            # Section 12: Executive Summary
-            dashboard['executive_summary'] = self._build_executive_summary(dashboard)
-            
-            # Section 13: Management Insights
-            dashboard['insights'] = self._build_insights(dashboard)
-            
-            # Add warning if no data
-            if data.get('total_dns', 0) == 0:
-                dashboard['_warning'] = f"No delivery data found for '{resolved}'"
-                dashboard['_suggestion'] = "Add Delivery Notes to see analytics"
-            
-            # Add timestamp
-            dashboard['generated_at'] = datetime.now().isoformat()
-            
-            total_time = time.time() - start_time
-            logger.info(f"✅ 360° dashboard built in {total_time:.3f}s")
-            
-            return dashboard
-            
-        except Exception as e:
-            logger.error(f"❌ Dashboard error: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return {"error": f"Failed to load dealer data: {str(e)[:100]}"}
+class Dealer360Dashboard:
+    """
+    Complete Dealer 360° Dashboard with all analytics.
+    
+    Sections:
+    1. Dealer Profile (FIXED - Uses DeliveryReport only)
+    2. Business Volume
+    3. Delivery Status
+    4. POD Status
+    5. PGI Status
+    6. Performance KPIs
+    7. Distance Analytics
+    8. Product Analytics
+    9. City Analytics
+    10. Aging Analytics
+    11. Control Tower Alerts
+    12. Executive Summary
+    13. Management Insights
+    """
+    
+    def __init__(self, db: Session, resolver: EntityResolver, search: SearchEngine):
+        self.db = db
+        self.resolver = resolver
+        self.search = search
+        self.distance_service = get_distance_service()
 # ==========================================================
 # BLOCK 2.5: GET DEALER PROFILE FROM MASTER TABLE
 # ==========================================================
@@ -226,10 +143,8 @@ logger.info("ℹ️ Using DeliveryReport for dealer data (no DealerMaster table)
             logger.error(f"Error querying DeliveryReport for dealer profile: {e}")
         
         return profile
-
 # ==========================================================
 # BLOCK 3: DEALER PROFILE
-# ==========================================================
 # ==========================================================
 # BLOCK 3: DEALER PROFILE
 # ==========================================================
@@ -256,6 +171,8 @@ logger.info("ℹ️ Using DeliveryReport for dealer data (no DealerMaster table)
         }
         
         return profile
+
+    
 
 # ==========================================================
 # BLOCK 4: BUSINESS VOLUME
@@ -1114,6 +1031,7 @@ def get_dealer_360_dashboard(db: Session, resolver: EntityResolver, search: Sear
 
 # ==========================================================
 # BLOCK 19: WHATSAPP FORMATTER (UPDATED)
+# ==========================================================
 # ==========================================================
 # ==========================================================
 # BLOCK 19: WHATSAPP FORMATTER (FIXED - NO DEALERMASTER)
