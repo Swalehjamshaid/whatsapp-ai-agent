@@ -26,356 +26,201 @@ from app.database import SessionLocal, check_database_connection
 # ==========================================================
 # BLOCK 2: LAZY IMPORTS (FIXED v4.0 - WITH AI CHECK)
 # ==========================================================
-# END OF BLOCK 2 - FIXED v4.0
 # ==========================================================
-# ==========================================================
-# BLOCK 2: LAZY IMPORTS (FIXED v5.0 - WITH COMPLETE DIAGNOSTICS)
+# BLOCK 2: LAZY IMPORTS (FIXED v7.0 - PRODUCTION READY)
 # ==========================================================
 
 def _get_analytics_service():
     """
     Load analytics service with comprehensive diagnostics.
-    BLOCK 2 - FIXED v5.0 - WITH COMPLETE DIAGNOSTICS
+    BLOCK 2 - FIXED v7.0 - FORCES REAL ANALYTICS
     """
-    logger.info("=" * 60)
+    logger.info("=" * 70)
     logger.info("🔍 ANALYTICS SERVICE DIAGNOSTICS")
-    logger.info("=" * 60)
+    logger.info("=" * 70)
     
+    # ==========================================================
+    # DIAGNOSTIC 1: Check AI Analysis Enabled
+    # ==========================================================
     try:
         from app.config import config
-        
-        # ==========================================================
-        # DIAGNOSTIC 1: Check AI Analysis Enabled
-        # ==========================================================
         ai_enabled = getattr(config, 'AI_ANALYSIS_ENABLED', True)
         logger.info(f"📌 AI_ANALYSIS_ENABLED: {ai_enabled}")
         
         if not ai_enabled:
-            logger.warning("⚠️ AI_ANALYSIS_ENABLED is False, using fallback analytics")
-            logger.warning("   💡 Set AI_ANALYSIS_ENABLED=True in config to use real analytics")
-            logger.info("=" * 60)
+            logger.error("❌ AI_ANALYSIS_ENABLED is False")
+            logger.error("   💡 Set AI_ANALYSIS_ENABLED=True in config")
+            logger.info("=" * 70)
             return _create_fallback_analytics(), None
-        
-        # ==========================================================
-        # DIAGNOSTIC 2: Test Database Connection
-        # ==========================================================
-        try:
-            from app.database import SessionLocal
-            db = SessionLocal()
-            total_records = db.query(DeliveryReport).count()
-            db.close()
-            logger.info(f"📌 Database connected. Found {total_records} records in delivery_reports")
-            
-            if total_records == 0:
-                logger.warning("⚠️ Database has ZERO records! Add data to see analytics.")
-                logger.warning("   💡 Insert data into delivery_reports table")
-                logger.info("=" * 60)
-                return _create_fallback_analytics(), None
-        except Exception as e:
-            logger.error(f"❌ Database connection test failed: {e}")
-            logger.warning("⚠️ Creating fallback analytics due to database issue")
-            logger.info("=" * 60)
-            return _create_fallback_analytics(), None
-        
-        # ==========================================================
-        # DIAGNOSTIC 3: Import Analytics Service
-        # ==========================================================
-        try:
-            from app.services.analytics_service import get_analytics_service, AnalyticsResponse
-            logger.info("✅ Analytics service imported successfully")
-        except ImportError as e:
-            logger.error(f"❌ Analytics service import error: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            logger.warning("⚠️ Creating fallback analytics due to import error")
-            logger.info("=" * 60)
-            return _create_fallback_analytics(), None
-        
-        # ==========================================================
-        # DIAGNOSTIC 4: Get Service Instance
-        # ==========================================================
-        try:
-            service = get_analytics_service()
-            logger.info(f"📊 Service type: {type(service)}")
-            logger.info(f"📊 Service class: {service.__class__.__name__}")
-            
-            if service is None:
-                logger.error("❌ Analytics service returned None")
-                # Try manual creation
-                try:
-                    from app.services.analytics_service import AnalyticsService
-                    service = AnalyticsService()
-                    logger.info("✅ AnalyticsService created manually")
-                except Exception as e:
-                    logger.error(f"❌ Manual creation failed: {e}")
-                    logger.info("=" * 60)
-                    return _create_fallback_analytics(), None
-        except Exception as e:
-            logger.error(f"❌ Failed to get analytics service: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            logger.info("=" * 60)
-            return _create_fallback_analytics(), None
-        
-        # ==========================================================
-        # DIAGNOSTIC 5: Verify Required Methods
-        # ==========================================================
-        required_methods = [
-            "get_dn_dashboard",
-            "get_dealer_dashboard",
-            "get_warehouse_dashboard",
-            "get_city_dashboard",
-            "get_product_dashboard",
-            "search_dealer",
-            "verify_dealer_exists",
-            "verify_dn_exists"
-        ]
-        
-        logger.info("🔍 Verifying analytics methods:")
-        missing_methods = []
-        available_methods = []
-        
-        for method in required_methods:
-            if hasattr(service, method):
-                available_methods.append(method)
-                logger.info(f"   ✅ {method}: AVAILABLE")
-            else:
-                missing_methods.append(method)
-                logger.error(f"   ❌ {method}: MISSING")
-        
-        if missing_methods:
-            logger.error(f"❌ Missing {len(missing_methods)} methods: {missing_methods}")
-            logger.warning("⚠️ Creating fallback analytics due to missing methods")
-            logger.info("=" * 60)
-            return _create_fallback_analytics(), AnalyticsResponse
-        
-        logger.info(f"✅ All {len(available_methods)} required methods available")
-        
-        # ==========================================================
-        # DIAGNOSTIC 6: Service Type Check
-        # ==========================================================
-        if hasattr(service, 'repo') and hasattr(service, 'get_dn_dashboard'):
-            logger.info("✅ Using REAL analytics service")
-        else:
-            logger.warning("⚠️ Using fallback analytics service - data may be limited")
-        
-        # ==========================================================
-        # DIAGNOSTIC 7: Test a Sample Query
-        # ==========================================================
-        try:
-            # Test dealer search
-            test_dealers = service.search_dealer("test", exact=False)
-            if test_dealers and hasattr(test_dealers, 'success'):
-                logger.info(f"✅ Dealer search test: success={test_dealers.success}")
-            elif isinstance(test_dealers, dict):
-                logger.info(f"✅ Dealer search test: returned {len(test_dealers.get('data', {}).get('results', []))} results")
-            else:
-                logger.info(f"✅ Dealer search test: {type(test_dealers)}")
-        except Exception as e:
-            logger.warning(f"⚠️ Dealer search test failed: {e}")
-        
-        # ==========================================================
-        # DIAGNOSTIC 8: Check WhatsApp Configuration
-        # ==========================================================
-        try:
-            token = getattr(config, 'WHATSAPP_ACCESS_TOKEN', '')
-            phone_id = getattr(config, 'WHATSAPP_PHONE_NUMBER_ID', '')
-            if token and phone_id:
-                logger.info(f"✅ WhatsApp configured: Phone ID {phone_id[:4]}...")
-            else:
-                logger.warning(f"⚠️ WhatsApp configuration incomplete: token={bool(token)}, phone_id={bool(phone_id)}")
-        except Exception as e:
-            logger.warning(f"⚠️ WhatsApp config check failed: {e}")
-        
-        logger.info("=" * 60)
-        logger.info("✅ Analytics service initialized successfully")
-        logger.info("=" * 60)
-        
-        return service, AnalyticsResponse
-        
-    except ImportError as e:
-        logger.error(f"❌ Import error in _get_analytics_service: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        logger.warning("⚠️ Creating fallback analytics...")
-        return _create_fallback_analytics(), None
     except Exception as e:
-        logger.error(f"❌ Error loading analytics service: {e}")
+        logger.error(f"❌ Config import failed: {e}")
+        return _create_fallback_analytics(), None
+    
+    # ==========================================================
+    # DIAGNOSTIC 2: Test Database Connection
+    # ==========================================================
+    try:
+        from app.database import SessionLocal
+        from app.models import DeliveryReport
+        from sqlalchemy import func
+        
+        db = SessionLocal()
+        
+        # Full database statistics
+        total_records = db.query(DeliveryReport).count()
+        total_dns = db.query(func.count(distinct(DeliveryReport.dn_no))).scalar()
+        total_dealers = db.query(func.count(distinct(DeliveryReport.customer_name))).scalar()
+        total_warehouses = db.query(func.count(distinct(DeliveryReport.warehouse))).scalar()
+        total_cities = db.query(func.count(distinct(DeliveryReport.ship_to_city))).scalar()
+        
+        db.close()
+        
+        logger.info(f"📌 Database connected. Found {total_records} records in delivery_reports")
+        logger.info(f"   📊 Total DNs: {total_dns}")
+        logger.info(f"   🏪 Total Dealers: {total_dealers}")
+        logger.info(f"   🏭 Total Warehouses: {total_warehouses}")
+        logger.info(f"   🏙️ Total Cities: {total_cities}")
+        
+        if total_records == 0:
+            logger.error("❌ Database has ZERO records! Add data to see analytics.")
+            logger.info("=" * 70)
+            return _create_fallback_analytics(), None
+            
+    except Exception as e:
+        logger.error(f"❌ Database connection test failed: {e}")
         import traceback
         logger.error(traceback.format_exc())
-        logger.warning("⚠️ Creating fallback analytics...")
+        logger.info("=" * 70)
         return _create_fallback_analytics(), None
-
-
-def _create_fallback_analytics():
-    """
-    Create a fallback analytics service that returns friendly error messages.
-    BLOCK 2 - ENHANCED FALLBACK WITH CLEAR MESSAGES
-    """
-    logger.warning("=" * 60)
-    logger.warning("⚠️ FALLBACK ANALYTICS ACTIVATED")
-    logger.warning("   This is NOT the real analytics service.")
-    logger.warning("   Data will show as zeros or N/A.")
-    logger.warning("=" * 60)
-    logger.warning("   Possible causes:")
-    logger.warning("   1. AI_ANALYSIS_ENABLED=False in config")
-    logger.warning("   2. Database connection failed")
-    logger.warning("   3. No data in delivery_reports table")
-    logger.warning("   4. Analytics service import error")
-    logger.warning("=" * 60)
-    logger.warning("   To fix:")
-    logger.warning("   1. Set AI_ANALYSIS_ENABLED=True")
-    logger.warning("   2. Check database connection")
-    logger.warning("   3. Add data to delivery_reports")
-    logger.warning("   4. Check service imports")
-    logger.warning("=" * 60)
     
-    class FallbackAnalytics:
-        """Fallback analytics service - prevents crashes with clear messages"""
-        
-        def get_dn_dashboard(self, dn_no):
-            logger.warning(f"⚠️ Fallback: get_dn_dashboard called for {dn_no}")
-            return {
-                "dn_number": dn_no,
-                "delivery_status": "Unknown",
-                "customer_name": "Unknown",
-                "warehouse": "Unknown",
-                "ship_to_city": "Unknown",
-                "units": 0,
-                "amount": 0,
-                "delivery_aging_text": "N/A",
-                "pod_aging_text": "N/A",
-                "total_cycle_text": "N/A",
-                "error": f"DN {dn_no} not found. Please add data to delivery_reports table.",
-                "hint": "Run: INSERT INTO delivery_reports (...) VALUES (...)"
-            }
-        
-        def get_dealer_dashboard(self, dealer_name):
-            logger.warning(f"⚠️ Fallback: get_dealer_dashboard called for {dealer_name}")
-            return {
-                "dealer_name": dealer_name,
-                "total_dns": 0,
-                "delivered_dns": 0,
-                "pending_dns": 0,
-                "delivery_rate": 0,
-                "total_revenue": 0,
-                "health_score": 50,
-                "risk_level": "Unknown",
-                "error": f"No data found for dealer '{dealer_name}'",
-                "hint": "Add data to delivery_reports table with this customer_name"
-            }
-        
-        def get_warehouse_dashboard(self, warehouse_name):
-            logger.warning(f"⚠️ Fallback: get_warehouse_dashboard called for {warehouse_name}")
-            return {
-                "warehouse": warehouse_name,
-                "total_dns": 0,
-                "delivered_dns": 0,
-                "pending_dns": 0,
-                "delivery_rate": 0,
-                "total_revenue": 0,
-                "error": f"No data found for warehouse '{warehouse_name}'"
-            }
-        
-        def get_city_dashboard(self, city_name):
-            logger.warning(f"⚠️ Fallback: get_city_dashboard called for {city_name}")
-            return {
-                "city_name": city_name,
-                "total_dns": 0,
-                "delivered_dns": 0,
-                "pending_dns": 0,
-                "delivery_rate": 0,
-                "total_revenue": 0,
-                "error": f"No data found for city '{city_name}'"
-            }
-        
-        def get_product_dashboard(self, product_name):
-            logger.warning(f"⚠️ Fallback: get_product_dashboard called for {product_name}")
-            return {
-                "product": product_name,
-                "revenue": 0,
-                "units": 0,
-                "dns": 0,
-                "delivery_rate": 0,
-                "error": f"No data found for product '{product_name}'"
-            }
-        
-        def get_ranking_dashboard(self, limit=10):
-            logger.warning("⚠️ Fallback: get_ranking_dashboard called")
-            return {"ranking": [], "error": "No ranking data available"}
-        
-        def get_pgi_dashboard(self):
-            logger.warning("⚠️ Fallback: get_pgi_dashboard called")
-            return {"total_dns": 0, "pgi_completed": 0, "pgi_pending": 0, "pgi_rate": 0}
-        
-        def get_pod_dashboard(self):
-            logger.warning("⚠️ Fallback: get_pod_dashboard called")
-            return {"total_dns": 0, "pod_completed": 0, "pod_pending": 0, "pod_rate": 0}
-        
-        def get_delivery_dashboard(self):
-            logger.warning("⚠️ Fallback: get_delivery_dashboard called")
-            return {"total_dns": 0, "delivered": 0, "in_transit": 0, "delivery_rate": 0}
-        
-        def get_executive_dashboard(self):
-            logger.warning("⚠️ Fallback: get_executive_dashboard called")
-            return {"total_dns": 0, "total_units": 0, "total_revenue": 0, "delivery_rate": 0}
-        
-        def get_control_tower_dashboard(self):
-            logger.warning("⚠️ Fallback: get_control_tower_dashboard called")
-            return {"total_alerts": 0, "critical_count": 0, "high_count": 0, "alerts": []}
-        
-        def get_revenue_dashboard(self):
-            logger.warning("⚠️ Fallback: get_revenue_dashboard called")
-            return {"total_revenue": 0, "total_units": 0, "total_dns": 0, "top_dealers": []}
-        
-        def get_aging_dashboard(self):
-            logger.warning("⚠️ Fallback: get_aging_dashboard called")
-            return {"total_pending": 0, "days_0_7": 0, "days_8_14": 0, "days_15_30": 0, "days_30_plus": 0}
-        
-        def search_dealer(self, query):
-            logger.warning(f"⚠️ Fallback: search_dealer called for {query}")
-            return []
-        
-        def verify_dealer_exists(self, dealer_name):
-            logger.warning(f"⚠️ Fallback: verify_dealer_exists called for {dealer_name}")
-            return False
-        
-        def verify_dn_exists(self, dn_no):
-            logger.warning(f"⚠️ Fallback: verify_dn_exists called for {dn_no}")
-            return False
-        
-        def get_dealer_360_dashboard(self, dealer_name):
-            logger.warning(f"⚠️ Fallback: get_dealer_360_dashboard called for {dealer_name}")
-            return {
-                "error": f"No data found for dealer '{dealer_name}'",
-                "message": "Please add data to delivery_reports table",
-                "profile": {
-                    "dealer_name": dealer_name,
-                    "dealer_code": "N/A",
-                    "warehouse": "N/A",
-                    "city": "N/A"
-                },
-                "business_volume": {
-                    "total_dns": 0,
-                    "total_units": 0,
-                    "total_revenue": 0
-                },
-                "delivery_status": {
-                    "delivered": 0,
-                    "in_transit": 0,
-                    "pending_pgi": 0
-                },
-                "performance": {
-                    "delivery_rate": 0,
-                    "health_score": 50,
-                    "risk_level": "Unknown"
-                }
-            }
+    # ==========================================================
+    # DIAGNOSTIC 3: Import Analytics Service
+    # ==========================================================
+    try:
+        from app.services.analytics_service import get_analytics_service, AnalyticsResponse
+        logger.info("✅ Analytics service imported successfully")
+    except ImportError as e:
+        logger.error(f"❌ Analytics service import error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        logger.info("=" * 70)
+        return _create_fallback_analytics(), None
     
-    logger.info("✅ FallbackAnalytics created")
-    return FallbackAnalytics()
-
-
+    # ==========================================================
+    # DIAGNOSTIC 4: Get Service Instance - FORCE REAL SERVICE
+    # ==========================================================
+    try:
+        service = get_analytics_service()
+        
+        # CRITICAL FIX: If service is None, create it manually
+        if service is None:
+            logger.error("❌ Analytics service returned None - Creating manually...")
+            try:
+                from app.services.analytics_service import AnalyticsService
+                service = AnalyticsService()
+                logger.info("✅ AnalyticsService created manually")
+            except Exception as e:
+                logger.error(f"❌ Manual creation failed: {e}")
+                logger.info("=" * 70)
+                return _create_fallback_analytics(), None
+        
+        # CRITICAL FIX: Check if service is real or fallback
+        if hasattr(service, 'repo') and hasattr(service, 'get_dealer_360_dashboard'):
+            logger.info("✅ Using REAL AnalyticsService")
+        else:
+            logger.warning("⚠️ Service appears to be fallback - creating REAL service")
+            try:
+                from app.services.analytics_service import AnalyticsService
+                service = AnalyticsService()
+                logger.info("✅ REAL AnalyticsService created successfully")
+            except Exception as e:
+                logger.error(f"❌ Failed to create REAL service: {e}")
+                return _create_fallback_analytics(), None
+        
+        logger.info(f"📊 Service type: {type(service)}")
+        logger.info(f"📊 Service class: {service.__class__.__name__}")
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to get analytics service: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        logger.info("=" * 70)
+        return _create_fallback_analytics(), None
+    
+    # ==========================================================
+    # DIAGNOSTIC 5: Verify Required Methods
+    # ==========================================================
+    required_methods = [
+        "get_dn_dashboard",
+        "get_dealer_dashboard",
+        "get_warehouse_dashboard",
+        "get_city_dashboard",
+        "get_product_dashboard",
+        "search_dealer",
+        "verify_dealer_exists",
+        "verify_dn_exists",
+        "get_dealer_360_dashboard"
+    ]
+    
+    logger.info("🔍 Verifying analytics methods:")
+    missing_methods = []
+    available_methods = []
+    
+    for method in required_methods:
+        if hasattr(service, method):
+            available_methods.append(method)
+            logger.info(f"   ✅ {method}: AVAILABLE")
+        else:
+            missing_methods.append(method)
+            logger.error(f"   ❌ {method}: MISSING")
+    
+    if missing_methods:
+        logger.error(f"❌ Missing {len(missing_methods)} methods: {missing_methods}")
+        logger.warning("⚠️ Creating fallback analytics due to missing methods")
+        logger.info("=" * 70)
+        return _create_fallback_analytics(), AnalyticsResponse
+    
+    logger.info(f"✅ All {len(available_methods)} required methods available")
+    
+    # ==========================================================
+    # DIAGNOSTIC 6: Test a Sample Query
+    # ==========================================================
+    try:
+        test_dealers = service.search_dealer("test", exact=False)
+        if test_dealers and hasattr(test_dealers, 'success'):
+            logger.info(f"✅ Dealer search test: success={test_dealers.success}")
+            if test_dealers.success and test_dealers.data:
+                results = test_dealers.data.get('results', [])
+                logger.info(f"   Found {len(results)} results")
+        elif isinstance(test_dealers, dict):
+            results_count = len(test_dealers.get('data', {}).get('results', []))
+            logger.info(f"✅ Dealer search test: returned {results_count} results")
+        else:
+            logger.info(f"✅ Dealer search test: {type(test_dealers)}")
+    except Exception as e:
+        logger.warning(f"⚠️ Dealer search test failed: {e}")
+    
+    # ==========================================================
+    # DIAGNOSTIC 7: Get Sample Data
+    # ==========================================================
+    try:
+        from app.database import SessionLocal
+        from app.models import DeliveryReport
+        db = SessionLocal()
+        sample = db.query(DeliveryReport.dn_no, DeliveryReport.customer_name).first()
+        db.close()
+        if sample:
+            logger.info(f"✅ Sample DN: {sample[0]} for Dealer: {sample[1]}")
+        else:
+            logger.warning("⚠️ No sample data found")
+    except Exception as e:
+        logger.warning(f"⚠️ Sample query failed: {e}")
+    
+    logger.info("=" * 70)
+    logger.info("✅ Analytics service initialized - USING REAL POSTGRESQL DATA")
+    logger.info("=" * 70)
+    
+    return service, AnalyticsResponse
 # ==========================================================
 # END OF BLOCK 2 - FIXED v5.0
 # ==========================================================
