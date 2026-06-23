@@ -24,37 +24,9 @@ from cachetools import TTLCache
 # BLOCK 1: POSTGRESQL IMPORTS - THE SOURCE OF TRUTH
 # ==========================================================
 
-# ==========================================================
-# FILE: app/services/analytics_service.py (v32.0 - ENTERPRISE)
-# PURPOSE: CENTRAL DATA ENGINE - POSTGRESQL ONLY
-# VERSION: 32.0 - Complete Enterprise Refactoring
-# ==========================================================
-
-from typing import Optional, Dict, Any, List, Tuple
-from datetime import datetime, timedelta
-from loguru import logger
-import time
-import uuid
-import re
-import math
-from collections import defaultdict
-from sqlalchemy.orm import Session
-from sqlalchemy import func, and_, or_, case, desc, asc, cast, String, text, distinct
-from functools import lru_cache
-import json
-import hashlib
-import threading
-from cachetools import TTLCache
-
-# ==========================================================
-# BLOCK 1: POSTGRESQL IMPORTS - THE SOURCE OF TRUTH
-# ==========================================================
-
 from app.models import DeliveryReport
 from app.database import SessionLocal, check_database_connection
-# ==========================================================
-# BLOCK 1.1: POSTGRESQL HEALTH ENGINE (ENHANCED v3.0)
-# ==========================================================
+
 # ==========================================================
 # BLOCK 1.1: POSTGRESQL HEALTH ENGINE (FIXED v4.0)
 # ==========================================================
@@ -116,9 +88,7 @@ class PostgreSQLHealthEngine:
                 db.close()
                 return result
             
-            # ==========================================================
             # CRITICAL COLUMNS - Service fails if these are missing
-            # ==========================================================
             critical_columns = [
                 "dn_no", "customer_name", "warehouse", "ship_to_city",
                 "dn_qty", "dn_amount"
@@ -147,9 +117,7 @@ class PostgreSQLHealthEngine:
                     result["errors"].append(f"Critical column '{col}' missing: {str(e)}")
                     logger.error(f"❌ Critical column '{col}' missing: {str(e)}")
             
-            # ==========================================================
-            # OPTIONAL COLUMNS - Warnings only, NOT errors (FIXED)
-            # ==========================================================
+            # OPTIONAL COLUMNS - Warnings only, NOT errors
             optional_columns = [
                 "dealer_code", "customer_code", "warehouse_code",
                 "customer_model", "material_no", "sales_office",
@@ -179,9 +147,7 @@ class PostgreSQLHealthEngine:
                     result["warnings"].append(f"Optional column '{col}' missing: {str(e)}")
                     logger.warning(f"⚠️ Optional column '{col}' missing: {str(e)}")
             
-            # ==========================================================
             # STATISTICS - FIXED: Use 'distinct' with correct import
-            # ==========================================================
             try:
                 result["statistics"] = {
                     "total_records": total_records,
@@ -198,9 +164,7 @@ class PostgreSQLHealthEngine:
             
             db.close()
             
-            # ==========================================================
             # DETERMINE STATUS
-            # ==========================================================
             critical_errors = len([e for e in result["errors"] if "critical" in e.lower()])
             critical_missing = len([c for c in result["critical_columns"].values() if not c.get("exists", False)])
             
@@ -229,7 +193,6 @@ class PostgreSQLHealthEngine:
     def get_health_report() -> Dict[str, Any]:
         """Get detailed health report."""
         return PostgreSQLHealthEngine.validate_database()
-
 
 
 # ==========================================================
@@ -274,6 +237,7 @@ class AnalyticsResponse:
     
     def to_json(self) -> str:
         return json.dumps(self.to_dict())
+
 
 # ==========================================================
 # BLOCK 4: DATE VALIDATION ENGINE
@@ -405,6 +369,7 @@ class DateValidator:
         else:
             return f"{days} Days"
 
+
 # ==========================================================
 # BLOCK 5: KPI ENGINE
 # ==========================================================
@@ -461,6 +426,7 @@ class KPIEngine:
             return "High", risk_score
         else:
             return "Critical", risk_score
+
 
 # ==========================================================
 # BLOCK 6: CACHE ENGINE
@@ -531,8 +497,9 @@ class CacheEngine:
             }
         }
 
+
 # ==========================================================
-# BLOCK 7: SEARCH ENGINE (ENHANCED)
+# BLOCK 7: SEARCH ENGINE
 # ==========================================================
 
 class SearchEngine:
@@ -547,7 +514,6 @@ class SearchEngine:
         if not query or not query.strip():
             return []
         
-        # Normalize DN
         query_clean = re.sub(r'[^0-9]', '', str(query).strip())
         if len(query_clean) < 8 or len(query_clean) > 12:
             return []
@@ -586,7 +552,6 @@ class SearchEngine:
         try:
             results = []
             
-            # STRATEGY 1: Exact match (highest confidence)
             if exact:
                 results = self.db.query(
                     func.distinct(DeliveryReport.customer_name)
@@ -594,7 +559,6 @@ class SearchEngine:
                     func.lower(DeliveryReport.customer_name) == func.lower(query_clean)
                 ).limit(SEARCH_LIMIT).all()
             else:
-                # STRATEGY 2: ILIKE match
                 results = self.db.query(
                     func.distinct(DeliveryReport.customer_name)
                 ).filter(
@@ -602,7 +566,6 @@ class SearchEngine:
                 ).limit(SEARCH_LIMIT).all()
             
             if not results and not exact:
-                # STRATEGY 3: Token match
                 tokens = query_clean.split()
                 for token in tokens:
                     if len(token) > 2:
@@ -703,7 +666,6 @@ class SearchEngine:
     
     def verify_dn_exists(self, dn_no: str) -> Dict[str, Any]:
         """Verify if a DN exists in PostgreSQL."""
-        # Normalize DN
         query_clean = re.sub(r'[^0-9]', '', str(dn_no).strip())
         if len(query_clean) < 8 or len(query_clean) > 12:
             return {"dn": dn_no, "found": False, "error": "Invalid DN format"}
@@ -737,8 +699,9 @@ class SearchEngine:
             logger.error(f"Dealer verification error: {e}")
             return False
 
+
 # ==========================================================
-# BLOCK 8: ENTITY RESOLVER (ENHANCED)
+# BLOCK 8: ENTITY RESOLVER
 # ==========================================================
 
 class EntityResolver:
@@ -758,74 +721,33 @@ class EntityResolver:
         self.db = db
         self.cache = cache or CacheEngine()
         
-        # Product keywords for detection
         self.PRODUCT_KEYWORDS = [
             'refrigerator', 'fridge', 'freezer', 'ac', 'air conditioner',
             'washing machine', 'washer', 'led', 'tv', 'television',
             'microwave', 'oven', 'water dispenser', 'cooler', 'heater'
         ]
-        
-        # Warehouse keywords for detection
         self.WAREHOUSE_KEYWORDS = ['warehouse', 'wh', 'depot', 'godown', 'distribution center']
-        
-        # City keywords for detection
         self.CITY_KEYWORDS = ['city', 'town', 'district', 'region']
     
-    # ==========================================================
-    # DN NORMALIZATION ENGINE
-    # ==========================================================
-    
     def _normalize_dn(self, dn_input: str) -> str:
-        """
-        Normalize DN number for database lookup.
-        
-        Supports:
-        - 6243684514
-        - 6243684514.0
-        - 6243684514.00
-        -  6243684514
-        - "6243684514"
-        - 6243684514
-        """
+        """Normalize DN number for database lookup."""
         if not dn_input:
             return ""
-        
         raw = str(dn_input).strip()
-        # Remove quotes if present
         raw = raw.strip('"').strip("'")
-        # Remove decimal if present
         if '.' in raw:
             raw = raw.split('.')[0]
-        # Remove any non-numeric characters
         return re.sub(r'[^0-9]', '', raw)
     
     def resolve_dn(self, dn_input: str) -> Dict[str, Any]:
-        """
-        Resolve DN number with hardened normalization.
-        """
+        """Resolve DN number with hardened normalization."""
         if not dn_input or not dn_input.strip():
-            return {
-                "entity": None,
-                "entity_type": "dn",
-                "found": False,
-                "confidence": 0,
-                "resolution_method": "none"
-            }
+            return {"entity": None, "entity_type": "dn", "found": False, "confidence": 0, "resolution_method": "none"}
         
         normalized = self._normalize_dn(dn_input)
-        
-        # Validate length (8-12 digits)
         if len(normalized) < 8 or len(normalized) > 12:
-            return {
-                "entity": None,
-                "entity_type": "dn",
-                "found": False,
-                "confidence": 0,
-                "resolution_method": "invalid_length",
-                "normalized": normalized
-            }
+            return {"entity": None, "entity_type": "dn", "found": False, "confidence": 0, "resolution_method": "invalid_length", "normalized": normalized}
         
-        # Check cache
         cache_key = f"dn:{normalized}"
         cached = self.cache.get("dn_cache", cache_key) if self.cache else None
         if cached:
@@ -833,85 +755,35 @@ class EntityResolver:
             return cached
         
         try:
-            # Query with cast to handle different data types
             result = self.db.query(DeliveryReport.dn_no).filter(
                 cast(DeliveryReport.dn_no, String) == normalized
             ).first()
-            
             if result:
                 resolved = result[0]
-                response = {
-                    "entity": resolved,
-                    "entity_type": "dn",
-                    "found": True,
-                    "confidence": 1.0,
-                    "resolution_method": "exact_match",
-                    "normalized": normalized
-                }
+                response = {"entity": resolved, "entity_type": "dn", "found": True, "confidence": 1.0, "resolution_method": "exact_match", "normalized": normalized}
                 if self.cache:
                     self.cache.set("dn_cache", cache_key, response)
                 logger.info(f"✅ DN resolved: {resolved} (confidence: 1.0)")
                 return response
             
-            # Try partial match for suggestions
-            try:
-                similar = self.db.query(DeliveryReport.dn_no).filter(
-                    DeliveryReport.dn_no.like(f"%{normalized}%")
-                ).limit(5).all()
-                
-                if similar:
-                    suggestions = [s[0] for s in similar]
-                    response = {
-                        "entity": None,
-                        "entity_type": "dn",
-                        "found": False,
-                        "confidence": 0.3,
-                        "resolution_method": "partial_match",
-                        "normalized": normalized,
-                        "suggestions": suggestions[:3]
-                    }
-                    return response
-            except Exception as e:
-                logger.warning(f"Similar DN search failed: {e}")
+            similar = self.db.query(DeliveryReport.dn_no).filter(
+                DeliveryReport.dn_no.like(f"%{normalized}%")
+            ).limit(5).all()
+            if similar:
+                return {"entity": None, "entity_type": "dn", "found": False, "confidence": 0.3, "resolution_method": "partial_match", "normalized": normalized, "suggestions": [s[0] for s in similar][:3]}
             
-            response = {
-                "entity": None,
-                "entity_type": "dn",
-                "found": False,
-                "confidence": 0,
-                "resolution_method": "not_found",
-                "normalized": normalized
-            }
-            return response
+            return {"entity": None, "entity_type": "dn", "found": False, "confidence": 0, "resolution_method": "not_found", "normalized": normalized}
             
         except Exception as e:
             logger.error(f"DN resolution error: {e}")
-            return {
-                "entity": None,
-                "entity_type": "dn",
-                "found": False,
-                "confidence": 0,
-                "resolution_method": "error",
-                "error": str(e)
-            }
+            return {"entity": None, "entity_type": "dn", "found": False, "confidence": 0, "resolution_method": "error", "error": str(e)}
     
     def resolve_dealer(self, dealer_input: str) -> Dict[str, Any]:
-        """
-        Resolve dealer name with multiple strategies.
-        Returns structured result with confidence.
-        """
+        """Resolve dealer name with multiple strategies."""
         if not dealer_input or not dealer_input.strip():
-            return {
-                "entity": None,
-                "entity_type": "dealer",
-                "found": False,
-                "confidence": 0,
-                "resolution_method": "none"
-            }
+            return {"entity": None, "entity_type": "dealer", "found": False, "confidence": 0, "resolution_method": "none"}
         
         dealer_input = dealer_input.strip()
-        
-        # Check cache
         cache_key = f"dealer:{dealer_input.lower()}"
         cached = self.cache.get("dealer_cache", cache_key) if self.cache else None
         if cached:
@@ -919,43 +791,28 @@ class EntityResolver:
             return cached
         
         try:
-            # STRATEGY 1: Exact match
             result = self.db.query(DeliveryReport.customer_name).filter(
                 func.lower(DeliveryReport.customer_name) == func.lower(dealer_input)
             ).first()
             if result:
                 resolved = result[0]
-                response = {
-                    "entity": resolved,
-                    "entity_type": "dealer",
-                    "found": True,
-                    "confidence": 1.0,
-                    "resolution_method": "exact_match"
-                }
+                response = {"entity": resolved, "entity_type": "dealer", "found": True, "confidence": 1.0, "resolution_method": "exact_match"}
                 if self.cache:
                     self.cache.set("dealer_cache", cache_key, response)
                 logger.info(f"✅ Dealer resolved (exact): {resolved} (confidence: 1.0)")
                 return response
             
-            # STRATEGY 2: ILIKE match
             result = self.db.query(DeliveryReport.customer_name).filter(
                 DeliveryReport.customer_name.ilike(f"%{dealer_input}%")
             ).first()
             if result:
                 resolved = result[0]
-                response = {
-                    "entity": resolved,
-                    "entity_type": "dealer",
-                    "found": True,
-                    "confidence": 0.85,
-                    "resolution_method": "ilike_match"
-                }
+                response = {"entity": resolved, "entity_type": "dealer", "found": True, "confidence": 0.85, "resolution_method": "ilike_match"}
                 if self.cache:
                     self.cache.set("dealer_cache", cache_key, response)
                 logger.info(f"✅ Dealer resolved (ILIKE): {resolved} (confidence: 0.85)")
                 return response
             
-            # STRATEGY 3: Token-based matching
             tokens = dealer_input.split()
             for token in tokens:
                 if len(token) > 2 and token.lower() not in ['the', 'and', 'for', 'with']:
@@ -964,58 +821,24 @@ class EntityResolver:
                     ).first()
                     if result:
                         resolved = result[0]
-                        response = {
-                            "entity": resolved,
-                            "entity_type": "dealer",
-                            "found": True,
-                            "confidence": 0.75,
-                            "resolution_method": f"token_match_{token}",
-                            "matched_token": token
-                        }
+                        response = {"entity": resolved, "entity_type": "dealer", "found": True, "confidence": 0.75, "resolution_method": f"token_match_{token}"}
                         if self.cache:
                             self.cache.set("dealer_cache", cache_key, response)
                         logger.info(f"✅ Dealer resolved (token '{token}'): {resolved} (confidence: 0.75)")
                         return response
             
-            response = {
-                "entity": None,
-                "entity_type": "dealer",
-                "found": False,
-                "confidence": 0,
-                "resolution_method": "not_found"
-            }
-            if self.cache:
-                self.cache.set("dealer_cache", cache_key, response)
-            return response
+            return {"entity": None, "entity_type": "dealer", "found": False, "confidence": 0, "resolution_method": "not_found"}
             
         except Exception as e:
             logger.error(f"Dealer resolution error: {e}")
-            return {
-                "entity": None,
-                "entity_type": "dealer",
-                "found": False,
-                "confidence": 0,
-                "resolution_method": "error",
-                "error": str(e)
-            }
+            return {"entity": None, "entity_type": "dealer", "found": False, "confidence": 0, "resolution_method": "error", "error": str(e)}
     
     def resolve_warehouse(self, warehouse_input: str) -> Dict[str, Any]:
-        """
-        Resolve warehouse name.
-        Never routes to dealer.
-        """
+        """Resolve warehouse name. Never routes to dealer."""
         if not warehouse_input or not warehouse_input.strip():
-            return {
-                "entity": None,
-                "entity_type": "warehouse",
-                "found": False,
-                "confidence": 0,
-                "resolution_method": "none"
-            }
+            return {"entity": None, "entity_type": "warehouse", "found": False, "confidence": 0, "resolution_method": "none"}
         
         warehouse_input = warehouse_input.strip()
-        
-        # Check cache
         cache_key = f"warehouse:{warehouse_input.lower()}"
         cached = self.cache.get("warehouse_cache", cache_key) if self.cache else None
         if cached:
@@ -1023,90 +846,47 @@ class EntityResolver:
             return cached
         
         try:
-            # Clean the input - remove keywords
             clean_input = warehouse_input
             for kw in ['warehouse', 'wh', 'depot', 'godown']:
                 clean_input = re.sub(rf'\b{kw}\b', '', clean_input, flags=re.IGNORECASE)
             clean_input = clean_input.strip()
-            
             if not clean_input:
                 clean_input = warehouse_input
             
-            # Try exact match
             result = self.db.query(DeliveryReport.warehouse).filter(
                 func.lower(DeliveryReport.warehouse) == func.lower(clean_input)
             ).first()
             if result and result[0]:
                 resolved = result[0]
-                response = {
-                    "entity": resolved,
-                    "entity_type": "warehouse",
-                    "found": True,
-                    "confidence": 1.0,
-                    "resolution_method": "exact_match"
-                }
+                response = {"entity": resolved, "entity_type": "warehouse", "found": True, "confidence": 1.0, "resolution_method": "exact_match"}
                 if self.cache:
                     self.cache.set("warehouse_cache", cache_key, response)
                 logger.info(f"✅ Warehouse resolved: {resolved} (confidence: 1.0)")
                 return response
             
-            # Try ILIKE
             result = self.db.query(DeliveryReport.warehouse).filter(
                 DeliveryReport.warehouse.ilike(f"%{clean_input}%")
             ).first()
             if result and result[0]:
                 resolved = result[0]
-                response = {
-                    "entity": resolved,
-                    "entity_type": "warehouse",
-                    "found": True,
-                    "confidence": 0.85,
-                    "resolution_method": "ilike_match"
-                }
+                response = {"entity": resolved, "entity_type": "warehouse", "found": True, "confidence": 0.85, "resolution_method": "ilike_match"}
                 if self.cache:
                     self.cache.set("warehouse_cache", cache_key, response)
                 logger.info(f"✅ Warehouse resolved (ILIKE): {resolved} (confidence: 0.85)")
                 return response
             
-            response = {
-                "entity": None,
-                "entity_type": "warehouse",
-                "found": False,
-                "confidence": 0,
-                "resolution_method": "not_found"
-            }
-            if self.cache:
-                self.cache.set("warehouse_cache", cache_key, response)
-            return response
+            return {"entity": None, "entity_type": "warehouse", "found": False, "confidence": 0, "resolution_method": "not_found"}
             
         except Exception as e:
             logger.error(f"Warehouse resolution error: {e}")
-            return {
-                "entity": None,
-                "entity_type": "warehouse",
-                "found": False,
-                "confidence": 0,
-                "resolution_method": "error",
-                "error": str(e)
-            }
+            return {"entity": None, "entity_type": "warehouse", "found": False, "confidence": 0, "resolution_method": "error", "error": str(e)}
     
     def resolve_city(self, city_input: str) -> Dict[str, Any]:
-        """
-        Resolve city name.
-        Never routes to dealer.
-        """
+        """Resolve city name. Never routes to dealer."""
         if not city_input or not city_input.strip():
-            return {
-                "entity": None,
-                "entity_type": "city",
-                "found": False,
-                "confidence": 0,
-                "resolution_method": "none"
-            }
+            return {"entity": None, "entity_type": "city", "found": False, "confidence": 0, "resolution_method": "none"}
         
         city_input = city_input.strip()
-        
-        # Check cache
         cache_key = f"city:{city_input.lower()}"
         cached = self.cache.get("city_cache", cache_key) if self.cache else None
         if cached:
@@ -1114,90 +894,47 @@ class EntityResolver:
             return cached
         
         try:
-            # Clean the input - remove keywords
             clean_input = city_input
             for kw in ['city', 'town', 'district', 'region']:
                 clean_input = re.sub(rf'\b{kw}\b', '', clean_input, flags=re.IGNORECASE)
             clean_input = clean_input.strip()
-            
             if not clean_input:
                 clean_input = city_input
             
-            # Try exact match
             result = self.db.query(DeliveryReport.ship_to_city).filter(
                 func.lower(DeliveryReport.ship_to_city) == func.lower(clean_input)
             ).first()
             if result and result[0]:
                 resolved = result[0]
-                response = {
-                    "entity": resolved,
-                    "entity_type": "city",
-                    "found": True,
-                    "confidence": 1.0,
-                    "resolution_method": "exact_match"
-                }
+                response = {"entity": resolved, "entity_type": "city", "found": True, "confidence": 1.0, "resolution_method": "exact_match"}
                 if self.cache:
                     self.cache.set("city_cache", cache_key, response)
                 logger.info(f"✅ City resolved: {resolved} (confidence: 1.0)")
                 return response
             
-            # Try ILIKE
             result = self.db.query(DeliveryReport.ship_to_city).filter(
                 DeliveryReport.ship_to_city.ilike(f"%{clean_input}%")
             ).first()
             if result and result[0]:
                 resolved = result[0]
-                response = {
-                    "entity": resolved,
-                    "entity_type": "city",
-                    "found": True,
-                    "confidence": 0.85,
-                    "resolution_method": "ilike_match"
-                }
+                response = {"entity": resolved, "entity_type": "city", "found": True, "confidence": 0.85, "resolution_method": "ilike_match"}
                 if self.cache:
                     self.cache.set("city_cache", cache_key, response)
                 logger.info(f"✅ City resolved (ILIKE): {resolved} (confidence: 0.85)")
                 return response
             
-            response = {
-                "entity": None,
-                "entity_type": "city",
-                "found": False,
-                "confidence": 0,
-                "resolution_method": "not_found"
-            }
-            if self.cache:
-                self.cache.set("city_cache", cache_key, response)
-            return response
+            return {"entity": None, "entity_type": "city", "found": False, "confidence": 0, "resolution_method": "not_found"}
             
         except Exception as e:
             logger.error(f"City resolution error: {e}")
-            return {
-                "entity": None,
-                "entity_type": "city",
-                "found": False,
-                "confidence": 0,
-                "resolution_method": "error",
-                "error": str(e)
-            }
+            return {"entity": None, "entity_type": "city", "found": False, "confidence": 0, "resolution_method": "error", "error": str(e)}
     
     def resolve_product(self, product_input: str) -> Dict[str, Any]:
-        """
-        Resolve product name.
-        Never routes to dealer.
-        """
+        """Resolve product name. Never routes to dealer."""
         if not product_input or not product_input.strip():
-            return {
-                "entity": None,
-                "entity_type": "product",
-                "found": False,
-                "confidence": 0,
-                "resolution_method": "none"
-            }
+            return {"entity": None, "entity_type": "product", "found": False, "confidence": 0, "resolution_method": "none"}
         
         product_input = product_input.strip()
-        
-        # Check cache
         cache_key = f"product:{product_input.lower()}"
         cached = self.cache.get("product_cache", cache_key) if self.cache else None
         if cached:
@@ -1205,108 +942,53 @@ class EntityResolver:
             return cached
         
         try:
-            # Try customer_model first
             result = self.db.query(DeliveryReport.customer_model).filter(
                 func.lower(DeliveryReport.customer_model) == func.lower(product_input)
             ).first()
             if result and result[0]:
                 resolved = result[0]
-                response = {
-                    "entity": resolved,
-                    "entity_type": "product",
-                    "found": True,
-                    "confidence": 1.0,
-                    "resolution_method": "exact_match_model"
-                }
+                response = {"entity": resolved, "entity_type": "product", "found": True, "confidence": 1.0, "resolution_method": "exact_match_model"}
                 if self.cache:
                     self.cache.set("product_cache", cache_key, response)
                 logger.info(f"✅ Product resolved (model): {resolved} (confidence: 1.0)")
                 return response
             
-            # Try material_no
             result = self.db.query(DeliveryReport.material_no).filter(
                 func.lower(DeliveryReport.material_no) == func.lower(product_input)
             ).first()
             if result and result[0]:
                 resolved = result[0]
-                response = {
-                    "entity": resolved,
-                    "entity_type": "product",
-                    "found": True,
-                    "confidence": 1.0,
-                    "resolution_method": "exact_match_material"
-                }
+                response = {"entity": resolved, "entity_type": "product", "found": True, "confidence": 1.0, "resolution_method": "exact_match_material"}
                 if self.cache:
                     self.cache.set("product_cache", cache_key, response)
                 logger.info(f"✅ Product resolved (material): {resolved} (confidence: 1.0)")
                 return response
             
-            # Try ILIKE on customer_model
             result = self.db.query(DeliveryReport.customer_model).filter(
                 DeliveryReport.customer_model.ilike(f"%{product_input}%")
             ).first()
             if result and result[0]:
                 resolved = result[0]
-                response = {
-                    "entity": resolved,
-                    "entity_type": "product",
-                    "found": True,
-                    "confidence": 0.85,
-                    "resolution_method": "ilike_match_model"
-                }
+                response = {"entity": resolved, "entity_type": "product", "found": True, "confidence": 0.85, "resolution_method": "ilike_match_model"}
                 if self.cache:
                     self.cache.set("product_cache", cache_key, response)
                 logger.info(f"✅ Product resolved (ILIKE): {resolved} (confidence: 0.85)")
                 return response
             
-            response = {
-                "entity": None,
-                "entity_type": "product",
-                "found": False,
-                "confidence": 0,
-                "resolution_method": "not_found"
-            }
-            if self.cache:
-                self.cache.set("product_cache", cache_key, response)
-            return response
+            return {"entity": None, "entity_type": "product", "found": False, "confidence": 0, "resolution_method": "not_found"}
             
         except Exception as e:
             logger.error(f"Product resolution error: {e}")
-            return {
-                "entity": None,
-                "entity_type": "product",
-                "found": False,
-                "confidence": 0,
-                "resolution_method": "error",
-                "error": str(e)
-            }
+            return {"entity": None, "entity_type": "product", "found": False, "confidence": 0, "resolution_method": "error", "error": str(e)}
     
     def resolve_entity(self, query: str) -> Dict[str, Any]:
-        """
-        Universal entity resolver with strict priority ordering.
-        
-        PRIORITY ORDER:
-        1. DN (8-12 digits)
-        2. Warehouse (explicit keywords)
-        3. City (explicit keywords)
-        4. Product (product keywords)
-        5. Dealer (last priority)
-        """
+        """Universal entity resolver with strict priority ordering."""
         if not query or not query.strip():
-            return {
-                "entity": None,
-                "entity_type": "unknown",
-                "found": False,
-                "confidence": 0,
-                "resolution_method": "none"
-            }
+            return {"entity": None, "entity_type": "unknown", "found": False, "confidence": 0, "resolution_method": "none"}
         
         query_clean = query.strip()
         logger.info(f"🔍 Universal entity resolution for: '{query_clean}'")
         
-        # ==========================================================
-        # PRIORITY 1: DN Resolution
-        # ==========================================================
         dn_match = re.search(r'\b(\d{8,12})\b', query_clean)
         if dn_match:
             result = self.resolve_dn(dn_match.group(1))
@@ -1314,59 +996,39 @@ class EntityResolver:
                 logger.info(f"✅ Entity resolved as DN: {result.get('entity')}")
                 return result
         
-        # ==========================================================
-        # PRIORITY 2: Warehouse Resolution
-        # ==========================================================
         if any(kw in query_clean.lower() for kw in self.WAREHOUSE_KEYWORDS):
             result = self.resolve_warehouse(query_clean)
             if result.get('found'):
                 logger.info(f"✅ Entity resolved as Warehouse: {result.get('entity')}")
                 return result
         
-        # ==========================================================
-        # PRIORITY 3: City Resolution
-        # ==========================================================
         if any(kw in query_clean.lower() for kw in self.CITY_KEYWORDS):
             result = self.resolve_city(query_clean)
             if result.get('found'):
                 logger.info(f"✅ Entity resolved as City: {result.get('entity')}")
                 return result
         
-        # ==========================================================
-        # PRIORITY 4: Product Resolution
-        # ==========================================================
         if any(kw in query_clean.lower() for kw in self.PRODUCT_KEYWORDS):
             result = self.resolve_product(query_clean)
             if result.get('found'):
                 logger.info(f"✅ Entity resolved as Product: {result.get('entity')}")
                 return result
         
-        # ==========================================================
-        # PRIORITY 5: Dealer Resolution (LAST)
-        # ==========================================================
         result = self.resolve_dealer(query_clean)
         if result.get('found'):
             logger.info(f"✅ Entity resolved as Dealer: {result.get('entity')}")
             return result
         
         logger.warning(f"❌ No entity resolved for: '{query_clean}'")
-        return {
-            "entity": None,
-            "entity_type": "unknown",
-            "found": False,
-            "confidence": 0,
-            "resolution_method": "none"
-        }
+        return {"entity": None, "entity_type": "unknown", "found": False, "confidence": 0, "resolution_method": "none"}
+
 
 # ==========================================================
 # BLOCK 8.5: DISTANCE SERVICE INTEGRATION
 # ==========================================================
 
 class DistanceIntegration:
-    """
-    Lazy integration with DistanceService.
-    Never allows distance service failures to break analytics.
-    """
+    """Lazy integration with DistanceService."""
     
     def __init__(self):
         self._distance_service = None
@@ -1374,7 +1036,6 @@ class DistanceIntegration:
         self._last_error = None
     
     def _get_distance_service(self):
-        """Lazy load DistanceService."""
         if self._initialized:
             return self._distance_service
         
@@ -1395,28 +1056,12 @@ class DistanceIntegration:
         return self._distance_service
     
     def calculate_dealer_distance(self, warehouse: str, city: str) -> Dict[str, Any]:
-        """
-        Calculate distance from warehouse to dealer city.
-        Never fails - returns safe default if distance service unavailable.
-        """
         if not warehouse or not city:
-            return {
-                "distance_km": None,
-                "travel_time_hours": None,
-                "transit_days": None,
-                "available": False,
-                "error": "Missing warehouse or city"
-            }
+            return {"distance_km": None, "travel_time_hours": None, "transit_days": None, "available": False, "error": "Missing warehouse or city"}
         
         service = self._get_distance_service()
         if not service:
-            return {
-                "distance_km": None,
-                "travel_time_hours": None,
-                "transit_days": None,
-                "available": False,
-                "error": "Distance service not available"
-            }
+            return {"distance_km": None, "travel_time_hours": None, "transit_days": None, "available": False, "error": "Distance service not available"}
         
         try:
             result = service.calculate_warehouse_distance(warehouse, city)
@@ -1424,98 +1069,40 @@ class DistanceIntegration:
                 distance_km = result.get('distance_km', 0)
                 travel_hours = result.get('approx_driving_hours', 0)
                 travel_minutes = result.get('approx_driving_minutes', 0)
-                
-                # Calculate transit days
                 transit_days = round(travel_hours / 8, 1) if travel_hours > 0 else 0
-                
-                return {
-                    "distance_km": round(distance_km, 1),
-                    "travel_time_hours": round(travel_hours, 1),
-                    "travel_time_minutes": travel_minutes,
-                    "transit_days": transit_days,
-                    "available": True,
-                    "error": None
-                }
+                return {"distance_km": round(distance_km, 1), "travel_time_hours": round(travel_hours, 1), "travel_time_minutes": travel_minutes, "transit_days": transit_days, "available": True, "error": None}
             else:
                 error = result.get('error', 'Unknown error') if result else 'No result'
-                return {
-                    "distance_km": None,
-                    "travel_time_hours": None,
-                    "transit_days": None,
-                    "available": False,
-                    "error": error
-                }
+                return {"distance_km": None, "travel_time_hours": None, "transit_days": None, "available": False, "error": error}
         except Exception as e:
             logger.error(f"Distance calculation error: {e}")
-            return {
-                "distance_km": None,
-                "travel_time_hours": None,
-                "transit_days": None,
-                "available": False,
-                "error": str(e)
-            }
+            return {"distance_km": None, "travel_time_hours": None, "transit_days": None, "available": False, "error": str(e)}
     
     def get_warehouse_coverage(self, warehouse: str) -> Dict[str, Any]:
-        """
-        Get warehouse coverage information.
-        Never fails - returns safe default if distance service unavailable.
-        """
         if not warehouse:
-            return {
-                "coverage_radius": None,
-                "average_distance": None,
-                "cities_served": 0,
-                "available": False,
-                "error": "Missing warehouse"
-            }
+            return {"coverage_radius": None, "average_distance": None, "cities_served": 0, "available": False, "error": "Missing warehouse"}
         
         service = self._get_distance_service()
         if not service:
-            return {
-                "coverage_radius": None,
-                "average_distance": None,
-                "cities_served": 0,
-                "available": False,
-                "error": "Distance service not available"
-            }
+            return {"coverage_radius": None, "average_distance": None, "cities_served": 0, "available": False, "error": "Distance service not available"}
         
         try:
             coverage = service.get_warehouse_coverage(warehouse)
             if coverage and coverage.get('success'):
-                return {
-                    "coverage_radius": coverage.get('max_distance_km', 0),
-                    "average_distance": coverage.get('average_distance_km', 0),
-                    "cities_served": coverage.get('total_cities', 0),
-                    "available": True,
-                    "error": None
-                }
+                return {"coverage_radius": coverage.get('max_distance_km', 0), "average_distance": coverage.get('average_distance_km', 0), "cities_served": coverage.get('total_cities', 0), "available": True, "error": None}
             else:
-                return {
-                    "coverage_radius": None,
-                    "average_distance": None,
-                    "cities_served": 0,
-                    "available": False,
-                    "error": coverage.get('error', 'Unknown error') if coverage else 'No result'
-                }
+                return {"coverage_radius": None, "average_distance": None, "cities_served": 0, "available": False, "error": coverage.get('error', 'Unknown error') if coverage else 'No result'}
         except Exception as e:
             logger.error(f"Warehouse coverage error: {e}")
-            return {
-                "coverage_radius": None,
-                "average_distance": None,
-                "cities_served": 0,
-                "available": False,
-                "error": str(e)
-            }
+            return {"coverage_radius": None, "average_distance": None, "cities_served": 0, "available": False, "error": str(e)}
+
 
 # ==========================================================
 # BLOCK 8.6: DEALER360 INTEGRATION
 # ==========================================================
 
 class Dealer360Integration:
-    """
-    Lazy integration with Dealer360Dashboard.
-    Prevents circular imports.
-    """
+    """Lazy integration with Dealer360Dashboard. Prevents circular imports."""
     
     def __init__(self, db: Session, resolver: EntityResolver, search: SearchEngine):
         self.db = db
@@ -1526,7 +1113,6 @@ class Dealer360Integration:
         self._last_error = None
     
     def _get_dealer_360(self):
-        """Lazy load Dealer360Dashboard."""
         if self._initialized:
             return self._dealer_360
         
@@ -1547,16 +1133,12 @@ class Dealer360Integration:
         return self._dealer_360
     
     def get_dashboard(self, dealer_name: str) -> Dict[str, Any]:
-        """Get Dealer360 dashboard - safe fallback if service unavailable."""
         if not dealer_name or not dealer_name.strip():
             return {"error": "Dealer name is required"}
         
         service = self._get_dealer_360()
         if not service:
-            return {
-                "error": "Dealer360 dashboard service not available",
-                "error_id": str(uuid.uuid4())[:8]
-            }
+            return {"error": "Dealer360 dashboard service not available", "error_id": str(uuid.uuid4())[:8]}
         
         try:
             result = service.get_dashboard(dealer_name)
@@ -1567,83 +1149,40 @@ class Dealer360Integration:
                 return result or {"error": "No result from Dealer360 service"}
         except Exception as e:
             logger.error(f"Dealer360 dashboard error: {e}")
-            return {
-                "error": f"Dealer360 dashboard error: {str(e)[:100]}",
-                "error_id": str(uuid.uuid4())[:8]
-            }
+            return {"error": f"Dealer360 dashboard error: {str(e)[:100]}", "error_id": str(uuid.uuid4())[:8]}
+
 
 # ==========================================================
 # BLOCK 8.7: SERVICE HEALTH API
 # ==========================================================
 
 class ServiceHealthAPI:
-    """
-    Health API for analytics service.
-    Callable from ai_provider_service.py.
-    """
+    """Health API for analytics service. Callable from ai_provider_service.py."""
     
     @staticmethod
     def get_service_status(analytics_service: 'AnalyticsService') -> Dict[str, Any]:
-        """Get comprehensive service status."""
         if not analytics_service:
-            return {
-                "status": "unavailable",
-                "healthy": False,
-                "message": "Analytics service not initialized"
-            }
+            return {"status": "unavailable", "healthy": False, "message": "Analytics service not initialized"}
         
         try:
-            # Check database health
             db_health = PostgreSQLHealthEngine.validate_database()
-            
-            # Check repository
             repo_healthy = hasattr(analytics_service, 'repo') and analytics_service.repo is not None
-            
-            # Check methods
-            methods = [
-                "get_dn_dashboard", "get_dealer_dashboard", "get_warehouse_dashboard",
-                "get_city_dashboard", "get_product_dashboard", "search_dn",
-                "search_dealer", "verify_dn_exists", "verify_dealer_exists"
-            ]
+            methods = ["get_dn_dashboard", "get_dealer_dashboard", "get_warehouse_dashboard", "get_city_dashboard", "get_product_dashboard", "search_dn", "search_dealer", "verify_dn_exists", "verify_dealer_exists"]
             available_methods = [m for m in methods if hasattr(analytics_service, m)]
             
-            return {
-                "status": "healthy" if db_health['status'] == 'healthy' and repo_healthy else "degraded",
-                "healthy": db_health['status'] == 'healthy' and repo_healthy,
-                "database": {
-                    "connected": db_health['connected'],
-                    "status": db_health['status'],
-                    "record_count": db_health['record_count']
-                },
-                "repository": {
-                    "available": repo_healthy
-                },
-                "methods": {
-                    "available": available_methods,
-                    "total_required": len(methods),
-                    "coverage": round(len(available_methods) / len(methods) * 100, 1)
-                },
-                "metrics": analytics_service.metrics if hasattr(analytics_service, 'metrics') else {},
-                "timestamp": datetime.now().isoformat()
-            }
+            return {"status": "healthy" if db_health['status'] == 'healthy' and repo_healthy else "degraded", "healthy": db_health['status'] == 'healthy' and repo_healthy, "database": {"connected": db_health['connected'], "status": db_health['status'], "record_count": db_health['record_count']}, "repository": {"available": repo_healthy}, "methods": {"available": available_methods, "total_required": len(methods), "coverage": round(len(available_methods) / len(methods) * 100, 1)}, "metrics": analytics_service.metrics if hasattr(analytics_service, 'metrics') else {}, "timestamp": datetime.now().isoformat()}
         except Exception as e:
-            return {
-                "status": "error",
-                "healthy": False,
-                "message": str(e),
-                "timestamp": datetime.now().isoformat()
-            }
+            return {"status": "error", "healthy": False, "message": str(e), "timestamp": datetime.now().isoformat()}
     
     @staticmethod
     def is_service_healthy(analytics_service: 'AnalyticsService') -> bool:
-        """Quick health check."""
         status = ServiceHealthAPI.get_service_status(analytics_service)
         return status.get('healthy', False)
     
     @staticmethod
     def get_health_report(analytics_service: 'AnalyticsService') -> Dict[str, Any]:
-        """Get detailed health report."""
         return ServiceHealthAPI.get_service_status(analytics_service)
+
 
 # ==========================================================
 # BLOCK 9: ANALYTICS REPOSITORY
@@ -1656,7 +1195,6 @@ class AnalyticsRepository:
         self.db = db or SessionLocal()
         self._owned_db = db is None
         
-        # Initialize components with cache
         self.cache = CacheEngine()
         self.resolver = EntityResolver(self.db, self.cache)
         self.search = SearchEngine(self.db, self.cache)
@@ -1665,7 +1203,6 @@ class AnalyticsRepository:
         
         logger.info("✅ AnalyticsRepository initialized with cache and integrations")
         
-        # Validate required methods
         required_methods = [
             "get_dn_dashboard", "get_dealer_dashboard", "get_warehouse_dashboard",
             "get_city_dashboard", "get_product_dashboard", "get_pgi_dashboard",
@@ -1681,55 +1218,40 @@ class AnalyticsRepository:
                 logger.error(f"❌ Missing method: {method}")
         
         if missing_methods:
-            logger.error(f"❌ Missing {len(missing_methods)} required methods")
+            logger.error(f"❌ Missing {len(missing_methods)} required methods: {missing_methods}")
         else:
             logger.info("✅ AnalyticsRepository initialized with all required methods")
     
     def close(self):
         if self._owned_db and self.db:
             self.db.close()
-
-# ==========================================================
-# BLOCK 10: DN DASHBOARD
-# ==========================================================
-        # ==========================================================
+    
+    # ==========================================================
     # BLOCK 10: DN DASHBOARD
     # ==========================================================
-
+    
     def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
-        """
-        Complete DN dashboard - PostgreSQL only.
-        """
+        """Complete DN dashboard - PostgreSQL only."""
         import time
         start_time = time.time()
         
         try:
             logger.info(f"📄 Processing DN: '{dn_no}'")
-            
-            # Normalize DN
             normalized = re.sub(r'[^0-9]', '', str(dn_no).strip())
-            
             if len(normalized) < 8 or len(normalized) > 12:
                 return {"error": f"Invalid DN format: {dn_no}. Must be 8-12 digits."}
             
-            # Check cache
             cache_key = f"dn_dashboard:{normalized}"
             cached = self.cache.get("dashboard_cache", cache_key)
             if cached:
                 logger.info(f"✅ DN dashboard cache hit: {normalized}")
                 return cached
             
-            # Query the record
-            try:
-                record = self.db.query(DeliveryReport).filter(
-                    cast(DeliveryReport.dn_no, String) == normalized
-                ).first()
-            except Exception as e:
-                logger.error(f"❌ Database query failed: {e}")
-                return {"error": f"Database error: {str(e)}"}
+            record = self.db.query(DeliveryReport).filter(
+                cast(DeliveryReport.dn_no, String) == normalized
+            ).first()
             
             if not record:
-                # Try to find similar DNs
                 suggestions = []
                 try:
                     similar = self.db.query(DeliveryReport.dn_no).filter(
@@ -1741,21 +1263,15 @@ class AnalyticsRepository:
                     logger.warning(f"Could not find similar DNs: {e}")
                 
                 if suggestions:
-                    return {
-                        "error": f"DN {dn_no} not found",
-                        "suggestions": suggestions
-                    }
-                
+                    return {"error": f"DN {dn_no} not found", "suggestions": suggestions}
                 return {"error": f"DN {dn_no} not found"}
             
-            # Calculate aging
             aging_result = DateValidator.calculate_aging(
                 record.dn_create_date,
                 record.good_issue_date,
                 record.pod_date
             )
             
-            # Build response
             response = {
                 "dn_number": record.dn_no,
                 "customer_name": record.customer_name or "",
@@ -1789,7 +1305,6 @@ class AnalyticsRepository:
                 "delivery_completed": aging_result.get("delivery_completed", False)
             }
             
-            # Cache response
             self.cache.set("dashboard_cache", cache_key, response)
             
             total_time = time.time() - start_time
@@ -1799,207 +1314,156 @@ class AnalyticsRepository:
         except Exception as e:
             logger.error(f"❌ Get DN dashboard failed: {e}")
             return {"error": f"Failed to load DN: {str(e)[:100]}"}
-# ==========================================================
-# BLOCK 11: DEALER DASHBOARD
-# ==========================================================
-def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
-    """
-    Complete dealer dashboard - PostgreSQL only.
-    FIXED: Enhanced dealer resolution with multiple strategies including ILIKE.
-    """
-    import time
-    start_time = time.time()
     
-    try:
-        logger.info(f"🔍 Searching for dealer: '{dealer_name}'")
+    # ==========================================================
+    # BLOCK 11: DEALER DASHBOARD
+    # ==========================================================
+    
+    def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
+        """Complete dealer dashboard - PostgreSQL only."""
+        import time
+        start_time = time.time()
         
-        if not dealer_name or not dealer_name.strip():
-            return {"error": "Dealer name is required"}
-        
-        dealer_name_clean = dealer_name.strip()
-        resolved = None
-        match_type = "none"
-        confidence = 0.0
-        
-        # ==========================================================
-        # STRATEGY 1: Exact match (case insensitive)
-        # ==========================================================
-        logger.info(f"📌 Strategy 1: Exact match for '{dealer_name_clean}'")
-        result = self.db.query(DeliveryReport.customer_name).filter(
-            func.lower(DeliveryReport.customer_name) == func.lower(dealer_name_clean)
-        ).first()
-        if result:
-            resolved = result[0]
-            match_type = "exact"
-            confidence = 1.0
-            logger.info(f"✅ Strategy 1 found: '{resolved}'")
-        
-        # ==========================================================
-        # STRATEGY 2: ILIKE match (CONTAINS) - CRITICAL FIX!
-        # ==========================================================
-        if not resolved:
-            logger.info(f"📌 Strategy 2: ILIKE match for '{dealer_name_clean}'")
+        try:
+            logger.info(f"🔍 Searching for dealer: '{dealer_name}'")
+            if not dealer_name or not dealer_name.strip():
+                return {"error": "Dealer name is required"}
+            
+            dealer_name_clean = dealer_name.strip()
+            resolved = None
+            match_type = "none"
+            confidence = 0.0
+            
+            # Strategy 1: Exact match
             result = self.db.query(DeliveryReport.customer_name).filter(
-                DeliveryReport.customer_name.ilike(f"%{dealer_name_clean}%")
+                func.lower(DeliveryReport.customer_name) == func.lower(dealer_name_clean)
             ).first()
             if result:
                 resolved = result[0]
-                match_type = "ilike"
-                confidence = 0.85
-                logger.info(f"✅ Strategy 2 found: '{resolved}' (ILIKE match)")
-        
-        # ==========================================================
-        # STRATEGY 3: Token-based matching
-        # ==========================================================
-        if not resolved:
-            logger.info(f"📌 Strategy 3: Token-based matching")
-            tokens = dealer_name_clean.split()
-            for token in tokens:
-                if len(token) > 2 and token.lower() not in ['the', 'and', 'for', 'with']:
+                match_type = "exact"
+                confidence = 1.0
+                logger.info(f"✅ Strategy 1 found: '{resolved}'")
+            
+            # Strategy 2: ILIKE match (contains)
+            if not resolved:
+                result = self.db.query(DeliveryReport.customer_name).filter(
+                    DeliveryReport.customer_name.ilike(f"%{dealer_name_clean}%")
+                ).first()
+                if result:
+                    resolved = result[0]
+                    match_type = "ilike"
+                    confidence = 0.85
+                    logger.info(f"✅ Strategy 2 found: '{resolved}'")
+            
+            # Strategy 3: Token-based matching
+            if not resolved:
+                tokens = dealer_name_clean.split()
+                for token in tokens:
+                    if len(token) > 2 and token.lower() not in ['the', 'and', 'for', 'with']:
+                        result = self.db.query(DeliveryReport.customer_name).filter(
+                            DeliveryReport.customer_name.ilike(f"%{token}%")
+                        ).first()
+                        if result:
+                            resolved = result[0]
+                            match_type = f"token_{token}"
+                            confidence = 0.75
+                            logger.info(f"✅ Strategy 3 found: '{resolved}'")
+                            break
+            
+            # Strategy 4: First word match
+            if not resolved:
+                first_word = dealer_name_clean.split()[0] if dealer_name_clean.split() else ""
+                if len(first_word) > 2:
                     result = self.db.query(DeliveryReport.customer_name).filter(
-                        DeliveryReport.customer_name.ilike(f"%{token}%")
+                        DeliveryReport.customer_name.ilike(f"%{first_word}%")
                     ).first()
                     if result:
                         resolved = result[0]
-                        match_type = f"token_{token}"
-                        confidence = 0.75
-                        logger.info(f"✅ Strategy 3 found: '{resolved}' (token: '{token}')")
-                        break
-        
-        # ==========================================================
-        # STRATEGY 4: First word match
-        # ==========================================================
-        if not resolved:
-            logger.info(f"📌 Strategy 4: First word match")
-            first_word = dealer_name_clean.split()[0] if dealer_name_clean.split() else ""
-            if len(first_word) > 2:
-                result = self.db.query(DeliveryReport.customer_name).filter(
-                    DeliveryReport.customer_name.ilike(f"%{first_word}%")
-                ).first()
-                if result:
-                    resolved = result[0]
-                    match_type = f"first_word_{first_word}"
-                    confidence = 0.65
-                    logger.info(f"✅ Strategy 4 found: '{resolved}' (first word: '{first_word}')")
-        
-        # ==========================================================
-        # STRATEGY 5: Last word match
-        # ==========================================================
-        if not resolved:
-            logger.info(f"📌 Strategy 5: Last word match")
-            words = dealer_name_clean.split()
-            last_word = words[-1] if words else ""
-            if len(last_word) > 2:
-                result = self.db.query(DeliveryReport.customer_name).filter(
-                    DeliveryReport.customer_name.ilike(f"%{last_word}%")
-                ).first()
-                if result:
-                    resolved = result[0]
-                    match_type = f"last_word_{last_word}"
-                    confidence = 0.65
-                    logger.info(f"✅ Strategy 5 found: '{resolved}' (last word: '{last_word}')")
-        
-        # ==========================================================
-        # STRATEGY 6: Character overlap (fuzzy)
-        # ==========================================================
-        if not resolved:
-            logger.info(f"📌 Strategy 6: Fuzzy match")
-            dealers = self.db.query(
-                func.distinct(DeliveryReport.customer_name)
+                        match_type = f"first_word_{first_word}"
+                        confidence = 0.65
+                        logger.info(f"✅ Strategy 4 found: '{resolved}'")
+            
+            # Strategy 5: Last word match
+            if not resolved:
+                words = dealer_name_clean.split()
+                last_word = words[-1] if words else ""
+                if len(last_word) > 2:
+                    result = self.db.query(DeliveryReport.customer_name).filter(
+                        DeliveryReport.customer_name.ilike(f"%{last_word}%")
+                    ).first()
+                    if result:
+                        resolved = result[0]
+                        match_type = f"last_word_{last_word}"
+                        confidence = 0.65
+                        logger.info(f"✅ Strategy 5 found: '{resolved}'")
+            
+            if not resolved:
+                similar = self.db.query(
+                    func.distinct(DeliveryReport.customer_name)
+                ).filter(
+                    DeliveryReport.customer_name.ilike(f"%{dealer_name_clean[:3]}%")
+                ).limit(10).all()
+                if similar:
+                    suggestions = [s[0] for s in similar if s[0] and s[0] != dealer_name_clean]
+                    if suggestions:
+                        return {"error": f"Dealer '{dealer_name}' not found", "suggestions": suggestions[:5], "message": f"Did you mean: {', '.join(suggestions[:3])}?"}
+                return {"error": f"Dealer '{dealer_name}' not found"}
+            
+            logger.info(f"✅ Dealer resolved: '{resolved}' (Match: {match_type}, Confidence: {confidence})")
+            
+            profile_result = self.db.query(
+                DeliveryReport.dealer_code,
+                DeliveryReport.customer_code,
+                DeliveryReport.division,
+                DeliveryReport.warehouse,
+                DeliveryReport.ship_to_city,
+                DeliveryReport.sales_office,
+                DeliveryReport.sales_manager
             ).filter(
-                DeliveryReport.customer_name.isnot(None),
-                DeliveryReport.customer_name != ''
-            ).limit(500).all()
+                func.lower(DeliveryReport.customer_name) == func.lower(resolved)
+            ).order_by(
+                DeliveryReport.dn_create_date.desc()
+            ).first()
             
-            best_match = None
-            best_score = 0
-            query_lower = dealer_name_clean.lower()
-            query_chars = set(query_lower)
-            
-            for dealer in dealers:
-                if not dealer[0]:
-                    continue
-                dealer_name = dealer[0]
-                dealer_lower = dealer_name.lower()
-                dealer_chars = set(dealer_lower)
-                
-                overlap = len(query_chars & dealer_chars)
-                score = overlap / max(len(query_chars), len(dealer_chars))
-                
-                if query_lower in dealer_lower or dealer_lower in query_lower:
-                    score += 0.3
-                
-                if score > best_score and score > 0.3:
-                    best_score = score
-                    best_match = dealer_name
-            
-            if best_match:
-                resolved = best_match
-                match_type = "fuzzy"
-                confidence = min(best_score, 1.0)
-                logger.info(f"✅ Strategy 6 found: '{resolved}' (fuzzy score: {best_score:.2f})")
-        
-        # ==========================================================
-        # CHECK IF DEALER WAS FOUND
-        # ==========================================================
-        if not resolved:
-            logger.warning(f"❌ Dealer '{dealer_name_clean}' not found in database")
-            
-            similar = self.db.query(
-                func.distinct(DeliveryReport.customer_name)
+            metrics_result = self.db.query(
+                func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
+                func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("total_units"),
+                func.coalesce(func.sum(DeliveryReport.dn_amount), 0).label("total_revenue"),
+                func.count(distinct(case((DeliveryReport.delivery_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("delivered_dns"),
+                func.count(distinct(case((DeliveryReport.pending_flag == True, DeliveryReport.dn_no), else_=None))).label("pending_dns"),
+                func.count(distinct(case((and_(DeliveryReport.delivery_status == 'Completed', DeliveryReport.pod_status != 'Completed'), DeliveryReport.dn_no), else_=None))).label("transit_dns")
             ).filter(
-                DeliveryReport.customer_name.ilike(f"%{dealer_name_clean[:3]}%")
-            ).limit(10).all()
+                func.lower(DeliveryReport.customer_name) == func.lower(resolved)
+            ).first()
             
-            if similar:
-                suggestions = [s[0] for s in similar if s[0] and s[0] != dealer_name_clean]
-                if suggestions:
-                    return {
-                        "error": f"Dealer '{dealer_name}' not found",
-                        "suggestions": suggestions[:5],
-                        "message": f"Did you mean: {', '.join(suggestions[:3])}?"
-                    }
+            if not metrics_result or metrics_result.total_dns == 0:
+                return {
+                    "dealer_name": resolved,
+                    "dealer_code": profile_result[0] if profile_result and profile_result[0] else "",
+                    "customer_code": profile_result[1] if profile_result and profile_result[1] else "",
+                    "division": profile_result[2] if profile_result and profile_result[2] else "",
+                    "warehouse": profile_result[3] if profile_result and profile_result[3] else "",
+                    "city": profile_result[4] if profile_result and profile_result[4] else "",
+                    "sales_office": profile_result[5] if profile_result and profile_result[5] else "",
+                    "sales_manager": profile_result[6] if profile_result and profile_result[6] else "",
+                    "total_dns": 0,
+                    "total_units": 0,
+                    "total_revenue": 0,
+                    "delivered_dns": 0,
+                    "pending_dns": 0,
+                    "transit_dns": 0,
+                    "delivery_rate": 0,
+                    "_warning": f"No delivery data found for dealer '{resolved}'"
+                }
             
-            return {"error": f"Dealer '{dealer_name}' not found"}
-        
-        logger.info(f"✅ Dealer resolved: '{resolved}' (Match: {match_type}, Confidence: {confidence})")
-        
-        # ==========================================================
-        # GET DEALER PROFILE
-        # ==========================================================
-        profile_result = self.db.query(
-            DeliveryReport.dealer_code,
-            DeliveryReport.customer_code,
-            DeliveryReport.division,
-            DeliveryReport.warehouse,
-            DeliveryReport.ship_to_city,
-            DeliveryReport.sales_office,
-            DeliveryReport.sales_manager
-        ).filter(
-            func.lower(DeliveryReport.customer_name) == func.lower(resolved)
-        ).order_by(
-            DeliveryReport.dn_create_date.desc()
-        ).first()
-        
-        # ==========================================================
-        # QUERY DEALER METRICS
-        # ==========================================================
-        metrics_result = self.db.query(
-            func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
-            func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("total_units"),
-            func.coalesce(func.sum(DeliveryReport.dn_amount), 0).label("total_revenue"),
-            func.count(distinct(case((DeliveryReport.delivery_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("delivered_dns"),
-            func.count(distinct(case((DeliveryReport.pending_flag == True, DeliveryReport.dn_no), else_=None))).label("pending_dns"),
-            func.count(distinct(case((and_(DeliveryReport.delivery_status == 'Completed', DeliveryReport.pod_status != 'Completed'), DeliveryReport.dn_no), else_=None))).label("transit_dns")
-        ).filter(
-            func.lower(DeliveryReport.customer_name) == func.lower(resolved)
-        ).first()
-        
-        # ==========================================================
-        # BUILD RESPONSE
-        # ==========================================================
-        if not metrics_result or metrics_result.total_dns == 0:
-            return {
+            total_dns = metrics_result.total_dns or 0
+            delivered_dns = metrics_result.delivered_dns or 0
+            transit_dns = metrics_result.transit_dns or 0
+            pending_dns = metrics_result.pending_dns or 0
+            
+            delivery_rate = KPIEngine.calculate_delivery_rate(delivered_dns, total_dns)
+            
+            response = {
                 "dealer_name": resolved,
                 "dealer_code": profile_result[0] if profile_result and profile_result[0] else "",
                 "customer_code": profile_result[1] if profile_result and profile_result[1] else "",
@@ -2008,75 +1472,40 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
                 "city": profile_result[4] if profile_result and profile_result[4] else "",
                 "sales_office": profile_result[5] if profile_result and profile_result[5] else "",
                 "sales_manager": profile_result[6] if profile_result and profile_result[6] else "",
-                "total_dns": 0,
-                "total_units": 0,
-                "total_revenue": 0,
-                "delivered_dns": 0,
-                "pending_dns": 0,
-                "transit_dns": 0,
-                "delivery_rate": 0,
-                "_warning": f"No delivery data found for dealer '{resolved}'"
+                "total_dns": total_dns,
+                "total_units": int(metrics_result.total_units or 0),
+                "total_revenue": float(metrics_result.total_revenue or 0),
+                "delivered_dns": delivered_dns,
+                "pending_dns": pending_dns,
+                "transit_dns": transit_dns,
+                "delivery_rate": delivery_rate,
+                "_match_type": match_type,
+                "_match_confidence": confidence
             }
-        
-        total_dns = metrics_result.total_dns or 0
-        delivered_dns = metrics_result.delivered_dns or 0
-        transit_dns = metrics_result.transit_dns or 0
-        pending_dns = metrics_result.pending_dns or 0
-        
-        delivery_rate = KPIEngine.calculate_delivery_rate(delivered_dns, total_dns)
-        
-        response = {
-            "dealer_name": resolved,
-            "dealer_code": profile_result[0] if profile_result and profile_result[0] else "",
-            "customer_code": profile_result[1] if profile_result and profile_result[1] else "",
-            "division": profile_result[2] if profile_result and profile_result[2] else "",
-            "warehouse": profile_result[3] if profile_result and profile_result[3] else "",
-            "city": profile_result[4] if profile_result and profile_result[4] else "",
-            "sales_office": profile_result[5] if profile_result and profile_result[5] else "",
-            "sales_manager": profile_result[6] if profile_result and profile_result[6] else "",
-            "total_dns": total_dns,
-            "total_units": int(metrics_result.total_units or 0),
-            "total_revenue": float(metrics_result.total_revenue or 0),
-            "delivered_dns": delivered_dns,
-            "pending_dns": pending_dns,
-            "transit_dns": transit_dns,
-            "delivery_rate": delivery_rate,
-            "_match_type": match_type,
-            "_match_confidence": confidence
-        }
-        
-        total_time = time.time() - start_time
-        logger.info(f"✅ Dealer dashboard built for: {resolved} in {total_time:.3f}s")
-        return response
-        
-    except Exception as e:
-        logger.error(f"❌ Get dealer dashboard failed: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return {"error": f"Failed to load dealer data: {str(e)[:100]}"}
-# ==========================================================
-# BLOCK 12: WAREHOUSE DASHBOARD
-# ==========================================================
-
-       # ==========================================================
+            
+            total_time = time.time() - start_time
+            logger.info(f"✅ Dealer dashboard built for: {resolved} in {total_time:.3f}s")
+            return response
+            
+        except Exception as e:
+            logger.error(f"❌ Get dealer dashboard failed: {e}")
+            return {"error": f"Failed to load dealer data: {str(e)[:100]}"}
+    
+    # ==========================================================
     # BLOCK 12: WAREHOUSE DASHBOARD
     # ==========================================================
-
+    
     def get_warehouse_dashboard(self, warehouse_name: str) -> Dict[str, Any]:
         """Complete warehouse dashboard - PostgreSQL only."""
         try:
             logger.info(f"🔍 Searching for warehouse: '{warehouse_name}'")
             
             resolved_result = self.resolver.resolve_warehouse(warehouse_name)
-            
             if not resolved_result.get('found'):
                 similar = self.search.search_warehouse(warehouse_name)
                 if similar:
                     suggestions = [s['warehouse'] for s in similar[:5]]
-                    return {
-                        "error": f"Warehouse '{warehouse_name}' not found",
-                        "suggestions": suggestions
-                    }
+                    return {"error": f"Warehouse '{warehouse_name}' not found", "suggestions": suggestions}
                 return {"error": f"Warehouse '{warehouse_name}' not found"}
             
             resolved = resolved_result.get('entity')
@@ -2114,7 +1543,6 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
                 "delivery_rate": KPIEngine.calculate_delivery_rate(delivered_dns, total_dns)
             }
             
-            # Add coverage information
             coverage = self.distance.get_warehouse_coverage(resolved)
             if coverage and coverage.get('available'):
                 response['coverage_radius'] = coverage.get('coverage_radius')
@@ -2126,29 +1554,22 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         except Exception as e:
             logger.error(f"Get warehouse dashboard failed: {e}")
             return {"error": str(e)}
-# ==========================================================
-# BLOCK 13: CITY DASHBOARD
-# ==========================================================
-
-     # ==========================================================
+    
+    # ==========================================================
     # BLOCK 13: CITY DASHBOARD
     # ==========================================================
-
+    
     def get_city_dashboard(self, city_name: str) -> Dict[str, Any]:
         """Complete city dashboard - PostgreSQL only."""
         try:
             logger.info(f"🔍 Searching for city: '{city_name}'")
             
             resolved_result = self.resolver.resolve_city(city_name)
-            
             if not resolved_result.get('found'):
                 similar = self.search.search_city(city_name)
                 if similar:
                     suggestions = [s['city'] for s in similar[:5]]
-                    return {
-                        "error": f"City '{city_name}' not found",
-                        "suggestions": suggestions
-                    }
+                    return {"error": f"City '{city_name}' not found", "suggestions": suggestions}
                 return {"error": f"City '{city_name}' not found"}
             
             resolved = resolved_result.get('entity')
@@ -2186,29 +1607,23 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
             
         except Exception as e:
             logger.error(f"Get city dashboard failed: {e}")
-            return {"error": str(e)}   
-
-# ==========================================================
-# BLOCK 14: PRODUCT DASHBOARD
+            return {"error": str(e)}
+    
     # ==========================================================
     # BLOCK 14: PRODUCT DASHBOARD
     # ==========================================================
-
+    
     def get_product_dashboard(self, product_name: str) -> Dict[str, Any]:
         """Complete product dashboard - PostgreSQL only."""
         try:
             logger.info(f"🔍 Searching for product: '{product_name}'")
             
             resolved_result = self.resolver.resolve_product(product_name)
-            
             if not resolved_result.get('found'):
                 similar = self.search.search_product(product_name)
                 if similar:
                     suggestions = [s['product'] for s in similar[:5]]
-                    return {
-                        "error": f"Product '{product_name}' not found",
-                        "suggestions": suggestions
-                    }
+                    return {"error": f"Product '{product_name}' not found", "suggestions": suggestions}
                 return {"error": f"Product '{product_name}' not found"}
             
             resolved = resolved_result.get('entity')
@@ -2251,10 +1666,11 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         except Exception as e:
             logger.error(f"Get product dashboard failed: {e}")
             return {"error": str(e)}
-# ==========================================================
-# BLOCK 15: PGI DASHBOARD
-# ==========================================================
-
+    
+    # ==========================================================
+    # BLOCK 15: PGI DASHBOARD
+    # ==========================================================
+    
     def get_pgi_dashboard(self) -> Dict[str, Any]:
         """PGI dashboard - PostgreSQL only."""
         try:
@@ -2280,11 +1696,11 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         except Exception as e:
             logger.error(f"Get PGI dashboard failed: {e}")
             return {"error": str(e)}
-
-# ==========================================================
-# BLOCK 16: POD DASHBOARD
-# ==========================================================
-
+    
+    # ==========================================================
+    # BLOCK 16: POD DASHBOARD
+    # ==========================================================
+    
     def get_pod_dashboard(self) -> Dict[str, Any]:
         """POD dashboard - PostgreSQL only."""
         try:
@@ -2310,11 +1726,11 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         except Exception as e:
             logger.error(f"Get POD dashboard failed: {e}")
             return {"error": str(e)}
-
-# ==========================================================
-# BLOCK 17: DELIVERY DASHBOARD
-# ==========================================================
-
+    
+    # ==========================================================
+    # BLOCK 17: DELIVERY DASHBOARD
+    # ==========================================================
+    
     def get_delivery_dashboard(self) -> Dict[str, Any]:
         """Delivery dashboard - PostgreSQL only."""
         try:
@@ -2343,11 +1759,11 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         except Exception as e:
             logger.error(f"Get delivery dashboard failed: {e}")
             return {"error": str(e)}
-
-# ==========================================================
-# BLOCK 18: EXECUTIVE DASHBOARD
-# ==========================================================
-
+    
+    # ==========================================================
+    # BLOCK 18: EXECUTIVE DASHBOARD
+    # ==========================================================
+    
     def get_executive_dashboard(self) -> Dict[str, Any]:
         """Executive dashboard - PostgreSQL only."""
         try:
@@ -2380,11 +1796,11 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         except Exception as e:
             logger.error(f"Get executive dashboard failed: {e}")
             return {"error": str(e)}
-
-# ==========================================================
-# BLOCK 19: CONTROL TOWER DASHBOARD
-# ==========================================================
-
+    
+    # ==========================================================
+    # BLOCK 19: CONTROL TOWER DASHBOARD
+    # ==========================================================
+    
     def get_control_tower_dashboard(self) -> Dict[str, Any]:
         """Control tower dashboard - PostgreSQL only."""
         try:
@@ -2435,11 +1851,11 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         except Exception as e:
             logger.error(f"Get control tower dashboard failed: {e}")
             return {"error": str(e)}
-
-# ==========================================================
-# BLOCK 20: REVENUE DASHBOARD
-# ==========================================================
-
+    
+    # ==========================================================
+    # BLOCK 20: REVENUE DASHBOARD
+    # ==========================================================
+    
     def get_revenue_dashboard(self) -> Dict[str, Any]:
         """Revenue dashboard - PostgreSQL only."""
         try:
@@ -2476,11 +1892,11 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         except Exception as e:
             logger.error(f"Get revenue dashboard failed: {e}")
             return {"error": str(e)}
-
-# ==========================================================
-# BLOCK 21: RANKING DASHBOARD
-# ==========================================================
-
+    
+    # ==========================================================
+    # BLOCK 21: RANKING DASHBOARD
+    # ==========================================================
+    
     def get_ranking_dashboard(self, limit: int = 10) -> Dict[str, Any]:
         """Dealer ranking - PostgreSQL only."""
         try:
@@ -2513,14 +1929,11 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         except Exception as e:
             logger.error(f"Get ranking dashboard failed: {e}")
             return {"error": str(e)}
-
-# ==========================================================
-# BLOCK 22: AGING DASHBOARD
-# ==========================================================
+    
     # ==========================================================
     # BLOCK 22: AGING DASHBOARD
     # ==========================================================
-
+    
     def get_aging_dashboard(self) -> Dict[str, Any]:
         """Aging dashboard - PostgreSQL only."""
         try:
@@ -2546,15 +1959,14 @@ def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
             logger.error(f"Get aging dashboard failed: {e}")
             return {"error": str(e)}
     
-        
-
-# ==========================================================
-# BLOCK 23: DEALER 360 DASHBOARD
-# ==========================================================
-
+    # ==========================================================
+    # BLOCK 23: DEALER 360 DASHBOARD
+    # ==========================================================
+    
     def get_dealer_360_dashboard(self, dealer_name: str) -> Dict[str, Any]:
         """Get complete 360° dealer dashboard."""
         return self.dealer360.get_dashboard(dealer_name)
+
 
 # ==========================================================
 # BLOCK 24: ANALYTICS SERVICE CLASS
@@ -2586,170 +1998,95 @@ class AnalyticsService:
     # ==========================================================
     
     def search_dn(self, query: str, exact: bool = False) -> AnalyticsResponse:
-        """Search for DNs - PostgreSQL only."""
         try:
             self.metrics["total_requests"] += 1
-            
             if not query or not query.strip():
                 self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(
-                    success=False,
-                    error="DN number is required",
-                    data={"results": [], "total": 0}
-                )
+                return AnalyticsResponse(success=False, error="DN number is required", data={"results": [], "total": 0})
             
             results = self.repo.search.search_dn(query, exact)
-            
             if not results:
                 self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(
-                    success=False,
-                    error=f"DN {query} not found",
-                    data={"results": [], "total": 0}
-                )
+                return AnalyticsResponse(success=False, error=f"DN {query} not found", data={"results": [], "total": 0})
             
             self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(
-                success=True,
-                data={"results": results, "total": len(results)}
-            )
-            
+            return AnalyticsResponse(success=True, data={"results": results, "total": len(results)})
         except Exception as e:
             self.metrics["failed_requests"] += 1
             logger.error(f"DN search failed: {e}")
             return AnalyticsResponse(success=False, error=str(e))
     
     def search_dealer(self, query: str, exact: bool = False) -> AnalyticsResponse:
-        """Search for dealers - PostgreSQL only."""
         try:
             self.metrics["total_requests"] += 1
-            
             if not query or not query.strip():
                 self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(
-                    success=False,
-                    error="Dealer name is required",
-                    data={"results": [], "total": 0}
-                )
+                return AnalyticsResponse(success=False, error="Dealer name is required", data={"results": [], "total": 0})
             
             results = self.repo.search.search_dealer(query, exact)
-            
             if not results:
                 self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(
-                    success=False,
-                    error=f"Dealer '{query}' not found",
-                    data={"results": [], "total": 0}
-                )
+                return AnalyticsResponse(success=False, error=f"Dealer '{query}' not found", data={"results": [], "total": 0})
             
             self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(
-                success=True,
-                data={"results": results, "total": len(results)}
-            )
-            
+            return AnalyticsResponse(success=True, data={"results": results, "total": len(results)})
         except Exception as e:
             self.metrics["failed_requests"] += 1
             logger.error(f"Dealer search failed: {e}")
             return AnalyticsResponse(success=False, error=str(e))
     
     def search_warehouse(self, query: str) -> AnalyticsResponse:
-        """Search for warehouses - PostgreSQL only."""
         try:
             self.metrics["total_requests"] += 1
-            
             if not query or not query.strip():
                 self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(
-                    success=False,
-                    error="Warehouse name is required",
-                    data={"results": [], "total": 0}
-                )
+                return AnalyticsResponse(success=False, error="Warehouse name is required", data={"results": [], "total": 0})
             
             results = self.repo.search.search_warehouse(query)
-            
             if not results:
                 self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(
-                    success=False,
-                    error=f"Warehouse '{query}' not found",
-                    data={"results": [], "total": 0}
-                )
+                return AnalyticsResponse(success=False, error=f"Warehouse '{query}' not found", data={"results": [], "total": 0})
             
             self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(
-                success=True,
-                data={"results": results, "total": len(results)}
-            )
-            
+            return AnalyticsResponse(success=True, data={"results": results, "total": len(results)})
         except Exception as e:
             self.metrics["failed_requests"] += 1
             logger.error(f"Warehouse search failed: {e}")
             return AnalyticsResponse(success=False, error=str(e))
     
     def search_city(self, query: str) -> AnalyticsResponse:
-        """Search for cities - PostgreSQL only."""
         try:
             self.metrics["total_requests"] += 1
-            
             if not query or not query.strip():
                 self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(
-                    success=False,
-                    error="City name is required",
-                    data={"results": [], "total": 0}
-                )
+                return AnalyticsResponse(success=False, error="City name is required", data={"results": [], "total": 0})
             
             results = self.repo.search.search_city(query)
-            
             if not results:
                 self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(
-                    success=False,
-                    error=f"City '{query}' not found",
-                    data={"results": [], "total": 0}
-                )
+                return AnalyticsResponse(success=False, error=f"City '{query}' not found", data={"results": [], "total": 0})
             
             self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(
-                success=True,
-                data={"results": results, "total": len(results)}
-            )
-            
+            return AnalyticsResponse(success=True, data={"results": results, "total": len(results)})
         except Exception as e:
             self.metrics["failed_requests"] += 1
             logger.error(f"City search failed: {e}")
             return AnalyticsResponse(success=False, error=str(e))
     
     def search_product(self, query: str) -> AnalyticsResponse:
-        """Search for products - PostgreSQL only."""
         try:
             self.metrics["total_requests"] += 1
-            
             if not query or not query.strip():
                 self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(
-                    success=False,
-                    error="Product name is required",
-                    data={"results": [], "total": 0}
-                )
+                return AnalyticsResponse(success=False, error="Product name is required", data={"results": [], "total": 0})
             
             results = self.repo.search.search_product(query)
-            
             if not results:
                 self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(
-                    success=False,
-                    error=f"Product '{query}' not found",
-                    data={"results": [], "total": 0}
-                )
+                return AnalyticsResponse(success=False, error=f"Product '{query}' not found", data={"results": [], "total": 0})
             
             self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(
-                success=True,
-                data={"results": results, "total": len(results)}
-            )
-            
+            return AnalyticsResponse(success=True, data={"results": results, "total": len(results)})
         except Exception as e:
             self.metrics["failed_requests"] += 1
             logger.error(f"Product search failed: {e}")
@@ -2760,7 +2097,6 @@ class AnalyticsService:
     # ==========================================================
     
     def verify_dn_exists(self, dn_no: str) -> AnalyticsResponse:
-        """Verify DN exists - PostgreSQL only."""
         try:
             self.metrics["total_requests"] += 1
             result = self.repo.search.verify_dn_exists(dn_no)
@@ -2772,7 +2108,6 @@ class AnalyticsService:
             return AnalyticsResponse(success=False, error=str(e))
     
     def verify_dealer_exists(self, dealer_name: str) -> AnalyticsResponse:
-        """Verify dealer exists - PostgreSQL only."""
         try:
             self.metrics["total_requests"] += 1
             result = self.repo.search.verify_dealer_exists(dealer_name)
@@ -2783,10 +2118,6 @@ class AnalyticsService:
             logger.error(f"Dealer verification failed: {e}")
             return AnalyticsResponse(success=False, error=str(e))
     
-    # ==========================================================
-    # BLOCK 27: ENTITY RESOLUTION
-    # ==========================================================
-
     # ==========================================================
     # BLOCK 27: DEALER 360 DASHBOARD
     # ==========================================================
@@ -2828,13 +2159,8 @@ class AnalyticsService:
             import traceback
             logger.error(traceback.format_exc())
             return AnalyticsResponse(success=False, error=f"Failed to load dealer: {str(e)[:100]}")
-
-
     
-        # ==========================================================
-    # BLOCK 28: DASHBOARD METHODS
     # ==========================================================
-        # ==========================================================
     # BLOCK 28: DEALER DASHBOARD
     # ==========================================================
     
@@ -2895,6 +2221,8 @@ class AnalyticsService:
             import traceback
             logger.error(traceback.format_exc())
             return AnalyticsResponse(success=False, error=f"Failed to load dealer data: {str(e)[:100]}")
+
+
 # ==========================================================
 # BLOCK 29: FACTORY FUNCTION (FIXED v9.0)
 # ==========================================================
@@ -2914,12 +2242,10 @@ def get_analytics_service(db: Optional[Session] = None) -> AnalyticsService:
     logger.info("🔍 ANALYTICS SERVICE INITIALIZATION")
     logger.info("=" * 60)
     
-    # If already initialized, return it
     if _analytics_service is not None:
         logger.info(f"✅ AnalyticsService already initialized")
         return _analytics_service
     
-    # Check max attempts
     if _analytics_initialization_attempts >= _MAX_ANALYTICS_INIT_ATTEMPTS:
         logger.error(f"❌ Max attempts ({_MAX_ANALYTICS_INIT_ATTEMPTS}) reached")
         logger.warning("⚠️ Creating emergency instance")
@@ -2934,9 +2260,6 @@ def get_analytics_service(db: Optional[Session] = None) -> AnalyticsService:
     _analytics_initialization_attempts += 1
     logger.info(f"📌 Attempt {_analytics_initialization_attempts}/{_MAX_ANALYTICS_INIT_ATTEMPTS}")
     
-    # ==========================================================
-    # VALIDATION: Test Database Connection
-    # ==========================================================
     try:
         from app.database import SessionLocal
         from app.models import DeliveryReport
@@ -2962,9 +2285,6 @@ def get_analytics_service(db: Optional[Session] = None) -> AnalyticsService:
         import traceback
         logger.error(traceback.format_exc())
     
-    # ==========================================================
-    # Create Analytics Service - NEVER RETURN NONE
-    # ==========================================================
     try:
         logger.info("🔄 Creating AnalyticsService...")
         _analytics_service = AnalyticsService(db)
@@ -2972,9 +2292,6 @@ def get_analytics_service(db: Optional[Session] = None) -> AnalyticsService:
         logger.info(f"📊 Service type: {type(_analytics_service)}")
         logger.info(f"📊 Service class: {_analytics_service.__class__.__name__}")
         
-        # ==========================================================
-        # Verify Critical Methods
-        # ==========================================================
         critical_methods = [
             "get_dealer_360_dashboard",
             "get_dealer_dashboard",
@@ -3005,9 +2322,6 @@ def get_analytics_service(db: Optional[Session] = None) -> AnalyticsService:
         import traceback
         logger.error(traceback.format_exc())
         
-        # ==========================================================
-        # CRITICAL FIX: ALWAYS return an instance, never None
-        # ==========================================================
         logger.warning("⚠️ Creating emergency AnalyticsService instance...")
         try:
             _analytics_service = AnalyticsService(db)
@@ -3015,32 +2329,30 @@ def get_analytics_service(db: Optional[Session] = None) -> AnalyticsService:
             return _analytics_service
         except Exception as e2:
             logger.error(f"❌ Emergency creation failed: {e2}")
-            # ABSOLUTE LAST RESORT
             _analytics_service = AnalyticsService()
             logger.info("✅ Absolute last resort AnalyticsService created")
             return _analytics_service
 
+
 # ==========================================================
-# BLOCK 30: SERVICE HEALTH API (NEW)
+# BLOCK 30: SERVICE HEALTH API
 # ==========================================================
 
 def get_service_status(service: Optional[AnalyticsService] = None) -> Dict[str, Any]:
-    """Get comprehensive service status."""
     if service is None:
         service = _analytics_service
     return ServiceHealthAPI.get_service_status(service)
 
 def is_service_healthy(service: Optional[AnalyticsService] = None) -> bool:
-    """Quick health check."""
     if service is None:
         service = _analytics_service
     return ServiceHealthAPI.is_service_healthy(service)
 
 def get_health_report(service: Optional[AnalyticsService] = None) -> Dict[str, Any]:
-    """Get detailed health report."""
     if service is None:
         service = _analytics_service
     return ServiceHealthAPI.get_health_report(service)
+
 
 # ==========================================================
 # BLOCK 31: EXPORTS
