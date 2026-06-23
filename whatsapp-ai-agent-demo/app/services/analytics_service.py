@@ -24,9 +24,34 @@ from cachetools import TTLCache
 # BLOCK 1: POSTGRESQL IMPORTS - THE SOURCE OF TRUTH
 # ==========================================================
 
+# ==========================================================
+# FILE: app/services/analytics_service.py (v32.0 - ENTERPRISE)
+# PURPOSE: CENTRAL DATA ENGINE - POSTGRESQL ONLY
+# VERSION: 32.0 - Complete Enterprise Refactoring
+# ==========================================================
+
+from typing import Optional, Dict, Any, List, Tuple
+from datetime import datetime, timedelta
+from loguru import logger
+import time
+import uuid
+import re
+import math
+from collections import defaultdict
+from sqlalchemy.orm import Session
+from sqlalchemy import func, and_, or_, case, desc, asc, cast, String, text, distinct
+from functools import lru_cache
+import json
+import hashlib
+import threading
+from cachetools import TTLCache
+
+# ==========================================================
+# BLOCK 1: POSTGRESQL IMPORTS - THE SOURCE OF TRUTH
+# ==========================================================
+
 from app.models import DeliveryReport
 from app.database import SessionLocal, check_database_connection
-
 # ==========================================================
 # BLOCK 1.1: POSTGRESQL HEALTH ENGINE (ENHANCED v3.0)
 # ==========================================================
