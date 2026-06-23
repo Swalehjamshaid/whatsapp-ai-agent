@@ -1138,11 +1138,14 @@ def get_dealer_360_dashboard(db: Session, resolver: EntityResolver, search: Sear
 # ==========================================================
 # BLOCK 19: WHATSAPP FORMATTER (UPDATED)
 # ==========================================================
+# ==========================================================
+# BLOCK 19: WHATSAPP FORMATTER (FIXED - ALWAYS SHOWS DISTANCE)
+# ==========================================================
 
 def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
     """
     Format 360° dashboard for WhatsApp display.
-    UPDATED: Shows dealer profile from master table.
+    FIXED: Always shows distance section with clear messages.
     """
     if not dashboard:
         return "❌ No data available"
@@ -1162,7 +1165,7 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
     lines.append("")
     lines.append("📋 *PROFILE*")
     lines.append(f"Dealer: {profile.get('dealer_name', 'N/A')}")
-    lines.append(f"Code: {profile.get('dealer_code', 'N/A')}")
+    lines.append(f"Dealer Code: {profile.get('dealer_code', 'N/A')}")
     lines.append(f"Customer Code: {profile.get('customer_code', 'N/A')}")
     lines.append(f"Division: {profile.get('division', 'N/A')}")
     lines.append(f"Sales Office: {profile.get('sales_office', 'N/A')}")
@@ -1172,7 +1175,6 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
     lines.append(f"Region: {profile.get('region', 'N/A')}")
     lines.append(f"Active Days: {profile.get('total_active_days', 0)}")
     
-    # Show source if debug needed
     source = profile.get('_profile_source', '')
     if source:
         lines.append(f"📌 Source: {source}")
@@ -1183,9 +1185,16 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
     lines.append("💰 *BUSINESS VOLUME*")
     lines.append(f"Total DNs: {business.get('total_dns', 0)}")
     lines.append(f"Total Units: {business.get('total_units', 0)}")
-    lines.append(f"Revenue: PKR {business.get('total_revenue', 0):,.0f}")
-    lines.append(f"Avg per DN: PKR {business.get('avg_revenue_per_dn', 0):,.0f}")
-    lines.append(f"Avg per Unit: PKR {business.get('avg_revenue_per_unit', 0):,.0f}")
+    
+    revenue = business.get('total_revenue', 0)
+    if revenue:
+        lines.append(f"Total Revenue: PKR {revenue:,.0f}")
+        lines.append(f"Avg per DN: PKR {business.get('avg_revenue_per_dn', 0):,.0f}")
+        lines.append(f"Avg per Unit: PKR {business.get('avg_revenue_per_unit', 0):,.0f}")
+    else:
+        lines.append(f"Total Revenue: PKR 0")
+        lines.append(f"Avg per DN: PKR 0")
+        lines.append(f"Avg per Unit: PKR 0")
     
     highest = business.get('highest_value_dn', {})
     lowest = business.get('lowest_value_dn', {})
@@ -1207,9 +1216,9 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
     pod = dashboard.get('pod_status', {})
     lines.append("")
     lines.append("📋 *POD STATUS*")
-    lines.append(f"Completed: {pod.get('pod_completed', 0)}")
-    lines.append(f"Pending: {pod.get('pending_pod', 0)}")
-    lines.append(f"Compliance: {pod.get('pod_compliance', 0)}%")
+    lines.append(f"POD Completed: {pod.get('pod_completed', 0)}")
+    lines.append(f"Pending POD: {pod.get('pending_pod', 0)}")
+    lines.append(f"POD Compliance: {pod.get('pod_compliance', 0)}%")
     lines.append(f"Avg POD Days: {pod.get('avg_pod_days', 0)}")
     lines.append(f"Oldest Pending: {pod.get('oldest_pending_pod', 'N/A')}")
     
@@ -1217,9 +1226,9 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
     pgi = dashboard.get('pgi_status', {})
     lines.append("")
     lines.append("🚛 *PGI STATUS*")
-    lines.append(f"Completed: {pgi.get('pgi_completed', 0)}")
-    lines.append(f"Pending: {pgi.get('pending_pgi', 0)}")
-    lines.append(f"Compliance: {pgi.get('pgi_compliance', 0)}%")
+    lines.append(f"PGI Completed: {pgi.get('pgi_completed', 0)}")
+    lines.append(f"Pending PGI: {pgi.get('pending_pgi', 0)}")
+    lines.append(f"PGI Compliance: {pgi.get('pgi_compliance', 0)}%")
     lines.append(f"Avg PGI Days: {pgi.get('avg_pgi_days', 0)}")
     lines.append(f"Oldest Pending: {pgi.get('oldest_pending_pgi', 'N/A')}")
     
@@ -1231,16 +1240,56 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
     lines.append(f"PGI Rate: {perf.get('pgi_rate', 0)}%")
     lines.append(f"POD Rate: {perf.get('pod_rate', 0)}%")
     lines.append(f"Health Score: {perf.get('health_score', 0)}/100")
-    lines.append(f"Risk: {perf.get('risk_level', 'Unknown')} ({perf.get('risk_score', 0)}/100)")
-    lines.append(f"Grade: {perf.get('performance_grade', 'N/A')}")
+    lines.append(f"Risk Level: {perf.get('risk_level', 'Unknown')} ({perf.get('risk_score', 0)}/100)")
+    lines.append(f"Performance Grade: {perf.get('performance_grade', 'N/A')}")
     
-    # SECTION 7: DISTANCE ANALYTICS
+    # ==========================================================
+    # SECTION 7: DISTANCE ANALYTICS (FIXED - ALWAYS SHOWS)
+    # ==========================================================
     distance = dashboard.get('distance', {})
-    if distance.get('road_distance'):
-        lines.append("")
-        lines.append("📍 *DISTANCE*")
-        lines.append(f"Road: {distance.get('road_distance')} km")
-        lines.append(f"Category: {distance.get('distance_category', 'N/A')}")
+    
+    # ALWAYS show distance section
+    lines.append("")
+    lines.append("📍 *DISTANCE*")
+    
+    warehouse = distance.get('warehouse', 'N/A')
+    dealer_city = distance.get('dealer_city', 'N/A')
+    
+    lines.append(f"Warehouse: {warehouse}")
+    lines.append(f"Dealer City: {dealer_city}")
+    
+    # Check if we have real location data
+    if warehouse != 'N/A' and dealer_city != 'N/A':
+        road_distance = distance.get('road_distance')
+        if road_distance:
+            lines.append(f"Road Distance: {road_distance} km")
+            
+            driving_time = distance.get('driving_time')
+            if driving_time:
+                if driving_time < 1:
+                    minutes = int(driving_time * 60)
+                    lines.append(f"Driving Time: {minutes} minutes")
+                else:
+                    hours = int(driving_time)
+                    minutes = int((driving_time - hours) * 60)
+                    if minutes > 0:
+                        lines.append(f"Driving Time: {hours}h {minutes}m")
+                    else:
+                        lines.append(f"Driving Time: {hours} hours")
+            
+            lines.append(f"Distance Category: {distance.get('distance_category', 'N/A')}")
+        else:
+            lines.append("📌 Distance: Not calculated")
+            lines.append("   💡 Check if distance service is configured")
+    else:
+        lines.append("📌 Distance: N/A")
+        if warehouse == 'N/A' and dealer_city == 'N/A':
+            lines.append("   ⚠️ Missing warehouse and city data")
+        elif warehouse == 'N/A':
+            lines.append("   ⚠️ Missing warehouse data")
+        elif dealer_city == 'N/A':
+            lines.append("   ⚠️ Missing dealer city data")
+        lines.append("   💡 Add location data to DealerMaster table")
     
     # SECTION 8: PRODUCT ANALYTICS
     products = dashboard.get('products', {})
@@ -1256,7 +1305,8 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
         lines.append("")
         lines.append("🏆 *Top 5 Products*")
         for i, p in enumerate(top_5[:5], 1):
-            lines.append(f"{i}. {p.get('product', 'N/A')} (PKR {p.get('revenue', 0):,.0f})")
+            revenue = p.get('revenue', 0)
+            lines.append(f"{i}. {p.get('product', 'N/A')} (PKR {revenue:,.0f})")
     
     # SECTION 9: CITY ANALYTICS
     cities = dashboard.get('cities', {})
@@ -1288,7 +1338,8 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
         lines.append("")
         lines.append("🚨 *ALERTS*")
         for alert in alerts[:5]:
-            emoji = "🔴" if alert.get('severity') == 'critical' else "🟠" if alert.get('severity') == 'high' else "🟡"
+            severity = alert.get('severity', 'low')
+            emoji = "🔴" if severity == 'critical' else "🟠" if severity == 'high' else "🟡"
             lines.append(f"{emoji} {alert.get('message', '')}")
     
     # SECTION 12: EXECUTIVE SUMMARY
@@ -1309,9 +1360,16 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
         lines.append(f"🎯 Action: {insights.get('recommended_action', 'N/A')}")
         lines.append(f"📈 Impact: {insights.get('expected_impact', 'N/A')}")
     
+    # SECTION 14: WARNINGS (if any)
+    warning = dashboard.get('_warning')
+    if warning:
+        lines.append("")
+        lines.append(f"⚠️ {warning}")
+        suggestion = dashboard.get('_suggestion')
+        if suggestion:
+            lines.append(f"💡 {suggestion}")
+    
     return "\n".join(lines)
-
-
 # ==========================================================
 # EXPORTS
 # ==========================================================
