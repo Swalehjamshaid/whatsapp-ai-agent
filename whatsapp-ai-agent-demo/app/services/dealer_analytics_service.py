@@ -1,7 +1,7 @@
 # ==========================================================
 # FILE: app/services/dealer_analytics_service.py
 # PURPOSE: Dealer 360° Analytics & Dashboard Engine
-# VERSION: 2.1 - FIXED: Case-Insensitive + ILIKE Matching
+# VERSION: 3.0 - FIXED: Dealer Master Join + COALESCE + No MAX() on metadata
 # ==========================================================
 
 from typing import Optional, Dict, Any, List, Tuple
@@ -17,6 +17,14 @@ from sqlalchemy import func, and_, or_, case, desc, asc, distinct, extract, text
 # ==========================================================
 
 from app.models import DeliveryReport
+# Import DealerMaster model if it exists
+try:
+    from app.models import DealerMaster
+    HAS_DEALER_MASTER = True
+except ImportError:
+    HAS_DEALER_MASTER = False
+    logger.warning("⚠️ DealerMaster model not found - using fallback")
+
 from app.services.distance_service import get_distance_service
 from app.services.analytics_service import KPIEngine, EntityResolver, SearchEngine
 
@@ -56,7 +64,7 @@ class Dealer360Dashboard:
     Complete Dealer 360° Dashboard with all analytics.
     
     Sections:
-    1. Dealer Profile
+    1. Dealer Profile (FIXED - Joins DealerMaster)
     2. Business Volume
     3. Delivery Status
     4. POD Status
@@ -109,7 +117,12 @@ class Dealer360Dashboard:
             logger.info(f"✅ Dealer resolved: '{resolved}'")
             
             # ==========================================================
-            # STEP 2: Query all dealer data
+            # STEP 2: Get Dealer Profile from Master Table
+            # ==========================================================
+            dealer_profile = self._get_dealer_profile(resolved)
+            
+            # ==========================================================
+            # STEP 3: Query all delivery data
             # ==========================================================
             query_start = time.time()
             data = self._query_all_dealer_data(resolved)
@@ -117,17 +130,24 @@ class Dealer360Dashboard:
             logger.info(f"⏱️ Query time: {query_time:.3f}s")
             
             if not data or data.get('total_dns', 0) == 0:
+                # Still return profile if dealer exists but has no DNs
                 return {
-                    "error": f"No data found for dealer '{resolved}'",
+                    "profile": dealer_profile,
+                    "error": f"No delivery data found for dealer '{resolved}'",
                     "message": "This dealer has no delivery reports"
                 }
             
             # ==========================================================
-            # STEP 3: Build all sections
+            # STEP 4: Merge profile with data
+            # ==========================================================
+            data.update(dealer_profile)
+            
+            # ==========================================================
+            # STEP 5: Build all sections
             # ==========================================================
             dashboard = {}
             
-            # Section 1: Dealer Profile
+            # Section 1: Dealer Profile (FIXED - uses master data)
             dashboard['profile'] = self._build_profile(resolved, data)
             
             # Section 2: Business Volume
@@ -182,16 +202,67 @@ class Dealer360Dashboard:
 
 
 # ==========================================================
+# BLOCK 2.5: GET DEALER PROFILE FROM MASTER TABLE
+# ==========================================================
+
+    def _get_dealer_profile(self, dealer_name: str) -> Dict[str, Any]:
+        """
+        Get dealer profile from master table.
+        FIXED: Uses DealerMaster table instead of DeliveryReport aggregates.
+        """
+        profile = {
+            "dealer_code": 'N/A',
+            "customer_code": 'N/A',
+            "division": 'N/A',
+            "sales_office": 'N/A',
+            "sales_manager": 'N/A',
+            "warehouse": 'N/A',
+            "city": 'N/A',
+            "region": 'N/A'
+        }
+        
+        if HAS_DEALER_MASTER:
+            try:
+                # Query DealerMaster table
+                dealer = self.db.query(DealerMaster).filter(
+                    func.lower(DealerMaster.dealer_name) == func.lower(dealer_name)
+                ).first()
+                
+                if dealer:
+                    profile = {
+                        "dealer_code": dealer.dealer_code or 'N/A',
+                        "customer_code": dealer.customer_code or 'N/A',
+                        "division": dealer.division or 'N/A',
+                        "sales_office": dealer.sales_office or 'N/A',
+                        "sales_manager": dealer.sales_manager or 'N/A',
+                        "warehouse": dealer.warehouse or 'N/A',
+                        "city": dealer.city or 'N/A',
+                        "region": dealer.region or 'N/A'
+                    }
+                    logger.info(f"✅ Found dealer in master table: {dealer.dealer_code}")
+                else:
+                    logger.warning(f"⚠️ Dealer not found in master table: {dealer_name}")
+                    
+            except Exception as e:
+                logger.error(f"Error querying DealerMaster: {e}")
+        else:
+            logger.warning("⚠️ DealerMaster model not available - using fallback")
+        
+        return profile
+
+
+# ==========================================================
 # BLOCK 3: DEALER PROFILE
 # ==========================================================
 
     def _build_profile(self, dealer_name: str, data: Dict) -> Dict[str, Any]:
-        """Build dealer profile section."""
+        """Build dealer profile section - FIXED: Uses master table data."""
         first_dn = data.get('first_dn_date')
         latest_dn = data.get('latest_dn_date')
         
         profile = {
             "dealer_name": dealer_name,
+            # These now come from master table via _get_dealer_profile
             "dealer_code": data.get('dealer_code', 'N/A'),
             "customer_code": data.get('customer_code', 'N/A'),
             "division": data.get('division', 'N/A'),
@@ -202,7 +273,9 @@ class Dealer360Dashboard:
             "region": data.get('region', 'N/A'),
             "first_dn_date": first_dn.isoformat() if first_dn else 'N/A',
             "latest_dn_date": latest_dn.isoformat() if latest_dn else 'N/A',
-            "total_active_days": self._calculate_active_days(first_dn, latest_dn)
+            "total_active_days": self._calculate_active_days(first_dn, latest_dn),
+            # Add source info for debugging
+            "_profile_source": "master_table" if data.get('dealer_code') != 'N/A' else "fallback"
         }
         
         return profile
@@ -837,29 +910,24 @@ class Dealer360Dashboard:
 
 
 # ==========================================================
-# BLOCK 16: DATA QUERY (FIXED - Case-Insensitive + ILIKE)
+# BLOCK 16: DATA QUERY - FIXED (Removed MAX() from metadata)
 # ==========================================================
 
     def _query_all_dealer_data(self, dealer_name: str) -> Dict[str, Any]:
         """
         Query all dealer data from database.
-        FIXED: Uses case-insensitive matching with ILIKE fallback.
+        FIXED: 
+        1. Removed MAX() from metadata fields (dealer_code, customer_code, etc.)
+        2. Only queries delivery metrics from DeliveryReport
+        3. Metadata now comes from DealerMaster table
         """
         try:
-            logger.info(f"📊 Querying data for dealer: '{dealer_name}'")
+            logger.info(f"📊 Querying delivery data for: '{dealer_name}'")
             
             # ==========================================================
-            # STEP 1: Try exact match first (case-insensitive)
+            # STEP 1: Query delivery metrics only (no metadata fields)
             # ==========================================================
             result = self.db.query(
-                DeliveryReport.customer_name.label("dealer_name"),
-                func.max(DeliveryReport.dealer_code).label("dealer_code"),
-                func.max(DeliveryReport.customer_code).label("customer_code"),
-                func.max(DeliveryReport.division).label("division"),
-                func.max(DeliveryReport.sales_office).label("sales_office"),
-                func.max(DeliveryReport.sales_manager).label("sales_manager"),
-                func.max(DeliveryReport.warehouse).label("warehouse"),
-                func.max(DeliveryReport.ship_to_city).label("city"),
                 func.min(DeliveryReport.dn_create_date).label("first_dn_date"),
                 func.max(DeliveryReport.dn_create_date).label("latest_dn_date"),
                 func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
@@ -873,26 +941,16 @@ class Dealer360Dashboard:
                 func.count(distinct(case((DeliveryReport.good_issue_date.is_(None), DeliveryReport.dn_no), else_=None))).label("pending_pgi_dns"),
                 func.count(distinct(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.dn_no), else_=None))).label("pgi_completed_dns")
             ).filter(
-                func.lower(DeliveryReport.customer_name) == func.lower(dealer_name)  # ← FIX: Case-insensitive
-            ).group_by(
-                DeliveryReport.customer_name
+                func.lower(DeliveryReport.customer_name) == func.lower(dealer_name)
             ).first()
             
             # ==========================================================
             # STEP 2: If no exact match, try ILIKE (partial match)
             # ==========================================================
-            if not result:
+            if not result or result.total_dns == 0:
                 logger.info(f"🔍 No exact match for '{dealer_name}', trying ILIKE...")
                 
                 ilike_results = self.db.query(
-                    DeliveryReport.customer_name.label("dealer_name"),
-                    func.max(DeliveryReport.dealer_code).label("dealer_code"),
-                    func.max(DeliveryReport.customer_code).label("customer_code"),
-                    func.max(DeliveryReport.division).label("division"),
-                    func.max(DeliveryReport.sales_office).label("sales_office"),
-                    func.max(DeliveryReport.sales_manager).label("sales_manager"),
-                    func.max(DeliveryReport.warehouse).label("warehouse"),
-                    func.max(DeliveryReport.ship_to_city).label("city"),
                     func.min(DeliveryReport.dn_create_date).label("first_dn_date"),
                     func.max(DeliveryReport.dn_create_date).label("latest_dn_date"),
                     func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
@@ -906,28 +964,18 @@ class Dealer360Dashboard:
                     func.count(distinct(case((DeliveryReport.good_issue_date.is_(None), DeliveryReport.dn_no), else_=None))).label("pending_pgi_dns"),
                     func.count(distinct(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.dn_no), else_=None))).label("pgi_completed_dns")
                 ).filter(
-                    DeliveryReport.customer_name.ilike(f"%{dealer_name}%")  # ← FIX: ILIKE for partial match
-                ).group_by(
-                    DeliveryReport.customer_name
+                    DeliveryReport.customer_name.ilike(f"%{dealer_name}%")
                 ).first()
                 
-                if ilike_results:
+                if ilike_results and ilike_results.total_dns > 0:
                     result = ilike_results
-                    logger.info(f"✅ Found dealer via ILIKE: '{result.dealer_name}'")
+                    logger.info(f"✅ Found data via ILIKE")
                 else:
                     # Try token-based matching
                     tokens = dealer_name.split()
                     for token in tokens:
                         if len(token) > 2:
                             token_result = self.db.query(
-                                DeliveryReport.customer_name.label("dealer_name"),
-                                func.max(DeliveryReport.dealer_code).label("dealer_code"),
-                                func.max(DeliveryReport.customer_code).label("customer_code"),
-                                func.max(DeliveryReport.division).label("division"),
-                                func.max(DeliveryReport.sales_office).label("sales_office"),
-                                func.max(DeliveryReport.sales_manager).label("sales_manager"),
-                                func.max(DeliveryReport.warehouse).label("warehouse"),
-                                func.max(DeliveryReport.ship_to_city).label("city"),
                                 func.min(DeliveryReport.dn_create_date).label("first_dn_date"),
                                 func.max(DeliveryReport.dn_create_date).label("latest_dn_date"),
                                 func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
@@ -942,32 +990,23 @@ class Dealer360Dashboard:
                                 func.count(distinct(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.dn_no), else_=None))).label("pgi_completed_dns")
                             ).filter(
                                 DeliveryReport.customer_name.ilike(f"%{token}%")
-                            ).group_by(
-                                DeliveryReport.customer_name
                             ).first()
                             
-                            if token_result:
+                            if token_result and token_result.total_dns > 0:
                                 result = token_result
-                                logger.info(f"✅ Found dealer via token '{token}': '{result.dealer_name}'")
+                                logger.info(f"✅ Found data via token '{token}'")
                                 break
             
-            if not result:
+            if not result or result.total_dns == 0:
                 logger.warning(f"❌ No data found for dealer '{dealer_name}'")
                 return {}
             
             # ==========================================================
-            # STEP 3: Build data dictionary
+            # STEP 3: Build data dictionary (metadata fields removed)
             # ==========================================================
-            logger.info(f"✅ Found data for dealer: '{result.dealer_name}'")
+            logger.info(f"✅ Found {result.total_dns} DNs for dealer")
             
             data = {
-                "dealer_code": result.dealer_code,
-                "customer_code": result.customer_code,
-                "division": result.division,
-                "sales_office": result.sales_office,
-                "sales_manager": result.sales_manager,
-                "warehouse": result.warehouse,
-                "city": result.city,
                 "first_dn_date": result.first_dn_date,
                 "latest_dn_date": result.latest_dn_date,
                 "total_dns": result.total_dns or 0,
@@ -989,7 +1028,7 @@ class Dealer360Dashboard:
                 DeliveryReport.dn_no,
                 DeliveryReport.dn_amount
             ).filter(
-                DeliveryReport.customer_name == result.dealer_name,
+                func.lower(DeliveryReport.customer_name) == func.lower(dealer_name),
                 DeliveryReport.dn_amount.isnot(None)
             ).order_by(
                 desc(DeliveryReport.dn_amount)
@@ -1007,7 +1046,7 @@ class Dealer360Dashboard:
                 DeliveryReport.dn_no,
                 DeliveryReport.dn_amount
             ).filter(
-                DeliveryReport.customer_name == result.dealer_name,
+                func.lower(DeliveryReport.customer_name) == func.lower(dealer_name),
                 DeliveryReport.dn_amount.isnot(None),
                 DeliveryReport.dn_amount > 0
             ).order_by(
@@ -1037,7 +1076,7 @@ class Dealer360Dashboard:
                         func.extract('day', func.now() - DeliveryReport.good_issue_date)
                     ).label('oldest_pending_pod')
                 ).filter(
-                    DeliveryReport.customer_name == result.dealer_name,
+                    func.lower(DeliveryReport.customer_name) == func.lower(dealer_name),
                     DeliveryReport.dn_create_date.isnot(None)
                 ).first()
                 
@@ -1104,12 +1143,13 @@ def get_dealer_360_dashboard(db: Session, resolver: EntityResolver, search: Sear
 
 
 # ==========================================================
-# BLOCK 19: WHATSAPP FORMATTER
+# BLOCK 19: WHATSAPP FORMATTER (UPDATED)
 # ==========================================================
 
 def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
     """
     Format 360° dashboard for WhatsApp display.
+    UPDATED: Shows dealer profile from master table.
     """
     if not dashboard:
         return "❌ No data available"
@@ -1136,7 +1176,13 @@ def format_dealer_360_dashboard(dashboard: Dict[str, Any]) -> str:
     lines.append(f"Sales Manager: {profile.get('sales_manager', 'N/A')}")
     lines.append(f"Warehouse: {profile.get('warehouse', 'N/A')}")
     lines.append(f"City: {profile.get('city', 'N/A')}")
+    lines.append(f"Region: {profile.get('region', 'N/A')}")
     lines.append(f"Active Days: {profile.get('total_active_days', 0)}")
+    
+    # Show source if debug needed
+    source = profile.get('_profile_source', '')
+    if source:
+        lines.append(f"📌 Source: {source}")
     
     # SECTION 2: BUSINESS VOLUME
     business = dashboard.get('business_volume', {})
@@ -1284,5 +1330,5 @@ __all__ = [
 ]
 
 # ==========================================================
-# END OF FILE - v2.1 PRODUCTION READY
+# END OF FILE - v3.0 PRODUCTION READY
 # ==========================================================
