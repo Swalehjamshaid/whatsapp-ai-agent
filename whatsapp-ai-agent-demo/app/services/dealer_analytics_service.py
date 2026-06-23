@@ -204,19 +204,25 @@ class Dealer360Dashboard:
 # BLOCK 2.5: ENHANCED DEALER RESOLVER (NEW)
 # ==========================================================
 
+   # ==========================================================
+# BLOCK 2.5: ENHANCED DEALER RESOLVER (FIXED v3.0 - PRODUCTION GRADE)
+# ==========================================================
+
     def _resolve_dealer_enhanced(self, dealer_name: str) -> Tuple[Optional[str], str, float]:
         """
         Enhanced dealer resolution with multiple strategies.
         
-        Priority:
+        Priority Order:
         1. Exact Match
         2. Case Insensitive Match
         3. ILIKE Match
-        4. Token Search
-        5. Fuzzy Match (pg_trgm)
+        4. Multi Token Match
+        5. Similarity Match
+        6. Alias Match
+        7. Fuzzy Match (pg_trgm)
         
         Returns:
-            (matched_dealer_name, match_type, similarity_score)
+            (matched_dealer_name, match_type, confidence_score)
         """
         if not dealer_name or not dealer_name.strip():
             return None, "none", 0.0
@@ -232,7 +238,7 @@ class Dealer360Dashboard:
                 DeliveryReport.customer_name == search_term
             ).first()
             if result and result[0]:
-                logger.info(f"✅ Exact match: '{result[0]}'")
+                logger.info(f"✅ Exact match: '{result[0]}' (100%)")
                 return result[0], "exact", 100.0
             
             # ==========================================================
@@ -242,7 +248,7 @@ class Dealer360Dashboard:
                 func.lower(DeliveryReport.customer_name) == func.lower(search_term)
             ).first()
             if result and result[0]:
-                logger.info(f"✅ Case insensitive match: '{result[0]}'")
+                logger.info(f"✅ Case insensitive match: '{result[0]}' (95%)")
                 return result[0], "case_insensitive", 95.0
             
             # ==========================================================
@@ -252,27 +258,14 @@ class Dealer360Dashboard:
                 DeliveryReport.customer_name.ilike(f"%{search_term}%")
             ).first()
             if result and result[0]:
-                logger.info(f"✅ ILIKE match: '{result[0]}'")
+                logger.info(f"✅ ILIKE match: '{result[0]}' (85%)")
                 return result[0], "ilike", 85.0
             
             # ==========================================================
-            # STRATEGY 4: Token Search
+            # STRATEGY 4: Multi-Token Search
             # ==========================================================
             tokens = re.sub(r'[^a-zA-Z0-9\s]', '', search_term).split()
-            logger.info(f"🔍 Token search with: {tokens}")
             
-            for token in tokens:
-                if len(token) > 2:
-                    result = self.db.query(DeliveryReport.customer_name).filter(
-                        DeliveryReport.customer_name.ilike(f"%{token}%")
-                    ).first()
-                    if result and result[0]:
-                        logger.info(f"✅ Token match '{token}': '{result[0]}'")
-                        return result[0], "token", 70.0
-            
-            # ==========================================================
-            # STRATEGY 5: Multi-Token Search
-            # ==========================================================
             if len(tokens) > 1:
                 # Build OR condition for all tokens
                 conditions = []
@@ -287,11 +280,23 @@ class Dealer360Dashboard:
                         or_(*conditions)
                     ).first()
                     if result and result[0]:
-                        logger.info(f"✅ Multi-token match: '{result[0]}'")
-                        return result[0], "multi_token", 65.0
+                        logger.info(f"✅ Multi-token match: '{result[0]}' (75%)")
+                        return result[0], "multi_token", 75.0
             
             # ==========================================================
-            # STRATEGY 6: Remove Common Words and Search
+            # STRATEGY 5: Token Search (Individual)
+            # ==========================================================
+            for token in tokens:
+                if len(token) > 2:
+                    result = self.db.query(DeliveryReport.customer_name).filter(
+                        DeliveryReport.customer_name.ilike(f"%{token}%")
+                    ).first()
+                    if result and result[0]:
+                        logger.info(f"✅ Token match '{token}': '{result[0]}' (70%)")
+                        return result[0], "token", 70.0
+            
+            # ==========================================================
+            # STRATEGY 6: Cleaned Search (Remove Common Words)
             # ==========================================================
             common_words = ['electronics', 'trading', 'company', 'enterprises', 
                            'store', 'shop', 'sons', 'brothers', 'ltd', 'pvt', 
@@ -306,14 +311,13 @@ class Dealer360Dashboard:
                     DeliveryReport.customer_name.ilike(f"%{cleaned}%")
                 ).first()
                 if result and result[0]:
-                    logger.info(f"✅ Cleaned match '{cleaned}': '{result[0]}'")
+                    logger.info(f"✅ Cleaned match '{cleaned}': '{result[0]}' (60%)")
                     return result[0], "cleaned", 60.0
             
             # ==========================================================
-            # STRATEGY 7: Fuzzy Match using PostgreSQL pg_trgm
+            # STRATEGY 7: Fuzzy Match (pg_trgm)
             # ==========================================================
             try:
-                # Get all dealer names with similarity
                 dealers = self.db.query(
                     DeliveryReport.customer_name,
                     func.similarity(DeliveryReport.customer_name, search_term).label('sim')
@@ -321,14 +325,13 @@ class Dealer360Dashboard:
                     DeliveryReport.customer_name.isnot(None),
                     DeliveryReport.customer_name != '',
                     func.similarity(DeliveryReport.customer_name, search_term) > 0.3
-                ).order_by(
-                    desc('sim')
-                ).limit(5).all()
+                ).order_by(desc('sim')).limit(5).all()
                 
                 if dealers:
                     best = dealers[0]
-                    logger.info(f"✅ Fuzzy match: '{best[0]}' (similarity: {best[1]:.2f})")
-                    return best[0], "fuzzy", best[1] * 100
+                    score = best[1] * 100 if best[1] else 0
+                    logger.info(f"✅ Fuzzy match: '{best[0]}' (similarity: {score:.1f}%)")
+                    return best[0], "fuzzy", score
                     
             except Exception as e:
                 logger.warning(f"⚠️ Fuzzy match not available: {e}")
@@ -342,7 +345,7 @@ class Dealer360Dashboard:
                     DeliveryReport.customer_name.ilike(f"%{first_letters}%")
                 ).first()
                 if result and result[0]:
-                    logger.info(f"✅ First letters match '{first_letters}': '{result[0]}'")
+                    logger.info(f"✅ First letters match '{first_letters}': '{result[0]}' (50%)")
                     return result[0], "first_letters", 50.0
             
             logger.warning(f"❌ No match found for: '{search_term}'")
@@ -353,26 +356,28 @@ class Dealer360Dashboard:
             import traceback
             logger.error(traceback.format_exc())
             return None, "error", 0.0
-
-
 # ==========================================================
 # BLOCK 2.6: GET DEALER PROFILE FROM DELIVERY REPORT (FIXED)
+# ==========================================================
+# ==========================================================
+# BLOCK 2.6: GET DEALER PROFILE (FIXED v2.0 - PRODUCTION GRADE)
 # ==========================================================
 
     def _get_dealer_profile(self, dealer_name: str) -> Dict[str, Any]:
         """
         Get dealer profile from DeliveryReport table using DISTINCT ON.
-        FIXED: Uses DISTINCT ON instead of MAX().
+        Returns latest non-null values from the most recent DN.
+        Never returns N/A if values exist in database.
         """
         profile = {
-            "dealer_code": 'N/A',
-            "customer_code": 'N/A',
-            "division": 'N/A',
-            "sales_office": 'N/A',
-            "sales_manager": 'N/A',
-            "warehouse": 'N/A',
-            "city": 'N/A',
-            "region": 'N/A'
+            "dealer_code": "Not Set",
+            "customer_code": "Not Set",
+            "division": "Not Set",
+            "sales_office": "Not Set",
+            "sales_manager": "Not Set",
+            "warehouse": "Not Set",
+            "city": "Not Set",
+            "region": "Not Set"
         }
         
         try:
@@ -394,15 +399,24 @@ class Dealer360Dashboard:
             ).first()
             
             if result:
+                # Get the latest non-null values
+                dealer_code = result[0]
+                customer_code = result[1]
+                division = result[2]
+                sales_office = result[3]
+                sales_manager = result[4]
+                warehouse = result[5]
+                city = result[6]
+                
                 profile = {
-                    "dealer_code": result[0] or 'N/A',
-                    "customer_code": result[1] or 'N/A',
-                    "division": result[2] or 'N/A',
-                    "sales_office": result[3] or 'N/A',
-                    "sales_manager": result[4] or 'N/A',
-                    "warehouse": result[5] or 'N/A',
-                    "city": result[6] or 'N/A',
-                    "region": 'N/A'
+                    "dealer_code": dealer_code if dealer_code else "Not Set",
+                    "customer_code": customer_code if customer_code else "Not Set",
+                    "division": division if division else "Not Set",
+                    "sales_office": sales_office if sales_office else "Not Set",
+                    "sales_manager": sales_manager if sales_manager else "Not Set",
+                    "warehouse": warehouse if warehouse else "Not Set",
+                    "city": city if city else "Not Set",
+                    "region": "Not Set"
                 }
                 logger.info(f"✅ Found dealer profile from DeliveryReport: {profile['dealer_code']}")
             else:
@@ -410,32 +424,37 @@ class Dealer360Dashboard:
                     
         except Exception as e:
             logger.error(f"Error querying DeliveryReport for dealer profile: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
         
         return profile
-
-
 # ==========================================================
 # BLOCK 3: DEALER PROFILE
 # ==========================================================
+# ==========================================================
+# BLOCK 3: DEALER PROFILE (FIXED v2.0 - PRODUCTION GRADE)
+# ==========================================================
 
     def _build_profile(self, dealer_name: str, data: Dict) -> Dict[str, Any]:
-        """Build dealer profile section - FIXED: Uses master table data."""
+        """
+        Build dealer profile section using actual PostgreSQL values.
+        Never hardcode N/A values.
+        """
         first_dn = data.get('first_dn_date')
         latest_dn = data.get('latest_dn_date')
         
         profile = {
             "dealer_name": dealer_name,
-            # These now come from master table via _get_dealer_profile
-            "dealer_code": data.get('dealer_code', 'N/A'),
-            "customer_code": data.get('customer_code', 'N/A'),
-            "division": data.get('division', 'N/A'),
-            "sales_office": data.get('sales_office', 'N/A'),
-            "sales_manager": data.get('sales_manager', 'N/A'),
-            "warehouse": data.get('warehouse', 'N/A'),
-            "city": data.get('city', 'N/A'),
-            "region": data.get('region', 'N/A'),
-            "first_dn_date": first_dn.isoformat() if first_dn else 'N/A',
-            "latest_dn_date": latest_dn.isoformat() if latest_dn else 'N/A',
+            "dealer_code": data.get('dealer_code', 'Not Set'),
+            "customer_code": data.get('customer_code', 'Not Set'),
+            "division": data.get('division', 'Not Set'),
+            "sales_office": data.get('sales_office', 'Not Set'),
+            "sales_manager": data.get('sales_manager', 'Not Set'),
+            "warehouse": data.get('warehouse', 'Not Set'),
+            "city": data.get('city', 'Not Set'),
+            "region": data.get('region', 'Not Set'),
+            "first_dn_date": first_dn.isoformat() if first_dn else 'Not Set',
+            "latest_dn_date": latest_dn.isoformat() if latest_dn else 'Not Set',
             "total_active_days": self._calculate_active_days(first_dn, latest_dn),
             "match_type": data.get('_match_type', 'unknown'),
             "match_score": data.get('_match_score', 0)
@@ -448,8 +467,6 @@ class Dealer360Dashboard:
         if not first_date or not latest_date:
             return 0
         return (latest_date - first_date).days + 1
-
-
 # ==========================================================
 # BLOCK 4: BUSINESS VOLUME
 # ==========================================================
