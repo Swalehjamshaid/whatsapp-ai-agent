@@ -1032,401 +1032,268 @@ class AIOrchestrator:
 # ==========================================================
 # BLOCK 10: ROUTE HANDLERS WITH SERVICE INTEGRATION
 # ==========================================================
-
     def _route_dn_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """Handle DN dashboard with analytics integration."""
+        """
+        Handle DN dashboard with complete validation and error handling.
+        BLOCK 10 - FIXED v5.0 - PRODUCTION GRADE
+        """
+        import time
+        start_time = time.time()
+        
+        logger.info(f"[{req_id}] 📄 DN Dashboard route called")
+        logger.info(f"[{req_id}] 📥 Entity: {entity}")
+        logger.info(f"[{req_id}] 📥 Context last_dn: {context.last_dn if context else None}")
+        
         dn_number = entity or (context.last_dn if context else None)
         
         if not dn_number:
-            return "📄 *DN DASHBOARD*\n\nPlease provide a DN number."
+            return "📄 *DN DASHBOARD*\n\nPlease provide a DN number.\n\n*Example:* 6243675570"
         
+        # Clean DN - remove non-numeric characters
         dn_clean = re.sub(r'\D', '', str(dn_number).strip())
-        if len(dn_clean) < 8 or len(dn_clean) > 12:
-            return f"❌ Invalid DN number: '{dn_number}'"
         
+        # Validate DN format (8-12 digits)
+        if len(dn_clean) < 8 or len(dn_clean) > 12:
+            return f"❌ Invalid DN number: '{dn_number}'\n\nDN numbers must be 8-12 digits."
+        
+        logger.info(f"[{req_id}] 🔍 Looking up DN: {dn_clean}")
+        
+        # ==========================================================
+        # STEP 1: Verify Analytics Service
+        # ==========================================================
+        if self.analytics is None:
+            logger.warning(f"[{req_id}] ⚠️ Analytics is None - attempting reload...")
+            try:
+                service, response_class = _get_analytics_service()
+                self._analytics = service
+                self._analytics_response = response_class
+                if self.analytics is None:
+                    logger.error(f"[{req_id}] ❌ Analytics service still None")
+                    return "⚠️ Service temporarily unavailable. Please try again later."
+            except Exception as e:
+                logger.error(f"[{req_id}] ❌ Analytics reload failed: {e}")
+                return "⚠️ Service temporarily unavailable. Please try again later."
+        
+        if not hasattr(self.analytics, 'get_dn_dashboard'):
+            logger.error(f"[{req_id}] ❌ get_dn_dashboard not available")
+            return "⚠️ Service temporarily unavailable. Please try again later."
+        
+        # ==========================================================
+        # STEP 2: Get DN Dashboard
+        # ==========================================================
         try:
+            logger.info(f"[{req_id}] 📊 Calling analytics.get_dn_dashboard('{dn_clean}')")
             response = self.analytics.get_dn_dashboard(dn_clean)
+            logger.info(f"[{req_id}] 📊 Response type: {type(response)}")
+            
+            # LOG RAW RESPONSE FOR DEBUGGING
+            logger.info(f"[{req_id}] 📊 Raw response: {str(response)[:500]}")
+            
+            # ==========================================================
+            # STEP 3: Validate Response
+            # ==========================================================
             is_valid, error_msg, data = self._validate_response(response, "DN Dashboard", req_id)
             
-            if not is_valid:
-                return f"❌ Unable to retrieve data for DN {dn_clean}.\n\n{error_msg}"
+            # LOG VALIDATED DATA
+            logger.info(f"[{req_id}] 📊 Validation result: is_valid={is_valid}")
+            if data:
+                logger.info(f"[{req_id}] 📊 Data keys: {list(data.keys()) if isinstance(data, dict) else 'NOT DICT'}")
+            else:
+                logger.info(f"[{req_id}] 📊 Data is None or empty")
             
-            return self._format_dn_dashboard(data, dn_clean)
-        except Exception as e:
-            logger.error(f"[{req_id}] DN dashboard error: {e}")
-            return f"❌ Error retrieving DN {dn_clean}: {str(e)[:100]}"
-
-    def _route_dealer_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """Handle dealer dashboard with full service integration."""
-        dealer_name = entity or (context.last_dealer if context else None)
-        
-        if not dealer_name:
-            return "🏪 *DEALER DASHBOARD*\n\nPlease specify a dealer name."
-        
-        original_name = dealer_name
-        
-        # ==========================================================
-        # STEP 1: Get Dealer 360 Dashboard
-        # ==========================================================
-        data = None
-        if self.dealer_analytics:
-            try:
-                logger.info(f"[{req_id}] 📊 Getting 360 dashboard for: {dealer_name}")
-                response = self.dealer_analytics.get_dealer_360_dashboard(dealer_name)
+            if not is_valid:
+                # Check if this is a "not found" error with suggestions
+                if data and isinstance(data, dict) and "suggestions" in data:
+                    suggestions = data.get("suggestions", [])
+                    if suggestions:
+                        return f"❌ DN '{dn_number}' not found.\n\n💡 Did you mean:\n" + "\n".join([f"• {s}" for s in suggestions[:3]])
                 
-                if hasattr(response, 'success') and response.success:
-                    data = response.data if hasattr(response, 'data') else {}
-                    logger.info(f"[{req_id}] ✅ 360 dashboard retrieved")
-                elif isinstance(response, dict) and not response.get('error'):
-                    data = response
-            except Exception as e:
-                logger.warning(f"[{req_id}] ⚠️ 360 dashboard failed: {e}")
-        
-        # ==========================================================
-        # STEP 2: Add Distance Information
-        # ==========================================================
-        if data and self.distance_service:
-            try:
-                warehouse = data.get('warehouse')
-                if warehouse:
-                    distance_info = self.distance_service.calculate_distance(
-                        dealer_name=dealer_name,
-                        warehouse_name=warehouse
-                    )
-                    if distance_info:
-                        data['distance_km'] = distance_info.get('distance_km')
-                        data['approx_driving_minutes'] = distance_info.get('approx_minutes')
-                        logger.info(f"[{req_id}] ✅ Distance: {distance_info.get('distance_km')} km")
-            except Exception as e:
-                logger.warning(f"[{req_id}] ⚠️ Distance calculation failed: {e}")
-        
-        # ==========================================================
-        # STEP 3: Fallback to Legacy Analytics
-        # ==========================================================
-        if not data:
-            try:
-                response = self.analytics.get_dealer_dashboard(dealer_name)
-                if hasattr(response, 'success') and response.success:
-                    data = response.data if hasattr(response, 'data') else {}
-                elif isinstance(response, dict) and not response.get('error'):
-                    data = response
-            except Exception as e:
-                logger.warning(f"[{req_id}] ⚠️ Legacy dashboard failed: {e}")
-        
-        # ==========================================================
-        # STEP 4: Validate and Format
-        # ==========================================================
-        if not data or (isinstance(data, dict) and data.get('error')):
-            error = data.get('error', 'No data') if isinstance(data, dict) else 'No data'
-            return f"❌ Unable to retrieve data for '{original_name}'.\n\n{error}"
-        
-        # Use 360 formatter if available
-        if data.get('_dashboard_type') == '360' or 'profile' in data:
-            try:
-                if format_dealer_360_dashboard:
-                    return format_dealer_360_dashboard(data)
-            except Exception as e:
-                logger.warning(f"[{req_id}] ⚠️ 360 formatter failed: {e}")
-        
-        return self._format_dealer_dashboard(data, dealer_name)
-
-    def _route_warehouse_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """Handle warehouse dashboard with coverage integration."""
-        warehouse_name = entity or (context.last_warehouse if context else None)
-        
-        if not warehouse_name:
-            return "🏭 *WAREHOUSE DASHBOARD*\n\nPlease specify a warehouse name."
-        
-        try:
-            response = self.analytics.get_warehouse_dashboard(warehouse_name)
-            is_valid, error_msg, data = self._validate_response(response, "Warehouse Dashboard", req_id)
+                logger.error(f"[{req_id}] ❌ Validation failed: {error_msg}")
+                return f"❌ Unable to retrieve data for DN {dn_number}.\n\n{error_msg}"
             
-            if not is_valid:
-                return f"❌ Unable to retrieve data for warehouse '{warehouse_name}'.\n\n{error_msg}"
+            # ==========================================================
+            # STEP 4: Format and Return
+            # ==========================================================
+            logger.info(f"[{req_id}] ✅ Valid data received, formatting...")
             
-            # Add distance coverage information
-            if data and self.distance_service:
-                try:
-                    coverage = self.distance_service.get_warehouse_coverage(warehouse_name)
-                    if coverage:
-                        data['avg_distance_km'] = coverage.get('avg_distance_km')
-                        data['max_distance_km'] = coverage.get('max_distance_km')
-                        data['distance_info'] = coverage.get('top_cities', [])
-                except Exception as e:
-                    logger.warning(f"[{req_id}] ⚠️ Coverage info failed: {e}")
+            # Check if data has required fields
+            if data and isinstance(data, dict):
+                required_fields = ['dn_number', 'customer_name']
+                missing_fields = [f for f in required_fields if f not in data]
+                if missing_fields:
+                    logger.warning(f"[{req_id}] ⚠️ Missing fields: {missing_fields}")
+                    logger.warning(f"[{req_id}] 📊 Available keys: {list(data.keys())}")
             
-            return self._format_warehouse_dashboard(data, warehouse_name)
+            result = self._format_dn_dashboard(data, dn_clean)
+            
+            elapsed = time.time() - start_time
+            logger.info(f"[{req_id}] ✅ DN dashboard returned in {elapsed:.3f}s")
+            logger.info(f"[{req_id}] 📊 Result length: {len(result)} characters")
+            return result
+            
         except Exception as e:
-            logger.error(f"[{req_id}] Warehouse dashboard error: {e}")
-            return f"❌ Error retrieving warehouse data: {str(e)[:100]}"
-
-    def _route_city_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """Handle city dashboard."""
-        city_name = entity or (context.last_city if context else None)
-        
-        if not city_name:
-            return "🏙️ *CITY DASHBOARD*\n\nPlease specify a city name."
-        
-        try:
-            response = self.analytics.get_city_dashboard(city_name)
-            is_valid, error_msg, data = self._validate_response(response, "City Dashboard", req_id)
-            
-            if not is_valid:
-                return f"❌ Unable to retrieve data for city '{city_name}'.\n\n{error_msg}"
-            
-            return self._format_city_dashboard(data, city_name)
-        except Exception as e:
-            logger.error(f"[{req_id}] City dashboard error: {e}")
-            return f"❌ Error retrieving city data: {str(e)[:100]}"
-
-    def _route_product_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """Handle product dashboard."""
-        product_name = entity or (context.last_product if context else None)
-        
-        if not product_name:
-            return "📦 *PRODUCT DASHBOARD*\n\nPlease specify a product."
-        
-        try:
-            response = self.analytics.get_product_dashboard(product_name)
-            is_valid, error_msg, data = self._validate_response(response, "Product Dashboard", req_id)
-            
-            if not is_valid:
-                return f"❌ Unable to retrieve data for product '{product_name}'.\n\n{error_msg}"
-            
-            return self._format_product_dashboard(data, product_name)
-        except Exception as e:
-            logger.error(f"[{req_id}] Product dashboard error: {e}")
-            return f"❌ Error retrieving product data: {str(e)[:100]}"
-
-
+            logger.error(f"[{req_id}] ❌ DN dashboard error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return f"❌ Error retrieving DN {dn_number}: {str(e)[:100]}"
 # ==========================================================
 # BLOCK 11: FORMATTERS WITH DISTANCE SUPPORT
 # ==========================================================
-
     def _format_dn_dashboard(self, data: Dict, dn_number: str) -> str:
-        """Format DN dashboard."""
+        """
+        Format DN dashboard - Complete production version.
+        BLOCK 11 - FIXED v6.0 - PRODUCTION GRADE
+        """
         try:
+            # ADD DEBUG LOGGING
+            logger.info(f"🔍 Formatting DN {dn_number} with data type: {type(data)}")
+            
             if not data:
+                logger.error(f"❌ No data for DN {dn_number}")
                 return f"❌ No data available for DN {dn_number}"
             
+            if isinstance(data, dict):
+                logger.info(f"📊 Data keys: {list(data.keys())}")
+            else:
+                logger.warning(f"⚠️ Data is not a dict: {type(data)}")
+                return f"❌ Invalid data format for DN {dn_number}"
+            
+            # ==========================================================
+            # Safe get with defaults
+            # ==========================================================
             def safe_get(key, default="N/A"):
                 val = data.get(key, default)
-                return default if val is None or val == "" else val
+                if val is None:
+                    return default
+                if isinstance(val, str) and val == "":
+                    return default
+                return val
             
+            # ==========================================================
+            # Get ALL fields with proper logging
+            # ==========================================================
+            customer_name = safe_get('customer_name', 'N/A')
+            dealer_code = safe_get('dealer_code', 'N/A')
+            customer_code = safe_get('customer_code', 'N/A')
+            warehouse = safe_get('warehouse', 'N/A')
+            city = safe_get('ship_to_city', 'N/A')
+            sales_office = safe_get('sales_office', 'N/A')
+            sales_manager = safe_get('sales_manager', 'N/A')
+            division = safe_get('division', 'N/A')
+            customer_model = safe_get('customer_model', 'N/A')
+            material_no = safe_get('material_no', 'N/A')
+            
+            units = safe_get('units', 0)
+            amount = safe_get('amount', 0)
+            status = safe_get('delivery_status', 'Unknown')
+            pgi_status = safe_get('pgi_status', 'N/A')
+            pod_status = safe_get('pod_status', 'N/A')
+            
+            # Get dates
+            create_date = safe_get('dn_create_date', 'N/A')
+            pgi_date = safe_get('good_issue_date', 'N/A')
+            pod_date = safe_get('pod_date', 'N/A')
+            
+            # Get aging
+            delivery_aging = safe_get('delivery_aging_text', 'N/A')
+            pod_aging = safe_get('pod_aging_text', 'N/A')
+            total_cycle = safe_get('total_cycle_text', 'N/A')
+            
+            # Status flags
+            pending_flag = data.get('pending_flag', False)
+            pending_text = "🔴 Yes" if pending_flag else "🟢 No"
+            
+            # Status emoji
+            status_emoji = "✅" if status in ['Completed', 'Delivered', 'Closed'] else "⏳"
+            
+            # ==========================================================
+            # Log what we found
+            # ==========================================================
+            logger.info(f"📊 DN {dn_number} data:")
+            logger.info(f"   Customer: {customer_name}")
+            logger.info(f"   Warehouse: {warehouse}")
+            logger.info(f"   City: {city}")
+            logger.info(f"   Units: {units}")
+            logger.info(f"   Amount: {amount}")
+            logger.info(f"   Status: {status}")
+            logger.info(f"   PGI: {pgi_status}")
+            logger.info(f"   POD: {pod_status}")
+            
+            # ==========================================================
+            # Build formatted response
+            # ==========================================================
             lines = [
                 "📄 *DN TRACKING*",
                 "",
                 f"DN No: {safe_get('dn_number', dn_number)}",
-                f"Dealer: {safe_get('customer_name', 'N/A')}",
-                f"Warehouse: {safe_get('warehouse', 'N/A')}",
-                f"City: {safe_get('ship_to_city', 'N/A')}",
+                f"Dealer: {customer_name}",
+                f"Dealer Code: {dealer_code}",
+                f"Customer Code: {customer_code}",
+                f"Warehouse: {warehouse}",
+                f"City: {city}",
+                f"Sales Office: {sales_office}",
+                f"Sales Manager: {sales_manager}",
+                f"Division: {division}",
+                "",
+                "📦 *Products*",
+                f"Model: {customer_model}",
+                f"Material: {material_no}",
                 "",
                 "📊 *Metrics*",
-                f"Units: {safe_get('units', 0)}",
-                f"Revenue: PKR {safe_get('amount', 0):,.0f}",
+                f"Units: {units}",
+            ]
+            
+            # Format amount with proper number formatting
+            if amount and amount != 0 and amount != "N/A":
+                try:
+                    amount_float = float(amount)
+                    lines.append(f"Revenue: PKR {amount_float:,.0f}")
+                except (ValueError, TypeError):
+                    lines.append(f"Revenue: PKR {amount}")
+            else:
+                lines.append(f"Revenue: PKR {amount}")
+            
+            lines.extend([
+                "",
+                "📅 *Dates*",
+                f"Create: {create_date}",
+                f"PGI: {pgi_date}",
+                f"POD: {pod_date}",
+                "",
+                "⏳ *Aging*",
+                f"Delivery Aging: {delivery_aging}",
+                f"POD Aging: {pod_aging}",
+                f"Total Cycle: {total_cycle}",
                 "",
                 "📋 *Status*",
-                f"Delivery: {safe_get('delivery_status', 'Unknown')}",
-                f"PGI: {safe_get('pgi_status', 'N/A')}",
-                f"POD: {safe_get('pod_status', 'N/A')}"
-            ]
+                f"Delivery: {status} {status_emoji}",
+                f"PGI: {pgi_status}",
+                f"POD: {pod_status}",
+                f"Pending: {pending_text}"
+            ])
             
-            return "\n".join(lines)
-        except Exception as e:
-            logger.error(f"DN format error: {e}")
-            return f"❌ Unable to format DN details: {str(e)}"
-
-    def _format_dealer_dashboard(self, data: Dict, dealer_name: str) -> str:
-        """Format dealer dashboard with distance information."""
-        try:
-            if not data:
-                return f"❌ No data available for dealer {dealer_name}"
-            
-            def safe_get(key, default="N/A"):
-                val = data.get(key, default)
-                return default if val is None or val == "" else val
-            
-            revenue = data.get('total_revenue', 0)
-            delivery_rate = safe_get('delivery_rate', 0)
-            total_dns = safe_get('total_dns', 0)
-            
-            lines = [
-                "🏢 *DEALER DASHBOARD*",
-                "",
-                f"Dealer: {safe_get('dealer_name', dealer_name)}",
-                f"Warehouse: {safe_get('warehouse', 'N/A')}",
-                f"City: {safe_get('city', 'N/A')}",
-                "",
-                "📊 *Metrics*",
-                f"Total DNs: {total_dns}",
-                f"Total Revenue: PKR {revenue:,.0f}" if revenue else f"Total Revenue: PKR {revenue}",
-                f"Delivery Rate: {delivery_rate}%",
-            ]
-            
-            # Add distance information if available
-            distance_km = data.get('distance_km')
-            if distance_km:
+            # ==========================================================
+            # Check for issues/warnings
+            # ==========================================================
+            issues = data.get('issues', [])
+            if issues and isinstance(issues, list):
                 lines.append("")
-                lines.append("📍 *Distance*")
-                lines.append(f"Warehouse → Dealer: {distance_km:.1f} km")
-                
-                approx_minutes = data.get('approx_driving_minutes')
-                if approx_minutes:
-                    if approx_minutes < 60:
-                        lines.append(f"⏱️ Approx Driving: {approx_minutes} minutes")
-                    else:
-                        hours = int(approx_minutes // 60)
-                        minutes = int(approx_minutes % 60)
-                        lines.append(f"⏱️ Approx Driving: {hours}h {minutes}m")
+                lines.append("⚠️ *Data Issues*")
+                for issue in issues[:3]:
+                    lines.append(f"   {issue}")
             
-            return self._truncate_response("\n".join(lines))
+            # ==========================================================
+            # Return formatted response
+            # ==========================================================
+            result = "\n".join(lines)
+            logger.info(f"📊 Formatted response length: {len(result)} characters")
+            return result
+            
         except Exception as e:
-            logger.error(f"Dealer format error: {e}")
-            return f"❌ Unable to format dealer data: {str(e)}"
-
-    def _format_warehouse_dashboard(self, data: Dict, warehouse_name: str) -> str:
-        """Format warehouse dashboard with coverage information."""
-        try:
-            if not data:
-                return f"❌ No data available for warehouse {warehouse_name}"
-            
-            def safe_get(key, default="N/A"):
-                val = data.get(key, default)
-                return default if val is None or val == "" else val
-            
-            revenue = data.get('total_revenue', 0)
-            
-            lines = [
-                "🏭 *WAREHOUSE DASHBOARD*",
-                "",
-                f"Warehouse: {safe_get('warehouse', warehouse_name)}",
-                "",
-                "📊 *Metrics*",
-                f"Total DNs: {safe_get('total_dns', 0)}",
-                f"Total Revenue: PKR {revenue:,.0f}" if revenue else f"Total Revenue: PKR {revenue}",
-                f"Total Dealers: {safe_get('total_dealers', 0)}",
-                f"Cities Served: {safe_get('cities_served', 0)}",
-            ]
-            
-            # Add distance coverage
-            avg_distance = data.get('avg_distance_km')
-            if avg_distance:
-                lines.append("")
-                lines.append("📍 *Distance Coverage*")
-                lines.append(f"Average Distance: {avg_distance:.1f} km")
-                
-                max_distance = data.get('max_distance_km')
-                if max_distance:
-                    lines.append(f"Farthest City: {max_distance:.1f} km")
-                
-                distance_info = data.get('distance_info', [])
-                if distance_info:
-                    lines.append("")
-                    lines.append("📌 *Top Cities by Distance*")
-                    for item in distance_info[:5]:
-                        city = item.get('city', 'Unknown')
-                        dist = item.get('distance_km', 0)
-                        lines.append(f"• {city}: {dist:.1f} km")
-            
-            return self._truncate_response("\n".join(lines))
-        except Exception as e:
-            logger.error(f"Warehouse format error: {e}")
-            return f"❌ Unable to format warehouse data: {str(e)}"
-
-    def _format_city_dashboard(self, data: Dict, city_name: str) -> str:
-        """Format city dashboard."""
-        try:
-            if not data:
-                return f"❌ No data available for city {city_name}"
-            
-            def safe_get(key, default="N/A"):
-                val = data.get(key, default)
-                return default if val is None or val == "" else val
-            
-            revenue = data.get('total_revenue', 0)
-            
-            lines = [
-                "🏙️ *CITY DASHBOARD*",
-                "",
-                f"City: {safe_get('city_name', city_name)}",
-                "",
-                "📊 *Metrics*",
-                f"Total DNs: {safe_get('total_dns', 0)}",
-                f"Total Revenue: PKR {revenue:,.0f}" if revenue else f"Total Revenue: PKR {revenue}",
-                f"Total Dealers: {safe_get('total_dealers', 0)}",
-                f"Total Warehouses: {safe_get('total_warehouses', 0)}",
-                "",
-                f"📦 Delivery Rate: {safe_get('delivery_rate', 0)}%"
-            ]
-            
-            return self._truncate_response("\n".join(lines))
-        except Exception as e:
-            logger.error(f"City format error: {e}")
-            return f"❌ Unable to format city data: {str(e)}"
-
-    def _format_product_dashboard(self, data: Dict, product_name: str) -> str:
-        """Format product dashboard."""
-        try:
-            if not data:
-                return f"❌ No data available for product {product_name}"
-            
-            def safe_get(key, default="N/A"):
-                val = data.get(key, default)
-                return default if val is None or val == "" else val
-            
-            revenue = data.get('revenue', 0)
-            
-            lines = [
-                "📦 *PRODUCT DASHBOARD*",
-                "",
-                f"Product: {safe_get('product', product_name)}",
-                "",
-                "📊 *Metrics*",
-                f"Total Revenue: PKR {revenue:,.0f}" if revenue else f"Total Revenue: PKR {revenue}",
-                f"Total Units: {safe_get('units', 0)}",
-                f"Total DNs: {safe_get('dns', 0)}",
-                "",
-                "📍 *Distribution*",
-                f"Dealers: {safe_get('dealers', 0)}",
-                f"Cities: {safe_get('cities', 0)}",
-                f"Warehouses: {safe_get('warehouses', 0)}",
-                "",
-                f"📦 Delivery Rate: {safe_get('delivery_rate', 0)}%"
-            ]
-            
-            return self._truncate_response("\n".join(lines))
-        except Exception as e:
-            logger.error(f"Product format error: {e}")
-            return f"❌ Unable to format product data: {str(e)}"
-
-    def _get_help_message(self) -> str:
-        """Get help message."""
-        return """🏠 *HAIER LOGISTICS AI*
-
-📋 *Available Dashboards:*
-
-1️⃣ 🏪 Dealer Dashboard
-2️⃣ 🏭 Warehouse Dashboard
-3️⃣ 🏙️ City Dashboard
-4️⃣ 📦 Product Dashboard
-5️⃣ 📄 DN Dashboard
-6️⃣ 📋 PGI Dashboard
-7️⃣ ✅ POD Dashboard
-8️⃣ 🚚 Delivery Dashboard
-9️⃣ 👔 Executive Dashboard
-🔟 🚨 Control Tower
-
-🔍 *Quick Commands:*
-• Enter 8-12 digit DN number
-• Dealer name (e.g., "Pakistan Electronics")
-• Product name (e.g., "Refrigerator")
-• City name (e.g., "Lahore City")
-• Warehouse name (e.g., "Rawalpindi warehouse")
-• "Help" for menu
-
-*Ask me anything about logistics!* 🤖"""
-
-
+            logger.error(f"❌ DN format error for {dn_number}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return f"❌ Unable to format DN details for {dn_number}: {str(e)}"
 # ==========================================================
 # BLOCK 12: SINGLETON & WRAPPER FUNCTIONS
 # ==========================================================
