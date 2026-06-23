@@ -1800,85 +1800,191 @@ class AnalyticsRepository:
 # ==========================================================
 # BLOCK 11: DEALER DASHBOARD
 # ==========================================================
-
-    def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
-        """
-        Complete dealer dashboard - PostgreSQL only.
-        """
-        import time
-        start_time = time.time()
+def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
+    """
+    Complete dealer dashboard - PostgreSQL only.
+    FIXED: Enhanced dealer resolution with multiple strategies.
+    """
+    import time
+    start_time = time.time()
+    
+    try:
+        logger.info(f"🔍 Searching for dealer: '{dealer_name}'")
         
-        try:
-            logger.info(f"🔍 Searching for dealer: '{dealer_name}'")
+        if not dealer_name or not dealer_name.strip():
+            return {"error": "Dealer name is required"}
+        
+        dealer_name_clean = dealer_name.strip()
+        
+        # ==========================================================
+        # STEP 1: RESOLVE DEALER WITH MULTIPLE STRATEGIES
+        # ==========================================================
+        resolved = None
+        match_type = "none"
+        confidence = 0.0
+        
+        # STRATEGY 1: Exact match (case insensitive)
+        logger.info(f"📌 Strategy 1: Exact match for '{dealer_name_clean}'")
+        result = self.db.query(DeliveryReport.customer_name).filter(
+            func.lower(DeliveryReport.customer_name) == func.lower(dealer_name_clean)
+        ).first()
+        if result:
+            resolved = result[0]
+            match_type = "exact"
+            confidence = 1.0
+            logger.info(f"✅ Strategy 1 found: '{resolved}' (exact match)")
+        
+        # STRATEGY 2: ILIKE match (contains)
+        if not resolved:
+            logger.info(f"📌 Strategy 2: ILIKE match for '{dealer_name_clean}'")
+            result = self.db.query(DeliveryReport.customer_name).filter(
+                DeliveryReport.customer_name.ilike(f"%{dealer_name_clean}%")
+            ).first()
+            if result:
+                resolved = result[0]
+                match_type = "ilike"
+                confidence = 0.85
+                logger.info(f"✅ Strategy 2 found: '{resolved}' (ILIKE match)")
+        
+        # STRATEGY 3: Token-based matching
+        if not resolved:
+            logger.info(f"📌 Strategy 3: Token-based matching")
+            tokens = dealer_name_clean.split()
+            for token in tokens:
+                if len(token) > 2 and token.lower() not in ['the', 'and', 'for', 'with']:
+                    result = self.db.query(DeliveryReport.customer_name).filter(
+                        DeliveryReport.customer_name.ilike(f"%{token}%")
+                    ).first()
+                    if result:
+                        resolved = result[0]
+                        match_type = f"token_{token}"
+                        confidence = 0.75
+                        logger.info(f"✅ Strategy 3 found: '{resolved}' (token: '{token}')")
+                        break
+        
+        # STRATEGY 4: First word match
+        if not resolved:
+            logger.info(f"📌 Strategy 4: First word match")
+            first_word = dealer_name_clean.split()[0] if dealer_name_clean.split() else ""
+            if len(first_word) > 2:
+                result = self.db.query(DeliveryReport.customer_name).filter(
+                    DeliveryReport.customer_name.ilike(f"%{first_word}%")
+                ).first()
+                if result:
+                    resolved = result[0]
+                    match_type = f"first_word_{first_word}"
+                    confidence = 0.65
+                    logger.info(f"✅ Strategy 4 found: '{resolved}' (first word: '{first_word}')")
+        
+        # STRATEGY 5: Character overlap (fuzzy)
+        if not resolved:
+            logger.info(f"📌 Strategy 5: Fuzzy match")
+            # Get all unique dealer names
+            dealers = self.db.query(
+                func.distinct(DeliveryReport.customer_name)
+            ).filter(
+                DeliveryReport.customer_name.isnot(None),
+                DeliveryReport.customer_name != ''
+            ).limit(500).all()
             
-            if not dealer_name or not dealer_name.strip():
-                return {"error": "Dealer name is required"}
+            best_match = None
+            best_score = 0
+            query_lower = dealer_name_clean.lower()
+            query_chars = set(query_lower)
             
-            # Check cache
-            cache_key = f"dealer_dashboard:{dealer_name.lower()}"
-            cached = self.cache.get("dashboard_cache", cache_key)
-            if cached:
-                logger.info(f"✅ Dealer dashboard cache hit: {dealer_name}")
-                return cached
+            for dealer in dealers:
+                if not dealer[0]:
+                    continue
+                dealer_name = dealer[0]
+                dealer_lower = dealer_name.lower()
+                dealer_chars = set(dealer_lower)
+                
+                # Character overlap score
+                overlap = len(query_chars & dealer_chars)
+                score = overlap / max(len(query_chars), len(dealer_chars))
+                
+                # Bonus for substring match
+                if query_lower in dealer_lower or dealer_lower in query_lower:
+                    score += 0.3
+                
+                if score > best_score and score > 0.3:
+                    best_score = score
+                    best_match = dealer_name
             
-            # Resolve dealer
-            resolved_result = self.resolver.resolve_dealer(dealer_name)
+            if best_match:
+                resolved = best_match
+                match_type = "fuzzy"
+                confidence = min(best_score, 1.0)
+                logger.info(f"✅ Strategy 5 found: '{resolved}' (fuzzy score: {best_score:.2f})")
+        
+        # ==========================================================
+        # STEP 2: CHECK IF DEALER WAS FOUND
+        # ==========================================================
+        if not resolved:
+            logger.warning(f"❌ Dealer '{dealer_name_clean}' not found in database")
             
-            if not resolved_result.get('found'):
-                similar = self.search.search_dealer(dealer_name, exact=False)
+            # Try to find similar dealers for suggestions
+            try:
+                similar = self.db.query(
+                    func.distinct(DeliveryReport.customer_name)
+                ).filter(
+                    DeliveryReport.customer_name.ilike(f"%{dealer_name_clean[:3]}%")
+                ).limit(10).all()
+                
                 if similar:
-                    suggestions = [s['dealer_name'] for s in similar[:5]]
-                    return {
-                        "error": f"Dealer '{dealer_name}' not found",
-                        "suggestions": suggestions
-                    }
-                return {"error": f"Dealer '{dealer_name}' not found"}
+                    suggestions = [s[0] for s in similar if s[0] and s[0] != dealer_name_clean]
+                    if suggestions:
+                        return {
+                            "error": f"Dealer '{dealer_name}' not found",
+                            "suggestions": suggestions[:5],
+                            "message": f"Did you mean: {', '.join(suggestions[:3])}?"
+                        }
+            except Exception as e:
+                logger.warning(f"Similar dealer search failed: {e}")
             
-            resolved = resolved_result.get('entity')
+            return {"error": f"Dealer '{dealer_name}' not found"}
+        
+        logger.info(f"✅ Dealer resolved: '{resolved}' (Match: {match_type}, Confidence: {confidence})")
+        
+        # ==========================================================
+        # STEP 3: GET DEALER PROFILE
+        # ==========================================================
+        profile_result = self.db.query(
+            DeliveryReport.dealer_code,
+            DeliveryReport.customer_code,
+            DeliveryReport.division,
+            DeliveryReport.warehouse,
+            DeliveryReport.ship_to_city,
+            DeliveryReport.sales_office,
+            DeliveryReport.sales_manager
+        ).filter(
+            func.lower(DeliveryReport.customer_name) == func.lower(resolved)
+        ).order_by(
+            DeliveryReport.dn_create_date.desc()
+        ).first()
+        
+        # ==========================================================
+        # STEP 4: QUERY DEALER METRICS
+        # ==========================================================
+        metrics_result = self.db.query(
+            func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
+            func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("total_units"),
+            func.coalesce(func.sum(DeliveryReport.dn_amount), 0).label("total_revenue"),
+            func.count(distinct(case((DeliveryReport.delivery_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("delivered_dns"),
+            func.count(distinct(case((DeliveryReport.pending_flag == True, DeliveryReport.dn_no), else_=None))).label("pending_dns"),
+            func.count(distinct(case((and_(DeliveryReport.delivery_status == 'Completed', DeliveryReport.pod_status != 'Completed'), DeliveryReport.dn_no), else_=None))).label("transit_dns")
+        ).filter(
+            func.lower(DeliveryReport.customer_name) == func.lower(resolved)
+        ).first()
+        
+        # ==========================================================
+        # STEP 5: CHECK IF METRICS EXIST
+        # ==========================================================
+        if not metrics_result or metrics_result.total_dns == 0:
+            logger.warning(f"⚠️ No delivery data found for dealer '{resolved}'")
             
-            # Get dealer profile
-            profile_result = self.db.query(
-                DeliveryReport.dealer_code,
-                DeliveryReport.customer_code,
-                DeliveryReport.division,
-                DeliveryReport.warehouse,
-                DeliveryReport.ship_to_city,
-                DeliveryReport.sales_office,
-                DeliveryReport.sales_manager
-            ).filter(
-                func.lower(DeliveryReport.customer_name) == func.lower(resolved)
-            ).order_by(
-                DeliveryReport.dn_create_date.desc()
-            ).first()
-            
-            # Query metrics
-            metrics_result = self.db.query(
-                func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
-                func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("total_units"),
-                func.coalesce(func.sum(DeliveryReport.dn_amount), 0).label("total_revenue"),
-                func.count(distinct(case((DeliveryReport.delivery_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("delivered_dns"),
-                func.count(distinct(case((DeliveryReport.pending_flag == True, DeliveryReport.dn_no), else_=None))).label("pending_dns"),
-                func.count(distinct(case((and_(DeliveryReport.delivery_status == 'Completed', DeliveryReport.pod_status != 'Completed'), DeliveryReport.dn_no), else_=None))).label("transit_dns"),
-                func.count(distinct(case((DeliveryReport.pod_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("pod_completed_dns")
-            ).filter(
-                func.lower(DeliveryReport.customer_name) == func.lower(resolved)
-            ).first()
-            
-            if not metrics_result or metrics_result.total_dns == 0:
-                return {"error": f"No data found for dealer '{resolved}'"}
-            
-            total_dns = metrics_result.total_dns or 0
-            delivered_dns = metrics_result.delivered_dns or 0
-            transit_dns = metrics_result.transit_dns or 0
-            pod_completed = metrics_result.pod_completed_dns or 0
-            
-            delivery_rate = KPIEngine.calculate_delivery_rate(delivered_dns, total_dns)
-            pgi_rate = KPIEngine.calculate_pgi_rate(delivered_dns, transit_dns, total_dns)
-            pod_rate = KPIEngine.calculate_pod_rate(pod_completed, delivered_dns) if delivered_dns > 0 else 0
-            
-            risk_level, risk_score = KPIEngine.calculate_risk_level(delivery_rate, pod_rate, 0)
-            
-            response = {
+            # Return profile with zero metrics
+            return {
                 "dealer_name": resolved,
                 "dealer_code": profile_result[0] if profile_result and profile_result[0] else "",
                 "customer_code": profile_result[1] if profile_result and profile_result[1] else "",
@@ -1887,47 +1993,56 @@ class AnalyticsRepository:
                 "city": profile_result[4] if profile_result and profile_result[4] else "",
                 "sales_office": profile_result[5] if profile_result and profile_result[5] else "",
                 "sales_manager": profile_result[6] if profile_result and profile_result[6] else "",
-                "total_dns": total_dns,
-                "total_units": int(metrics_result.total_units or 0),
-                "total_revenue": float(metrics_result.total_revenue or 0),
-                "delivered_dns": delivered_dns,
-                "pending_dns": metrics_result.pending_dns or 0,
-                "transit_dns": transit_dns,
-                "pod_completed_dns": pod_completed,
-                "delivery_rate": delivery_rate,
-                "pgi_rate": pgi_rate,
-                "pod_rate": pod_rate,
-                "health_score": KPIEngine.calculate_health_score({
-                    "delivery_rate": delivery_rate,
-                    "pod_rate": pod_rate,
-                    "avg_aging": 0,
-                    "revenue": float(metrics_result.total_revenue or 0)
-                }),
-                "risk_level": risk_level,
-                "risk_score": risk_score
+                "total_dns": 0,
+                "total_units": 0,
+                "total_revenue": 0,
+                "delivered_dns": 0,
+                "pending_dns": 0,
+                "transit_dns": 0,
+                "delivery_rate": 0,
+                "_warning": f"No delivery data found for dealer '{resolved}'",
+                "_suggestion": f"Check if there are DNs for '{resolved}' in the database"
             }
-            
-            # Add distance information
-            if response.get('warehouse') and response.get('city'):
-                distance_info = self.distance.calculate_dealer_distance(
-                    response.get('warehouse'),
-                    response.get('city')
-                )
-                if distance_info and distance_info.get('available'):
-                    response['distance_km'] = distance_info.get('distance_km')
-                    response['travel_time_hours'] = distance_info.get('travel_time_hours')
-                    response['transit_days'] = distance_info.get('transit_days')
-            
-            # Cache response
-            self.cache.set("dashboard_cache", cache_key, response)
-            
-            total_time = time.time() - start_time
-            logger.info(f"✅ Dealer dashboard built for: {resolved} in {total_time:.3f}s")
-            return response
-            
-        except Exception as e:
-            logger.error(f"❌ Get dealer dashboard failed: {e}")
-            return {"error": f"Failed to load dealer data: {str(e)[:100]}"}
+        
+        # ==========================================================
+        # STEP 6: BUILD RESPONSE
+        # ==========================================================
+        total_dns = metrics_result.total_dns or 0
+        delivered_dns = metrics_result.delivered_dns or 0
+        transit_dns = metrics_result.transit_dns or 0
+        pending_dns = metrics_result.pending_dns or 0
+        
+        delivery_rate = KPIEngine.calculate_delivery_rate(delivered_dns, total_dns)
+        
+        response = {
+            "dealer_name": resolved,
+            "dealer_code": profile_result[0] if profile_result and profile_result[0] else "",
+            "customer_code": profile_result[1] if profile_result and profile_result[1] else "",
+            "division": profile_result[2] if profile_result and profile_result[2] else "",
+            "warehouse": profile_result[3] if profile_result and profile_result[3] else "",
+            "city": profile_result[4] if profile_result and profile_result[4] else "",
+            "sales_office": profile_result[5] if profile_result and profile_result[5] else "",
+            "sales_manager": profile_result[6] if profile_result and profile_result[6] else "",
+            "total_dns": total_dns,
+            "total_units": int(metrics_result.total_units or 0),
+            "total_revenue": float(metrics_result.total_revenue or 0),
+            "delivered_dns": delivered_dns,
+            "pending_dns": pending_dns,
+            "transit_dns": transit_dns,
+            "delivery_rate": delivery_rate,
+            "_match_type": match_type,
+            "_match_confidence": confidence
+        }
+        
+        total_time = time.time() - start_time
+        logger.info(f"✅ Dealer dashboard built for: {resolved} in {total_time:.3f}s")
+        return response
+        
+    except Exception as e:
+        logger.error(f"❌ Get dealer dashboard failed: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {"error": f"Failed to load dealer data: {str(e)[:100]}"}
 
 # ==========================================================
 # BLOCK 12: WAREHOUSE DASHBOARD
@@ -2648,369 +2763,91 @@ class AnalyticsService:
     # ==========================================================
     # BLOCK 27: ENTITY RESOLUTION
     # ==========================================================
+    def get_dealer_360_dashboard(self, dealer_name: str) -> Dict[str, Any]:
+    """Get complete 360° dealer dashboard with fallback to legacy."""
+    if self._dealer_360 is None:
+        logger.warning("⚠️ Dealer360Dashboard not available, falling back to legacy")
+        return self.get_dealer_dashboard(dealer_name)
     
-    def resolve_dealer(self, dealer_name: str) -> Optional[str]:
-        return self.repo.resolver.resolve_dealer(dealer_name)
-    
-    def resolve_warehouse(self, warehouse_name: str) -> Optional[str]:
-        return self.repo.resolver.resolve_warehouse(warehouse_name)
-    
-    def resolve_city(self, city_name: str) -> Optional[str]:
-        return self.repo.resolver.resolve_city(city_name)
-    
-    def resolve_product(self, product_name: str) -> Optional[str]:
-        return self.repo.resolver.resolve_product(product_name)
-    
-    def resolve_dn(self, dn_no: str) -> Optional[str]:
-        return self.repo.resolver.resolve_dn(dn_no)
+    try:
+        result = self._dealer_360.get_dashboard(dealer_name)
+        if result and "error" not in result:
+            result['_dashboard_type'] = '360'
+            logger.info(f"✅ 360 dashboard retrieved for: {dealer_name}")
+            return result
+        else:
+            error = result.get('error') if result else 'No result'
+            logger.warning(f"⚠️ 360 dashboard failed: {error}, falling back to legacy")
+            return self.get_dealer_dashboard(dealer_name)
+    except Exception as e:
+        logger.warning(f"⚠️ 360 dashboard exception: {e}, falling back to legacy")
+        import traceback
+        logger.warning(traceback.format_exc())
+        return self.get_dealer_dashboard(dealer_name)
     
     # ==========================================================
     # BLOCK 28: DASHBOARD METHODS
     # ==========================================================
-    
-    def get_dealer_360_dashboard(self, dealer_name: str) -> AnalyticsResponse:
-        """Get complete 360° dealer dashboard."""
-        try:
-            self.metrics["total_requests"] += 1
-            logger.info(f"🔍 Dealer 360 Dashboard request for: {dealer_name}")
-            
-            if not dealer_name or not str(dealer_name).strip():
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error="Dealer name is required")
-            
-            if not hasattr(self.repo, 'get_dealer_360_dashboard'):
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error="Dealer 360 dashboard not available")
-            
-            result = self.repo.get_dealer_360_dashboard(dealer_name.strip())
-            
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                if "suggestions" in result:
-                    return AnalyticsResponse(
-                        success=False, 
-                        error=result["error"],
-                        data={"suggestions": result.get("suggestions", [])}
-                    )
-                return AnalyticsResponse(success=False, error=result["error"])
-            
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-            
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Dealer 360 dashboard error: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def get_dn_dashboard(self, dn_no: str) -> AnalyticsResponse:
-        """Get DN Dashboard - PostgreSQL only."""
-        try:
-            self.metrics["total_requests"] += 1
-            logger.info(f"🔍 DN Dashboard request for: {dn_no}")
-            
-            if not dn_no or not str(dn_no).strip():
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error="DN number is required")
-            
-            if not hasattr(self.repo, 'get_dn_dashboard'):
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error="DN dashboard not available")
-            
-            result = self.repo.get_dn_dashboard(dn_no.strip())
-            
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                if "suggestions" in result:
-                    return AnalyticsResponse(
-                        success=False, 
-                        error=result["error"],
-                        data={"suggestions": result.get("suggestions", [])}
-                    )
-                return AnalyticsResponse(success=False, error=result["error"])
-            
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-            
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"DN dashboard error: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
     def get_dealer_dashboard(self, dealer_name: str) -> AnalyticsResponse:
-        """Get Dealer Dashboard - PostgreSQL only."""
-        try:
-            self.metrics["total_requests"] += 1
-            logger.info(f"🔍 Dealer Dashboard request for: {dealer_name}")
-            
-            if not dealer_name or not str(dealer_name).strip():
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error="Dealer name is required")
-            
-            # Try 360 dashboard first
-            if hasattr(self.repo, 'get_dealer_360_dashboard'):
-                try:
-                    result = self.repo.get_dealer_360_dashboard(dealer_name.strip())
-                    if "error" not in result:
-                        result['_dashboard_type'] = '360'
-                        self.metrics["successful_requests"] += 1
-                        return AnalyticsResponse(success=True, data=result)
-                except Exception as e:
-                    logger.warning(f"360 dashboard failed, falling back: {e}")
-            
-            # Fallback to legacy
-            if not hasattr(self.repo, 'get_dealer_dashboard'):
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error="Dealer dashboard not available")
-            
-            result = self.repo.get_dealer_dashboard(dealer_name.strip())
-            
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                if "suggestions" in result:
-                    return AnalyticsResponse(
-                        success=False, 
-                        error=result["error"],
-                        data={"suggestions": result.get("suggestions", [])}
-                    )
-                return AnalyticsResponse(success=False, error=result["error"])
-            
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-            
-        except Exception as e:
+    """Get Dealer Dashboard - PostgreSQL only."""
+    try:
+        self.metrics["total_requests"] += 1
+        logger.info(f"🔍 Dealer Dashboard request for: {dealer_name}")
+        
+        if not dealer_name or not str(dealer_name).strip():
             self.metrics["failed_requests"] += 1
-            logger.error(f"Dealer dashboard error: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def get_warehouse_dashboard(self, warehouse_name: str) -> AnalyticsResponse:
-        """Get Warehouse Dashboard - PostgreSQL only."""
-        try:
-            self.metrics["total_requests"] += 1
-            logger.info(f"🔍 Warehouse Dashboard request for: {warehouse_name}")
-            
-            if not warehouse_name or not str(warehouse_name).strip():
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error="Warehouse name is required")
-            
-            if not hasattr(self.repo, 'get_warehouse_dashboard'):
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error="Warehouse dashboard not available")
-            
-            result = self.repo.get_warehouse_dashboard(warehouse_name.strip())
-            
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                if "suggestions" in result:
-                    return AnalyticsResponse(
-                        success=False, 
-                        error=result["error"],
-                        data={"suggestions": result.get("suggestions", [])}
-                    )
-                return AnalyticsResponse(success=False, error=result["error"])
-            
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-            
-        except Exception as e:
+            return AnalyticsResponse(success=False, error="Dealer name is required")
+        
+        # Try 360 dashboard first
+        if hasattr(self.repo, 'get_dealer_360_dashboard'):
+            try:
+                logger.info(f"📊 Attempting 360 dashboard for: {dealer_name}")
+                result = self.repo.get_dealer_360_dashboard(dealer_name.strip())
+                if "error" not in result:
+                    result['_dashboard_type'] = '360'
+                    self.metrics["successful_requests"] += 1
+                    logger.info(f"✅ 360 dashboard returned successfully for: {dealer_name}")
+                    return AnalyticsResponse(success=True, data=result)
+                else:
+                    logger.warning(f"⚠️ 360 dashboard returned error: {result.get('error')}")
+            except Exception as e:
+                logger.warning(f"⚠️ 360 dashboard failed, falling back: {e}")
+        
+        # Fallback to legacy
+        if not hasattr(self.repo, 'get_dealer_dashboard'):
             self.metrics["failed_requests"] += 1
-            logger.error(f"Warehouse dashboard error: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def get_city_dashboard(self, city_name: str) -> AnalyticsResponse:
-        """Get City Dashboard - PostgreSQL only."""
-        try:
-            self.metrics["total_requests"] += 1
-            logger.info(f"🔍 City Dashboard request for: {city_name}")
-            
-            if not city_name or not str(city_name).strip():
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error="City name is required")
-            
-            if not hasattr(self.repo, 'get_city_dashboard'):
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error="City dashboard not available")
-            
-            result = self.repo.get_city_dashboard(city_name.strip())
-            
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                if "suggestions" in result:
-                    return AnalyticsResponse(
-                        success=False, 
-                        error=result["error"],
-                        data={"suggestions": result.get("suggestions", [])}
-                    )
-                return AnalyticsResponse(success=False, error=result["error"])
-            
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-            
-        except Exception as e:
+            error_msg = "Dealer dashboard not available"
+            logger.error(f"❌ {error_msg}")
+            return AnalyticsResponse(success=False, error=error_msg)
+        
+        logger.info(f"📊 Using legacy dealer dashboard for: {dealer_name}")
+        result = self.repo.get_dealer_dashboard(dealer_name.strip())
+        
+        if "error" in result:
             self.metrics["failed_requests"] += 1
-            logger.error(f"City dashboard error: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def get_product_dashboard(self, product_name: str) -> AnalyticsResponse:
-        """Get Product Dashboard - PostgreSQL only."""
-        try:
-            self.metrics["total_requests"] += 1
-            logger.info(f"🔍 Product Dashboard request for: {product_name}")
-            
-            if not product_name or not str(product_name).strip():
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error="Product name is required")
-            
-            if not hasattr(self.repo, 'get_product_dashboard'):
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error="Product dashboard not available")
-            
-            result = self.repo.get_product_dashboard(product_name.strip())
-            
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                if "suggestions" in result:
-                    return AnalyticsResponse(
-                        success=False, 
-                        error=result["error"],
-                        data={"suggestions": result.get("suggestions", [])}
-                    )
-                return AnalyticsResponse(success=False, error=result["error"])
-            
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-            
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Product dashboard error: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def get_pgi_dashboard(self) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            if not hasattr(self.repo, 'get_pgi_dashboard'):
-                return AnalyticsResponse(success=False, error="PGI dashboard not available")
-            result = self.repo.get_pgi_dashboard()
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"PGI dashboard error: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def get_pod_dashboard(self) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            if not hasattr(self.repo, 'get_pod_dashboard'):
-                return AnalyticsResponse(success=False, error="POD dashboard not available")
-            result = self.repo.get_pod_dashboard()
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"POD dashboard error: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def get_delivery_dashboard(self) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            if not hasattr(self.repo, 'get_delivery_dashboard'):
-                return AnalyticsResponse(success=False, error="Delivery dashboard not available")
-            result = self.repo.get_delivery_dashboard()
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Delivery dashboard error: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def get_executive_dashboard(self) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            if not hasattr(self.repo, 'get_executive_dashboard'):
-                return AnalyticsResponse(success=False, error="Executive dashboard not available")
-            result = self.repo.get_executive_dashboard()
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Executive dashboard error: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def get_control_tower_dashboard(self) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            if not hasattr(self.repo, 'get_control_tower_dashboard'):
-                return AnalyticsResponse(success=False, error="Control tower not available")
-            result = self.repo.get_control_tower_dashboard()
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Control tower error: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def get_revenue_dashboard(self) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            if not hasattr(self.repo, 'get_revenue_dashboard'):
-                return AnalyticsResponse(success=False, error="Revenue dashboard not available")
-            result = self.repo.get_revenue_dashboard()
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Revenue dashboard error: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def get_ranking_dashboard(self, limit: int = 10) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            if not hasattr(self.repo, 'get_ranking_dashboard'):
-                return AnalyticsResponse(success=False, error="Ranking dashboard not available")
-            result = self.repo.get_ranking_dashboard(limit)
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Ranking dashboard error: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def get_aging_dashboard(self) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            if not hasattr(self.repo, 'get_aging_dashboard'):
-                return AnalyticsResponse(success=False, error="Aging dashboard not available")
-            result = self.repo.get_aging_dashboard()
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Aging dashboard error: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
+            if "suggestions" in result:
+                logger.info(f"💡 Suggestions found for: {dealer_name}")
+                return AnalyticsResponse(
+                    success=False, 
+                    error=result["error"],
+                    data={"suggestions": result.get("suggestions", [])}
+                )
+            logger.error(f"❌ Dealer dashboard error for {dealer_name}: {result.get('error')}")
+            return AnalyticsResponse(success=False, error=result["error"])
+        
+        self.metrics["successful_requests"] += 1
+        logger.info(f"✅ Dealer dashboard returned successfully for: {dealer_name}")
+        return AnalyticsResponse(success=True, data=result)
+        
+    except Exception as e:
+        self.metrics["failed_requests"] += 1
+        logger.error(f"❌ Dealer dashboard error for {dealer_name}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return AnalyticsResponse(success=False, error=f"Failed to load dealer data: {str(e)[:100]}")
+
+
+
 
 # ==========================================================
 # BLOCK 29: FACTORY FUNCTION (FIXED v9.0)
