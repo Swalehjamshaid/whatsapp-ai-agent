@@ -1235,7 +1235,6 @@ class AIOrchestrator:
 # ==========================================================
 # BLOCK 12: SINGLETON & WRAPPER FUNCTIONS
 # ==========================================================
-# ==========================================================
 # BLOCK 12: SINGLETON & WRAPPER FUNCTIONS (FIXED v4.0)
 # ==========================================================
 
@@ -1397,6 +1396,9 @@ def get_orchestrator_status() -> Dict[str, Any]:
         "conversation_count": len(_orchestrator.conversation_cache) if _orchestrator else 0,
         "metrics": _orchestrator.metrics if _orchestrator else {}
     }
+
+
+# ==========================================================
 # ==========================================================
 # BLOCK 13: EXPORTS
 # ==========================================================
