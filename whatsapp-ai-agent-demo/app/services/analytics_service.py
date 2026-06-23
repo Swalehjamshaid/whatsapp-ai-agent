@@ -1,27 +1,20 @@
 # ==========================================================
-# FILE: app/services/analytics_service.py (v30.0 - PRODUCTION)
-# ==========================================================
-# PURPOSE: PRIMARY ANALYTICS ENGINE - PostgreSQL Only
-# VERSION: 30.0 - Complete Production Analytics Engine
-# ==========================================================
-# ==========================================================
-# ADD THIS IMPORT AT THE TOP OF THE FILE
+# FILE: app/services/ai_provider_service.py (v30.0 - FULLY INTEGRATED)
+# PURPOSE: COMPLETE AI ORCHESTRATION WITH ALL SERVICES INTEGRATED
+# VERSION: 30.0 - Full Integration with Analytics, Distance, Dealer Analytics
 # ==========================================================
 
-from app.services.dealer_analytics_service import Dealer360Dashboard
-from typing import Optional, Dict, Any, List, Tuple
-from datetime import datetime, timedelta
-from loguru import logger
 import time
 import uuid
 import re
-import math
-from collections import defaultdict
+import os
+import requests
+from typing import Optional, Callable, Any, Dict, List, Tuple
+from dataclasses import dataclass, field
+from cachetools import TTLCache, LRUCache
+from loguru import logger
 from sqlalchemy.orm import Session
-from sqlalchemy import func, and_, or_, case, desc, asc, cast, String, text, distinct
-from functools import lru_cache
-import json
-import hashlib
+from sqlalchemy import func, cast, String, and_, or_
 
 # ==========================================================
 # BLOCK 1: POSTGRESQL IMPORTS - THE SOURCE OF TRUTH
@@ -31,2880 +24,1654 @@ from app.models import DeliveryReport
 from app.database import SessionLocal, check_database_connection
 
 # ==========================================================
-# BLOCK 2: CONSTANTS
+# BLOCK 1.5: SERVICE IMPORTS - FULL INTEGRATION
 # ==========================================================
 
-CACHE_TTL_SECONDS = 300
-QUERY_TIMEOUT_SECONDS = 10
-MAX_RETRY_ATTEMPTS = 3
-MAX_RESPONSE_LENGTH = 2500
-SEARCH_LIMIT = 20
-TOP_LIMIT = 10
+try:
+    from app.services.analytics_service import get_analytics_service, AnalyticsResponse
+    logger.info("✅ Analytics service imported successfully")
+except ImportError as e:
+    logger.error(f"❌ Analytics service import failed: {e}")
+    get_analytics_service = None
+    AnalyticsResponse = None
+
+try:
+    from app.services.distance_service import DistanceService
+    logger.info("✅ Distance service imported successfully")
+except ImportError as e:
+    logger.error(f"❌ Distance service import failed: {e}")
+    DistanceService = None
+
+try:
+    from app.services.dealer_analytics_service import DealerAnalyticsService, format_dealer_360_dashboard
+    logger.info("✅ Dealer Analytics service imported successfully")
+except ImportError as e:
+    logger.error(f"❌ Dealer Analytics service import failed: {e}")
+    DealerAnalyticsService = None
+    format_dealer_360_dashboard = None
 
 # ==========================================================
-# BLOCK 3: RESPONSE CONTRACT
+# BLOCK 2: ANALYTICS SERVICE LOADER (FIXED v10.0)
 # ==========================================================
 
-class AnalyticsResponse:
-    """Standard response contract for all analytics endpoints"""
+def _create_response_class():
+    """Create a dummy response class for fallback."""
+    class DummyResponse:
+        def __init__(self, data=None, success=True, error=None):
+            self.data = data or {}
+            self.success = success
+            self.error = error
     
-    def __init__(self, success: bool = True, data: Dict[str, Any] = None, error: str = None, error_id: str = None):
-        self.success = success
-        self.data = data or {}
-        self.error = error
-        self.error_id = error_id or str(uuid.uuid4())[:8]
-        self.timestamp = datetime.now().isoformat()
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "success": self.success,
-            "data": self.data,
-            "error": self.error,
-            "error_id": self.error_id,
-            "timestamp": self.timestamp
-        }
+    return DummyResponse
 
-# ==========================================================
-# BLOCK 4: DATABASE HEALTH CHECKER
-# ==========================================================
-
-class DatabaseHealthChecker:
-    """PostgreSQL health check and monitoring"""
-    
-    @staticmethod
-    def test_connection() -> Dict[str, Any]:
-        """Test PostgreSQL connection and return status"""
-        try:
-            db = SessionLocal()
-            total_records = db.query(DeliveryReport).count()
-            db.close()
-            
-            logger.info(f"✅ PostgreSQL connected! Found {total_records} records in delivery_reports")
-            
-            return {
-                "connected": True,
-                "total_records": total_records,
-                "table_name": "delivery_reports",
-                "status": "healthy",
-                "message": f"Connected successfully. Total Records: {total_records}"
-            }
-        except Exception as e:
-            logger.error(f"❌ Database connection test failed: {e}")
-            return {
-                "connected": False,
-                "error": str(e),
-                "status": "unhealthy",
-                "message": f"Connection failed: {str(e)}"
-            }
-    
-    @staticmethod
-    def get_table_stats() -> Dict[str, Any]:
-        """Get table statistics from PostgreSQL"""
-        try:
-            db = SessionLocal()
-            
-            total = db.query(DeliveryReport).count()
-            dealers = db.query(func.distinct(DeliveryReport.customer_name)).filter(
-                DeliveryReport.customer_name.isnot(None),
-                DeliveryReport.customer_name != ''
-            ).count()
-            warehouses = db.query(func.distinct(DeliveryReport.warehouse)).filter(
-                DeliveryReport.warehouse.isnot(None),
-                DeliveryReport.warehouse != ''
-            ).count()
-            cities = db.query(func.distinct(DeliveryReport.ship_to_city)).filter(
-                DeliveryReport.ship_to_city.isnot(None),
-                DeliveryReport.ship_to_city != ''
-            ).count()
-            
-            db.close()
-            
-            return {
-                "total_records": total,
-                "unique_dealers": dealers,
-                "unique_warehouses": warehouses,
-                "unique_cities": cities,
-                "status": "healthy"
-            }
-        except Exception as e:
-            logger.error(f"Table stats error: {e}")
-            return {"error": str(e), "status": "unhealthy"}
-
-# ==========================================================
-# BLOCK 5: DATE VALIDATION ENGINE (PRODUCTION FIX v38.0)
-# ==========================================================
-
-from functools import lru_cache
-from typing import Optional, Dict, Any, List, Tuple
-from datetime import datetime, timedelta
-from loguru import logger
-
-class DateValidator:
+def _get_analytics_service():
     """
-    PRODUCTION DATE VALIDATION ENGINE v38.0
-    
-    CRITICAL BUSINESS RULE:
-    =======================
-    ALL dates are interpreted as YEAR-DATE-MONTH (YYYY-DD-MM)
-    
-    Position 1: Year (YYYY)
-    Position 2: Date/Day (DD) 
-    Position 3: Month (MM)
-    
-    INTELLIGENT PARSING LOGIC:
-    ===========================
-    1. Try YYYY-DD-MM first (business format)
-    2. If month > 12, auto-swap to YYYY-MM-DD (ISO format)
-    3. This handles both formats automatically
+    Load analytics service with comprehensive validation.
+    BLOCK 2 - FIXED v10.0 - PRODUCTION GRADE
+    ALWAYS returns valid service and response class.
     """
-    
-    @staticmethod
-    @lru_cache(maxsize=1024)
-    def parse_business_date(raw_value: Any) -> Optional[datetime]:
-        """Parse date using INTELLIGENT format detection."""
-        if raw_value is None:
-            return None
-        
-        if isinstance(raw_value, datetime):
-            return raw_value
-        
-        raw_str = str(raw_value).strip()
-        if not raw_str:
-            return None
-        
-        try:
-            parts = raw_str.split("-")
-            if len(parts) != 3:
-                logger.warning(f"⚠️ Invalid date format (expected 3 parts): {raw_str}")
-                return None
-            
-            year = int(parts[0])
-            pos2 = int(parts[1])
-            pos3 = int(parts[2])
-            
-            if not (1900 <= year <= 2100):
-                logger.warning(f"⚠️ Year out of range: {year}")
-                return None
-            
-            # Try YYYY-DD-MM first
-            if 1 <= pos3 <= 12 and 1 <= pos2 <= 31:
-                try:
-                    result = datetime(year, pos3, pos2)
-                    logger.debug(f"✅ Parsed as YYYY-DD-MM: {raw_str} → {result.strftime('%d-%b-%Y')}")
-                    return result
-                except ValueError:
-                    pass
-            
-            # Try YYYY-MM-DD (auto-swap)
-            if 1 <= pos2 <= 12 and 1 <= pos3 <= 31:
-                try:
-                    result = datetime(year, pos2, pos3)
-                    logger.debug(f"✅ Parsed as YYYY-MM-DD (auto-swapped): {raw_str} → {result.strftime('%d-%b-%Y')}")
-                    return result
-                except ValueError:
-                    pass
-            
-            logger.error(f"❌ Date parsing error: {raw_str} - All formats failed")
-            return None
-            
-        except (ValueError, TypeError) as e:
-            logger.error(f"❌ Date parsing error: {raw_str} - {e}")
-            return None
-    
-    @staticmethod
-    def interpret_business_date(raw_date: Optional[datetime]) -> Optional[datetime]:
-        """Alias for parse_business_date."""
-        return DateValidator.parse_business_date(raw_date)
-    
-    @staticmethod
-    def validate_date_sequence(
-        create_date: Optional[datetime],
-        pgi_date: Optional[datetime],
-        pod_date: Optional[datetime]
-    ) -> Tuple[bool, List[str], str]:
-        """Validate chronological order with all 5 scenarios."""
-        issues = []
-        
-        create_date = DateValidator.parse_business_date(create_date)
-        pgi_date = DateValidator.parse_business_date(pgi_date)
-        pod_date = DateValidator.parse_business_date(pod_date)
-        
-        create_exists = create_date is not None
-        pgi_exists = pgi_date is not None
-        pod_exists = pod_date is not None
-        
-        # SCENARIO 4: POD Exists, PGI Missing
-        if pod_exists and not pgi_exists:
-            issues.append("⚠️ POD Received without PGI Completion")
-            logger.warning(f"SCENARIO_4: POD exists but PGI missing")
-            return False, issues, "SCENARIO_4_POD_WITHOUT_PGI"
-        
-        # SCENARIO 5: POD < PGI
-        if pod_exists and pgi_exists and pod_date < pgi_date:
-            issues.append(f"⚠️ POD ({pod_date.strftime('%d-%b-%Y')}) occurs before PGI ({pgi_date.strftime('%d-%b-%Y')})")
-            logger.warning(f"SCENARIO_5: POD before PGI")
-            return False, issues, "SCENARIO_5_POD_BEFORE_PGI"
-        
-        # VALID SCENARIOS 1, 2, 3
-        if create_exists:
-            if pgi_exists and pgi_date < create_date:
-                issues.append(f"⚠️ PGI ({pgi_date.strftime('%d-%b-%Y')}) before Create ({create_date.strftime('%d-%b-%Y')})")
-                return False, issues, "INVALID_PGI_BEFORE_CREATE"
-            
-            if pod_exists and pod_date < create_date:
-                issues.append(f"⚠️ POD ({pod_date.strftime('%d-%b-%Y')}) before Create ({create_date.strftime('%d-%b-%Y')})")
-                return False, issues, "INVALID_POD_BEFORE_CREATE"
-        
-        if create_exists and pgi_exists and pod_exists:
-            scenario = "SCENARIO_1_COMPLETE"
-        elif create_exists and pgi_exists and not pod_exists:
-            scenario = "SCENARIO_2_POD_PENDING"
-        elif create_exists and not pgi_exists and not pod_exists:
-            scenario = "SCENARIO_3_PGI_PENDING"
-        else:
-            issues.append("⚠️ Invalid combination: Missing create date")
-            return False, issues, "UNKNOWN"
-        
-        return True, issues, scenario
-    
-    @staticmethod
-    def calculate_aging(
-        create_date: Optional[datetime],
-        pgi_date: Optional[datetime],
-        pod_date: Optional[datetime]
-    ) -> Dict[str, Any]:
-        """Calculate aging - ALWAYS calculate values."""
-        
-        create_date = DateValidator.parse_business_date(create_date)
-        pgi_date = DateValidator.parse_business_date(pgi_date)
-        pod_date = DateValidator.parse_business_date(pod_date)
-        
-        create_exists = create_date is not None
-        pgi_exists = pgi_date is not None
-        pod_exists = pod_date is not None
-        
-        today = datetime.now().date()
-        
-        result = {
-            "delivery_aging": None,
-            "pod_aging": None,
-            "total_cycle": None,
-            "delivery_aging_text": "N/A",
-            "pod_aging_text": "N/A",
-            "total_cycle_text": "N/A",
-            "is_valid": True,
-            "issues": [],
-            "status": "valid",
-            "pgi_completed": False,
-            "pod_received": False,
-            "delivery_completed": False,
-            "scenario": "UNKNOWN",
-        }
-        
-        # Calculate Delivery Aging
-        if create_exists and pgi_exists:
-            delivery_aging = max(0, (pgi_date.date() - create_date.date()).days)
-            result["delivery_aging"] = delivery_aging
-            result["delivery_aging_text"] = DateValidator._format_aging(delivery_aging)
-            result["pgi_completed"] = True
-        elif create_exists and not pgi_exists:
-            delivery_aging = max(0, (today - create_date.date()).days)
-            result["delivery_aging"] = delivery_aging
-            result["delivery_aging_text"] = f"{DateValidator._format_aging(delivery_aging)} (Pending PGI)"
-        
-        # Calculate POD Aging
-        if pgi_exists and pod_exists:
-            pod_aging = max(0, (pod_date.date() - pgi_date.date()).days)
-            result["pod_aging"] = pod_aging
-            result["pod_aging_text"] = DateValidator._format_aging(pod_aging)
-            result["pod_received"] = True
-        elif pgi_exists and not pod_exists:
-            pod_aging = max(0, (today - pgi_date.date()).days)
-            result["pod_aging"] = pod_aging
-            result["pod_aging_text"] = f"{DateValidator._format_aging(pod_aging)} (Pending POD)"
-        elif create_exists and pod_exists and not pgi_exists:
-            pod_aging = max(0, (pod_date.date() - create_date.date()).days)
-            result["pod_aging"] = pod_aging
-            result["pod_aging_text"] = f"{DateValidator._format_aging(pod_aging)} (No PGI)"
-            result["pod_received"] = True
-        
-        # Calculate Total Cycle
-        if create_exists and pod_exists:
-            total_cycle = max(0, (pod_date.date() - create_date.date()).days)
-            result["total_cycle"] = total_cycle
-            result["total_cycle_text"] = DateValidator._format_aging(total_cycle)
-            result["delivery_completed"] = True
-        elif create_exists and not pod_exists:
-            if pgi_exists:
-                result["total_cycle_text"] = "In Progress (POD Pending)"
-            else:
-                result["total_cycle_text"] = "In Progress (PGI Pending)"
-        
-        # Validate Scenarios
-        is_valid, issues, scenario = DateValidator.validate_date_sequence(
-            create_date, pgi_date, pod_date
-        )
-        
-        result["is_valid"] = is_valid
-        result["issues"] = issues
-        result["scenario"] = scenario
-        result["status"] = "valid" if is_valid else "invalid"
-        
-        if scenario == "SCENARIO_5_POD_BEFORE_PGI":
-            issues.append(f"⚠️ POD occurs before PGI - Data quality issue")
-        
-        logger.info(f"📊 Aging: {scenario} | Delivery: {result['delivery_aging_text']} | POD: {result['pod_aging_text']} | Total: {result['total_cycle_text']}")
-        
-        return result
-    
-    @staticmethod
-    def _format_aging(days: int) -> str:
-        """Format aging for display."""
-        if days is None:
-            return "N/A"
-        if days == 0:
-            return "Same Day"
-        elif days == 1:
-            return "1 Day"
-        else:
-            return f"{days} Days"
-    
-    @staticmethod
-    def validate_dashboard_compatibility(result: Dict[str, Any]) -> bool:
-        """Validate result is compatible with all dashboards."""
-        required_fields = [
-            "delivery_aging", "pod_aging", "total_cycle",
-            "delivery_aging_text", "pod_aging_text", "total_cycle_text",
-            "is_valid", "status", "pgi_completed", "pod_received",
-            "delivery_completed", "scenario"
-        ]
-        
-        for field in required_fields:
-            if field not in result:
-                logger.error(f"❌ Missing required field: {field}")
-                return False
-        
-        if result["pod_received"]:
-            if "(Pending)" in result["pod_aging_text"]:
-                logger.error(f"❌ Contradiction: POD received but aging shows Pending")
-                return False
-            if result["total_cycle_text"] == "In Progress (POD Pending)":
-                logger.error(f"❌ Contradiction: POD received but Total Cycle shows Pending")
-                return False
-            if result["scenario"] not in ["SCENARIO_1_COMPLETE", "SCENARIO_4_POD_WITHOUT_PGI"]:
-                logger.error(f"❌ Contradiction: POD received but scenario is {result['scenario']}")
-                return False
-        
-        return True
-
-# ==========================================================
-# BLOCK 6: KPI ENGINE
-# ==========================================================
-
-class KPIEngine:
-    """Business KPI calculation engine"""
-    
-    @staticmethod
-    def calculate_delivery_rate(delivered_dns: int, total_dns: int) -> float:
-        if total_dns == 0:
-            return 0.0
-        return round((delivered_dns / total_dns) * 100, 1)
-    
-    @staticmethod
-    def calculate_pgi_rate(pgi_completed: int, in_transit: int, total_dns: int) -> float:
-        if total_dns == 0:
-            return 0.0
-        return round(((pgi_completed + in_transit) / total_dns) * 100, 1)
-    
-    @staticmethod
-    def calculate_pod_rate(pod_completed: int, delivered_dns: int) -> float:
-        if delivered_dns == 0:
-            return 0.0
-        return round((pod_completed / delivered_dns) * 100, 1)
-    
-    @staticmethod
-    def calculate_health_score(metrics: Dict[str, float]) -> int:
-        delivery_rate = metrics.get("delivery_rate", 0)
-        pod_rate = metrics.get("pod_rate", 0)
-        avg_aging = metrics.get("avg_aging", 0)
-        revenue = metrics.get("revenue", 0)
-        
-        score = (
-            (delivery_rate / 100 * 40) +
-            (pod_rate / 100 * 30) +
-            ((100 - min(avg_aging / 30 * 100, 100)) / 100 * 20) +
-            (min(revenue / 1000000 * 100, 100) / 100 * 10)
-        )
-        return min(int(score), 100)
-    
-    @staticmethod
-    def calculate_risk_level(delivery_rate: float, pod_rate: float, avg_aging: float) -> Tuple[str, int]:
-        delivery_risk = 0 if delivery_rate >= 90 else 50 if delivery_rate >= 70 else 100
-        pod_risk = 0 if pod_rate >= 90 else 50 if pod_rate >= 70 else 100
-        aging_risk = 0 if avg_aging <= 3 else 50 if avg_aging <= 7 else 100
-        
-        risk_score = (delivery_risk + pod_risk + aging_risk) // 3
-        
-        if risk_score <= 25:
-            return "Low", risk_score
-        elif risk_score <= 50:
-            return "Medium", risk_score
-        elif risk_score <= 75:
-            return "High", risk_score
-        else:
-            return "Critical", risk_score
-
-# ==========================================================
-# BLOCK 7: SEARCH ENGINE
-# ==========================================================
-
-class SearchEngine:
-    """Universal PostgreSQL Search Engine"""
-    
-    def __init__(self, db: Session):
-        self.db = db
-    
-    def search_dn(self, query: str, exact: bool = False) -> List[Dict[str, Any]]:
-        """Search for DNs in PostgreSQL"""
-        if not query or not query.strip():
-            return []
-        
-        query_clean = re.sub(r'[^0-9]', '', str(query).strip())
-        if len(query_clean) < 8 or len(query_clean) > 12:
-            return []
-        
-        try:
-            if exact:
-                results = self.db.query(DeliveryReport).filter(
-                    cast(DeliveryReport.dn_no, String) == query_clean
-                ).limit(SEARCH_LIMIT).all()
-            else:
-                results = self.db.query(DeliveryReport).filter(
-                    DeliveryReport.dn_no.like(f"%{query_clean}%")
-                ).limit(SEARCH_LIMIT).all()
-            
-            return [{
-                "dn_no": r.dn_no,
-                "customer_name": r.customer_name,
-                "warehouse": r.warehouse,
-                "ship_to_city": r.ship_to_city,
-                "dn_amount": r.dn_amount,
-                "dn_qty": r.dn_qty,
-                "delivery_status": r.delivery_status
-            } for r in results]
-            
-        except Exception as e:
-            logger.error(f"DN search error: {e}")
-            return []
-    
-    def search_dealer(self, query: str, exact: bool = False) -> List[Dict[str, Any]]:
-        """Search for dealers in PostgreSQL"""
-        if not query or not query.strip():
-            return []
-        
-        query_clean = query.strip()
-        
-        try:
-            if exact:
-                results = self.db.query(
-                    func.distinct(DeliveryReport.customer_name)
-                ).filter(
-                    func.lower(DeliveryReport.customer_name) == func.lower(query_clean)
-                ).limit(SEARCH_LIMIT).all()
-            else:
-                results = self.db.query(
-                    func.distinct(DeliveryReport.customer_name)
-                ).filter(
-                    DeliveryReport.customer_name.ilike(f"%{query_clean}%")
-                ).limit(SEARCH_LIMIT).all()
-            
-            if not results and not exact:
-                tokens = query_clean.split()
-                for token in tokens:
-                    if len(token) > 2:
-                        token_results = self.db.query(
-                            func.distinct(DeliveryReport.customer_name)
-                        ).filter(
-                            DeliveryReport.customer_name.ilike(f"%{token}%")
-                        ).limit(SEARCH_LIMIT).all()
-                        if token_results:
-                            results = token_results
-                            break
-            
-            return [{"dealer_name": r[0]} for r in results if r[0]]
-            
-        except Exception as e:
-            logger.error(f"Dealer search error: {e}")
-            return []
-    
-    def search_warehouse(self, query: str) -> List[Dict[str, Any]]:
-        """Search for warehouses in PostgreSQL"""
-        if not query or not query.strip():
-            return []
-        
-        query_clean = query.strip()
-        
-        try:
-            results = self.db.query(
-                func.distinct(DeliveryReport.warehouse)
-            ).filter(
-                DeliveryReport.warehouse.ilike(f"%{query_clean}%")
-            ).filter(
-                DeliveryReport.warehouse.isnot(None),
-                DeliveryReport.warehouse != ''
-            ).limit(SEARCH_LIMIT).all()
-            
-            return [{"warehouse": r[0]} for r in results if r[0]]
-            
-        except Exception as e:
-            logger.error(f"Warehouse search error: {e}")
-            return []
-    
-    def search_city(self, query: str) -> List[Dict[str, Any]]:
-        """Search for cities in PostgreSQL"""
-        if not query or not query.strip():
-            return []
-        
-        query_clean = query.strip()
-        
-        try:
-            results = self.db.query(
-                func.distinct(DeliveryReport.ship_to_city)
-            ).filter(
-                DeliveryReport.ship_to_city.ilike(f"%{query_clean}%")
-            ).filter(
-                DeliveryReport.ship_to_city.isnot(None),
-                DeliveryReport.ship_to_city != ''
-            ).limit(SEARCH_LIMIT).all()
-            
-            return [{"city": r[0]} for r in results if r[0]]
-            
-        except Exception as e:
-            logger.error(f"City search error: {e}")
-            return []
-    
-    def search_product(self, query: str) -> List[Dict[str, Any]]:
-        """Search for products in PostgreSQL"""
-        if not query or not query.strip():
-            return []
-        
-        query_clean = query.strip()
-        
-        try:
-            results = self.db.query(
-                func.distinct(DeliveryReport.customer_model)
-            ).filter(
-                DeliveryReport.customer_model.ilike(f"%{query_clean}%")
-            ).filter(
-                DeliveryReport.customer_model.isnot(None),
-                DeliveryReport.customer_model != ''
-            ).limit(SEARCH_LIMIT).all()
-            
-            if not results:
-                results = self.db.query(
-                    func.distinct(DeliveryReport.material_no)
-                ).filter(
-                    DeliveryReport.material_no.ilike(f"%{query_clean}%")
-                ).filter(
-                    DeliveryReport.material_no.isnot(None),
-                    DeliveryReport.material_no != ''
-                ).limit(SEARCH_LIMIT).all()
-                return [{"product": r[0]} for r in results if r[0]]
-            
-            return [{"product": r[0]} for r in results if r[0]]
-            
-        except Exception as e:
-            logger.error(f"Product search error: {e}")
-            return []
-    
-    def search_division(self, query: str) -> List[Dict[str, Any]]:
-        """Search for divisions in PostgreSQL"""
-        if not query or not query.strip():
-            return []
-        
-        query_clean = query.strip()
-        
-        try:
-            results = self.db.query(
-                func.distinct(DeliveryReport.division)
-            ).filter(
-                DeliveryReport.division.ilike(f"%{query_clean}%")
-            ).filter(
-                DeliveryReport.division.isnot(None),
-                DeliveryReport.division != ''
-            ).limit(SEARCH_LIMIT).all()
-            
-            return [{"division": r[0]} for r in results if r[0]]
-            
-        except Exception as e:
-            logger.error(f"Division search error: {e}")
-            return []
-    
-    def search_sales_office(self, query: str) -> List[Dict[str, Any]]:
-        """Search for sales offices in PostgreSQL"""
-        if not query or not query.strip():
-            return []
-        
-        query_clean = query.strip()
-        
-        try:
-            results = self.db.query(
-                func.distinct(DeliveryReport.sales_office)
-            ).filter(
-                DeliveryReport.sales_office.ilike(f"%{query_clean}%")
-            ).filter(
-                DeliveryReport.sales_office.isnot(None),
-                DeliveryReport.sales_office != ''
-            ).limit(SEARCH_LIMIT).all()
-            
-            return [{"sales_office": r[0]} for r in results if r[0]]
-            
-        except Exception as e:
-            logger.error(f"Sales office search error: {e}")
-            return []
-    
-    def search_sales_manager(self, query: str) -> List[Dict[str, Any]]:
-        """Search for sales managers in PostgreSQL"""
-        if not query or not query.strip():
-            return []
-        
-        query_clean = query.strip()
-        
-        try:
-            results = self.db.query(
-                func.distinct(DeliveryReport.sales_manager)
-            ).filter(
-                DeliveryReport.sales_manager.ilike(f"%{query_clean}%")
-            ).filter(
-                DeliveryReport.sales_manager.isnot(None),
-                DeliveryReport.sales_manager != ''
-            ).limit(SEARCH_LIMIT).all()
-            
-            return [{"sales_manager": r[0]} for r in results if r[0]]
-            
-        except Exception as e:
-            logger.error(f"Sales manager search error: {e}")
-            return []
-    
-    def verify_dn_exists(self, dn_no: str) -> Dict[str, Any]:
-        """Verify if a DN exists in PostgreSQL"""
-        query_clean = re.sub(r'[^0-9]', '', str(dn_no).strip())
-        if len(query_clean) < 8 or len(query_clean) > 12:
-            return {"dn": dn_no, "found": False, "error": "Invalid DN format"}
-        
-        try:
-            result = self.db.query(DeliveryReport).filter(
-                cast(DeliveryReport.dn_no, String) == query_clean
-            ).first()
-            
-            if result:
-                return {
-                    "dn": dn_no,
-                    "found": True,
-                    "normalized": query_clean,
-                    "record": {
-                        "dn_no": result.dn_no,
-                        "customer_name": result.customer_name,
-                        "warehouse": result.warehouse,
-                        "ship_to_city": result.ship_to_city,
-                        "dn_qty": result.dn_qty,
-                        "dn_amount": result.dn_amount
-                    }
-                }
-            
-            return {"dn": dn_no, "found": False, "normalized": query_clean}
-            
-        except Exception as e:
-            logger.error(f"DN verification error: {e}")
-            return {"dn": dn_no, "found": False, "error": str(e)}
-    
-    def verify_dealer_exists(self, dealer_name: str) -> bool:
-        """Verify if a dealer exists in PostgreSQL"""
-        if not dealer_name or not dealer_name.strip():
-            return False
-        
-        try:
-            result = self.db.query(DeliveryReport).filter(
-                func.lower(DeliveryReport.customer_name) == func.lower(dealer_name.strip())
-            ).first()
-            return result is not None
-        except Exception as e:
-            logger.error(f"Dealer verification error: {e}")
-            return False
-    
-    def verify_city_exists(self, city_name: str) -> bool:
-        """Verify if a city exists in PostgreSQL"""
-        if not city_name or not city_name.strip():
-            return False
-        
-        try:
-            result = self.db.query(DeliveryReport).filter(
-                func.lower(DeliveryReport.ship_to_city) == func.lower(city_name.strip())
-            ).first()
-            return result is not None
-        except Exception as e:
-            logger.error(f"City verification error: {e}")
-            return False
-    
-    def verify_warehouse_exists(self, warehouse_name: str) -> bool:
-        """Verify if a warehouse exists in PostgreSQL"""
-        if not warehouse_name or not warehouse_name.strip():
-            return False
-        
-        try:
-            result = self.db.query(DeliveryReport).filter(
-                func.lower(DeliveryReport.warehouse) == func.lower(warehouse_name.strip())
-            ).first()
-            return result is not None
-        except Exception as e:
-            logger.error(f"Warehouse verification error: {e}")
-            return False
-    
-    def verify_product_exists(self, product_name: str) -> bool:
-        """Verify if a product exists in PostgreSQL"""
-        if not product_name or not product_name.strip():
-            return False
-        
-        try:
-            result = self.db.query(DeliveryReport).filter(
-                func.lower(DeliveryReport.customer_model) == func.lower(product_name.strip())
-            ).first()
-            return result is not None
-        except Exception as e:
-            logger.error(f"Product verification error: {e}")
-            return False
-
-# ==========================================================
-# BLOCK 8: ENTITY RESOLVER (FIXED - v3.0)
-# ==========================================================
-
-class EntityResolver:
-    """Entity resolution engine using PostgreSQL"""
-    
-    def __init__(self, db: Session):
-        self.db = db
-    
-    def resolve_dealer(self, dealer_input: str) -> Optional[str]:
-        """Resolve dealer name using PostgreSQL with 8 strategies."""
-        if not dealer_input or not dealer_input.strip():
-            return None
-        
-        dealer_input = dealer_input.strip()
-        start_time = time.time()
-        
-        try:
-            # STRATEGY 1: Exact match
-            result = self.db.query(DeliveryReport.customer_name).filter(
-                func.lower(DeliveryReport.customer_name) == func.lower(dealer_input)
-            ).first()
-            if result:
-                logger.info(f"✅ Dealer resolved (exact): {result[0]} in {time.time() - start_time:.3f}s")
-                return result[0]
-            
-            # STRATEGY 2: ILIKE match
-            result = self.db.query(DeliveryReport.customer_name).filter(
-                DeliveryReport.customer_name.ilike(f"%{dealer_input}%")
-            ).first()
-            if result:
-                logger.info(f"✅ Dealer resolved (ILIKE): {result[0]} in {time.time() - start_time:.3f}s")
-                return result[0]
-            
-            # STRATEGY 3: Token-based matching
-            tokens = dealer_input.split()
-            for token in tokens:
-                if len(token) > 2:
-                    result = self.db.query(DeliveryReport.customer_name).filter(
-                        DeliveryReport.customer_name.ilike(f"%{token}%")
-                    ).first()
-                    if result:
-                        logger.info(f"✅ Dealer resolved (token '{token}'): {result[0]} in {time.time() - start_time:.3f}s")
-                        return result[0]
-            
-            # STRATEGY 4: Fuzzy matching with LOWER threshold (0.3)
-            dealers = self.db.query(
-                func.distinct(DeliveryReport.customer_name)
-            ).filter(
-                DeliveryReport.customer_name.isnot(None),
-                DeliveryReport.customer_name != ''
-            ).limit(1000).all()
-            
-            best_match = None
-            best_score = 0
-            dealer_input_lower = dealer_input.lower()
-            dealer_input_tokens = set(dealer_input_lower.split())
-            
-            for dealer in dealers:
-                if not dealer[0]:
-                    continue
-                dealer_name = dealer[0]
-                dealer_lower = dealer_name.lower()
-                dealer_tokens = set(dealer_lower.split())
-                
-                scores = []
-                
-                # Token overlap score
-                if dealer_input_tokens and dealer_tokens:
-                    overlap = len(dealer_input_tokens & dealer_tokens)
-                    token_score = overlap / max(len(dealer_input_tokens), len(dealer_tokens))
-                    scores.append(token_score)
-                
-                # Character overlap score
-                char_overlap = len(set(dealer_input_lower) & set(dealer_lower))
-                char_score = char_overlap / max(len(dealer_input_lower), len(dealer_lower))
-                scores.append(char_score)
-                
-                # Contains score
-                if dealer_input_lower in dealer_lower or dealer_lower in dealer_input_lower:
-                    scores.append(0.8)
-                
-                # Word match score
-                for token in dealer_input_tokens:
-                    if len(token) > 2 and token in dealer_lower:
-                        scores.append(0.7)
-                
-                if scores:
-                    score = max(scores)
-                else:
-                    score = 0
-                
-                if score > best_score and score > 0.3:
-                    best_score = score
-                    best_match = dealer_name
-            
-            if best_match:
-                logger.info(f"✅ Dealer resolved (fuzzy, score={best_score:.2f}): {best_match} in {time.time() - start_time:.3f}s")
-                return best_match
-            
-            # STRATEGY 5: Partial word matching
-            for token in tokens:
-                if len(token) > 2:
-                    results = self.db.query(
-                        func.distinct(DeliveryReport.customer_name)
-                    ).filter(
-                        or_(
-                            DeliveryReport.customer_name.ilike(f"% {token} %"),
-                            DeliveryReport.customer_name.ilike(f"{token} %"),
-                            DeliveryReport.customer_name.ilike(f"% {token}")
-                        )
-                    ).limit(10).all()
-                    
-                    if results:
-                        logger.info(f"✅ Dealer resolved (partial word '{token}'): {results[0][0]} in {time.time() - start_time:.3f}s")
-                        return results[0][0]
-            
-            # STRATEGY 6: Remove common words
-            common_words = ['electronics', 'trading', 'company', 'enterprises', 'store', 'shop', 'sons', 'brothers', 'ltd', 'pvt', 'limited', 'and']
-            cleaned_input = dealer_input.lower()
-            for word in common_words:
-                cleaned_input = cleaned_input.replace(word, '').strip()
-            
-            if cleaned_input and len(cleaned_input) > 2:
-                result = self.db.query(DeliveryReport.customer_name).filter(
-                    DeliveryReport.customer_name.ilike(f"%{cleaned_input}%")
-                ).first()
-                if result:
-                    logger.info(f"✅ Dealer resolved (cleaned '{cleaned_input}'): {result[0]} in {time.time() - start_time:.3f}s")
-                    return result[0]
-            
-            # STRATEGY 7: First word only
-            first_word = tokens[0] if tokens else ""
-            if len(first_word) > 2:
-                result = self.db.query(DeliveryReport.customer_name).filter(
-                    DeliveryReport.customer_name.ilike(f"%{first_word}%")
-                ).first()
-                if result:
-                    logger.info(f"✅ Dealer resolved (first word '{first_word}'): {result[0]} in {time.time() - start_time:.3f}s")
-                    return result[0]
-            
-            # STRATEGY 8: Substring matching
-            for token in tokens:
-                if len(token) > 2:
-                    results = self.db.query(
-                        func.distinct(DeliveryReport.customer_name)
-                    ).filter(
-                        DeliveryReport.customer_name.ilike(f"%{token}%")
-                    ).limit(10).all()
-                    
-                    if results:
-                        logger.info(f"✅ Dealer resolved (substring '{token}'): {results[0][0]} in {time.time() - start_time:.3f}s")
-                        return results[0][0]
-            
-            logger.warning(f"❌ Dealer not found: '{dealer_input}' after all strategies")
-            return None
-            
-        except Exception as e:
-            logger.error(f"❌ Dealer resolution error: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return None
-    
-    def resolve_warehouse(self, warehouse_input: str) -> Optional[str]:
-        """Resolve warehouse name using PostgreSQL only"""
-        if not warehouse_input or not warehouse_input.strip():
-            return None
-        
-        warehouse_input = warehouse_input.strip()
-        
-        try:
-            result = self.db.query(DeliveryReport.warehouse).filter(
-                func.lower(DeliveryReport.warehouse) == func.lower(warehouse_input)
-            ).first()
-            if result:
-                return result[0]
-            
-            result = self.db.query(DeliveryReport.warehouse).filter(
-                DeliveryReport.warehouse.ilike(f"%{warehouse_input}%")
-            ).first()
-            if result:
-                return result[0]
-            
-            tokens = warehouse_input.split()
-            for token in tokens:
-                if len(token) > 2:
-                    result = self.db.query(DeliveryReport.warehouse).filter(
-                        DeliveryReport.warehouse.ilike(f"%{token}%")
-                    ).first()
-                    if result:
-                        return result[0]
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"Warehouse resolution error: {e}")
-            return None
-    
-    def resolve_city(self, city_input: str) -> Optional[str]:
-        """Resolve city name using PostgreSQL only"""
-        if not city_input or not city_input.strip():
-            return None
-        
-        city_input = city_input.strip()
-        
-        try:
-            result = self.db.query(DeliveryReport.ship_to_city).filter(
-                func.lower(DeliveryReport.ship_to_city) == func.lower(city_input)
-            ).first()
-            if result:
-                return result[0]
-            
-            result = self.db.query(DeliveryReport.ship_to_city).filter(
-                DeliveryReport.ship_to_city.ilike(f"%{city_input}%")
-            ).first()
-            if result:
-                return result[0]
-            
-            tokens = city_input.split()
-            for token in tokens:
-                if len(token) > 2:
-                    result = self.db.query(DeliveryReport.ship_to_city).filter(
-                        DeliveryReport.ship_to_city.ilike(f"%{token}%")
-                    ).first()
-                    if result:
-                        return result[0]
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"City resolution error: {e}")
-            return None
-    
-    def resolve_product(self, product_input: str) -> Optional[str]:
-        """Resolve product name using PostgreSQL only"""
-        if not product_input or not product_input.strip():
-            return None
-        
-        product_input = product_input.strip()
-        
-        try:
-            result = self.db.query(DeliveryReport.customer_model).filter(
-                func.lower(DeliveryReport.customer_model) == func.lower(product_input)
-            ).first()
-            if result and result[0]:
-                return result[0]
-            
-            result = self.db.query(DeliveryReport.material_no).filter(
-                func.lower(DeliveryReport.material_no) == func.lower(product_input)
-            ).first()
-            if result and result[0]:
-                return result[0]
-            
-            result = self.db.query(DeliveryReport.customer_model).filter(
-                DeliveryReport.customer_model.ilike(f"%{product_input}%")
-            ).first()
-            if result and result[0]:
-                return result[0]
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"Product resolution error: {e}")
-            return None
-    
-    def resolve_dn(self, dn_input: str) -> Optional[str]:
-        """Resolve DN number using PostgreSQL only"""
-        if not dn_input or not dn_input.strip():
-            return None
-        
-        normalized = re.sub(r'[^0-9]', '', str(dn_input).strip())
-        if len(normalized) < 8 or len(normalized) > 12:
-            return None
-        
-        try:
-            result = self.db.query(DeliveryReport.dn_no).filter(
-                cast(DeliveryReport.dn_no, String) == normalized
-            ).first()
-            if result:
-                return result[0]
-            return None
-            
-        except Exception as e:
-            logger.error(f"DN resolution error: {e}")
-            return None
-
-# ==========================================================
-# BLOCK 9: ANALYTICS REPOSITORY (FIXED WITH VALIDATION)
-
-# ==========================================================
-# BLOCK 9: ANALYTICS REPOSITORY (FIXED)
-# ==========================================================
-
-class AnalyticsRepository:
-    """PostgreSQL-driven analytics repository"""
-    
-    def __init__(self, db: Optional[Session] = None):
-        self.db = db or SessionLocal()
-        self._owned_db = db is None
-        self.resolver = EntityResolver(self.db)
-        self.search = SearchEngine(self.db)
-        
-        # ==========================================================
-        # ✅ FIXED: Initialize Dealer 360 Dashboard with error handling
-        # ==========================================================
-        self._dealer_360 = None
-        try:
-            from app.services.dealer_analytics_service import Dealer360Dashboard
-            self._dealer_360 = Dealer360Dashboard(self.db, self.resolver, self.search)
-            logger.info("✅ Dealer360Dashboard initialized")
-        except ImportError as e:
-            logger.warning(f"⚠️ Dealer360Dashboard import error: {e}")
-            self._dealer_360 = None
-        except Exception as e:
-            logger.warning(f"⚠️ Dealer360Dashboard init error: {e}")
-            import traceback
-            logger.warning(traceback.format_exc())
-            self._dealer_360 = None
-        
-        # ==========================================================
-        # ✅ FIXED: STARTUP VALIDATION - Check but DON'T crash
-        # ==========================================================
-        required_methods = [
-            "get_dealer_dashboard",
-            "get_warehouse_dashboard",
-            "get_city_dashboard",
-            "get_product_dashboard",
-            "get_pgi_dashboard",
-            "get_pod_dashboard",
-            "get_delivery_dashboard",
-            "get_executive_dashboard",
-            "get_control_tower_dashboard",
-            "get_revenue_dashboard",
-            "get_ranking_dashboard",
-            "get_aging_dashboard",
-            "get_dn_dashboard"
-        ]
-        
-        missing_methods = []
-        for method in required_methods:
-            if not hasattr(self, method):
-                missing_methods.append(method)
-                logger.error(f"❌ Missing method: {method}")
-        
-        if missing_methods:
-            logger.error(f"❌ Missing {len(missing_methods)} required methods: {missing_methods}")
-            logger.warning("⚠️ Some methods are missing - check indentation! Will continue anyway.")
-        else:
-            logger.info("✅ AnalyticsRepository initialized with all required methods")
-            logger.info("   - get_dealer_dashboard: AVAILABLE")
-            logger.info("   - get_warehouse_dashboard: AVAILABLE")
-            logger.info("   - get_city_dashboard: AVAILABLE")
-            logger.info("   - get_product_dashboard: AVAILABLE")
-            logger.info("   - get_pgi_dashboard: AVAILABLE")
-            logger.info("   - get_pod_dashboard: AVAILABLE")
-            logger.info("   - get_delivery_dashboard: AVAILABLE")
-            logger.info("   - get_dn_dashboard: AVAILABLE")
-            logger.info("   - get_executive_dashboard: AVAILABLE")
-            logger.info("   - get_control_tower_dashboard: AVAILABLE")
-            logger.info("   - get_revenue_dashboard: AVAILABLE")
-            logger.info("   - get_ranking_dashboard: AVAILABLE")
-            logger.info("   - get_aging_dashboard: AVAILABLE")
-    
-    def close(self):
-        if self._owned_db and self.db:
-            self.db.close()
+    logger.info("=" * 70)
+    logger.info("🔍 ANALYTICS SERVICE LOADER - PRODUCTION GRADE v10.0")
+    logger.info("=" * 70)
     
     # ==========================================================
-    # ✅ ADD THIS METHOD
-    # ==========================================================
-    def get_dealer_360_dashboard(self, dealer_name: str) -> Dict[str, Any]:
-        """Get complete 360° dealer dashboard."""
-        if self._dealer_360 is None:
-            return {"error": "Dealer 360 dashboard service not available"}
-        return self._dealer_360.get_dashboard(dealer_name)
-
-
-
-# BLOCK 10: DN DASHBOARD (FIXED - v3.0)
-# ==========================================================
-
-    def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
-        """
-        Complete DN dashboard with production logging and validation.
-        BLOCK 10 - FIXED v3.0
-        """
-        import time
-        start_time = time.time()
-        
-        try:
-            logger.info(f"📄 Processing DN: '{dn_no}'")
-            
-            # ==========================================================
-            # STEP 1: Resolve DN
-            # ==========================================================
-            normalized = self.resolver.resolve_dn(dn_no)
-            if not normalized:
-                logger.error(f"❌ DN {dn_no} not found in database")
-                return {"error": f"DN {dn_no} not found"}
-            
-            logger.info(f"✅ DN resolved: '{normalized}'")
-            
-            # ==========================================================
-            # STEP 2: Query the record
-            # ==========================================================
-            try:
-                record = self.db.query(DeliveryReport).filter(
-                    cast(DeliveryReport.dn_no, String) == normalized
-                ).first()
-            except Exception as e:
-                logger.error(f"❌ Database query failed for DN {normalized}: {e}")
-                return {"error": f"Database error: {str(e)}"}
-            
-            if not record:
-                logger.error(f"❌ DN {normalized} not found in database")
-                return {"error": f"DN {dn_no} not found"}
-            
-            logger.info(f"✅ DN record found for: '{normalized}'")
-            
-            # ==========================================================
-            # STEP 3: Calculate aging with error handling
-            # ==========================================================
-            try:
-                aging_result = DateValidator.calculate_aging(
-                    record.dn_create_date,
-                    record.good_issue_date,
-                    record.pod_date
-                )
-                logger.info(f"✅ Aging calculated for DN {normalized}:")
-                logger.info(f"   Scenario: {aging_result.get('scenario')}")
-                logger.info(f"   Delivery Aging: {aging_result.get('delivery_aging_text')}")
-                logger.info(f"   POD Aging: {aging_result.get('pod_aging_text')}")
-                logger.info(f"   Total Cycle: {aging_result.get('total_cycle_text')}")
-            except Exception as e:
-                logger.error(f"❌ Date calculation failed for DN {normalized}: {e}")
-                import traceback
-                logger.error(traceback.format_exc())
-                aging_result = {
-                    "delivery_aging": None,
-                    "pod_aging": None,
-                    "total_cycle": None,
-                    "delivery_aging_text": "Error",
-                    "pod_aging_text": "Error",
-                    "total_cycle_text": "Error",
-                    "is_valid": False,
-                    "issues": [f"Date calculation error: {str(e)}"],
-                    "scenario": "ERROR",
-                    "pod_received": False,
-                    "pgi_completed": False,
-                    "delivery_completed": False
-                }
-            
-            # ==========================================================
-            # STEP 4: Build Response
-            # ==========================================================
-            response = {
-                "dn_number": record.dn_no,
-                "customer_name": record.customer_name,
-                "dealer_code": record.dealer_code or "",
-                "customer_code": record.customer_code or "",
-                "warehouse": record.warehouse,
-                "ship_to_city": record.ship_to_city,
-                "sales_office": record.sales_office or "",
-                "sales_manager": record.sales_manager or "",
-                "division": record.division or "",
-                "customer_model": record.customer_model or "",
-                "material_no": record.material_no or "",
-                "units": int(record.dn_qty) if record.dn_qty else 0,
-                "amount": float(record.dn_amount) if record.dn_amount else 0,
-                "dn_create_date": record.dn_create_date.isoformat() if record.dn_create_date else None,
-                "good_issue_date": record.good_issue_date.isoformat() if record.good_issue_date else None,
-                "pod_date": record.pod_date.isoformat() if record.pod_date else None,
-                "delivery_status": record.delivery_status,
-                "pgi_status": record.pgi_status,
-                "pod_status": record.pod_status,
-                "pending_flag": record.pending_flag,
-                "delivery_aging": aging_result.get("delivery_aging"),
-                "pod_aging": aging_result.get("pod_aging"),
-                "total_cycle": aging_result.get("total_cycle"),
-                "delivery_aging_text": aging_result.get("delivery_aging_text"),
-                "pod_aging_text": aging_result.get("pod_aging_text"),
-                "total_cycle_text": aging_result.get("total_cycle_text"),
-                "is_valid": aging_result.get("is_valid", True),
-                "issues": aging_result.get("issues", []),
-                "scenario": aging_result.get("scenario"),
-                "pod_received": aging_result.get("pod_received"),
-                "pgi_completed": aging_result.get("pgi_completed"),
-                "delivery_completed": aging_result.get("delivery_completed"),
-            }
-            
-            total_time = time.time() - start_time
-            logger.info(f"✅ DN {normalized} dashboard built successfully (took {total_time:.3f}s)")
-            return response
-            
-        except Exception as e:
-            logger.error(f"❌ Get DN dashboard failed for {dn_no}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return {"error": f"Failed to load DN {dn_no}: {str(e)[:100]}"}
-
-# ==========================================================
-# END OF BLOCK 10 - DN DASHBOARD
-# ==========================================================    
-    
-    
-    
-    # ==========================================================
-# BLOCK 11: DEALER DASHBOARD (PRODUCTION-GRADE v4.0 - FIXED)
-#==========================================================
-
-# ==========================================================
-# BLOCK 11: DEALER DASHBOARD (PRODUCTION-GRADE v5.0 - FIXED)
-# ==========================================================
-# BLOCK 11: DEALER DASHBOARD (FIXED v6.0 - PRODUCTION GRADE)
-# ==========================================================
-
-    def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
-        """
-        Complete dealer dashboard - PRODUCTION GRADE.
-        BLOCK 11 - FIXED v6.0
-        """
-        import time
-        start_time = time.time()
-        
-        try:
-            logger.info(f"🔍 Searching for dealer: '{dealer_name}'")
-            
-            if not dealer_name or not dealer_name.strip():
-                return {"error": "Dealer name is required"}
-            
-            # ==========================================================
-            # STEP 1: Try 360 Dashboard first
-            # ==========================================================
-            if self._dealer_360 is not None:
-                try:
-                    logger.info(f"🔍 Using 360 dashboard for: '{dealer_name}'")
-                    result = self._dealer_360.get_dashboard(dealer_name)
-                    
-                    if "error" in result:
-                        logger.warning(f"⚠️ 360 dashboard returned error: {result['error']}")
-                    else:
-                        result['_dashboard_type'] = '360'
-                        logger.info(f"✅ 360 dashboard built successfully for: {dealer_name}")
-                        return result
-                except Exception as e:
-                    logger.warning(f"⚠️ 360 dashboard failed, falling back to legacy: {e}")
-            
-            # ==========================================================
-            # STEP 2: Resolve dealer
-            # ==========================================================
-            resolved = self.resolver.resolve_dealer(dealer_name)
-            
-            if not resolved:
-                # Try to find similar dealers for suggestions
-                try:
-                    similar = self.search.search_dealer(dealer_name, exact=False)
-                    if similar and len(similar) > 0:
-                        suggestions = [s['dealer_name'] for s in similar[:5]]
-                        return {
-                            "error": f"Dealer '{dealer_name}' not found",
-                            "suggestions": suggestions,
-                            "message": f"Did you mean: {', '.join(suggestions[:3])}?"
-                        }
-                except Exception as e:
-                    logger.error(f"Search error: {e}")
-                
-                return {"error": f"Dealer '{dealer_name}' not found"}
-            
-            # ==========================================================
-            # STEP 3: Get dealer profile using DISTINCT ON
-            # ==========================================================
-            profile_result = self.db.query(
-                DeliveryReport.dealer_code,
-                DeliveryReport.customer_code,
-                DeliveryReport.division,
-                DeliveryReport.warehouse,
-                DeliveryReport.ship_to_city,
-                DeliveryReport.sales_office,
-                DeliveryReport.sales_manager
-            ).filter(
-                func.lower(DeliveryReport.customer_name) == func.lower(resolved)
-            ).order_by(
-                DeliveryReport.customer_name,
-                DeliveryReport.dn_create_date.desc()
-            ).first()
-            
-            # ==========================================================
-            # STEP 4: Query dealer metrics
-            # ==========================================================
-            metrics_result = self.db.query(
-                func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
-                func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("total_units"),
-                func.coalesce(func.sum(DeliveryReport.dn_amount), 0).label("total_revenue"),
-                func.count(distinct(case((DeliveryReport.delivery_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("delivered_dns"),
-                func.count(distinct(case((DeliveryReport.pending_flag == True, DeliveryReport.dn_no), else_=None))).label("pending_dns"),
-                func.count(distinct(case((and_(DeliveryReport.delivery_status == 'Completed', DeliveryReport.pod_status != 'Completed'), DeliveryReport.dn_no), else_=None))).label("transit_dns"),
-                func.count(distinct(case((DeliveryReport.pod_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("pod_completed_dns"),
-                func.count(distinct(case((and_(DeliveryReport.delivery_status == 'Completed', DeliveryReport.pod_status != 'Completed'), DeliveryReport.dn_no), else_=None))).label("pending_pod_dns"),
-                func.count(distinct(case((DeliveryReport.good_issue_date.is_(None), DeliveryReport.dn_no), else_=None))).label("pending_pgi_dns"),
-                func.count(distinct(DeliveryReport.customer_model)).label("product_count"),
-                func.count(distinct(DeliveryReport.ship_to_city)).label("city_count")
-            ).filter(
-                func.lower(DeliveryReport.customer_name) == func.lower(resolved)
-            ).first()
-            
-            if not metrics_result or metrics_result.total_dns == 0:
-                return {"error": f"No data found for dealer '{resolved}'"}
-            
-            # ==========================================================
-            # STEP 5: Build response
-            # ==========================================================
-            total_dns = metrics_result.total_dns or 0
-            delivered_dns = metrics_result.delivered_dns or 0
-            transit_dns = metrics_result.transit_dns or 0
-            pod_completed = metrics_result.pod_completed_dns or 0
-            
-            delivery_rate = KPIEngine.calculate_delivery_rate(delivered_dns, total_dns)
-            pgi_rate = KPIEngine.calculate_pgi_rate(delivered_dns, transit_dns, total_dns)
-            pod_rate = KPIEngine.calculate_pod_rate(pod_completed, delivered_dns) if delivered_dns > 0 else 0
-            
-            risk_level, risk_score = KPIEngine.calculate_risk_level(
-                delivery_rate,
-                pod_rate,
-                0
-            )
-            
-            response = {
-                "dealer_name": resolved,
-                "dealer_code": profile_result[0] if profile_result and profile_result[0] else "Not Set",
-                "customer_code": profile_result[1] if profile_result and profile_result[1] else "Not Set",
-                "division": profile_result[2] if profile_result and profile_result[2] else "Not Set",
-                "warehouse": profile_result[3] if profile_result and profile_result[3] else "Not Set",
-                "city": profile_result[4] if profile_result and profile_result[4] else "Not Set",
-                "sales_office": profile_result[5] if profile_result and profile_result[5] else "Not Set",
-                "sales_manager": profile_result[6] if profile_result and profile_result[6] else "Not Set",
-                "total_dns": total_dns,
-                "total_units": int(metrics_result.total_units or 0),
-                "total_revenue": float(metrics_result.total_revenue or 0),
-                "delivered_dns": delivered_dns,
-                "pending_dns": metrics_result.pending_dns or 0,
-                "transit_dns": transit_dns,
-                "pod_completed_dns": pod_completed,
-                "pending_pod_dns": metrics_result.pending_pod_dns or 0,
-                "pending_pgi_dns": metrics_result.pending_pgi_dns or 0,
-                "product_count": metrics_result.product_count or 0,
-                "city_count": metrics_result.city_count or 0,
-                "delivery_rate": delivery_rate,
-                "pgi_rate": pgi_rate,
-                "pod_rate": pod_rate,
-                "health_score": KPIEngine.calculate_health_score({
-                    "delivery_rate": delivery_rate,
-                    "pod_rate": pod_rate,
-                    "avg_aging": 0,
-                    "revenue": float(metrics_result.total_revenue or 0)
-                }),
-                "risk_level": risk_level,
-                "risk_score": risk_score
-            }
-            
-            # ==========================================================
-            # STEP 6: Add distance if available
-            # ==========================================================
-            try:
-                if profile_result and profile_result[3] and profile_result[4]:
-                    from app.services.distance_service import get_distance_service
-                    distance_service = get_distance_service()
-                    distance_info = distance_service.calculate_warehouse_distance(
-                        profile_result[3],
-                        profile_result[4]
-                    )
-                    if distance_info and distance_info.get('success'):
-                        response['distance_km'] = distance_info.get('distance_km')
-                        response['distance_approx_hours'] = distance_info.get('approx_driving_hours')
-                        response['distance_miles'] = distance_info.get('distance_miles')
-                        response['approx_driving_minutes'] = distance_info.get('approx_driving_minutes')
-            except Exception as e:
-                logger.error(f"Distance calculation error: {e}")
-            
-            total_time = time.time() - start_time
-            logger.info(f"✅ Dealer dashboard built for: {resolved} (took {total_time:.3f}s)")
-            return response
-            
-        except Exception as e:
-            logger.error(f"❌ Get dealer dashboard failed for '{dealer_name}': {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return {"error": f"Failed to load dealer data: {str(e)[:100]}"}
-    
-    # ==========================================================
-# BLOCK 12: WAREHOUSE DASHBOARD (FIXED)
-# ==========================================================
-
-    def get_warehouse_dashboard(self, warehouse_name: str) -> Dict[str, Any]:
-        """Complete warehouse dashboard from PostgreSQL with suggestions."""
-        try:
-            logger.info(f"🔍 Searching for warehouse: '{warehouse_name}'")
-            resolved = self.resolver.resolve_warehouse(warehouse_name)
-            
-            if not resolved:
-                logger.warning(f"❌ Warehouse '{warehouse_name}' not found")
-                similar = self.search.search_warehouse(warehouse_name)
-                if similar:
-                    suggestions = [s['warehouse'] for s in similar[:5]]
-                    return {
-                        "error": f"Warehouse '{warehouse_name}' not found",
-                        "suggestions": suggestions,
-                        "message": f"Did you mean: {', '.join(suggestions[:3])}?"
-                    }
-                return {"error": f"Warehouse '{warehouse_name}' not found"}
-            
-            result = self.db.query(
-                DeliveryReport.warehouse.label("warehouse"),
-                func.max(DeliveryReport.warehouse_code).label("warehouse_code"),
-                func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
-                func.sum(DeliveryReport.dn_qty).label("total_units"),
-                func.sum(DeliveryReport.dn_amount).label("total_revenue"),
-                func.count(distinct(DeliveryReport.customer_name)).label("total_dealers"),
-                func.count(distinct(DeliveryReport.ship_to_city)).label("cities_served"),
-                func.count(distinct(DeliveryReport.customer_model)).label("product_count"),
-                func.count(distinct(case((DeliveryReport.delivery_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("delivered_dns"),
-                func.count(distinct(case((DeliveryReport.pending_flag == True, DeliveryReport.dn_no), else_=None))).label("pending_dns"),
-                func.count(distinct(case((and_(DeliveryReport.delivery_status == 'Completed', DeliveryReport.pod_status != 'Completed'), DeliveryReport.dn_no), else_=None))).label("pending_pod_dns")
-            ).filter(
-                DeliveryReport.warehouse == resolved
-            ).group_by(DeliveryReport.warehouse).first()
-            
-            if not result or result.total_dns == 0:
-                return {"error": f"No data found for warehouse '{resolved}'"}
-            
-            total_dns = result.total_dns or 1
-            delivered_dns = result.delivered_dns or 0
-            
-            return {
-                "warehouse": resolved,
-                "warehouse_code": result.warehouse_code or "",
-                "total_dns": total_dns,
-                "total_units": int(result.total_units or 0),
-                "total_revenue": float(result.total_revenue or 0),
-                "total_dealers": result.total_dealers or 0,
-                "cities_served": result.cities_served or 0,
-                "product_count": result.product_count or 0,
-                "delivered_dns": delivered_dns,
-                "pending_dns": result.pending_dns or 0,
-                "pending_pod_dns": result.pending_pod_dns or 0,
-                "delivery_rate": KPIEngine.calculate_delivery_rate(delivered_dns, total_dns)
-            }
-            
-        except Exception as e:
-            logger.error(f"Get warehouse dashboard failed: {e}")
-            return {"error": str(e)}
-
-# ==========================================================
-# BLOCK 13: CITY DASHBOARD (FIXED)
-# ==========================================================
-
-    def get_city_dashboard(self, city_name: str) -> Dict[str, Any]:
-        """Complete city dashboard from PostgreSQL with suggestions."""
-        try:
-            logger.info(f"🔍 Searching for city: '{city_name}'")
-            resolved = self.resolver.resolve_city(city_name)
-            
-            if not resolved:
-                logger.warning(f"❌ City '{city_name}' not found")
-                similar = self.search.search_city(city_name)
-                if similar:
-                    suggestions = [s['city'] for s in similar[:5]]
-                    return {
-                        "error": f"City '{city_name}' not found",
-                        "suggestions": suggestions,
-                        "message": f"Did you mean: {', '.join(suggestions[:3])}?"
-                    }
-                return {"error": f"City '{city_name}' not found"}
-            
-            result = self.db.query(
-                DeliveryReport.ship_to_city.label("city"),
-                func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
-                func.sum(DeliveryReport.dn_qty).label("total_units"),
-                func.sum(DeliveryReport.dn_amount).label("total_revenue"),
-                func.count(distinct(DeliveryReport.customer_name)).label("total_dealers"),
-                func.count(distinct(DeliveryReport.warehouse)).label("total_warehouses"),
-                func.count(distinct(case((DeliveryReport.delivery_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("delivered_dns"),
-                func.count(distinct(case((DeliveryReport.pending_flag == True, DeliveryReport.dn_no), else_=None))).label("pending_dns"),
-                func.count(distinct(case((DeliveryReport.pod_status != 'Completed', DeliveryReport.dn_no), else_=None))).label("pending_pod_dns")
-            ).filter(
-                DeliveryReport.ship_to_city == resolved
-            ).group_by(DeliveryReport.ship_to_city).first()
-            
-            if not result or result.total_dns == 0:
-                return {"error": f"No data found for city '{resolved}'"}
-            
-            total_dns = result.total_dns or 1
-            delivered_dns = result.delivered_dns or 0
-            
-            return {
-                "city_name": resolved,
-                "total_dns": total_dns,
-                "total_units": int(result.total_units or 0),
-                "total_revenue": float(result.total_revenue or 0),
-                "total_dealers": result.total_dealers or 0,
-                "total_warehouses": result.total_warehouses or 0,
-                "delivered_dns": delivered_dns,
-                "pending_dns": result.pending_dns or 0,
-                "pending_pod_dns": result.pending_pod_dns or 0,
-                "delivery_rate": KPIEngine.calculate_delivery_rate(delivered_dns, total_dns)
-            }
-            
-        except Exception as e:
-            logger.error(f"Get city dashboard failed: {e}")
-            return {"error": str(e)}
-
-# ==========================================================
-# BLOCK 14: PRODUCT DASHBOARD (FIXED)
-# ==========================================================
-
-    def get_product_dashboard(self, product_name: str) -> Dict[str, Any]:
-        """Complete product dashboard from PostgreSQL with suggestions."""
-        try:
-            logger.info(f"🔍 Searching for product: '{product_name}'")
-            resolved = self.resolver.resolve_product(product_name)
-            
-            if not resolved:
-                logger.warning(f"❌ Product '{product_name}' not found")
-                similar = self.search.search_product(product_name)
-                if similar:
-                    suggestions = [s['product'] for s in similar[:5]]
-                    return {
-                        "error": f"Product '{product_name}' not found",
-                        "suggestions": suggestions,
-                        "message": f"Did you mean: {', '.join(suggestions[:3])}?"
-                    }
-                return {"error": f"Product '{product_name}' not found"}
-            
-            result = self.db.query(
-                func.coalesce(DeliveryReport.customer_model, DeliveryReport.material_no).label("product"),
-                func.sum(DeliveryReport.dn_amount).label("revenue"),
-                func.sum(DeliveryReport.dn_qty).label("units"),
-                func.count(distinct(DeliveryReport.dn_no)).label("dns"),
-                func.count(distinct(DeliveryReport.customer_name)).label("dealers"),
-                func.count(distinct(DeliveryReport.ship_to_city)).label("cities"),
-                func.count(distinct(DeliveryReport.warehouse)).label("warehouses"),
-                func.count(distinct(case((DeliveryReport.delivery_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("delivered")
-            ).filter(
-                or_(
-                    DeliveryReport.customer_model == resolved,
-                    DeliveryReport.material_no == resolved
-                )
-            ).group_by(
-                DeliveryReport.customer_model,
-                DeliveryReport.material_no
-            ).first()
-            
-            if not result or result.dns == 0:
-                return {"error": f"No data found for product '{resolved}'"}
-            
-            total_dns = result.dns or 1
-            
-            return {
-                "product": resolved,
-                "revenue": float(result.revenue or 0),
-                "units": int(result.units or 0),
-                "dns": total_dns,
-                "dealers": result.dealers or 0,
-                "cities": result.cities or 0,
-                "warehouses": result.warehouses or 0,
-                "delivery_rate": KPIEngine.calculate_delivery_rate(result.delivered or 0, total_dns)
-            }
-            
-        except Exception as e:
-            logger.error(f"Get product dashboard failed: {e}")
-            return {"error": str(e)}
-
-# ==========================================================
-# BLOCK 15: PGI DASHBOARD
-# ==========================================================
-
-    def get_pgi_dashboard(self) -> Dict[str, Any]:
-        """PGI dashboard from PostgreSQL"""
-        try:
-            result = self.db.query(
-                func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
-                func.count(distinct(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.dn_no), else_=None))).label("pgi_completed"),
-                func.count(distinct(case((DeliveryReport.good_issue_date.is_(None), DeliveryReport.dn_no), else_=None))).label("pgi_pending"),
-                func.count(distinct(case((and_(DeliveryReport.delivery_status == 'Completed', DeliveryReport.pod_status != 'Completed'), DeliveryReport.dn_no), else_=None))).label("in_transit")
-            ).first()
-            
-            total = result.total_dns or 1
-            pgi_completed = result.pgi_completed or 0
-            in_transit = result.in_transit or 0
-            
-            return {
-                "total_dns": total,
-                "pgi_completed": pgi_completed,
-                "pgi_pending": result.pgi_pending or 0,
-                "in_transit": in_transit,
-                "pgi_rate": KPIEngine.calculate_pgi_rate(pgi_completed, in_transit, total)
-            }
-            
-        except Exception as e:
-            logger.error(f"Get PGI dashboard failed: {e}")
-            return {"error": str(e)}
-
-# ==========================================================
-# BLOCK 16: POD DASHBOARD
-# ==========================================================
-
-    def get_pod_dashboard(self) -> Dict[str, Any]:
-        """POD dashboard from PostgreSQL"""
-        try:
-            result = self.db.query(
-                func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
-                func.count(distinct(case((DeliveryReport.pod_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("pod_completed"),
-                func.count(distinct(case((and_(DeliveryReport.delivery_status == 'Completed', DeliveryReport.pod_status != 'Completed'), DeliveryReport.dn_no), else_=None))).label("pod_pending"),
-                func.count(distinct(case((DeliveryReport.delivery_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("delivered_dns")
-            ).first()
-            
-            total = result.total_dns or 1
-            pod_completed = result.pod_completed or 0
-            delivered_dns = result.delivered_dns or 0
-            
-            return {
-                "total_dns": total,
-                "pod_completed": pod_completed,
-                "pod_pending": result.pod_pending or 0,
-                "delivered_dns": delivered_dns,
-                "pod_rate": KPIEngine.calculate_pod_rate(pod_completed, delivered_dns) if delivered_dns > 0 else 0
-            }
-            
-        except Exception as e:
-            logger.error(f"Get POD dashboard failed: {e}")
-            return {"error": str(e)}
-
-# ==========================================================
-# BLOCK 17: DELIVERY DASHBOARD
-# ==========================================================
-
-    def get_delivery_dashboard(self) -> Dict[str, Any]:
-        """Delivery dashboard from PostgreSQL"""
-        try:
-            result = self.db.query(
-                func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
-                func.count(distinct(case((DeliveryReport.delivery_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("delivered"),
-                func.count(distinct(case((DeliveryReport.pending_flag == True, DeliveryReport.dn_no), else_=None))).label("pending"),
-                func.count(distinct(case((and_(DeliveryReport.delivery_status == 'Completed', DeliveryReport.pod_status != 'Completed'), DeliveryReport.dn_no), else_=None))).label("in_transit"),
-                func.count(distinct(case((DeliveryReport.good_issue_date.is_(None), DeliveryReport.dn_no), else_=None))).label("pending_pgi")
-            ).first()
-            
-            total = result.total_dns or 1
-            delivered = result.delivered or 0
-            in_transit = result.in_transit or 0
-            
-            return {
-                "total_dns": total,
-                "delivered": delivered,
-                "in_transit": in_transit,
-                "pending_pgi": result.pending_pgi or 0,
-                "pending": result.pending or 0,
-                "delivery_rate": KPIEngine.calculate_delivery_rate(delivered, total),
-                "pgi_rate": KPIEngine.calculate_pgi_rate(delivered, in_transit, total)
-            }
-            
-        except Exception as e:
-            logger.error(f"Get delivery dashboard failed: {e}")
-            return {"error": str(e)}
-
-# ==========================================================
-# BLOCK 18: EXECUTIVE DASHBOARD
-# ==========================================================
-
-    def get_executive_dashboard(self) -> Dict[str, Any]:
-        """Executive dashboard from PostgreSQL"""
-        try:
-            result = self.db.query(
-                func.count(distinct(DeliveryReport.dn_no)).label("total_dns"),
-                func.sum(DeliveryReport.dn_qty).label("total_units"),
-                func.sum(DeliveryReport.dn_amount).label("total_revenue"),
-                func.count(distinct(DeliveryReport.customer_name)).label("total_dealers"),
-                func.count(distinct(DeliveryReport.ship_to_city)).label("total_cities"),
-                func.count(distinct(DeliveryReport.warehouse)).label("total_warehouses"),
-                func.count(distinct(case((DeliveryReport.delivery_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("delivered_dns"),
-                func.count(distinct(case((DeliveryReport.pending_flag == True, DeliveryReport.dn_no), else_=None))).label("pending_dns")
-            ).first()
-            
-            total_dns = result.total_dns or 1
-            delivered_dns = result.delivered_dns or 0
-            
-            return {
-                "total_dns": total_dns,
-                "total_units": int(result.total_units or 0),
-                "total_revenue": float(result.total_revenue or 0),
-                "total_dealers": result.total_dealers or 0,
-                "total_cities": result.total_cities or 0,
-                "total_warehouses": result.total_warehouses or 0,
-                "delivered_dns": delivered_dns,
-                "pending_dns": result.pending_dns or 0,
-                "delivery_rate": KPIEngine.calculate_delivery_rate(delivered_dns, total_dns)
-            }
-            
-        except Exception as e:
-            logger.error(f"Get executive dashboard failed: {e}")
-            return {"error": str(e)}
-
-# ==========================================================
-# BLOCK 19: CONTROL TOWER DASHBOARD
-# ==========================================================
-
-    def get_control_tower_dashboard(self) -> Dict[str, Any]:
-        """Control tower dashboard from PostgreSQL"""
-        try:
-            pgi_alerts = self.db.query(
-                DeliveryReport.dn_no,
-                DeliveryReport.customer_name,
-                func.date_part('day', func.now() - DeliveryReport.dn_create_date).label("days_old")
-            ).filter(
-                DeliveryReport.good_issue_date.is_(None),
-                DeliveryReport.dn_create_date.isnot(None),
-                func.date_part('day', func.now() - DeliveryReport.dn_create_date) > 7
-            ).order_by(desc("days_old")).limit(10).all()
-            
-            pod_alerts = self.db.query(
-                DeliveryReport.dn_no,
-                DeliveryReport.customer_name,
-                func.date_part('day', func.now() - DeliveryReport.good_issue_date).label("days_old")
-            ).filter(
-                DeliveryReport.good_issue_date.isnot(None),
-                DeliveryReport.pod_date.is_(None),
-                func.date_part('day', func.now() - DeliveryReport.good_issue_date) > 7
-            ).order_by(desc("days_old")).limit(10).all()
-            
-            alerts = []
-            for r in pgi_alerts:
-                days = int(r.days_old or 0)
-                alerts.append({
-                    "type": "Pending PGI",
-                    "severity": "high" if days > 15 else "medium",
-                    "description": f"DN {r.dn_no} for {r.customer_name} pending PGI for {days} days"
-                })
-            
-            for r in pod_alerts:
-                days = int(r.days_old or 0)
-                alerts.append({
-                    "type": "Pending POD",
-                    "severity": "critical" if days > 30 else "high" if days > 15 else "medium",
-                    "description": f"DN {r.dn_no} for {r.customer_name} pending POD for {days} days"
-                })
-            
-            return {
-                "alerts": alerts[:20],
-                "critical_count": sum(1 for a in alerts if a.get("severity") == "critical"),
-                "high_count": sum(1 for a in alerts if a.get("severity") == "high"),
-                "total_alerts": len(alerts)
-            }
-            
-        except Exception as e:
-            logger.error(f"Get control tower dashboard failed: {e}")
-            return {"error": str(e)}
-
-# ==========================================================
-# BLOCK 20: REVENUE DASHBOARD
-# ==========================================================
-
-    def get_revenue_dashboard(self) -> Dict[str, Any]:
-        """Revenue dashboard from PostgreSQL"""
-        try:
-            result = self.db.query(
-                func.sum(DeliveryReport.dn_amount).label("total_revenue"),
-                func.sum(DeliveryReport.dn_qty).label("total_units"),
-                func.count(distinct(DeliveryReport.dn_no)).label("total_dns")
-            ).first()
-            
-            by_dealer = self.db.query(
-                DeliveryReport.customer_name.label("dealer"),
-                func.sum(DeliveryReport.dn_amount).label("revenue")
-            ).filter(
-                DeliveryReport.customer_name.isnot(None),
-                DeliveryReport.customer_name != ''
-            ).group_by(
-                DeliveryReport.customer_name
-            ).order_by(desc("revenue")).limit(10).all()
-            
-            dealer_revenue = []
-            for r in by_dealer:
-                dealer_revenue.append({
-                    "dealer": r.dealer or "Unknown",
-                    "revenue": float(r.revenue or 0)
-                })
-            
-            return {
-                "total_revenue": float(result.total_revenue or 0),
-                "total_units": int(result.total_units or 0),
-                "total_dns": result.total_dns or 0,
-                "top_dealers": dealer_revenue
-            }
-            
-        except Exception as e:
-            logger.error(f"Get revenue dashboard failed: {e}")
-            return {"error": str(e)}
-
-# ==========================================================
-# BLOCK 21: RANKING DASHBOARD
-# ==========================================================
-
-    def get_ranking_dashboard(self, limit: int = 10) -> Dict[str, Any]:
-        """Dealer ranking from PostgreSQL"""
-        try:
-            results = self.db.query(
-                DeliveryReport.customer_name.label("dealer"),
-                func.sum(DeliveryReport.dn_amount).label("revenue"),
-                func.sum(DeliveryReport.dn_qty).label("units"),
-                func.count(distinct(DeliveryReport.dn_no)).label("dns"),
-                func.count(distinct(case((DeliveryReport.delivery_status == 'Completed', DeliveryReport.dn_no), else_=None))).label("delivered")
-            ).filter(
-                DeliveryReport.customer_name.isnot(None),
-                DeliveryReport.customer_name != ''
-            ).group_by(
-                DeliveryReport.customer_name
-            ).order_by(desc("revenue")).limit(limit).all()
-            
-            ranking = []
-            for r in results:
-                total_dns = r.dns or 1
-                ranking.append({
-                    "dealer": r.dealer or "Unknown",
-                    "revenue": float(r.revenue or 0),
-                    "units": int(r.units or 0),
-                    "dns": total_dns,
-                    "delivery_rate": KPIEngine.calculate_delivery_rate(r.delivered or 0, total_dns)
-                })
-            
-            return {"ranking": ranking, "total": len(ranking)}
-            
-        except Exception as e:
-            logger.error(f"Get ranking dashboard failed: {e}")
-            return {"error": str(e)}
-
-# ==========================================================
-# BLOCK 22: AGING DASHBOARD
-# ==========================================================
-
-    def get_aging_dashboard(self) -> Dict[str, Any]:
-        """Aging dashboard from PostgreSQL"""
-        try:
-            result = self.db.query(
-                func.count(distinct(case((func.date_part('day', func.now() - DeliveryReport.dn_create_date) <= 7, DeliveryReport.dn_no), else_=None))).label("days_0_7"),
-                func.count(distinct(case((and_(func.date_part('day', func.now() - DeliveryReport.dn_create_date) > 7, func.date_part('day', func.now() - DeliveryReport.dn_create_date) <= 14), DeliveryReport.dn_no), else_=None))).label("days_8_14"),
-                func.count(distinct(case((and_(func.date_part('day', func.now() - DeliveryReport.dn_create_date) > 14, func.date_part('day', func.now() - DeliveryReport.dn_create_date) <= 30), DeliveryReport.dn_no), else_=None))).label("days_15_30"),
-                func.count(distinct(case((func.date_part('day', func.now() - DeliveryReport.dn_create_date) > 30, DeliveryReport.dn_no), else_=None))).label("days_30_plus")
-            ).filter(
-                DeliveryReport.dn_create_date.isnot(None),
-                DeliveryReport.pending_flag == True
-            ).first()
-            
-            return {
-                "days_0_7": result.days_0_7 or 0,
-                "days_8_14": result.days_8_14 or 0,
-                "days_15_30": result.days_15_30 or 0,
-                "days_30_plus": result.days_30_plus or 0,
-                "total_pending": (result.days_0_7 or 0) + (result.days_8_14 or 0) + (result.days_15_30 or 0) + (result.days_30_plus or 0)
-            }
-            
-        except Exception as e:
-            logger.error(f"Get aging dashboard failed: {e}")
-            return {"error": str(e)}
-
-# ==========================================================
-# BLOCK 23: FOLLOW-UP SUPPORT
-# ==========================================================
-
-    def get_followup_data(self, context: Dict[str, Any], question: str) -> Dict[str, Any]:
-        """Handle follow-up questions using context"""
-        try:
-            last_entity = context.get("last_entity")
-            last_intent = context.get("last_intent")
-            
-            if not last_entity:
-                return {"error": "No previous entity found"}
-            
-            question_lower = question.lower()
-            
-            if any(word in question_lower for word in ["revenue", "amount", "value", "worth"]):
-                if last_intent == "dealer_dashboard":
-                    return self.get_dealer_dashboard(last_entity)
-                elif last_intent == "warehouse_dashboard":
-                    return self.get_warehouse_dashboard(last_entity)
-                elif last_intent == "city_dashboard":
-                    return self.get_city_dashboard(last_entity)
-                elif last_intent == "product_dashboard":
-                    return self.get_product_dashboard(last_entity)
-                elif last_intent == "dn_dashboard":
-                    return self.get_dn_dashboard(last_entity)
-            
-            if any(word in question_lower for word in ["pod", "proof of delivery"]):
-                if last_intent == "dealer_dashboard":
-                    return self.get_dealer_dashboard(last_entity)
-                elif last_intent == "dn_dashboard":
-                    return self.get_dn_dashboard(last_entity)
-                elif last_intent == "warehouse_dashboard":
-                    return self.get_warehouse_dashboard(last_entity)
-            
-            if any(word in question_lower for word in ["pgi", "goods issue"]):
-                if last_intent == "dealer_dashboard":
-                    return self.get_dealer_dashboard(last_entity)
-                elif last_intent == "dn_dashboard":
-                    return self.get_dn_dashboard(last_entity)
-                elif last_intent == "warehouse_dashboard":
-                    return self.get_warehouse_dashboard(last_entity)
-            
-            if any(word in question_lower for word in ["units", "quantity", "qty", "pieces"]):
-                if last_intent == "dealer_dashboard":
-                    return self.get_dealer_dashboard(last_entity)
-                elif last_intent == "product_dashboard":
-                    return self.get_product_dashboard(last_entity)
-                elif last_intent == "warehouse_dashboard":
-                    return self.get_warehouse_dashboard(last_entity)
-            
-            if any(word in question_lower for word in ["dn", "delivery note", "order"]):
-                if last_intent == "dealer_dashboard":
-                    return self.get_dealer_dashboard(last_entity)
-                elif last_intent == "warehouse_dashboard":
-                    return self.get_warehouse_dashboard(last_entity)
-                elif last_intent == "city_dashboard":
-                    return self.get_city_dashboard(last_entity)
-            
-            if any(word in question_lower for word in ["products", "product", "models"]):
-                if last_intent == "dealer_dashboard":
-                    return {"message": "Product list for this dealer is available"}
-                elif last_intent == "city_dashboard":
-                    return {"message": "Product list for this city is available"}
-            
-            if any(word in question_lower for word in ["rank", "ranking", "top", "best"]):
-                if last_intent == "dealer_dashboard":
-                    return self.get_ranking_dashboard(10)
-            
-            if any(word in question_lower for word in ["aging", "old", "delay", "overdue"]):
-                if last_intent == "dealer_dashboard":
-                    return self.get_aging_dashboard()
-                elif last_intent == "dn_dashboard":
-                    return self.get_dn_dashboard(last_entity)
-            
-            if any(word in question_lower for word in ["pending", "not completed", "waiting"]):
-                if last_intent == "dealer_dashboard":
-                    return self.get_dealer_dashboard(last_entity)
-                elif last_intent == "warehouse_dashboard":
-                    return self.get_warehouse_dashboard(last_entity)
-            
-            if any(word in question_lower for word in ["performance", "status", "health"]):
-                if last_intent == "dealer_dashboard":
-                    return self.get_dealer_dashboard(last_entity)
-                elif last_intent == "warehouse_dashboard":
-                    return self.get_warehouse_dashboard(last_entity)
-                elif last_intent == "city_dashboard":
-                    return self.get_city_dashboard(last_entity)
-            
-            return {"error": "Follow-up question not recognized"}
-            
-        except Exception as e:
-            logger.error(f"Follow-up data error: {e}")
-            return {"error": str(e)}
-
-# ==========================================================
-# BLOCK 24: MAIN ANALYTICS SERVICE
-# ==========================================================
-
-class AnalyticsService:
-    """Main analytics service - PostgreSQL only"""
-    
-    def __init__(self, db: Optional[Session] = None):
-        self.repo = AnalyticsRepository(db)
-        self.metrics = {
-            "total_requests": 0,
-            "successful_requests": 0,
-            "failed_requests": 0,
-            "cache_hits": 0,
-            "cache_misses": 0
-        }
-        logger.info("✅ AnalyticsService v30.0 initialized - PostgreSQL Only")
-    
-    def close(self):
-        self.repo.close()
-
-# ==========================================================
-# BLOCK 25: SEARCH METHODS
-# ==========================================================
-# BLOCK 25: SEARCH DN (FIXED - PRODUCTION GRADE)
-# ==========================================================
-
-    def search_dn(self, query: str, exact: bool = False) -> AnalyticsResponse:
-        """
-        Search for DNs in PostgreSQL with exact and partial support.
-        BLOCK 25 - FIXED v2.0 - PRODUCTION GRADE
-        """
-        try:
-            self.metrics["total_requests"] += 1
-            
-            if not query or not query.strip():
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(
-                    success=False,
-                    error="DN number is required",
-                    data={"results": [], "total": 0}
-                )
-            
-            # Clean query - remove non-numeric characters
-            query_clean = re.sub(r'[^0-9]', '', str(query).strip())
-            
-            if len(query_clean) < 8 or len(query_clean) > 12:
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(
-                    success=False,
-                    error=f"Invalid DN format: {query}. Must be 8-12 digits.",
-                    data={"results": [], "total": 0}
-                )
-            
-            try:
-                if exact:
-                    results = self.db.query(DeliveryReport).filter(
-                        cast(DeliveryReport.dn_no, String) == query_clean
-                    ).limit(SEARCH_LIMIT).all()
-                else:
-                    results = self.db.query(DeliveryReport).filter(
-                        DeliveryReport.dn_no.like(f"%{query_clean}%")
-                    ).limit(SEARCH_LIMIT).all()
-                
-                if not results:
-                    self.metrics["failed_requests"] += 1
-                    return AnalyticsResponse(
-                        success=False,
-                        error=f"DN {query_clean} not found in delivery_reports table.",
-                        data={"results": [], "total": 0}
-                    )
-                
-                formatted_results = []
-                for r in results:
-                    formatted_results.append({
-                        "dn_no": r.dn_no,
-                        "customer_name": r.customer_name,
-                        "dealer_code": r.dealer_code,
-                        "customer_code": r.customer_code,
-                        "warehouse": r.warehouse,
-                        "city": r.ship_to_city,
-                        "dn_qty": r.dn_qty,
-                        "dn_amount": r.dn_amount,
-                        "dn_create_date": r.dn_create_date.isoformat() if r.dn_create_date else None,
-                        "good_issue_date": r.good_issue_date.isoformat() if r.good_issue_date else None,
-                        "pod_date": r.pod_date.isoformat() if r.pod_date else None,
-                        "delivery_status": r.delivery_status,
-                        "pgi_status": r.pgi_status,
-                        "pod_status": r.pod_status,
-                        "pending_flag": r.pending_flag
-                    })
-                
-                self.metrics["successful_requests"] += 1
-                return AnalyticsResponse(
-                    success=True,
-                    data={"results": formatted_results, "total": len(formatted_results)}
-                )
-                
-            except Exception as e:
-                error_msg = f"DN search query failed: {str(e)}"
-                logger.error(f"❌ {error_msg}")
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(
-                    success=False,
-                    error=error_msg,
-                    data={"results": [], "total": 0}
-                )
-                
-        except Exception as e:
-            error_msg = f"DN search failed: {str(e)}"
-            logger.error(f"❌ {error_msg}")
-            self.metrics["failed_requests"] += 1
-            return AnalyticsResponse(
-                success=False,
-                error=error_msg,
-                data={"results": [], "total": 0}
-            )
-
-# ==========================================================
-# BLOCK 26: VERIFICATION METHODS
-# ==========================================================
-
-    def verify_dn_exists(self, dn_no: str) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            result = self.repo.search.verify_dn_exists(dn_no)
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"DN verification failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def verify_dealer_exists(self, dealer_name: str) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            result = self.repo.search.verify_dealer_exists(dealer_name)
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data={"exists": result})
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Dealer verification failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def verify_city_exists(self, city_name: str) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            result = self.repo.search.verify_city_exists(city_name)
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data={"exists": result})
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"City verification failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def verify_warehouse_exists(self, warehouse_name: str) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            result = self.repo.search.verify_warehouse_exists(warehouse_name)
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data={"exists": result})
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Warehouse verification failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def verify_product_exists(self, product_name: str) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            result = self.repo.search.verify_product_exists(product_name)
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data={"exists": result})
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Product verification failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-
-# ==========================================================
-# BLOCK 27: ENTITY RESOLUTION
-# ==========================================================
-
-    def resolve_dealer(self, dealer_name: str) -> Optional[str]:
-        return self.repo.resolver.resolve_dealer(dealer_name)
-    
-    def resolve_warehouse(self, warehouse_name: str) -> Optional[str]:
-        return self.repo.resolver.resolve_warehouse(warehouse_name)
-    
-    def resolve_city(self, city_name: str) -> Optional[str]:
-        return self.repo.resolver.resolve_city(city_name)
-    
-    def resolve_product(self, product_name: str) -> Optional[str]:
-        return self.repo.resolver.resolve_product(product_name)
-    
-    def resolve_dn(self, dn_no: str) -> Optional[str]:
-        return self.repo.resolver.resolve_dn(dn_no)
-
-
-# ==========================================================
-# BLOCK 28: DASHBOARD METHODS (COMPLETE)
-# ==========================================================
-
-    def get_dealer_360_dashboard(self, dealer_name: str) -> AnalyticsResponse:
-        """
-        Get complete 360° dealer dashboard.
-        BLOCK 28 - NEW METHOD
-        
-        Returns:
-            AnalyticsResponse with 360° dealer dashboard data
-        """
-        try:
-            self.metrics["total_requests"] += 1
-            logger.info(f"🔍 Dealer 360 Dashboard request for: {dealer_name}")
-            
-            if not dealer_name or not str(dealer_name).strip():
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error="Dealer name is required")
-            
-            # Check if repo has the method
-            if not hasattr(self.repo, 'get_dealer_360_dashboard'):
-                error_msg = "Dealer 360 dashboard not available"
-                logger.error(f"❌ {error_msg}")
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=error_msg)
-            
-            # Get dashboard
-            result = self.repo.get_dealer_360_dashboard(dealer_name.strip())
-            
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                if "suggestions" in result:
-                    return AnalyticsResponse(
-                        success=False, 
-                        error=result["error"],
-                        data={"suggestions": result.get("suggestions", [])}
-                    )
-                logger.error(f"❌ Dealer 360 dashboard error for {dealer_name}: {result['error']}")
-                return AnalyticsResponse(success=False, error=result["error"])
-            
-            self.metrics["successful_requests"] += 1
-            logger.info(f"✅ Dealer 360 dashboard returned successfully for {dealer_name}")
-            return AnalyticsResponse(success=True, data=result)
-            
-        except AttributeError as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"❌ AttributeError for {dealer_name}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return AnalyticsResponse(success=False, error=f"Method not found: {str(e)}")
-            
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"❌ Get dealer 360 dashboard failed for {dealer_name}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return AnalyticsResponse(success=False, error=f"Failed to load dealer: {str(e)[:100]}")
-
-    def get_dn_dashboard(self, dn_no: str) -> AnalyticsResponse:
-        """
-        Get DN Dashboard - Production Grade.
-        BLOCK 28 - FIXED
-        """
-        try:
-            self.metrics["total_requests"] += 1
-            logger.info(f"🔍 DN Dashboard request for: {dn_no}")
-            
-            if not dn_no or not str(dn_no).strip():
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error="DN number is required")
-            
-            dn_clean = re.sub(r'[^0-9]', '', str(dn_no).strip())
-            if len(dn_clean) < 8 or len(dn_clean) > 12:
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=f"Invalid DN format: {dn_no}. Must be 8-12 digits.")
-            
-            if not hasattr(self.repo, 'get_dn_dashboard'):
-                error_msg = "AnalyticsRepository missing method: get_dn_dashboard"
-                logger.error(f"❌ {error_msg}")
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=error_msg)
-            
-            result = self.repo.get_dn_dashboard(dn_clean)
-            
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                logger.error(f"❌ DN dashboard error for {dn_clean}: {result['error']}")
-                return AnalyticsResponse(success=False, error=result["error"])
-            
-            self.metrics["successful_requests"] += 1
-            logger.info(f"✅ DN dashboard returned successfully for {dn_clean}")
-            return AnalyticsResponse(success=True, data=result)
-            
-        except AttributeError as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"❌ AttributeError for DN {dn_no}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return AnalyticsResponse(success=False, error=f"Method not found: {str(e)}")
-            
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"❌ Get DN dashboard failed for {dn_no}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return AnalyticsResponse(success=False, error=f"Failed to load DN: {str(e)[:100]}")
-
-    def get_dealer_dashboard(self, dealer_name: str) -> AnalyticsResponse:
-        """
-        Get Dealer Dashboard - Production Grade.
-        BLOCK 28 - FIXED
-        """
-        try:
-            self.metrics["total_requests"] += 1
-            logger.info(f"🔍 Dealer Dashboard request for: {dealer_name}")
-            
-            if not dealer_name or not str(dealer_name).strip():
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error="Dealer name is required")
-            
-            # Try 360 dashboard first
-            if hasattr(self.repo, 'get_dealer_360_dashboard'):
-                logger.info(f"🔍 Using 360 dashboard for: {dealer_name}")
-                result = self.repo.get_dealer_360_dashboard(dealer_name.strip())
-                
-                if "error" in result:
-                    self.metrics["failed_requests"] += 1
-                    if "suggestions" in result:
-                        return AnalyticsResponse(
-                            success=False, 
-                            error=result["error"],
-                            data={"suggestions": result.get("suggestions", [])}
-                        )
-                    return AnalyticsResponse(success=False, error=result["error"])
-                
-                # Mark as 360 dashboard
-                result['_dashboard_type'] = '360'
-                self.metrics["successful_requests"] += 1
-                return AnalyticsResponse(success=True, data=result)
-            
-            # Fallback to legacy
-            if not hasattr(self.repo, 'get_dealer_dashboard'):
-                error_msg = "AnalyticsRepository missing method: get_dealer_dashboard"
-                logger.error(f"❌ {error_msg}")
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=error_msg)
-            
-            result = self.repo.get_dealer_dashboard(dealer_name.strip())
-            
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                if "suggestions" in result:
-                    return AnalyticsResponse(
-                        success=False, 
-                        error=result["error"],
-                        data={"suggestions": result.get("suggestions", [])}
-                    )
-                logger.error(f"❌ Dealer dashboard error for {dealer_name}: {result['error']}")
-                return AnalyticsResponse(success=False, error=result["error"])
-            
-            self.metrics["successful_requests"] += 1
-            logger.info(f"✅ Dealer dashboard returned successfully for {dealer_name}")
-            return AnalyticsResponse(success=True, data=result)
-            
-        except AttributeError as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"❌ AttributeError for {dealer_name}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return AnalyticsResponse(success=False, error=f"Method not found: {str(e)}")
-            
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"❌ Get dealer dashboard failed for {dealer_name}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return AnalyticsResponse(success=False, error=f"Failed to load dealer: {str(e)[:100]}")
-
-    def get_warehouse_dashboard(self, warehouse_name: str) -> AnalyticsResponse:
-        """
-        Get Warehouse Dashboard - Production Grade.
-        BLOCK 28 - FIXED
-        """
-        try:
-            self.metrics["total_requests"] += 1
-            logger.info(f"🔍 Warehouse Dashboard request for: {warehouse_name}")
-            
-            if not warehouse_name or not str(warehouse_name).strip():
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error="Warehouse name is required")
-            
-            if not hasattr(self.repo, 'get_warehouse_dashboard'):
-                error_msg = "AnalyticsRepository missing method: get_warehouse_dashboard"
-                logger.error(f"❌ {error_msg}")
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=error_msg)
-            
-            result = self.repo.get_warehouse_dashboard(warehouse_name.strip())
-            
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                if "suggestions" in result:
-                    return AnalyticsResponse(
-                        success=False, 
-                        error=result["error"],
-                        data={"suggestions": result.get("suggestions", [])}
-                    )
-                logger.error(f"❌ Warehouse dashboard error for {warehouse_name}: {result['error']}")
-                return AnalyticsResponse(success=False, error=result["error"])
-            
-            self.metrics["successful_requests"] += 1
-            logger.info(f"✅ Warehouse dashboard returned successfully for {warehouse_name}")
-            return AnalyticsResponse(success=True, data=result)
-            
-        except AttributeError as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"❌ AttributeError for {warehouse_name}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return AnalyticsResponse(success=False, error=f"Method not found: {str(e)}")
-            
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"❌ Get warehouse dashboard failed for {warehouse_name}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return AnalyticsResponse(success=False, error=f"Failed to load warehouse: {str(e)[:100]}")
-
-    def get_city_dashboard(self, city_name: str) -> AnalyticsResponse:
-        """
-        Get City Dashboard - Production Grade.
-        BLOCK 28 - FIXED
-        """
-        try:
-            self.metrics["total_requests"] += 1
-            logger.info(f"🔍 City Dashboard request for: {city_name}")
-            
-            if not city_name or not str(city_name).strip():
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error="City name is required")
-            
-            if not hasattr(self.repo, 'get_city_dashboard'):
-                error_msg = "AnalyticsRepository missing method: get_city_dashboard"
-                logger.error(f"❌ {error_msg}")
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=error_msg)
-            
-            result = self.repo.get_city_dashboard(city_name.strip())
-            
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                if "suggestions" in result:
-                    return AnalyticsResponse(
-                        success=False, 
-                        error=result["error"],
-                        data={"suggestions": result.get("suggestions", [])}
-                    )
-                logger.error(f"❌ City dashboard error for {city_name}: {result['error']}")
-                return AnalyticsResponse(success=False, error=result["error"])
-            
-            self.metrics["successful_requests"] += 1
-            logger.info(f"✅ City dashboard returned successfully for {city_name}")
-            return AnalyticsResponse(success=True, data=result)
-            
-        except AttributeError as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"❌ AttributeError for {city_name}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return AnalyticsResponse(success=False, error=f"Method not found: {str(e)}")
-            
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"❌ Get city dashboard failed for {city_name}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return AnalyticsResponse(success=False, error=f"Failed to load city: {str(e)[:100]}")
-
-    def get_product_dashboard(self, product_name: str) -> AnalyticsResponse:
-        """
-        Get Product Dashboard - Production Grade.
-        BLOCK 28 - FIXED
-        """
-        try:
-            self.metrics["total_requests"] += 1
-            logger.info(f"🔍 Product Dashboard request for: {product_name}")
-            
-            if not product_name or not str(product_name).strip():
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error="Product name is required")
-            
-            if not hasattr(self.repo, 'get_product_dashboard'):
-                error_msg = "AnalyticsRepository missing method: get_product_dashboard"
-                logger.error(f"❌ {error_msg}")
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=error_msg)
-            
-            result = self.repo.get_product_dashboard(product_name.strip())
-            
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                if "suggestions" in result:
-                    return AnalyticsResponse(
-                        success=False, 
-                        error=result["error"],
-                        data={"suggestions": result.get("suggestions", [])}
-                    )
-                logger.error(f"❌ Product dashboard error for {product_name}: {result['error']}")
-                return AnalyticsResponse(success=False, error=result["error"])
-            
-            self.metrics["successful_requests"] += 1
-            logger.info(f"✅ Product dashboard returned successfully for {product_name}")
-            return AnalyticsResponse(success=True, data=result)
-            
-        except AttributeError as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"❌ AttributeError for {product_name}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return AnalyticsResponse(success=False, error=f"Method not found: {str(e)}")
-            
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"❌ Get product dashboard failed for {product_name}: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return AnalyticsResponse(success=False, error=f"Failed to load product: {str(e)[:100]}")
-
-    def get_pgi_dashboard(self) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            if not hasattr(self.repo, 'get_pgi_dashboard'):
-                return AnalyticsResponse(success=False, error="Method not available")
-            result = self.repo.get_pgi_dashboard()
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"PGI dashboard error: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def get_pod_dashboard(self) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            if not hasattr(self.repo, 'get_pod_dashboard'):
-                return AnalyticsResponse(success=False, error="Method not available")
-            result = self.repo.get_pod_dashboard()
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"POD dashboard error: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-    
-    def get_delivery_dashboard(self) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            if not hasattr(self.repo, 'get_delivery_dashboard'):
-                return AnalyticsResponse(success=False, error="Method not available")
-            result = self.repo.get_delivery_dashboard()
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Delivery dashboard error: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-
-    def get_executive_dashboard(self) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            if not hasattr(self.repo, 'get_executive_dashboard'):
-                return AnalyticsResponse(success=False, error="Method not available")
-            result = self.repo.get_executive_dashboard()
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Executive dashboard error: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-
-    def get_control_tower_dashboard(self) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            if not hasattr(self.repo, 'get_control_tower_dashboard'):
-                return AnalyticsResponse(success=False, error="Method not available")
-            result = self.repo.get_control_tower_dashboard()
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Control tower error: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-
-    def get_revenue_dashboard(self) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            if not hasattr(self.repo, 'get_revenue_dashboard'):
-                return AnalyticsResponse(success=False, error="Method not available")
-            result = self.repo.get_revenue_dashboard()
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Revenue dashboard error: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-
-    def get_ranking_dashboard(self, limit: int = 10) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            if not hasattr(self.repo, 'get_ranking_dashboard'):
-                return AnalyticsResponse(success=False, error="Method not available")
-            result = self.repo.get_ranking_dashboard(limit)
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Ranking dashboard error: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-
-    def get_aging_dashboard(self) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            if not hasattr(self.repo, 'get_aging_dashboard'):
-                return AnalyticsResponse(success=False, error="Method not available")
-            result = self.repo.get_aging_dashboard()
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Aging dashboard error: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-
-# ==========================================================
-# END OF BLOCK 28
-# ==========================================================
-
-# BLOCK 29: FOLLOW-UP SUPPORT
-# ==========================================================
-
-    def get_followup_data(self, context: Dict[str, Any], question: str) -> AnalyticsResponse:
-        try:
-            self.metrics["total_requests"] += 1
-            result = self.repo.get_followup_data(context, question)
-            if "error" in result:
-                self.metrics["failed_requests"] += 1
-                return AnalyticsResponse(success=False, error=result["error"])
-            self.metrics["successful_requests"] += 1
-            return AnalyticsResponse(success=True, data=result)
-        except Exception as e:
-            self.metrics["failed_requests"] += 1
-            logger.error(f"Get follow-up data failed: {e}")
-            return AnalyticsResponse(success=False, error=str(e))
-
-# ==========================================================
-
-# ==========================================================
-# BLOCK 30: FACTORY FUNCTION (FIXED v5.0 - NEVER RETURNS NONE)
-# ==========================================================
-# ==========================================================
-# BLOCK 30: FACTORY FUNCTION (FIXED v7.0 - PRODUCTION GRADE)
-# ==========================================================
-
-_analytics_service = None
-_analytics_initialization_attempts = 0
-_MAX_ANALYTICS_INIT_ATTEMPTS = 3
-
-def get_analytics_service(db: Optional[Session] = None) -> AnalyticsService:
-    """
-    Get or create AnalyticsService singleton with validation.
-    BLOCK 30 - FIXED v7.0 - PRODUCTION GRADE
-    ALWAYS returns AnalyticsService, NEVER None.
-    """
-    global _analytics_service, _analytics_initialization_attempts
-    
-    logger.info("=" * 60)
-    logger.info("🔍 ANALYTICS SERVICE INITIALIZATION")
-    logger.info("=" * 60)
-    
-    # ==========================================================
-    # Check if service already exists
-    # ==========================================================
-    if _analytics_service is not None:
-        logger.info(f"✅ AnalyticsService already initialized (instance: {id(_analytics_service)})")
-        logger.info("=" * 60)
-        return _analytics_service
-    
-    # ==========================================================
-    # Check initialization attempts
-    # ==========================================================
-    if _analytics_initialization_attempts >= _MAX_ANALYTICS_INIT_ATTEMPTS:
-        logger.error(f"❌ Max attempts ({_MAX_ANALYTICS_INIT_ATTEMPTS}) reached")
-        logger.warning("⚠️ Creating new instance anyway")
-        try:
-            _analytics_service = AnalyticsService(db)
-            logger.info(f"✅ AnalyticsService created after max attempts (instance: {id(_analytics_service)})")
-        except Exception as e:
-            logger.error(f"❌ Even max attempt creation failed: {e}")
-            # Absolute last resort
-            _analytics_service = AnalyticsService()
-        logger.info("=" * 60)
-        return _analytics_service
-    
-    _analytics_initialization_attempts += 1
-    logger.info(f"📌 Attempt {_analytics_initialization_attempts}/{_MAX_ANALYTICS_INIT_ATTEMPTS}")
-    
-    # ==========================================================
-    # VALIDATION: Test Database Connection
+    # VALIDATION 1: Check AI Analysis Enabled
     # ==========================================================
     try:
-        from app.database import SessionLocal
-        from app.models import DeliveryReport
-        from sqlalchemy import func
+        from app.config import config
+        ai_enabled = getattr(config, 'AI_ANALYSIS_ENABLED', True)
+        logger.info(f"📌 AI_ANALYSIS_ENABLED: {ai_enabled}")
         
-        test_db = SessionLocal()
-        total_records = test_db.query(DeliveryReport).count()
-        total_dns = test_db.query(func.count(distinct(DeliveryReport.dn_no))).scalar()
-        total_dealers = test_db.query(func.count(distinct(DeliveryReport.customer_name))).scalar()
-        total_warehouses = test_db.query(func.count(distinct(DeliveryReport.warehouse))).scalar()
-        total_cities = test_db.query(func.count(distinct(DeliveryReport.ship_to_city))).scalar()
-        test_db.close()
+        if not ai_enabled:
+            logger.error("❌ AI_ANALYSIS_ENABLED is False")
+            logger.error("   💡 Set AI_ANALYSIS_ENABLED=True in config")
+            fallback = _create_fallback_analytics()
+            return fallback, _create_response_class()
+    except Exception as e:
+        logger.error(f"❌ Config validation failed: {e}")
+        fallback = _create_fallback_analytics()
+        return fallback, _create_response_class()
+    
+    # ==========================================================
+    # VALIDATION 2: Test Database Connection
+    # ==========================================================
+    db = None
+    try:
+        db = SessionLocal()
         
-        logger.info("✅ PostgreSQL Validation: SUCCESS")
+        # Get database statistics
+        total_records = db.query(DeliveryReport).count()
+        
+        if total_records == 0:
+            logger.error("❌ Database has ZERO records!")
+            logger.error("   💡 Insert data into delivery_reports table")
+            logger.warning("⚠️ Using fallback analytics due to empty database")
+            if db:
+                db.close()
+            fallback = _create_fallback_analytics()
+            return fallback, _create_response_class()
+        
+        total_dns = db.query(func.count(distinct(DeliveryReport.dn_no))).scalar()
+        total_dealers = db.query(func.count(distinct(DeliveryReport.customer_name))).scalar()
+        total_warehouses = db.query(func.count(distinct(DeliveryReport.warehouse))).scalar()
+        total_cities = db.query(func.count(distinct(DeliveryReport.ship_to_city))).scalar()
+        
+        db.close()
+        
+        logger.info(f"📌 PostgreSQL Connection: SUCCESS")
         logger.info(f"   📊 Total Records: {total_records}")
         logger.info(f"   📦 Total DNs: {total_dns}")
         logger.info(f"   🏪 Total Dealers: {total_dealers}")
         logger.info(f"   🏭 Total Warehouses: {total_warehouses}")
         logger.info(f"   🏙️ Total Cities: {total_cities}")
         
-        if total_records == 0:
-            logger.warning("⚠️ Database has ZERO records - dashboards will show zeros")
-            logger.warning("   💡 Insert data into delivery_reports table")
-            
     except Exception as e:
-        error_msg = f"Database validation failed: {str(e)}"
-        logger.error(f"❌ {error_msg}")
+        logger.error(f"❌ Database connection failed: {e}")
         import traceback
         logger.error(traceback.format_exc())
-        # Don't raise here - try to continue with service creation
+        if db:
+            db.close()
+        logger.warning("⚠️ Using fallback analytics due to database error")
+        fallback = _create_fallback_analytics()
+        return fallback, _create_response_class()
     
     # ==========================================================
-    # Create Analytics Service - NEVER RETURN NONE
+    # VALIDATION 3: Import Analytics Service
     # ==========================================================
+    if get_analytics_service is None:
+        logger.error("❌ Analytics service not available")
+        fallback = _create_fallback_analytics()
+        return fallback, _create_response_class()
+    
+    # ==========================================================
+    # VALIDATION 4: Get Service Instance
+    # ==========================================================
+    service = None
     try:
-        logger.info("🔄 Creating AnalyticsService...")
-        service = AnalyticsService(db)
-        logger.info(f"✅ AnalyticsService created successfully (instance: {id(service)})")
+        service = get_analytics_service()
+        
+        if service is None:
+            logger.error("❌ Analytics service returned None")
+            # Try manual creation
+            try:
+                from app.services.analytics_service import AnalyticsService
+                service = AnalyticsService()
+                logger.info("✅ AnalyticsService created manually")
+            except Exception as e:
+                logger.error(f"❌ Manual creation failed: {e}")
+                fallback = _create_fallback_analytics()
+                return fallback, AnalyticsResponse or _create_response_class()
+        
         logger.info(f"📊 Service type: {type(service)}")
         logger.info(f"📊 Service class: {service.__class__.__name__}")
         
-        _analytics_service = service
-        _analytics_initialization_attempts = 0  # Reset on success
-        
-        # ==========================================================
-        # Verify Critical Methods
-        # ==========================================================
-        critical_methods = [
-            "get_dealer_360_dashboard",
-            "get_dealer_dashboard",
-            "get_dn_dashboard",
-            "search_dealer",
-            "get_warehouse_dashboard",
-            "get_city_dashboard",
-            "get_product_dashboard"
-        ]
-        
-        logger.info("🔍 Verifying critical methods:")
-        missing_methods = []
-        
-        for method in critical_methods:
-            if hasattr(service, method):
-                logger.info(f"   ✅ {method}: AVAILABLE")
-            else:
-                missing_methods.append(method)
-                logger.error(f"   ❌ {method}: MISSING")
-        
-        if missing_methods:
-            logger.error(f"❌ Missing {len(missing_methods)} critical methods: {missing_methods}")
-            logger.warning("⚠️ Service may not function correctly")
-        
-        # ==========================================================
-        # Test Query
-        # ==========================================================
-        try:
-            test = service.search_dealer("test", exact=False)
-            logger.info(f"✅ Dealer search test: {type(test)}")
-            if hasattr(test, 'success'):
-                logger.info(f"   Success: {test.success}")
-        except Exception as e:
-            logger.warning(f"⚠️ Search test failed: {e}")
-            logger.warning("   Service may still work for production queries")
-        
-        # ==========================================================
-        # Check Repository
-        # ==========================================================
-        if hasattr(service, 'repo'):
-            logger.info(f"📊 Repository: {type(service.repo)}")
-            if hasattr(service.repo, '_dealer_360'):
-                logger.info("✅ Dealer360Dashboard available")
-        else:
-            logger.warning("⚠️ Service has no 'repo' attribute")
-        
-        logger.info("=" * 60)
-        logger.info("✅ AnalyticsService initialized successfully")
-        logger.info("   Service is ready to serve REAL PostgreSQL data")
-        logger.info("=" * 60)
-        
-        return service
-        
     except Exception as e:
-        error_msg = f"Failed to create AnalyticsService: {str(e)}"
-        logger.error(f"❌ {error_msg}")
+        logger.error(f"❌ Failed to get analytics service: {e}")
         import traceback
         logger.error(traceback.format_exc())
+        fallback = _create_fallback_analytics()
+        return fallback, AnalyticsResponse or _create_response_class()
+    
+    # ==========================================================
+    # VALIDATION 5: Verify Required Methods
+    # ==========================================================
+    required_methods = [
+        "get_dn_dashboard",
+        "get_dealer_dashboard",
+        "get_warehouse_dashboard",
+        "get_city_dashboard",
+        "get_product_dashboard",
+        "search_dn",
+        "search_dealer",
+        "search_warehouse",
+        "search_city",
+        "search_product",
+        "verify_dn_exists",
+        "verify_dealer_exists",
+    ]
+    
+    logger.info("🔍 Verifying analytics methods:")
+    missing_methods = []
+    
+    for method in required_methods:
+        if hasattr(service, method):
+            logger.info(f"   ✅ {method}: AVAILABLE")
+        else:
+            missing_methods.append(method)
+            logger.error(f"   ❌ {method}: MISSING")
+    
+    if missing_methods:
+        logger.warning(f"⚠️ Missing {len(missing_methods)} methods - using available methods")
+    
+    logger.info("=" * 70)
+    logger.info("✅ Analytics service initialized successfully")
+    logger.info("✅ Service is ready to serve REAL PostgreSQL data")
+    logger.info("=" * 70)
+    
+    return service, AnalyticsResponse or _create_response_class()
+
+def _create_fallback_analytics():
+    """Create fallback analytics with clear error messages."""
+    class FallbackAnalytics:
+        def get_dn_dashboard(self, dn_no):
+            return {
+                "dn_number": dn_no,
+                "error": f"DN {dn_no} not found",
+                "hint": "Please add data to delivery_reports table"
+            }
+        
+        def get_dealer_dashboard(self, dealer_name):
+            return {
+                "dealer_name": dealer_name,
+                "error": f"No data found for dealer '{dealer_name}'",
+                "total_dns": 0,
+                "total_revenue": 0,
+                "delivery_rate": 0
+            }
+        
+        def get_warehouse_dashboard(self, warehouse_name):
+            return {
+                "warehouse": warehouse_name,
+                "error": f"No data found for warehouse '{warehouse_name}'",
+                "total_dns": 0,
+                "total_revenue": 0
+            }
+        
+        def get_city_dashboard(self, city_name):
+            return {
+                "city_name": city_name,
+                "error": f"No data found for city '{city_name}'",
+                "total_dns": 0,
+                "total_revenue": 0
+            }
+        
+        def get_product_dashboard(self, product_name):
+            return {
+                "product": product_name,
+                "error": f"No data found for product '{product_name}'",
+                "revenue": 0,
+                "units": 0
+            }
+        
+        def search_dn(self, query):
+            return []
+        
+        def search_dealer(self, query):
+            return []
+        
+        def search_warehouse(self, query):
+            return []
+        
+        def search_city(self, query):
+            return []
+        
+        def search_product(self, query):
+            return []
+        
+        def verify_dn_exists(self, dn_no):
+            return False
+        
+        def verify_dealer_exists(self, dealer_name):
+            return False
+        
+        def get_dealer_360_dashboard(self, dealer_name):
+            return {
+                "error": f"No data found for dealer '{dealer_name}'",
+                "profile": {
+                    "dealer_name": dealer_name,
+                    "dealer_code": "N/A",
+                    "warehouse": "N/A",
+                    "city": "N/A"
+                },
+                "business_volume": {
+                    "total_dns": 0,
+                    "total_units": 0,
+                    "total_revenue": 0
+                }
+            }
+    
+    return FallbackAnalytics()
+
+
+# ==========================================================
+# BLOCK 3: CONFIGURATION
+# ==========================================================
+
+from app.config import config
+
+CACHE_TTL_SECONDS = getattr(config, 'CACHE_TTL', 300)
+CONTEXT_TTL_SECONDS = getattr(config, 'CACHE_TTL_SESSION', 1800)
+MAX_RESPONSE_LENGTH = 2500
+QUERY_TIMEOUT_SECONDS = getattr(config, 'AI_TIMEOUT_SECONDS', 10)
+MAX_RETRY_ATTEMPTS = getattr(config, 'AI_MAX_RETRIES', 3)
+AI_ANALYSIS_ENABLED = getattr(config, 'AI_ANALYSIS_ENABLED', True)
+FUZZY_MATCH_THRESHOLD = float(os.getenv('FUZZY_MATCH_THRESHOLD', '0.3'))
+MAX_FUZZY_RESULTS = int(os.getenv('MAX_FUZZY_RESULTS', '1000'))
+
+
+# ==========================================================
+# BLOCK 4: POSTGRESQL RESOLVER
+# ==========================================================
+
+class PostgreSQLResolver:
+    """Pure PostgreSQL-based entity resolution."""
+    
+    def __init__(self, session_factory: Optional[Callable[[], Session]] = None):
+        self.session_factory = session_factory or SessionLocal
+        self._cache = TTLCache(maxsize=2000, ttl=3600)
+        self.DeliveryReport = DeliveryReport
+        self.fuzzy_threshold = FUZZY_MATCH_THRESHOLD
+        self.max_fuzzy_results = MAX_FUZZY_RESULTS
+    
+    def _get_session(self) -> Optional[Session]:
+        try:
+            return self.session_factory()
+        except Exception as e:
+            logger.error(f"Session creation failed: {e}")
+            return None
+    
+    def resolve_dealer(self, query: str) -> Optional[str]:
+        """Resolve dealer name with multiple strategies."""
+        if not query or not query.strip():
+            return None
+        
+        query_clean = query.strip()
+        cache_key = f"dealer:{query_clean.lower()}"
+        
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+        
+        session = self._get_session()
+        if not session:
+            return None
+        
+        try:
+            # STRATEGY 1: Exact match
+            result = session.query(self.DeliveryReport.customer_name).filter(
+                func.lower(self.DeliveryReport.customer_name) == func.lower(query_clean)
+            ).first()
+            if result:
+                resolved = result[0]
+                self._cache[cache_key] = resolved
+                return resolved
+            
+            # STRATEGY 2: ILIKE match
+            result = session.query(self.DeliveryReport.customer_name).filter(
+                self.DeliveryReport.customer_name.ilike(f"%{query_clean}%")
+            ).first()
+            if result:
+                resolved = result[0]
+                self._cache[cache_key] = resolved
+                return resolved
+            
+            # STRATEGY 3: Token-based matching
+            tokens = query_clean.split()
+            for token in tokens:
+                if len(token) > 2:
+                    result = session.query(self.DeliveryReport.customer_name).filter(
+                        self.DeliveryReport.customer_name.ilike(f"%{token}%")
+                    ).first()
+                    if result:
+                        resolved = result[0]
+                        self._cache[cache_key] = resolved
+                        return resolved
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Dealer resolution error: {e}")
+            return None
+        finally:
+            session.close()
+    
+    def resolve_warehouse(self, query: str) -> Optional[str]:
+        """Resolve warehouse name."""
+        if not query or not query.strip():
+            return None
+        
+        cache_key = f"warehouse:{query.lower().strip()}"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+        
+        session = self._get_session()
+        if not session:
+            return None
+        
+        try:
+            result = session.query(self.DeliveryReport.warehouse).filter(
+                func.lower(self.DeliveryReport.warehouse) == func.lower(query)
+            ).first()
+            if result:
+                resolved = result[0]
+                self._cache[cache_key] = resolved
+                return resolved
+            
+            result = session.query(self.DeliveryReport.warehouse).filter(
+                self.DeliveryReport.warehouse.ilike(f"%{query}%")
+            ).first()
+            if result:
+                resolved = result[0]
+                self._cache[cache_key] = resolved
+                return resolved
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Warehouse resolution error: {e}")
+            return None
+        finally:
+            session.close()
+    
+    def resolve_city(self, query: str) -> Optional[str]:
+        """Resolve city name."""
+        if not query or not query.strip():
+            return None
+        
+        cache_key = f"city:{query.lower().strip()}"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+        
+        session = self._get_session()
+        if not session:
+            return None
+        
+        try:
+            result = session.query(self.DeliveryReport.ship_to_city).filter(
+                func.lower(self.DeliveryReport.ship_to_city) == func.lower(query)
+            ).first()
+            if result:
+                resolved = result[0]
+                self._cache[cache_key] = resolved
+                return resolved
+            
+            result = session.query(self.DeliveryReport.ship_to_city).filter(
+                self.DeliveryReport.ship_to_city.ilike(f"%{query}%")
+            ).first()
+            if result:
+                resolved = result[0]
+                self._cache[cache_key] = resolved
+                return resolved
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"City resolution error: {e}")
+            return None
+        finally:
+            session.close()
+    
+    def resolve_product(self, query: str) -> Optional[str]:
+        """Resolve product name."""
+        if not query or not query.strip():
+            return None
+        
+        cache_key = f"product:{query.lower().strip()}"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+        
+        session = self._get_session()
+        if not session:
+            return None
+        
+        try:
+            result = session.query(self.DeliveryReport.customer_model).filter(
+                func.lower(self.DeliveryReport.customer_model) == func.lower(query)
+            ).first()
+            if result and result[0]:
+                resolved = result[0]
+                self._cache[cache_key] = resolved
+                return resolved
+            
+            result = session.query(self.DeliveryReport.customer_model).filter(
+                self.DeliveryReport.customer_model.ilike(f"%{query}%")
+            ).first()
+            if result and result[0]:
+                resolved = result[0]
+                self._cache[cache_key] = resolved
+                return resolved
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Product resolution error: {e}")
+            return None
+        finally:
+            session.close()
+    
+    def resolve_dn(self, query: str) -> Optional[str]:
+        """Resolve DN number."""
+        if not query or not query.strip():
+            return None
+        
+        normalized = re.sub(r'[^0-9]', '', str(query).strip())
+        if len(normalized) < 8 or len(normalized) > 12:
+            return None
+        
+        cache_key = f"dn:{normalized}"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+        
+        session = self._get_session()
+        if not session:
+            return None
+        
+        try:
+            result = session.query(self.DeliveryReport.dn_no).filter(
+                cast(self.DeliveryReport.dn_no, String) == normalized
+            ).first()
+            if result:
+                resolved = result[0]
+                self._cache[cache_key] = resolved
+                return resolved
+            return None
+            
+        except Exception as e:
+            logger.error(f"DN resolution error: {e}")
+            return None
+        finally:
+            session.close()
+
+
+# ==========================================================
+# BLOCK 5: CONVERSATION CONTEXT
+# ==========================================================
+
+@dataclass
+class ConversationContext:
+    phone_number: str
+    last_intent: Optional[str] = None
+    last_entity: Optional[str] = None
+    last_dealer: Optional[str] = None
+    last_warehouse: Optional[str] = None
+    last_city: Optional[str] = None
+    last_dn: Optional[str] = None
+    last_product: Optional[str] = None
+    message_count: int = 0
+    created_at: float = field(default_factory=time.time)
+    last_updated: float = field(default_factory=time.time)
+
+
+# ==========================================================
+# BLOCK 6: INTENT CLASSIFIER
+# ==========================================================
+
+@dataclass
+class IntentResult:
+    intent: str
+    confidence: float
+    entity_type: Optional[str] = None
+    entity_value: Optional[str] = None
+    raw_query: str = ""
+
+class IntentClassifier:
+    """Enhanced intent classifier with priority-based routing."""
+    
+    PRODUCT_KEYWORDS = {
+        'refrigerator': 0.95, 'fridge': 0.95, 'freezer': 0.95,
+        'ac': 0.95, 'air conditioner': 0.95,
+        'washing machine': 0.95, 'washer': 0.90,
+        'led': 0.90, 'tv': 0.90, 'television': 0.90,
+        'microwave': 0.95, 'oven': 0.90,
+        'water dispenser': 0.95, 'cooler': 0.90,
+    }
+    
+    DEALER_INDICATORS = {
+        'electronics': 0.70, 'trading': 0.60,
+        'enterprise': 0.60, 'corporation': 0.60,
+        'industries': 0.60, 'traders': 0.60,
+    }
+    
+    WAREHOUSE_KEYWORDS = {
+        'warehouse': 0.95, 'wh': 0.90, 'depot': 0.90,
+    }
+    
+    CITY_KEYWORDS = {
+        'city': 0.95, 'town': 0.85, 'district': 0.85,
+    }
+    
+    def __init__(self, resolver: PostgreSQLResolver):
+        self.resolver = resolver
+        self._cache = TTLCache(maxsize=1000, ttl=300)
+    
+    def classify(self, query: str, context: Optional[ConversationContext] = None) -> IntentResult:
+        """Classify intent with priority-based routing."""
+        if not query or not query.strip():
+            return IntentResult(intent="help", confidence=1.0, raw_query=query)
+        
+        query_clean = query.strip()
+        query_lower = query_clean.lower()
+        cache_key = f"intent:{query_lower}"
+        
+        if cache_key in self._cache:
+            cached = self._cache[cache_key]
+            if cached.confidence > 0.5:
+                return cached
+        
+        result = self._classify_with_priority(query_clean, query_lower, context)
+        self._cache[cache_key] = result
+        return result
+    
+    def _classify_with_priority(self, query: str, query_lower: str, context: Optional[ConversationContext]) -> IntentResult:
+        """Classify intent with strict priority order."""
+        
+        # PRIORITY 1: DN Number
+        dn_match = re.search(r'\b(\d{8,12})\b', query)
+        if dn_match:
+            return IntentResult(
+                intent="dn_dashboard",
+                confidence=1.0,
+                entity_type="dn",
+                entity_value=dn_match.group(1),
+                raw_query=query
+            )
+        
+        # PRIORITY 2: Warehouse
+        for keyword in self.WAREHOUSE_KEYWORDS:
+            if keyword in query_lower:
+                warehouse_match = re.search(rf'(?:{keyword})\s+([A-Za-z0-9\s\-&]+)', query, re.IGNORECASE)
+                if warehouse_match:
+                    warehouse_name = warehouse_match.group(1).strip()
+                    resolved = self.resolver.resolve_warehouse(warehouse_name)
+                    return IntentResult(
+                        intent="warehouse_dashboard",
+                        confidence=0.95,
+                        entity_type="warehouse",
+                        entity_value=resolved or warehouse_name,
+                        raw_query=query
+                    )
+        
+        # PRIORITY 3: City
+        for keyword in self.CITY_KEYWORDS:
+            if keyword in query_lower:
+                city_match = re.search(rf'(?:{keyword})\s+([A-Za-z\s\-]+)', query, re.IGNORECASE)
+                if city_match:
+                    city_name = city_match.group(1).strip()
+                    resolved = self.resolver.resolve_city(city_name)
+                    return IntentResult(
+                        intent="city_dashboard",
+                        confidence=0.95,
+                        entity_type="city",
+                        entity_value=resolved or city_name,
+                        raw_query=query
+                    )
+        
+        # PRIORITY 4: Product
+        for keyword, confidence in self.PRODUCT_KEYWORDS.items():
+            if keyword in query_lower:
+                resolved = self.resolver.resolve_product(keyword)
+                return IntentResult(
+                    intent="product_dashboard",
+                    confidence=confidence,
+                    entity_type="product",
+                    entity_value=resolved or keyword,
+                    raw_query=query
+                )
+        
+        # PRIORITY 5: Dealer (last priority)
+        dealer_score = 0
+        for keyword, score in self.DEALER_INDICATORS.items():
+            if keyword in query_lower:
+                dealer_score = max(dealer_score, score)
+        
+        if dealer_score > 0.3:
+            resolved = self.resolver.resolve_dealer(query)
+            if resolved:
+                return IntentResult(
+                    intent="dealer_dashboard",
+                    confidence=dealer_score,
+                    entity_type="dealer",
+                    entity_value=resolved,
+                    raw_query=query
+                )
+        
+        # Try standalone detection
+        if len(query) > 2 and not any(c.isdigit() for c in query):
+            # Try product first
+            product_resolved = self.resolver.resolve_product(query)
+            if product_resolved:
+                return IntentResult(
+                    intent="product_dashboard",
+                    confidence=0.7,
+                    entity_type="product",
+                    entity_value=product_resolved,
+                    raw_query=query
+                )
+            
+            # Try dealer last
+            dealer_resolved = self.resolver.resolve_dealer(query)
+            if dealer_resolved:
+                return IntentResult(
+                    intent="dealer_dashboard",
+                    confidence=0.6,
+                    entity_type="dealer",
+                    entity_value=dealer_resolved,
+                    raw_query=query
+                )
+        
+        # Context fallback
+        if context and context.last_intent:
+            return IntentResult(
+                intent=context.last_intent,
+                confidence=0.5,
+                entity_type=context.last_entity,
+                entity_value=context.last_dealer or context.last_entity,
+                raw_query=query
+            )
+        
+        return IntentResult(intent="help", confidence=1.0, raw_query=query)
+
+
+# ==========================================================
+# BLOCK 7: MAIN AI ORCHESTRATOR (FULLY INTEGRATED)
+# ==========================================================
+
+class AIOrchestrator:
+    """
+    Complete AI Orchestrator with all services integrated.
+    
+    Architecture:
+    ┌─────────────────────────────────────────────────────────────┐
+    │                    AIOrchestrator                          │
+    │  - Intent Classification                                   │
+    │  - Entity Resolution                                       │
+    │  - Context Management                                      │
+    │  - Dashboard Routing                                       │
+    └─────────────────────────────────────────────────────────────┘
+                              │
+          ┌───────────────────┼───────────────────┐
+          │                   │                   │
+          ▼                   ▼                   ▼
+    AnalyticsService    DistanceService    DealerAnalyticsService
+          │                   │                   │
+          └───────────────────┼───────────────────┘
+                              │
+                              ▼
+                        PostgreSQL
+                     delivery_reports
+    """
+    
+    def __init__(self, session_factory: Optional[Callable[[], Session]] = None):
+        self.session_factory = session_factory or SessionLocal
+        
+        # Initialize all services
+        self._analytics = None
+        self._analytics_response = None
+        self._resolver = None
+        self._classifier = None
+        self._distance_service = None
+        self._dealer_analytics = None
+        
+        # Caches
+        self.response_cache = TTLCache(maxsize=2000, ttl=CACHE_TTL_SECONDS)
+        self.conversation_cache: Dict[str, ConversationContext] = {}
+        
+        # Metrics
+        self.metrics = {
+            "total_requests": 0,
+            "intent_detection": {},
+            "errors": 0,
+            "cache_hits": 0,
+            "cache_misses": 0
+        }
+        
+        logger.info("=" * 70)
+        logger.info("AI Router v30.0 - FULLY INTEGRATED")
+        logger.info("Architecture: AnalyticsService + DistanceService + DealerAnalyticsService")
+        logger.info("=" * 70)
+        
+        # Initialize all services
+        self._init_services()
+        
+        logger.info("=" * 70)
+        logger.info("✅ AI Router v30.0 initialized successfully")
+        logger.info("✅ All services integrated and ready")
+        logger.info("=" * 70)
+    
+    def _init_services(self):
+        """Initialize all services with error handling."""
+        # 1. Analytics Service
+        try:
+            self._init_analytics()
+        except Exception as e:
+            logger.error(f"❌ Analytics init failed: {e}")
+            self._analytics = None
+        
+        # 2. Resolver
+        try:
+            self._resolver = PostgreSQLResolver(self.session_factory)
+            logger.info("✅ Resolver initialized")
+        except Exception as e:
+            logger.error(f"❌ Resolver init failed: {e}")
+            self._resolver = None
+        
+        # 3. Classifier
+        try:
+            self._classifier = IntentClassifier(self.resolver)
+            logger.info("✅ Classifier initialized")
+        except Exception as e:
+            logger.error(f"❌ Classifier init failed: {e}")
+            self._classifier = None
+        
+        # 4. Distance Service
+        try:
+            if DistanceService:
+                self._distance_service = DistanceService(self.session_factory)
+                logger.info("✅ Distance service initialized")
+            else:
+                logger.warning("⚠️ Distance service not available")
+        except Exception as e:
+            logger.error(f"❌ Distance service init failed: {e}")
+            self._distance_service = None
+        
+        # 5. Dealer Analytics Service
+        try:
+            if DealerAnalyticsService:
+                self._dealer_analytics = DealerAnalyticsService(self.session_factory)
+                logger.info("✅ Dealer Analytics service initialized")
+            else:
+                logger.warning("⚠️ Dealer Analytics service not available")
+        except Exception as e:
+            logger.error(f"❌ Dealer Analytics service init failed: {e}")
+            self._dealer_analytics = None
+    
+    def _init_analytics(self):
+        """Initialize analytics service with retry."""
+        for attempt in range(3):
+            try:
+                logger.info(f"🔄 Attempt {attempt + 1}/3 to initialize analytics...")
+                service, response_class = _get_analytics_service()
+                self._analytics = service
+                self._analytics_response = response_class
+                
+                if self._analytics is not None:
+                    logger.info(f"✅ Analytics service initialized on attempt {attempt + 1}")
+                    return
+                else:
+                    logger.warning(f"⚠️ Analytics service None on attempt {attempt + 1}")
+                    time.sleep(1)
+            except Exception as e:
+                logger.error(f"❌ Attempt {attempt + 1} failed: {e}")
+                time.sleep(1)
+        
+        logger.error("❌ All attempts to initialize analytics failed!")
+        # Create fallback as last resort
+        self._analytics = _create_fallback_analytics()
+        self._analytics_response = _create_response_class()
+        logger.warning("⚠️ Using fallback analytics service")
+    
+    @property
+    def analytics(self):
+        """Get analytics service."""
+        if self._analytics is None:
+            logger.warning("⚠️ Analytics service is None - attempting to reload...")
+            try:
+                service, response_class = _get_analytics_service()
+                self._analytics = service
+                self._analytics_response = response_class
+                if self._analytics is None:
+                    logger.error("❌ Analytics service still None after reload")
+            except Exception as e:
+                logger.error(f"❌ Reload failed: {e}")
+        return self._analytics
+    
+    @property
+    def resolver(self):
+        """Get resolver with lazy initialization."""
+        if self._resolver is None:
+            self._resolver = PostgreSQLResolver(self.session_factory)
+        return self._resolver
+    
+    @property
+    def classifier(self):
+        """Get classifier with lazy initialization."""
+        if self._classifier is None:
+            self._classifier = IntentClassifier(self.resolver)
+        return self._classifier
+    
+    @property
+    def distance_service(self):
+        """Get distance service with lazy initialization."""
+        if self._distance_service is None and DistanceService:
+            try:
+                self._distance_service = DistanceService(self.session_factory)
+                logger.info("✅ Distance service initialized (lazy)")
+            except Exception as e:
+                logger.error(f"Distance service init failed: {e}")
+                self._distance_service = None
+        return self._distance_service
+    
+    @property
+    def dealer_analytics(self):
+        """Get dealer analytics service with lazy initialization."""
+        if self._dealer_analytics is None and DealerAnalyticsService:
+            try:
+                self._dealer_analytics = DealerAnalyticsService(self.session_factory)
+                logger.info("✅ Dealer Analytics service initialized (lazy)")
+            except Exception as e:
+                logger.error(f"Dealer Analytics init failed: {e}")
+                self._dealer_analytics = None
+        return self._dealer_analytics
+    
+    def _load_context(self, phone_number: Optional[str]) -> Optional[ConversationContext]:
+        """Load conversation context."""
+        if not phone_number:
+            return None
+        
+        if phone_number not in self.conversation_cache:
+            self.conversation_cache[phone_number] = ConversationContext(phone_number=phone_number)
+        
+        context = self.conversation_cache[phone_number]
+        if time.time() - context.last_updated > CONTEXT_TTL_SECONDS:
+            context = ConversationContext(phone_number=phone_number)
+            self.conversation_cache[phone_number] = context
+        
+        return context
+    
+    def _update_context(self, phone_number: Optional[str], intent: str, entity_type: str, entity: str):
+        """Update conversation context."""
+        if not phone_number or not entity:
+            return
+        
+        context = self._load_context(phone_number)
+        if not context:
+            return
+        
+        context.last_intent = intent
+        context.last_entity = entity
+        context.message_count += 1
+        context.last_updated = time.time()
+        
+        if entity_type == "dealer":
+            context.last_dealer = entity
+        elif entity_type == "warehouse":
+            context.last_warehouse = entity
+        elif entity_type == "city":
+            context.last_city = entity
+        elif entity_type == "dn":
+            context.last_dn = entity
+        elif entity_type == "product":
+            context.last_product = entity
+        
+        self.conversation_cache[phone_number] = context
+    
+    def _validate_response(self, response, service_name: str, req_id: str) -> Tuple[bool, str, Optional[Dict]]:
+        """Validate response from any service."""
+        if response is None:
+            return False, "No response received", None
+        
+        if isinstance(response, dict):
+            if "error" in response:
+                return False, response.get("error", "Unknown error"), response
+            if not response:
+                return False, "Empty response", None
+            return True, "", response
+        
+        if hasattr(response, 'success'):
+            if not response.success:
+                error = getattr(response, 'error', 'Unknown error')
+                return False, error, getattr(response, 'data', {})
+            data = getattr(response, 'data', {})
+            return True, "", data
+        
+        if isinstance(response, list):
+            return True, "", {"results": response}
+        
+        return True, "", {"data": response}
+    
+    def _truncate_response(self, response: str) -> str:
+        """Truncate response if too long."""
+        if len(response) > MAX_RESPONSE_LENGTH:
+            return response[:MAX_RESPONSE_LENGTH - 20] + "\n\n... (truncated)"
+        return response
+
+
+# ==========================================================
+# BLOCK 8: MAIN ENTRY POINT
+# ==========================================================
+
+    def process_whatsapp_query(
+        self,
+        question: str,
+        session_factory: Optional[Callable[[], Session]] = None,
+        phone_number: Optional[str] = None,
+        user_id: Optional[str] = None,
+        request_id: Optional[str] = None
+    ) -> str:
+        """
+        Process WhatsApp query with full service integration.
+        
+        Flow:
+        1. Validate input
+        2. Classify intent
+        3. Route to appropriate dashboard
+        4. Format response
+        5. Update context
+        6. Return response
+        """
+        start_time = time.time()
+        
+        if not getattr(config, 'AI_ANALYSIS_ENABLED', True):
+            return "⚠️ AI service is currently disabled. Please contact support."
+        
+        req_id = request_id or str(uuid.uuid4())[:8]
+        self.metrics["total_requests"] += 1
+        
+        logger.info(f"[{req_id}] 📥 Processing: '{question[:100]}'")
+        
+        if session_factory:
+            self.session_factory = session_factory
+        
+        if not question or len(question.strip()) < 2:
+            return "Please provide a valid question. Type 'help' for menu."
+        
+        try:
+            context = self._load_context(phone_number)
+            
+            # Classify intent
+            intent_result = self.classifier.classify(question.strip(), context)
+            
+            logger.info(f"[{req_id}] 🎯 Intent: {intent_result.intent}")
+            logger.info(f"[{req_id}] 📊 Entity: {intent_result.entity_value}")
+            
+            if intent_result.intent == "help":
+                return self._get_help_message()
+            
+            # Route to appropriate dashboard
+            result = self._route_to_dashboard(
+                intent_result.intent,
+                intent_result.entity_value,
+                intent_result.entity_type,
+                context,
+                req_id
+            )
+            
+            if result:
+                self._update_context(
+                    phone_number,
+                    intent_result.intent,
+                    intent_result.entity_type or "unknown",
+                    intent_result.entity_value
+                )
+                elapsed = time.time() - start_time
+                logger.info(f"[{req_id}] ✅ Completed in {elapsed:.3f}s")
+                return result
+            
+            return self._get_help_message()
+            
+        except Exception as e:
+            self.metrics["errors"] += 1
+            logger.exception(f"[{req_id}] ❌ ERROR: {e}")
+            return f"⚠️ Unable to process request. Please try again or type 'help'."
+
+
+# ==========================================================
+# BLOCK 9: ROUTING ENGINE WITH FULL INTEGRATION
+# ==========================================================
+
+    def _route_to_dashboard(self, intent: str, entity: Optional[str], 
+                            entity_type: Optional[str], 
+                            context: Optional[ConversationContext], 
+                            req_id: str) -> Optional[str]:
+        """
+        Route to appropriate dashboard with full service integration.
+        
+        Services Used:
+        - AnalyticsService: Core data
+        - DistanceService: Distance calculations
+        - DealerAnalyticsService: 360 dealer dashboards
+        """
+        if not self.analytics:
+            return "⚠️ Analytics service is temporarily unavailable. Please try again later."
+        
+        ROUTE_MAP = {
+            "dn_dashboard": self._route_dn_dashboard,
+            "dealer_dashboard": self._route_dealer_dashboard,
+            "warehouse_dashboard": self._route_warehouse_dashboard,
+            "city_dashboard": self._route_city_dashboard,
+            "product_dashboard": self._route_product_dashboard,
+        }
+        
+        try:
+            handler = ROUTE_MAP.get(intent)
+            if handler:
+                return handler(entity, context, req_id)
+            return None
+        except Exception as e:
+            logger.error(f"[{req_id}] Routing error: {e}")
+            return f"⚠️ Unable to load {intent.replace('_', ' ').title()}."
+
+
+# ==========================================================
+# BLOCK 10: ROUTE HANDLERS WITH SERVICE INTEGRATION
+# ==========================================================
+
+    def _route_dn_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        """Handle DN dashboard with analytics integration."""
+        dn_number = entity or (context.last_dn if context else None)
+        
+        if not dn_number:
+            return "📄 *DN DASHBOARD*\n\nPlease provide a DN number."
+        
+        dn_clean = re.sub(r'\D', '', str(dn_number).strip())
+        if len(dn_clean) < 8 or len(dn_clean) > 12:
+            return f"❌ Invalid DN number: '{dn_number}'"
+        
+        try:
+            response = self.analytics.get_dn_dashboard(dn_clean)
+            is_valid, error_msg, data = self._validate_response(response, "DN Dashboard", req_id)
+            
+            if not is_valid:
+                return f"❌ Unable to retrieve data for DN {dn_clean}.\n\n{error_msg}"
+            
+            return self._format_dn_dashboard(data, dn_clean)
+        except Exception as e:
+            logger.error(f"[{req_id}] DN dashboard error: {e}")
+            return f"❌ Error retrieving DN {dn_clean}: {str(e)[:100]}"
+
+    def _route_dealer_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        """
+        Handle dealer dashboard with full service integration.
+        
+        Integration Flow:
+        1. DealerAnalyticsService → 360 dashboard
+        2. DistanceService → Distance calculation
+        3. AnalyticsService → Legacy fallback
+        """
+        dealer_name = entity or (context.last_dealer if context else None)
+        
+        if not dealer_name:
+            return "🏪 *DEALER DASHBOARD*\n\nPlease specify a dealer name."
+        
+        original_name = dealer_name
         
         # ==========================================================
-        # CRITICAL FIX: ALWAYS return an instance, never None
+        # STEP 1: Get Dealer 360 Dashboard from DealerAnalyticsService
         # ==========================================================
-        logger.warning("⚠️ Creating emergency AnalyticsService instance...")
-        try:
-            _analytics_service = AnalyticsService(db)
-            logger.info(f"✅ Emergency AnalyticsService created (instance: {id(_analytics_service)})")
-            return _analytics_service
-        except Exception as e2:
-            logger.error(f"❌ Emergency creation failed: {e2}")
-            # ABSOLUTE LAST RESORT: Create with no db
+        data = None
+        if self.dealer_analytics:
             try:
-                _analytics_service = AnalyticsService()
-                logger.info("✅ Absolute last resort AnalyticsService created")
-                return _analytics_service
-            except Exception as e3:
-                logger.error(f"❌ All creation attempts failed: {e3}")
-                # ULTIMATE FALLBACK: Create a dummy service
-                _analytics_service = AnalyticsService()
-                return _analytics_service
-# BLOCK 31: EXPORTS
+                logger.info(f"[{req_id}] 📊 Getting 360 dashboard for: {dealer_name}")
+                response = self.dealer_analytics.get_dealer_360_dashboard(dealer_name)
+                
+                if hasattr(response, 'success') and response.success:
+                    data = response.data if hasattr(response, 'data') else {}
+                    logger.info(f"[{req_id}] ✅ 360 dashboard retrieved")
+                elif isinstance(response, dict) and not response.get('error'):
+                    data = response
+                    logger.info(f"[{req_id}] ✅ 360 dashboard retrieved as dict")
+            except Exception as e:
+                logger.warning(f"[{req_id}] ⚠️ 360 dashboard failed: {e}")
+        
+        # ==========================================================
+        # STEP 2: Add Distance Information from DistanceService
+        # ==========================================================
+        if data and self.distance_service:
+            try:
+                warehouse = data.get('warehouse')
+                city = data.get('city')
+                if warehouse and city:
+                    distance_info = self.distance_service.calculate_warehouse_distance(warehouse, city)
+                    if distance_info and distance_info.get('success'):
+                        data['distance_km'] = distance_info.get('distance_km')
+                        data['approx_driving_minutes'] = distance_info.get('approx_driving_minutes')
+                        logger.info(f"[{req_id}] ✅ Distance: {distance_info.get('distance_km')} km")
+            except Exception as e:
+                logger.warning(f"[{req_id}] ⚠️ Distance calculation failed: {e}")
+        
+        # ==========================================================
+        # STEP 3: Fallback to Legacy AnalyticsService
+        # ==========================================================
+        if not data:
+            try:
+                logger.info(f"[{req_id}] 📊 Using legacy analytics for: {dealer_name}")
+                response = self.analytics.get_dealer_dashboard(dealer_name)
+                if hasattr(response, 'success') and response.success:
+                    data = response.data if hasattr(response, 'data') else {}
+                elif isinstance(response, dict) and not response.get('error'):
+                    data = response
+            except Exception as e:
+                logger.warning(f"[{req_id}] ⚠️ Legacy dashboard failed: {e}")
+        
+        # ==========================================================
+        # STEP 4: Validate and Format
+        # ==========================================================
+        if not data or (isinstance(data, dict) and data.get('error')):
+            error = data.get('error', 'No data') if isinstance(data, dict) else 'No data'
+            
+            # Check for suggestions
+            if isinstance(data, dict) and 'suggestions' in data:
+                suggestions = data.get('suggestions', [])
+                if suggestions:
+                    return f"❌ Dealer '{original_name}' not found.\n\n💡 Did you mean:\n" + "\n".join([f"• {s}" for s in suggestions[:3]])
+            
+            return f"❌ Unable to retrieve data for '{original_name}'.\n\n{error}"
+        
+        # Use 360 formatter if available
+        if data.get('_dashboard_type') == '360' or 'profile' in data:
+            try:
+                if format_dealer_360_dashboard:
+                    return format_dealer_360_dashboard(data)
+            except Exception as e:
+                logger.warning(f"[{req_id}] ⚠️ 360 formatter failed: {e}")
+        
+        return self._format_dealer_dashboard(data, dealer_name)
+
+    def _route_warehouse_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        """
+        Handle warehouse dashboard with coverage integration.
+        
+        Integration Flow:
+        1. AnalyticsService → Warehouse data
+        2. DistanceService → Coverage information
+        """
+        warehouse_name = entity or (context.last_warehouse if context else None)
+        
+        if not warehouse_name:
+            return "🏭 *WAREHOUSE DASHBOARD*\n\nPlease specify a warehouse name."
+        
+        try:
+            response = self.analytics.get_warehouse_dashboard(warehouse_name)
+            is_valid, error_msg, data = self._validate_response(response, "Warehouse Dashboard", req_id)
+            
+            if not is_valid:
+                return f"❌ Unable to retrieve data for warehouse '{warehouse_name}'.\n\n{error_msg}"
+            
+            # Add distance coverage information from DistanceService
+            if data and self.distance_service:
+                try:
+                    coverage = self.distance_service.get_warehouse_coverage(warehouse_name)
+                    if coverage and coverage.get('success'):
+                        data['avg_distance_km'] = coverage.get('avg_distance_km')
+                        data['max_distance_km'] = coverage.get('max_distance_km')
+                        data['min_distance_km'] = coverage.get('min_distance_km')
+                        data['distance_info'] = coverage.get('cities', [])
+                        logger.info(f"[{req_id}] ✅ Coverage info added")
+                except Exception as e:
+                    logger.warning(f"[{req_id}] ⚠️ Coverage info failed: {e}")
+            
+            return self._format_warehouse_dashboard(data, warehouse_name)
+        except Exception as e:
+            logger.error(f"[{req_id}] Warehouse dashboard error: {e}")
+            return f"❌ Error retrieving warehouse data: {str(e)[:100]}"
+
+    def _route_city_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        """Handle city dashboard."""
+        city_name = entity or (context.last_city if context else None)
+        
+        if not city_name:
+            return "🏙️ *CITY DASHBOARD*\n\nPlease specify a city name."
+        
+        try:
+            response = self.analytics.get_city_dashboard(city_name)
+            is_valid, error_msg, data = self._validate_response(response, "City Dashboard", req_id)
+            
+            if not is_valid:
+                return f"❌ Unable to retrieve data for city '{city_name}'.\n\n{error_msg}"
+            
+            return self._format_city_dashboard(data, city_name)
+        except Exception as e:
+            logger.error(f"[{req_id}] City dashboard error: {e}")
+            return f"❌ Error retrieving city data: {str(e)[:100]}"
+
+    def _route_product_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
+        """Handle product dashboard."""
+        product_name = entity or (context.last_product if context else None)
+        
+        if not product_name:
+            return "📦 *PRODUCT DASHBOARD*\n\nPlease specify a product."
+        
+        try:
+            response = self.analytics.get_product_dashboard(product_name)
+            is_valid, error_msg, data = self._validate_response(response, "Product Dashboard", req_id)
+            
+            if not is_valid:
+                return f"❌ Unable to retrieve data for product '{product_name}'.\n\n{error_msg}"
+            
+            return self._format_product_dashboard(data, product_name)
+        except Exception as e:
+            logger.error(f"[{req_id}] Product dashboard error: {e}")
+            return f"❌ Error retrieving product data: {str(e)[:100]}"
+
+
+# ==========================================================
+# BLOCK 11: FORMATTERS WITH DISTANCE SUPPORT
+# ==========================================================
+
+    def _format_dn_dashboard(self, data: Dict, dn_number: str) -> str:
+        """Format DN dashboard."""
+        try:
+            if not data:
+                return f"❌ No data available for DN {dn_number}"
+            
+            def safe_get(key, default="N/A"):
+                val = data.get(key, default)
+                return default if val is None or val == "" else val
+            
+            lines = [
+                "📄 *DN TRACKING*",
+                "",
+                f"DN No: {safe_get('dn_number', dn_number)}",
+                f"Dealer: {safe_get('customer_name', 'N/A')}",
+                f"Warehouse: {safe_get('warehouse', 'N/A')}",
+                f"City: {safe_get('ship_to_city', 'N/A')}",
+                "",
+                "📊 *Metrics*",
+                f"Units: {safe_get('units', 0)}",
+                f"Revenue: PKR {safe_get('amount', 0):,.0f}",
+                "",
+                "📋 *Status*",
+                f"Delivery: {safe_get('delivery_status', 'Unknown')}",
+                f"PGI: {safe_get('pgi_status', 'N/A')}",
+                f"POD: {safe_get('pod_status', 'N/A')}"
+            ]
+            
+            return "\n".join(lines)
+        except Exception as e:
+            logger.error(f"DN format error: {e}")
+            return f"❌ Unable to format DN details: {str(e)}"
+
+    def _format_dealer_dashboard(self, data: Dict, dealer_name: str) -> str:
+        """Format dealer dashboard with distance information."""
+        try:
+            if not data:
+                return f"❌ No data available for dealer {dealer_name}"
+            
+            def safe_get(key, default="N/A"):
+                val = data.get(key, default)
+                return default if val is None or val == "" else val
+            
+            revenue = data.get('total_revenue', 0)
+            delivery_rate = safe_get('delivery_rate', 0)
+            total_dns = safe_get('total_dns', 0)
+            
+            lines = [
+                "🏢 *DEALER DASHBOARD*",
+                "",
+                f"Dealer: {safe_get('dealer_name', dealer_name)}",
+                f"Warehouse: {safe_get('warehouse', 'N/A')}",
+                f"City: {safe_get('city', 'N/A')}",
+                "",
+                "📊 *Metrics*",
+                f"Total DNs: {total_dns}",
+                f"Total Revenue: PKR {revenue:,.0f}" if revenue else f"Total Revenue: PKR {revenue}",
+                f"Delivery Rate: {delivery_rate}%",
+            ]
+            
+            # Add distance information if available
+            distance_km = data.get('distance_km')
+            if distance_km:
+                lines.append("")
+                lines.append("📍 *Distance*")
+                lines.append(f"Warehouse → Dealer: {distance_km:.1f} km")
+                
+                approx_minutes = data.get('approx_driving_minutes')
+                if approx_minutes:
+                    if approx_minutes < 60:
+                        lines.append(f"⏱️ Approx Driving: {approx_minutes} minutes")
+                    else:
+                        hours = int(approx_minutes // 60)
+                        minutes = int(approx_minutes % 60)
+                        lines.append(f"⏱️ Approx Driving: {hours}h {minutes}m")
+            
+            return self._truncate_response("\n".join(lines))
+        except Exception as e:
+            logger.error(f"Dealer format error: {e}")
+            return f"❌ Unable to format dealer data: {str(e)}"
+
+    def _format_warehouse_dashboard(self, data: Dict, warehouse_name: str) -> str:
+        """Format warehouse dashboard with coverage information."""
+        try:
+            if not data:
+                return f"❌ No data available for warehouse {warehouse_name}"
+            
+            def safe_get(key, default="N/A"):
+                val = data.get(key, default)
+                return default if val is None or val == "" else val
+            
+            revenue = data.get('total_revenue', 0)
+            
+            lines = [
+                "🏭 *WAREHOUSE DASHBOARD*",
+                "",
+                f"Warehouse: {safe_get('warehouse', warehouse_name)}",
+                "",
+                "📊 *Metrics*",
+                f"Total DNs: {safe_get('total_dns', 0)}",
+                f"Total Revenue: PKR {revenue:,.0f}" if revenue else f"Total Revenue: PKR {revenue}",
+                f"Total Dealers: {safe_get('total_dealers', 0)}",
+                f"Cities Served: {safe_get('cities_served', 0)}",
+            ]
+            
+            # Add distance coverage
+            avg_distance = data.get('avg_distance_km')
+            if avg_distance:
+                lines.append("")
+                lines.append("📍 *Distance Coverage*")
+                lines.append(f"Average Distance: {avg_distance:.1f} km")
+                
+                max_distance = data.get('max_distance_km')
+                if max_distance:
+                    lines.append(f"Farthest City: {max_distance:.1f} km")
+                
+                distance_info = data.get('distance_info', [])
+                if distance_info:
+                    lines.append("")
+                    lines.append("📌 *Top Cities by Distance*")
+                    for item in distance_info[:5]:
+                        city = item.get('city', 'Unknown')
+                        dist = item.get('distance_km', 0)
+                        lines.append(f"• {city}: {dist:.1f} km")
+            
+            return self._truncate_response("\n".join(lines))
+        except Exception as e:
+            logger.error(f"Warehouse format error: {e}")
+            return f"❌ Unable to format warehouse data: {str(e)}"
+
+    def _format_city_dashboard(self, data: Dict, city_name: str) -> str:
+        """Format city dashboard."""
+        try:
+            if not data:
+                return f"❌ No data available for city {city_name}"
+            
+            def safe_get(key, default="N/A"):
+                val = data.get(key, default)
+                return default if val is None or val == "" else val
+            
+            revenue = data.get('total_revenue', 0)
+            
+            lines = [
+                "🏙️ *CITY DASHBOARD*",
+                "",
+                f"City: {safe_get('city_name', city_name)}",
+                "",
+                "📊 *Metrics*",
+                f"Total DNs: {safe_get('total_dns', 0)}",
+                f"Total Revenue: PKR {revenue:,.0f}" if revenue else f"Total Revenue: PKR {revenue}",
+                f"Total Dealers: {safe_get('total_dealers', 0)}",
+                f"Total Warehouses: {safe_get('total_warehouses', 0)}",
+                "",
+                f"📦 Delivery Rate: {safe_get('delivery_rate', 0)}%"
+            ]
+            
+            return self._truncate_response("\n".join(lines))
+        except Exception as e:
+            logger.error(f"City format error: {e}")
+            return f"❌ Unable to format city data: {str(e)}"
+
+    def _format_product_dashboard(self, data: Dict, product_name: str) -> str:
+        """Format product dashboard."""
+        try:
+            if not data:
+                return f"❌ No data available for product {product_name}"
+            
+            def safe_get(key, default="N/A"):
+                val = data.get(key, default)
+                return default if val is None or val == "" else val
+            
+            revenue = data.get('revenue', 0)
+            
+            lines = [
+                "📦 *PRODUCT DASHBOARD*",
+                "",
+                f"Product: {safe_get('product', product_name)}",
+                "",
+                "📊 *Metrics*",
+                f"Total Revenue: PKR {revenue:,.0f}" if revenue else f"Total Revenue: PKR {revenue}",
+                f"Total Units: {safe_get('units', 0)}",
+                f"Total DNs: {safe_get('dns', 0)}",
+                "",
+                "📍 *Distribution*",
+                f"Dealers: {safe_get('dealers', 0)}",
+                f"Cities: {safe_get('cities', 0)}",
+                f"Warehouses: {safe_get('warehouses', 0)}",
+                "",
+                f"📦 Delivery Rate: {safe_get('delivery_rate', 0)}%"
+            ]
+            
+            return self._truncate_response("\n".join(lines))
+        except Exception as e:
+            logger.error(f"Product format error: {e}")
+            return f"❌ Unable to format product data: {str(e)}"
+
+    def _get_help_message(self) -> str:
+        """Get help message."""
+        return """🏠 *HAIER LOGISTICS AI*
+
+📋 *Available Dashboards:*
+
+1️⃣ 🏪 Dealer Dashboard
+2️⃣ 🏭 Warehouse Dashboard
+3️⃣ 🏙️ City Dashboard
+4️⃣ 📦 Product Dashboard
+5️⃣ 📄 DN Dashboard
+6️⃣ 📋 PGI Dashboard
+7️⃣ ✅ POD Dashboard
+8️⃣ 🚚 Delivery Dashboard
+9️⃣ 👔 Executive Dashboard
+🔟 🚨 Control Tower
+
+🔍 *Quick Commands:*
+• Enter 8-12 digit DN number
+• Dealer name (e.g., "Pakistan Electronics")
+• Product name (e.g., "Refrigerator")
+• City name (e.g., "Lahore City")
+• Warehouse name (e.g., "Rawalpindi warehouse")
+• "Help" for menu
+
+*Ask me anything about logistics!* 🤖"""
+
+
+# ==========================================================
+# BLOCK 12: SINGLETON & WRAPPER FUNCTIONS
+# ==========================================================
+
+_orchestrator = None
+_initialization_attempts = 0
+_MAX_INIT_ATTEMPTS = 3
+
+def get_orchestrator(session_factory: Optional[Callable[[], Session]] = None) -> Optional[AIOrchestrator]:
+    """Get or create AI Orchestrator singleton."""
+    global _orchestrator, _initialization_attempts
+    
+    if _orchestrator is not None:
+        return _orchestrator
+    
+    if _initialization_attempts >= _MAX_INIT_ATTEMPTS:
+        logger.error(f"❌ Max initialization attempts ({_MAX_INIT_ATTEMPTS}) reached")
+        return None
+    
+    _initialization_attempts += 1
+    logger.info(f"🔄 Initializing AI Orchestrator (attempt {_initialization_attempts}/{_MAX_INIT_ATTEMPTS})...")
+    
+    try:
+        _orchestrator = AIOrchestrator(session_factory=session_factory)
+        logger.info("✅ AI Orchestrator v30.0 initialized successfully")
+        _initialization_attempts = 0
+        return _orchestrator
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize AI Orchestrator: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        _orchestrator = None
+        return None
+
+
+def process_whatsapp_query(
+    question: str,
+    session_factory: Optional[Callable[[], Session]] = None,
+    phone_number: Optional[str] = None,
+    user_id: Optional[str] = None,
+    request_id: Optional[str] = None
+) -> str:
+    """
+    Process WhatsApp query with all services integrated.
+    
+    Architecture Flow:
+    ┌─────────────────────────────────────────────────────────────┐
+    │                    WhatsApp User                           │
+    └─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+                    ┌─────────────────┐
+                    │   webhook.py    │
+                    └─────────────────┘
+                              │
+                              ▼
+              ┌─────────────────────────────────┐
+              │    process_whatsapp_query()     │
+              │    (AI Orchestrator Entry)      │
+              └─────────────────────────────────┘
+                              │
+                              ▼
+              ┌─────────────────────────────────┐
+              │    AIOrchestrator               │
+              │  - Intent Classification        │
+              │  - Entity Resolution            │
+              │  - Context Management           │
+              │  - Dashboard Routing            │
+              └─────────────────────────────────┘
+                              │
+          ┌───────────────────┼───────────────────┐
+          │                   │                   │
+          ▼                   ▼                   ▼
+┌─────────────────┐ ┌─────────────────┐ ┌─────────────────────┐
+│ AnalyticsService│ │ DistanceService │ │DealerAnalyticsService│
+│  (PostgreSQL)   │ │   (GeoPy)       │ │   (360 Dashboard)    │
+└─────────────────┘ └─────────────────┘ └─────────────────────┘
+          │                   │                   │
+          └───────────────────┼───────────────────┘
+                              │
+                              ▼
+                    ┌─────────────────┐
+                    │   PostgreSQL    │
+                    │ delivery_reports│
+                    └─────────────────┘
+    """
+    global _orchestrator
+    
+    if not question or not question.strip():
+        return "Please provide a valid question. Type 'help' for menu."
+    
+    orchestrator = get_orchestrator(session_factory)
+    
+    if orchestrator is None:
+        return "⚠️ AI service is currently unavailable. Please try again later."
+    
+    try:
+        return orchestrator.process_whatsapp_query(
+            question=question,
+            session_factory=session_factory,
+            phone_number=phone_number,
+            user_id=user_id,
+            request_id=request_id
+        )
+    except Exception as e:
+        logger.error(f"❌ Error processing query: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return f"⚠️ Error processing your request. Please try again later."
+
+
+def reset_orchestrator() -> None:
+    """Reset the orchestrator singleton."""
+    global _orchestrator, _initialization_attempts
+    _orchestrator = None
+    _initialization_attempts = 0
+    logger.info("🔄 Orchestrator reset successfully")
+
+
+def get_orchestrator_status() -> Dict[str, Any]:
+    """Get current orchestrator status for diagnostics."""
+    global _orchestrator, _initialization_attempts
+    
+    return {
+        "orchestrator_initialized": _orchestrator is not None,
+        "initialization_attempts": _initialization_attempts,
+        "max_attempts": _MAX_INIT_ATTEMPTS,
+        "analytics_available": hasattr(_orchestrator, 'analytics') and _orchestrator.analytics is not None if _orchestrator else False,
+        "distance_available": hasattr(_orchestrator, 'distance_service') and _orchestrator.distance_service is not None if _orchestrator else False,
+        "dealer_analytics_available": hasattr(_orchestrator, 'dealer_analytics') and _orchestrator.dealer_analytics is not None if _orchestrator else False,
+        "conversation_count": len(_orchestrator.conversation_cache) if _orchestrator else 0,
+        "metrics": _orchestrator.metrics if _orchestrator else {}
+    }
+
+
+# ==========================================================
+# BLOCK 13: EXPORTS
 # ==========================================================
 
 __all__ = [
-    'AnalyticsService',
-    'AnalyticsResponse',
-    'AnalyticsRepository',
-    'KPIEngine',
-    'DateValidator',
-    'SearchEngine',
-    'EntityResolver',
-    'DatabaseHealthChecker',
-    'get_analytics_service',
-    'test_database_connection'
+    'AIOrchestrator',
+    'PostgreSQLResolver',
+    'ConversationContext',
+    'IntentClassifier',
+    'IntentResult',
+    'get_orchestrator',
+    'process_whatsapp_query',
+    'reset_orchestrator',
+    'get_orchestrator_status',
 ]
 
 # ==========================================================
-# END OF FILE - v30.0 PRODUCTION READY
+# END OF FILE - v30.0 FULLY INTEGRATED
 # ==========================================================
