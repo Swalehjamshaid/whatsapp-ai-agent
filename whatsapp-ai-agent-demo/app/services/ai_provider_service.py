@@ -1,7 +1,7 @@
 # ==========================================================
-# FILE: app/services/ai_provider_service.py (v28.0 - PRODUCTION READY)
-# PURPOSE: POSTGRESQL-DRIVEN AI ROUTER
-# VERSION: 28.0 - Fixed WhatsApp Token & Config Alignment
+# FILE: app/services/ai_provider_service.py (v29.0 - PRODUCTION READY)
+# PURPOSE: POSTGRESQL-DRIVEN AI ROUTER WITH IMPROVED ROUTING
+# VERSION: 29.0 - Fixed Routing, Intent Detection, Error Handling
 # ==========================================================
 
 import time
@@ -24,17 +24,14 @@ from app.models import DeliveryReport
 from app.database import SessionLocal, check_database_connection
 
 # ==========================================================
-# BLOCK 2: LAZY IMPORTS (FIXED v4.0 - WITH AI CHECK)
-# ==========================================================
-# ==========================================================
-# BLOCK 2: LAZY IMPORTS (FIXED v8.0 - PRODUCTION GRADE)
+# BLOCK 2: ANALYTICS SERVICE LOADER (PRODUCTION GRADE v9.0)
 # ==========================================================
 
 def _get_analytics_service():
     """
     Load analytics service with comprehensive validation.
-    BLOCK 2 - FIXED v8.0 - PRODUCTION GRADE
-    Raises detailed errors instead of silent fallback.
+    BLOCK 2 - FIXED v9.0 - PRODUCTION GRADE
+    NEVER returns None. Always returns (service, response_class).
     """
     logger.info("=" * 70)
     logger.info("🔍 ANALYTICS SERVICE LOADER - PRODUCTION GRADE")
@@ -49,12 +46,12 @@ def _get_analytics_service():
         logger.info(f"📌 AI_ANALYSIS_ENABLED: {ai_enabled}")
         
         if not ai_enabled:
-            error_msg = "AI_ANALYSIS_ENABLED is False. Set to True in config."
-            logger.error(f"❌ {error_msg}")
-            raise RuntimeError(error_msg)
+            logger.error("❌ AI_ANALYSIS_ENABLED is False")
+            logger.error("   💡 Set AI_ANALYSIS_ENABLED=True in config")
+            return _create_fallback_analytics(), None
     except Exception as e:
         logger.error(f"❌ Config validation failed: {e}")
-        raise
+        return _create_fallback_analytics(), None
     
     # ==========================================================
     # VALIDATION 2: Test Database Connection
@@ -66,7 +63,7 @@ def _get_analytics_service():
         
         db = SessionLocal()
         
-        # Test connection and get statistics
+        # Get database statistics
         total_records = db.query(DeliveryReport).count()
         total_dns = db.query(func.count(distinct(DeliveryReport.dn_no))).scalar()
         total_dealers = db.query(func.count(distinct(DeliveryReport.customer_name))).scalar()
@@ -87,11 +84,11 @@ def _get_analytics_service():
             logger.warning("   💡 Insert data into delivery_reports table")
             
     except Exception as e:
-        error_msg = f"Database connection failed: {str(e)}"
-        logger.error(f"❌ {error_msg}")
+        logger.error(f"❌ Database connection failed: {e}")
         import traceback
         logger.error(traceback.format_exc())
-        raise RuntimeError(error_msg)
+        logger.warning("⚠️ Using fallback analytics due to database error")
+        return _create_fallback_analytics(), None
     
     # ==========================================================
     # VALIDATION 3: Import Analytics Service
@@ -100,32 +97,40 @@ def _get_analytics_service():
         from app.services.analytics_service import get_analytics_service, AnalyticsResponse
         logger.info("✅ Analytics service imported successfully")
     except ImportError as e:
-        error_msg = f"Analytics service import failed: {str(e)}"
-        logger.error(f"❌ {error_msg}")
+        logger.error(f"❌ Analytics service import failed: {e}")
         import traceback
         logger.error(traceback.format_exc())
-        raise RuntimeError(error_msg)
+        logger.warning("⚠️ Using fallback analytics due to import error")
+        return _create_fallback_analytics(), None
     
     # ==========================================================
     # VALIDATION 4: Get Service Instance
     # ==========================================================
+    service = None
     try:
         service = get_analytics_service()
         
         if service is None:
-            error_msg = "Analytics service returned None"
-            logger.error(f"❌ {error_msg}")
-            raise RuntimeError(error_msg)
+            logger.error("❌ Analytics service returned None")
+            # CRITICAL: Create manually instead of returning None
+            try:
+                from app.services.analytics_service import AnalyticsService
+                service = AnalyticsService()
+                logger.info("✅ AnalyticsService created manually")
+            except Exception as e:
+                logger.error(f"❌ Manual creation failed: {e}")
+                logger.warning("⚠️ Using fallback analytics due to creation failure")
+                return _create_fallback_analytics(), None
         
         logger.info(f"📊 Service type: {type(service)}")
         logger.info(f"📊 Service class: {service.__class__.__name__}")
         
     except Exception as e:
-        error_msg = f"Failed to get analytics service: {str(e)}"
-        logger.error(f"❌ {error_msg}")
+        logger.error(f"❌ Failed to get analytics service: {e}")
         import traceback
         logger.error(traceback.format_exc())
-        raise RuntimeError(error_msg)
+        logger.warning("⚠️ Using fallback analytics due to service error")
+        return _create_fallback_analytics(), None
     
     # ==========================================================
     # VALIDATION 5: Verify Required Methods
@@ -136,9 +141,13 @@ def _get_analytics_service():
         "get_warehouse_dashboard",
         "get_city_dashboard",
         "get_product_dashboard",
+        "search_dn",
         "search_dealer",
-        "verify_dealer_exists",
+        "search_warehouse",
+        "search_city",
+        "search_product",
         "verify_dn_exists",
+        "verify_dealer_exists",
         "get_dealer_360_dashboard"
     ]
     
@@ -155,9 +164,9 @@ def _get_analytics_service():
             logger.error(f"   ❌ {method}: MISSING")
     
     if missing_methods:
-        error_msg = f"Missing {len(missing_methods)} required methods: {missing_methods}"
-        logger.error(f"❌ {error_msg}")
-        raise RuntimeError(error_msg)
+        logger.error(f"❌ Missing {len(missing_methods)} methods: {missing_methods}")
+        logger.warning("⚠️ Using fallback analytics due to missing methods")
+        return _create_fallback_analytics(), AnalyticsResponse
     
     logger.info(f"✅ All {len(available_methods)} required methods available")
     
@@ -203,9 +212,199 @@ def _get_analytics_service():
     
     return service, AnalyticsResponse
 
+
+def _create_fallback_analytics():
+    """
+    Create a fallback analytics service that returns friendly error messages.
+    BLOCK 2 - ENHANCED FALLBACK WITH CLEAR MESSAGES
+    """
+    logger.warning("=" * 70)
+    logger.warning("⚠️ FALLBACK ANALYTICS ACTIVATED")
+    logger.warning("   This is NOT the real analytics service.")
+    logger.warning("   Data will show as zeros or N/A.")
+    logger.warning("=" * 70)
+    logger.warning("   Possible causes:")
+    logger.warning("   1. AI_ANALYSIS_ENABLED=False in config")
+    logger.warning("   2. Database connection failed")
+    logger.warning("   3. No data in delivery_reports table")
+    logger.warning("   4. Analytics service import error")
+    logger.warning("   5. Missing required methods")
+    logger.warning("=" * 70)
+    logger.warning("   To fix:")
+    logger.warning("   1. Set AI_ANALYSIS_ENABLED=True")
+    logger.warning("   2. Check database connection")
+    logger.warning("   3. Add data to delivery_reports")
+    logger.warning("   4. Check service imports")
+    logger.warning("   5. Verify all methods exist")
+    logger.warning("=" * 70)
+    
+    class FallbackAnalytics:
+        """Fallback analytics service - prevents crashes with clear messages"""
+        
+        def get_dn_dashboard(self, dn_no):
+            logger.warning(f"⚠️ Fallback: get_dn_dashboard called for {dn_no}")
+            return {
+                "dn_number": dn_no,
+                "delivery_status": "Unknown",
+                "customer_name": "Unknown",
+                "warehouse": "Unknown",
+                "ship_to_city": "Unknown",
+                "units": 0,
+                "amount": 0,
+                "delivery_aging_text": "N/A",
+                "pod_aging_text": "N/A",
+                "total_cycle_text": "N/A",
+                "error": f"DN {dn_no} not found. Please add data to delivery_reports table.",
+                "hint": "Run: INSERT INTO delivery_reports (...) VALUES (...)"
+            }
+        
+        def get_dealer_dashboard(self, dealer_name):
+            logger.warning(f"⚠️ Fallback: get_dealer_dashboard called for {dealer_name}")
+            return {
+                "dealer_name": dealer_name,
+                "total_dns": 0,
+                "delivered_dns": 0,
+                "pending_dns": 0,
+                "delivery_rate": 0,
+                "total_revenue": 0,
+                "health_score": 50,
+                "risk_level": "Unknown",
+                "error": f"No data found for dealer '{dealer_name}'",
+                "hint": "Add data to delivery_reports table with this customer_name"
+            }
+        
+        def get_warehouse_dashboard(self, warehouse_name):
+            logger.warning(f"⚠️ Fallback: get_warehouse_dashboard called for {warehouse_name}")
+            return {
+                "warehouse": warehouse_name,
+                "total_dns": 0,
+                "delivered_dns": 0,
+                "pending_dns": 0,
+                "delivery_rate": 0,
+                "total_revenue": 0,
+                "error": f"No data found for warehouse '{warehouse_name}'"
+            }
+        
+        def get_city_dashboard(self, city_name):
+            logger.warning(f"⚠️ Fallback: get_city_dashboard called for {city_name}")
+            return {
+                "city_name": city_name,
+                "total_dns": 0,
+                "delivered_dns": 0,
+                "pending_dns": 0,
+                "delivery_rate": 0,
+                "total_revenue": 0,
+                "error": f"No data found for city '{city_name}'"
+            }
+        
+        def get_product_dashboard(self, product_name):
+            logger.warning(f"⚠️ Fallback: get_product_dashboard called for {product_name}")
+            return {
+                "product": product_name,
+                "revenue": 0,
+                "units": 0,
+                "dns": 0,
+                "delivery_rate": 0,
+                "error": f"No data found for product '{product_name}'"
+            }
+        
+        def get_ranking_dashboard(self, limit=10):
+            logger.warning("⚠️ Fallback: get_ranking_dashboard called")
+            return {"ranking": [], "error": "No ranking data available"}
+        
+        def get_pgi_dashboard(self):
+            logger.warning("⚠️ Fallback: get_pgi_dashboard called")
+            return {"total_dns": 0, "pgi_completed": 0, "pgi_pending": 0, "pgi_rate": 0}
+        
+        def get_pod_dashboard(self):
+            logger.warning("⚠️ Fallback: get_pod_dashboard called")
+            return {"total_dns": 0, "pod_completed": 0, "pod_pending": 0, "pod_rate": 0}
+        
+        def get_delivery_dashboard(self):
+            logger.warning("⚠️ Fallback: get_delivery_dashboard called")
+            return {"total_dns": 0, "delivered": 0, "in_transit": 0, "delivery_rate": 0}
+        
+        def get_executive_dashboard(self):
+            logger.warning("⚠️ Fallback: get_executive_dashboard called")
+            return {"total_dns": 0, "total_units": 0, "total_revenue": 0, "delivery_rate": 0}
+        
+        def get_control_tower_dashboard(self):
+            logger.warning("⚠️ Fallback: get_control_tower_dashboard called")
+            return {"total_alerts": 0, "critical_count": 0, "high_count": 0, "alerts": []}
+        
+        def get_revenue_dashboard(self):
+            logger.warning("⚠️ Fallback: get_revenue_dashboard called")
+            return {"total_revenue": 0, "total_units": 0, "total_dns": 0, "top_dealers": []}
+        
+        def get_aging_dashboard(self):
+            logger.warning("⚠️ Fallback: get_aging_dashboard called")
+            return {"total_pending": 0, "days_0_7": 0, "days_8_14": 0, "days_15_30": 0, "days_30_plus": 0}
+        
+        def search_dn(self, query):
+            logger.warning(f"⚠️ Fallback: search_dn called for {query}")
+            return []
+        
+        def search_dealer(self, query):
+            logger.warning(f"⚠️ Fallback: search_dealer called for {query}")
+            return []
+        
+        def search_warehouse(self, query):
+            logger.warning(f"⚠️ Fallback: search_warehouse called for {query}")
+            return []
+        
+        def search_city(self, query):
+            logger.warning(f"⚠️ Fallback: search_city called for {query}")
+            return []
+        
+        def search_product(self, query):
+            logger.warning(f"⚠️ Fallback: search_product called for {query}")
+            return []
+        
+        def verify_dn_exists(self, dn_no):
+            logger.warning(f"⚠️ Fallback: verify_dn_exists called for {dn_no}")
+            return False
+        
+        def verify_dealer_exists(self, dealer_name):
+            logger.warning(f"⚠️ Fallback: verify_dealer_exists called for {dealer_name}")
+            return False
+        
+        def get_dealer_360_dashboard(self, dealer_name):
+            logger.warning(f"⚠️ Fallback: get_dealer_360_dashboard called for {dealer_name}")
+            return {
+                "error": f"No data found for dealer '{dealer_name}'",
+                "message": "Please add data to delivery_reports table",
+                "profile": {
+                    "dealer_name": dealer_name,
+                    "dealer_code": "N/A",
+                    "warehouse": "N/A",
+                    "city": "N/A"
+                },
+                "business_volume": {
+                    "total_dns": 0,
+                    "total_units": 0,
+                    "total_revenue": 0
+                },
+                "delivery_status": {
+                    "delivered": 0,
+                    "in_transit": 0,
+                    "pending_pgi": 0
+                },
+                "performance": {
+                    "delivery_rate": 0,
+                    "health_score": 50,
+                    "risk_level": "Unknown"
+                }
+            }
+    
+    logger.info("✅ FallbackAnalytics created")
+    return FallbackAnalytics()
+
+
 # ==========================================================
-# END OF BLOCK 2 - FIXED v5.0
+# END OF BLOCK 2
 # ==========================================================
+
+
 # ==========================================================
 # BLOCK 3: CONFIGURATION (ALIGNED WITH app/config.py)
 # ==========================================================
@@ -245,12 +444,9 @@ logger.info(f"   AI_ANALYSIS_ENABLED: {AI_ANALYSIS_ENABLED}")
 logger.info(f"   FUZZY_THRESHOLD: {FUZZY_MATCH_THRESHOLD}")
 logger.info("=" * 70)
 
-# ==========================================================
-# END OF BLOCK 3
-# ==========================================================
 
 # ==========================================================
-# BLOCK 3.5: WHATSAPP TOKEN VALIDATION (NEW)
+# BLOCK 3.5: WHATSAPP TOKEN VALIDATION
 # ==========================================================
 
 def validate_whatsapp_token() -> Dict[str, Any]:
@@ -281,7 +477,6 @@ def validate_whatsapp_token() -> Dict[str, Any]:
         api_version = getattr(config, 'WHATSAPP_API_VERSION', 'v25.0')
         api_url = getattr(config, 'WHATSAPP_API_URL', 'https://graph.facebook.com')
         
-        # Test token by calling /me
         url = f"{api_url}/{api_version}/me?access_token={token}"
         response = requests.get(url, timeout=5)
         
@@ -341,6 +536,7 @@ def validate_whatsapp_token() -> Dict[str, Any]:
             "message": f"Error validating token: {str(e)}"
         }
 
+
 def get_whatsapp_config() -> Dict[str, Any]:
     """Get WhatsApp configuration from app.config"""
     return {
@@ -353,9 +549,6 @@ def get_whatsapp_config() -> Dict[str, Any]:
         "message_timeout": getattr(config, 'WHATSAPP_MESSAGE_TIMEOUT', 60)
     }
 
-# ==========================================================
-# END OF BLOCK 3.5
-# ==========================================================
 
 # ==========================================================
 # BLOCK 4: DATABASE CONNECTION TEST
@@ -382,6 +575,7 @@ def test_database_connection() -> Dict[str, Any]:
             "status": "unhealthy"
         }
 
+
 # ==========================================================
 # BLOCK 5: POSTGRESQL RESOLVER (FIXED v4.0 - CONFIGURABLE)
 # ==========================================================
@@ -394,7 +588,6 @@ class PostgreSQLResolver:
         self._cache = TTLCache(maxsize=2000, ttl=3600)
         self.DeliveryReport = DeliveryReport
         
-        # Load configuration from app.config
         try:
             self.fuzzy_threshold = float(os.getenv('FUZZY_MATCH_THRESHOLD', '0.3'))
             self.max_fuzzy_results = int(os.getenv('MAX_FUZZY_RESULTS', '1000'))
@@ -415,11 +608,10 @@ class PostgreSQLResolver:
             return None
     
     def resolve_dealer(self, query: str) -> Optional[str]:
-        """Resolve dealer name with configurable fuzzy threshold"""
+        """Resolve dealer name with 8 strategies."""
         if not query or not query.strip():
             return None
         
-        # Clean query
         query_clean = query.strip()
         typo_fixes = {"are ": "", "is ": "", "the ": "", "for ": "", "of ": ""}
         for typo, fix in typo_fixes.items():
@@ -469,7 +661,7 @@ class PostgreSQLResolver:
                         self._cache[cache_key] = resolved
                         return resolved
             
-            # STRATEGY 4: Fuzzy matching with configurable threshold
+            # STRATEGY 4: Fuzzy matching
             dealers = session.query(
                 func.distinct(self.DeliveryReport.customer_name)
             ).filter(
@@ -491,22 +683,18 @@ class PostgreSQLResolver:
                 
                 scores = []
                 
-                # Token overlap score
                 if query_tokens and dealer_tokens:
                     overlap = len(query_tokens & dealer_tokens)
                     token_score = overlap / max(len(query_tokens), len(dealer_tokens))
                     scores.append(token_score)
                 
-                # Character overlap score
                 char_overlap = len(set(query_lower) & set(dealer_lower))
                 char_score = char_overlap / max(len(query_lower), len(dealer_lower))
                 scores.append(char_score)
                 
-                # Contains score
                 if query_lower in dealer_lower or dealer_lower in query_lower:
                     scores.append(0.8)
                 
-                # Word match score
                 for token in query_tokens:
                     if len(token) > 2 and token in dealer_lower:
                         scores.append(0.7)
@@ -516,7 +704,6 @@ class PostgreSQLResolver:
                 else:
                     score = 0
                 
-                # Use configurable threshold
                 if score > best_score and score > self.fuzzy_threshold:
                     best_score = score
                     best_match = dealer_name
@@ -738,9 +925,6 @@ class PostgreSQLResolver:
         finally:
             session.close()
 
-# ==========================================================
-# END OF BLOCK 5 - FIXED v4.0
-# ==========================================================
 
 # ==========================================================
 # BLOCK 6: CONVERSATION CONTEXT
@@ -781,183 +965,406 @@ class ConversationContext:
             "phone_number": self.phone_number,
         }
 
-# ==========================================================
-# BLOCK 7: INTENT PATTERNS - COMPLETE
-# ==========================================================
-
-INTENT_PATTERNS = {
-    "dealer_dashboard": [
-        "dealer dashboard", "dealer performance", "dealer revenue", 
-        "dealer units", "dealer dn", "dealer pod", "dealer pgi",
-        "show dealer", "customer dashboard", "dealer profile",
-        "dealer delivered", "dealer pending"
-    ],
-    "dealer_ranking": [
-        "top dealer", "top dealers", "best dealer", "dealer ranking",
-        "bottom dealers", "worst dealer", "compare dealers"
-    ],
-    "dealer_products": [
-        "products of dealer", "dealer products", "top products for dealer",
-        "dealer product mix", "what products does dealer"
-    ],
-    "warehouse_dashboard": [
-        "warehouse dashboard", "warehouse performance", "warehouse revenue",
-        "warehouse units", "warehouse dn", "show warehouse",
-        "warehouse delivered", "warehouse pending", "warehouse aging"
-    ],
-    "warehouse_ranking": [
-        "top warehouse", "top warehouses", "warehouse ranking",
-        "bottom warehouses", "compare warehouses"
-    ],
-    "warehouse_coverage": [
-        "warehouse coverage", "warehouse dealers", "warehouse cities"
-    ],
-    "warehouse_products": [
-        "warehouse products", "warehouse product mix",
-        "top products in warehouse"
-    ],
-    "city_dashboard": [
-        "city dashboard", "city performance", "city revenue",
-        "city units", "city dn", "show city", "city dealers",
-        "city warehouses", "city delivered", "city pending"
-    ],
-    "city_ranking": [
-        "top city", "top cities", "city ranking", "bottom cities",
-        "compare cities"
-    ],
-    "city_products": [
-        "city products", "top products in city", "city product mix"
-    ],
-    "product_dashboard": [
-        "product dashboard", "show product", "product performance",
-        "product revenue", "product units", "product dn",
-        "best selling", "top material", "top model"
-    ],
-    "product_ranking": [
-        "top product", "top products", "product ranking",
-        "bottom products", "worst selling"
-    ],
-    "product_trend": [
-        "product trend", "product growth", "product decline"
-    ],
-    "dn_dashboard": [
-        "show dn", "dn status", "what is dn", "dn details",
-        "dn information", "track dn", "dn tracking"
-    ],
-    "dn_analytics": [
-        "how many dns", "total dn count", "dn count"
-    ],
-    "pgi_dashboard": [
-        "pgi dashboard", "pgi completed", "pgi pending",
-        "pgi rate", "average pgi days", "pgi status",
-        "pgi by dealer", "pgi by warehouse", "pgi by city",
-        "pgi aging"
-    ],
-    "pod_dashboard": [
-        "pod dashboard", "pod pending", "pod completed",
-        "pod rate", "average pod days", "pod status",
-        "pod by dealer", "pod by warehouse", "pod by city",
-        "pod aging"
-    ],
-    "delivery_dashboard": [
-        "delivery dashboard", "delivered dns", "pending dns",
-        "delivery rate", "average delivery days", "delayed deliveries",
-        "delivery aging", "delivery by dealer", "delivery by city"
-    ],
-    "executive_dashboard": [
-        "executive summary", "nationwide performance",
-        "total revenue", "total units", "total dns",
-        "total dealers", "total cities", "total warehouses",
-        "ceo", "management", "overview"
-    ],
-    "control_tower": [
-        "control tower", "critical issues", "critical alerts",
-        "pending pod", "pending pgi", "delayed deliveries",
-        "high risk dealers", "high risk warehouses", "high risk cities",
-        "oldest pending dn"
-    ],
-    "revenue_dashboard": [
-        "revenue dashboard", "total revenue",
-        "revenue by dealer", "revenue by warehouse",
-        "revenue by city", "revenue by product",
-        "revenue by division", "revenue by sales office",
-        "top revenue dealers", "top revenue cities"
-    ],
-    "aging_dashboard": [
-        "dn aging", "oldest pending dn", "aging analysis",
-        "pending aging", "newest dn", "average aging",
-        "pgi aging", "pod aging"
-    ],
-    "division_dashboard": [
-        "division dashboard", "division performance",
-        "division revenue", "division units", "division dn",
-        "revenue by division", "show division",
-        "top divisions", "best division", "worst division"
-    ],
-    "sales_office_dashboard": [
-        "sales office", "sales office dashboard",
-        "sales office revenue", "sales office performance",
-        "top sales offices", "compare sales offices"
-    ],
-    "sales_manager_dashboard": [
-        "sales manager", "sales manager dashboard",
-        "sales manager revenue", "sales manager performance",
-        "top sales managers", "compare sales managers"
-    ],
-    "help": [
-        "help", "menu", "hi", "hello", "start", "?", "commands"
-    ]
-}
 
 # ==========================================================
-# BLOCK 8: FOLLOW-UP PATTERNS
+# BLOCK 7: INTENT CLASSIFICATION (ENHANCED v5.0)
 # ==========================================================
 
-FOLLOWUP_PATTERNS = {
-    "revenue": r'(?:revenue|sales|amount|value|worth)',
-    "pod": r'(?:pod|proof of delivery|delivery proof)',
-    "pgi": r'(?:pgi|goods issue|issue)',
-    "units": r'(?:units|quantity|qty|pieces)',
-    "dn": r'(?:dn|delivery note|order)',
-    "aging": r'(?:aging|old|delay|overdue)',
-    "pending": r'(?:pending|not completed|waiting)',
-    "products": r'(?:products|product|models|items)',
-    "ranking": r'(?:rank|ranking|top|best)',
-    "performance": r'(?:performance|status|health)',
-}
+@dataclass
+class IntentResult:
+    """Result of intent classification with high confidence"""
+    intent: str
+    confidence: float
+    entity_type: Optional[str] = None
+    entity_value: Optional[str] = None
+    raw_query: str = ""
+    normalized_query: str = ""
+
+class IntentClassifier:
+    """
+    Enhanced intent classifier with PostgreSQL-backed entity resolution.
+    BLOCK 7 - ENHANCED v5.0 with better patterns and confidence scoring.
+    """
+    
+    # Priority-ordered product keywords (MUST match before dealer)
+    PRODUCT_KEYWORDS = {
+        'refrigerator': 0.95,
+        'fridge': 0.95,
+        'freezer': 0.95,
+        'deep freezer': 0.95,
+        'ac': 0.95,
+        'air conditioner': 0.95,
+        'washing machine': 0.95,
+        'washer': 0.90,
+        'led': 0.90,
+        'tv': 0.90,
+        'television': 0.90,
+        'microwave': 0.95,
+        'oven': 0.90,
+        'water dispenser': 0.95,
+        'cooler': 0.90,
+        'heater': 0.90,
+        'generator': 0.85,
+    }
+    
+    # Dealer indicator words (lower priority than products)
+    DEALER_INDICATORS = {
+        'electronics': 0.70,
+        'trading': 0.60,
+        'enterprise': 0.60,
+        'corporation': 0.60,
+        'industries': 0.60,
+        'traders': 0.60,
+        'house': 0.50,
+        'store': 0.50,
+        'mart': 0.50,
+        'company': 0.50,
+    }
+    
+    # Warehouse indicator words
+    WAREHOUSE_KEYWORDS = {
+        'warehouse': 0.95,
+        'wh': 0.90,
+        'depot': 0.90,
+        'distribution center': 0.90,
+        'godown': 0.85,
+    }
+    
+    # City indicator words
+    CITY_KEYWORDS = {
+        'city': 0.95,
+        'town': 0.85,
+        'district': 0.85,
+        'region': 0.80,
+        'area': 0.70,
+    }
+    
+    def __init__(self, resolver: Optional[PostgreSQLResolver] = None):
+        self.resolver = resolver or PostgreSQLResolver(session_factory=SessionLocal)
+        self._cache = TTLCache(maxsize=1000, ttl=300)
+    
+    def classify(self, query: str, context: Optional[ConversationContext] = None) -> IntentResult:
+        """
+        Classify intent with priority-based routing.
+        BLOCK 7 - FIXED ROUTING PRIORITY
+        """
+        if not query or not query.strip():
+            return IntentResult(
+                intent="help",
+                confidence=1.0,
+                raw_query=query
+            )
+        
+        query_clean = query.strip()
+        query_lower = query_clean.lower()
+        cache_key = f"intent:{query_lower}"
+        
+        if cache_key in self._cache:
+            cached = self._cache[cache_key]
+            # Check if cached result is still valid
+            if cached.confidence > 0.5:
+                return cached
+        
+        result = self._classify_with_priority(query_clean, query_lower, context)
+        self._cache[cache_key] = result
+        return result
+    
+    def _classify_with_priority(self, query: str, query_lower: str, context: Optional[ConversationContext]) -> IntentResult:
+        """
+        Classify intent with strict priority order.
+        PRIORITY 1: DN Number (8-12 digits)
+        PRIORITY 2: Warehouse (explicit keywords)
+        PRIORITY 3: City (explicit keywords)  
+        PRIORITY 4: Product (product keywords)
+        PRIORITY 5: Dealer (dealer keywords or standalone)
+        """
+        
+        # ==========================================================
+        # PRIORITY 1: DN SEARCH (8-12 digit numbers)
+        # ==========================================================
+        dn_match = re.search(r'\b(\d{8,12})\b', query)
+        if dn_match:
+            dn_number = dn_match.group(1)
+            return IntentResult(
+                intent="dn_dashboard",
+                confidence=1.0,
+                entity_type="dn",
+                entity_value=dn_number,
+                raw_query=query,
+                normalized_query=dn_number
+            )
+        
+        # ==========================================================
+        # PRIORITY 2: WAREHOUSE SEARCH (explicit keywords)
+        # ==========================================================
+        for keyword, confidence in self.WAREHOUSE_KEYWORDS.items():
+            if keyword in query_lower:
+                # Extract warehouse name
+                warehouse_patterns = [
+                    rf'(?:warehouse|wh|depot|godown)\s+([A-Za-z0-9\s\-&]+)',
+                    rf'([A-Za-z0-9\s\-&]+)\s+warehouse',
+                    rf'(?:wh|depot)\s*[-:]?\s*([A-Za-z0-9\-]+)',
+                ]
+                
+                for pattern in warehouse_patterns:
+                    match = re.search(pattern, query, re.IGNORECASE)
+                    if match:
+                        warehouse_name = match.group(1).strip()
+                        if len(warehouse_name) > 1:
+                            # Try to resolve
+                            resolved = self.resolver.resolve_warehouse(warehouse_name)
+                            if resolved:
+                                return IntentResult(
+                                    intent="warehouse_dashboard",
+                                    confidence=confidence,
+                                    entity_type="warehouse",
+                                    entity_value=resolved,
+                                    raw_query=query,
+                                    normalized_query=warehouse_name
+                                )
+                            else:
+                                # Still route to warehouse dashboard with what we have
+                                return IntentResult(
+                                    intent="warehouse_dashboard",
+                                    confidence=confidence * 0.8,
+                                    entity_type="warehouse",
+                                    entity_value=warehouse_name,
+                                    raw_query=query,
+                                    normalized_query=warehouse_name
+                                )
+        
+        # ==========================================================
+        # PRIORITY 3: CITY SEARCH (explicit keywords)
+        # ==========================================================
+        for keyword, confidence in self.CITY_KEYWORDS.items():
+            if keyword in query_lower:
+                city_patterns = [
+                    rf'(?:city|town|district|region)\s+([A-Za-z\s\-]+)',
+                    rf'([A-Za-z\s\-]+)\s+city',
+                ]
+                
+                for pattern in city_patterns:
+                    match = re.search(pattern, query, re.IGNORECASE)
+                    if match:
+                        city_name = match.group(1).strip()
+                        if len(city_name) > 1:
+                            resolved = self.resolver.resolve_city(city_name)
+                            if resolved:
+                                return IntentResult(
+                                    intent="city_dashboard",
+                                    confidence=confidence,
+                                    entity_type="city",
+                                    entity_value=resolved,
+                                    raw_query=query,
+                                    normalized_query=city_name
+                                )
+                            else:
+                                return IntentResult(
+                                    intent="city_dashboard",
+                                    confidence=confidence * 0.8,
+                                    entity_type="city",
+                                    entity_value=city_name,
+                                    raw_query=query,
+                                    normalized_query=city_name
+                                )
+        
+        # ==========================================================
+        # PRIORITY 4: PRODUCT SEARCH (product keywords)
+        # ==========================================================
+        best_product_match = None
+        best_product_score = 0
+        
+        for keyword, score in self.PRODUCT_KEYWORDS.items():
+            if keyword in query_lower:
+                # Check if it's an exact product keyword match
+                if score > best_product_score:
+                    best_product_score = score
+                    best_product_match = keyword
+        
+        if best_product_match:
+            # Try to resolve product
+            resolved = self.resolver.resolve_product(best_product_match)
+            if resolved:
+                return IntentResult(
+                    intent="product_dashboard",
+                    confidence=best_product_score,
+                    entity_type="product",
+                    entity_value=resolved,
+                    raw_query=query,
+                    normalized_query=best_product_match
+                )
+            else:
+                # Still route to product dashboard
+                return IntentResult(
+                    intent="product_dashboard",
+                    confidence=best_product_score * 0.8,
+                    entity_type="product",
+                    entity_value=best_product_match,
+                    raw_query=query,
+                    normalized_query=best_product_match
+                )
+        
+        # ==========================================================
+        # PRIORITY 5: DEALER SEARCH (last priority)
+        # ==========================================================
+        
+        # Check for explicit dealer indicators
+        dealer_score = 0
+        for keyword, score in self.DEALER_INDICATORS.items():
+            if keyword in query_lower:
+                dealer_score = max(dealer_score, score)
+        
+        # If query has dealer indicators, route to dealer
+        if dealer_score > 0.3:
+            dealer_name = query
+            # Clean up
+            for indicator in self.DEALER_INDICATORS:
+                if indicator in query_lower:
+                    dealer_name = query.replace(indicator, '').strip()
+                    dealer_name = re.sub(r'[^A-Za-z0-9\s\.\-&]', '', dealer_name).strip()
+                    break
+            
+            if dealer_name:
+                resolved = self.resolver.resolve_dealer(dealer_name)
+                if resolved:
+                    return IntentResult(
+                        intent="dealer_dashboard",
+                        confidence=dealer_score,
+                        entity_type="dealer",
+                        entity_value=resolved,
+                        raw_query=query,
+                        normalized_query=dealer_name
+                    )
+                else:
+                    return IntentResult(
+                        intent="dealer_dashboard",
+                        confidence=dealer_score * 0.7,
+                        entity_type="dealer",
+                        entity_value=dealer_name,
+                        raw_query=query,
+                        normalized_query=dealer_name
+                    )
+        
+        # ==========================================================
+        # STANDALONE ENTITY DETECTION (with correct priority)
+        # ==========================================================
+        if len(query) > 2:
+            # Check if it's a short word that could be a product
+            if len(query) <= 20 and not any(c.isdigit() for c in query):
+                # Try product first (NEW - FIXES PRODUCT ROUTING)
+                product_resolved = self.resolver.resolve_product(query)
+                if product_resolved:
+                    return IntentResult(
+                        intent="product_dashboard",
+                        confidence=0.7,
+                        entity_type="product",
+                        entity_value=product_resolved,
+                        raw_query=query,
+                        normalized_query=query
+                    )
+                
+                # Then warehouse
+                warehouse_resolved = self.resolver.resolve_warehouse(query)
+                if warehouse_resolved:
+                    return IntentResult(
+                        intent="warehouse_dashboard",
+                        confidence=0.7,
+                        entity_type="warehouse",
+                        entity_value=warehouse_resolved,
+                        raw_query=query,
+                        normalized_query=query
+                    )
+                
+                # Then city
+                city_resolved = self.resolver.resolve_city(query)
+                if city_resolved:
+                    return IntentResult(
+                        intent="city_dashboard",
+                        confidence=0.7,
+                        entity_type="city",
+                        entity_value=city_resolved,
+                        raw_query=query,
+                        normalized_query=query
+                    )
+                
+                # Finally dealer (lowest priority - FIXED)
+                dealer_resolved = self.resolver.resolve_dealer(query)
+                if dealer_resolved:
+                    return IntentResult(
+                        intent="dealer_dashboard",
+                        confidence=0.6,
+                        entity_type="dealer",
+                        entity_value=dealer_resolved,
+                        raw_query=query,
+                        normalized_query=query
+                    )
+        
+        # ==========================================================
+        # CONTEXT FALLBACK
+        # ==========================================================
+        if context and context.last_intent and context.last_entity:
+            return IntentResult(
+                intent=context.last_intent,
+                confidence=0.5,
+                entity_type=self._get_entity_type(context.last_intent),
+                entity_value=context.last_entity,
+                raw_query=query,
+                normalized_query=query
+            )
+        
+        # ==========================================================
+        # DEFAULT: HELP
+        # ==========================================================
+        return IntentResult(
+            intent="help",
+            confidence=1.0,
+            raw_query=query,
+            normalized_query=query
+        )
+    
+    def _get_entity_type(self, intent: str) -> str:
+        """Map intent to entity type."""
+        mapping = {
+            "dn_dashboard": "dn",
+            "dealer_dashboard": "dealer",
+            "warehouse_dashboard": "warehouse",
+            "city_dashboard": "city",
+            "product_dashboard": "product",
+            "dealer_ranking": "dealer",
+            "dealer_products": "dealer",
+            "warehouse_ranking": "warehouse",
+            "warehouse_coverage": "warehouse",
+            "warehouse_products": "warehouse",
+            "city_ranking": "city",
+            "city_dealers": "city",
+            "city_products": "city",
+            "product_ranking": "product",
+            "product_trend": "product",
+            "pgi_dashboard": "pgi",
+            "pod_dashboard": "pod",
+            "delivery_dashboard": "delivery",
+            "executive_dashboard": "executive",
+            "control_tower": "control",
+            "revenue_dashboard": "revenue",
+            "aging_dashboard": "aging",
+            "division_dashboard": "division",
+            "sales_manager_dashboard": "sales_manager",
+            "sales_office_dashboard": "sales_office",
+        }
+        return mapping.get(intent, "unknown")
+
 
 # ==========================================================
-# BLOCK 9: ENTITY PATTERNS
-# ==========================================================
-
-ENTITY_PATTERNS = {
-    "dealer_name": r'(?:dealer|customer|party)\s+([A-Za-z0-9\s&\.\-]+)',
-    "dealer_name_standalone": r'^([A-Za-z\s&\.\-]{3,50})$',
-    "dealer_code": r'\b(?:[A-Z]{2,4}\d{2,6})\b',
-    "customer_code": r'\b(?:CUST|CT)\d{5,}\b',
-    "warehouse": r'(?:warehouse|wh)\s+([A-Za-z0-9\s\-]+)',
-    "warehouse_pattern": r'^([A-Za-z\s\-]+)\s+warehouse$',
-    "city": r'(?:city|in)\s+([A-Za-z\s\-]+)',
-    "city_pattern": r'^([A-Za-z\s\-]+)\s+city$',
-    "product": r'(?:product|model|material)\s+([A-Za-z0-9\-]+)',
-    "dn_number": r'\b(\d{8,12})\b',
-    "dn_pattern": r'(?:dn|track|delivery note)\s*[:#]?\s*(\d{8,12})',
-    "division": r'(?:division|div)\s+([A-Za-z\s\-]+)',
-    "sales_manager": r'(?:sales manager|sm|manager)\s+([A-Za-z\s\-]+)',
-    "sales_office": r'(?:sales office|office)\s+([A-Za-z\s\-]+)',
-}
-
-# ==========================================================
-# BLOCK 10: MAIN AI ROUTER (FIXED v5.0 - NO CRASH)
+# BLOCK 8: MAIN AI ROUTER (FIXED v5.0)
 # ==========================================================
 
 class AIOrchestrator:
     def __init__(self, session_factory: Optional[Callable[[], Session]] = None):
-        self.session_factory = session_factory
-        
+        self.session_factory = session_factory or SessionLocal
         self._analytics = None
         self._analytics_response = None
         self._resolver = None
+        self._classifier = None
         
         self.response_cache = TTLCache(maxsize=2000, ttl=CACHE_TTL_SECONDS)
         self.failure_cache = TTLCache(maxsize=400, ttl=60)
@@ -975,10 +1382,9 @@ class AIOrchestrator:
         }
 
         # ==========================================================
-        # ✅ WHATSAPP TOKEN VALIDATION ON STARTUP
+        # WHATSAPP TOKEN VALIDATION ON STARTUP
         # ==========================================================
         try:
-            from app.config import config
             if getattr(config, 'WHATSAPP_ACCESS_TOKEN', ''):
                 logger.info("🔍 Validating WhatsApp token...")
                 validation = validate_whatsapp_token()
@@ -994,47 +1400,40 @@ class AIOrchestrator:
             logger.error(f"❌ WhatsApp validation error: {e}")
 
         logger.info("=" * 70)
-        logger.info("AI Router v28.0 - Initializing...")
+        logger.info("AI Router v29.0 - Initializing...")
         logger.info("=" * 70)
         
-        # ✅ Initialize analytics - don't crash on failure
+        # Initialize components
         try:
             self._init_analytics()
         except Exception as e:
             logger.error(f"❌ Analytics init failed: {e}")
+            self._analytics = None
         
-        # ✅ Verify methods - don't crash on failure
+        # Initialize classifier
+        self._classifier = IntentClassifier(self.resolver)
+        
+        # Verify methods
         try:
             self._verify_analytics_methods()
         except Exception as e:
             logger.error(f"❌ Method verification failed: {e}")
         
         logger.info("=" * 70)
-        logger.info("AI Router v28.0 - PostgreSQL-Driven Production")
+        logger.info("AI Router v29.0 - PostgreSQL-Driven Production")
         logger.info("=" * 70)
     
     def _init_analytics(self):
-        """Initialize analytics service with retry - DON'T CRASH"""
+        """Initialize analytics service with retry."""
         for attempt in range(3):
             try:
                 logger.info(f"🔄 Attempt {attempt + 1}/3 to initialize analytics...")
-                self._analytics = None
-                self._analytics_response = None
                 service, response_class = _get_analytics_service()
                 self._analytics = service
                 self._analytics_response = response_class
                 
                 if self._analytics is not None:
                     logger.info(f"✅ Analytics service initialized on attempt {attempt + 1}")
-                    # Verify the service is real, not fallback
-                    if hasattr(self._analytics, 'get_dealer_dashboard'):
-                        logger.info("✅ Dealer dashboard method available")
-                    else:
-                        logger.warning("⚠️ Dealer dashboard method missing - using fallback")
-                    if hasattr(self._analytics, 'get_dn_dashboard'):
-                        logger.info("✅ DN dashboard method available")
-                    else:
-                        logger.warning("⚠️ DN dashboard method missing - using fallback")
                     return
                 else:
                     logger.warning(f"⚠️ Analytics service None on attempt {attempt + 1}")
@@ -1046,7 +1445,7 @@ class AIOrchestrator:
         logger.error("❌ All attempts to initialize analytics failed!")
     
     def _verify_analytics_methods(self):
-        """Verify all required analytics methods exist - LOG BUT DON'T CRASH"""
+        """Verify required analytics methods exist."""
         if not self.analytics:
             logger.error("❌ Analytics service is None - cannot verify methods")
             return
@@ -1059,423 +1458,48 @@ class AIOrchestrator:
             "get_product_dashboard",
             "search_dealer",
             "verify_dealer_exists",
-            "verify_dn_exists"
+            "verify_dn_exists",
+            "get_dealer_360_dashboard"
         ]
         
         logger.info("🔍 Verifying analytics methods:")
-        missing_methods = []
-        
         for method in required_methods:
             if hasattr(self.analytics, method):
                 logger.info(f"   ✅ {method}: AVAILABLE")
             else:
-                missing_methods.append(method)
                 logger.error(f"   ❌ {method}: MISSING")
-        
-        if missing_methods:
-            logger.error(f"❌ Missing {len(missing_methods)} required methods: {missing_methods}")
-        else:
-            logger.info("✅ All required methods available!")
     
     @property
     def analytics(self):
-        """Get analytics service with lazy loading and retry."""
+        """Get analytics service with lazy loading."""
         if self._analytics is None:
             logger.warning("⚠️ Analytics service is None - attempting to reload...")
             try:
                 service, response_class = _get_analytics_service()
                 self._analytics = service
                 self._analytics_response = response_class
-                
                 if self._analytics is None:
                     logger.error("❌ Analytics service still None after reload")
-                else:
-                    logger.info("✅ Analytics service reloaded successfully")
-                    self._verify_analytics_methods()
             except Exception as e:
                 logger.error(f"❌ Reload failed: {e}")
-        
         return self._analytics
     
     @property
     def resolver(self):
+        """Get resolver with lazy initialization."""
         if self._resolver is None:
             self._resolver = PostgreSQLResolver(self.session_factory)
         return self._resolver
-
-# ==========================================================
-# BLOCK 11: INTENT DETECTION (FIXED v5.0)
-# ==========================================================
-
-    def _detect_intent(self, question: str, context: Optional[ConversationContext] = None) -> Tuple[str, Optional[str], Optional[str]]:
-        """
-        Detect intent from user question.
-        BLOCK 11 - FIXED v5.0
-        - DEALER priority over CITY
-        - Typo handling
-        """
-        question_original = question.strip()
-        question_lower = question_original.lower()
-        
-        logger.debug(f"🔍 Detecting intent for: '{question_original}'")
-        
-        # HELP
-        if question_lower in ["help", "menu", "hi", "hello", "start", "?", "commands"]:
-            logger.info(f"✅ Intent: help")
-            return "help", None, None
-        
-        # FOLLOW-UP
-        if context and context.last_intent and context.last_entity:
-            followup_intent = self._detect_followup(question_lower, context)
-            if followup_intent:
-                logger.info(f"🔄 Follow-up detected: {followup_intent}")
-                return followup_intent, context.last_entity, self._get_entity_type(followup_intent)
-        
-        # DN DETECTION (HIGHEST PRIORITY)
-        dn_match = re.search(r'\b(\d{8,12})\b', question_original)
-        if dn_match:
-            dn_number = re.sub(r'\D', '', dn_match.group(1))
-            if 8 <= len(dn_number) <= 12:
-                logger.info(f"✅ DN detected: {dn_number}")
-                self.metrics["intent_detection"]["dn_dashboard"] = self.metrics["intent_detection"].get("dn_dashboard", 0) + 1
-                return "dn_dashboard", dn_number, "dn"
-        
-        dn_keyword_match = re.search(r'(?:dn|delivery note|track|order)\s*[:#]?\s*(\d{8,12})', question_original, re.IGNORECASE)
-        if dn_keyword_match:
-            dn_number = re.sub(r'\D', '', dn_keyword_match.group(1))
-            if 8 <= len(dn_number) <= 12:
-                logger.info(f"✅ DN detected from keyword: {dn_number}")
-                self.metrics["intent_detection"]["dn_dashboard"] = self.metrics["intent_detection"].get("dn_dashboard", 0) + 1
-                return "dn_dashboard", dn_number, "dn"
-        
-        # PRODUCT DETECTION (with explicit keyword)
-        if "product" in question_lower or "model" in question_lower or "material" in question_lower or "sku" in question_lower:
-            product_match = re.search(r'(?:product|model|material|sku)\s*[:#]?\s*([A-Za-z0-9\-]+)', question_original, re.IGNORECASE)
-            if product_match:
-                entity = product_match.group(1).strip()
-                if len(entity) > 1:
-                    resolved = self.resolver.resolve_product(entity)
-                    if resolved:
-                        logger.info(f"✅ Product detected: '{resolved}'")
-                        self.metrics["intent_detection"]["product_dashboard"] = self.metrics["intent_detection"].get("product_dashboard", 0) + 1
-                        return "product_dashboard", resolved, "product"
-        
-        # WAREHOUSE DETECTION (with explicit keyword)
-        if "warehouse" in question_lower or "wh " in question_lower:
-            wh_match = re.search(r'(?:warehouse|wh)\s+([A-Za-z0-9\s\-]+)', question_original, re.IGNORECASE)
-            if wh_match:
-                entity = wh_match.group(1).strip()
-                if len(entity) > 2:
-                    resolved = self.resolver.resolve_warehouse(entity)
-                    if resolved:
-                        logger.info(f"✅ Warehouse detected: '{resolved}'")
-                        self.metrics["intent_detection"]["warehouse_dashboard"] = self.metrics["intent_detection"].get("warehouse_dashboard", 0) + 1
-                        return "warehouse_dashboard", resolved, "warehouse"
-                    else:
-                        logger.info(f"🔍 Warehouse '{entity}' not found, will search")
-                        self.metrics["intent_detection"]["warehouse_dashboard"] = self.metrics["intent_detection"].get("warehouse_dashboard", 0) + 1
-                        return "warehouse_dashboard", entity, "warehouse"
-            
-            wh_pattern = re.search(r'^([A-Za-z\s\-]+)\s+warehouse$', question_original, re.IGNORECASE)
-            if wh_pattern:
-                entity = wh_pattern.group(1).strip()
-                if len(entity) > 2:
-                    resolved = self.resolver.resolve_warehouse(entity)
-                    if resolved:
-                        logger.info(f"✅ Warehouse from pattern: '{resolved}'")
-                        self.metrics["intent_detection"]["warehouse_dashboard"] = self.metrics["intent_detection"].get("warehouse_dashboard", 0) + 1
-                        return "warehouse_dashboard", resolved, "warehouse"
-                    else:
-                        logger.info(f"🔍 Warehouse '{entity}' not found, will search")
-                        self.metrics["intent_detection"]["warehouse_dashboard"] = self.metrics["intent_detection"].get("warehouse_dashboard", 0) + 1
-                        return "warehouse_dashboard", entity, "warehouse"
-            
-            if context and context.last_warehouse:
-                logger.info(f"🔄 Using context warehouse: {context.last_warehouse}")
-                self.metrics["intent_detection"]["warehouse_dashboard"] = self.metrics["intent_detection"].get("warehouse_dashboard", 0) + 1
-                return "warehouse_dashboard", context.last_warehouse, "warehouse"
-        
-        # CITY DETECTION (with explicit keyword ONLY)
-        if "city" in question_lower or "town" in question_lower:
-            city_match = re.search(r'(?:city|town)\s+([A-Za-z\s\-]+)', question_original, re.IGNORECASE)
-            if city_match:
-                entity = city_match.group(1).strip()
-                if len(entity) > 2:
-                    resolved = self.resolver.resolve_city(entity)
-                    if resolved:
-                        logger.info(f"✅ City detected: '{resolved}'")
-                        self.metrics["intent_detection"]["city_dashboard"] = self.metrics["intent_detection"].get("city_dashboard", 0) + 1
-                        return "city_dashboard", resolved, "city"
-                    else:
-                        logger.info(f"🔍 City '{entity}' not found, will search")
-                        self.metrics["intent_detection"]["city_dashboard"] = self.metrics["intent_detection"].get("city_dashboard", 0) + 1
-                        return "city_dashboard", entity, "city"
-            
-            city_pattern = re.search(r'^([A-Za-z\s\-]+)\s+city$', question_original, re.IGNORECASE)
-            if city_pattern:
-                entity = city_pattern.group(1).strip()
-                if len(entity) > 2:
-                    resolved = self.resolver.resolve_city(entity)
-                    if resolved:
-                        logger.info(f"✅ City from pattern: '{resolved}'")
-                        self.metrics["intent_detection"]["city_dashboard"] = self.metrics["intent_detection"].get("city_dashboard", 0) + 1
-                        return "city_dashboard", resolved, "city"
-                    else:
-                        logger.info(f"🔍 City '{entity}' not found, will search")
-                        self.metrics["intent_detection"]["city_dashboard"] = self.metrics["intent_detection"].get("city_dashboard", 0) + 1
-                        return "city_dashboard", entity, "city"
-            
-            if context and context.last_city:
-                logger.info(f"🔄 Using context city: {context.last_city}")
-                self.metrics["intent_detection"]["city_dashboard"] = self.metrics["intent_detection"].get("city_dashboard", 0) + 1
-                return "city_dashboard", context.last_city, "city"
-        
-        # DEALER DETECTION (with explicit keywords)
-        dealer_keywords = ["dealer", "customer", "party", "sold to", "show"]
-        if any(kw in question_lower for kw in dealer_keywords):
-            dealer_match = re.search(r'(?:dealer|customer|party|show)\s+([A-Za-z0-9\s&\.\-]+)', question_original, re.IGNORECASE)
-            if dealer_match:
-                entity = dealer_match.group(1).strip()
-                if len(entity) > 2:
-                    resolved = self.resolver.resolve_dealer(entity)
-                    if resolved:
-                        logger.info(f"✅ Dealer detected: '{resolved}'")
-                        self.metrics["intent_detection"]["dealer_dashboard"] = self.metrics["intent_detection"].get("dealer_dashboard", 0) + 1
-                        return "dealer_dashboard", resolved, "dealer"
-                    else:
-                        logger.info(f"🔍 Dealer '{entity}' not found, will search")
-                        self.metrics["intent_detection"]["dealer_dashboard"] = self.metrics["intent_detection"].get("dealer_dashboard", 0) + 1
-                        return "dealer_dashboard", entity, "dealer"
-            
-            for_match = re.search(r'for\s+([A-Za-z0-9\s&\.\-]+)', question_original, re.IGNORECASE)
-            if for_match:
-                entity = for_match.group(1).strip()
-                if len(entity) > 2:
-                    resolved = self.resolver.resolve_dealer(entity)
-                    if resolved:
-                        logger.info(f"✅ Dealer from 'for': '{resolved}'")
-                        self.metrics["intent_detection"]["dealer_dashboard"] = self.metrics["intent_detection"].get("dealer_dashboard", 0) + 1
-                        return "dealer_dashboard", resolved, "dealer"
-                    else:
-                        logger.info(f"🔍 Dealer '{entity}' not found, will search")
-                        self.metrics["intent_detection"]["dealer_dashboard"] = self.metrics["intent_detection"].get("dealer_dashboard", 0) + 1
-                        return "dealer_dashboard", entity, "dealer"
-            
-            if context and context.last_dealer:
-                logger.info(f"🔄 Using context dealer: {context.last_dealer}")
-                self.metrics["intent_detection"]["dealer_dashboard"] = self.metrics["intent_detection"].get("dealer_dashboard", 0) + 1
-                return "dealer_dashboard", context.last_dealer, "dealer"
-        
-        # STANDALONE - DEALER FIRST (FIXED!)
-        if 3 <= len(question_original) <= 100 and not any(c.isdigit() for c in question_original):
-            
-            # Clean typos
-            question_clean = question_original
-            typo_fixes = {"are ": "", "is ": "", "the ": "", "for ": "", "of ": ""}
-            for typo, fix in typo_fixes.items():
-                if question_clean.lower().startswith(typo):
-                    question_clean = question_clean[len(typo):].strip()
-                    logger.info(f"🔍 Fixed typo: '{question_original}' → '{question_clean}'")
-                    break
-            
-            if not question_clean:
-                question_clean = question_original
-            
-            # STEP 1: Check DEALER FIRST
-            dealer_resolved = self.resolver.resolve_dealer(question_clean)
-            if not dealer_resolved and question_clean != question_original:
-                dealer_resolved = self.resolver.resolve_dealer(question_original)
-            
-            if dealer_resolved:
-                logger.info(f"✅ Dealer from standalone: '{dealer_resolved}'")
-                self.metrics["intent_detection"]["dealer_dashboard"] = self.metrics["intent_detection"].get("dealer_dashboard", 0) + 1
-                return "dealer_dashboard", dealer_resolved, "dealer"
-            
-            # STEP 2: Check WAREHOUSE
-            warehouse_resolved = self.resolver.resolve_warehouse(question_clean)
-            if warehouse_resolved:
-                logger.info(f"✅ Warehouse from standalone: '{warehouse_resolved}'")
-                self.metrics["intent_detection"]["warehouse_dashboard"] = self.metrics["intent_detection"].get("warehouse_dashboard", 0) + 1
-                return "warehouse_dashboard", warehouse_resolved, "warehouse"
-            
-            # STEP 3: Check PRODUCT
-            product_resolved = self.resolver.resolve_product(question_clean)
-            if product_resolved:
-                logger.info(f"✅ Product from standalone: '{product_resolved}'")
-                self.metrics["intent_detection"]["product_dashboard"] = self.metrics["intent_detection"].get("product_dashboard", 0) + 1
-                return "product_dashboard", product_resolved, "product"
-            
-            # STEP 4: Check CITY LAST
-            city_resolved = self.resolver.resolve_city(question_clean)
-            if city_resolved:
-                logger.info(f"✅ City from standalone: '{city_resolved}'")
-                self.metrics["intent_detection"]["city_dashboard"] = self.metrics["intent_detection"].get("city_dashboard", 0) + 1
-                return "city_dashboard", city_resolved, "city"
-            
-            # STEP 5: Default to DEALER
-            logger.info(f"🔍 Treating standalone as dealer (default): '{question_original}'")
-            self.metrics["intent_detection"]["dealer_dashboard"] = self.metrics["intent_detection"].get("dealer_dashboard", 0) + 1
-            return "dealer_dashboard", question_clean, "dealer"
-        
-        # DIVISION DETECTION
-        if "division" in question_lower:
-            division_match = re.search(r'(?:division|div)\s+([A-Za-z\s\-]+)', question_original, re.IGNORECASE)
-            if division_match:
-                entity = division_match.group(1).strip()
-                if len(entity) > 2:
-                    logger.info(f"✅ Division detected: '{entity}'")
-                    self.metrics["intent_detection"]["division_dashboard"] = self.metrics["intent_detection"].get("division_dashboard", 0) + 1
-                    return "division_dashboard", entity, "division"
-        
-        # SALES MANAGER DETECTION
-        if "sales manager" in question_lower or "sm " in question_lower:
-            sm_match = re.search(r'(?:sales manager|sm|manager)\s+([A-Za-z\s\-]+)', question_original, re.IGNORECASE)
-            if sm_match:
-                entity = sm_match.group(1).strip()
-                if len(entity) > 2:
-                    logger.info(f"✅ Sales Manager detected: '{entity}'")
-                    self.metrics["intent_detection"]["sales_manager_dashboard"] = self.metrics["intent_detection"].get("sales_manager_dashboard", 0) + 1
-                    return "sales_manager_dashboard", entity, "sales_manager"
-        
-        # SALES OFFICE DETECTION
-        if "sales office" in question_lower or "office " in question_lower:
-            so_match = re.search(r'(?:sales office|office)\s+([A-Za-z\s\-]+)', question_original, re.IGNORECASE)
-            if so_match:
-                entity = so_match.group(1).strip()
-                if len(entity) > 2:
-                    logger.info(f"✅ Sales Office detected: '{entity}'")
-                    self.metrics["intent_detection"]["sales_office_dashboard"] = self.metrics["intent_detection"].get("sales_office_dashboard", 0) + 1
-                    return "sales_office_dashboard", entity, "sales_office"
-        
-        # PATTERN MATCHING FOR ALL OTHER INTENTS
-        for intent, patterns in INTENT_PATTERNS.items():
-            for pattern in patterns:
-                if pattern in question_lower:
-                    logger.info(f"✅ Intent '{intent}' from pattern '{pattern}'")
-                    self.metrics["intent_detection"][intent] = self.metrics["intent_detection"].get(intent, 0) + 1
-                    entity, entity_type = self._extract_entity(question_original, intent)
-                    return intent, entity, entity_type
-        
-        # FALLBACK - Context
-        if context and context.last_intent and context.last_entity:
-            logger.info(f"🔄 Using context: {context.last_intent} with entity {context.last_entity}")
-            return context.last_intent, context.last_entity, self._get_entity_type(context.last_intent)
-        
-        # UNKNOWN - Return help
-        logger.warning(f"❌ Unknown intent for: '{question_original}'")
-        return "help", None, None
-
-# ==========================================================
-# BLOCK 12: FOLLOW-UP DETECTION
-# ==========================================================
-
-    def _detect_followup(self, question: str, context: ConversationContext) -> Optional[str]:
-        if "revenue" in question or "amount" in question or "worth" in question:
-            return context.last_intent
-        if "pod" in question:
-            return "pod_dashboard"
-        if "pgi" in question:
-            return "pgi_dashboard"
-        if "units" in question or "quantity" in question:
-            return context.last_intent
-        if "aging" in question or "old" in question or "delay" in question:
-            return "aging_dashboard"
-        if "pending" in question:
-            return context.last_intent
-        if "ranking" in question or "rank" in question or "top" in question:
-            return "dealer_ranking"
-        if "products" in question or "models" in question or "product" in question:
-            return "dealer_products"
-        if "performance" in question or "status" in question:
-            return context.last_intent
-        return None
-
-# ==========================================================
-# BLOCK 13: ENTITY EXTRACTION
-# ==========================================================
-
-    def _extract_entity(self, question: str, intent: str) -> Tuple[Optional[str], Optional[str]]:
-        question_clean = question.strip()
-        
-        for entity_type, pattern in ENTITY_PATTERNS.items():
-            match = re.search(pattern, question_clean, re.IGNORECASE)
-            if match:
-                entity = match.group(1).strip() if len(match.groups()) > 0 else match.group(0).strip()
-                if len(entity) > 2:
-                    return entity, self._map_entity_type(entity_type)
-        
-        if intent == "dealer_dashboard":
-            prefixes = ["show me", "show", "get", "view", "dealer", "customer"]
-            text = question_clean
-            for prefix in prefixes:
-                if text.lower().startswith(prefix):
-                    text = text[len(prefix):].strip()
-                    if len(text) > 2:
-                        return text, "dealer"
-        
-        if intent == "product_dashboard":
-            product_match = re.search(r'(?:product|model|material)\s+([A-Za-z0-9\-]+)', question_clean, re.IGNORECASE)
-            if product_match:
-                return product_match.group(1).strip(), "product"
-        
-        return None, None
     
-    def _map_entity_type(self, entity_pattern: str) -> str:
-        mapping = {
-            "dealer_name": "dealer",
-            "dealer_name_standalone": "dealer",
-            "dealer_code": "dealer",
-            "customer_code": "dealer",
-            "warehouse": "warehouse",
-            "warehouse_pattern": "warehouse",
-            "city": "city",
-            "city_pattern": "city",
-            "product": "product",
-            "dn_number": "dn",
-            "dn_pattern": "dn",
-            "division": "division",
-            "sales_manager": "sales_manager",
-            "sales_office": "sales_office",
-        }
-        return mapping.get(entity_pattern, "unknown")
+    @property
+    def classifier(self):
+        """Get classifier with lazy initialization."""
+        if self._classifier is None:
+            self._classifier = IntentClassifier(self.resolver)
+        return self._classifier
     
-    def _get_entity_type(self, intent: str) -> str:
-        entity_mapping = {
-            "dealer_dashboard": "dealer",
-            "dealer_products": "dealer",
-            "dealer_ranking": "dealer",
-            "warehouse_dashboard": "warehouse",
-            "warehouse_ranking": "warehouse",
-            "warehouse_coverage": "warehouse",
-            "warehouse_products": "warehouse",
-            "city_dashboard": "city",
-            "city_ranking": "city",
-            "city_dealers": "city",
-            "city_products": "city",
-            "product_dashboard": "product",
-            "product_ranking": "product",
-            "product_trend": "product",
-            "dn_dashboard": "dn",
-            "dn_analytics": "dn",
-            "pgi_dashboard": "pgi",
-            "pod_dashboard": "pod",
-            "delivery_dashboard": "delivery",
-            "executive_dashboard": "executive",
-            "control_tower": "control",
-            "revenue_dashboard": "revenue",
-            "aging_dashboard": "aging",
-            "division_dashboard": "division",
-            "sales_manager_dashboard": "sales_manager",
-            "sales_office_dashboard": "sales_office",
-            "help": "help",
-        }
-        return entity_mapping.get(intent, "unknown")
-
-# ==========================================================
-# BLOCK 14: CONTEXT MANAGEMENT
-# ==========================================================
-
     def _load_context(self, phone_number: Optional[str]) -> Optional[ConversationContext]:
+        """Load conversation context."""
         if not phone_number:
             return None
         
@@ -1490,6 +1514,7 @@ class AIOrchestrator:
         return context
     
     def _update_context(self, phone_number: Optional[str], intent: str, entity_type: str, entity: str, req_id: str):
+        """Update conversation context."""
         if not phone_number:
             return
         
@@ -1526,14 +1551,12 @@ class AIOrchestrator:
         elif entity_type == "sales_manager":
             context.last_sales_manager = entity
             context.last_entity = entity
-        elif entity_type == "sales_office":
-            context.last_sales_office = entity
-            context.last_entity = entity
         
         self.conversation_cache[phone_number] = context
 
+
 # ==========================================================
-# BLOCK 15: MAIN ENTRY POINT
+# BLOCK 9: MAIN ENTRY POINT
 # ==========================================================
 
     def process_whatsapp_query(
@@ -1544,14 +1567,12 @@ class AIOrchestrator:
         user_id: Optional[str] = None,
         request_id: Optional[str] = None
     ) -> str:
+        """Process WhatsApp query with improved routing."""
         start_time = time.time()
         
-        # ==========================================================
-        # ✅ AI ENABLED CHECK
-        # ==========================================================
-        from app.config import config
+        # Check AI enabled
         if not getattr(config, 'AI_ANALYSIS_ENABLED', True):
-            logger.warning("⚠️ AI_ANALYSIS_ENABLED is False, using rule-based responses")
+            logger.warning("⚠️ AI_ANALYSIS_ENABLED is False")
             return "⚠️ AI service is currently disabled. Please contact support."
         
         req_id = request_id or str(uuid.uuid4())[:8]
@@ -1563,6 +1584,7 @@ class AIOrchestrator:
         if session_factory:
             self.session_factory = session_factory
             self._resolver = None
+            self._classifier = None
         
         if not question or len(question.strip()) < 2:
             return "Please provide a valid question. Type 'help' for menu."
@@ -1571,21 +1593,31 @@ class AIOrchestrator:
             context = self._load_context(phone_number)
             question_clean = question.strip()
             
-            intent, entity, entity_type = self._detect_intent(question_clean, context)
+            # Classify intent
+            intent_result = self.classifier.classify(question_clean, context)
             
-            if intent == "help":
+            logger.info(f"[{req_id}] 🎯 Intent: {intent_result.intent}")
+            logger.info(f"[{req_id}] 📊 Entity: {intent_result.entity_value} ({intent_result.entity_type})")
+            logger.info(f"[{req_id}] 📊 Confidence: {intent_result.confidence:.2f}")
+            
+            if intent_result.intent == "help":
                 return self._get_help_message()
             
-            logger.info(f"[{req_id}] 🎯 Intent: {intent} | Entity: {entity} | Type: {entity_type}")
-            
-            result = self._route_to_dashboard(intent, entity, entity_type, context, req_id)
+            # Route to dashboard
+            result = self._route_to_dashboard(
+                intent_result.intent,
+                intent_result.entity_value,
+                intent_result.entity_type,
+                context,
+                req_id
+            )
             
             if result:
                 self._update_context(
-                    phone_number, 
-                    intent, 
-                    entity_type or self._get_entity_type(intent), 
-                    entity or context.last_entity if context else None, 
+                    phone_number,
+                    intent_result.intent,
+                    intent_result.entity_type or "unknown",
+                    intent_result.entity_value or context.last_entity if context else None,
                     req_id
                 )
                 elapsed = time.time() - start_time
@@ -1599,36 +1631,37 @@ class AIOrchestrator:
             logger.exception(f"[{req_id}] ❌ ERROR: {e}")
             return f"⚠️ Unable to process request. Please try again or type 'help'."
 
+
 # ==========================================================
-# BLOCK 16: ROUTING ENGINE (OPTIMIZED)
+# BLOCK 10: ROUTING ENGINE (OPTIMIZED)
 # ==========================================================
 
     def _route_to_dashboard(self, intent: str, entity: Optional[str], 
                             entity_type: Optional[str], 
                             context: Optional[ConversationContext], 
                             req_id: str) -> Optional[str]:
+        """Route to appropriate dashboard."""
         if not self.analytics:
             logger.error(f"[{req_id}] Analytics service not available")
             return "⚠️ Analytics service is temporarily unavailable. Please try again later."
         
-        # Route map - clean and maintainable
+        # Route map
         ROUTE_MAP = {
+            "dn_dashboard": self._route_dn_dashboard,
             "dealer_dashboard": self._route_dealer_dashboard,
+            "warehouse_dashboard": self._route_warehouse_dashboard,
+            "city_dashboard": self._route_city_dashboard,
+            "product_dashboard": self._route_product_dashboard,
             "dealer_ranking": self._route_dealer_ranking,
             "dealer_products": self._route_dealer_products,
-            "warehouse_dashboard": self._route_warehouse_dashboard,
             "warehouse_ranking": self._route_warehouse_ranking,
             "warehouse_coverage": self._route_warehouse_coverage,
             "warehouse_products": self._route_warehouse_products,
-            "city_dashboard": self._route_city_dashboard,
             "city_ranking": self._route_city_ranking,
             "city_dealers": self._route_city_dealers,
             "city_products": self._route_city_products,
-            "product_dashboard": self._route_product_dashboard,
             "product_ranking": self._route_product_ranking,
             "product_trend": self._route_product_trend,
-            "dn_dashboard": self._route_dn_dashboard,
-            "dn_analytics": self._route_dn_analytics,
             "pgi_dashboard": self._route_pgi_dashboard,
             "pod_dashboard": self._route_pod_dashboard,
             "delivery_dashboard": self._route_delivery_dashboard,
@@ -1656,28 +1689,21 @@ class AIOrchestrator:
             return f"⚠️ Unable to load {intent.replace('_', ' ').title()}. Please try again."
 
 
-# BLOCK 17: ROUTE HANDLERS (COMPLETE - FIXED)
+# ==========================================================
+# BLOCK 11: ROUTE HANDLERS (FIXED)
 # ==========================================================
 
     def _validate_response(self, response, service_name: str, req_id: str) -> Tuple[bool, str, Optional[Dict]]:
-        """
-        Validate response from analytics service.
-        BLOCK 17 - FIXED v10.0
-        Returns: (is_valid, error_message, data)
-        Supports: AnalyticsResponse, dict, list, None
-        """
+        """Validate response from analytics service."""
         logger.info(f"[{req_id}] 🔍 Validating {service_name} response")
         logger.info(f"[{req_id}] 📊 Response type: {type(response)}")
         
-        # Check if response is None
         if response is None:
             logger.error(f"[{req_id}] ❌ Response is None for {service_name}")
             return False, "No response received from service", None
         
-        # Check if response is a dict (direct data response)
         if isinstance(response, dict):
             logger.info(f"[{req_id}] ✅ Response is a dict with {len(response)} keys")
-            logger.info(f"[{req_id}] 📊 Dict keys: {list(response.keys())}")
             
             if "error" in response:
                 error_msg = response.get("error", "Unknown error")
@@ -1688,27 +1714,16 @@ class AIOrchestrator:
                 logger.warning(f"[{req_id}] ⚠️ Response is empty dict")
                 return False, "Empty response received", None
             
-            # Check if response has required fields
-            required_fields = ['dn_number', 'customer_name', 'warehouse']
-            missing_fields = [f for f in required_fields if f not in response]
-            if missing_fields:
-                logger.warning(f"[{req_id}] ⚠️ Missing fields: {missing_fields}")
-            
             logger.info(f"[{req_id}] ✅ Valid dict response with {len(response)} keys")
             return True, "", response
         
-        # Check if response has success attribute (AnalyticsResponse)
         if hasattr(response, 'success'):
-            logger.info(f"[{req_id}] ✅ Response has success attribute")
-            
             if not response.success:
                 error_msg = getattr(response, 'error', 'Unknown error')
                 logger.error(f"[{req_id}] ❌ Response success=False: {error_msg}")
                 return False, error_msg, None
             
             data = getattr(response, 'data', {})
-            logger.info(f"[{req_id}] 📊 Data from AnalyticsResponse: {type(data)}")
-            
             if not data or len(data) == 0:
                 logger.warning(f"[{req_id}] ⚠️ Response data is empty")
                 return False, "No data in response", None
@@ -1718,18 +1733,9 @@ class AIOrchestrator:
                 logger.error(f"[{req_id}] ❌ Data contains error: {error_msg}")
                 return False, error_msg, None
             
-            # Check if data has required fields
-            if isinstance(data, dict):
-                required_fields = ['dn_number', 'customer_name', 'warehouse']
-                missing_fields = [f for f in required_fields if f not in data]
-                if missing_fields:
-                    logger.warning(f"[{req_id}] ⚠️ Data missing fields: {missing_fields}")
-                    logger.warning(f"[{req_id}] 📊 Data keys: {list(data.keys())}")
-            
             logger.info(f"[{req_id}] ✅ Valid AnalyticsResponse with {len(data)} data keys")
             return True, "", data
         
-        # Check if response is a list
         if isinstance(response, list):
             logger.info(f"[{req_id}] ✅ Response is a list with {len(response)} items")
             if len(response) == 0:
@@ -1737,238 +1743,129 @@ class AIOrchestrator:
                 return False, "Empty list response", None
             return True, "", {"results": response}
         
-        # Unknown response type
         logger.error(f"[{req_id}] ❌ Unknown response type: {type(response)}")
         return False, f"Unexpected response type: {type(response).__name__}", None
 
     def _route_dn_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """
-        Handle DN dashboard with complete error handling and retry.
-        BLOCK 17 - FIXED v10.0
-        """
+        """Handle DN dashboard."""
         import time
         start_time = time.time()
         
         logger.info(f"[{req_id}] 📄 DN Dashboard route called")
-        logger.info(f"[{req_id}] 📥 Entity: {entity}")
-        logger.info(f"[{req_id}] 📥 Context last_dn: {context.last_dn if context else None}")
         
         dn_number = entity or (context.last_dn if context else None)
         
         if not dn_number:
-            logger.warning(f"[{req_id}] ❌ No DN number provided")
             return "📄 *DN DASHBOARD*\n\nPlease provide a DN number.\n\n*Example:* 6243675570"
         
-        # Clean DN
         dn_clean = re.sub(r'\D', '', str(dn_number).strip())
         if len(dn_clean) < 8 or len(dn_clean) > 12:
-            logger.warning(f"[{req_id}] ❌ Invalid DN format: {dn_number}")
             return f"❌ Invalid DN number: '{dn_number}'\n\nDN numbers must be 8-12 digits."
         
         logger.info(f"[{req_id}] 🔍 Looking up DN: {dn_clean}")
         
-        # ==========================================================
-        # STEP 1: Verify analytics service - with retry
-        # ==========================================================
         if self.analytics is None:
-            logger.warning(f"[{req_id}] ⚠️ Analytics is None - attempting reload...")
-            service, response_class = _get_analytics_service()
-            self._analytics = service
-            self._analytics_response = response_class
-            
-            if self.analytics is None:
-                logger.error(f"[{req_id}] ❌ Analytics service still None")
-                return "⚠️ Service temporarily unavailable. Please try again later."
+            return "⚠️ Service temporarily unavailable. Please try again later."
         
         if not hasattr(self.analytics, 'get_dn_dashboard'):
-            logger.error(f"[{req_id}] ❌ get_dn_dashboard not available")
             return "⚠️ Service temporarily unavailable. Please try again later."
         
         try:
-            # ==========================================================
-            # STEP 2: Get dashboard
-            # ==========================================================
             response = self.analytics.get_dn_dashboard(dn_clean)
-            logger.info(f"[{req_id}] 📊 Response type: {type(response)}")
-            
-            # LOG RAW RESPONSE
-            logger.info(f"[{req_id}] 📊 Raw response: {response}")
-            
-            # ==========================================================
-            # STEP 3: Validate response
-            # ==========================================================
             is_valid, error_msg, data = self._validate_response(response, "DN Dashboard", req_id)
             
-            # LOG VALIDATED DATA
-            logger.info(f"[{req_id}] 📊 Data keys after validation: {list(data.keys()) if data else 'NO DATA'}")
-            logger.info(f"[{req_id}] 📊 Data preview: {str(data)[:500] if data else 'EMPTY'}")
-            
             if not is_valid:
-                logger.error(f"[{req_id}] ❌ Validation failed: {error_msg}")
                 return f"❌ Unable to retrieve data for DN {dn_clean}.\n\n{error_msg}"
-            
-            # ==========================================================
-            # STEP 4: Format and return
-            # ==========================================================
-            logger.info(f"[{req_id}] ✅ Valid data received, formatting...")
-            logger.info(f"[{req_id}] 📊 Data has {len(data)} fields: {list(data.keys())}")
             
             result = self._format_dn_dashboard(data, dn_clean)
             
             elapsed = time.time() - start_time
             logger.info(f"[{req_id}] ✅ DN dashboard returned in {elapsed:.3f}s")
-            logger.info(f"[{req_id}] 📊 Result length: {len(result)} characters")
             return result
             
         except Exception as e:
             logger.error(f"[{req_id}] ❌ DN dashboard error: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
             return f"❌ Error retrieving DN {dn_clean}: {str(e)[:100]}"
 
     def _route_dealer_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """
-        Handle dealer dashboard with improved validation and error handling.
-        BLOCK 17 - FIXED
-        """
+        """Handle dealer dashboard."""
         import time
         start_time = time.time()
-        
-        logger.info(f"[{req_id}] 🏪 Dealer Dashboard route called")
-        logger.info(f"[{req_id}] 📥 Entity: {entity}")
         
         dealer_name = entity
         if not dealer_name and context and context.last_dealer:
             dealer_name = context.last_dealer
-            logger.info(f"[{req_id}] 🔄 Using context dealer: {dealer_name}")
         
         if not dealer_name:
             return "🏪 *DEALER DASHBOARD*\n\nPlease specify a dealer name."
         
         original_dealer_name = dealer_name
         
-        # Clean typos
+        # Clean typo
         typo_fixes = {"are ": "", "is ": "", "the ": "", "for ": "", "of ": ""}
         for typo, fix in typo_fixes.items():
             if dealer_name.lower().startswith(typo):
                 dealer_name = dealer_name[len(typo):].strip()
-                logger.info(f"[{req_id}] 🔍 Fixed typo: '{original_dealer_name}' → '{dealer_name}'")
                 break
         
         if len(dealer_name) < 2:
             dealer_name = original_dealer_name
         
-        # ==========================================================
-        # STEP 1: Verify analytics service
-        # ==========================================================
         if self.analytics is None:
-            logger.error(f"[{req_id}] ❌ Analytics service is None")
             return "⚠️ Service temporarily unavailable. Please try again later."
         
         logger.info(f"[{req_id}] 🔍 Searching for dealer: '{dealer_name}'")
         
         try:
-            # ==========================================================
-            # STEP 2: Get dashboard (try 360 first, fallback to legacy)
-            # ==========================================================
+            # Try 360 dashboard first
             response = None
             data = None
             
-            # Try 360 dashboard
             if hasattr(self.analytics, 'get_dealer_360_dashboard'):
-                logger.info(f"[{req_id}] 📊 Using 360 dashboard")
                 response = self.analytics.get_dealer_360_dashboard(dealer_name)
-                logger.info(f"[{req_id}] 📊 Response type: {type(response)}")
-                
-                # Check if response is AnalyticsResponse or dict
                 if hasattr(response, 'success') and response.success:
                     data = response.data if hasattr(response, 'data') else {}
-                    logger.info(f"[{req_id}] 📊 360 dashboard returned successfully")
                 elif isinstance(response, dict) and not response.get('error'):
                     data = response
-                    logger.info(f"[{req_id}] 📊 360 dashboard returned as dict")
-                else:
-                    logger.warning(f"[{req_id}] ⚠️ 360 dashboard failed, falling back to legacy")
-                    response = None
             
             # Fallback to legacy
-            if response is None or (hasattr(response, 'success') and not response.success):
+            if data is None:
                 if hasattr(self.analytics, 'get_dealer_dashboard'):
-                    logger.info(f"[{req_id}] 📊 Using legacy dashboard")
                     response = self.analytics.get_dealer_dashboard(dealer_name)
                     if hasattr(response, 'success') and response.success:
                         data = response.data if hasattr(response, 'data') else {}
                     elif isinstance(response, dict) and not response.get('error'):
                         data = response
-                else:
-                    logger.error(f"[{req_id}] ❌ No dealer dashboard method available")
-                    return "⚠️ Service temporarily unavailable. Please try again later."
             
-            # ==========================================================
-            # STEP 3: Validate response
-            # ==========================================================
             if not data or (isinstance(data, dict) and data.get('error')):
-                error_msg = data.get('error', 'Unknown error') if isinstance(data, dict) else 'No data'
+                error_msg = data.get('error', 'No data') if isinstance(data, dict) else 'No data'
                 logger.error(f"[{req_id}] ❌ No data received: {error_msg}")
-                
-                # Check for suggestions
-                if isinstance(data, dict) and "suggestions" in data:
-                    suggestions = data.get("suggestions", [])
-                    if suggestions:
-                        return f"❌ Dealer '{original_dealer_name}' not found.\n\n💡 Did you mean:\n" + "\n".join([f"• {s}" for s in suggestions[:3]])
-                
                 return f"❌ Unable to retrieve data for '{original_dealer_name}'.\n\n{error_msg}"
             
-            # ==========================================================
-            # STEP 4: Format and return
-            # ==========================================================
-            logger.info(f"[{req_id}] ✅ Valid data received, formatting...")
-            
-            # Check if it's a 360 dashboard
-            if isinstance(data, dict) and data.get('_dashboard_type') == '360':
-                try:
-                    from app.services.dealer_analytics_service import format_dealer_360_dashboard
-                    result = format_dealer_360_dashboard(data)
-                except ImportError as e:
-                    logger.error(f"[{req_id}] ❌ Import error: {e}")
-                    # Fallback to legacy formatter
-                    result = self._format_dealer_dashboard(data, dealer_name)
-            else:
-                # Use the formatter method
-                result = self._format_dealer_dashboard(data, dealer_name)
+            result = self._format_dealer_dashboard(data, dealer_name)
             
             elapsed = time.time() - start_time
             logger.info(f"[{req_id}] ✅ Dealer dashboard returned in {elapsed:.3f}s")
             return result
             
-        except AttributeError as e:
-            logger.error(f"[{req_id}] ❌ AttributeError: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return f"❌ Error retrieving dealer data: {str(e)}"
-            
         except Exception as e:
             logger.error(f"[{req_id}] ❌ Dealer dashboard error: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
             return f"❌ Error retrieving dealer data: {str(e)[:100]}"
 
     def _route_warehouse_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """Handle warehouse dashboard with improved validation."""
+        """Handle warehouse dashboard."""
         import time
         start_time = time.time()
-        
-        logger.info(f"[{req_id}] 🏭 Warehouse Dashboard route called")
-        logger.info(f"[{req_id}] 📥 Entity: {entity}")
         
         warehouse_name = entity
         if not warehouse_name and context and context.last_warehouse:
             warehouse_name = context.last_warehouse
         
         if not warehouse_name:
-            return "🏭 *WAREHOUSE DASHBOARD*\n\nPlease specify a warehouse name.\n\n*Examples:*\n• Lahore warehouse\n• Rawalpindi warehouse"
+            return "🏭 *WAREHOUSE DASHBOARD*\n\nPlease specify a warehouse name."
         
-        logger.info(f"[{req_id}] 🔍 Searching for warehouse: '{warehouse_name}'")
+        if self.analytics is None:
+            return "⚠️ Service temporarily unavailable. Please try again later."
         
         try:
             if not hasattr(self.analytics, 'get_warehouse_dashboard'):
@@ -1978,10 +1875,6 @@ class AIOrchestrator:
             is_valid, error_msg, data = self._validate_response(response, "Warehouse Dashboard", req_id)
             
             if not is_valid:
-                if data and isinstance(data, dict) and "suggestions" in data:
-                    suggestions = data.get("suggestions", [])
-                    if suggestions:
-                        return f"❌ Warehouse '{warehouse_name}' not found.\n\n💡 Did you mean:\n" + "\n".join([f"• {s}" for s in suggestions[:3]])
                 return f"❌ Unable to retrieve data for warehouse '{warehouse_name}'.\n\n{error_msg}"
             
             result = self._format_warehouse_dashboard(data, warehouse_name)
@@ -1994,21 +1887,19 @@ class AIOrchestrator:
             return f"❌ Error retrieving warehouse data: {str(e)[:100]}"
 
     def _route_city_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """Handle city dashboard with improved validation."""
+        """Handle city dashboard."""
         import time
         start_time = time.time()
-        
-        logger.info(f"[{req_id}] 🏙️ City Dashboard route called")
-        logger.info(f"[{req_id}] 📥 Entity: {entity}")
         
         city_name = entity
         if not city_name and context and context.last_city:
             city_name = context.last_city
         
         if not city_name:
-            return "🏙️ *CITY DASHBOARD*\n\nPlease specify a city name.\n\n*Examples:*\n• Haripur\n• Sahiwal"
+            return "🏙️ *CITY DASHBOARD*\n\nPlease specify a city name."
         
-        logger.info(f"[{req_id}] 🔍 Searching for city: '{city_name}'")
+        if self.analytics is None:
+            return "⚠️ Service temporarily unavailable. Please try again later."
         
         try:
             if not hasattr(self.analytics, 'get_city_dashboard'):
@@ -2018,10 +1909,6 @@ class AIOrchestrator:
             is_valid, error_msg, data = self._validate_response(response, "City Dashboard", req_id)
             
             if not is_valid:
-                if data and isinstance(data, dict) and "suggestions" in data:
-                    suggestions = data.get("suggestions", [])
-                    if suggestions:
-                        return f"❌ City '{city_name}' not found.\n\n💡 Did you mean:\n" + "\n".join([f"• {s}" for s in suggestions[:3]])
                 return f"❌ Unable to retrieve data for city '{city_name}'.\n\n{error_msg}"
             
             result = self._format_city_dashboard(data, city_name)
@@ -2034,21 +1921,19 @@ class AIOrchestrator:
             return f"❌ Error retrieving city data: {str(e)[:100]}"
 
     def _route_product_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
-        """Handle product dashboard with improved validation."""
+        """Handle product dashboard."""
         import time
         start_time = time.time()
-        
-        logger.info(f"[{req_id}] 📦 Product Dashboard route called")
-        logger.info(f"[{req_id}] 📥 Entity: {entity}")
         
         product_name = entity
         if not product_name and context and context.last_product:
             product_name = context.last_product
         
         if not product_name:
-            return "📦 *PRODUCT DASHBOARD*\n\nPlease specify a product.\n\n*Examples:*\n• HRF-316IPGA\n• Model A123"
+            return "📦 *PRODUCT DASHBOARD*\n\nPlease specify a product."
         
-        logger.info(f"[{req_id}] 🔍 Searching for product: '{product_name}'")
+        if self.analytics is None:
+            return "⚠️ Service temporarily unavailable. Please try again later."
         
         try:
             if not hasattr(self.analytics, 'get_product_dashboard'):
@@ -2058,10 +1943,6 @@ class AIOrchestrator:
             is_valid, error_msg, data = self._validate_response(response, "Product Dashboard", req_id)
             
             if not is_valid:
-                if data and isinstance(data, dict) and "suggestions" in data:
-                    suggestions = data.get("suggestions", [])
-                    if suggestions:
-                        return f"❌ Product '{product_name}' not found.\n\n💡 Did you mean:\n" + "\n".join([f"• {s}" for s in suggestions[:3]])
                 return f"❌ Unable to retrieve data for product '{product_name}'.\n\n{error_msg}"
             
             result = self._format_product_dashboard(data, product_name)
@@ -2073,8 +1954,12 @@ class AIOrchestrator:
             logger.error(f"[{req_id}] ❌ Product dashboard error: {e}")
             return f"❌ Error retrieving product data: {str(e)[:100]}"
 
-    def _route_dealer_ranking(self, req_id: str) -> str:
-        """Handle dealer ranking."""
+
+# ==========================================================
+# BLOCK 12: ADDITIONAL ROUTE HANDLERS
+# ==========================================================
+
+    def _route_dealer_ranking(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         try:
             response = self.analytics.get_ranking_dashboard(limit=10)
             is_valid, error_msg, data = self._validate_response(response, "Dealer Ranking", req_id)
@@ -2091,7 +1976,7 @@ class AIOrchestrator:
             return "📦 *DEALER PRODUCTS*\n\nPlease specify a dealer name."
         return f"📦 *PRODUCTS FOR {dealer_name.upper()}*\n\nProduct information coming soon."
     
-    def _route_warehouse_ranking(self, req_id: str) -> str:
+    def _route_warehouse_ranking(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         return "🏆 *WAREHOUSE RANKING*\n\nWarehouse ranking coming soon."
     
     def _route_warehouse_coverage(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
@@ -2106,7 +1991,7 @@ class AIOrchestrator:
             return "📦 *WAREHOUSE PRODUCTS*\n\nPlease specify a warehouse name."
         return f"📦 *PRODUCTS IN {warehouse_name.upper()}*\n\nProduct list coming soon."
     
-    def _route_city_ranking(self, req_id: str) -> str:
+    def _route_city_ranking(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         return "🏆 *CITY RANKING*\n\nCity ranking coming soon."
     
     def _route_city_dealers(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
@@ -2121,16 +2006,13 @@ class AIOrchestrator:
             return "📦 *CITY PRODUCTS*\n\nPlease specify a city name."
         return f"📦 *PRODUCTS IN {city_name.upper()}*\n\nProduct list coming soon."
     
-    def _route_product_ranking(self, req_id: str) -> str:
+    def _route_product_ranking(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         return "🏆 *PRODUCT RANKING*\n\nProduct ranking coming soon."
     
     def _route_product_trend(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         return "📈 *PRODUCT TREND*\n\nProduct trend coming soon."
 
-    def _route_dn_analytics(self, req_id: str) -> str:
-        return "📊 *DN ANALYTICS*\n\nAnalytics coming soon."
-
-    def _route_pgi_dashboard(self, req_id: str) -> str:
+    def _route_pgi_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         try:
             response = self.analytics.get_pgi_dashboard()
             is_valid, error_msg, data = self._validate_response(response, "PGI Dashboard", req_id)
@@ -2141,7 +2023,7 @@ class AIOrchestrator:
             logger.error(f"[{req_id}] ❌ PGI dashboard error: {e}")
             return f"❌ Error retrieving PGI data: {str(e)[:100]}"
     
-    def _route_pod_dashboard(self, req_id: str) -> str:
+    def _route_pod_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         try:
             response = self.analytics.get_pod_dashboard()
             is_valid, error_msg, data = self._validate_response(response, "POD Dashboard", req_id)
@@ -2152,7 +2034,7 @@ class AIOrchestrator:
             logger.error(f"[{req_id}] ❌ POD dashboard error: {e}")
             return f"❌ Error retrieving POD data: {str(e)[:100]}"
     
-    def _route_delivery_dashboard(self, req_id: str) -> str:
+    def _route_delivery_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         try:
             response = self.analytics.get_delivery_dashboard()
             is_valid, error_msg, data = self._validate_response(response, "Delivery Dashboard", req_id)
@@ -2163,7 +2045,7 @@ class AIOrchestrator:
             logger.error(f"[{req_id}] ❌ Delivery dashboard error: {e}")
             return f"❌ Error retrieving delivery data: {str(e)[:100]}"
     
-    def _route_executive_dashboard(self, req_id: str) -> str:
+    def _route_executive_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         try:
             response = self.analytics.get_executive_dashboard()
             is_valid, error_msg, data = self._validate_response(response, "Executive Dashboard", req_id)
@@ -2174,7 +2056,7 @@ class AIOrchestrator:
             logger.error(f"[{req_id}] ❌ Executive dashboard error: {e}")
             return f"❌ Error retrieving executive data: {str(e)[:100]}"
     
-    def _route_control_tower(self, req_id: str) -> str:
+    def _route_control_tower(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         try:
             response = self.analytics.get_control_tower_dashboard()
             is_valid, error_msg, data = self._validate_response(response, "Control Tower", req_id)
@@ -2185,7 +2067,7 @@ class AIOrchestrator:
             logger.error(f"[{req_id}] ❌ Control tower error: {e}")
             return f"❌ Error retrieving control tower data: {str(e)[:100]}"
     
-    def _route_revenue_dashboard(self, req_id: str) -> str:
+    def _route_revenue_dashboard(self, entity: Optional[str], context: Optional[ConversationContext], req_id: str) -> str:
         try:
             response = self.analytics.get_revenue_dashboard()
             is_valid, error_msg, data = self._validate_response(response, "Revenue Dashboard", req_id)
@@ -2225,24 +2107,17 @@ class AIOrchestrator:
             return "🏢 *SALES OFFICE DASHBOARD*\n\nPlease specify a sales office name."
         return f"🏢 *SALES OFFICE: {so_name.upper()}*\n\nSales office data coming soon."
 
-# ==========================================================
-# END OF BLOCK 17
-# ==========================================================
 
-# BLOCK 18-22: FORMATTERS (FIXED - Safe handling WITH DISTANCE)
+# ==========================================================
+# BLOCK 13: FORMATTERS (FIXED)
 # ==========================================================
 
     def _format_dn_dashboard(self, data: Dict, dn_number: str) -> str:
-        """Format DN dashboard - Safe handling of all fields."""
+        """Format DN dashboard."""
         try:
-            # ADD DEBUG LOGGING
-            logger.info(f"🔍 Formatting DN {dn_number} with data keys: {list(data.keys()) if data else 'EMPTY'}")
-            
             if not data:
-                logger.error(f"❌ No data for DN {dn_number}")
                 return f"❌ No data available for DN {dn_number}"
             
-            # Safe get with defaults
             def safe_get(key, default="N/A"):
                 val = data.get(key, default)
                 if val is None:
@@ -2251,7 +2126,6 @@ class AIOrchestrator:
                     return default
                 return val
             
-            # Get ALL fields with proper logging
             customer_name = safe_get('customer_name', 'N/A')
             warehouse = safe_get('warehouse', 'N/A')
             city = safe_get('ship_to_city', 'N/A')
@@ -2261,39 +2135,18 @@ class AIOrchestrator:
             pgi_status = safe_get('pgi_status', 'N/A')
             pod_status = safe_get('pod_status', 'N/A')
             
-            # Log what we found
-            logger.info(f"📊 DN {dn_number} data:")
-            logger.info(f"   Customer: {customer_name}")
-            logger.info(f"   Warehouse: {warehouse}")
-            logger.info(f"   City: {city}")
-            logger.info(f"   Units: {units}")
-            logger.info(f"   Amount: {amount}")
-            logger.info(f"   Status: {status}")
-            
             status_emoji = "✅" if status in ['Completed', 'Delivered', 'Closed'] else "⏳"
             pending_text = "🔴 Yes" if data.get('pending_flag') else "🟢 No"
             
-            # Get aging values safely
             delivery_aging = safe_get('delivery_aging_text', 'N/A')
             pod_aging = safe_get('pod_aging_text', 'N/A')
             total_cycle = safe_get('total_cycle_text', 'N/A')
             
-            # Get issues safely
-            issues = data.get('issues', [])
-            if not isinstance(issues, list):
-                issues = []
-            
-            # Get dates safely
             create_date = safe_get('dn_create_date', 'N/A')
             pgi_date = safe_get('good_issue_date', 'N/A')
             pod_date = safe_get('pod_date', 'N/A')
             
-            # Get additional fields
             dealer_code = safe_get('dealer_code', 'N/A')
-            customer_code = safe_get('customer_code', 'N/A')
-            sales_office = safe_get('sales_office', 'N/A')
-            sales_manager = safe_get('sales_manager', 'N/A')
-            division = safe_get('division', 'N/A')
             customer_model = safe_get('customer_model', 'N/A')
             material_no = safe_get('material_no', 'N/A')
             
@@ -2303,12 +2156,8 @@ class AIOrchestrator:
                 f"DN No: {safe_get('dn_number', dn_number)}",
                 f"Dealer: {customer_name}",
                 f"Dealer Code: {dealer_code}",
-                f"Customer Code: {customer_code}",
                 f"Warehouse: {warehouse}",
                 f"City: {city}",
-                f"Sales Office: {sales_office}",
-                f"Sales Manager: {sales_manager}",
-                f"Division: {division}",
                 "",
                 "📦 *Products*",
                 f"Model: {customer_model}",
@@ -2318,7 +2167,6 @@ class AIOrchestrator:
                 f"Units: {units}",
             ]
             
-            # Format amount with proper number formatting
             if amount and amount != 0:
                 lines.append(f"Revenue: PKR {amount:,.0f}")
             else:
@@ -2335,16 +2183,6 @@ class AIOrchestrator:
                 f"Delivery Aging: {delivery_aging}",
                 f"POD Aging: {pod_aging}",
                 f"Total Cycle: {total_cycle}",
-            ])
-            
-            if issues:
-                lines.append("")
-                lines.append("⚠ *Data Issue Detected*")
-                for issue in issues[:3]:
-                    lines.append(f"   {issue}")
-                lines.append("   Please verify source data.")
-            
-            lines.extend([
                 "",
                 "📋 *Status*",
                 f"Delivery: {status} {status_emoji}",
@@ -2353,26 +2191,14 @@ class AIOrchestrator:
                 f"Pending: {pending_text}"
             ])
             
-            # Return full response without truncation for debugging
-            result = "\n".join(lines)
-            logger.info(f"📊 Formatted response length: {len(result)} characters")
-            return result
+            return "\n".join(lines)
             
         except Exception as e:
-            logger.error(f"❌ DN format error: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+            logger.error(f"DN format error: {e}")
             return f"❌ Unable to format DN details for {dn_number}: {str(e)}"
 
-    # ==========================================================
-    # ADD THIS MISSING METHOD - _format_dealer_dashboard
-    # ==========================================================
-
     def _format_dealer_dashboard(self, data: Dict, dealer_name: str) -> str:
-        """
-        Format dealer dashboard - Safe handling WITH DISTANCE.
-        BLOCK 18-22 - ADDED
-        """
+        """Format dealer dashboard."""
         try:
             if not data:
                 return f"❌ No data available for dealer {dealer_name}"
@@ -2404,14 +2230,6 @@ class AIOrchestrator:
             if revenue is None:
                 revenue = 0
             
-            # ==========================================================
-            # GET DISTANCE INFORMATION
-            # ==========================================================
-            distance_km = data.get('distance_km')
-            distance_hours = data.get('distance_approx_hours')
-            distance_miles = data.get('distance_miles')
-            distance_minutes = data.get('approx_driving_minutes')
-            
             lines = [
                 "🏢 *DEALER DASHBOARD*",
                 "",
@@ -2421,34 +2239,6 @@ class AIOrchestrator:
                 f"Division: {safe_get('division', 'N/A')}",
                 f"Warehouse: {safe_get('warehouse', 'N/A')}",
                 f"City: {safe_get('city', 'N/A')}",
-            ]
-            
-            # ==========================================================
-            # ADD DISTANCE SECTION IF AVAILABLE
-            # ==========================================================
-            if distance_km:
-                lines.append("")
-                lines.append("📍 *Distance*")
-                lines.append(f"Warehouse → Dealer: {distance_km:.1f} km")
-                if distance_miles:
-                    lines.append(f"Warehouse → Dealer: {distance_miles:.1f} miles")
-                if distance_minutes:
-                    if distance_minutes < 60:
-                        lines.append(f"⏱️ Approx Driving: {distance_minutes} minutes")
-                    else:
-                        lines.append(f"⏱️ Approx Driving: {distance_minutes // 60}h {distance_minutes % 60}m")
-                elif distance_hours:
-                    if distance_hours < 1:
-                        lines.append(f"⏱️ Approx Driving: {int(distance_hours * 60)} minutes")
-                    else:
-                        hours = int(distance_hours)
-                        minutes = int((distance_hours - hours) * 60)
-                        if minutes > 0:
-                            lines.append(f"⏱️ Approx Driving: {hours}h {minutes}m")
-                        else:
-                            lines.append(f"⏱️ Approx Driving: {hours}h")
-            
-            lines.extend([
                 "",
                 "📊 *Metrics*",
                 f"Total DNs: {total_dns}",
@@ -2474,21 +2264,16 @@ class AIOrchestrator:
                 "",
                 f"📌 Products: {safe_get('product_count', 0)}",
                 f"📍 Cities: {safe_get('city_count', 0)}"
-            ])
+            ]
             
             return self._truncate_response("\n".join(lines))
             
         except Exception as e:
             logger.error(f"Dealer format error: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
             return f"❌ Unable to format dealer data for {dealer_name}: {str(e)}"
 
     def _format_warehouse_dashboard(self, data: Dict, warehouse_name: str) -> str:
-        """
-        Format warehouse dashboard - Safe handling WITH DISTANCE COVERAGE.
-        BLOCK 18-22 - UPDATED WITH DISTANCE
-        """
+        """Format warehouse dashboard."""
         try:
             if not data:
                 return f"❌ No data available for warehouse {warehouse_name}"
@@ -2509,19 +2294,10 @@ class AIOrchestrator:
             if revenue is None:
                 revenue = 0
             
-            # ==========================================================
-            # GET DISTANCE COVERAGE INFORMATION (NEW)
-            # ==========================================================
-            avg_distance = data.get('avg_distance_km')
-            max_distance = data.get('max_distance_km')
-            min_distance = data.get('min_distance_km')
-            distance_info = data.get('distance_info', [])
-            
             lines = [
                 "🏭 *WAREHOUSE DASHBOARD*",
                 "",
                 f"Warehouse: {safe_get('warehouse', warehouse_name)}",
-                f"Warehouse Code: {safe_get('warehouse_code', 'N/A')}",
                 "",
                 "📊 *Metrics*",
                 f"Total DNs: {total_dns}",
@@ -2532,35 +2308,12 @@ class AIOrchestrator:
                 f"Total Dealers: {safe_get('total_dealers', 0)}",
                 f"Cities Served: {safe_get('cities_served', 0)}",
                 f"Product Count: {safe_get('product_count', 0)}",
-            ]
-            
-            # ==========================================================
-            # ADD DISTANCE COVERAGE SECTION IF AVAILABLE (NEW)
-            # ==========================================================
-            if avg_distance:
-                lines.append("")
-                lines.append("📍 *Distance Coverage*")
-                lines.append(f"Average Distance: {avg_distance:.1f} km")
-                if min_distance:
-                    lines.append(f"Closest City: {min_distance:.1f} km")
-                if max_distance:
-                    lines.append(f"Farthest City: {max_distance:.1f} km")
-                
-                if distance_info:
-                    lines.append("")
-                    lines.append("📌 *Top Cities by Distance*")
-                    for item in distance_info[:5]:
-                        city = item.get('city', 'Unknown')
-                        dist = item.get('distance_km', 0)
-                        lines.append(f"• {city}: {dist:.1f} km")
-            
-            lines.extend([
                 "",
                 "📦 *Delivery Status*",
                 f"Delivered: {delivered} ({delivery_rate}%)",
                 f"Pending: {pending}",
                 f"Pending POD: {safe_get('pending_pod_dns', 0)}"
-            ])
+            ]
             
             return self._truncate_response("\n".join(lines))
         except Exception as e:
@@ -2568,7 +2321,7 @@ class AIOrchestrator:
             return f"❌ Unable to format warehouse data for {warehouse_name}"
 
     def _format_city_dashboard(self, data: Dict, city_name: str) -> str:
-        """Format city dashboard - Safe handling."""
+        """Format city dashboard."""
         try:
             if not data:
                 return f"❌ No data available for city {city_name}"
@@ -2615,7 +2368,7 @@ class AIOrchestrator:
             return f"❌ Unable to format city data for {city_name}"
 
     def _format_product_dashboard(self, data: Dict, product_name: str) -> str:
-        """Format product dashboard - Safe handling."""
+        """Format product dashboard."""
         try:
             if not data:
                 return f"❌ No data available for product {product_name}"
@@ -2656,7 +2409,7 @@ class AIOrchestrator:
             return f"❌ Unable to format product data for {product_name}"
 
     def _format_dealer_ranking(self, data: Dict) -> str:
-        """Format dealer ranking - Safe handling."""
+        """Format dealer ranking."""
         try:
             if not data:
                 return "❌ No ranking data available"
@@ -2887,12 +2640,9 @@ Pending: {pending}"""
             logger.error(f"Aging format error: {e}")
             return "❌ Unable to format aging data"
 
-# ==========================================================
-# END OF BLOCK 18-22 - FORMATTERS
-# ==========================================================
 
 # ==========================================================
-# BLOCK 23: HELP MESSAGE
+# BLOCK 14: HELP MESSAGE
 # ==========================================================
 
     def _get_help_message(self) -> str:
@@ -2924,7 +2674,8 @@ Pending: {pending}"""
 *🔍 Quick Commands:*
 • Enter 8-12 digit DN number
 • Dealer name (e.g., "Pakistan Electronics Mansehra")
-• City name (e.g., "Lahore")
+• Product name (e.g., "Refrigerator", "AC")
+• City name (e.g., "Lahore City")
 • Warehouse name (e.g., "Rawalpindi warehouse")
 • "Executive summary"
 • "Control tower"
@@ -2939,8 +2690,9 @@ Pending: {pending}"""
 
 *Ask me anything about logistics!* 🤖"""
 
+
 # ==========================================================
-# BLOCK 24: SINGLETON & WRAPPER FUNCTIONS (FIXED v3.0)
+# BLOCK 15: UTILITY FUNCTIONS
 # ==========================================================
 
     def _truncate_response(self, response: str) -> str:
@@ -2951,24 +2703,20 @@ Pending: {pending}"""
 
 
 # ==========================================================
-# SINGLETON & WRAPPER FUNCTIONS
+# BLOCK 16: SINGLETON & WRAPPER FUNCTIONS
 # ==========================================================
 
 _orchestrator = None
 _initialization_attempts = 0
 _MAX_INIT_ATTEMPTS = 3
 
-def get_orchestrator(session_factory: Optional[Callable[[], Session]] = None) -> AIOrchestrator:
-    """
-    Get or create AI Orchestrator singleton with retry logic.
-    BLOCK 24 - FIXED v3.0
-    """
+def get_orchestrator(session_factory: Optional[Callable[[], Session]] = None) -> Optional[AIOrchestrator]:
+    """Get or create AI Orchestrator singleton with retry logic."""
     global _orchestrator, _initialization_attempts
     
     if _orchestrator is not None:
         return _orchestrator
     
-    # If we've tried too many times, don't keep trying
     if _initialization_attempts >= _MAX_INIT_ATTEMPTS:
         logger.error(f"❌ Max initialization attempts ({_MAX_INIT_ATTEMPTS}) reached")
         return None
@@ -2978,21 +2726,9 @@ def get_orchestrator(session_factory: Optional[Callable[[], Session]] = None) ->
     
     try:
         _orchestrator = AIOrchestrator(session_factory=session_factory)
-        logger.info("✅ AI Orchestrator v28.0 initialized successfully")
-        _initialization_attempts = 0  # Reset on success
+        logger.info("✅ AI Orchestrator v29.0 initialized successfully")
+        _initialization_attempts = 0
         return _orchestrator
-        
-    except AttributeError as e:
-        logger.error(f"❌ AttributeError during initialization: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        
-        # Check if analytics service is the issue
-        if "analytics" in str(e).lower() or "method" in str(e).lower():
-            logger.warning("⚠️ Analytics service issue detected - will retry on next request")
-        
-        _orchestrator = None
-        return None
         
     except Exception as e:
         logger.error(f"❌ Failed to initialize AI Orchestrator: {e}")
@@ -3009,24 +2745,16 @@ def process_whatsapp_query(
     user_id: Optional[str] = None,
     request_id: Optional[str] = None
 ) -> str:
-    """
-    Process WhatsApp query with fallback and recovery.
-    BLOCK 24 - FIXED v3.0
-    """
+    """Process WhatsApp query with fallback and recovery."""
     global _orchestrator, _initialization_attempts
     
-    # Validate input
     if not question or not question.strip():
         return "Please provide a valid question. Type 'help' for menu."
     
-    # Get orchestrator
     orchestrator = get_orchestrator(session_factory)
     
-    # If orchestrator is None, try to reset and retry once
     if orchestrator is None:
         logger.warning("⚠️ Orchestrator is None - attempting emergency reset...")
-        
-        # Reset and try one more time
         _orchestrator = None
         _initialization_attempts = 0
         
@@ -3039,11 +2767,9 @@ def process_whatsapp_query(
             _orchestrator = None
             return "⚠️ AI service is currently unavailable. Please try again later."
     
-    # Final check
     if orchestrator is None:
         return "⚠️ AI service is currently unavailable. Please try again later."
     
-    # Process the query
     try:
         return orchestrator.process_whatsapp_query(
             question=question,
@@ -3060,10 +2786,7 @@ def process_whatsapp_query(
 
 
 def reset_orchestrator() -> None:
-    """
-    Reset the orchestrator singleton (useful for testing or recovery).
-    BLOCK 24 - FIXED v3.0
-    """
+    """Reset the orchestrator singleton."""
     global _orchestrator, _initialization_attempts
     _orchestrator = None
     _initialization_attempts = 0
@@ -3071,10 +2794,7 @@ def reset_orchestrator() -> None:
 
 
 def get_orchestrator_status() -> Dict[str, Any]:
-    """
-    Get current orchestrator status for diagnostics.
-    BLOCK 24 - FIXED v3.0
-    """
+    """Get current orchestrator status for diagnostics."""
     global _orchestrator, _initialization_attempts
     
     return {
@@ -3088,16 +2808,8 @@ def get_orchestrator_status() -> Dict[str, Any]:
     }
 
 
-# ==========================================================
-# BLOCK 24.5: WHATSAPP TOKEN HEALTH CHECK (NEW)
-# ==========================================================
-
 def get_whatsapp_health_status() -> Dict[str, Any]:
-    """
-    Get WhatsApp token health status for monitoring.
-    """
-    from app.config import config
-    
+    """Get WhatsApp token health status for monitoring."""
     token = getattr(config, 'WHATSAPP_ACCESS_TOKEN', '')
     phone_id = getattr(config, 'WHATSAPP_PHONE_NUMBER_ID', '')
     
@@ -3118,13 +2830,10 @@ def get_whatsapp_health_status() -> Dict[str, Any]:
     
     return status
 
+
 def check_whatsapp_token_health() -> Dict[str, Any]:
-    """
-    Quick health check for WhatsApp token.
-    Returns simple status for monitoring endpoints.
-    """
+    """Quick health check for WhatsApp token."""
     try:
-        from app.config import config
         token = getattr(config, 'WHATSAPP_ACCESS_TOKEN', '')
         phone_id = getattr(config, 'WHATSAPP_PHONE_NUMBER_ID', '')
         
@@ -3159,18 +2868,17 @@ def check_whatsapp_token_health() -> Dict[str, Any]:
             "message": f"Health check failed: {str(e)}"
         }
 
-# ==========================================================
-# END OF BLOCK 24.5
-# ==========================================================
 
 # ==========================================================
-# BLOCK 25: EXPORTS
+# BLOCK 17: EXPORTS
 # ==========================================================
 
 __all__ = [
     'AIOrchestrator',
     'PostgreSQLResolver',
     'ConversationContext',
+    'IntentClassifier',
+    'IntentResult',
     'get_orchestrator',
     'process_whatsapp_query',
     'reset_orchestrator',
@@ -3183,5 +2891,5 @@ __all__ = [
 ]
 
 # ==========================================================
-# END OF FILE - v28.0 PRODUCTION READY
+# END OF FILE - v29.0 PRODUCTION READY
 # ==========================================================
