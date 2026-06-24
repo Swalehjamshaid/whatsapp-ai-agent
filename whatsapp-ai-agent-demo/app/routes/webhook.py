@@ -1,8 +1,8 @@
 # ==========================================================
-# FILE: app/routes/webhook.py (v25.0 - ALIGNED WITH NEW ARCHITECTURE)
+# FILE: app/routes/webhook.py (v26.0 - COMPLETE PRODUCTION)
 # ==========================================================
 # PURPOSE: WhatsApp Webhook Handler - ALWAYS Calls AI
-# VERSION: 25.0 - ALIGNED WITH ai_provider_service.py v5.0
+# VERSION: 26.0 - FIXED RESPONSE FORMATTING
 # ==========================================================
 
 import json
@@ -12,7 +12,7 @@ import re
 import os
 import asyncio
 from datetime import datetime
-from typing import Dict, Any, Optional, List, Callable
+from typing import Dict, Any, Optional, List, Callable, Union
 from fastapi import APIRouter, Request, BackgroundTasks, Query, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 from loguru import logger
@@ -57,14 +57,14 @@ _ai_provider_service = None
 _whatsapp_service = None
 
 # ==========================================================
-# ✅ FIXED: AI PROVIDER SERVICE (USES CORRECT FUNCTION)
+# ✅ FIXED: AI PROVIDER SERVICE
 # ==========================================================
 
 def _get_ai_provider_service() -> Optional[Any]:
     """
     Get the AI Provider Service.
     
-    FIXED: Uses get_whatsapp_provider_service() from ai_provider_service.py
+    Uses get_whatsapp_provider_service() from ai_provider_service.py
     """
     global _ai_provider_service
     
@@ -74,27 +74,23 @@ def _get_ai_provider_service() -> Optional[Any]:
     try:
         logger.info("🚀 Initializing AI Provider Service v5.0...")
         
-        # ✅ CORRECT: Use the right import
         from app.services.ai_provider_service import get_whatsapp_provider_service
         
         if not DATABASE_AVAILABLE:
             logger.error("❌ Database not available")
             return None
         
-        # ✅ CORRECT: Get the provider
         _ai_provider_service = get_whatsapp_provider_service()
         
         if _ai_provider_service:
             logger.info("✅ AI Provider Service v5.0 initialized successfully")
             
-            # ✅ Check service registry status
             try:
                 health = _ai_provider_service.get_service_registry_status()
                 logger.info(f"   ├── Services Ready: {health.get('ready', 0)}")
                 logger.info(f"   ├── In Development: {health.get('in_development', 0)}")
                 logger.info(f"   ├── Readiness Score: {health.get('readiness_score', 0):.1f}%")
                 
-                # Check DN service status
                 dn_status = _ai_provider_service.registry.get_service_status("dn")
                 if dn_status.get("ready", False):
                     logger.info(f"   ├── DN Service: ✅ READY")
@@ -205,6 +201,103 @@ def is_duplicate_message(message_id: str, phone_number: str) -> bool:
     return False
 
 # ==========================================================
+# ✅ FIXED: RESPONSE FORMATTING HELPER
+# ==========================================================
+
+def _ensure_string_response(response_data: Any) -> str:
+    """
+    Ensure response is always a string for WhatsApp.
+    
+    ✅ FIXES: "text.body" must be a string error
+    """
+    if response_data is None:
+        return "No data available"
+    
+    if isinstance(response_data, str):
+        return response_data
+    
+    if isinstance(response_data, dict):
+        # Check if it's a dashboard response with 'data' field
+        if "data" in response_data:
+            data = response_data["data"]
+            if isinstance(data, dict):
+                # Try to format as dashboard
+                return _format_dashboard_response(data)
+        # Check if it has 'response' field
+        if "response" in response_data:
+            return _ensure_string_response(response_data["response"])
+        # Check if it has 'error' field
+        if "error" in response_data:
+            return f"⚠️ {response_data['error']}"
+        # Convert dict to string
+        return str(response_data)
+    
+    if isinstance(response_data, list):
+        return "\n".join([str(item) for item in response_data])
+    
+    return str(response_data)
+
+def _format_dashboard_response(data: Dict[str, Any]) -> str:
+    """Format DN dashboard data into WhatsApp message."""
+    if not data:
+        return "No data available"
+    
+    lines = []
+    
+    # DN Number
+    dn_no = data.get('dn_no', 'N/A')
+    lines.append(f"📦 *DN: {dn_no}*")
+    lines.append("")
+    
+    # Dealer
+    dealer = data.get('dealer_name') or data.get('customer_name') or 'Unknown'
+    lines.append("*Dealer:*")
+    lines.append(f"{dealer}")
+    lines.append("")
+    
+    # Warehouse
+    warehouse = data.get('warehouse', 'Unknown')
+    lines.append("*Warehouse:*")
+    lines.append(f"{warehouse}")
+    lines.append("")
+    
+    # City
+    city = data.get('city', 'Unknown')
+    lines.append("*City:*")
+    lines.append(f"{city}")
+    lines.append("")
+    
+    # Metrics
+    lines.append("*📊 Metrics:*")
+    lines.append(f"Units: {data.get('total_units', 0)}")
+    revenue = data.get('total_revenue', 0)
+    lines.append(f"Revenue: PKR {revenue:,.2f}" if revenue else "Revenue: PKR 0")
+    lines.append("")
+    
+    # Dates
+    lines.append("*📅 Dates:*")
+    lines.append(f"DN Create: {data.get('dn_create_date', 'N/A')}")
+    lines.append(f"PGI: {data.get('good_issue_date', 'N/A')}")
+    lines.append(f"POD: {data.get('pod_date', 'N/A')}")
+    lines.append("")
+    
+    # Aging
+    lines.append("*⏳ Aging:*")
+    lines.append(f"Delivery: {data.get('delivery_aging_text', 'N/A')}")
+    lines.append(f"POD: {data.get('pod_aging_text', 'N/A')}")
+    lines.append(f"Total Cycle: {data.get('total_cycle_text', 'N/A')}")
+    lines.append("")
+    
+    # Status
+    lines.append("*📋 Status:*")
+    lines.append(f"Delivery: {data.get('status_emoji', '❓')} {data.get('status_text', 'Unknown')}")
+    lines.append(f"PGI: {data.get('pgi_status_text', 'Unknown')}")
+    lines.append(f"POD: {data.get('pod_status_text', 'Unknown')}")
+    lines.append(f"Pending: {data.get('pending_flag_text', 'Unknown')}")
+    
+    return "\n".join(lines)
+
+# ==========================================================
 # WEBHOOK VERIFICATION (GET)
 # ==========================================================
 
@@ -249,7 +342,7 @@ async def verify_webhook(
         )
 
 # ==========================================================
-# ✅ FIXED: WEBHOOK MESSAGE HANDLER (POST)
+# WEBHOOK MESSAGE HANDLER (POST)
 # ==========================================================
 
 @router.post("/")
@@ -331,7 +424,6 @@ async def handle_webhook(
                     webhook_stats["total_messages_processed"] += 1
                     logger.info(f"[{request_id}] 📨 Message from {phone_number}: '{message_text[:50] if message_text else '[Media]'}'")
                     
-                    # ✅ Process ALL messages with AI
                     if message_text and message_text.strip():
                         background_tasks.add_task(
                             process_message_with_ai,
@@ -371,7 +463,7 @@ async def handle_webhook(
         )
 
 # ==========================================================
-# ✅ FIXED: PROCESS MESSAGE WITH AI (USES CORRECT API)
+# ✅ FIXED: PROCESS MESSAGE WITH AI
 # ==========================================================
 
 async def process_message_with_ai(
@@ -382,13 +474,13 @@ async def process_message_with_ai(
     """
     ✅ ALWAYS calls the AI Orchestrator.
     ✅ Uses the CORRECT API: process_whatsapp_query(message, sender_id)
+    ✅ FIXED: Ensures response is always a string
     """
     start_time = time.time()
     
     try:
         logger.info(f"[{request_id}] 🧠 Processing with AI: '{message_text[:50]}'")
         
-        # ✅ Get AI Provider
         ai_provider = _get_ai_provider_service()
         
         if not ai_provider:
@@ -399,11 +491,9 @@ async def process_message_with_ai(
         
         logger.info(f"[{request_id}] ✅ AI Provider available")
         
-        # ✅ CALL AI ORCHESTRATOR WITH CORRECT SIGNATURE
         try:
             logger.info(f"[{request_id}] 📤 Calling AI Orchestrator...")
             
-            # ✅ CORRECT: process_whatsapp_query(message, sender_id)
             response = await ai_provider.process_whatsapp_query(
                 message=message_text,
                 sender_id=phone_number
@@ -411,13 +501,15 @@ async def process_message_with_ai(
             
             logger.info(f"[{request_id}] ✅ AI response received")
             
-            # ✅ Extract response text
-            if response and isinstance(response, dict):
-                response_text = response.get("response", "⚠️ I couldn't process your request.")
-            else:
-                response_text = str(response) if response else "⚠️ I couldn't process your request."
+            # ✅ FIXED: Always convert to string
+            response_text = _ensure_string_response(response)
             
-            # ✅ Send response
+            # ✅ Ensure it's not empty
+            if not response_text or response_text == "None":
+                response_text = "⚠️ I couldn't process your request. Please try again."
+            
+            logger.info(f"[{request_id}] 📤 Response: {response_text[:100]}...")
+            
             await send_whatsapp_response(phone_number, response_text, request_id)
             
         except Exception as e:
@@ -425,7 +517,6 @@ async def process_message_with_ai(
             import traceback
             traceback.print_exc()
             
-            # ✅ Send error response
             error_msg = "⚠️ I encountered an error processing your request. Please try again."
             await send_whatsapp_response(phone_number, error_msg, request_id)
         
@@ -477,7 +568,7 @@ async def process_location_message(
         logger.error(f"[{request_id}] ❌ Location processing error: {e}")
 
 # ==========================================================
-# SEND WHATSAPP RESPONSE
+# ✅ FIXED: SEND WHATSAPP RESPONSE
 # ==========================================================
 
 async def send_whatsapp_response(
@@ -485,7 +576,20 @@ async def send_whatsapp_response(
     response_text: str,
     request_id: str
 ) -> bool:
+    """
+    Send WhatsApp response.
+    
+    ✅ FIXED: Ensures response_text is always a string
+    """
     try:
+        # ✅ Ensure response_text is a string
+        if not isinstance(response_text, str):
+            response_text = _ensure_string_response(response_text)
+        
+        # ✅ Ensure it's not empty
+        if not response_text or response_text.strip() == "":
+            response_text = "No data available"
+        
         whatsapp = _get_whatsapp_service()
         if whatsapp:
             try:
@@ -501,7 +605,6 @@ async def send_whatsapp_response(
                 return False
         else:
             logger.warning(f"[{request_id}] ⚠️ WhatsApp service not available")
-            # Print response for debugging
             print(f"[{request_id}] RESPONSE TO {phone_number}: {response_text[:200]}")
             return False
     except Exception as e:
@@ -517,7 +620,7 @@ async def webhook_ping() -> JSONResponse:
     ai = _get_ai_provider_service()
     return JSONResponse(content={
         "ping": "pong",
-        "webhook_version": "25.0",
+        "webhook_version": "26.0",
         "architecture": "v16.0 (Built-in Intent Detection)",
         "timestamp": datetime.now().isoformat(),
         "services": {
@@ -535,7 +638,7 @@ async def webhook_health() -> JSONResponse:
     ai = _get_ai_provider_service()
     return JSONResponse(content={
         "status": "healthy" if ai else "degraded",
-        "webhook_version": "25.0",
+        "webhook_version": "26.0",
         "architecture": "v16.0 (Built-in Intent Detection)",
         "timestamp": datetime.now().isoformat(),
         "services": {
@@ -549,14 +652,47 @@ async def webhook_health() -> JSONResponse:
     })
 
 # ==========================================================
+# DIAGNOSTIC ENDPOINT
+# ==========================================================
+
+@router.get("/test-dn")
+async def test_dn_lookup(dn: str = Query(..., description="DN number to test")):
+    """Test DN lookup directly."""
+    try:
+        ai = _get_ai_provider_service()
+        if not ai:
+            return JSONResponse(
+                status_code=503,
+                content={"error": "AI Provider not available"}
+            )
+        
+        # Get dn_analysis service
+        dn_service = ai.registry.get_service_instance("dn")
+        if not dn_service:
+            return JSONResponse(
+                status_code=503,
+                content={"error": "DN Service not available"}
+            )
+        
+        # Test the DN
+        result = dn_service.test_dn_lookup(dn)
+        return JSONResponse(content=result)
+        
+    except Exception as e:
+        logger.error(f"❌ Test DN error: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)}
+        )
+
+# ==========================================================
 # INITIALIZATION
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("🌐 WEBHOOK ROUTER v25.0 - ALIGNED WITH NEW ARCHITECTURE")
+logger.info("🌐 WEBHOOK ROUTER v26.0 - FIXED RESPONSE FORMATTING")
 logger.info("=" * 70)
 
-# ✅ Force initialize AI on startup
 logger.info("🚀 Pre-initializing AI Provider Service...")
 ai = _get_ai_provider_service()
 if ai:
@@ -566,7 +702,6 @@ else:
     logger.error("❌ AI Provider Service initialization FAILED")
     webhook_stats["ai_enabled"] = False
 
-# ✅ Test database connection
 try:
     if DATABASE_AVAILABLE:
         db = SessionLocal()
@@ -575,7 +710,6 @@ try:
         logger.info(f"✅ Database connection test: {result}")
         webhook_stats["db_connected"] = True
         
-        # ✅ Check if table has data
         if MODELS_AVAILABLE:
             count = db.query(DeliveryReport).count()
             logger.info(f"✅ DeliveryReport records: {count}")
@@ -591,6 +725,7 @@ logger.info("")
 logger.info("   📌 ARCHITECTURE: v16.0 (Built-in Intent Detection)")
 logger.info("   📌 AI Provider: v5.0 (NO ai_query_service.py)")
 logger.info("   📌 Routing: IntentDetectionEngine (built-in)")
+logger.info("   📌 Response Formatting: ✅ FIXED (always string)")
 logger.info("")
 logger.info("=" * 70)
 
