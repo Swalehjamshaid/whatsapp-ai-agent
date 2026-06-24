@@ -417,7 +417,6 @@ class DNAnalysisService:
     # ==========================================================
     # BLOCK 6: AGING CALCULATION METHODS
     # ==========================================================
- 
     
     def _parse_date_ydm(self, date_value):
         """
@@ -633,8 +632,9 @@ class DNAnalysisService:
         elif days < 90:
             return f"{days} Days (3 Months)"
         else:
-            return f"{days} Days ({days // 30} Months)"     
-      ==============================================
+            return f"{days} Days ({days // 30} Months)"
+
+    # ==========================================================
     # BLOCK 7: DN SEARCH WITH FULL DIAGNOSTICS
     # ==========================================================
     
@@ -874,9 +874,6 @@ class DNAnalysisService:
         return {"success": True, "data": results}
     
     # ==========================================================
-    # BLOCK 8: DN DASHBOARD
-    # ==========================================================
-      # ==========================================================
     # BLOCK 8: DN DASHBOARD (UPDATED FOR YYYY-DD-MM)
     # ==========================================================
     
@@ -991,6 +988,8 @@ Please verify the DN number."""
         
         logger.info(f"✅ Dashboard returned for DN {dn_no}")
         return {"success": True, "data": data}
+    
+    # ==========================================================
     # BLOCK 9: DIAGNOSTIC METHODS
     # ==========================================================
     
@@ -1419,8 +1418,6 @@ Please verify the DN number."""
             return {"success": False, "error": str(e)}
     
     # ==========================================================
-    # BLOCK 11: WHATSAPP RESPONSE FORMATTER
-        # ==========================================================
     # BLOCK 11: WHATSAPP RESPONSE FORMATTER (UPDATED)
     # ==========================================================
     
@@ -1504,6 +1501,8 @@ Please verify the DN number."""
         lines.append("Pending: {}".format(data.get('pending_flag_text', 'Unknown')))
         
         return "\n".join(lines)
+
+
 # ==========================================================
 # BLOCK 12: THREAD-SAFE SINGLETON
 # ==========================================================
