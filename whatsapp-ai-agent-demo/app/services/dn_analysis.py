@@ -418,32 +418,96 @@ class DNAnalysisService:
     # BLOCK 6: AGING CALCULATION METHODS
     # ==========================================================
     
-    def calculate_delivery_aging(self, dn_create_date, good_issue_date) -> int:
-        """Calculate delivery aging."""
-        try:
-            if isinstance(dn_create_date, str):
-                dn_create_date = datetime.fromisoformat(dn_create_date.replace('Z', '+00:00'))
-            if isinstance(good_issue_date, str):
-                good_issue_date = datetime.fromisoformat(good_issue_date.replace('Z', '+00:00'))
+   
+    # ============    # ==========================================================
+    # BLOCK 6: AGING CALCULATION METHODS (UPDATED)
+    # ==========================================================
+    
+    def _format_date(self, date_value) -> str:
+        """
+        Format date as DD.MM.YYYY
+        
+        Args:
+            date_value: Date string, datetime, or date object
             
-            if not dn_create_date:
+        Returns:
+            Formatted date string (DD.MM.YYYY) or 'N/A' if invalid
+        """
+        if not date_value:
+            return 'N/A'
+        
+        try:
+            if isinstance(date_value, str):
+                # Try to parse ISO format
+                if 'T' in date_value:
+                    date_obj = datetime.fromisoformat(date_value.replace('Z', '+00:00'))
+                else:
+                    date_obj = datetime.strptime(date_value, '%Y-%m-%d')
+            elif isinstance(date_value, datetime):
+                date_obj = date_value
+            elif isinstance(date_value, date):
+                date_obj = datetime.combine(date_value, datetime.min.time())
+            else:
+                return 'N/A'
+            
+            # Format as DD.MM.YYYY
+            return date_obj.strftime('%d.%m.%Y')
+        except Exception as e:
+            logger.warning(f"⚠️ Date formatting error: {e}")
+            return 'N/A'
+    
+    def _parse_date(self, date_value):
+        """
+        Parse date from various formats into datetime object.
+        
+        Args:
+            date_value: Date string, datetime, or date object
+            
+        Returns:
+            datetime object or None if invalid
+        """
+        if not date_value:
+            return None
+        
+        try:
+            if isinstance(date_value, str):
+                if 'T' in date_value:
+                    return datetime.fromisoformat(date_value.replace('Z', '+00:00'))
+                else:
+                    return datetime.strptime(date_value, '%Y-%m-%d')
+            elif isinstance(date_value, datetime):
+                return date_value
+            elif isinstance(date_value, date):
+                return datetime.combine(date_value, datetime.min.time())
+            else:
+                return None
+        except Exception as e:
+            logger.warning(f"⚠️ Date parsing error: {e}")
+            return None
+    
+    def calculate_delivery_aging(self, dn_create_date, good_issue_date) -> int:
+        """
+        Calculate delivery aging in days.
+        
+        IF good_issue_date EXISTS:
+            good_issue_date - dn_create_date
+        ELSE:
+            CURRENT_DATE - dn_create_date
+        """
+        try:
+            # Parse dates
+            dn_date = self._parse_date(dn_create_date)
+            gi_date = self._parse_date(good_issue_date)
+            
+            if not dn_date:
                 return 0
             
-            if good_issue_date:
-                if isinstance(dn_create_date, datetime) and isinstance(good_issue_date, datetime):
-                    days = (good_issue_date.date() - dn_create_date.date()).days
-                elif isinstance(dn_create_date, date) and isinstance(good_issue_date, date):
-                    days = (good_issue_date - dn_create_date).days
-                else:
-                    days = 0
-                return max(0, days)
+            if gi_date:
+                days = (gi_date - dn_date).days
+                return max(0, days)  # Ensure non-negative
             
-            if isinstance(dn_create_date, datetime):
-                days = (datetime.now().date() - dn_create_date.date()).days
-            elif isinstance(dn_create_date, date):
-                days = (datetime.now().date() - dn_create_date).days
-            else:
-                days = 0
+            # Use current date
+            days = (datetime.now() - dn_date).days
             return max(0, days)
             
         except Exception as e:
@@ -451,31 +515,28 @@ class DNAnalysisService:
             return 0
     
     def calculate_pod_aging(self, good_issue_date, pod_date) -> int:
-        """Calculate POD aging."""
+        """
+        Calculate POD aging in days.
+        
+        IF pod_date EXISTS:
+            pod_date - good_issue_date
+        ELSE:
+            CURRENT_DATE - good_issue_date
+        """
         try:
-            if isinstance(good_issue_date, str):
-                good_issue_date = datetime.fromisoformat(good_issue_date.replace('Z', '+00:00'))
-            if isinstance(pod_date, str):
-                pod_date = datetime.fromisoformat(pod_date.replace('Z', '+00:00'))
+            # Parse dates
+            gi_date = self._parse_date(good_issue_date)
+            pd_date = self._parse_date(pod_date)
             
-            if not good_issue_date:
+            if not gi_date:
                 return 0
             
-            if pod_date:
-                if isinstance(good_issue_date, datetime) and isinstance(pod_date, datetime):
-                    days = (pod_date.date() - good_issue_date.date()).days
-                elif isinstance(good_issue_date, date) and isinstance(pod_date, date):
-                    days = (pod_date - good_issue_date).days
-                else:
-                    days = 0
-                return max(0, days)
+            if pd_date:
+                days = (pd_date - gi_date).days
+                return max(0, days)  # Ensure non-negative
             
-            if isinstance(good_issue_date, datetime):
-                days = (datetime.now().date() - good_issue_date.date()).days
-            elif isinstance(good_issue_date, date):
-                days = (datetime.now().date() - good_issue_date).days
-            else:
-                days = 0
+            # Use current date
+            days = (datetime.now() - gi_date).days
             return max(0, days)
             
         except Exception as e:
@@ -483,31 +544,28 @@ class DNAnalysisService:
             return 0
     
     def calculate_total_cycle(self, dn_create_date, pod_date) -> int:
-        """Calculate total cycle time."""
+        """
+        Calculate total cycle time in days.
+        
+        IF pod_date EXISTS:
+            pod_date - dn_create_date
+        ELSE:
+            CURRENT_DATE - dn_create_date
+        """
         try:
-            if isinstance(dn_create_date, str):
-                dn_create_date = datetime.fromisoformat(dn_create_date.replace('Z', '+00:00'))
-            if isinstance(pod_date, str):
-                pod_date = datetime.fromisoformat(pod_date.replace('Z', '+00:00'))
+            # Parse dates
+            dn_date = self._parse_date(dn_create_date)
+            pd_date = self._parse_date(pod_date)
             
-            if not dn_create_date:
+            if not dn_date:
                 return 0
             
-            if pod_date:
-                if isinstance(dn_create_date, datetime) and isinstance(pod_date, datetime):
-                    days = (pod_date.date() - dn_create_date.date()).days
-                elif isinstance(dn_create_date, date) and isinstance(pod_date, date):
-                    days = (pod_date - dn_create_date).days
-                else:
-                    days = 0
-                return max(0, days)
+            if pd_date:
+                days = (pd_date - dn_date).days
+                return max(0, days)  # Ensure non-negative
             
-            if isinstance(dn_create_date, datetime):
-                days = (datetime.now().date() - dn_create_date.date()).days
-            elif isinstance(dn_create_date, date):
-                days = (datetime.now().date() - dn_create_date).days
-            else:
-                days = 0
+            # Use current date
+            days = (datetime.now() - dn_date).days
             return max(0, days)
             
         except Exception as e:
@@ -532,8 +590,7 @@ class DNAnalysisService:
             return f"{days} Days (3 Months)"
         else:
             return f"{days} Days ({days // 30} Months)"
-    
-    # ==========================================================
+    ==============================================
     # BLOCK 7: DN SEARCH WITH FULL DIAGNOSTICS
     # ==========================================================
     
@@ -776,6 +833,10 @@ class DNAnalysisService:
     # BLOCK 8: DN DASHBOARD
     # ==========================================================
     
+     # ==========================================================
+    # BLOCK 8: DN DASHBOARD (UPDATED)
+    # ==========================================================
+    
     def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
         """Get complete DN dashboard with normalized search."""
         logger.info(f"📊 Getting dashboard for DN: '{dn_no}'")
@@ -818,6 +879,7 @@ Please verify the DN number."""
         
         data = result.get("data", {})
         
+        # Calculate aging
         delivery_aging = self.calculate_delivery_aging(
             data.get('dn_create_date'),
             data.get('good_issue_date')
@@ -831,18 +893,22 @@ Please verify the DN number."""
             data.get('pod_date')
         )
         
+        # Add aging days
         data['delivery_aging_days'] = delivery_aging
         data['pod_aging_days'] = pod_aging
         data['total_cycle_days'] = total_cycle
+        
+        # Add aging text
         data['delivery_aging_text'] = self._format_aging_text(delivery_aging)
         data['pod_aging_text'] = self._format_aging_text(pod_aging)
         data['total_cycle_text'] = self._format_aging_text(total_cycle)
         
+        # ✅ FORMAT DATES AS DD.MM.YYYY
         for date_field in ['dn_create_date', 'good_issue_date', 'pod_date']:
             if data.get(date_field):
-                if isinstance(data[date_field], (datetime, date)):
-                    data[date_field] = data[date_field].strftime("%Y-%m-%d")
+                data[date_field] = self._format_date(data[date_field])
         
+        # Add status emojis
         status = data.get('delivery_status', '')
         if status in ['Completed', 'Delivered', 'Closed']:
             data['status_emoji'] = '✅'
@@ -857,18 +923,21 @@ Please verify the DN number."""
             data['status_emoji'] = '❓'
             data['status_text'] = status or 'Unknown'
         
+        # Add PGI status
         pgi_status = data.get('pgi_status', '')
         if pgi_status == 'Completed':
             data['pgi_status_text'] = '✅ Completed'
         else:
             data['pgi_status_text'] = '⏳ Pending'
         
+        # Add POD status
         pod_status = data.get('pod_status', '')
         if pod_status == 'Completed':
             data['pod_status_text'] = '✅ Completed'
         else:
             data['pod_status_text'] = '⏳ Pending'
         
+        # Add pending flag (Boolean)
         pending_flag = data.get('pending_flag')
         if pending_flag is True or pending_flag == 'true' or pending_flag == 'True' or pending_flag == 1:
             data['pending_flag_text'] = '⚠️ Yes'
@@ -879,7 +948,6 @@ Please verify the DN number."""
         
         logger.info(f"✅ Dashboard returned for DN {dn_no}")
         return {"success": True, "data": data}
-    
     # ==========================================================
     # BLOCK 9: DIAGNOSTIC METHODS
     # ==========================================================
@@ -1312,8 +1380,17 @@ Please verify the DN number."""
     # BLOCK 11: WHATSAPP RESPONSE FORMATTER
     # ==========================================================
     
+       # ==========================================================
+    # BLOCK 11: WHATSAPP RESPONSE FORMATTER (UPDATED)
+    # ==========================================================
+    
     def format_dn_dashboard(self, dashboard_data: Dict[str, Any]) -> str:
-        """Format DN dashboard for WhatsApp response."""
+        """
+        Format DN dashboard for WhatsApp response.
+        
+        ✅ Dates are in DD.MM.YYYY format
+        ✅ Aging is calculated correctly
+        """
         data = dashboard_data.get('data', {})
         
         lines = []
@@ -1328,20 +1405,58 @@ Please verify the DN number."""
         lines.append("*City:*")
         lines.append("{}".format(data.get('city', 'Unknown')))
         lines.append("")
+        
+        # Delivery Location
+        delivery_location = data.get('delivery_location')
+        if delivery_location:
+            lines.append("*Delivery Location:*")
+            lines.append("{}".format(delivery_location))
+            lines.append("")
+        
+        # Sales Manager
+        sales_manager = data.get('sales_manager')
+        if sales_manager:
+            lines.append("*Sales Manager:*")
+            lines.append("{}".format(sales_manager))
+            lines.append("")
+        
+        # Division
+        division = data.get('division')
+        if division:
+            lines.append("*Division:*")
+            lines.append("{}".format(division))
+            lines.append("")
+        
+        # Metrics
         lines.append("*📊 Metrics:*")
         lines.append("Units: {}".format(data.get('total_units', 0)))
-        lines.append("Revenue: PKR {:,}".format(data.get('total_revenue', 0) or 0))
+        revenue = data.get('total_revenue', 0)
+        if revenue:
+            lines.append("Revenue: PKR {:,}".format(revenue))
+        else:
+            lines.append("Revenue: PKR 0")
         lines.append("")
+        
+        # Material Count
+        material_count = data.get('material_count', 1)
+        lines.append("Materials: {}".format(material_count))
+        lines.append("")
+        
+        # ✅ Dates - Already in DD.MM.YYYY format
         lines.append("*📅 Dates:*")
         lines.append("DN Create: {}".format(data.get('dn_create_date', 'N/A')))
         lines.append("PGI: {}".format(data.get('good_issue_date', 'N/A')))
         lines.append("POD: {}".format(data.get('pod_date', 'N/A')))
         lines.append("")
+        
+        # Aging
         lines.append("*⏳ Aging:*")
         lines.append("Delivery: {}".format(data.get('delivery_aging_text', 'N/A')))
         lines.append("POD: {}".format(data.get('pod_aging_text', 'N/A')))
         lines.append("Total Cycle: {}".format(data.get('total_cycle_text', 'N/A')))
         lines.append("")
+        
+        # Status
         lines.append("*📋 Status:*")
         lines.append("Delivery: {} {}".format(data.get('status_emoji', '❓'), data.get('status_text', 'Unknown')))
         lines.append("PGI: {}".format(data.get('pgi_status_text', 'Unknown')))
@@ -1349,7 +1464,6 @@ Please verify the DN number."""
         lines.append("Pending: {}".format(data.get('pending_flag_text', 'Unknown')))
         
         return "\n".join(lines)
-
 
 # ==========================================================
 # BLOCK 12: THREAD-SAFE SINGLETON
