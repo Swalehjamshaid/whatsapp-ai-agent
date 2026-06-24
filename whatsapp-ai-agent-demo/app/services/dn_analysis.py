@@ -423,52 +423,58 @@ class DNAnalysisService:
     # ==========================================================
     # BLOCK 6: AGING CALCULATION METHODS (YYYY-DD-MM FIXED)
     # ==========================================================
-        # ==========================================================
-    # BLOCK 6: AGING CALCULATION METHODS (IMPROVED)
+      # ==========================================================
+    # BLOCK 6: AGING CALCULATION METHODS (YYYY-DD-MM FOR CALCULATION)
     # ==========================================================
     
     def _parse_date(self, date_value):
         """
-        Parse date using PostgreSQL as source of truth.
+        Parse date for CALCULATION using company format: YYYY-DD-MM
         
-        PostgreSQL dates are stored in YYYY-MM-DD format.
-        Use them exactly as stored - no custom conversion.
+        IMPORTANT: 
+        - Display shows: YYYY-MM-DD (e.g., 2026-06-05)
+        - Calculation uses: YYYY-DD-MM (e.g., 2026-06-05 → 6 May 2026)
+        - PostgreSQL stores: YYYY-MM-DD (June 5, 2026)
+        - Company interprets: YYYY-DD-MM (6 May 2026)
+        
+        So we MUST swap day and month for calculations.
         
         Args:
             date_value: Date from PostgreSQL (date object, datetime, or string)
             
         Returns:
-            datetime object or None if parsing fails
+            datetime object with swapped day/month for calculation
         """
         if not date_value:
             return None
         
         try:
-            parsed_date = None
-            
             # Handle datetime objects
             if isinstance(date_value, datetime):
-                parsed_date = date_value
+                # Swap day and month for calculation
+                return datetime(date_value.year, date_value.day, date_value.month)
             
             # Handle date objects (PostgreSQL returns these)
-            elif isinstance(date_value, date):
-                parsed_date = datetime.combine(date_value, datetime.min.time())
+            if isinstance(date_value, date):
+                # Swap day and month for calculation
+                # PostgreSQL date(2026, 6, 5) → datetime(2026, 5, 6) = 6 May 2026
+                return datetime(date_value.year, date_value.day, date_value.month)
             
             # Handle string dates (YYYY-MM-DD format)
-            elif isinstance(date_value, str):
-                parsed_date = datetime.strptime(date_value, "%Y-%m-%d")
+            if isinstance(date_value, str):
+                parts = date_value.split('-')
+                if len(parts) == 3:
+                    year = int(parts[0])
+                    month = int(parts[1])  # PostgreSQL month
+                    day = int(parts[2])    # PostgreSQL day
+                    
+                    # Swap for company format: YYYY-DD-MM
+                    # day becomes month, month becomes day
+                    return datetime(year, day, month)
+                else:
+                    return datetime.strptime(date_value, "%Y-%m-%d")
             
-            else:
-                return None
-            
-            # ✅ IMPROVEMENT #3: Date validation
-            if parsed_date:
-                if parsed_date.year < 2020:
-                    logger.warning(f"⚠️ Suspicious Year (<2020): {parsed_date.strftime('%Y-%m-%d')}")
-                if parsed_date.year > 2035:
-                    logger.warning(f"⚠️ Suspicious Year (>2035): {parsed_date.strftime('%Y-%m-%d')}")
-            
-            return parsed_date
+            return None
             
         except Exception as e:
             logger.error(f"❌ Date parsing error for {date_value}: {e}")
@@ -476,23 +482,23 @@ class DNAnalysisService:
     
     def _parse_date_ydm(self, date_value):
         """
-        Parse date using PostgreSQL as source of truth.
+        Parse date using company format: YYYY-DD-MM for calculation.
         
-        Same as _parse_date() - uses PostgreSQL format YYYY-MM-DD.
-        (Method name kept for backward compatibility)
+        Same as _parse_date() - swaps day and month.
         """
         return self._parse_date(date_value)
     
     def _format_date_dmy_long(self, date_value) -> str:
         """
-        Format datetime → DD Month YYYY (Day Month Year).
+        Format datetime → DD Month YYYY (Day Month Year) for display.
         
-        Example: 2026-05-13 → "13 May 2026"
+        Example: 2026-06-05 → "6 May 2026"
         """
         if not date_value:
             return 'N/A'
         
         try:
+            # Parse using company format first
             parsed = self._parse_date(date_value)
             if parsed:
                 return parsed.strftime('%-d %B %Y')
@@ -503,9 +509,9 @@ class DNAnalysisService:
     
     def _format_date_dmy_short(self, date_value) -> str:
         """
-        Format datetime → DD-MMM-YY (Day-Month-Year with month abbreviation).
+        Format datetime → DD-MMM-YY for display.
         
-        Example: 2026-05-13 → "13-May-26"
+        Example: 2026-06-05 → "6-May-26"
         """
         if not date_value:
             return 'N/A'
@@ -521,9 +527,9 @@ class DNAnalysisService:
     
     def calculate_delivery_aging(self, dn_create_date, good_issue_date) -> int:
         """
-        Calculate delivery aging in days using PostgreSQL dates.
+        Calculate delivery aging using company format: YYYY-DD-MM.
         
-        Formula: good_issue_date - dn_create_date
+        Formula: good_issue_date - dn_create_date (both parsed as YYYY-DD-MM)
         If no PGI, calculate from current date.
         
         Args:
@@ -539,7 +545,7 @@ class DNAnalysisService:
                 logger.warning("⚠️ DN Create Date Missing - Returning 0")
                 return 0
             
-            # Parse dates using PostgreSQL format
+            # Parse dates using company format: YYYY-DD-MM (swaps day/month)
             dn_date = self._parse_date(dn_create_date)
             gi_date = self._parse_date(good_issue_date)
             
@@ -559,8 +565,8 @@ class DNAnalysisService:
                 # ✅ IMPROVEMENT #2: Full diagnostic logging
                 logger.info(
                     f"Delivery Aging Calculation | "
-                    f"DN={dn_date.strftime('%Y-%m-%d')} | "
-                    f"PGI={gi_date.strftime('%Y-%m-%d')} | "
+                    f"DN={dn_date.strftime('%Y-%m-%d')} (interpreted as {dn_date.strftime('%d %B %Y')}) | "
+                    f"PGI={gi_date.strftime('%Y-%m-%d')} (interpreted as {gi_date.strftime('%d %B %Y')}) | "
                     f"Days={days}"
                 )
                 return days
@@ -571,7 +577,7 @@ class DNAnalysisService:
             # ✅ IMPROVEMENT #2: Full diagnostic logging
             logger.info(
                 f"Delivery Aging Calculation (No PGI) | "
-                f"DN={dn_date.strftime('%Y-%m-%d')} | "
+                f"DN={dn_date.strftime('%Y-%m-%d')} (interpreted as {dn_date.strftime('%d %B %Y')}) | "
                 f"Current={datetime.now().strftime('%Y-%m-%d')} | "
                 f"Days={days}"
             )
@@ -583,9 +589,9 @@ class DNAnalysisService:
     
     def calculate_pod_aging(self, good_issue_date, pod_date) -> int:
         """
-        Calculate POD aging in days using PostgreSQL dates.
+        Calculate POD aging using company format: YYYY-DD-MM.
         
-        Formula: pod_date - good_issue_date
+        Formula: pod_date - good_issue_date (both parsed as YYYY-DD-MM)
         If no POD, calculate from current date.
         
         Args:
@@ -596,7 +602,7 @@ class DNAnalysisService:
             POD aging in days (never negative)
         """
         try:
-            # Parse dates using PostgreSQL format
+            # Parse dates using company format: YYYY-DD-MM (swaps day/month)
             gi_date = self._parse_date(good_issue_date)
             pd_date = self._parse_date(pod_date)
             
@@ -616,8 +622,8 @@ class DNAnalysisService:
                 # ✅ IMPROVEMENT #2: Full diagnostic logging
                 logger.info(
                     f"POD Aging Calculation | "
-                    f"PGI={gi_date.strftime('%Y-%m-%d')} | "
-                    f"POD={pd_date.strftime('%Y-%m-%d')} | "
+                    f"PGI={gi_date.strftime('%Y-%m-%d')} (interpreted as {gi_date.strftime('%d %B %Y')}) | "
+                    f"POD={pd_date.strftime('%Y-%m-%d')} (interpreted as {pd_date.strftime('%d %B %Y')}) | "
                     f"Days={days}"
                 )
                 return days
@@ -628,7 +634,7 @@ class DNAnalysisService:
             # ✅ IMPROVEMENT #2: Full diagnostic logging
             logger.info(
                 f"POD Aging Calculation (No POD) | "
-                f"PGI={gi_date.strftime('%Y-%m-%d')} | "
+                f"PGI={gi_date.strftime('%Y-%m-%d')} (interpreted as {gi_date.strftime('%d %B %Y')}) | "
                 f"Current={datetime.now().strftime('%Y-%m-%d')} | "
                 f"Days={days}"
             )
@@ -640,9 +646,9 @@ class DNAnalysisService:
     
     def calculate_total_cycle(self, dn_create_date, pod_date) -> int:
         """
-        Calculate total cycle time in days using PostgreSQL dates.
+        Calculate total cycle using company format: YYYY-DD-MM.
         
-        Formula: pod_date - dn_create_date
+        Formula: pod_date - dn_create_date (both parsed as YYYY-DD-MM)
         If no POD, calculate from current date.
         
         Args:
@@ -658,7 +664,7 @@ class DNAnalysisService:
                 logger.warning("⚠️ DN Create Date Missing - Returning 0")
                 return 0
             
-            # Parse dates using PostgreSQL format
+            # Parse dates using company format: YYYY-DD-MM (swaps day/month)
             dn_date = self._parse_date(dn_create_date)
             pd_date = self._parse_date(pod_date)
             
@@ -678,8 +684,8 @@ class DNAnalysisService:
                 # ✅ IMPROVEMENT #2: Full diagnostic logging
                 logger.info(
                     f"Total Cycle Calculation | "
-                    f"DN={dn_date.strftime('%Y-%m-%d')} | "
-                    f"POD={pd_date.strftime('%Y-%m-%d')} | "
+                    f"DN={dn_date.strftime('%Y-%m-%d')} (interpreted as {dn_date.strftime('%d %B %Y')}) | "
+                    f"POD={pd_date.strftime('%Y-%m-%d')} (interpreted as {pd_date.strftime('%d %B %Y')}) | "
                     f"Days={days}"
                 )
                 return days
@@ -690,7 +696,7 @@ class DNAnalysisService:
             # ✅ IMPROVEMENT #2: Full diagnostic logging
             logger.info(
                 f"Total Cycle Calculation (No POD) | "
-                f"DN={dn_date.strftime('%Y-%m-%d')} | "
+                f"DN={dn_date.strftime('%Y-%m-%d')} (interpreted as {dn_date.strftime('%d %B %Y')}) | "
                 f"Current={datetime.now().strftime('%Y-%m-%d')} | "
                 f"Days={days}"
             )
@@ -733,7 +739,7 @@ class DNAnalysisService:
         """
         Debug aging calculations with full details.
         
-        Purpose: Quick diagnosis from Railway logs.
+        Shows both display and interpreted dates.
         
         Args:
             dn_create_date: DN Create date
@@ -745,7 +751,7 @@ class DNAnalysisService:
         """
         logger.info("🔍 Running debug_aging_calculation...")
         
-        # Parse dates
+        # Parse dates (swaps day/month for calculation)
         dn_parsed = self._parse_date(dn_create_date)
         gi_parsed = self._parse_date(good_issue_date)
         pod_parsed = self._parse_date(pod_date)
@@ -761,10 +767,15 @@ class DNAnalysisService:
                 "pgi_date": str(good_issue_date) if good_issue_date else None,
                 "pod_date": str(pod_date) if pod_date else None
             },
-            "parsed_dates": {
+            "interpreted_dates": {
                 "dn_create_date": dn_parsed.strftime('%Y-%m-%d') if dn_parsed else None,
                 "pgi_date": gi_parsed.strftime('%Y-%m-%d') if gi_parsed else None,
                 "pod_date": pod_parsed.strftime('%Y-%m-%d') if pod_parsed else None
+            },
+            "display_dates": {
+                "dn_create_date": dn_parsed.strftime('%d %B %Y') if dn_parsed else None,
+                "pgi_date": gi_parsed.strftime('%d %B %Y') if gi_parsed else None,
+                "pod_date": pod_parsed.strftime('%d %B %Y') if pod_parsed else None
             },
             "calculations": {
                 "delivery_aging_days": delivery_aging,
@@ -783,15 +794,15 @@ class DNAnalysisService:
         logger.info("=" * 60)
         logger.info("🔍 DEBUG AGING CALCULATION")
         logger.info("=" * 60)
-        logger.info(f"Input Dates:")
+        logger.info(f"Input Dates (PostgreSQL YYYY-MM-DD):")
         logger.info(f"  ├── DN Create: {result['input_dates']['dn_create_date']}")
         logger.info(f"  ├── PGI:       {result['input_dates']['pgi_date']}")
         logger.info(f"  └── POD:       {result['input_dates']['pod_date']}")
         logger.info("")
-        logger.info(f"Parsed Dates:")
-        logger.info(f"  ├── DN Create: {result['parsed_dates']['dn_create_date']}")
-        logger.info(f"  ├── PGI:       {result['parsed_dates']['pgi_date']}")
-        logger.info(f"  └── POD:       {result['parsed_dates']['pod_date']}")
+        logger.info(f"Interpreted Dates (YYYY-DD-MM for calculation):")
+        logger.info(f"  ├── DN Create: {result['interpreted_dates']['dn_create_date']} → {result['display_dates']['dn_create_date']}")
+        logger.info(f"  ├── PGI:       {result['interpreted_dates']['pgi_date']} → {result['display_dates']['pgi_date']}")
+        logger.info(f"  └── POD:       {result['interpreted_dates']['pod_date']} → {result['display_dates']['pod_date']}")
         logger.info("")
         logger.info(f"Calculations:")
         logger.info(f"  ├── Delivery Aging: {result['calculations']['delivery_aging_days']} days → {result['formatted']['delivery_aging_text']}")
