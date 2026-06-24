@@ -16,6 +16,7 @@
 # - ✅ FIXED: Auto-retry with exact DN when fallback finds same DN
 # - ✅ ADDED: Diagnostic logging for every search
 # - ✅ ADDED: COUNT(*) pre-check before DN Not Found
+# - ✅ ADDED: Date format as "DD Month YYYY" (e.g., 4 May 2026)
 # ==========================================================
 
 import logging
@@ -415,14 +416,14 @@ class DNAnalysisService:
         }
     
     # ==========================================================
-    # BLOCK 6: AGING CALCULATION METHODS
+    # BLOCK 6: AGING CALCULATION METHODS (YYYY-DD-MM)
     # ==========================================================
     
     def _parse_date_ydm(self, date_value):
         """
         Parse YYYY-DD-MM format → datetime object.
         
-        Example: "2026-04-05" → May 4, 2026 (Year=2026, Day=04, Month=05)
+        Example: "2026-04-05" → Year=2026, Day=04, Month=05 → May 4, 2026
         """
         if not date_value:
             return None
@@ -447,6 +448,37 @@ class DNAnalysisService:
             logger.warning(f"⚠️ Date parsing error for YYYY-DD-MM: {e}")
             return None
     
+    def _format_date_dmy_long(self, date_value) -> str:
+        """
+        Format datetime → DD Month YYYY (Day Month Year).
+        
+        Example: May 4, 2026 → "4 May 2026"
+        Example: May 7, 2026 → "7 May 2026"
+        Example: May 25, 2026 → "25 May 2026"
+        """
+        if not date_value:
+            return 'N/A'
+        
+        try:
+            if isinstance(date_value, str):
+                parts = date_value.split('-')
+                if len(parts) == 3:
+                    year = int(parts[0])
+                    day = int(parts[1])
+                    month = int(parts[2])
+                    date_obj = datetime(year, month, day)
+                    return date_obj.strftime('%-d %B %Y')
+                return date_value
+            elif isinstance(date_value, datetime):
+                return date_value.strftime('%-d %B %Y')
+            elif isinstance(date_value, date):
+                return date_value.strftime('%-d %B %Y')
+            else:
+                return 'N/A'
+        except Exception as e:
+            logger.warning(f"⚠️ Date formatting error: {e}")
+            return 'N/A'
+    
     def _format_date_dmy_short(self, date_value) -> str:
         """
         Format datetime → DD-MMM-YY (Day-Month-Year with month abbreviation).
@@ -458,7 +490,6 @@ class DNAnalysisService:
         
         try:
             if isinstance(date_value, str):
-                # Parse YYYY-DD-MM to datetime first
                 parts = date_value.split('-')
                 if len(parts) == 3:
                     year = int(parts[0])
@@ -477,45 +508,15 @@ class DNAnalysisService:
             logger.warning(f"⚠️ Date formatting error: {e}")
             return 'N/A'
     
-    def _format_date_ddmmyyyy(self, date_value) -> str:
-        """
-        Format datetime → DD.MM.YYYY (Day.Month.Year).
-        
-        Example: May 4, 2026 → "04.05.2026"
-        """
-        if not date_value:
-            return 'N/A'
-        
-        try:
-            if isinstance(date_value, str):
-                parts = date_value.split('-')
-                if len(parts) == 3:
-                    year = int(parts[0])
-                    day = int(parts[1])
-                    month = int(parts[2])
-                    date_obj = datetime(year, month, day)
-                    return date_obj.strftime('%d.%m.%Y')
-                return date_value
-            elif isinstance(date_value, datetime):
-                return date_value.strftime('%d.%m.%Y')
-            elif isinstance(date_value, date):
-                return date_value.strftime('%d.%m.%Y')
-            else:
-                return 'N/A'
-        except Exception as e:
-            logger.warning(f"⚠️ Date formatting error: {e}")
-            return 'N/A'
-    
     def _parse_date(self, date_value):
         """
-        Generic date parser - handles multiple formats.
+        Generic date parser - handles YYYY-DD-MM first, then YYYY-MM-DD.
         """
         if not date_value:
             return None
         
         try:
             if isinstance(date_value, str):
-                # Try YYYY-DD-MM first
                 parts = date_value.split('-')
                 if len(parts) == 3:
                     year = int(parts[0])
@@ -874,7 +875,7 @@ class DNAnalysisService:
         return {"success": True, "data": results}
     
     # ==========================================================
-    # BLOCK 8: DN DASHBOARD (UPDATED FOR YYYY-DD-MM)
+    # BLOCK 8: DN DASHBOARD (UPDATED WITH DD MONTH YYYY FORMAT)
     # ==========================================================
     
     def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
@@ -943,10 +944,10 @@ Please verify the DN number."""
         data['pod_aging_text'] = self._format_aging_text(pod_aging)
         data['total_cycle_text'] = self._format_aging_text(total_cycle)
         
-        # ✅ FORMAT DATES AS DD-MMM-YY (e.g., 4-May-26)
+        # ✅ FORMAT DATES AS DD MONTH YYYY (e.g., 4 May 2026)
         for date_field in ['dn_create_date', 'good_issue_date', 'pod_date']:
             if data.get(date_field):
-                data[date_field] = self._format_date_dmy_short(data[date_field])
+                data[date_field] = self._format_date_dmy_long(data[date_field])
         
         # Add status emojis
         status = data.get('delivery_status', '')
@@ -1425,7 +1426,7 @@ Please verify the DN number."""
         """
         Format DN dashboard for WhatsApp response.
         
-        ✅ Dates are in DD-MMM-YY format (e.g., 4-May-26)
+        ✅ Dates are in "DD Month YYYY" format (e.g., 4 May 2026)
         ✅ Aging is calculated correctly
         """
         data = dashboard_data.get('data', {})
@@ -1479,7 +1480,7 @@ Please verify the DN number."""
         lines.append("Materials: {}".format(material_count))
         lines.append("")
         
-        # ✅ Dates - Display as DD-MMM-YY (e.g., 4-May-26)
+        # ✅ Dates - Display as DD Month YYYY (e.g., 4 May 2026)
         lines.append("*📅 Dates:*")
         lines.append("DN Create: {}".format(data.get('dn_create_date', 'N/A')))
         lines.append("PGI: {}".format(data.get('good_issue_date', 'N/A')))
@@ -1567,6 +1568,7 @@ logger.info("   ✅ ADDED: Column type logging in health_check()")
 logger.info("   ✅ FIXED: Auto-retry with exact DN when fallback finds same DN")
 logger.info("   ✅ ADDED: Diagnostic logging for every search")
 logger.info("   ✅ ADDED: COUNT(*) pre-check before DN Not Found")
+logger.info("   ✅ ADDED: Date format as 'DD Month YYYY' (e.g., 4 May 2026)")
 logger.info("")
 logger.info("   AVAILABLE METHODS:")
 logger.info("   ✅ health_check()")
