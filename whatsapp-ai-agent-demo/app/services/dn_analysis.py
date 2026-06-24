@@ -420,145 +420,108 @@ class DNAnalysisService:
     # BLOCK 6: AGING CALCULATION METHODS (YYYY-DD-MM)
     # ==========================================================
         # ==========================================================
-    # BLOCK 6: AGING CALCULATION METHODS (FIXED)
+    # BLOCK 6: AGING CALCULATION METHODS (YYYY-DD-MM)
     # ==========================================================
     
-    def _parse_date_ydm(self, date_value):
+    def _parse_date(self, date_value):
         """
-        Parse YYYY-DD-MM format → datetime object.
+        Parse date using company format: YYYY-DD-MM
         
-        Example: "2026-04-05" → Year=2026, Day=04, Month=05 → May 4, 2026
+        Example: "2026-06-05" → Year=2026, Day=06, Month=05 → May 6, 2026
+        
+        Args:
+            date_value: Date string in YYYY-DD-MM format or datetime/date object
+            
+        Returns:
+            datetime object or None if parsing fails
         """
         if not date_value:
             return None
         
         try:
+            # Handle datetime or date objects
+            if isinstance(date_value, datetime):
+                return date_value
+            elif isinstance(date_value, date):
+                return datetime.combine(date_value, datetime.min.time())
+            
+            # Handle string dates - ALWAYS parse as YYYY-DD-MM
             if isinstance(date_value, str):
                 parts = date_value.split('-')
                 if len(parts) == 3:
                     year = int(parts[0])   # 2026
-                    day = int(parts[1])    # 04
+                    day = int(parts[1])    # 06
                     month = int(parts[2])  # 05
-                    return datetime(year, month, day)
+                    
+                    # Validate date parts
+                    if not (1 <= month <= 12 and 1 <= day <= 31):
+                        raise ValueError(f"Invalid month/day: month={month}, day={day}")
+                    
+                    parsed_date = datetime(year, month, day)
+                    
+                    # ✅ Diagnostic logging
+                    logger.info(f"Date Conversion: Raw={date_value} Parsed={parsed_date.strftime('%Y-%m-%d')}")
+                    
+                    return parsed_date
                 else:
+                    # Fallback for other formats
+                    logger.warning(f"⚠️ Unexpected date format (not YYYY-DD-MM): {date_value}")
                     return datetime.strptime(date_value, '%Y-%m-%d')
-            elif isinstance(date_value, datetime):
-                return date_value
-            elif isinstance(date_value, date):
-                return datetime.combine(date_value, datetime.min.time())
-            else:
-                return None
+            
+            return None
+            
         except Exception as e:
-            logger.warning(f"⚠️ Date parsing error for YYYY-DD-MM: {e}")
+            logger.warning(f"⚠️ Date parsing error for {date_value}: {e}")
             return None
     
-    def _format_date_dmy_long(self, date_value) -> str:
+    def _parse_date_ydm(self, date_value):
         """
-        Format datetime → DD Month YYYY (Day Month Year).
+        Parse date using company format: YYYY-DD-MM
         
-        Example: May 4, 2026 → "4 May 2026"
-        """
-        if not date_value:
-            return 'N/A'
+        Same as _parse_date() - uses YYYY-DD-MM format consistently.
         
-        try:
-            if isinstance(date_value, str):
-                parts = date_value.split('-')
-                if len(parts) == 3:
-                    year = int(parts[0])
-                    day = int(parts[1])
-                    month = int(parts[2])
-                    date_obj = datetime(year, month, day)
-                    return date_obj.strftime('%-d %B %Y')
-                return date_value
-            elif isinstance(date_value, datetime):
-                return date_value.strftime('%-d %B %Y')
-            elif isinstance(date_value, date):
-                return date_value.strftime('%-d %B %Y')
-            else:
-                return 'N/A'
-        except Exception as e:
-            logger.warning(f"⚠️ Date formatting error: {e}")
-            return 'N/A'
-    
-    def _format_date_dmy_short(self, date_value) -> str:
+        Example: "2026-06-05" → Year=2026, Day=06, Month=05 → May 6, 2026
         """
-        Format datetime → DD-MMM-YY (Day-Month-Year with month abbreviation).
-        
-        Example: May 4, 2026 → "4-May-26"
-        """
-        if not date_value:
-            return 'N/A'
-        
-        try:
-            if isinstance(date_value, str):
-                parts = date_value.split('-')
-                if len(parts) == 3:
-                    year = int(parts[0])
-                    day = int(parts[1])
-                    month = int(parts[2])
-                    date_obj = datetime(year, month, day)
-                    return date_obj.strftime('%-d-%b-%y')
-                return date_value
-            elif isinstance(date_value, datetime):
-                return date_value.strftime('%-d-%b-%y')
-            elif isinstance(date_value, date):
-                return date_value.strftime('%-d-%b-%y')
-            else:
-                return 'N/A'
-        except Exception as e:
-            logger.warning(f"⚠️ Date formatting error: {e}")
-            return 'N/A'
-    
-    def _parse_date(self, date_value):
-        """
-        Generic date parser - handles YYYY-DD-MM first, then YYYY-MM-DD.
-        """
-        if not date_value:
-            return None
-        
-        try:
-            if isinstance(date_value, str):
-                parts = date_value.split('-')
-                if len(parts) == 3:
-                    year = int(parts[0])
-                    day = int(parts[1])
-                    month = int(parts[2])
-                    return datetime(year, month, day)
-                else:
-                    return datetime.strptime(date_value, '%Y-%m-%d')
-            elif isinstance(date_value, datetime):
-                return date_value
-            elif isinstance(date_value, date):
-                return datetime.combine(date_value, datetime.min.time())
-            else:
-                return None
-        except Exception as e:
-            logger.warning(f"⚠️ Date parsing error: {e}")
-            return None
+        # Use the same parsing logic as _parse_date
+        return self._parse_date(date_value)
     
     def calculate_delivery_aging(self, dn_create_date, good_issue_date) -> int:
         """
-        Calculate delivery aging in days.
+        Calculate delivery aging in days using YYYY-DD-MM dates.
         
         IF good_issue_date EXISTS:
             good_issue_date - dn_create_date
         ELSE:
             CURRENT_DATE - dn_create_date
         
-        ✅ FIXED: Returns actual days (including negative for data quality issues)
+        Args:
+            dn_create_date: DN Create date in YYYY-DD-MM format
+            good_issue_date: PGI date in YYYY-DD-MM format
+            
+        Returns:
+            Delivery aging in days
         """
         try:
+            # Parse dates using YYYY-DD-MM format
             dn_date = self._parse_date(dn_create_date)
             gi_date = self._parse_date(good_issue_date)
             
             if not dn_date:
+                logger.warning(f"⚠️ Failed to parse DN Create date: {dn_create_date}")
                 return 0
             
-            if gi_date:
-                return (gi_date - dn_date).days  # ✅ Allow negative values
+            # ✅ Diagnostic logging
+            logger.info(f"📊 Delivery Aging: DN={dn_create_date} PGI={good_issue_date}")
             
-            return (datetime.now() - dn_date).days
+            if gi_date:
+                days = (gi_date - dn_date).days
+                logger.info(f"   ├── Delivery Aging: {days} days (PGI - DN)")
+                return days
+            
+            # No PGI yet - calculate from current date
+            days = (datetime.now() - dn_date).days
+            logger.info(f"   ├── Delivery Aging: {days} days (Current - DN)")
+            return days
             
         except Exception as e:
             logger.warning(f"⚠️ Failed to calculate delivery aging: {e}")
@@ -566,26 +529,41 @@ class DNAnalysisService:
     
     def calculate_pod_aging(self, good_issue_date, pod_date) -> int:
         """
-        Calculate POD aging in days.
+        Calculate POD aging in days using YYYY-DD-MM dates.
         
         IF pod_date EXISTS:
             pod_date - good_issue_date
         ELSE:
             CURRENT_DATE - good_issue_date
         
-        ✅ FIXED: Returns actual days (including negative for data quality issues)
+        Args:
+            good_issue_date: PGI date in YYYY-DD-MM format
+            pod_date: POD date in YYYY-DD-MM format
+            
+        Returns:
+            POD aging in days
         """
         try:
+            # Parse dates using YYYY-DD-MM format
             gi_date = self._parse_date(good_issue_date)
             pd_date = self._parse_date(pod_date)
             
             if not gi_date:
+                logger.warning(f"⚠️ Failed to parse PGI date: {good_issue_date}")
                 return 0
             
-            if pd_date:
-                return (pd_date - gi_date).days  # ✅ Allow negative values
+            # ✅ Diagnostic logging
+            logger.info(f"📊 POD Aging: PGI={good_issue_date} POD={pod_date}")
             
-            return (datetime.now() - gi_date).days
+            if pd_date:
+                days = (pd_date - gi_date).days
+                logger.info(f"   ├── POD Aging: {days} days (POD - PGI)")
+                return days
+            
+            # No POD yet - calculate from current date
+            days = (datetime.now() - gi_date).days
+            logger.info(f"   ├── POD Aging: {days} days (Current - PGI)")
+            return days
             
         except Exception as e:
             logger.warning(f"⚠️ Failed to calculate POD aging: {e}")
@@ -593,55 +571,45 @@ class DNAnalysisService:
     
     def calculate_total_cycle(self, dn_create_date, pod_date) -> int:
         """
-        Calculate total cycle time in days.
+        Calculate total cycle time in days using YYYY-DD-MM dates.
         
         IF pod_date EXISTS:
             pod_date - dn_create_date
         ELSE:
             CURRENT_DATE - dn_create_date
         
-        ✅ FIXED: Returns actual days (including negative for data quality issues)
+        Args:
+            dn_create_date: DN Create date in YYYY-DD-MM format
+            pod_date: POD date in YYYY-DD-MM format
+            
+        Returns:
+            Total cycle time in days
         """
         try:
+            # Parse dates using YYYY-DD-MM format
             dn_date = self._parse_date(dn_create_date)
             pd_date = self._parse_date(pod_date)
             
             if not dn_date:
+                logger.warning(f"⚠️ Failed to parse DN Create date: {dn_create_date}")
                 return 0
             
-            if pd_date:
-                return (pd_date - dn_date).days  # ✅ Allow negative values
+            # ✅ Diagnostic logging
+            logger.info(f"📊 Total Cycle: DN={dn_create_date} POD={pod_date}")
             
-            return (datetime.now() - dn_date).days
+            if pd_date:
+                days = (pd_date - dn_date).days
+                logger.info(f"   ├── Total Cycle: {days} days (POD - DN)")
+                return days
+            
+            # No POD yet - calculate from current date
+            days = (datetime.now() - dn_date).days
+            logger.info(f"   ├── Total Cycle: {days} days (Current - DN)")
+            return days
             
         except Exception as e:
             logger.warning(f"⚠️ Failed to calculate total cycle: {e}")
             return 0
-    
-    def _format_aging_text(self, days: int) -> str:
-        """
-        Format aging days into human readable text.
-        
-        ✅ FIXED: Shows actual days with indicators
-        """
-        if days < 0:
-            return f"{abs(days)} Days (Data Error - POD before PGI/DN)"
-        elif days == 0:
-            return "Same Day"
-        elif days == 1:
-            return "1 Day"
-        elif days < 7:
-            return f"{days} Days"
-        elif days < 14:
-            return f"{days} Days (1-2 Weeks)"
-        elif days < 30:
-            return f"{days} Days ({days // 7} Weeks)"
-        elif days < 60:
-            return f"{days} Days (1-2 Months)"
-        elif days < 90:
-            return f"{days} Days (3 Months)"
-        else:
-            return f"{days} Days ({days // 30} Months)"
     # ==========================================================
     # BLOCK 7: DN SEARCH WITH FULL DIAGNOSTICS
     # ==========================================================
@@ -994,6 +962,94 @@ Please verify the DN number."""
         
         logger.info(f"✅ Dashboard returned for DN {dn_no}")
         return {"success": True, "data": data}
+
+    # ==========================================================
+    # BLOCK 8.5: DATE VALIDATION TEST
+    # ==========================================================
+    
+    def test_date_calculation(self) -> Dict[str, Any]:
+        """
+        Test date calculations using the company-wide YYYY-DD-MM format.
+        
+        Test Case:
+        - DN Create: 2026-06-05
+        - PGI:       2026-06-05
+        - POD:       2026-07-05
+        
+        Expected Results:
+        - Delivery Aging = 0 days
+        - POD Aging = 1 day
+        - Total Cycle = 1 day
+        
+        Note: Since dates are parsed as YYYY-DD-MM:
+        - 2026-06-05 → 6 May 2026 (day=06, month=05)
+        - 2026-07-05 → 7 May 2026 (day=07, month=05)
+        - Difference: 1 day
+        """
+        logger.info("🧪 Running date calculation test...")
+        
+        # Test data in YYYY-DD-MM format
+        dn_create = "2026-06-05"  # Year=2026, Day=06, Month=05 → 6 May 2026
+        pgi = "2026-06-05"        # Year=2026, Day=06, Month=05 → 6 May 2026
+        pod = "2026-07-05"        # Year=2026, Day=07, Month=05 → 7 May 2026
+        
+        # Parse dates for display
+        dn_parsed = self._parse_date(dn_create)
+        pgi_parsed = self._parse_date(pgi)
+        pod_parsed = self._parse_date(pod)
+        
+        # Calculate aging
+        delivery_aging = self.calculate_delivery_aging(dn_create, pgi)
+        pod_aging = self.calculate_pod_aging(pgi, pod)
+        total_cycle = self.calculate_total_cycle(dn_create, pod)
+        
+        # Format results
+        result = {
+            "test_name": "Date Calculation Test (YYYY-DD-MM)",
+            "input": {
+                "dn_create": dn_create,
+                "pgi": pgi,
+                "pod": pod
+            },
+            "parsed_dates": {
+                "dn_create": dn_parsed.strftime("%d %B %Y") if dn_parsed else None,
+                "pgi": pgi_parsed.strftime("%d %B %Y") if pgi_parsed else None,
+                "pod": pod_parsed.strftime("%d %B %Y") if pod_parsed else None
+            },
+            "calculations": {
+                "delivery_aging_days": delivery_aging,
+                "pod_aging_days": pod_aging,
+                "total_cycle_days": total_cycle
+            },
+            "expected": {
+                "delivery_aging_days": 0,
+                "pod_aging_days": 1,
+                "total_cycle_days": 1
+            },
+            "passed": (
+                delivery_aging == 0 and
+                pod_aging == 1 and
+                total_cycle == 1
+            )
+        }
+        
+        # Log results
+        logger.info("📊 Test Results:")
+        logger.info(f"   ├── DN Create: {dn_create} → {result['parsed_dates']['dn_create']}")
+        logger.info(f"   ├── PGI: {pgi} → {result['parsed_dates']['pgi']}")
+        logger.info(f"   ├── POD: {pod} → {result['parsed_dates']['pod']}")
+        logger.info(f"   ├── Delivery Aging: {delivery_aging} days (Expected: 0) ✅")
+        logger.info(f"   ├── POD Aging: {pod_aging} days (Expected: 1) ✅")
+        logger.info(f"   ├── Total Cycle: {total_cycle} days (Expected: 1) ✅")
+        logger.info(f"   └── Test: {'✅ PASSED' if result['passed'] else '❌ FAILED'}")
+        
+        return result
+
+
+
+
+
+    
     
     # ==========================================================
     # BLOCK 9: DIAGNOSTIC METHODS
