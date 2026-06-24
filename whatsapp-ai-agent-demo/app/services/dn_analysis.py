@@ -417,62 +417,114 @@ class DNAnalysisService:
     # ==========================================================
     # BLOCK 6: AGING CALCULATION METHODS
     # ==========================================================
-    
-   
-    # ============    # ==========================================================
-    # BLOCK 6: AGING CALCULATION METHODS (UPDATED)
+        # ==========================================================
+    # BLOCK 6: DATE FUNCTIONS FOR YYYY-DD-MM FORMAT
     # ==========================================================
     
-    def _format_date(self, date_value) -> str:
+    def _parse_date_ydm(self, date_value):
         """
-        Format date as DD.MM.YYYY
+        Parse YYYY-DD-MM format → datetime object.
         
-        Args:
-            date_value: Date string, datetime, or date object
-            
-        Returns:
-            Formatted date string (DD.MM.YYYY) or 'N/A' if invalid
-        """
-        if not date_value:
-            return 'N/A'
-        
-        try:
-            if isinstance(date_value, str):
-                # Try to parse ISO format
-                if 'T' in date_value:
-                    date_obj = datetime.fromisoformat(date_value.replace('Z', '+00:00'))
-                else:
-                    date_obj = datetime.strptime(date_value, '%Y-%m-%d')
-            elif isinstance(date_value, datetime):
-                date_obj = date_value
-            elif isinstance(date_value, date):
-                date_obj = datetime.combine(date_value, datetime.min.time())
-            else:
-                return 'N/A'
-            
-            # Format as DD.MM.YYYY
-            return date_obj.strftime('%d.%m.%Y')
-        except Exception as e:
-            logger.warning(f"⚠️ Date formatting error: {e}")
-            return 'N/A'
-    
-    def _parse_date(self, date_value):
-        """
-        Parse date from various formats into datetime object.
-        
-        Args:
-            date_value: Date string, datetime, or date object
-            
-        Returns:
-            datetime object or None if invalid
+        Example: "2026-04-05" → May 4, 2026 (Year=2026, Day=04, Month=05)
         """
         if not date_value:
             return None
         
         try:
             if isinstance(date_value, str):
-                if 'T' in date_value:
-                    return datetime.fromisoformat(date_value.replace('Z', '+00:00'))
+                parts = date_value.split('-')
+                if len(parts) == 3:
+                    year = int(parts[0])   # 2026
+                    day = int(parts[1])    # 04
+                    month = int(parts[2])  # 05
+                    return datetime(year, month, day)
+                else:
+                    return datetime.strptime(date_value, '%Y-%m-%d')
+            elif isinstance(date_value, datetime):
+                return date_value
+            elif isinstance(date_value, date):
+                return datetime.combine(date_value, datetime.min.time())
+            else:
+                return None
+        except Exception as e:
+            logger.warning(f"⚠️ Date parsing error for YYYY-DD-MM: {e}")
+            return None
+    
+    def _format_date_dmy(self, date_value) -> str:
+        """
+        Format datetime → DD-MMM-YY (Day-Month-Year with month abbreviation).
+        
+        Example: May 4, 2026 → "4-May-26"
+        """
+        if not date_value:
+            return 'N/A'
+        
+        try:
+            if isinstance(date_value, str):
+                # Parse YYYY-DD-MM to datetime first
+                parts = date_value.split('-')
+                if len(parts) == 3:
+                    year = int(parts[0])
+                    day = int(parts[1])
+                    month = int(parts[2])
+                    date_obj = datetime(year, month, day)
+                    return date_obj.strftime('%-d-%b-%y')
+                return date_value
+            elif isinstance(date_value, datetime):
+                return date_value.strftime('%-d-%b-%y')
+            elif isinstance(date_value, date):
+                return date_value.strftime('%-d-%b-%y')
+            else:
+                return 'N/A'
+        except Exception as e:
+            logger.warning(f"⚠️ Date formatting error: {e}")
+            return 'N/A'
+    
+    def _format_date_ddmmyyyy(self, date_value) -> str:
+        """
+        Format datetime → DD.MM.YYYY (Day.Month.Year).
+        
+        Example: May 4, 2026 → "04.05.2026"
+        """
+        if not date_value:
+            return 'N/A'
+        
+        try:
+            if isinstance(date_value, str):
+                parts = date_value.split('-')
+                if len(parts) == 3:
+                    year = int(parts[0])
+                    day = int(parts[1])
+                    month = int(parts[2])
+                    date_obj = datetime(year, month, day)
+                    return date_obj.strftime('%d.%m.%Y')
+                return date_value
+            elif isinstance(date_value, datetime):
+                return date_value.strftime('%d.%m.%Y')
+            elif isinstance(date_value, date):
+                return date_value.strftime('%d.%m.%Y')
+            else:
+                return 'N/A'
+        except Exception as e:
+            logger.warning(f"⚠️ Date formatting error: {e}")
+            return 'N/A'
+    
+    def _parse_date(self, date_value):
+        """
+        Generic date parser - handles multiple formats.
+        """
+        if not date_value:
+            return None
+        
+        try:
+            if isinstance(date_value, str):
+                # Try YYYY-DD-MM first
+                parts = date_value.split('-')
+                if len(parts) == 3:
+                    year = int(parts[0])
+                    day = int(parts[1])
+                    month = int(parts[2])
+                    return datetime(year, month, day)
                 else:
                     return datetime.strptime(date_value, '%Y-%m-%d')
             elif isinstance(date_value, datetime):
@@ -495,7 +547,6 @@ class DNAnalysisService:
             CURRENT_DATE - dn_create_date
         """
         try:
-            # Parse dates
             dn_date = self._parse_date(dn_create_date)
             gi_date = self._parse_date(good_issue_date)
             
@@ -504,9 +555,8 @@ class DNAnalysisService:
             
             if gi_date:
                 days = (gi_date - dn_date).days
-                return max(0, days)  # Ensure non-negative
+                return max(0, days)
             
-            # Use current date
             days = (datetime.now() - dn_date).days
             return max(0, days)
             
@@ -524,7 +574,6 @@ class DNAnalysisService:
             CURRENT_DATE - good_issue_date
         """
         try:
-            # Parse dates
             gi_date = self._parse_date(good_issue_date)
             pd_date = self._parse_date(pod_date)
             
@@ -533,9 +582,8 @@ class DNAnalysisService:
             
             if pd_date:
                 days = (pd_date - gi_date).days
-                return max(0, days)  # Ensure non-negative
+                return max(0, days)
             
-            # Use current date
             days = (datetime.now() - gi_date).days
             return max(0, days)
             
@@ -553,7 +601,6 @@ class DNAnalysisService:
             CURRENT_DATE - dn_create_date
         """
         try:
-            # Parse dates
             dn_date = self._parse_date(dn_create_date)
             pd_date = self._parse_date(pod_date)
             
@@ -562,9 +609,8 @@ class DNAnalysisService:
             
             if pd_date:
                 days = (pd_date - dn_date).days
-                return max(0, days)  # Ensure non-negative
+                return max(0, days)
             
-            # Use current date
             days = (datetime.now() - dn_date).days
             return max(0, days)
             
@@ -590,6 +636,7 @@ class DNAnalysisService:
             return f"{days} Days (3 Months)"
         else:
             return f"{days} Days ({days // 30} Months)"
+   
     ==============================================
     # BLOCK 7: DN SEARCH WITH FULL DIAGNOSTICS
     # ==========================================================
@@ -832,9 +879,8 @@ class DNAnalysisService:
     # ==========================================================
     # BLOCK 8: DN DASHBOARD
     # ==========================================================
-    
-     # ==========================================================
-    # BLOCK 8: DN DASHBOARD (UPDATED)
+      # ==========================================================
+    # BLOCK 8: DN DASHBOARD (UPDATED FOR YYYY-DD-MM)
     # ==========================================================
     
     def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
@@ -879,7 +925,7 @@ Please verify the DN number."""
         
         data = result.get("data", {})
         
-        # Calculate aging
+        # Calculate aging (dates are in YYYY-DD-MM format)
         delivery_aging = self.calculate_delivery_aging(
             data.get('dn_create_date'),
             data.get('good_issue_date')
@@ -903,10 +949,10 @@ Please verify the DN number."""
         data['pod_aging_text'] = self._format_aging_text(pod_aging)
         data['total_cycle_text'] = self._format_aging_text(total_cycle)
         
-        # ✅ FORMAT DATES AS DD.MM.YYYY
+        # ✅ FORMAT DATES AS DD-MMM-YY (e.g., 4-May-26)
         for date_field in ['dn_create_date', 'good_issue_date', 'pod_date']:
             if data.get(date_field):
-                data[date_field] = self._format_date(data[date_field])
+                data[date_field] = self._format_date_dmy(data[date_field])
         
         # Add status emojis
         status = data.get('delivery_status', '')
@@ -1379,8 +1425,7 @@ Please verify the DN number."""
     # ==========================================================
     # BLOCK 11: WHATSAPP RESPONSE FORMATTER
     # ==========================================================
-    
-       # ==========================================================
+        # ==========================================================
     # BLOCK 11: WHATSAPP RESPONSE FORMATTER (UPDATED)
     # ==========================================================
     
@@ -1388,7 +1433,7 @@ Please verify the DN number."""
         """
         Format DN dashboard for WhatsApp response.
         
-        ✅ Dates are in DD.MM.YYYY format
+        ✅ Dates are in DD-MMM-YY format (e.g., 4-May-26)
         ✅ Aging is calculated correctly
         """
         data = dashboard_data.get('data', {})
@@ -1442,7 +1487,7 @@ Please verify the DN number."""
         lines.append("Materials: {}".format(material_count))
         lines.append("")
         
-        # ✅ Dates - Already in DD.MM.YYYY format
+        # ✅ Dates - Display as DD-MMM-YY (e.g., 4-May-26)
         lines.append("*📅 Dates:*")
         lines.append("DN Create: {}".format(data.get('dn_create_date', 'N/A')))
         lines.append("PGI: {}".format(data.get('good_issue_date', 'N/A')))
@@ -1464,7 +1509,7 @@ Please verify the DN number."""
         lines.append("Pending: {}".format(data.get('pending_flag_text', 'Unknown')))
         
         return "\n".join(lines)
-
+   
 # ==========================================================
 # BLOCK 12: THREAD-SAFE SINGLETON
 # ==========================================================
