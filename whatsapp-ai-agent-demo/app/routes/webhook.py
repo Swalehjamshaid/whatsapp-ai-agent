@@ -1,8 +1,8 @@
 # ==========================================================
-# FILE: app/routes/webhook.py (v24.0 - COMPLETE PRODUCTION)
+# FILE: app/routes/webhook.py (v25.0 - ALIGNED WITH NEW ARCHITECTURE)
 # ==========================================================
-# PURPOSE: WhatsApp Webhook Handler - 100% AI Driven
-# VERSION: 24.0 - ALWAYS Calls AI, No Fallback
+# PURPOSE: WhatsApp Webhook Handler - ALWAYS Calls AI
+# VERSION: 25.0 - ALIGNED WITH ai_provider_service.py v5.0
 # ==========================================================
 
 import json
@@ -54,81 +54,71 @@ except ImportError as e:
 # ==========================================================
 
 _ai_provider_service = None
-_analytics_service = None
 _whatsapp_service = None
 
 # ==========================================================
-# ✅ FIXED: AI PROVIDER SERVICE
+# ✅ FIXED: AI PROVIDER SERVICE (USES CORRECT FUNCTION)
 # ==========================================================
 
 def _get_ai_provider_service() -> Optional[Any]:
+    """
+    Get the AI Provider Service.
+    
+    FIXED: Uses get_whatsapp_provider_service() from ai_provider_service.py
+    """
     global _ai_provider_service
     
     if _ai_provider_service is not None:
         return _ai_provider_service
     
     try:
-        logger.info("🚀 Initializing AI Provider Service...")
-        from app.services.ai_provider_service import get_orchestrator
+        logger.info("🚀 Initializing AI Provider Service v5.0...")
+        
+        # ✅ CORRECT: Use the right import
+        from app.services.ai_provider_service import get_whatsapp_provider_service
         
         if not DATABASE_AVAILABLE:
             logger.error("❌ Database not available")
             return None
         
-        def session_factory() -> Session:
-            try:
-                return SessionLocal()
-            except Exception as e:
-                logger.error(f"❌ Session creation failed: {e}")
-                raise
-        
-        logger.info("🔧 Creating AI Orchestrator with session_factory...")
-        _ai_provider_service = get_orchestrator(session_factory=session_factory)
+        # ✅ CORRECT: Get the provider
+        _ai_provider_service = get_whatsapp_provider_service()
         
         if _ai_provider_service:
-            logger.info("✅ AI Orchestrator created successfully")
+            logger.info("✅ AI Provider Service v5.0 initialized successfully")
+            
+            # ✅ Check service registry status
             try:
-                test_session = session_factory()
-                if MODELS_AVAILABLE:
-                    count = test_session.query(DeliveryReport).count()
-                    logger.info(f"✅ PostgreSQL connected! Found {count} records")
-                test_session.close()
+                health = _ai_provider_service.get_service_registry_status()
+                logger.info(f"   ├── Services Ready: {health.get('ready', 0)}")
+                logger.info(f"   ├── In Development: {health.get('in_development', 0)}")
+                logger.info(f"   ├── Readiness Score: {health.get('readiness_score', 0):.1f}%")
+                
+                # Check DN service status
+                dn_status = _ai_provider_service.registry.get_service_status("dn")
+                if dn_status.get("ready", False):
+                    logger.info(f"   ├── DN Service: ✅ READY")
+                else:
+                    logger.warning(f"   ├── DN Service: 🔧 {dn_status.get('status', 'UNKNOWN')}")
+                    
             except Exception as e:
-                logger.error(f"❌ PostgreSQL connection test FAILED: {e}")
+                logger.warning(f"⚠️ Could not get service registry status: {e}")
         else:
-            logger.error("❌ Failed to create AI Orchestrator")
+            logger.error("❌ Failed to create AI Provider Service")
         
         return _ai_provider_service
         
+    except ImportError as e:
+        logger.error(f"❌ Failed to import ai_provider_service: {e}")
+        return None
     except Exception as e:
         logger.error(f"❌ Failed to initialize AI Provider: {e}")
         import traceback
         traceback.print_exc()
         return None
 
-def _get_analytics_service():
-    global _analytics_service
-    
-    if _analytics_service is not None:
-        return _analytics_service
-    
-    try:
-        logger.info("🚀 Initializing Analytics Service...")
-        from app.services.analytics_service import get_analytics_service
-        
-        if not DATABASE_AVAILABLE:
-            return None
-        
-        db = SessionLocal()
-        _analytics_service = get_analytics_service(db)
-        logger.info("✅ Analytics Service loaded")
-        return _analytics_service
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to initialize Analytics: {e}")
-        return None
-
 def _get_whatsapp_service():
+    """Get WhatsApp service for sending messages."""
     global _whatsapp_service
     
     if _whatsapp_service is not None:
@@ -176,6 +166,7 @@ webhook_stats = {
     "_processed_messages": {},
     "ai_enabled": False,
     "db_connected": False,
+    "architecture": "v16.0 (Built-in Intent Detection)"
 }
 
 def update_stats(success: bool, endpoint: str = "unknown", processing_time_ms: float = 0):
@@ -340,7 +331,7 @@ async def handle_webhook(
                     webhook_stats["total_messages_processed"] += 1
                     logger.info(f"[{request_id}] 📨 Message from {phone_number}: '{message_text[:50] if message_text else '[Media]'}'")
                     
-                    # ✅ PROCESS ALL MESSAGES WITH AI
+                    # ✅ Process ALL messages with AI
                     if message_text and message_text.strip():
                         background_tasks.add_task(
                             process_message_with_ai,
@@ -380,7 +371,7 @@ async def handle_webhook(
         )
 
 # ==========================================================
-# ✅ FIXED: PROCESS MESSAGE WITH AI (NO FALLBACK)
+# ✅ FIXED: PROCESS MESSAGE WITH AI (USES CORRECT API)
 # ==========================================================
 
 async def process_message_with_ai(
@@ -390,7 +381,7 @@ async def process_message_with_ai(
 ) -> None:
     """
     ✅ ALWAYS calls the AI Orchestrator.
-    ✅ NO FALLBACK - AI handles everything.
+    ✅ Uses the CORRECT API: process_whatsapp_query(message, sender_id)
     """
     start_time = time.time()
     
@@ -408,53 +399,35 @@ async def process_message_with_ai(
         
         logger.info(f"[{request_id}] ✅ AI Provider available")
         
-        # ✅ Create session factory for this request
-        def session_factory() -> Session:
-            try:
-                return SessionLocal()
-            except Exception as e:
-                logger.error(f"[{request_id}] ❌ Session factory error: {e}")
-                raise
-        
-        # ✅ CALL AI ORCHESTRATOR
+        # ✅ CALL AI ORCHESTRATOR WITH CORRECT SIGNATURE
         try:
             logger.info(f"[{request_id}] 📤 Calling AI Orchestrator...")
             
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(
-                    ai_provider.process_whatsapp_query,
-                    message_text,
-                    session_factory,
-                    phone_number,
-                    None,
-                    request_id
-                )
-                
-                try:
-                    response = future.result(timeout=30)
-                    logger.info(f"[{request_id}] ✅ AI response: {len(response)} chars")
-                except concurrent.futures.TimeoutError:
-                    logger.error(f"[{request_id}] ⏰ AI timeout after 30s")
-                    response = "⏰ I'm still thinking. Please wait a moment and try again."
-                except Exception as e:
-                    logger.error(f"[{request_id}] ❌ AI error: {e}")
-                    response = None
+            # ✅ CORRECT: process_whatsapp_query(message, sender_id)
+            response = await ai_provider.process_whatsapp_query(
+                message=message_text,
+                sender_id=phone_number
+            )
+            
+            logger.info(f"[{request_id}] ✅ AI response received")
+            
+            # ✅ Extract response text
+            if response and isinstance(response, dict):
+                response_text = response.get("response", "⚠️ I couldn't process your request.")
+            else:
+                response_text = str(response) if response else "⚠️ I couldn't process your request."
             
             # ✅ Send response
-            if response:
-                await send_whatsapp_response(phone_number, response, request_id)
-            else:
-                logger.warning(f"[{request_id}] ⚠️ No AI response")
-                fallback = "⚠️ I'm having trouble processing your request. Please try again in a moment."
-                await send_whatsapp_response(phone_number, fallback, request_id)
-                
+            await send_whatsapp_response(phone_number, response_text, request_id)
+            
         except Exception as e:
             logger.error(f"[{request_id}] ❌ AI processing error: {e}")
             import traceback
             traceback.print_exc()
-            fallback = "⚠️ I encountered an error. Please try again."
-            await send_whatsapp_response(phone_number, fallback, request_id)
+            
+            # ✅ Send error response
+            error_msg = "⚠️ I encountered an error processing your request. Please try again."
+            await send_whatsapp_response(phone_number, error_msg, request_id)
         
         processing_time = (time.time() - start_time) * 1000
         logger.info(f"[{request_id}] 📊 Message processed in {processing_time:.0f}ms")
@@ -528,60 +501,12 @@ async def send_whatsapp_response(
                 return False
         else:
             logger.warning(f"[{request_id}] ⚠️ WhatsApp service not available")
+            # Print response for debugging
             print(f"[{request_id}] RESPONSE TO {phone_number}: {response_text[:200]}")
             return False
     except Exception as e:
         logger.error(f"[{request_id}] ❌ Send response error: {e}")
         return False
-
-# ==========================================================
-# ✅ FIXED: HELP MESSAGE - ONLY FALLBACK
-# ==========================================================
-
-def get_help_response() -> str:
-    return """
-🏠 *HAIER LOGISTICS AI*
-
-*📋 20+ Dashboards Available:*
-
-1️⃣ 🏪 Dealer Dashboard
-2️⃣ 🏭 Warehouse Dashboard
-3️⃣ 🏙️ City Dashboard
-4️⃣ 📦 Product Dashboard
-5️⃣ 📄 DN Dashboard
-6️⃣ 📋 PGI Dashboard
-7️⃣ ✅ POD Dashboard
-8️⃣ 🚚 Delivery Dashboard
-9️⃣ 📍 Distance Dashboard
-🔟 👔 Executive Dashboard
-1️⃣1️⃣ 🚨 Control Tower
-1️⃣2️⃣ 🏆 Dealer Ranking
-1️⃣3️⃣ 🏆 Warehouse Ranking
-1️⃣4️⃣ 🏆 City Ranking
-1️⃣5️⃣ 🏆 Product Ranking
-1️⃣6️⃣ 💰 Revenue Dashboard
-1️⃣7️⃣ 📊 Division Dashboard
-1️⃣8️⃣ 👤 Sales Manager Dashboard
-1️⃣9️⃣ ⏳ Aging Dashboard
-2️⃣0️⃣ 🔄 Follow-up Support
-
-*🔍 Quick Commands:*
-• Enter 8-12 digit DN number
-• Dealer name (e.g., "ZQ Electronics")
-• City name (e.g., "Haripur")
-• Warehouse name (e.g., "Lahore")
-• "Executive summary"
-• "Control tower"
-• "Top dealers"
-• "Help" for menu
-
-*💡 Follow-up Support:*
-• "What is its POD?" → Uses last dealer
-• "How many pending DN?" → Uses last dealer
-• "Show me its revenue" → Uses last dealer
-• "Show aging" → Uses last dealer
-
-*Ask me anything about logistics!* 🤖"""
 
 # ==========================================================
 # STATUS ENDPOINTS
@@ -592,7 +517,8 @@ async def webhook_ping() -> JSONResponse:
     ai = _get_ai_provider_service()
     return JSONResponse(content={
         "ping": "pong",
-        "webhook_version": "24.0",
+        "webhook_version": "25.0",
+        "architecture": "v16.0 (Built-in Intent Detection)",
         "timestamp": datetime.now().isoformat(),
         "services": {
             "ai_provider": "healthy" if ai else "unhealthy",
@@ -609,7 +535,8 @@ async def webhook_health() -> JSONResponse:
     ai = _get_ai_provider_service()
     return JSONResponse(content={
         "status": "healthy" if ai else "degraded",
-        "webhook_version": "24.0",
+        "webhook_version": "25.0",
+        "architecture": "v16.0 (Built-in Intent Detection)",
         "timestamp": datetime.now().isoformat(),
         "services": {
             "ai_provider": "healthy" if ai else "unhealthy",
@@ -626,14 +553,14 @@ async def webhook_health() -> JSONResponse:
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("🌐 WEBHOOK ROUTER v24.0 - COMPLETE PRODUCTION")
+logger.info("🌐 WEBHOOK ROUTER v25.0 - ALIGNED WITH NEW ARCHITECTURE")
 logger.info("=" * 70)
 
 # ✅ Force initialize AI on startup
 logger.info("🚀 Pre-initializing AI Provider Service...")
 ai = _get_ai_provider_service()
 if ai:
-    logger.info("✅ AI Provider Service initialized successfully")
+    logger.info("✅ AI Provider Service v5.0 initialized successfully")
     webhook_stats["ai_enabled"] = True
 else:
     logger.error("❌ AI Provider Service initialization FAILED")
@@ -660,6 +587,11 @@ except Exception as e:
     logger.error(f"❌ Database connection test FAILED: {e}")
     webhook_stats["db_connected"] = False
 
+logger.info("")
+logger.info("   📌 ARCHITECTURE: v16.0 (Built-in Intent Detection)")
+logger.info("   📌 AI Provider: v5.0 (NO ai_query_service.py)")
+logger.info("   📌 Routing: IntentDetectionEngine (built-in)")
+logger.info("")
 logger.info("=" * 70)
 
 __all__ = ['router']
