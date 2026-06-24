@@ -424,10 +424,7 @@ class DNAnalysisService:
     # BLOCK 6: AGING CALCULATION METHODS (YYYY-DD-MM FIXED)
     # ==========================================================
         # ==========================================================
-    # BLOCK 6: AGING CALCULATION METHODS (YYYY-DD-MM FIXED)
-    # ==========================================================
-        # ==========================================================
-    # BLOCK 6: AGING CALCULATION METHODS (POSTGRESQL SOURCE OF TRUTH)
+    # BLOCK 6: AGING CALCULATION METHODS (IMPROVED)
     # ==========================================================
     
     def _parse_date(self, date_value):
@@ -447,22 +444,34 @@ class DNAnalysisService:
             return None
         
         try:
+            parsed_date = None
+            
             # Handle datetime objects
             if isinstance(date_value, datetime):
-                return date_value
+                parsed_date = date_value
             
             # Handle date objects (PostgreSQL returns these)
-            if isinstance(date_value, date):
-                return datetime.combine(date_value, datetime.min.time())
+            elif isinstance(date_value, date):
+                parsed_date = datetime.combine(date_value, datetime.min.time())
             
             # Handle string dates (YYYY-MM-DD format)
-            if isinstance(date_value, str):
-                return datetime.strptime(date_value, "%Y-%m-%d")
+            elif isinstance(date_value, str):
+                parsed_date = datetime.strptime(date_value, "%Y-%m-%d")
             
-            return None
+            else:
+                return None
+            
+            # ✅ IMPROVEMENT #3: Date validation
+            if parsed_date:
+                if parsed_date.year < 2020:
+                    logger.warning(f"⚠️ Suspicious Year (<2020): {parsed_date.strftime('%Y-%m-%d')}")
+                if parsed_date.year > 2035:
+                    logger.warning(f"⚠️ Suspicious Year (>2035): {parsed_date.strftime('%Y-%m-%d')}")
+            
+            return parsed_date
             
         except Exception as e:
-            logger.warning(f"⚠️ Date parsing error for {date_value}: {e}")
+            logger.error(f"❌ Date parsing error for {date_value}: {e}")
             return None
     
     def _parse_date_ydm(self, date_value):
@@ -522,9 +531,14 @@ class DNAnalysisService:
             good_issue_date: PGI date (PostgreSQL date object)
             
         Returns:
-            Delivery aging in days
+            Delivery aging in days (never negative)
         """
         try:
+            # ✅ IMPROVEMENT #4: NULL date handling
+            if dn_create_date is None:
+                logger.warning("⚠️ DN Create Date Missing - Returning 0")
+                return 0
+            
             # Parse dates using PostgreSQL format
             dn_date = self._parse_date(dn_create_date)
             gi_date = self._parse_date(good_issue_date)
@@ -536,16 +550,35 @@ class DNAnalysisService:
             # Calculate aging
             if gi_date:
                 days = (gi_date - dn_date).days
-                logger.info(f"📊 Delivery Aging: {days} days (PGI - DN)")
+                
+                # ✅ IMPROVEMENT #1: Negative day protection
+                if days < 0:
+                    logger.error(f"❌ Invalid Delivery Aging: PGI ({good_issue_date}) before DN ({dn_create_date}) - Returning 0")
+                    return 0
+                
+                # ✅ IMPROVEMENT #2: Full diagnostic logging
+                logger.info(
+                    f"Delivery Aging Calculation | "
+                    f"DN={dn_date.strftime('%Y-%m-%d')} | "
+                    f"PGI={gi_date.strftime('%Y-%m-%d')} | "
+                    f"Days={days}"
+                )
                 return days
             
             # No PGI yet - calculate from current date
             days = (datetime.now() - dn_date).days
-            logger.info(f"📊 Delivery Aging: {days} days (Current - DN)")
+            
+            # ✅ IMPROVEMENT #2: Full diagnostic logging
+            logger.info(
+                f"Delivery Aging Calculation (No PGI) | "
+                f"DN={dn_date.strftime('%Y-%m-%d')} | "
+                f"Current={datetime.now().strftime('%Y-%m-%d')} | "
+                f"Days={days}"
+            )
             return days
             
         except Exception as e:
-            logger.warning(f"⚠️ Failed to calculate delivery aging: {e}")
+            logger.error(f"❌ Failed to calculate delivery aging: {e}")
             return 0
     
     def calculate_pod_aging(self, good_issue_date, pod_date) -> int:
@@ -560,7 +593,7 @@ class DNAnalysisService:
             pod_date: POD date (PostgreSQL date object)
             
         Returns:
-            POD aging in days
+            POD aging in days (never negative)
         """
         try:
             # Parse dates using PostgreSQL format
@@ -574,16 +607,35 @@ class DNAnalysisService:
             # Calculate aging
             if pd_date:
                 days = (pd_date - gi_date).days
-                logger.info(f"📊 POD Aging: {days} days (POD - PGI)")
+                
+                # ✅ IMPROVEMENT #1: Negative day protection
+                if days < 0:
+                    logger.error(f"❌ Invalid POD Aging: POD ({pod_date}) before PGI ({good_issue_date}) - Returning 0")
+                    return 0
+                
+                # ✅ IMPROVEMENT #2: Full diagnostic logging
+                logger.info(
+                    f"POD Aging Calculation | "
+                    f"PGI={gi_date.strftime('%Y-%m-%d')} | "
+                    f"POD={pd_date.strftime('%Y-%m-%d')} | "
+                    f"Days={days}"
+                )
                 return days
             
             # No POD yet - calculate from current date
             days = (datetime.now() - gi_date).days
-            logger.info(f"📊 POD Aging: {days} days (Current - PGI)")
+            
+            # ✅ IMPROVEMENT #2: Full diagnostic logging
+            logger.info(
+                f"POD Aging Calculation (No POD) | "
+                f"PGI={gi_date.strftime('%Y-%m-%d')} | "
+                f"Current={datetime.now().strftime('%Y-%m-%d')} | "
+                f"Days={days}"
+            )
             return days
             
         except Exception as e:
-            logger.warning(f"⚠️ Failed to calculate POD aging: {e}")
+            logger.error(f"❌ Failed to calculate POD aging: {e}")
             return 0
     
     def calculate_total_cycle(self, dn_create_date, pod_date) -> int:
@@ -598,9 +650,14 @@ class DNAnalysisService:
             pod_date: POD date (PostgreSQL date object)
             
         Returns:
-            Total cycle time in days
+            Total cycle time in days (never negative)
         """
         try:
+            # ✅ IMPROVEMENT #4: NULL date handling
+            if dn_create_date is None:
+                logger.warning("⚠️ DN Create Date Missing - Returning 0")
+                return 0
+            
             # Parse dates using PostgreSQL format
             dn_date = self._parse_date(dn_create_date)
             pd_date = self._parse_date(pod_date)
@@ -611,22 +668,43 @@ class DNAnalysisService:
             
             # Calculate cycle
             if pd_date:
+                # ✅ IMPROVEMENT #5: Data consistency check
+                if pd_date < dn_date:
+                    logger.error(f"❌ Invalid Data: POD ({pod_date}) before DN ({dn_create_date}) - Returning 0")
+                    return 0
+                
                 days = (pd_date - dn_date).days
-                logger.info(f"📊 Total Cycle: {days} days (POD - DN)")
+                
+                # ✅ IMPROVEMENT #2: Full diagnostic logging
+                logger.info(
+                    f"Total Cycle Calculation | "
+                    f"DN={dn_date.strftime('%Y-%m-%d')} | "
+                    f"POD={pd_date.strftime('%Y-%m-%d')} | "
+                    f"Days={days}"
+                )
                 return days
             
             # No POD yet - calculate from current date
             days = (datetime.now() - dn_date).days
-            logger.info(f"📊 Total Cycle: {days} days (Current - DN)")
+            
+            # ✅ IMPROVEMENT #2: Full diagnostic logging
+            logger.info(
+                f"Total Cycle Calculation (No POD) | "
+                f"DN={dn_date.strftime('%Y-%m-%d')} | "
+                f"Current={datetime.now().strftime('%Y-%m-%d')} | "
+                f"Days={days}"
+            )
             return days
             
         except Exception as e:
-            logger.warning(f"⚠️ Failed to calculate total cycle: {e}")
+            logger.error(f"❌ Failed to calculate total cycle: {e}")
             return 0
     
     def _format_aging_text(self, days: int) -> str:
         """
         Format aging days into human readable text.
+        
+        ✅ Ensures "Same Day" only appears when days = 0
         """
         if days < 0:
             return f"{abs(days)} Days (Data Error - POD before PGI/DN)"
@@ -648,6 +726,81 @@ class DNAnalysisService:
             return f"{days} Days ({days // 30} Months)"
     
     # ==========================================================
+    # BLOCK 6.5: DEBUG METHOD
+    # ==========================================================
+    
+    def debug_aging_calculation(self, dn_create_date, good_issue_date, pod_date) -> Dict[str, Any]:
+        """
+        Debug aging calculations with full details.
+        
+        Purpose: Quick diagnosis from Railway logs.
+        
+        Args:
+            dn_create_date: DN Create date
+            good_issue_date: PGI date
+            pod_date: POD date
+            
+        Returns:
+            Dictionary with all parsed dates and aging calculations
+        """
+        logger.info("🔍 Running debug_aging_calculation...")
+        
+        # Parse dates
+        dn_parsed = self._parse_date(dn_create_date)
+        gi_parsed = self._parse_date(good_issue_date)
+        pod_parsed = self._parse_date(pod_date)
+        
+        # Calculate aging
+        delivery_aging = self.calculate_delivery_aging(dn_create_date, good_issue_date)
+        pod_aging = self.calculate_pod_aging(good_issue_date, pod_date)
+        total_cycle = self.calculate_total_cycle(dn_create_date, pod_date)
+        
+        result = {
+            "input_dates": {
+                "dn_create_date": str(dn_create_date) if dn_create_date else None,
+                "pgi_date": str(good_issue_date) if good_issue_date else None,
+                "pod_date": str(pod_date) if pod_date else None
+            },
+            "parsed_dates": {
+                "dn_create_date": dn_parsed.strftime('%Y-%m-%d') if dn_parsed else None,
+                "pgi_date": gi_parsed.strftime('%Y-%m-%d') if gi_parsed else None,
+                "pod_date": pod_parsed.strftime('%Y-%m-%d') if pod_parsed else None
+            },
+            "calculations": {
+                "delivery_aging_days": delivery_aging,
+                "pod_aging_days": pod_aging,
+                "total_cycle_days": total_cycle
+            },
+            "formatted": {
+                "delivery_aging_text": self._format_aging_text(delivery_aging),
+                "pod_aging_text": self._format_aging_text(pod_aging),
+                "total_cycle_text": self._format_aging_text(total_cycle)
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Log full debug info
+        logger.info("=" * 60)
+        logger.info("🔍 DEBUG AGING CALCULATION")
+        logger.info("=" * 60)
+        logger.info(f"Input Dates:")
+        logger.info(f"  ├── DN Create: {result['input_dates']['dn_create_date']}")
+        logger.info(f"  ├── PGI:       {result['input_dates']['pgi_date']}")
+        logger.info(f"  └── POD:       {result['input_dates']['pod_date']}")
+        logger.info("")
+        logger.info(f"Parsed Dates:")
+        logger.info(f"  ├── DN Create: {result['parsed_dates']['dn_create_date']}")
+        logger.info(f"  ├── PGI:       {result['parsed_dates']['pgi_date']}")
+        logger.info(f"  └── POD:       {result['parsed_dates']['pod_date']}")
+        logger.info("")
+        logger.info(f"Calculations:")
+        logger.info(f"  ├── Delivery Aging: {result['calculations']['delivery_aging_days']} days → {result['formatted']['delivery_aging_text']}")
+        logger.info(f"  ├── POD Aging:      {result['calculations']['pod_aging_days']} days → {result['formatted']['pod_aging_text']}")
+        logger.info(f"  └── Total Cycle:    {result['calculations']['total_cycle_days']} days → {result['formatted']['total_cycle_text']}")
+        logger.info("=" * 60)
+        
+        return result
+       # ==========================================================
     # BLOCK 7: DN SEARCH WITH FULL DIAGNOSTICS
     # ==========================================================
     
