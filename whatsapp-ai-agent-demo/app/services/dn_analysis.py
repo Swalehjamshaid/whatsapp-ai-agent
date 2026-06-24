@@ -1,26 +1,31 @@
 # ==========================================================
-# FILE: app/services/dn_analysis.py (v3.2 - PRODUCTION GRADE)
+# FILE: app/services/dn_analysis.py (v4.0 - PRODUCTION GRADE)
 # ==========================================================
 # PURPOSE: DN Analytics Service - Direct PostgreSQL Integration
 # SOURCE: delivery_reports table ONLY
-# VERSION: 3.2 - FIXED validation_query
+# VERSION: 4.0 - FIXED DN LOOKUP WITH FULL DIAGNOSTICS
 #
 # COMPATIBLE WITH: ai_provider_service.py v5.0
 # INTEGRATION: Railway PostgreSQL
 #
-# FIXES APPLIED IN v3.2:
-# - ✅ FIXED: validation_query uses raw SQL
-# - ✅ FIXED: material_count uses COUNT(*) 
-# - ✅ All v3.1 improvements preserved
+# FIXES APPLIED IN v4.0:
+# - ✅ ADDED: Full SQL exception logging with traceback
+# - ✅ ADDED: Direct exact-match check before aggregation
+# - ✅ ADDED: test_dn_lookup() diagnostic method
+# - ✅ ADDED: Column type logging in health_check()
+# - ✅ FIXED: Auto-retry with exact DN when fallback finds same DN
+# - ✅ ADDED: Diagnostic logging for every search
+# - ✅ ADDED: COUNT(*) pre-check before DN Not Found
 # ==========================================================
 
 import logging
 from typing import Dict, List, Optional, Any
 from datetime import datetime, date
-from sqlalchemy import text, func, and_, or_, distinct
+from sqlalchemy import text, func, and_, or_, distinct, inspect
 from sqlalchemy.orm import Session
 import threading
 import re
+import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +36,6 @@ logger = logging.getLogger(__name__)
 try:
     from app.database import SessionLocal
     from app.models import DeliveryReport
-    from sqlalchemy import inspect
     logger.info("✅ Database models imported successfully")
 except ImportError as e:
     logger.error(f"❌ Database import failed: {e}")
@@ -56,9 +60,9 @@ class DNAnalysisService:
     def __init__(self):
         """Initialize DN Analytics Service."""
         self._service_name = "dn_analysis"
-        self._version = "3.2"
+        self._version = "4.0"
         self._status = "INITIALIZING"
-        logger.info("🔧 DNAnalysisService v3.2 initializing...")
+        logger.info("🔧 DNAnalysisService v4.0 initializing...")
         
         # Test connection
         test_result = self._test_connection()
@@ -105,7 +109,11 @@ class DNAnalysisService:
             return None
     
     def _execute_query(self, query: str, params: Dict[str, Any] = None) -> List[Dict[str, Any]]:
-        """Execute raw SQL query and return results as dicts."""
+        """
+        Execute raw SQL query and return results as dicts.
+        
+        ✅ FIXED: Full exception logging with traceback
+        """
         session = None
         try:
             session = self._get_session()
@@ -113,12 +121,23 @@ class DNAnalysisService:
                 logger.error("❌ No session available")
                 return []
             
+            logger.debug(f"📝 Executing SQL: {query[:200]}...")
+            logger.debug(f"📝 Parameters: {params}")
+            
             result = session.execute(text(query), params or {})
             columns = result.keys()
             rows = [dict(zip(columns, row)) for row in result.fetchall()]
+            
+            logger.debug(f"✅ Query returned {len(rows)} rows")
             return rows
+            
         except Exception as e:
-            logger.error(f"❌ Query execution failed: {e}")
+            # ✅ FULL EXCEPTION LOGGING
+            logger.error(f"❌ SQL Execution Failed!")
+            logger.error(f"   Query: {query[:500]}")
+            logger.error(f"   Parameters: {params}")
+            logger.error(f"   Error: {str(e)}")
+            logger.error(f"   Traceback:\n{traceback.format_exc()}")
             return []
         finally:
             if session:
@@ -126,9 +145,6 @@ class DNAnalysisService:
     
     # ==========================================================
     # BLOCK 4: DN SEARCH NORMALIZATION
-    # ==========================================================
-       # ==========================================================
-    # BLOCK 4: DN SEARCH NORMALIZATION (FIXED)
     # ==========================================================
     
     def _normalize_dn(self, dn_no: str) -> str:
@@ -142,11 +158,6 @@ class DNAnalysisService:
     def _build_normalized_dn_query(self, dn_no: str) -> str:
         """
         Build DN query with multiple matching strategies.
-        
-        ✅ FIXED: Uses multiple approaches to find DN:
-        1. Exact match with LIKE
-        2. Match without special characters
-        3. Match with any formatting
         """
         return """
             SELECT 
@@ -173,19 +184,33 @@ class DNAnalysisService:
                 COUNT(*) AS material_count
             FROM delivery_reports
             WHERE 
-                -- Strategy 1: Direct match
                 CAST(dn_no AS TEXT) = :dn_no
-                OR 
-                -- Strategy 2: LIKE match (handles spaces, prefixes, suffixes)
-                CAST(dn_no AS TEXT) LIKE '%' || :dn_no || '%'
-                OR 
-                -- Strategy 3: Match without hyphens or special chars
-                REPLACE(CAST(dn_no AS TEXT), '-', '') = :dn_no
-                OR 
-                -- Strategy 4: Match with any non-numeric characters removed
-                REGEXP_REPLACE(CAST(dn_no AS TEXT), '[^0-9]', '', 'g') = :dn_no
+                OR CAST(dn_no AS TEXT) LIKE '%' || :dn_no || '%'
+                OR REPLACE(CAST(dn_no AS TEXT), '-', '') = :dn_no
+                OR REGEXP_REPLACE(CAST(dn_no AS TEXT), '[^0-9]', '', 'g') = :dn_no
             GROUP BY dn_no
             LIMIT 1
+        """
+    
+    def _build_exact_match_query(self, dn_no: str) -> str:
+        """
+        Build exact match query for diagnostic purposes.
+        """
+        return """
+            SELECT *
+            FROM delivery_reports
+            WHERE CAST(dn_no AS TEXT) = :dn_no
+            LIMIT 1
+        """
+    
+    def _build_count_query(self, dn_no: str) -> str:
+        """
+        Build count query for diagnostic purposes.
+        """
+        return """
+            SELECT COUNT(*) as count
+            FROM delivery_reports
+            WHERE CAST(dn_no AS TEXT) = :dn_no
         """
     
     def _build_fallback_dn_query(self, dn_no: str) -> str:
@@ -209,6 +234,7 @@ class DNAnalysisService:
             WHERE CAST(dn_no AS TEXT) LIKE '%' || :dn_no || '%'
             LIMIT 10
         """
+    
     # ==========================================================
     # BLOCK 5: HEALTH & VALIDATION METHODS
     # ==========================================================
@@ -259,7 +285,7 @@ class DNAnalysisService:
                 logger.error(f"❌ Table check failed: {e}")
                 return result
             
-            # Check 4: Check required columns
+            # Check 4: Check required columns AND log column types
             try:
                 required_columns = [
                     "dn_no", "customer_name", "dealer_code", "customer_code",
@@ -268,7 +294,14 @@ class DNAnalysisService:
                     "pod_date", "delivery_status", "pgi_status", "pod_status",
                     "pending_flag"
                 ]
-                columns = [col["name"] for col in inspector.get_columns("delivery_reports")]
+                columns_info = inspector.get_columns("delivery_reports")
+                columns = [col["name"] for col in columns_info]
+                
+                # ✅ Log column types for diagnostics
+                logger.info("📊 PostgreSQL Column Types:")
+                for col in columns_info:
+                    logger.info(f"   ├── {col['name']}: {col['type']}")
+                
                 missing = [col for col in required_columns if col not in columns]
                 
                 if missing:
@@ -329,7 +362,6 @@ class DNAnalysisService:
                 logger.error("❌ Validation failed: SessionLocal not available")
                 return result
             
-            # ✅ FIXED: Use raw SQL instead of ORM
             query = "SELECT COUNT(DISTINCT dn_no) as count FROM delivery_reports"
             query_result = session.execute(text(query))
             row = query_result.fetchone()
@@ -372,6 +404,7 @@ class DNAnalysisService:
                 "get_dn_dashboard",
                 "diagnose_dn",
                 "check_dn_raw",
+                "test_dn_lookup",
                 "get_pending_dns",
                 "get_pending_pgi",
                 "get_pending_pod",
@@ -501,21 +534,19 @@ class DNAnalysisService:
             return f"{days} Days ({days // 30} Months)"
     
     # ==========================================================
-    # BLOCK 7: DN SEARCH WITH NORMALIZATION
-    # ==========================================================
-        # ==========================================================
-    # BLOCK 7: DN SEARCH (UPDATED)
+    # BLOCK 7: DN SEARCH WITH FULL DIAGNOSTICS
     # ==========================================================
     
     def search_dn(self, dn_no: str) -> Dict[str, Any]:
         """
-        Search for a specific DN with multiple matching strategies.
+        Search for a specific DN with multiple matching strategies and full diagnostics.
         
         Steps:
         1. Normalize DN
         2. Try all matching strategies at once
         3. If not found, try fallback partial match
-        4. Return results or similar DNs
+        4. If fallback finds the same DN, auto-retry with exact match
+        5. Return results or similar DNs
         """
         logger.info(f"🔍 Searching for DN: '{dn_no}'")
         
@@ -534,16 +565,51 @@ class DNAnalysisService:
         query = self._build_normalized_dn_query(normalized_dn)
         results = self._execute_query(query, {"dn_no": normalized_dn})
         
+        # ✅ Diagnostic logging
+        logger.info(f"📊 DN Search | Input={dn_no} | Normalized={normalized_dn} | Results={len(results)}")
+        
         if results:
             logger.info(f"✅ DN {dn_no} found with {results[0].get('material_count', 1)} materials")
             return {"success": True, "data": results[0]}
         
-        # Step 3: Fallback partial match search
-        logger.warning(f"⚠️ Exact match not found for {dn_no}. Running fallback search...")
+        # Step 3: Check exact match count before fallback
+        count_query = self._build_count_query(normalized_dn)
+        count_results = self._execute_query(count_query, {"dn_no": normalized_dn})
+        exact_count = count_results[0].get('count', 0) if count_results else 0
+        logger.info(f"   ├── Exact match count: {exact_count}")
+        
+        if exact_count > 0:
+            # ✅ If exact count > 0, try direct exact match
+            logger.info(f"   ├── Exact match found! Trying direct query...")
+            exact_query = self._build_exact_match_query(normalized_dn)
+            exact_results = self._execute_query(exact_query, {"dn_no": normalized_dn})
+            if exact_results:
+                # Build aggregated result from exact match
+                data = self._aggregate_dn_results(exact_results, normalized_dn)
+                if data:
+                    logger.info(f"✅ DN {dn_no} found via direct exact match")
+                    return {"success": True, "data": data}
+        
+        # Step 4: Fallback partial match search
+        logger.warning(f"⚠️ Primary match not found for {dn_no}. Running fallback search...")
         fallback_query = self._build_fallback_dn_query(normalized_dn)
         fallback_results = self._execute_query(fallback_query, {"dn_no": normalized_dn})
         
         similar_dns = [str(r.get('dn_no', '')) for r in fallback_results if r.get('dn_no')]
+        
+        # ✅ Check if the requested DN is in similar_dns
+        requested_dn_found = any(dn == normalized_dn or dn == dn_no for dn in similar_dns)
+        
+        if requested_dn_found:
+            # ✅ Auto-retry with the exact DN
+            logger.info(f"   ├── Requested DN found in fallback! Auto-retrying with exact DN...")
+            exact_query = self._build_exact_match_query(normalized_dn)
+            exact_results = self._execute_query(exact_query, {"dn_no": normalized_dn})
+            if exact_results:
+                data = self._aggregate_dn_results(exact_results, normalized_dn)
+                if data:
+                    logger.info(f"✅ DN {dn_no} found via fallback auto-retry")
+                    return {"success": True, "data": data}
         
         if similar_dns:
             logger.info(f"   ├── Similar DNs found: {similar_dns[:5]}")
@@ -556,36 +622,74 @@ class DNAnalysisService:
         
         logger.warning(f"❌ DN {dn_no} not found - no similar matches")
         return {"success": False, "error": f"DN {dn_no} not found"}
-        # ==========================================================
-    # BLOCK 7.5: VERIFY DN (FIXES "Missing methods: ['verify_dn']")
+    
+    def _aggregate_dn_results(self, results: List[Dict[str, Any]], dn_no: str) -> Optional[Dict[str, Any]]:
+        """
+        Aggregate raw DN results into a single dashboard record.
+        """
+        if not results:
+            return None
+        
+        data = {
+            "dn_no": dn_no,
+            "dealer_name": results[0].get('customer_name', 'Unknown'),
+            "customer_name": results[0].get('customer_name', 'Unknown'),
+            "dealer_code": results[0].get('dealer_code'),
+            "customer_code": results[0].get('customer_code'),
+            "warehouse": results[0].get('warehouse'),
+            "warehouse_code": results[0].get('warehouse_code'),
+            "city": results[0].get('ship_to_city'),
+            "delivery_location": results[0].get('delivery_location'),
+            "sales_manager": results[0].get('sales_manager'),
+            "division": results[0].get('division'),
+            "total_units": sum(r.get('dn_qty', 0) or 0 for r in results),
+            "total_revenue": sum(r.get('dn_amount', 0) or 0 for r in results),
+            "dn_create_date": min((r.get('dn_create_date') for r in results if r.get('dn_create_date')), default=None),
+            "good_issue_date": max((r.get('good_issue_date') for r in results if r.get('good_issue_date')), default=None),
+            "pod_date": max((r.get('pod_date') for r in results if r.get('pod_date')), default=None),
+            "delivery_status": results[0].get('delivery_status'),
+            "pgi_status": results[0].get('pgi_status'),
+            "pod_status": results[0].get('pod_status'),
+            "pending_flag": results[0].get('pending_flag'),
+            "material_count": len(results)
+        }
+        
+        # Calculate aging
+        delivery_aging = self.calculate_delivery_aging(
+            data.get('dn_create_date'),
+            data.get('good_issue_date')
+        )
+        pod_aging = self.calculate_pod_aging(
+            data.get('good_issue_date'),
+            data.get('pod_date')
+        )
+        total_cycle = self.calculate_total_cycle(
+            data.get('dn_create_date'),
+            data.get('pod_date')
+        )
+        
+        data['delivery_aging_days'] = delivery_aging
+        data['pod_aging_days'] = pod_aging
+        data['total_cycle_days'] = total_cycle
+        
+        return data
+    
+    # ==========================================================
+    # BLOCK 7.5: VERIFY DN
     # ==========================================================
     
     def verify_dn(self, dn_no: str) -> Dict[str, Any]:
         """
         Verify if DN exists using multiple matching strategies.
-        
-        Uses 4 strategies to find DN regardless of formatting:
-        1. Exact match
-        2. LIKE match (handles spaces, prefixes, suffixes)
-        3. REPLACE hyphens
-        4. REGEXP_REPLACE non-numeric characters
-        
-        Args:
-            dn_no: DN number to verify
-            
-        Returns:
-            Dict with exists flag
         """
         logger.info(f"🔍 Verifying DN: '{dn_no}'")
         
         if not dn_no:
             return {"success": False, "exists": False, "error": "DN number required"}
         
-        # Normalize the DN
         normalized_dn = self._normalize_dn(dn_no)
         logger.info(f"   ├── Normalized: '{normalized_dn}'")
         
-        # Check if DN exists using multiple strategies
         query = """
             SELECT COUNT(DISTINCT dn_no) as count 
             FROM delivery_reports 
@@ -600,8 +704,73 @@ class DNAnalysisService:
         logger.info(f"✅ DN {dn_no} exists: {exists}")
         return {"success": True, "exists": exists}
     
+    # ==========================================================
+    # BLOCK 7.6: TEST DN LOOKUP (DIAGNOSTIC)
+    # ==========================================================
     
-    
+    def test_dn_lookup(self, dn_no: str) -> Dict[str, Any]:
+        """
+        Test DN lookup with full diagnostics.
+        
+        Returns:
+        - exact match count
+        - normalized match count
+        - like match count
+        - first 10 matching DNs
+        """
+        logger.info(f"🔬 Testing DN lookup: '{dn_no}'")
+        
+        if not dn_no:
+            return {"success": False, "error": "DN number required"}
+        
+        normalized_dn = self._normalize_dn(dn_no)
+        results = {
+            "dn": dn_no,
+            "normalized": normalized_dn,
+            "exact_count": 0,
+            "like_count": 0,
+            "regex_count": 0,
+            "matching_dns": [],
+            "diagnostics": []
+        }
+        
+        # 1. Exact match count
+        query1 = "SELECT COUNT(*) as count FROM delivery_reports WHERE CAST(dn_no AS TEXT) = :dn_no"
+        r1 = self._execute_query(query1, {"dn_no": normalized_dn})
+        results["exact_count"] = r1[0].get('count', 0) if r1 else 0
+        results["diagnostics"].append(f"Exact match: {results['exact_count']}")
+        
+        # 2. LIKE match count
+        query2 = "SELECT COUNT(*) as count FROM delivery_reports WHERE CAST(dn_no AS TEXT) LIKE '%' || :dn_no || '%'"
+        r2 = self._execute_query(query2, {"dn_no": normalized_dn})
+        results["like_count"] = r2[0].get('count', 0) if r2 else 0
+        results["diagnostics"].append(f"LIKE match: {results['like_count']}")
+        
+        # 3. REGEXP_REPLACE match count
+        query3 = """
+            SELECT COUNT(*) as count 
+            FROM delivery_reports 
+            WHERE REGEXP_REPLACE(CAST(dn_no AS TEXT), '[^0-9]', '', 'g') = :dn_no
+        """
+        r3 = self._execute_query(query3, {"dn_no": normalized_dn})
+        results["regex_count"] = r3[0].get('count', 0) if r3 else 0
+        results["diagnostics"].append(f"REGEXP match: {results['regex_count']}")
+        
+        # 4. Get matching DNs
+        query4 = """
+            SELECT DISTINCT dn_no
+            FROM delivery_reports
+            WHERE CAST(dn_no AS TEXT) LIKE '%' || :dn_no || '%'
+            LIMIT 10
+        """
+        r4 = self._execute_query(query4, {"dn_no": normalized_dn})
+        results["matching_dns"] = [str(r.get('dn_no', '')) for r in r4 if r.get('dn_no')]
+        
+        results["found"] = results["exact_count"] > 0 or results["like_count"] > 0
+        results["diagnostics"].append(f"Total matching DNs: {len(results['matching_dns'])}")
+        
+        logger.info(f"✅ Test DN lookup complete: found={results['found']}")
+        return {"success": True, "data": results}
     
     # ==========================================================
     # BLOCK 8: DN DASHBOARD
@@ -714,39 +883,96 @@ Please verify the DN number."""
     # ==========================================================
     # BLOCK 9: DIAGNOSTIC METHODS
     # ==========================================================
-        # ==========================================================
-    # BLOCK 9: SERVICE METADATA
-    # ==========================================================
     
-    def get_service_metadata(self) -> Dict[str, Any]:
-        """Get service metadata for ai_provider_service.py."""
-        logger.info("🔍 Returning service metadata...")
+    def diagnose_dn(self, dn_no: str) -> Dict[str, Any]:
+        """Diagnose DN issues."""
+        logger.info(f"🔬 Diagnosing DN: '{dn_no}'")
+        
+        if not dn_no:
+            return {"success": False, "error": "DN number required"}
+        
+        normalized_dn = self._normalize_dn(dn_no)
+        
+        result = {
+            "dn": dn_no,
+            "normalized": normalized_dn,
+            "exact_match_count": 0,
+            "partial_match_count": 0,
+            "similar_dns": [],
+            "exists": False,
+            "diagnostic": []
+        }
+        
+        exact_query = """
+            SELECT COUNT(DISTINCT dn_no) as count 
+            FROM delivery_reports 
+            WHERE REGEXP_REPLACE(
+                CAST(dn_no AS TEXT),
+                '[^0-9]',
+                '',
+                'g'
+            ) = :dn_no
+        """
+        exact_results = self._execute_query(exact_query, {"dn_no": normalized_dn})
+        exact_count = exact_results[0].get('count', 0) if exact_results else 0
+        result["exact_match_count"] = exact_count
+        result["exists"] = exact_count > 0
+        result["diagnostic"].append(f"Exact match (normalized): {exact_count} found")
+        
+        partial_query = """
+            SELECT DISTINCT dn_no
+            FROM delivery_reports
+            WHERE CAST(dn_no AS TEXT) LIKE '%' || :dn_no || '%'
+            LIMIT 20
+        """
+        partial_results = self._execute_query(partial_query, {"dn_no": normalized_dn})
+        similar_dns = [str(r.get('dn_no', '')) for r in partial_results if r.get('dn_no')]
+        result["partial_match_count"] = len(similar_dns)
+        result["similar_dns"] = similar_dns[:10]
+        result["diagnostic"].append(f"Partial matches: {len(similar_dns)} found")
+        
+        if similar_dns:
+            result["diagnostic"].append(f"Similar DNs: {', '.join(similar_dns[:5])}")
+        
+        raw_query = """
+            SELECT COUNT(DISTINCT dn_no) as count 
+            FROM delivery_reports 
+            WHERE dn_no = :dn_no
+        """
+        raw_results = self._execute_query(raw_query, {"dn_no": dn_no})
+        raw_count = raw_results[0].get('count', 0) if raw_results else 0
+        result["diagnostic"].append(f"Raw match (without normalization): {raw_count} found")
+        
+        logger.info(f"✅ Diagnosis complete for {dn_no}: exists={result['exists']}, partial={result['partial_match_count']}")
+        return {"success": True, "data": result}
+    
+    def check_dn_raw(self, dn_no: str) -> Dict[str, Any]:
+        """Check raw DN existence without any normalization."""
+        logger.info(f"🔍 Checking raw DN: '{dn_no}'")
+        
+        if not dn_no:
+            return {"success": False, "error": "DN number required"}
+        
+        query = """
+            SELECT DISTINCT dn_no
+            FROM delivery_reports
+            WHERE CAST(dn_no AS TEXT) LIKE '%' || :dn_no || '%'
+            LIMIT 10
+        """
+        results = self._execute_query(query, {"dn_no": dn_no})
+        
+        similar_dns = [str(r.get('dn_no', '')) for r in results if r.get('dn_no')]
         
         return {
-            "service_name": self._service_name,
-            "version": self._version,
-            "status": self._status,
-            "module": "DN Analytics",
-            "description": "DN Analytics Service - PostgreSQL Integration",
-            "methods": [
-                "health_check",
-                "validation_query",
-                "get_service_metadata",
-                "search_dn",
-                "verify_dn",
-                "get_dn_dashboard",
-                "diagnose_dn",
-                "check_dn_raw",
-                "get_pending_dns",
-                "get_pending_pgi",
-                "get_pending_pod",
-                "calculate_delivery_aging",
-                "calculate_pod_aging",
-                "calculate_total_cycle"
-            ]
+            "success": True,
+            "dn": dn_no,
+            "found": len(similar_dns) > 0,
+            "similar_dns": similar_dns[:10],
+            "count": len(similar_dns)
         }
+    
     # ==========================================================
-    # BLOCK 10: PENDING METHODS (with COUNT(*))
+    # BLOCK 10: PENDING METHODS
     # ==========================================================
     
     def get_pending_dns(self, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
@@ -1171,20 +1397,24 @@ __all__ = [
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("DNAnalysisService v3.2 - PRODUCTION GRADE")
+logger.info("DNAnalysisService v4.0 - PRODUCTION GRADE")
 logger.info("=" * 70)
 logger.info("")
 logger.info("   SERVICE DETAILS:")
 logger.info("   ✅ Service Name: dn_analysis")
-logger.info("   ✅ Version: 3.2")
+logger.info("   ✅ Version: 4.0")
 logger.info("   ✅ Status: READY")
 logger.info("   ✅ Source: PostgreSQL (delivery_reports)")
 logger.info("   ✅ Compatible: ai_provider_service.py v5.0")
 logger.info("")
-logger.info("   FIXES APPLIED IN v3.2:")
-logger.info("   ✅ FIXED: validation_query uses raw SQL")
-logger.info("   ✅ FIXED: material_count uses COUNT(*)")
-logger.info("   ✅ All v3.1 improvements preserved")
+logger.info("   FIXES APPLIED IN v4.0:")
+logger.info("   ✅ ADDED: Full SQL exception logging with traceback")
+logger.info("   ✅ ADDED: Direct exact-match check before aggregation")
+logger.info("   ✅ ADDED: test_dn_lookup() diagnostic method")
+logger.info("   ✅ ADDED: Column type logging in health_check()")
+logger.info("   ✅ FIXED: Auto-retry with exact DN when fallback finds same DN")
+logger.info("   ✅ ADDED: Diagnostic logging for every search")
+logger.info("   ✅ ADDED: COUNT(*) pre-check before DN Not Found")
 logger.info("")
 logger.info("   AVAILABLE METHODS:")
 logger.info("   ✅ health_check()")
@@ -1195,6 +1425,7 @@ logger.info("   ✅ verify_dn()")
 logger.info("   ✅ get_dn_dashboard()")
 logger.info("   ✅ diagnose_dn()")
 logger.info("   ✅ check_dn_raw()")
+logger.info("   ✅ test_dn_lookup()")
 logger.info("   ✅ get_pending_dns()")
 logger.info("   ✅ get_pending_pgi()")
 logger.info("   ✅ get_pending_pod()")
