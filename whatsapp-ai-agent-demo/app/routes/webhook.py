@@ -1,8 +1,8 @@
 # ==========================================================
-# FILE: app/routes/webhook.py (v26.0 - COMPLETE PRODUCTION)
+# FILE: app/routes/webhook.py (v27.0 - COMPLETE PRODUCTION)
 # ==========================================================
 # PURPOSE: WhatsApp Webhook Handler - ALWAYS Calls AI
-# VERSION: 26.0 - FIXED RESPONSE FORMATTING
+# VERSION: 27.0 - FIXED RESPONSE FORMATTING
 # ==========================================================
 
 import json
@@ -201,44 +201,15 @@ def is_duplicate_message(message_id: str, phone_number: str) -> bool:
     return False
 
 # ==========================================================
-# ✅ FIXED: RESPONSE FORMATTING HELPER
+# ✅ FIXED: RESPONSE FORMATTING FUNCTIONS
 # ==========================================================
 
-def _ensure_string_response(response_data: Any) -> str:
-    """
-    Ensure response is always a string for WhatsApp.
-    
-    ✅ FIXES: "text.body" must be a string error
-    """
-    if response_data is None:
-        return "No data available"
-    
-    if isinstance(response_data, str):
-        return response_data
-    
-    if isinstance(response_data, dict):
-        # Check if it's a dashboard response with 'data' field
-        if "data" in response_data:
-            data = response_data["data"]
-            if isinstance(data, dict):
-                # Try to format as dashboard
-                return _format_dashboard_response(data)
-        # Check if it has 'response' field
-        if "response" in response_data:
-            return _ensure_string_response(response_data["response"])
-        # Check if it has 'error' field
-        if "error" in response_data:
-            return f"⚠️ {response_data['error']}"
-        # Convert dict to string
-        return str(response_data)
-    
-    if isinstance(response_data, list):
-        return "\n".join([str(item) for item in response_data])
-    
-    return str(response_data)
-
 def _format_dashboard_response(data: Dict[str, Any]) -> str:
-    """Format DN dashboard data into WhatsApp message."""
+    """
+    Format DN dashboard data into WhatsApp message.
+    
+    ✅ FIXED: Properly formats all DN fields
+    """
     if not data:
         return "No data available"
     
@@ -267,11 +238,40 @@ def _format_dashboard_response(data: Dict[str, Any]) -> str:
     lines.append(f"{city}")
     lines.append("")
     
+    # Delivery Location
+    delivery_location = data.get('delivery_location')
+    if delivery_location:
+        lines.append("*Delivery Location:*")
+        lines.append(f"{delivery_location}")
+        lines.append("")
+    
+    # Sales Manager
+    sales_manager = data.get('sales_manager')
+    if sales_manager:
+        lines.append("*Sales Manager:*")
+        lines.append(f"{sales_manager}")
+        lines.append("")
+    
+    # Division
+    division = data.get('division')
+    if division:
+        lines.append("*Division:*")
+        lines.append(f"{division}")
+        lines.append("")
+    
     # Metrics
     lines.append("*📊 Metrics:*")
     lines.append(f"Units: {data.get('total_units', 0)}")
     revenue = data.get('total_revenue', 0)
-    lines.append(f"Revenue: PKR {revenue:,.2f}" if revenue else "Revenue: PKR 0")
+    if revenue:
+        lines.append(f"Revenue: PKR {revenue:,.2f}")
+    else:
+        lines.append("Revenue: PKR 0")
+    lines.append("")
+    
+    # Material Count
+    material_count = data.get('material_count', 1)
+    lines.append(f"Materials: {material_count}")
     lines.append("")
     
     # Dates
@@ -296,6 +296,71 @@ def _format_dashboard_response(data: Dict[str, Any]) -> str:
     lines.append(f"Pending: {data.get('pending_flag_text', 'Unknown')}")
     
     return "\n".join(lines)
+
+
+def _format_list_response(items: List[Any]) -> str:
+    """Format a list of items for WhatsApp."""
+    if not items:
+        return "No items found"
+    
+    result = []
+    for i, item in enumerate(items, 1):
+        if isinstance(item, dict):
+            # Check if it's a DN item
+            if "dn_no" in item:
+                result.append(_format_dashboard_response(item))
+            else:
+                result.append(f"{i}. {str(item)}")
+        else:
+            result.append(f"{i}. {str(item)}")
+    
+    return "\n\n".join(result)
+
+
+def _ensure_string_response(response_data: Any) -> str:
+    """
+    Ensure response is always a string for WhatsApp.
+    
+    ✅ FIXED: Properly formats DN dashboard data
+    """
+    if response_data is None:
+        return "No data available"
+    
+    if isinstance(response_data, str):
+        return response_data
+    
+    if isinstance(response_data, dict):
+        # Check if it's a dashboard response with 'data' field
+        if "data" in response_data:
+            data = response_data["data"]
+            # If data is a dict with DN fields, format it
+            if isinstance(data, dict) and "dn_no" in data:
+                return _format_dashboard_response(data)
+            # If data is a list, format each item
+            if isinstance(data, list):
+                return _format_list_response(data)
+            # Otherwise convert to string
+            return str(data)
+        
+        # Check if it has 'response' field
+        if "response" in response_data:
+            return _ensure_string_response(response_data["response"])
+        
+        # Check if it has 'error' field
+        if "error" in response_data:
+            return f"⚠️ {response_data['error']}"
+        
+        # If it's a DN data dict directly
+        if "dn_no" in response_data:
+            return _format_dashboard_response(response_data)
+        
+        # Convert dict to string
+        return str(response_data)
+    
+    if isinstance(response_data, list):
+        return _format_list_response(response_data)
+    
+    return str(response_data)
 
 # ==========================================================
 # WEBHOOK VERIFICATION (GET)
@@ -501,14 +566,14 @@ async def process_message_with_ai(
             
             logger.info(f"[{request_id}] ✅ AI response received")
             
-            # ✅ FIXED: Always convert to string
+            # ✅ FIXED: Always convert to string using the enhanced function
             response_text = _ensure_string_response(response)
             
-            # ✅ Ensure it's not empty
-            if not response_text or response_text == "None":
+            # Ensure it's not empty
+            if not response_text or response_text == "None" or response_text.strip() == "":
                 response_text = "⚠️ I couldn't process your request. Please try again."
             
-            logger.info(f"[{request_id}] 📤 Response: {response_text[:100]}...")
+            logger.info(f"[{request_id}] 📤 Response length: {len(response_text)} chars")
             
             await send_whatsapp_response(phone_number, response_text, request_id)
             
@@ -582,11 +647,11 @@ async def send_whatsapp_response(
     ✅ FIXED: Ensures response_text is always a string
     """
     try:
-        # ✅ Ensure response_text is a string
+        # Ensure response_text is a string
         if not isinstance(response_text, str):
             response_text = _ensure_string_response(response_text)
         
-        # ✅ Ensure it's not empty
+        # Ensure it's not empty
         if not response_text or response_text.strip() == "":
             response_text = "No data available"
         
@@ -620,7 +685,7 @@ async def webhook_ping() -> JSONResponse:
     ai = _get_ai_provider_service()
     return JSONResponse(content={
         "ping": "pong",
-        "webhook_version": "26.0",
+        "webhook_version": "27.0",
         "architecture": "v16.0 (Built-in Intent Detection)",
         "timestamp": datetime.now().isoformat(),
         "services": {
@@ -638,7 +703,7 @@ async def webhook_health() -> JSONResponse:
     ai = _get_ai_provider_service()
     return JSONResponse(content={
         "status": "healthy" if ai else "degraded",
-        "webhook_version": "26.0",
+        "webhook_version": "27.0",
         "architecture": "v16.0 (Built-in Intent Detection)",
         "timestamp": datetime.now().isoformat(),
         "services": {
@@ -666,7 +731,6 @@ async def test_dn_lookup(dn: str = Query(..., description="DN number to test")):
                 content={"error": "AI Provider not available"}
             )
         
-        # Get dn_analysis service
         dn_service = ai.registry.get_service_instance("dn")
         if not dn_service:
             return JSONResponse(
@@ -674,7 +738,6 @@ async def test_dn_lookup(dn: str = Query(..., description="DN number to test")):
                 content={"error": "DN Service not available"}
             )
         
-        # Test the DN
         result = dn_service.test_dn_lookup(dn)
         return JSONResponse(content=result)
         
@@ -690,7 +753,7 @@ async def test_dn_lookup(dn: str = Query(..., description="DN number to test")):
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("🌐 WEBHOOK ROUTER v26.0 - FIXED RESPONSE FORMATTING")
+logger.info("🌐 WEBHOOK ROUTER v27.0 - COMPLETE PRODUCTION")
 logger.info("=" * 70)
 
 logger.info("🚀 Pre-initializing AI Provider Service...")
