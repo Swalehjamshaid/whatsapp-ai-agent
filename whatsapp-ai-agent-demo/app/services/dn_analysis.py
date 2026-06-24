@@ -423,51 +423,90 @@ class DNAnalysisService:
     # ==========================================================
     # BLOCK 6: AGING CALCULATION METHODS (YYYY-DD-MM FIXED)
     # ==========================================================
+        # ==========================================================
+    # BLOCK 6: AGING CALCULATION METHODS (YYYY-DD-MM FIXED)
+    # ==========================================================
     
     def _parse_date(self, date_value):
         """
         Parse date using company format: YYYY-DD-MM
         
-        Example: "2026-06-05" → Year=2026, Day=06, Month=05 → May 6, 2026
+        CRITICAL: PostgreSQL returns Python date objects.
+        We MUST convert them to string first, then parse as YYYY-DD-MM.
+        
+        Example: PostgreSQL returns date(2026, 6, 5) → "2026-06-05"
+                 Company interprets as Year=2026, Day=06, Month=05 → 6 May 2026
         
         Args:
-            date_value: Date string in YYYY-DD-MM format or datetime/date object
+            date_value: Date from PostgreSQL (date object, datetime, or string)
             
         Returns:
-            datetime object or None if parsing fails
+            datetime object with company interpretation or None if parsing fails
         """
         if not date_value:
             return None
         
         try:
-            # Handle datetime or date objects
-            if isinstance(date_value, datetime):
-                return date_value
-            elif isinstance(date_value, date):
-                return datetime.combine(date_value, datetime.min.time())
-            
-            # Handle string dates - ALWAYS parse as YYYY-DD-MM
-            if isinstance(date_value, str):
-                parts = date_value.split('-')
+            # ✅ FIX: Handle PostgreSQL date objects FIRST
+            if isinstance(date_value, date) and not isinstance(date_value, datetime):
+                # PostgreSQL returns Python date objects
+                # Convert to string in YYYY-MM-DD format (database format)
+                raw_date = date_value.strftime("%Y-%m-%d")
+                
+                # Now parse using company rule: YYYY-DD-MM
+                parts = raw_date.split('-')
                 if len(parts) == 3:
-                    year = int(parts[0])   # 2026
-                    day = int(parts[1])    # 06
-                    month = int(parts[2])  # 05
+                    year = int(parts[0])      # 2026
+                    day = int(parts[1])       # 06 (DB month becomes our day)
+                    month = int(parts[2])     # 05 (DB day becomes our month)
                     
-                    # Validate date parts
+                    # Validate
                     if not (1 <= month <= 12 and 1 <= day <= 31):
                         raise ValueError(f"Invalid month/day: month={month}, day={day}")
                     
                     parsed_date = datetime(year, month, day)
                     
                     # ✅ Diagnostic logging
-                    logger.info(f"Date Conversion: Raw={date_value} Parsed={parsed_date.strftime('%Y-%m-%d')} (Day={day}, Month={month})")
+                    logger.info(f"Date Conversion: PostgreSQL={date_value} → Raw={raw_date} → YYYY-DD-MM={year:04d}-{day:02d}-{month:02d} → {parsed_date.strftime('%d %B %Y')}")
                     
                     return parsed_date
-                else:
-                    # Fallback for other formats
-                    logger.warning(f"⚠️ Unexpected date format (not YYYY-DD-MM): {date_value}")
-                    return datetime.strptime(date_value, '%Y-%m-%d')
+                    
+            elif isinstance(date_value, datetime):
+                # Handle datetime objects (convert to date first)
+                date_obj = date_value.date()
+                raw_date = date_obj.strftime("%Y-%m-%d")
+                
+                parts = raw_date.split('-')
+                if len(parts) == 3:
+                    year = int(parts[0])
+                    day = int(parts[1])
+                    month = int(parts[2])
+                    
+                    if not (1 <= month <= 12 and 1 <= day <= 31):
+                        raise ValueError(f"Invalid month/day: month={month}, day={day}")
+                    
+                    parsed_date = datetime(year, month, day)
+                    
+                    logger.info(f"Date Conversion: datetime={date_value} → Raw={raw_date} → YYYY-DD-MM={year:04d}-{day:02d}-{month:02d} → {parsed_date.strftime('%d %B %Y')}")
+                    
+                    return parsed_date
+            
+            # Handle string dates
+            elif isinstance(date_value, str):
+                parts = date_value.split('-')
+                if len(parts) == 3:
+                    year = int(parts[0])
+                    day = int(parts[1])
+                    month = int(parts[2])
+                    
+                    if not (1 <= month <= 12 and 1 <= day <= 31):
+                        raise ValueError(f"Invalid month/day: month={month}, day={day}")
+                    
+                    parsed_date = datetime(year, month, day)
+                    
+                    logger.info(f"Date Conversion: String={date_value} → YYYY-DD-MM={year:04d}-{day:02d}-{month:02d} → {parsed_date.strftime('%d %B %Y')}")
+                    
+                    return parsed_date
             
             return None
             
@@ -481,7 +520,7 @@ class DNAnalysisService:
         
         Same as _parse_date() - uses YYYY-DD-MM format consistently.
         
-        Example: "2026-06-05" → Year=2026, Day=06, Month=05 → May 6, 2026
+        Example: PostgreSQL date(2026, 6, 5) → 6 May 2026
         """
         # Use the same parsing logic as _parse_date
         return self._parse_date(date_value)
@@ -490,27 +529,17 @@ class DNAnalysisService:
         """
         Format datetime → DD Month YYYY (Day Month Year).
         
-        Example: May 6, 2026 → "6 May 2026"
+        Example: 6 May 2026 → "6 May 2026"
         """
         if not date_value:
             return 'N/A'
         
         try:
-            if isinstance(date_value, str):
-                parts = date_value.split('-')
-                if len(parts) == 3:
-                    year = int(parts[0])
-                    day = int(parts[1])
-                    month = int(parts[2])
-                    date_obj = datetime(year, month, day)
-                    return date_obj.strftime('%-d %B %Y')
-                return date_value
-            elif isinstance(date_value, datetime):
-                return date_value.strftime('%-d %B %Y')
-            elif isinstance(date_value, date):
-                return date_value.strftime('%-d %B %Y')
-            else:
-                return 'N/A'
+            # Parse the date first using company rule
+            parsed = self._parse_date(date_value)
+            if parsed:
+                return parsed.strftime('%-d %B %Y')
+            return str(date_value)
         except Exception as e:
             logger.warning(f"⚠️ Date formatting error: {e}")
             return 'N/A'
@@ -519,27 +548,17 @@ class DNAnalysisService:
         """
         Format datetime → DD-MMM-YY (Day-Month-Year with month abbreviation).
         
-        Example: May 6, 2026 → "6-May-26"
+        Example: 6 May 2026 → "6-May-26"
         """
         if not date_value:
             return 'N/A'
         
         try:
-            if isinstance(date_value, str):
-                parts = date_value.split('-')
-                if len(parts) == 3:
-                    year = int(parts[0])
-                    day = int(parts[1])
-                    month = int(parts[2])
-                    date_obj = datetime(year, month, day)
-                    return date_obj.strftime('%-d-%b-%y')
-                return date_value
-            elif isinstance(date_value, datetime):
-                return date_value.strftime('%-d-%b-%y')
-            elif isinstance(date_value, date):
-                return date_value.strftime('%-d-%b-%y')
-            else:
-                return 'N/A'
+            # Parse the date first using company rule
+            parsed = self._parse_date(date_value)
+            if parsed:
+                return parsed.strftime('%-d-%b-%y')
+            return str(date_value)
         except Exception as e:
             logger.warning(f"⚠️ Date formatting error: {e}")
             return 'N/A'
@@ -554,14 +573,14 @@ class DNAnalysisService:
             CURRENT_DATE - dn_create_date
         
         Args:
-            dn_create_date: DN Create date in YYYY-DD-MM format
-            good_issue_date: PGI date in YYYY-DD-MM format
+            dn_create_date: DN Create date (PostgreSQL date object)
+            good_issue_date: PGI date (PostgreSQL date object)
             
         Returns:
             Delivery aging in days
         """
         try:
-            # Parse dates using YYYY-DD-MM format
+            # Parse dates using company format: YYYY-DD-MM
             dn_date = self._parse_date(dn_create_date)
             gi_date = self._parse_date(good_issue_date)
             
@@ -570,16 +589,21 @@ class DNAnalysisService:
                 return 0
             
             # ✅ Diagnostic logging
-            logger.info(f"📊 Delivery Aging: DN={dn_create_date} PGI={good_issue_date}")
+            logger.info(f"📊 Delivery Aging Calculation:")
+            logger.info(f"   ├── DN Create (PostgreSQL): {dn_create_date}")
+            logger.info(f"   ├── DN Create (Parsed): {dn_date.strftime('%d %B %Y')}")
+            logger.info(f"   ├── PGI (PostgreSQL): {good_issue_date}")
+            if gi_date:
+                logger.info(f"   ├── PGI (Parsed): {gi_date.strftime('%d %B %Y')}")
             
             if gi_date:
                 days = (gi_date - dn_date).days
-                logger.info(f"   ├── Delivery Aging: {days} days (PGI - DN)")
+                logger.info(f"   └── Delivery Aging: {days} days (PGI - DN)")
                 return days
             
             # No PGI yet - calculate from current date
             days = (datetime.now() - dn_date).days
-            logger.info(f"   ├── Delivery Aging: {days} days (Current - DN)")
+            logger.info(f"   └── Delivery Aging: {days} days (Current - DN)")
             return days
             
         except Exception as e:
@@ -596,14 +620,14 @@ class DNAnalysisService:
             CURRENT_DATE - good_issue_date
         
         Args:
-            good_issue_date: PGI date in YYYY-DD-MM format
-            pod_date: POD date in YYYY-DD-MM format
+            good_issue_date: PGI date (PostgreSQL date object)
+            pod_date: POD date (PostgreSQL date object)
             
         Returns:
             POD aging in days
         """
         try:
-            # Parse dates using YYYY-DD-MM format
+            # Parse dates using company format: YYYY-DD-MM
             gi_date = self._parse_date(good_issue_date)
             pd_date = self._parse_date(pod_date)
             
@@ -612,16 +636,21 @@ class DNAnalysisService:
                 return 0
             
             # ✅ Diagnostic logging
-            logger.info(f"📊 POD Aging: PGI={good_issue_date} POD={pod_date}")
+            logger.info(f"📊 POD Aging Calculation:")
+            logger.info(f"   ├── PGI (PostgreSQL): {good_issue_date}")
+            logger.info(f"   ├── PGI (Parsed): {gi_date.strftime('%d %B %Y')}")
+            logger.info(f"   ├── POD (PostgreSQL): {pod_date}")
+            if pd_date:
+                logger.info(f"   ├── POD (Parsed): {pd_date.strftime('%d %B %Y')}")
             
             if pd_date:
                 days = (pd_date - gi_date).days
-                logger.info(f"   ├── POD Aging: {days} days (POD - PGI)")
+                logger.info(f"   └── POD Aging: {days} days (POD - PGI)")
                 return days
             
             # No POD yet - calculate from current date
             days = (datetime.now() - gi_date).days
-            logger.info(f"   ├── POD Aging: {days} days (Current - PGI)")
+            logger.info(f"   └── POD Aging: {days} days (Current - PGI)")
             return days
             
         except Exception as e:
@@ -638,14 +667,14 @@ class DNAnalysisService:
             CURRENT_DATE - dn_create_date
         
         Args:
-            dn_create_date: DN Create date in YYYY-DD-MM format
-            pod_date: POD date in YYYY-DD-MM format
+            dn_create_date: DN Create date (PostgreSQL date object)
+            pod_date: POD date (PostgreSQL date object)
             
         Returns:
             Total cycle time in days
         """
         try:
-            # Parse dates using YYYY-DD-MM format
+            # Parse dates using company format: YYYY-DD-MM
             dn_date = self._parse_date(dn_create_date)
             pd_date = self._parse_date(pod_date)
             
@@ -654,16 +683,21 @@ class DNAnalysisService:
                 return 0
             
             # ✅ Diagnostic logging
-            logger.info(f"📊 Total Cycle: DN={dn_create_date} POD={pod_date}")
+            logger.info(f"📊 Total Cycle Calculation:")
+            logger.info(f"   ├── DN Create (PostgreSQL): {dn_create_date}")
+            logger.info(f"   ├── DN Create (Parsed): {dn_date.strftime('%d %B %Y')}")
+            logger.info(f"   ├── POD (PostgreSQL): {pod_date}")
+            if pd_date:
+                logger.info(f"   ├── POD (Parsed): {pd_date.strftime('%d %B %Y')}")
             
             if pd_date:
                 days = (pd_date - dn_date).days
-                logger.info(f"   ├── Total Cycle: {days} days (POD - DN)")
+                logger.info(f"   └── Total Cycle: {days} days (POD - DN)")
                 return days
             
             # No POD yet - calculate from current date
             days = (datetime.now() - dn_date).days
-            logger.info(f"   ├── Total Cycle: {days} days (Current - DN)")
+            logger.info(f"   └── Total Cycle: {days} days (Current - DN)")
             return days
             
         except Exception as e:
@@ -694,6 +728,7 @@ class DNAnalysisService:
             return f"{days} Days (3 Months)"
         else:
             return f"{days} Days ({days // 30} Months)"
+    
     
     # ==========================================================
     # BLOCK 7: DN SEARCH WITH FULL DIAGNOSTICS
@@ -1050,39 +1085,40 @@ Please verify the DN number."""
     # ==========================================================
     # BLOCK 8.5: DATE VALIDATION TEST
     # ==========================================================
+   
     
     def test_date_calculation(self) -> Dict[str, Any]:
         """
         Test date calculations using the company-wide YYYY-DD-MM format.
         
         Test Case:
-        - DN Create: 2026-06-05
-        - PGI:       2026-06-05
-        - POD:       2026-07-05
+        - DN Create: 2026-06-05 (PostgreSQL date object: date(2026, 6, 5))
+        - PGI:       2026-06-05 (PostgreSQL date object: date(2026, 6, 5))
+        - POD:       2026-07-05 (PostgreSQL date object: date(2026, 7, 5))
         
         Expected Results:
         - Delivery Aging = 0 days
         - POD Aging = 1 day
         - Total Cycle = 1 day
         
-        Note: Since dates are parsed as YYYY-DD-MM:
-        - 2026-06-05 → 6 May 2026 (day=06, month=05)
-        - 2026-07-05 → 7 May 2026 (day=07, month=05)
-        - Difference: 1 day
+        Note: PostgreSQL stores date(2026, 6, 5) → Company interprets as 6 May 2026
+              PostgreSQL stores date(2026, 7, 5) → Company interprets as 7 May 2026
+              Difference: 1 day
         """
         logger.info("🧪 Running date calculation test...")
         
-        # Test data in YYYY-DD-MM format
-        dn_create = "2026-06-05"  # Year=2026, Day=06, Month=05 → 6 May 2026
-        pgi = "2026-06-05"        # Year=2026, Day=06, Month=05 → 6 May 2026
-        pod = "2026-07-05"        # Year=2026, Day=07, Month=05 → 7 May 2026
+        # Simulate PostgreSQL date objects
+        from datetime import date as date_type
+        dn_create = date_type(2026, 6, 5)  # PostgreSQL returns this
+        pgi = date_type(2026, 6, 5)        # PostgreSQL returns this
+        pod = date_type(2026, 7, 5)        # PostgreSQL returns this
         
-        # Parse dates for display
+        # Parse dates using company format
         dn_parsed = self._parse_date(dn_create)
         pgi_parsed = self._parse_date(pgi)
         pod_parsed = self._parse_date(pod)
         
-        # Calculate aging using YYYY-DD-MM dates
+        # Calculate aging
         delivery_aging = self.calculate_delivery_aging(dn_create, pgi)
         pod_aging = self.calculate_pod_aging(pgi, pod)
         total_cycle = self.calculate_total_cycle(dn_create, pod)
@@ -1091,9 +1127,9 @@ Please verify the DN number."""
         result = {
             "test_name": "Date Calculation Test (YYYY-DD-MM)",
             "input": {
-                "dn_create": dn_create,
-                "pgi": pgi,
-                "pod": pod
+                "dn_create": str(dn_create),
+                "pgi": str(pgi),
+                "pod": str(pod)
             },
             "parsed_dates": {
                 "dn_create": dn_parsed.strftime("%d %B %Y") if dn_parsed else None,
@@ -1128,7 +1164,6 @@ Please verify the DN number."""
         logger.info(f"   └── Test: {'✅ PASSED' if result['passed'] else '❌ FAILED'}")
         
         return result
-    
     # ==========================================================
     # BLOCK 9: DIAGNOSTIC METHODS
     # ==========================================================
