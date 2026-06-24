@@ -419,6 +419,9 @@ class DNAnalysisService:
     # ==========================================================
     # BLOCK 6: AGING CALCULATION METHODS (YYYY-DD-MM)
     # ==========================================================
+        # ==========================================================
+    # BLOCK 6: AGING CALCULATION METHODS (FIXED)
+    # ==========================================================
     
     def _parse_date_ydm(self, date_value):
         """
@@ -542,6 +545,8 @@ class DNAnalysisService:
             good_issue_date - dn_create_date
         ELSE:
             CURRENT_DATE - dn_create_date
+        
+        ✅ FIXED: Returns actual days (including negative for data quality issues)
         """
         try:
             dn_date = self._parse_date(dn_create_date)
@@ -551,11 +556,9 @@ class DNAnalysisService:
                 return 0
             
             if gi_date:
-                days = (gi_date - dn_date).days
-                return max(0, days)
+                return (gi_date - dn_date).days  # ✅ Allow negative values
             
-            days = (datetime.now() - dn_date).days
-            return max(0, days)
+            return (datetime.now() - dn_date).days
             
         except Exception as e:
             logger.warning(f"⚠️ Failed to calculate delivery aging: {e}")
@@ -569,6 +572,8 @@ class DNAnalysisService:
             pod_date - good_issue_date
         ELSE:
             CURRENT_DATE - good_issue_date
+        
+        ✅ FIXED: Returns actual days (including negative for data quality issues)
         """
         try:
             gi_date = self._parse_date(good_issue_date)
@@ -578,11 +583,9 @@ class DNAnalysisService:
                 return 0
             
             if pd_date:
-                days = (pd_date - gi_date).days
-                return max(0, days)
+                return (pd_date - gi_date).days  # ✅ Allow negative values
             
-            days = (datetime.now() - gi_date).days
-            return max(0, days)
+            return (datetime.now() - gi_date).days
             
         except Exception as e:
             logger.warning(f"⚠️ Failed to calculate POD aging: {e}")
@@ -596,6 +599,8 @@ class DNAnalysisService:
             pod_date - dn_create_date
         ELSE:
             CURRENT_DATE - dn_create_date
+        
+        ✅ FIXED: Returns actual days (including negative for data quality issues)
         """
         try:
             dn_date = self._parse_date(dn_create_date)
@@ -605,19 +610,23 @@ class DNAnalysisService:
                 return 0
             
             if pd_date:
-                days = (pd_date - dn_date).days
-                return max(0, days)
+                return (pd_date - dn_date).days  # ✅ Allow negative values
             
-            days = (datetime.now() - dn_date).days
-            return max(0, days)
+            return (datetime.now() - dn_date).days
             
         except Exception as e:
             logger.warning(f"⚠️ Failed to calculate total cycle: {e}")
             return 0
     
     def _format_aging_text(self, days: int) -> str:
-        """Format aging days into human readable text."""
-        if days <= 0:
+        """
+        Format aging days into human readable text.
+        
+        ✅ FIXED: Shows actual days with indicators
+        """
+        if days < 0:
+            return f"{abs(days)} Days (Data Error - POD before PGI/DN)"
+        elif days == 0:
             return "Same Day"
         elif days == 1:
             return "1 Day"
@@ -633,7 +642,6 @@ class DNAnalysisService:
             return f"{days} Days (3 Months)"
         else:
             return f"{days} Days ({days // 30} Months)"
-
     # ==========================================================
     # BLOCK 7: DN SEARCH WITH FULL DIAGNOSTICS
     # ==========================================================
