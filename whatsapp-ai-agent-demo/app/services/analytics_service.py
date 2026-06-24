@@ -221,19 +221,21 @@ class AnalyticsService:
     # ==========================================================
     # BLOCK 4: ENHANCED DN DASHBOARD - COMPLETE REPLACEMENT
     # ==========================================================
+    # ==========================================================
+# BLOCK 4: ENHANCED DN DASHBOARD - COMPLETE REPLACEMENT
+# ==========================================================
     
     def _resolve_dn_enhanced(self, dn_input: str) -> Dict[str, Any]:
         """
-        Enhanced DN resolution with multiple strategies
+        Enhanced DN resolution with multiple strategies and AGGREGATION
         
         Strategies:
-        1. Exact match as VARCHAR
+        1. Exact match as VARCHAR (aggregated by DN)
         2. Exact match as INTEGER (CAST)
-        3. Exact match as BIGINT (CAST)
-        4. Pattern match with wildcards
-        5. Remove leading zeros and try again
-        6. Handle decimal points
-        7. Handle whitespace and special characters
+        3. Pattern match with wildcards
+        4. Remove leading zeros and try again
+        5. Handle decimal points
+        6. Handle whitespace and special characters
         """
         if not dn_input:
             return {"found": False, "error": "Empty DN input"}
@@ -262,66 +264,135 @@ class AnalyticsService:
         
         try:
             # ==========================================================
-            # STRATEGY 1: Direct VARCHAR match
+            # STRATEGY 1: Direct VARCHAR match with AGGREGATION
             # ==========================================================
             query_varchar = """
-                SELECT dn_no, customer_name, warehouse, ship_to_city, dn_qty, 
-                       dn_amount, dn_create_date, good_issue_date, pod_date, 
-                       delivery_status, pgi_status, pod_status, pending_flag,
-                       division, customer_code, dealer_code, sales_office, sales_manager,
-                       dn_work, order_type, storage_location, delivery_location,
-                       remarks, source_file, upload_batch_id, created_at, updated_at
+                SELECT 
+                    dn_no,
+                    MAX(customer_name) AS customer_name,
+                    MAX(warehouse) AS warehouse,
+                    MAX(ship_to_city) AS ship_to_city,
+                    SUM(dn_qty) AS dn_qty,
+                    SUM(dn_amount) AS dn_amount,
+                    MIN(dn_create_date) AS dn_create_date,
+                    MAX(good_issue_date) AS good_issue_date,
+                    MAX(pod_date) AS pod_date,
+                    MAX(delivery_status) AS delivery_status,
+                    MAX(pgi_status) AS pgi_status,
+                    MAX(pod_status) AS pod_status,
+                    MAX(pending_flag) AS pending_flag,
+                    MAX(division) AS division,
+                    MAX(customer_code) AS customer_code,
+                    MAX(dealer_code) AS dealer_code,
+                    MAX(sales_office) AS sales_office,
+                    MAX(sales_manager) AS sales_manager,
+                    MAX(dn_work) AS dn_work,
+                    MAX(order_type) AS order_type,
+                    MAX(storage_location) AS storage_location,
+                    MAX(delivery_location) AS delivery_location,
+                    MAX(remarks) AS remarks,
+                    MAX(source_file) AS source_file,
+                    MAX(upload_batch_id) AS upload_batch_id,
+                    MAX(created_at) AS created_at,
+                    MAX(updated_at) AS updated_at,
+                    COUNT(*) AS material_count
                 FROM delivery_reports
                 WHERE dn_no = :dn_no
-                LIMIT 1
+                GROUP BY dn_no
             """
             result = session.execute(text(query_varchar), {"dn_no": dn_numeric}).fetchone()
             
             if result:
                 session.close()
-                logger.info(f"✅ DN found via VARCHAR match: {dn_numeric}")
+                logger.info(f"✅ DN found via VARCHAR match (aggregated): {dn_numeric}")
                 return self._row_to_dict(result, dn_numeric)
             
             # ==========================================================
-            # STRATEGY 2: Try as INTEGER (CAST)
+            # STRATEGY 2: Try as INTEGER (CAST) with AGGREGATION
             # ==========================================================
             query_int = """
-                SELECT dn_no, customer_name, warehouse, ship_to_city, dn_qty, 
-                       dn_amount, dn_create_date, good_issue_date, pod_date, 
-                       delivery_status, pgi_status, pod_status, pending_flag,
-                       division, customer_code, dealer_code, sales_office, sales_manager,
-                       dn_work, order_type, storage_location, delivery_location,
-                       remarks, source_file, upload_batch_id, created_at, updated_at
+                SELECT 
+                    dn_no,
+                    MAX(customer_name) AS customer_name,
+                    MAX(warehouse) AS warehouse,
+                    MAX(ship_to_city) AS ship_to_city,
+                    SUM(dn_qty) AS dn_qty,
+                    SUM(dn_amount) AS dn_amount,
+                    MIN(dn_create_date) AS dn_create_date,
+                    MAX(good_issue_date) AS good_issue_date,
+                    MAX(pod_date) AS pod_date,
+                    MAX(delivery_status) AS delivery_status,
+                    MAX(pgi_status) AS pgi_status,
+                    MAX(pod_status) AS pod_status,
+                    MAX(pending_flag) AS pending_flag,
+                    MAX(division) AS division,
+                    MAX(customer_code) AS customer_code,
+                    MAX(dealer_code) AS dealer_code,
+                    MAX(sales_office) AS sales_office,
+                    MAX(sales_manager) AS sales_manager,
+                    MAX(dn_work) AS dn_work,
+                    MAX(order_type) AS order_type,
+                    MAX(storage_location) AS storage_location,
+                    MAX(delivery_location) AS delivery_location,
+                    MAX(remarks) AS remarks,
+                    MAX(source_file) AS source_file,
+                    MAX(upload_batch_id) AS upload_batch_id,
+                    MAX(created_at) AS created_at,
+                    MAX(updated_at) AS updated_at,
+                    COUNT(*) AS material_count
                 FROM delivery_reports
                 WHERE CAST(dn_no AS VARCHAR) = :dn_no
-                LIMIT 1
+                GROUP BY dn_no
             """
             result = session.execute(text(query_int), {"dn_no": dn_numeric}).fetchone()
             
             if result:
                 session.close()
-                logger.info(f"✅ DN found via CAST match: {dn_numeric}")
+                logger.info(f"✅ DN found via CAST match (aggregated): {dn_numeric}")
                 return self._row_to_dict(result, dn_numeric)
             
             # ==========================================================
-            # STRATEGY 3: Pattern match (in case of leading/trailing spaces)
+            # STRATEGY 3: Pattern match with AGGREGATION
             # ==========================================================
             query_pattern = """
-                SELECT dn_no, customer_name, warehouse, ship_to_city, dn_qty, 
-                       dn_amount, dn_create_date, good_issue_date, pod_date, 
-                       delivery_status, pgi_status, pod_status, pending_flag,
-                       division, customer_code, dealer_code, sales_office, sales_manager,
-                       dn_work, order_type, storage_location, delivery_location,
-                       remarks, source_file, upload_batch_id, created_at, updated_at
+                SELECT 
+                    dn_no,
+                    MAX(customer_name) AS customer_name,
+                    MAX(warehouse) AS warehouse,
+                    MAX(ship_to_city) AS ship_to_city,
+                    SUM(dn_qty) AS dn_qty,
+                    SUM(dn_amount) AS dn_amount,
+                    MIN(dn_create_date) AS dn_create_date,
+                    MAX(good_issue_date) AS good_issue_date,
+                    MAX(pod_date) AS pod_date,
+                    MAX(delivery_status) AS delivery_status,
+                    MAX(pgi_status) AS pgi_status,
+                    MAX(pod_status) AS pod_status,
+                    MAX(pending_flag) AS pending_flag,
+                    MAX(division) AS division,
+                    MAX(customer_code) AS customer_code,
+                    MAX(dealer_code) AS dealer_code,
+                    MAX(sales_office) AS sales_office,
+                    MAX(sales_manager) AS sales_manager,
+                    MAX(dn_work) AS dn_work,
+                    MAX(order_type) AS order_type,
+                    MAX(storage_location) AS storage_location,
+                    MAX(delivery_location) AS delivery_location,
+                    MAX(remarks) AS remarks,
+                    MAX(source_file) AS source_file,
+                    MAX(upload_batch_id) AS upload_batch_id,
+                    MAX(created_at) AS created_at,
+                    MAX(updated_at) AS updated_at,
+                    COUNT(*) AS material_count
                 FROM delivery_reports
                 WHERE dn_no LIKE :pattern
-                LIMIT 1
+                GROUP BY dn_no
             """
             result = session.execute(text(query_pattern), {"pattern": f"%{dn_numeric}%"}).fetchone()
             
             if result:
                 session.close()
-                logger.info(f"✅ DN found via pattern match: {dn_numeric}")
+                logger.info(f"✅ DN found via pattern match (aggregated): {dn_numeric}")
                 return self._row_to_dict(result, dn_numeric)
             
             # ==========================================================
@@ -332,7 +403,7 @@ class AnalyticsService:
                 result = session.execute(text(query_varchar), {"dn_no": dn_no_leading_zeros}).fetchone()
                 if result:
                     session.close()
-                    logger.info(f"✅ DN found after removing leading zeros: {dn_no_leading_zeros}")
+                    logger.info(f"✅ DN found after removing leading zeros (aggregated): {dn_no_leading_zeros}")
                     return self._row_to_dict(result, dn_no_leading_zeros)
             
             # ==========================================================
@@ -340,20 +411,43 @@ class AnalyticsService:
             # ==========================================================
             if not dn_numeric.isdigit():
                 query_case = """
-                    SELECT dn_no, customer_name, warehouse, ship_to_city, dn_qty, 
-                           dn_amount, dn_create_date, good_issue_date, pod_date, 
-                           delivery_status, pgi_status, pod_status, pending_flag,
-                           division, customer_code, dealer_code, sales_office, sales_manager,
-                           dn_work, order_type, storage_location, delivery_location,
-                           remarks, source_file, upload_batch_id, created_at, updated_at
+                    SELECT 
+                        dn_no,
+                        MAX(customer_name) AS customer_name,
+                        MAX(warehouse) AS warehouse,
+                        MAX(ship_to_city) AS ship_to_city,
+                        SUM(dn_qty) AS dn_qty,
+                        SUM(dn_amount) AS dn_amount,
+                        MIN(dn_create_date) AS dn_create_date,
+                        MAX(good_issue_date) AS good_issue_date,
+                        MAX(pod_date) AS pod_date,
+                        MAX(delivery_status) AS delivery_status,
+                        MAX(pgi_status) AS pgi_status,
+                        MAX(pod_status) AS pod_status,
+                        MAX(pending_flag) AS pending_flag,
+                        MAX(division) AS division,
+                        MAX(customer_code) AS customer_code,
+                        MAX(dealer_code) AS dealer_code,
+                        MAX(sales_office) AS sales_office,
+                        MAX(sales_manager) AS sales_manager,
+                        MAX(dn_work) AS dn_work,
+                        MAX(order_type) AS order_type,
+                        MAX(storage_location) AS storage_location,
+                        MAX(delivery_location) AS delivery_location,
+                        MAX(remarks) AS remarks,
+                        MAX(source_file) AS source_file,
+                        MAX(upload_batch_id) AS upload_batch_id,
+                        MAX(created_at) AS created_at,
+                        MAX(updated_at) AS updated_at,
+                        COUNT(*) AS material_count
                     FROM delivery_reports
                     WHERE UPPER(dn_no) = UPPER(:dn_no)
-                    LIMIT 1
+                    GROUP BY dn_no
                 """
                 result = session.execute(text(query_case), {"dn_no": dn_numeric}).fetchone()
                 if result:
                     session.close()
-                    logger.info(f"✅ DN found via case-insensitive match: {dn_numeric}")
+                    logger.info(f"✅ DN found via case-insensitive match (aggregated): {dn_numeric}")
                     return self._row_to_dict(result, dn_numeric)
             
             session.close()
@@ -379,15 +473,35 @@ class AnalyticsService:
             return {"found": False, "error": f"Database error: {str(e)}"}
 
     def _row_to_dict(self, row, dn_no: str) -> Dict[str, Any]:
-        """Convert database row to dictionary"""
+        """Convert database row to dictionary with proper validation"""
         if not row:
             return {"found": False}
         
+        # Extract values with validation
+        customer_name = str(row[1]) if row[1] is not None else None
+        warehouse = str(row[2]) if row[2] is not None else None
+        ship_to_city = str(row[3]) if row[3] is not None else None
+        
+        # Validate data quality
+        data_quality_warnings = []
+        
+        if customer_name is None or customer_name.strip() == '':
+            data_quality_warnings.append("Customer name is NULL or empty")
+            customer_name = "Unknown Dealer"
+        
+        if warehouse is None or warehouse.strip() == '':
+            data_quality_warnings.append("Warehouse is NULL or empty")
+            warehouse = "Unknown Warehouse"
+        
+        if ship_to_city is None or ship_to_city.strip() == '':
+            data_quality_warnings.append("Ship to city is NULL or empty")
+            ship_to_city = "Unknown City"
+        
         data = {
             "dn_no": row[0] or dn_no,
-            "customer_name": row[1] or "Unknown Dealer",
-            "warehouse": row[2] or "Unknown Warehouse",
-            "ship_to_city": row[3] or "Unknown City",
+            "customer_name": customer_name,
+            "warehouse": warehouse,
+            "ship_to_city": ship_to_city,
             "dn_qty": int(row[4]) if row[4] is not None else 0,
             "dn_amount": float(row[5]) if row[5] is not None else 0,
             "dn_create_date": row[6],
@@ -397,11 +511,11 @@ class AnalyticsService:
             "pgi_status": row[10] or "Unknown",
             "pod_status": row[11] or "Unknown",
             "pending_flag": row[12] or "N",
-            "division": row[13] or "Unknown",
-            "customer_code": row[14] or "Unknown",
-            "dealer_code": row[15] or "Unknown",
-            "sales_office": row[16] or "Unknown",
-            "sales_manager": row[17] or "Unknown",
+            "division": row[13] if len(row) > 13 else "Unknown",
+            "customer_code": row[14] if len(row) > 14 else "Unknown",
+            "dealer_code": row[15] if len(row) > 15 else "Unknown",
+            "sales_office": row[16] if len(row) > 16 else "Unknown",
+            "sales_manager": row[17] if len(row) > 17 else "Unknown",
             "dn_work": row[18] if len(row) > 18 else None,
             "order_type": row[19] if len(row) > 19 else None,
             "storage_location": row[20] if len(row) > 20 else None,
@@ -411,7 +525,9 @@ class AnalyticsService:
             "upload_batch_id": row[24] if len(row) > 24 else None,
             "created_at": row[25] if len(row) > 25 else None,
             "updated_at": row[26] if len(row) > 26 else None,
-            "found": True
+            "material_count": row[27] if len(row) > 27 else 1,
+            "found": True,
+            "data_quality_warnings": data_quality_warnings
         }
         
         # Format dates
@@ -547,6 +663,104 @@ class AnalyticsService:
     
     def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
         """
+        Get complete DN dashboard with enhanced resolution and AGGREGATION
+        
+        Returns:
+            DN Number, Dealer, Warehouse, City, Units, Revenue,
+            PGI, POD, Delivery Status, Aging, and all metadata
+        """
+        if not dn_no:
+            return self._error_response("DN number is required", "INVALID_DN")
+        
+        # Clean the input
+        dn_clean = str(dn_no).strip()
+        
+        # Check cache first
+        cache_key = f"dn_dashboard:{dn_clean}"
+        if cache_key in self._dn_cache:
+            cached = self._dn_cache[cache_key]
+            # Only return if it's a successful result or a not-found with suggestions
+            if cached.get('found', False) or cached.get('suggestions'):
+                logger.info(f"✅ DN dashboard cache hit: {dn_clean}")
+                return cached
+        
+        logger.info(f"🔍 Retrieving DN dashboard for: {dn_clean}")
+        
+        # Use enhanced resolution
+        resolution_result = self._resolve_dn_enhanced(dn_clean)
+        
+        if not resolution_result.get('found', False):
+            # Return structured error with suggestions
+            suggestions = resolution_result.get('suggestions', [])
+            error_msg = resolution_result.get('error', f"DN {dn_clean} not found")
+            normalized = resolution_result.get('normalized', dn_clean)
+            
+            result = self._error_response(
+                error_msg,
+                "DN_NOT_FOUND",
+                {
+                    "dn_no": dn_clean,
+                    "normalized": normalized,
+                    "suggestions": suggestions[:5] if suggestions else []
+                }
+            )
+            
+            # Add suggestions to the response
+            if suggestions:
+                result["suggestions"] = suggestions[:5]
+                result["message"] = f"DN {dn_clean} not found. Did you mean: {', '.join(suggestions[:3])}?"
+                result["suggestion_count"] = len(suggestions)
+            
+            self._dn_cache[cache_key] = result
+            logger.warning(f"⚠️ DN {dn_clean} not found. Suggestions: {suggestions[:3] if suggestions else 'None'}")
+            return result
+        
+        # Extract the found data
+        data = resolution_result
+        
+        # Check for data quality warnings
+        data_quality_warnings = data.get('data_quality_warnings', [])
+        if data_quality_warnings:
+            logger.warning(f"⚠️ Data quality warnings for DN {dn_clean}: {data_quality_warnings}")
+        
+        # Format the response
+        response = {
+            "success": True,
+            "data": data,
+            "dn_no": data.get('dn_no', dn_clean),
+            "found": True,
+            "resolution_strategy": "enhanced_match",
+            "material_count": data.get('material_count', 1),
+            "data_quality_warnings": data_quality_warnings
+        }
+        
+        # Add distance information if available
+        if self._distance_service:
+            try:
+                warehouse = data.get('warehouse')
+                city = data.get('ship_to_city')
+                if warehouse and city and warehouse != 'Unknown' and city != 'Unknown':
+                    distance_result = self._distance_service.calculate_warehouse_distance(warehouse, city)
+                    if distance_result and distance_result.get('success'):
+                        response["distance_km"] = distance_result.get('distance_km')
+                        response["distance_miles"] = distance_result.get('distance_miles')
+                        response["approx_driving_hours"] = distance_result.get('approx_driving_hours')
+                        response["approx_driving_minutes"] = distance_result.get('approx_driving_minutes')
+                        response["distance_type"] = distance_result.get('distance_type', 'unknown')
+                        logger.info(f"✅ Distance calculated: {distance_result.get('distance_km')} km")
+            except Exception as e:
+                logger.warning(f"⚠️ Distance calculation failed: {e}")
+        
+        self._dn_cache[cache_key] = response
+        logger.info(f"✅ DN dashboard retrieved for: {dn_clean}")
+        return response
+
+        # ==========================================================
+    # BLOCK 4A: GET DN DASHBOARD - COMPLETE REPLACEMENT
+    # ==========================================================
+    
+    def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
+        """
         Get complete DN dashboard with enhanced resolution
         
         Returns:
@@ -635,11 +849,16 @@ class AnalyticsService:
     # ==========================================================
     # BLOCK 5: DEALER DASHBOARD
     # ==========================================================
+  # BLOCK 5: DEALER DASHBOARD - IMPROVED MATCHING
+    # ==========================================================
     
     def get_dealer_dashboard(self, dealer: str) -> Dict[str, Any]:
         """
-        Get comprehensive dealer dashboard with KPIs, performance metrics,
-        and all related analytics
+        Get comprehensive dealer dashboard with improved matching
+        
+        Uses TRIM(LOWER()) for better matching
+        Supports partial matching with LIKE
+        Aggregates all DN data for the dealer
         """
         if not dealer:
             return self._error_response("Dealer name is required", "INVALID_DEALER")
@@ -656,12 +875,12 @@ class AnalyticsService:
         
         logger.info(f"🔍 Retrieving dealer dashboard for: {dealer_clean}")
         
-        # Query dealer data
+        # Query dealer data with improved matching
         query = """
             SELECT 
-                customer_name as dealer_name,
-                dealer_code,
-                customer_code,
+                MAX(customer_name) as dealer_name,
+                MAX(dealer_code) as dealer_code,
+                MAX(customer_code) as customer_code,
                 MAX(division) as division,
                 MAX(warehouse) as warehouse,
                 MAX(warehouse_code) as warehouse_code,
@@ -674,15 +893,15 @@ class AnalyticsService:
                 COUNT(DISTINCT warehouse) as warehouses_used,
                 COUNT(DISTINCT ship_to_city) as cities_served,
                 -- Status breakdown
-                COUNT(CASE WHEN delivery_status IN ('Completed', 'Delivered', 'Closed') THEN 1 END) as delivered_dns,
-                COUNT(CASE WHEN delivery_status IN ('Pending', 'Open') THEN 1 END) as pending_dns,
-                COUNT(CASE WHEN delivery_status IN ('In Transit', 'Transit') THEN 1 END) as transit_dns,
+                COUNT(DISTINCT CASE WHEN delivery_status IN ('Completed', 'Delivered', 'Closed') THEN dn_no END) as delivered_dns,
+                COUNT(DISTINCT CASE WHEN delivery_status IN ('Pending', 'Open') THEN dn_no END) as pending_dns,
+                COUNT(DISTINCT CASE WHEN delivery_status IN ('In Transit', 'Transit') THEN dn_no END) as transit_dns,
                 -- PGI status
-                COUNT(CASE WHEN pgi_status = 'Completed' THEN 1 END) as pgi_completed,
+                COUNT(DISTINCT CASE WHEN pgi_status = 'Completed' THEN dn_no END) as pgi_completed,
                 -- POD status
-                COUNT(CASE WHEN pod_status = 'Completed' THEN 1 END) as pod_completed,
+                COUNT(DISTINCT CASE WHEN pod_status = 'Completed' THEN dn_no END) as pod_completed,
                 -- Pending flag
-                COUNT(CASE WHEN pending_flag = 'Y' THEN 1 END) as pending_flag_count,
+                COUNT(DISTINCT CASE WHEN pending_flag = 'Y' THEN dn_no END) as pending_flag_count,
                 -- Date metrics
                 MIN(dn_create_date) as first_dn_date,
                 MAX(dn_create_date) as last_dn_date,
@@ -692,21 +911,21 @@ class AnalyticsService:
                 -- Aging (average across all DNs)
                 AVG(EXTRACT(DAY FROM COALESCE(CURRENT_DATE, dn_create_date) - dn_create_date)) as avg_aging_days,
                 -- Calculate rates
-                CASE WHEN COUNT(dn_no) > 0 
-                    THEN ROUND(COUNT(CASE WHEN delivery_status IN ('Completed', 'Delivered', 'Closed') THEN 1 END) * 100.0 / COUNT(dn_no), 2)
+                CASE WHEN COUNT(DISTINCT dn_no) > 0 
+                    THEN ROUND(COUNT(DISTINCT CASE WHEN delivery_status IN ('Completed', 'Delivered', 'Closed') THEN dn_no END) * 100.0 / COUNT(DISTINCT dn_no), 2)
                     ELSE 0 
                 END as delivery_rate,
-                CASE WHEN COUNT(dn_no) > 0 
-                    THEN ROUND(COUNT(CASE WHEN pgi_status = 'Completed' THEN 1 END) * 100.0 / COUNT(dn_no), 2)
+                CASE WHEN COUNT(DISTINCT dn_no) > 0 
+                    THEN ROUND(COUNT(DISTINCT CASE WHEN pgi_status = 'Completed' THEN dn_no END) * 100.0 / COUNT(DISTINCT dn_no), 2)
                     ELSE 0 
                 END as pgi_rate,
-                CASE WHEN COUNT(dn_no) > 0 
-                    THEN ROUND(COUNT(CASE WHEN pod_status = 'Completed' THEN 1 END) * 100.0 / COUNT(dn_no), 2)
+                CASE WHEN COUNT(DISTINCT dn_no) > 0 
+                    THEN ROUND(COUNT(DISTINCT CASE WHEN pod_status = 'Completed' THEN dn_no END) * 100.0 / COUNT(DISTINCT dn_no), 2)
                     ELSE 0 
                 END as pod_rate
             FROM delivery_reports
-            WHERE LOWER(customer_name) LIKE LOWER(:dealer)
-            GROUP BY customer_name, dealer_code, customer_code
+            WHERE TRIM(LOWER(customer_name)) LIKE TRIM(LOWER(:dealer))
+            GROUP BY customer_name
             ORDER BY total_revenue DESC
             LIMIT 1
         """
@@ -768,19 +987,23 @@ class AnalyticsService:
             except Exception as e:
                 logger.warning(f"⚠️ Distance calculation failed: {e}")
         
-        # Get recent DNs
+        # Get recent DNs (aggregated)
         recent_query = """
             SELECT 
                 dn_no,
-                dn_create_date,
-                good_issue_date as pgi_date,
-                pod_date,
-                dn_qty as units,
-                dn_amount as revenue,
-                delivery_status
+                MAX(customer_name) as dealer,
+                MAX(warehouse) as warehouse,
+                MAX(ship_to_city) as city,
+                SUM(dn_qty) as units,
+                SUM(dn_amount) as revenue,
+                MIN(dn_create_date) as dn_create_date,
+                MAX(good_issue_date) as pgi_date,
+                MAX(pod_date) as pod_date,
+                MAX(delivery_status) as delivery_status
             FROM delivery_reports
-            WHERE LOWER(customer_name) LIKE LOWER(:dealer)
-            ORDER BY dn_create_date DESC
+            WHERE TRIM(LOWER(customer_name)) LIKE TRIM(LOWER(:dealer))
+            GROUP BY dn_no
+            ORDER BY MIN(dn_create_date) DESC
             LIMIT 5
         """
         recent_results = self._execute_query(recent_query, {"dealer": f"%{dealer_clean}%"})
@@ -798,11 +1021,11 @@ class AnalyticsService:
         trend_query = """
             SELECT 
                 DATE_TRUNC('month', dn_create_date) as month,
-                COUNT(dn_no) as dn_count,
+                COUNT(DISTINCT dn_no) as dn_count,
                 SUM(dn_amount) as revenue,
                 SUM(dn_qty) as units
             FROM delivery_reports
-            WHERE LOWER(customer_name) LIKE LOWER(:dealer)
+            WHERE TRIM(LOWER(customer_name)) LIKE TRIM(LOWER(:dealer))
             GROUP BY DATE_TRUNC('month', dn_create_date)
             ORDER BY month DESC
             LIMIT 6
@@ -827,6 +1050,203 @@ class AnalyticsService:
         logger.info(f"✅ Dealer dashboard retrieved for: {dealer_clean}")
         return result
 
+    # ==========================================================
+    # BLOCK 9: SEARCH METHODS - IMPROVED WITH AGGREGATION
+    # ==========================================================
+    
+    def search_dn(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """
+        Search for DNs matching the query with AGGREGATION
+        
+        Returns DN-level aggregated data:
+        - DN Count = COUNT(DISTINCT dn_no)
+        - Units = SUM(dn_qty)
+        - Revenue = SUM(dn_amount)
+        - Dealer = MAX(customer_name)
+        - Warehouse = MAX(warehouse)
+        - City = MAX(ship_to_city)
+        """
+        if not query:
+            return []
+        
+        query_clean = str(query).strip()
+        
+        # If query is numeric, try exact match first
+        if query_clean.isdigit():
+            exact_query = """
+                SELECT 
+                    dn_no,
+                    MAX(customer_name) as dealer,
+                    MAX(warehouse) as warehouse,
+                    MAX(ship_to_city) as city,
+                    SUM(dn_qty) as units,
+                    SUM(dn_amount) as revenue,
+                    MIN(dn_create_date) as dn_create_date,
+                    MAX(good_issue_date) as pgi_date,
+                    MAX(pod_date) as pod_date,
+                    MAX(delivery_status) as delivery_status,
+                    COUNT(*) as material_count
+                FROM delivery_reports
+                WHERE dn_no = :dn_no
+                GROUP BY dn_no
+                ORDER BY MIN(dn_create_date) DESC
+                LIMIT :limit
+            """
+            results = self._execute_query(exact_query, {"dn_no": query_clean, "limit": limit})
+            if results:
+                return self._format_search_results(results)
+        
+        # Generic search with AGGREGATION
+        search_query = """
+            SELECT 
+                dn_no,
+                MAX(customer_name) as dealer,
+                MAX(warehouse) as warehouse,
+                MAX(ship_to_city) as city,
+                SUM(dn_qty) as units,
+                SUM(dn_amount) as revenue,
+                MIN(dn_create_date) as dn_create_date,
+                MAX(good_issue_date) as pgi_date,
+                MAX(pod_date) as pod_date,
+                MAX(delivery_status) as delivery_status,
+                COUNT(*) as material_count
+            FROM delivery_reports
+            WHERE dn_no LIKE :query
+               OR customer_name LIKE :query
+               OR warehouse LIKE :query
+               OR ship_to_city LIKE :query
+            GROUP BY dn_no
+            ORDER BY MIN(dn_create_date) DESC
+            LIMIT :limit
+        """
+        results = self._execute_query(search_query, {"query": f"%{query_clean}%", "limit": limit})
+        return self._format_search_results(results)
+    
+    def search_dealer(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Search for dealers matching the query with improved TRIM matching"""
+        if not query:
+            return []
+        
+        query_clean = str(query).strip()
+        
+        search_query = """
+            SELECT 
+                MAX(customer_name) as dealer,
+                MAX(dealer_code) as dealer_code,
+                MAX(customer_code) as customer_code,
+                MAX(warehouse) as main_warehouse,
+                MAX(ship_to_city) as main_city,
+                COUNT(DISTINCT dn_no) as dn_count,
+                SUM(dn_amount) as total_revenue,
+                SUM(dn_qty) as total_units,
+                ROUND(COUNT(DISTINCT CASE WHEN delivery_status IN ('Completed', 'Delivered', 'Closed') THEN dn_no END) * 100.0 / COUNT(DISTINCT dn_no), 2) as delivery_rate
+            FROM delivery_reports
+            WHERE TRIM(LOWER(customer_name)) LIKE TRIM(LOWER(:query))
+            GROUP BY customer_name
+            ORDER BY total_revenue DESC
+            LIMIT :limit
+        """
+        results = self._execute_query(search_query, {"query": f"%{query_clean}%", "limit": limit})
+        return self._format_search_results(results)
+    
+    def search_warehouse(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Search for warehouses matching the query"""
+        if not query:
+            return []
+        
+        query_clean = str(query).strip()
+        
+        search_query = """
+            SELECT 
+                warehouse,
+                warehouse_code,
+                COUNT(DISTINCT customer_name) as dealers,
+                COUNT(DISTINCT ship_to_city) as cities,
+                COUNT(DISTINCT dn_no) as dn_count,
+                SUM(dn_amount) as total_revenue,
+                SUM(dn_qty) as total_units,
+                ROUND(COUNT(DISTINCT CASE WHEN delivery_status IN ('Completed', 'Delivered', 'Closed') THEN dn_no END) * 100.0 / COUNT(DISTINCT dn_no), 2) as delivery_rate
+            FROM delivery_reports
+            WHERE TRIM(LOWER(warehouse)) LIKE TRIM(LOWER(:query))
+            GROUP BY warehouse, warehouse_code
+            ORDER BY total_revenue DESC
+            LIMIT :limit
+        """
+        results = self._execute_query(search_query, {"query": f"%{query_clean}%", "limit": limit})
+        return self._format_search_results(results)
+    
+    def search_city(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Search for cities matching the query"""
+        if not query:
+            return []
+        
+        query_clean = str(query).strip()
+        
+        search_query = """
+            SELECT 
+                ship_to_city as city,
+                COUNT(DISTINCT customer_name) as dealers,
+                COUNT(DISTINCT warehouse) as warehouses,
+                COUNT(DISTINCT dn_no) as dn_count,
+                SUM(dn_amount) as total_revenue,
+                SUM(dn_qty) as total_units,
+                ROUND(COUNT(DISTINCT CASE WHEN delivery_status IN ('Completed', 'Delivered', 'Closed') THEN dn_no END) * 100.0 / COUNT(DISTINCT dn_no), 2) as delivery_rate
+            FROM delivery_reports
+            WHERE TRIM(LOWER(ship_to_city)) LIKE TRIM(LOWER(:query))
+            GROUP BY ship_to_city
+            ORDER BY total_revenue DESC
+            LIMIT :limit
+        """
+        results = self._execute_query(search_query, {"query": f"%{query_clean}%", "limit": limit})
+        return self._format_search_results(results)
+    
+    def search_product(self, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Search for products matching the query"""
+        if not query:
+            return []
+        
+        query_clean = str(query).strip()
+        
+        search_query = """
+            SELECT 
+                customer_model as product,
+                material_no,
+                COUNT(DISTINCT dn_no) as dn_count,
+                SUM(dn_amount) as total_revenue,
+                SUM(dn_qty) as total_units,
+                COUNT(DISTINCT customer_name) as dealers,
+                COUNT(DISTINCT ship_to_city) as cities,
+                ROUND(COUNT(DISTINCT CASE WHEN delivery_status IN ('Completed', 'Delivered', 'Closed') THEN dn_no END) * 100.0 / COUNT(DISTINCT dn_no), 2) as delivery_rate
+            FROM delivery_reports
+            WHERE TRIM(LOWER(customer_model)) LIKE TRIM(LOWER(:query))
+            GROUP BY customer_model, material_no
+            ORDER BY total_revenue DESC
+            LIMIT :limit
+        """
+        results = self._execute_query(search_query, {"query": f"%{query_clean}%", "limit": limit})
+        return self._format_search_results(results)
+    
+    def _format_search_results(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Format search results for consistent output"""
+        formatted = []
+        for r in results:
+            # Format dates
+            for date_field in ['dn_create_date', 'pgi_date', 'pod_date', 'created_at', 'updated_at']:
+                if r.get(date_field):
+                    if isinstance(r[date_field], (datetime, date)):
+                        r[date_field] = r[date_field].strftime("%Y-%m-%d")
+            
+            # Format numeric values
+            for num_field in ['units', 'revenue', 'dn_count', 'total_units', 'total_revenue', 'dn_qty', 'dn_amount']:
+                if r.get(num_field) is not None:
+                    if isinstance(r[num_field], (int, float)):
+                        if 'revenue' in num_field or 'amount' in num_field:
+                            r[num_field] = round(float(r[num_field]), 2)
+                        else:
+                            r[num_field] = int(r[num_field])
+            
+            formatted.append(r)
+        return formatted
     # ==========================================================
     # BLOCK 6: WAREHOUSE DASHBOARD
     # ==========================================================
@@ -1489,6 +1909,8 @@ class AnalyticsService:
     # ==========================================================
     # BLOCK 10: VERIFICATION METHODS
     # ==========================================================
+    # BLOCK 10: VERIFICATION METHODS - IMPROVED
+    # ==========================================================
     
     def verify_dn_exists(self, dn_no: str) -> bool:
         """Verify if a DN exists in the system"""
@@ -1501,7 +1923,7 @@ class AnalyticsService:
         
         # Try multiple strategies
         query = """
-            SELECT COUNT(*) as count 
+            SELECT COUNT(DISTINCT dn_no) as count 
             FROM delivery_reports 
             WHERE dn_no = :dn_no 
                OR CAST(dn_no AS VARCHAR) = :dn_no
@@ -1514,12 +1936,18 @@ class AnalyticsService:
         return results and results[0].get('count', 0) > 0
     
     def verify_dealer_exists(self, dealer: str) -> bool:
-        """Verify if a dealer exists in the system"""
+        """Verify if a dealer exists in the system with improved TRIM matching"""
         if not dealer:
             return False
         
-        query = "SELECT COUNT(*) as count FROM delivery_reports WHERE LOWER(customer_name) LIKE LOWER(:dealer)"
-        results = self._execute_query(query, {"dealer": f"%{str(dealer).strip()}%"})
+        dealer_clean = str(dealer).strip()
+        
+        query = """
+            SELECT COUNT(DISTINCT customer_name) as count 
+            FROM delivery_reports 
+            WHERE TRIM(LOWER(customer_name)) LIKE TRIM(LOWER(:dealer))
+        """
+        results = self._execute_query(query, {"dealer": f"%{dealer_clean}%"})
         return results and results[0].get('count', 0) > 0
     
     def verify_warehouse_exists(self, warehouse: str) -> bool:
@@ -1527,7 +1955,11 @@ class AnalyticsService:
         if not warehouse:
             return False
         
-        query = "SELECT COUNT(*) as count FROM delivery_reports WHERE LOWER(warehouse) LIKE LOWER(:warehouse)"
+        query = """
+            SELECT COUNT(DISTINCT warehouse) as count 
+            FROM delivery_reports 
+            WHERE TRIM(LOWER(warehouse)) LIKE TRIM(LOWER(:warehouse))
+        """
         results = self._execute_query(query, {"warehouse": f"%{str(warehouse).strip()}%"})
         return results and results[0].get('count', 0) > 0
     
@@ -1536,7 +1968,11 @@ class AnalyticsService:
         if not city:
             return False
         
-        query = "SELECT COUNT(*) as count FROM delivery_reports WHERE LOWER(ship_to_city) LIKE LOWER(:city)"
+        query = """
+            SELECT COUNT(DISTINCT ship_to_city) as count 
+            FROM delivery_reports 
+            WHERE TRIM(LOWER(ship_to_city)) LIKE TRIM(LOWER(:city))
+        """
         results = self._execute_query(query, {"city": f"%{str(city).strip()}%"})
         return results and results[0].get('count', 0) > 0
     
@@ -1546,11 +1982,246 @@ class AnalyticsService:
             return False
         
         product_clean = str(product).strip()
-        query = """SELECT COUNT(*) as count FROM delivery_reports 
-                   WHERE LOWER(customer_model) LIKE LOWER(:product) 
-                   OR LOWER(material_no) LIKE LOWER(:product)"""
+        query = """
+            SELECT COUNT(DISTINCT customer_model) as count 
+            FROM delivery_reports 
+            WHERE TRIM(LOWER(customer_model)) LIKE TRIM(LOWER(:product)) 
+               OR TRIM(LOWER(material_no)) LIKE TRIM(LOWER(:product))
+        """
         results = self._execute_query(query, {"product": f"%{product_clean}%"})
         return results and results[0].get('count', 0) > 0
+
+    # ==========================================================
+    # BLOCK 16: NEW METHOD - GET PENDING DELIVERIES
+    # ==========================================================
+    
+    def get_pending_deliveries(self, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
+        """
+        Get all pending deliveries with complete information
+        
+        Pending DN if:
+        - pod_date IS NULL
+        - OR delivery_status = 'Pending'
+        - OR pending_flag = True
+        - OR pgi_status != 'Completed'
+        - OR pod_status != 'Completed'
+        
+        Returns:
+            List of pending DNs with complete metrics
+            Total count of pending DNs
+            Pagination information
+        """
+        try:
+            logger.info(f"🔍 Retrieving pending deliveries (limit: {limit}, offset: {offset})")
+            
+            # First, get total count of pending DNs
+            count_query = """
+                SELECT COUNT(DISTINCT dn_no) as total_pending
+                FROM delivery_reports
+                WHERE pod_date IS NULL
+                   OR delivery_status = 'Pending'
+                   OR pending_flag = 'Y'
+                   OR pgi_status != 'Completed'
+                   OR pod_status != 'Completed'
+            """
+            count_result = self._execute_query(count_query)
+            total_pending = count_result[0].get('total_pending', 0) if count_result else 0
+            
+            if total_pending == 0:
+                return {
+                    "success": True,
+                    "data": [],
+                    "total": 0,
+                    "limit": limit,
+                    "offset": offset,
+                    "message": "No pending deliveries found"
+                }
+            
+            # Get pending DNs with aggregation
+            pending_query = """
+                SELECT 
+                    dn_no,
+                    MAX(customer_name) as dealer,
+                    MAX(warehouse) as warehouse,
+                    MAX(ship_to_city) as city,
+                    SUM(dn_qty) as units,
+                    SUM(dn_amount) as revenue,
+                    MIN(dn_create_date) as dn_create_date,
+                    MAX(good_issue_date) as pgi_date,
+                    MAX(pod_date) as pod_date,
+                    MAX(delivery_status) as delivery_status,
+                    MAX(pgi_status) as pgi_status,
+                    MAX(pod_status) as pod_status,
+                    MAX(pending_flag) as pending_flag,
+                    COUNT(*) as material_count,
+                    MAX(division) as division,
+                    MAX(customer_code) as customer_code,
+                    MAX(dealer_code) as dealer_code,
+                    MAX(sales_office) as sales_office,
+                    MAX(sales_manager) as sales_manager,
+                    MAX(dn_work) as dn_work,
+                    MAX(order_type) as order_type
+                FROM delivery_reports
+                WHERE pod_date IS NULL
+                   OR delivery_status = 'Pending'
+                   OR pending_flag = 'Y'
+                   OR pgi_status != 'Completed'
+                   OR pod_status != 'Completed'
+                GROUP BY dn_no
+                ORDER BY MIN(dn_create_date) ASC
+                LIMIT :limit OFFSET :offset
+            """
+            
+            pending_results = self._execute_query(
+                pending_query, 
+                {"limit": limit, "offset": offset}
+            )
+            
+            # Format results with aging calculations
+            formatted_results = []
+            for row in pending_results:
+                # Calculate aging
+                dn_create = row.get('dn_create_date')
+                pgi_date = row.get('pgi_date')
+                pod_date = row.get('pod_date')
+                
+                # Calculate delivery aging (from create date)
+                delivery_aging = 0
+                if dn_create:
+                    if isinstance(dn_create, (datetime, date)):
+                        delivery_aging = (datetime.now().date() - dn_create.date()).days
+                    elif isinstance(dn_create, str):
+                        try:
+                            dn_date = datetime.fromisoformat(dn_create.replace('Z', '+00:00'))
+                            delivery_aging = (datetime.now().date() - dn_date.date()).days
+                        except:
+                            pass
+                
+                # Calculate POD aging (from PGI date)
+                pod_aging = 0
+                if pgi_date:
+                    if isinstance(pgi_date, (datetime, date)):
+                        pod_aging = (datetime.now().date() - pgi_date.date()).days
+                    elif isinstance(pgi_date, str):
+                        try:
+                            pgi_date_obj = datetime.fromisoformat(pgi_date.replace('Z', '+00:00'))
+                            pod_aging = (datetime.now().date() - pgi_date_obj.date()).days
+                        except:
+                            pass
+                
+                # Calculate total cycle (from create to POD, if available)
+                total_cycle = None
+                if dn_create and pod_date:
+                    try:
+                        if isinstance(dn_create, (datetime, date)) and isinstance(pod_date, (datetime, date)):
+                            total_cycle = (pod_date - dn_create).days
+                        elif isinstance(dn_create, str) and isinstance(pod_date, str):
+                            dn_date = datetime.fromisoformat(dn_create.replace('Z', '+00:00'))
+                            pod_date_obj = datetime.fromisoformat(pod_date.replace('Z', '+00:00'))
+                            total_cycle = (pod_date_obj - dn_date).days
+                    except:
+                        pass
+                
+                # Format dates for output
+                for date_field in ['dn_create_date', 'pgi_date', 'pod_date']:
+                    if row.get(date_field):
+                        if isinstance(row[date_field], (datetime, date)):
+                            row[date_field] = row[date_field].strftime("%Y-%m-%d %H:%M:%S")
+                
+                formatted_row = {
+                    "dn_no": row.get('dn_no'),
+                    "dealer": row.get('dealer') or "Unknown Dealer",
+                    "warehouse": row.get('warehouse') or "Unknown Warehouse",
+                    "city": row.get('city') or "Unknown City",
+                    "units": int(row.get('units') or 0),
+                    "revenue": float(row.get('revenue') or 0),
+                    "dn_create_date": row.get('dn_create_date'),
+                    "pgi_date": row.get('pgi_date'),
+                    "pod_date": row.get('pod_date'),
+                    "delivery_status": row.get('delivery_status') or "Pending",
+                    "pgi_status": row.get('pgi_status') or "Unknown",
+                    "pod_status": row.get('pod_status') or "Unknown",
+                    "pending_flag": row.get('pending_flag') or "N",
+                    "delivery_aging_days": delivery_aging,
+                    "pod_aging_days": pod_aging,
+                    "total_cycle_days": total_cycle,
+                    "material_count": row.get('material_count', 1),
+                    "division": row.get('division'),
+                    "customer_code": row.get('customer_code'),
+                    "dealer_code": row.get('dealer_code'),
+                    "sales_office": row.get('sales_office'),
+                    "sales_manager": row.get('sales_manager'),
+                    "dn_work": row.get('dn_work'),
+                    "order_type": row.get('order_type'),
+                    # Determine reason for pending
+                    "pending_reason": self._determine_pending_reason(row)
+                }
+                
+                # Add aging text
+                formatted_row['delivery_aging_text'] = self._format_aging_text(delivery_aging)
+                formatted_row['pod_aging_text'] = self._format_aging_text(pod_aging)
+                if total_cycle is not None:
+                    formatted_row['total_cycle_text'] = self._format_aging_text(total_cycle)
+                
+                # Add urgency indicator
+                if delivery_aging > 30:
+                    formatted_row['urgency'] = '🔴 CRITICAL'
+                elif delivery_aging > 14:
+                    formatted_row['urgency'] = '🟡 HIGH'
+                elif delivery_aging > 7:
+                    formatted_row['urgency'] = '🟠 MEDIUM'
+                else:
+                    formatted_row['urgency'] = '🟢 NORMAL'
+                
+                formatted_results.append(formatted_row)
+            
+            return {
+                "success": True,
+                "data": formatted_results,
+                "total": total_pending,
+                "limit": limit,
+                "offset": offset,
+                "returned": len(formatted_results),
+                "has_more": (offset + limit) < total_pending,
+                "next_offset": offset + limit if (offset + limit) < total_pending else None,
+                "summary": {
+                    "total_pending": total_pending,
+                    "critical_count": len([r for r in formatted_results if r.get('urgency') == '🔴 CRITICAL']),
+                    "high_count": len([r for r in formatted_results if r.get('urgency') == '🟡 HIGH']),
+                    "medium_count": len([r for r in formatted_results if r.get('urgency') == '🟠 MEDIUM']),
+                    "normal_count": len([r for r in formatted_results if r.get('urgency') == '🟢 NORMAL'])
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to get pending deliveries: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "error_type": "PENDING_DELIVERIES_ERROR",
+                "timestamp": datetime.now().isoformat()
+            }
+    
+    def _determine_pending_reason(self, row: Dict[str, Any]) -> str:
+        """Determine why a DN is pending"""
+        reasons = []
+        
+        if row.get('pod_date') is None:
+            reasons.append("POD not received")
+        
+        if row.get('delivery_status') == 'Pending':
+            reasons.append("Delivery status is Pending")
+        
+        if row.get('pending_flag') == 'Y':
+            reasons.append("Pending flag is set")
+        
+        if row.get('pgi_status') != 'Completed' and row.get('pgi_status') is not None:
+            reasons.append(f"PGI status is {row.get('pgi_status')}")
+        
+        if row.get('pod_status') != 'Completed' and row.get('pod_status') is not None:
+            reasons.append(f"POD status is {row.get('pod_status')}")
+        
+        return ", ".join(reasons) if reasons else "Unknown reason"
 
     # ==========================================================
     # BLOCK 11: RANKING ENGINE
