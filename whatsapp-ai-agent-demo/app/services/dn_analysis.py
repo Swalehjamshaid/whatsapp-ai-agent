@@ -127,6 +127,9 @@ class DNAnalysisService:
     # ==========================================================
     # BLOCK 4: DN SEARCH NORMALIZATION
     # ==========================================================
+       # ==========================================================
+    # BLOCK 4: DN SEARCH NORMALIZATION (FIXED)
+    # ==========================================================
     
     def _normalize_dn(self, dn_no: str) -> str:
         """Normalize DN number for search - removes non-numeric characters."""
@@ -138,9 +141,12 @@ class DNAnalysisService:
     
     def _build_normalized_dn_query(self, dn_no: str) -> str:
         """
-        Build normalized DN query with REGEXP_REPLACE.
+        Build DN query with multiple matching strategies.
         
-        ✅ FIXED: Uses COUNT(*) for material_count (safe for all tables)
+        ✅ FIXED: Uses multiple approaches to find DN:
+        1. Exact match with LIKE
+        2. Match without special characters
+        3. Match with any formatting
         """
         return """
             SELECT 
@@ -166,13 +172,20 @@ class DNAnalysisService:
                 MAX(pending_flag) AS pending_flag,
                 COUNT(*) AS material_count
             FROM delivery_reports
-            WHERE REGEXP_REPLACE(
-                CAST(dn_no AS TEXT),
-                '[^0-9]',
-                '',
-                'g'
-            ) = :dn_no
+            WHERE 
+                -- Strategy 1: Direct match
+                CAST(dn_no AS TEXT) = :dn_no
+                OR 
+                -- Strategy 2: LIKE match (handles spaces, prefixes, suffixes)
+                CAST(dn_no AS TEXT) LIKE '%' || :dn_no || '%'
+                OR 
+                -- Strategy 3: Match without hyphens or special chars
+                REPLACE(CAST(dn_no AS TEXT), '-', '') = :dn_no
+                OR 
+                -- Strategy 4: Match with any non-numeric characters removed
+                REGEXP_REPLACE(CAST(dn_no AS TEXT), '[^0-9]', '', 'g') = :dn_no
             GROUP BY dn_no
+            LIMIT 1
         """
     
     def _build_fallback_dn_query(self, dn_no: str) -> str:
@@ -196,7 +209,6 @@ class DNAnalysisService:
             WHERE CAST(dn_no AS TEXT) LIKE '%' || :dn_no || '%'
             LIMIT 10
         """
-    
     # ==========================================================
     # BLOCK 5: HEALTH & VALIDATION METHODS
     # ==========================================================
@@ -491,14 +503,26 @@ class DNAnalysisService:
     # ==========================================================
     # BLOCK 7: DN SEARCH WITH NORMALIZATION
     # ==========================================================
+        # ==========================================================
+    # BLOCK 7: DN SEARCH (UPDATED)
+    # ==========================================================
     
     def search_dn(self, dn_no: str) -> Dict[str, Any]:
-        """Search for a specific DN with normalization and fallback."""
+        """
+        Search for a specific DN with multiple matching strategies.
+        
+        Steps:
+        1. Normalize DN
+        2. Try all matching strategies at once
+        3. If not found, try fallback partial match
+        4. Return results or similar DNs
+        """
         logger.info(f"🔍 Searching for DN: '{dn_no}'")
         
         if not dn_no:
             return {"success": False, "error": "DN number required"}
         
+        # Step 1: Normalize DN
         normalized_dn = self._normalize_dn(dn_no)
         logger.info(f"   ├── Normalized: '{normalized_dn}'")
         logger.info(f"   ├── Length: {len(normalized_dn)}")
@@ -506,6 +530,7 @@ class DNAnalysisService:
         if len(normalized_dn) < 8:
             return {"success": False, "error": f"Invalid DN format: {normalized_dn} (must be 8-12 digits)"}
         
+        # Step 2: Execute query with multiple strategies
         query = self._build_normalized_dn_query(normalized_dn)
         results = self._execute_query(query, {"dn_no": normalized_dn})
         
@@ -513,6 +538,7 @@ class DNAnalysisService:
             logger.info(f"✅ DN {dn_no} found with {results[0].get('material_count', 1)} materials")
             return {"success": True, "data": results[0]}
         
+        # Step 3: Fallback partial match search
         logger.warning(f"⚠️ Exact match not found for {dn_no}. Running fallback search...")
         fallback_query = self._build_fallback_dn_query(normalized_dn)
         fallback_results = self._execute_query(fallback_query, {"dn_no": normalized_dn})
@@ -530,32 +556,6 @@ class DNAnalysisService:
         
         logger.warning(f"❌ DN {dn_no} not found - no similar matches")
         return {"success": False, "error": f"DN {dn_no} not found"}
-    
-    def verify_dn(self, dn_no: str) -> Dict[str, Any]:
-        """Verify if DN exists using normalized search."""
-        logger.info(f"🔍 Verifying DN: '{dn_no}'")
-        
-        if not dn_no:
-            return {"success": False, "exists": False, "error": "DN number required"}
-        
-        normalized_dn = self._normalize_dn(dn_no)
-        
-        query = """
-            SELECT COUNT(DISTINCT dn_no) as count 
-            FROM delivery_reports 
-            WHERE REGEXP_REPLACE(
-                CAST(dn_no AS TEXT),
-                '[^0-9]',
-                '',
-                'g'
-            ) = :dn_no
-        """
-        results = self._execute_query(query, {"dn_no": normalized_dn})
-        exists = results and results[0].get('count', 0) > 0
-        
-        logger.info(f"✅ DN {dn_no} exists: {exists}")
-        return {"success": True, "exists": exists}
-    
     # ==========================================================
     # BLOCK 8: DN DASHBOARD
     # ==========================================================
