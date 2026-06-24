@@ -422,53 +422,49 @@ class DNAnalysisService:
     
     # ==========================================================
     # BLOCK 6: AGING CALCULATION METHODS (YYYY-DD-MM FIXED)
-      # ==========================================================
+        # ==========================================================
     # BLOCK 6: AGING CALCULATION METHODS (DAY-ONLY DIFFERENCE)
     # ==========================================================
     
     def _parse_date(self, date_value):
         """
-        Parse date for CALCULATION using company format: YYYY-DD-MM
+        Parse date using company format: YYYY-DD-MM
         
-        IMPORTANT: 
-        - Display shows: YYYY-MM-DD (e.g., 2026-06-05)
-        - Calculation uses: YYYY-DD-MM (e.g., 2026-06-05 → 6 May 2026)
-        - PostgreSQL stores: YYYY-MM-DD (June 5, 2026)
-        - Company interprets: YYYY-DD-MM (6 May 2026)
+        PostgreSQL returns date objects. We swap day and month
+        to interpret as YYYY-DD-MM.
         
-        So we MUST swap day and month for calculations.
+        Example: 
+        - PostgreSQL: 2026-04-05 (April 5, 2026)
+        - Company interprets: 2026-04-05 (5 April 2026)
+        - We swap: Year=2026, Day=04, Month=05
         
         Args:
             date_value: Date from PostgreSQL (date object, datetime, or string)
             
         Returns:
-            datetime object with swapped day/month for calculation
+            datetime object with swapped day/month
         """
         if not date_value:
             return None
         
         try:
+            # Handle PostgreSQL date objects
+            if isinstance(date_value, date) and not isinstance(date_value, datetime):
+                # PostgreSQL date(2026, 4, 5) → datetime(2026, 5, 4)
+                return datetime(date_value.year, date_value.day, date_value.month)
+            
             # Handle datetime objects
-            if isinstance(date_value, datetime):
-                # Swap day and month for calculation
+            elif isinstance(date_value, datetime):
                 return datetime(date_value.year, date_value.day, date_value.month)
             
-            # Handle date objects (PostgreSQL returns these)
-            if isinstance(date_value, date):
-                # Swap day and month for calculation
-                # PostgreSQL date(2026, 6, 5) → datetime(2026, 5, 6) = 6 May 2026
-                return datetime(date_value.year, date_value.day, date_value.month)
-            
-            # Handle string dates (YYYY-MM-DD format)
-            if isinstance(date_value, str):
+            # Handle string dates
+            elif isinstance(date_value, str):
                 parts = date_value.split('-')
                 if len(parts) == 3:
                     year = int(parts[0])
                     month = int(parts[1])  # PostgreSQL month
                     day = int(parts[2])    # PostgreSQL day
-                    
-                    # Swap for company format: YYYY-DD-MM
-                    # day becomes month, month becomes day
+                    # Swap: day becomes month, month becomes day
                     return datetime(year, day, month)
                 else:
                     return datetime.strptime(date_value, "%Y-%m-%d")
@@ -479,17 +475,9 @@ class DNAnalysisService:
             logger.error(f"❌ Date parsing error for {date_value}: {e}")
             return None
     
-    def _parse_date_ydm(self, date_value):
+    def _get_day_value(self, date_value) -> int:
         """
-        Parse date using company format: YYYY-DD-MM for calculation.
-        
-        Same as _parse_date() - swaps day and month.
-        """
-        return self._parse_date(date_value)
-    
-    def _get_day_only(self, date_value) -> int:
-        """
-        Extract the DAY value from a date (YYYY-DD-MM interpretation).
+        Extract the DAY value from a date using YYYY-DD-MM interpretation.
         
         Args:
             date_value: Date from PostgreSQL
@@ -503,65 +491,22 @@ class DNAnalysisService:
         try:
             parsed = self._parse_date(date_value)
             if parsed:
-                # In YYYY-DD-MM format, the day is the second part
-                # But after parsing, we need the day value
-                # For PostgreSQL date(2026, 6, 5) → datetime(2026, 5, 6)
-                # The day is 6 (which was originally the month)
+                # After swapping, the day is the second part (YYYY-DD-MM)
                 return parsed.day
             return 0
         except Exception as e:
             logger.error(f"❌ Failed to extract day from {date_value}: {e}")
             return 0
     
-    def _format_date_dmy_long(self, date_value) -> str:
-        """
-        Format datetime → DD Month YYYY (Day Month Year) for display.
-        
-        Example: 2026-06-05 → "6 May 2026"
-        """
-        if not date_value:
-            return 'N/A'
-        
-        try:
-            # Parse using company format first
-            parsed = self._parse_date(date_value)
-            if parsed:
-                return parsed.strftime('%-d %B %Y')
-            return str(date_value)
-        except Exception as e:
-            logger.warning(f"⚠️ Date formatting error: {e}")
-            return 'N/A'
-    
-    def _format_date_dmy_short(self, date_value) -> str:
-        """
-        Format datetime → DD-MMM-YY for display.
-        
-        Example: 2026-06-05 → "6-May-26"
-        """
-        if not date_value:
-            return 'N/A'
-        
-        try:
-            parsed = self._parse_date(date_value)
-            if parsed:
-                return parsed.strftime('%-d-%b-%y')
-            return str(date_value)
-        except Exception as e:
-            logger.warning(f"⚠️ Date formatting error: {e}")
-            return 'N/A'
-    
     def calculate_delivery_aging(self, dn_create_date, good_issue_date) -> int:
         """
-        Calculate delivery aging using DAY-ONLY DIFFERENCE (Company Business Rule).
+        Calculate delivery aging using DAY-ONLY DIFFERENCE.
         
-        CRITICAL: Company calculates DAY difference only (ignoring months/years).
+        COMPANY BUSINESS RULE: 
+        - Interpret dates as YYYY-DD-MM
+        - Calculate difference using DAY numbers only
         
         Formula: PGI Day - DN Create Day
-        
-        Example:
-        - DN Create: 2026-04-05 → Day=05
-        - PGI: 2026-05-05 → Day=05
-        - Difference: 0 days → "Same Day"
         
         Args:
             dn_create_date: DN Create date (PostgreSQL date object)
@@ -571,30 +516,20 @@ class DNAnalysisService:
             Delivery aging in days (day-only difference)
         """
         try:
-            # ✅ NULL date handling
             if dn_create_date is None:
                 logger.warning("⚠️ DN Create Date Missing - Returning 0")
                 return 0
             
-            # Extract DAY values only (YYYY-DD-MM interpretation)
-            dn_day = self._get_day_only(dn_create_date)
-            gi_day = self._get_day_only(good_issue_date)
+            dn_day = self._get_day_value(dn_create_date)
+            gi_day = self._get_day_value(good_issue_date)
             
-            # ✅ COMPANY BUSINESS RULE: Day-only difference
             days = gi_day - dn_day
             
-            # Negative day protection
             if days < 0:
-                logger.error(f"❌ Invalid Delivery Aging: PGI Day ({gi_day}) < DN Day ({dn_day}) - Returning 0")
+                logger.error(f"❌ Invalid Delivery Aging: PGI Day ({gi_day}) < DN Day ({dn_day})")
                 return 0
             
-            # Full diagnostic logging
-            logger.info(
-                f"Delivery Aging Calculation (Day-Only) | "
-                f"DN={dn_create_date} (Day={dn_day}) | "
-                f"PGI={good_issue_date} (Day={gi_day}) | "
-                f"Days={days}"
-            )
+            logger.info(f"Delivery Aging (Day-Only) | DN Day={dn_day} | PGI Day={gi_day} | Days={days}")
             return days
             
         except Exception as e:
@@ -603,16 +538,13 @@ class DNAnalysisService:
     
     def calculate_pod_aging(self, good_issue_date, pod_date) -> int:
         """
-        Calculate POD aging using DAY-ONLY DIFFERENCE (Company Business Rule).
+        Calculate POD aging using DAY-ONLY DIFFERENCE.
         
-        CRITICAL: Company calculates DAY difference only (ignoring months/years).
+        COMPANY BUSINESS RULE: 
+        - Interpret dates as YYYY-DD-MM
+        - Calculate difference using DAY numbers only
         
         Formula: POD Day - PGI Day
-        
-        Example:
-        - PGI: 2026-05-05 → Day=05
-        - POD: 2026-08-05 → Day=05
-        - Difference: 0 days → "Same Day"
         
         Args:
             good_issue_date: PGI date (PostgreSQL date object)
@@ -622,29 +554,20 @@ class DNAnalysisService:
             POD aging in days (day-only difference)
         """
         try:
-            # Extract DAY values only (YYYY-DD-MM interpretation)
-            gi_day = self._get_day_only(good_issue_date)
-            pd_day = self._get_day_only(pod_date)
+            gi_day = self._get_day_value(good_issue_date)
+            pd_day = self._get_day_value(pod_date)
             
             if gi_day == 0:
                 logger.warning(f"⚠️ Failed to parse PGI date: {good_issue_date}")
                 return 0
             
-            # ✅ COMPANY BUSINESS RULE: Day-only difference
             days = pd_day - gi_day
             
-            # Negative day protection
             if days < 0:
-                logger.error(f"❌ Invalid POD Aging: POD Day ({pd_day}) < PGI Day ({gi_day}) - Returning 0")
+                logger.error(f"❌ Invalid POD Aging: POD Day ({pd_day}) < PGI Day ({gi_day})")
                 return 0
             
-            # Full diagnostic logging
-            logger.info(
-                f"POD Aging Calculation (Day-Only) | "
-                f"PGI={good_issue_date} (Day={gi_day}) | "
-                f"POD={pod_date} (Day={pd_day}) | "
-                f"Days={days}"
-            )
+            logger.info(f"POD Aging (Day-Only) | PGI Day={gi_day} | POD Day={pd_day} | Days={days}")
             return days
             
         except Exception as e:
@@ -653,16 +576,13 @@ class DNAnalysisService:
     
     def calculate_total_cycle(self, dn_create_date, pod_date) -> int:
         """
-        Calculate total cycle using DAY-ONLY DIFFERENCE (Company Business Rule).
+        Calculate total cycle using DAY-ONLY DIFFERENCE.
         
-        CRITICAL: Company calculates DAY difference only (ignoring months/years).
+        COMPANY BUSINESS RULE: 
+        - Interpret dates as YYYY-DD-MM
+        - Calculate difference using DAY numbers only
         
         Formula: POD Day - DN Create Day
-        
-        Example:
-        - DN Create: 2026-04-05 → Day=05
-        - POD: 2026-08-05 → Day=05
-        - Difference: 0 days → "Same Day"
         
         Args:
             dn_create_date: DN Create date (PostgreSQL date object)
@@ -672,34 +592,24 @@ class DNAnalysisService:
             Total cycle time in days (day-only difference)
         """
         try:
-            # NULL date handling
             if dn_create_date is None:
                 logger.warning("⚠️ DN Create Date Missing - Returning 0")
                 return 0
             
-            # Extract DAY values only (YYYY-DD-MM interpretation)
-            dn_day = self._get_day_only(dn_create_date)
-            pd_day = self._get_day_only(pod_date)
+            dn_day = self._get_day_value(dn_create_date)
+            pd_day = self._get_day_value(pod_date)
             
             if dn_day == 0:
                 logger.warning(f"⚠️ Failed to parse DN Create date: {dn_create_date}")
                 return 0
             
-            # ✅ COMPANY BUSINESS RULE: Day-only difference
             days = pd_day - dn_day
             
-            # Negative day protection
             if days < 0:
-                logger.error(f"❌ Invalid Total Cycle: POD Day ({pd_day}) < DN Day ({dn_day}) - Returning 0")
+                logger.error(f"❌ Invalid Total Cycle: POD Day ({pd_day}) < DN Day ({dn_day})")
                 return 0
             
-            # Full diagnostic logging
-            logger.info(
-                f"Total Cycle Calculation (Day-Only) | "
-                f"DN={dn_create_date} (Day={dn_day}) | "
-                f"POD={pod_date} (Day={pd_day}) | "
-                f"Days={days}"
-            )
+            logger.info(f"Total Cycle (Day-Only) | DN Day={dn_day} | POD Day={pd_day} | Days={days}")
             return days
             
         except Exception as e:
@@ -709,8 +619,6 @@ class DNAnalysisService:
     def _format_aging_text(self, days: int) -> str:
         """
         Format aging days into human readable text.
-        
-        ✅ Ensures "Same Day" only appears when days = 0
         """
         if days < 0:
             return f"{abs(days)} Days (Data Error)"
@@ -732,7 +640,7 @@ class DNAnalysisService:
             return f"{days} Days ({days // 30} Months)"
     
     # ==========================================================
-    # BLOCK 6.5: DEBUG METHOD
+    # BLOCK 6.5: DEBUG METHOD (DAY-ONLY DIFFERENCE)
     # ==========================================================
     
     def debug_aging_calculation(self, dn_create_date, good_issue_date, pod_date) -> Dict[str, Any]:
@@ -751,21 +659,37 @@ class DNAnalysisService:
         """
         logger.info("🔍 Running debug_aging_calculation...")
         
+        # Parse dates using YYYY-DD-MM interpretation
+        dn_parsed = self._parse_date(dn_create_date)
+        gi_parsed = self._parse_date(good_issue_date)
+        pod_parsed = self._parse_date(pod_date)
+        
         # Extract DAY values
-        dn_day = self._get_day_only(dn_create_date)
-        gi_day = self._get_day_only(good_issue_date)
-        pd_day = self._get_day_only(pod_date)
+        dn_day = self._get_day_value(dn_create_date)
+        gi_day = self._get_day_value(good_issue_date)
+        pd_day = self._get_day_value(pod_date)
         
         # Calculate aging (day-only)
         delivery_aging = self.calculate_delivery_aging(dn_create_date, good_issue_date)
         pod_aging = self.calculate_pod_aging(good_issue_date, pod_date)
         total_cycle = self.calculate_total_cycle(dn_create_date, pod_date)
         
+        # Build result dictionary
         result = {
             "input_dates": {
                 "dn_create_date": str(dn_create_date) if dn_create_date else None,
                 "pgi_date": str(good_issue_date) if good_issue_date else None,
                 "pod_date": str(pod_date) if pod_date else None
+            },
+            "parsed_dates": {
+                "dn_create_date": dn_parsed.strftime('%Y-%m-%d') if dn_parsed else None,
+                "pgi_date": gi_parsed.strftime('%Y-%m-%d') if gi_parsed else None,
+                "pod_date": pod_parsed.strftime('%Y-%m-%d') if pod_parsed else None
+            },
+            "display_dates": {
+                "dn_create_date": dn_parsed.strftime('%d %B %Y') if dn_parsed else None,
+                "pgi_date": gi_parsed.strftime('%d %B %Y') if gi_parsed else None,
+                "pod_date": pod_parsed.strftime('%d %B %Y') if pod_parsed else None
             },
             "day_values": {
                 "dn_create_day": dn_day,
@@ -786,22 +710,33 @@ class DNAnalysisService:
         }
         
         # Log full debug info
-        logger.info("=" * 60)
+        logger.info("=" * 70)
         logger.info("🔍 DEBUG AGING CALCULATION (Day-Only Business Rule)")
-        logger.info("=" * 60)
-        logger.info(f"Input Dates (PostgreSQL YYYY-MM-DD):")
-        logger.info(f"  ├── DN Create: {result['input_dates']['dn_create_date']} → Day={dn_day}")
-        logger.info(f"  ├── PGI:       {result['input_dates']['pgi_date']} → Day={gi_day}")
-        logger.info(f"  └── POD:       {result['input_dates']['pod_date']} → Day={pd_day}")
+        logger.info("=" * 70)
         logger.info("")
-        logger.info(f"Calculations (Day-Only Difference):")
-        logger.info(f"  ├── Delivery Aging: {gi_day} - {dn_day} = {delivery_aging} days → {result['formatted']['delivery_aging_text']}")
-        logger.info(f"  ├── POD Aging:      {pd_day} - {gi_day} = {pod_aging} days → {result['formatted']['pod_aging_text']}")
-        logger.info(f"  └── Total Cycle:    {pd_day} - {dn_day} = {total_cycle} days → {result['formatted']['total_cycle_text']}")
-        logger.info("=" * 60)
+        logger.info("📅 Input Dates (PostgreSQL YYYY-MM-DD):")
+        logger.info(f"  ├── DN Create: {result['input_dates']['dn_create_date']}")
+        logger.info(f"  ├── PGI:       {result['input_dates']['pgi_date']}")
+        logger.info(f"  └── POD:       {result['input_dates']['pod_date']}")
+        logger.info("")
+        logger.info("🔄 Parsed Dates (YYYY-DD-MM Interpretation):")
+        logger.info(f"  ├── DN Create: {result['parsed_dates']['dn_create_date']} → {result['display_dates']['dn_create_date']}")
+        logger.info(f"  ├── PGI:       {result['parsed_dates']['pgi_date']} → {result['display_dates']['pgi_date']}")
+        logger.info(f"  └── POD:       {result['parsed_dates']['pod_date']} → {result['display_dates']['pod_date']}")
+        logger.info("")
+        logger.info("📊 Day Values Extracted:")
+        logger.info(f"  ├── DN Create Day: {result['day_values']['dn_create_day']}")
+        logger.info(f"  ├── PGI Day:       {result['day_values']['pgi_day']}")
+        logger.info(f"  └── POD Day:       {result['day_values']['pod_day']}")
+        logger.info("")
+        logger.info("🧮 Calculations (Day-Only Difference):")
+        logger.info(f"  ├── Delivery Aging: {result['day_values']['pgi_day']} - {result['day_values']['dn_create_day']} = {result['calculations']['delivery_aging_days']} days → {result['formatted']['delivery_aging_text']}")
+        logger.info(f"  ├── POD Aging:      {result['day_values']['pod_day']} - {result['day_values']['pgi_day']} = {result['calculations']['pod_aging_days']} days → {result['formatted']['pod_aging_text']}")
+        logger.info(f"  └── Total Cycle:    {result['day_values']['pod_day']} - {result['day_values']['dn_create_day']} = {result['calculations']['total_cycle_days']} days → {result['formatted']['total_cycle_text']}")
+        logger.info("")
+        logger.info("=" * 70)
         
         return result
-       # ==========================================================
     # BLOCK 7: DN SEARCH WITH FULL DIAGNOSTICS
     # ==========================================================
     
