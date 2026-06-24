@@ -417,9 +417,7 @@ class DNAnalysisService:
     # ==========================================================
     # BLOCK 6: AGING CALCULATION METHODS
     # ==========================================================
-        # ==========================================================
-    # BLOCK 6: DATE FUNCTIONS FOR YYYY-DD-MM FORMAT
-    # ==========================================================
+ 
     
     def _parse_date_ydm(self, date_value):
         """
@@ -450,7 +448,7 @@ class DNAnalysisService:
             logger.warning(f"⚠️ Date parsing error for YYYY-DD-MM: {e}")
             return None
     
-    def _format_date_dmy(self, date_value) -> str:
+    def _format_date_dmy_short(self, date_value) -> str:
         """
         Format datetime → DD-MMM-YY (Day-Month-Year with month abbreviation).
         
@@ -635,9 +633,8 @@ class DNAnalysisService:
         elif days < 90:
             return f"{days} Days (3 Months)"
         else:
-            return f"{days} Days ({days // 30} Months)"
-   
-    ==============================================
+            return f"{days} Days ({days // 30} Months)"     
+      ==============================================
     # BLOCK 7: DN SEARCH WITH FULL DIAGNOSTICS
     # ==========================================================
     
@@ -952,7 +949,7 @@ Please verify the DN number."""
         # ✅ FORMAT DATES AS DD-MMM-YY (e.g., 4-May-26)
         for date_field in ['dn_create_date', 'good_issue_date', 'pod_date']:
             if data.get(date_field):
-                data[date_field] = self._format_date_dmy(data[date_field])
+                data[date_field] = self._format_date_dmy_short(data[date_field])
         
         # Add status emojis
         status = data.get('delivery_status', '')
@@ -994,7 +991,6 @@ Please verify the DN number."""
         
         logger.info(f"✅ Dashboard returned for DN {dn_no}")
         return {"success": True, "data": data}
-    # ==========================================================
     # BLOCK 9: DIAGNOSTIC METHODS
     # ==========================================================
     
@@ -1424,7 +1420,6 @@ Please verify the DN number."""
     
     # ==========================================================
     # BLOCK 11: WHATSAPP RESPONSE FORMATTER
-    # ==========================================================
         # ==========================================================
     # BLOCK 11: WHATSAPP RESPONSE FORMATTER (UPDATED)
     # ==========================================================
@@ -1509,7 +1504,6 @@ Please verify the DN number."""
         lines.append("Pending: {}".format(data.get('pending_flag_text', 'Unknown')))
         
         return "\n".join(lines)
-   
 # ==========================================================
 # BLOCK 12: THREAD-SAFE SINGLETON
 # ==========================================================
