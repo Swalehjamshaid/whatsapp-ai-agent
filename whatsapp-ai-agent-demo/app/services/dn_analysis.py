@@ -16,7 +16,8 @@
 # - ✅ FIXED: Auto-retry with exact DN when fallback finds same DN
 # - ✅ ADDED: Diagnostic logging for every search
 # - ✅ ADDED: COUNT(*) pre-check before DN Not Found
-# - ✅ ADDED: Date format as "DD Month YYYY" (e.g., 4 May 2026)
+# - ✅ UPDATED: POD shows "Done" when completed
+# - ✅ UPDATED: Dates stay in YYYY-MM-DD format
 # ==========================================================
 
 import logging
@@ -453,8 +454,6 @@ class DNAnalysisService:
         Format datetime → DD Month YYYY (Day Month Year).
         
         Example: May 4, 2026 → "4 May 2026"
-        Example: May 7, 2026 → "7 May 2026"
-        Example: May 25, 2026 → "25 May 2026"
         """
         if not date_value:
             return 'N/A'
@@ -875,7 +874,7 @@ class DNAnalysisService:
         return {"success": True, "data": results}
     
     # ==========================================================
-    # BLOCK 8: DN DASHBOARD (UPDATED WITH DD MONTH YYYY FORMAT)
+    # BLOCK 8: DN DASHBOARD - KEEPS YYYY-MM-DD FORMAT
     # ==========================================================
     
     def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
@@ -920,7 +919,7 @@ Please verify the DN number."""
         
         data = result.get("data", {})
         
-        # Calculate aging (dates are in YYYY-DD-MM format)
+        # Calculate aging
         delivery_aging = self.calculate_delivery_aging(
             data.get('dn_create_date'),
             data.get('good_issue_date')
@@ -944,10 +943,8 @@ Please verify the DN number."""
         data['pod_aging_text'] = self._format_aging_text(pod_aging)
         data['total_cycle_text'] = self._format_aging_text(total_cycle)
         
-        # ✅ FORMAT DATES AS DD MONTH YYYY (e.g., 4 May 2026)
-        for date_field in ['dn_create_date', 'good_issue_date', 'pod_date']:
-            if data.get(date_field):
-                data[date_field] = self._format_date_dmy_long(data[date_field])
+        # ✅ KEEP DATES AS YYYY-MM-DD (NO FORMATTING)
+        # Dates are already in YYYY-MM-DD format from PostgreSQL
         
         # Add status emojis
         status = data.get('delivery_status', '')
@@ -971,10 +968,10 @@ Please verify the DN number."""
         else:
             data['pgi_status_text'] = '⏳ Pending'
         
-        # Add POD status
+        # ✅ POD Status - "Done" when completed
         pod_status = data.get('pod_status', '')
-        if pod_status == 'Completed':
-            data['pod_status_text'] = '✅ Completed'
+        if pod_status in ['Completed', 'Received', 'Done']:
+            data['pod_status_text'] = 'Done'
         else:
             data['pod_status_text'] = '⏳ Pending'
         
@@ -1419,15 +1416,16 @@ Please verify the DN number."""
             return {"success": False, "error": str(e)}
     
     # ==========================================================
-    # BLOCK 11: WHATSAPP RESPONSE FORMATTER (UPDATED)
+    # BLOCK 11: WHATSAPP RESPONSE FORMATTER - EXACT OUTPUT
     # ==========================================================
     
     def format_dn_dashboard(self, dashboard_data: Dict[str, Any]) -> str:
         """
         Format DN dashboard for WhatsApp response.
         
-        ✅ Dates are in "DD Month YYYY" format (e.g., 4 May 2026)
+        ✅ Dates are in YYYY-MM-DD format
         ✅ Aging is calculated correctly
+        ✅ POD shows "Done" when completed
         """
         data = dashboard_data.get('data', {})
         
@@ -1480,7 +1478,7 @@ Please verify the DN number."""
         lines.append("Materials: {}".format(material_count))
         lines.append("")
         
-        # ✅ Dates - Display as DD Month YYYY (e.g., 4 May 2026)
+        # ✅ Dates - Display as YYYY-MM-DD
         lines.append("*📅 Dates:*")
         lines.append("DN Create: {}".format(data.get('dn_create_date', 'N/A')))
         lines.append("PGI: {}".format(data.get('good_issue_date', 'N/A')))
@@ -1498,7 +1496,16 @@ Please verify the DN number."""
         lines.append("*📋 Status:*")
         lines.append("Delivery: {} {}".format(data.get('status_emoji', '❓'), data.get('status_text', 'Unknown')))
         lines.append("PGI: {}".format(data.get('pgi_status_text', 'Unknown')))
-        lines.append("POD: {}".format(data.get('pod_status_text', 'Unknown')))
+        
+        # ✅ POD Status - Show "Done" when completed
+        pod_status = data.get('pod_status', '')
+        pod_status_text = data.get('pod_status_text', 'Unknown')
+        
+        if pod_status in ['Completed', 'Received', 'Done'] or pod_status_text == 'Done':
+            lines.append("POD: Done")
+        else:
+            lines.append("POD: {}".format(pod_status_text))
+        
         lines.append("Pending: {}".format(data.get('pending_flag_text', 'Unknown')))
         
         return "\n".join(lines)
@@ -1568,7 +1575,8 @@ logger.info("   ✅ ADDED: Column type logging in health_check()")
 logger.info("   ✅ FIXED: Auto-retry with exact DN when fallback finds same DN")
 logger.info("   ✅ ADDED: Diagnostic logging for every search")
 logger.info("   ✅ ADDED: COUNT(*) pre-check before DN Not Found")
-logger.info("   ✅ ADDED: Date format as 'DD Month YYYY' (e.g., 4 May 2026)")
+logger.info("   ✅ UPDATED: POD shows 'Done' when completed")
+logger.info("   ✅ UPDATED: Dates stay in YYYY-MM-DD format")
 logger.info("")
 logger.info("   AVAILABLE METHODS:")
 logger.info("   ✅ health_check()")
