@@ -2,28 +2,10 @@
 # MASTER ROUTING AND ORCHESTRATION ENGINE
 # ==========================================================
 # File: app/services/ai_provider_service.py
-# Version: 5.0 - PRODUCTION GRADE (NO ai_query_service.py)
+# Version: 5.0 - PRODUCTION GRADE
 # Purpose: Single entry point for all WhatsApp requests.
-#
-# ALL ORIGINAL ATTRIBUTES PRESERVED
-# - Intent Routing (now built-in)
-# - Service Orchestration
-# - Auto-Discovery & Auto-Activation
-# - True Service Readiness Validation
-# - PostgreSQL Validation
-# - Groq Integration (language layer only)
-# - WhatsApp Response Control
-# - Incremental Development Support
-#
-# This file does NOT:
-# - Calculate KPIs
-# - Execute SQL business analytics
-# - Build dashboards
-# - Generate fake data
-# - Use mock data
-#
-# Services auto-activate when fully ready.
-# No manual registry updates required.
+# NO DEPENDENCY ON ai_query_service.py
+# ALL intent detection is built-in.
 # ==========================================================
 
 import logging
@@ -54,7 +36,7 @@ except ImportError as e:
 
 
 # ==========================================================
-# BLOCK 2: ROUTING DECISION CLASS (Built-in - Preserved)
+# BLOCK 2: ROUTING DECISION CLASS
 # ==========================================================
 
 @dataclass
@@ -85,18 +67,12 @@ class RoutingDecision:
 
 
 # ==========================================================
-# BLOCK 3: INTENT DETECTION ENGINE (Built-in - NEW)
+# BLOCK 3: INTENT DETECTION ENGINE (BUILT-IN)
 # ==========================================================
 
 class IntentDetectionEngine:
-    """
-    Built-in Intent Detection Engine.
+    """Built-in Intent Detection - NO ai_query_service.py dependency."""
     
-    Replaces ai_query_service.py dependency.
-    ALL original intent detection logic preserved.
-    """
-    
-    # Patterns - Same as original
     DN_PATTERN = re.compile(r'\b(\d{8,12})\b')
     DEALER_PATTERN = re.compile(r'(?:dealer|show|display|get|view|tell me about|about)\s+([a-z0-9\s&\-\.]+)', re.IGNORECASE)
     PENDING_DN_PATTERN = re.compile(r'(?:pending|open|show\s+pending|list\s+pending)\s*(?:dn|delivery|deliveries)?', re.IGNORECASE)
@@ -109,7 +85,7 @@ class IntentDetectionEngine:
     GREETING_PATTERN = re.compile(r'^(?:hello|hi|hey|good morning|good evening|good afternoon|howdy|greetings)', re.IGNORECASE)
     
     def detect_intent(self, message: str) -> RoutingDecision:
-        """Detect intent from message - REPLACES ai_query_service.process_query()."""
+        """Detect intent from message - NO external dependencies."""
         cleaned = message.strip()
         normalized = cleaned.lower()
         
@@ -279,11 +255,10 @@ class IntentDetectionEngine:
 
 
 # ==========================================================
-# BLOCK 4: SERVICE STATUS ENUM (Preserved)
+# BLOCK 4: SERVICE STATUS ENUM
 # ==========================================================
 
 class ServiceStatus:
-    """Service status constants."""
     READY = "READY"
     IN_DEVELOPMENT = "IN_DEVELOPMENT"
     NOT_STARTED = "NOT_STARTED"
@@ -292,20 +267,10 @@ class ServiceStatus:
 
 
 # ==========================================================
-# BLOCK 5: POSTGRESQL VALIDATOR (Preserved)
+# BLOCK 5: POSTGRESQL VALIDATOR
 # ==========================================================
 
 class PostgreSQLValidator:
-    """
-    PostgreSQL Schema Validator.
-    
-    Validates:
-    - Connection
-    - delivery_reports table exists
-    - Required columns exist
-    - Query execution works
-    """
-    
     REQUIRED_COLUMNS = [
         "dn_no", "customer_name", "dealer_code", "customer_code",
         "ship_to_city", "warehouse", "dn_qty", "dn_amount",
@@ -313,117 +278,67 @@ class PostgreSQLValidator:
         "delivery_status", "pgi_status", "pod_status", "pending_flag"
     ]
     
-    def __init__(self):
-        """Initialize PostgreSQL validator."""
-        self._last_check = None
-        self._cached_result = None
-    
     def validate(self) -> Dict[str, Any]:
-        """
-        Validate PostgreSQL schema.
-        
-        Returns:
-            Dict with validation results
-        """
         result = {
             "success": False,
             "connected": False,
             "table_exists": False,
             "columns_valid": False,
-            "query_executes": False,
             "errors": [],
-            "warnings": [],
             "timestamp": datetime.now().isoformat()
         }
         
         try:
-            # Check 1: Connection
             if not SessionLocal:
                 result["errors"].append("SessionLocal not available")
                 return result
             
             session = SessionLocal()
             
-            # Test connection
             try:
                 session.execute(text("SELECT 1"))
                 result["connected"] = True
             except Exception as e:
-                result["errors"].append(f"Connection test failed: {str(e)}")
+                result["errors"].append(f"Connection failed: {str(e)}")
                 session.close()
                 return result
             
-            # Check 2: Table exists
             inspector = sa_inspect(session.bind)
             tables = inspector.get_table_names()
             
             if "delivery_reports" not in tables:
                 result["errors"].append("Table 'delivery_reports' does not exist")
-                result["table_exists"] = False
                 session.close()
                 return result
             
             result["table_exists"] = True
             
-            # Check 3: Required columns exist
             columns = [col["name"] for col in inspector.get_columns("delivery_reports")]
-            missing_columns = [col for col in self.REQUIRED_COLUMNS if col not in columns]
+            missing = [col for col in self.REQUIRED_COLUMNS if col not in columns]
             
-            if missing_columns:
-                result["warnings"].append(f"Missing columns: {missing_columns}")
+            if missing:
+                result["errors"].append(f"Missing columns: {missing}")
                 result["columns_valid"] = False
             else:
                 result["columns_valid"] = True
             
-            # Check 4: Test query execution
-            try:
-                test_query = """
-                    SELECT COUNT(*) as count 
-                    FROM delivery_reports 
-                    LIMIT 1
-                """
-                session.execute(text(test_query))
-                result["query_executes"] = True
-            except Exception as e:
-                result["errors"].append(f"Test query failed: {str(e)}")
-                result["query_executes"] = False
-            
             session.close()
             
-            # Determine overall status
-            if (result["connected"] and result["table_exists"] and 
-                result["columns_valid"] and result["query_executes"]):
+            if result["connected"] and result["table_exists"] and result["columns_valid"]:
                 result["success"] = True
-            
-            self._last_check = result["timestamp"]
-            self._cached_result = result
-            
-            logger.info(f"PostgreSQL validation: success={result['success']}, "
-                       f"connected={result['connected']}, "
-                       f"table={result['table_exists']}, "
-                       f"columns={result['columns_valid']}")
             
             return result
             
         except Exception as e:
-            result["errors"].append(f"Validation failed: {str(e)}")
-            logger.error(f"PostgreSQL validation error: {e}")
+            result["errors"].append(str(e))
             return result
 
 
 # ==========================================================
-# BLOCK 6: SERVICE REGISTRY - AUTO-DISCOVERY & AUTO-ACTIVATION (Preserved)
+# BLOCK 6: SERVICE REGISTRY
 # ==========================================================
 
 class ServiceRegistry:
-    """
-    Automatic Service Registry with True Readiness Validation.
-    
-    Services auto-activate when fully ready.
-    No manual status updates required.
-    """
-    
-    # Service definitions
     SERVICES = {
         "dn": {
             "module": "app.services.dn_analysis",
@@ -485,7 +400,6 @@ class ServiceRegistry:
     }
     
     def __init__(self):
-        """Initialize service registry."""
         self._services = self.SERVICES.copy()
         self._status_cache = {}
         self._instance_cache = {}
@@ -493,81 +407,57 @@ class ServiceRegistry:
         self._last_validation = None
         self._postgresql_validator = PostgreSQLValidator()
     
-    def validate_all_services(self, force: bool = False) -> Dict[str, Dict[str, Any]]:
-        """Validate all services and update status."""
+    def validate_all_services(self) -> Dict[str, Dict[str, Any]]:
         with self._lock:
-            # First, validate PostgreSQL
             pg_status = self._postgresql_validator.validate()
-            
             results = {}
             for service_key in self._services:
                 results[service_key] = self._validate_service(
                     service_key, 
                     pg_valid=pg_status.get("success", False)
                 )
-            
             self._last_validation = time.time()
             return results
     
     def _validate_service(self, service_key: str, pg_valid: bool = False) -> Dict[str, Any]:
-        """
-        True readiness validation.
-        
-        A service is READY only when ALL checks pass.
-        """
         if service_key not in self._services:
-            return {
-                "status": ServiceStatus.NOT_STARTED,
-                "ready": False,
-                "errors": [f"Service '{service_key}' not registered"]
-            }
+            return {"status": ServiceStatus.NOT_STARTED, "ready": False, "errors": ["Not registered"]}
         
         service_def = self._services[service_key]
-        module_name = service_def.get("module")
-        class_name = service_def.get("class_name")
-        required_methods = service_def.get("methods", [])
         
         result = {
             "status": ServiceStatus.NOT_STARTED,
             "ready": False,
             "errors": [],
-            "warnings": [],
             "checks_passed": 0,
             "checks_total": 7
         }
         
-        # Check 1: PostgreSQL validation
         if not pg_valid:
-            pg_status = self._postgresql_validator.validate()
-            if not pg_status.get("success", False):
-                result["status"] = ServiceStatus.ERROR
-                result["errors"].append("PostgreSQL validation failed")
-                result["errors"].extend(pg_status.get("errors", []))
-                return result
+            result["status"] = ServiceStatus.ERROR
+            result["errors"].append("PostgreSQL validation failed")
+            return result
         
         result["checks_passed"] += 1
         
-        # Check 2: Module exists
         try:
-            module = importlib.import_module(module_name)
+            module = importlib.import_module(service_def.get("module"))
             result["checks_passed"] += 1
         except ImportError as e:
             result["status"] = ServiceStatus.NOT_STARTED
-            result["errors"].append(f"Module '{module_name}' not found: {e}")
+            result["errors"].append(f"Module not found: {e}")
             return result
         
-        # Check 3: Class exists
-        if not hasattr(module, class_name):
+        if not hasattr(module, service_def.get("class_name")):
             result["status"] = ServiceStatus.IN_DEVELOPMENT
-            result["errors"].append(f"Class '{class_name}' not found")
+            result["errors"].append(f"Class '{service_def.get('class_name')}' not found")
             return result
         
-        cls = getattr(module, class_name)
+        cls = getattr(module, service_def.get("class_name"))
         result["checks_passed"] += 1
         
-        # Check 4: Required methods exist
         missing_methods = []
-        for method in required_methods:
+        for method in service_def.get("methods", []):
             if not hasattr(cls, method):
                 missing_methods.append(method)
         
@@ -578,7 +468,6 @@ class ServiceRegistry:
         
         result["checks_passed"] += 1
         
-        # Check 5: Instantiate service
         try:
             instance = cls()
             result["checks_passed"] += 1
@@ -587,39 +476,34 @@ class ServiceRegistry:
             result["errors"].append(f"Instantiation failed: {e}")
             return result
         
-        # Check 6: health_check passes
         if hasattr(instance, "health_check"):
             try:
                 health = instance.health_check()
-                if not health.get("healthy", False):
+                if health.get("healthy", False):
+                    result["checks_passed"] += 1
+                else:
                     result["status"] = ServiceStatus.IN_DEVELOPMENT
-                    result["errors"].append(f"Health check failed: {health.get('error', 'Unknown error')}")
+                    result["errors"].append(f"Health check failed")
                     return result
-                result["checks_passed"] += 1
             except Exception as e:
                 result["status"] = ServiceStatus.ERROR
                 result["errors"].append(f"Health check exception: {e}")
                 return result
-        else:
-            result["warnings"].append("No health_check method")
         
-        # Check 7: validation_query executes
         if hasattr(instance, "validation_query"):
             try:
                 validation = instance.validation_query()
-                if not validation.get("success", False):
+                if validation.get("success", False):
+                    result["checks_passed"] += 1
+                else:
                     result["status"] = ServiceStatus.IN_DEVELOPMENT
-                    result["errors"].append(f"Validation query failed: {validation.get('error', 'Unknown error')}")
+                    result["errors"].append(f"Validation failed")
                     return result
-                result["checks_passed"] += 1
             except Exception as e:
                 result["status"] = ServiceStatus.ERROR
-                result["errors"].append(f"Validation query exception: {e}")
+                result["errors"].append(f"Validation exception: {e}")
                 return result
-        else:
-            result["warnings"].append("No validation_query method")
         
-        # All checks passed!
         result["status"] = ServiceStatus.READY
         result["ready"] = True
         result["instance"] = instance
@@ -627,23 +511,16 @@ class ServiceRegistry:
         return result
     
     def get_service_status(self, service_key: str) -> Dict[str, Any]:
-        """Get status of a specific service."""
-        # Validate if not in cache or cache is old
         if (service_key not in self._status_cache or 
             self._last_validation is None or 
             time.time() - self._last_validation > 60):
             
-            # Check if PostgreSQL validation status has changed
             pg_status = self._postgresql_validator.validate()
-            pg_valid = pg_status.get("success", False)
-            
-            # Validate service
             self._status_cache[service_key] = self._validate_service(
                 service_key, 
-                pg_valid=pg_valid
+                pg_valid=pg_status.get("success", False)
             )
             
-            # Cache instance if ready
             if self._status_cache[service_key].get("ready", False):
                 self._instance_cache[service_key] = self._status_cache[service_key].get("instance")
         
@@ -654,24 +531,18 @@ class ServiceRegistry:
         })
     
     def is_service_ready(self, service_key: str) -> bool:
-        """Check if a service is ready to execute."""
         status = self.get_service_status(service_key)
         return status.get("ready", False)
     
     def get_service_instance(self, service_key: str):
-        """Get service instance."""
         if not self.is_service_ready(service_key):
             return None
-        
         return self._instance_cache.get(service_key)
     
     def get_service_info(self, service_key: str) -> Dict[str, Any]:
-        """Get service metadata if available."""
         if service_key not in self._services:
             return {"error": "Service not registered"}
-        
         status = self.get_service_status(service_key)
-        
         return {
             "key": service_key,
             "description": self._services[service_key].get("description", ""),
@@ -684,24 +555,18 @@ class ServiceRegistry:
         }
     
     def get_all_service_statuses(self) -> Dict[str, Dict[str, Any]]:
-        """Get status of all services."""
         results = {}
         for service_key in self._services:
             results[service_key] = self.get_service_status(service_key)
         return results
     
     def get_health_report(self) -> Dict[str, Any]:
-        """Get comprehensive health report."""
         statuses = self.get_all_service_statuses()
-        
         total = len(statuses)
         ready = sum(1 for s in statuses.values() if s.get("ready", False))
-        in_dev = sum(1 for s in statuses.values() 
-                    if s.get("status") == ServiceStatus.IN_DEVELOPMENT)
-        not_started = sum(1 for s in statuses.values() 
-                        if s.get("status") == ServiceStatus.NOT_STARTED)
-        error = sum(1 for s in statuses.values() 
-                   if s.get("status") == ServiceStatus.ERROR)
+        in_dev = sum(1 for s in statuses.values() if s.get("status") == ServiceStatus.IN_DEVELOPMENT)
+        not_started = sum(1 for s in statuses.values() if s.get("status") == ServiceStatus.NOT_STARTED)
+        error = sum(1 for s in statuses.values() if s.get("status") == ServiceStatus.ERROR)
         
         pg_status = self._postgresql_validator.validate()
         
@@ -719,34 +584,24 @@ class ServiceRegistry:
 
 
 # ==========================================================
-# BLOCK 7: WHATSAPP PROVIDER SERVICE - MASTER ROUTER (Preserved)
+# BLOCK 7: WHATSAPP PROVIDER SERVICE - MASTER ROUTER
 # ==========================================================
 
 class WhatsAppProviderService:
-    """
-    Master WhatsApp Provider Service.
-    
-    This is the SINGLE ENTRY POINT for all WhatsApp requests.
-    This file orchestrates all services and controls responses.
-    """
-    
     def __init__(self):
-        """Initialize WhatsAppProviderService."""
         start_time = time.time()
         
         try:
             logger.info("=" * 70)
-            logger.info("AI Provider Service v5.0 - PRODUCTION GRADE")
+            logger.info("AI Provider Service v5.0 - NO ai_query_service.py")
             logger.info("=" * 70)
             
-            # Initialize intent detection engine (built-in - REPLACES ai_query_service)
             self.intent_engine = IntentDetectionEngine()
-            logger.info("✅ IntentDetectionEngine initialized (built-in)")
+            logger.info("✅ IntentDetectionEngine initialized")
             
-            # Initialize service registry (auto-discovery)
             self.registry = ServiceRegistry()
+            logger.info("✅ ServiceRegistry initialized")
             
-            # Initialize Groq service (language layer only)
             self._groq_service = None
             try:
                 from app.services.groq_service import get_groq_service
@@ -757,16 +612,13 @@ class WhatsAppProviderService:
             except Exception as e:
                 logger.error(f"❌ GroqService initialization failed: {e}")
             
-            # Validate all services
             self.registry.validate_all_services()
             
             init_duration = (time.time() - start_time) * 1000
-            
-            # Log service registry status
             health = self.registry.get_health_report()
             
             logger.info("")
-            logger.info("   SERVICE REGISTRY STATUS (Auto-Discovered):")
+            logger.info("   SERVICE REGISTRY STATUS:")
             logger.info(f"   ✅ Ready: {health['ready']}")
             logger.info(f"   🔧 In Development: {health['in_development']}")
             logger.info(f"   ⏳ Not Started: {health['not_started']}")
@@ -774,44 +626,29 @@ class WhatsAppProviderService:
             logger.info(f"   📊 Readiness Score: {health['readiness_score']:.1f}%")
             logger.info("")
             
-            # Log PostgreSQL status
             pg_status = health.get('postgresql', {})
-            pg_icon = "✅" if pg_status.get("success") else "❌"
-            logger.info(f"   PostgreSQL: {pg_icon} {pg_status.get('connected', False)}")
+            logger.info(f"   PostgreSQL: {'✅' if pg_status.get('success') else '❌'} {pg_status.get('connected', False)}")
             logger.info("")
             
-            # Log each service
             for service_key, status in health['services'].items():
                 ready = status.get("ready", False)
                 status_text = status.get("status", "UNKNOWN")
                 checks = status.get("checks_passed", 0)
                 total_checks = status.get("checks_total", 7)
-                
                 icon = "✅" if ready else "🔧"
                 logger.info(f"   {icon} {service_key.title():15} → {status_text} ({checks}/{total_checks} checks)")
             
-            logger.info("")
-            logger.info("   ROUTING RULES:")
-            logger.info("   ✅ Only READY services execute")
-            logger.info("   ✅ Services auto-activate when ready")
-            logger.info("   ✅ Groq = Language layer only")
-            logger.info("   ✅ PostgreSQL = Only data source")
-            logger.info("   ✅ Intent detection built-in (no ai_query_service.py)")
-            logger.info("   ❌ No mock data")
-            logger.info("   ❌ No fake analytics")
-            logger.info("   ❌ No execution of incomplete modules")
-            logger.info("   ❌ Groq never becomes data source")
             logger.info("")
             logger.info("   STATUS: ✅ PRODUCTION GRADE")
             logger.info(f"   INIT TIME: {init_duration:.2f}ms")
             logger.info("=" * 70)
             
         except Exception as e:
-            logger.exception(f"❌ Failed to initialize WhatsAppProviderService: {str(e)}")
-            raise RuntimeError(f"WhatsAppProviderService initialization failed: {str(e)}") from e
+            logger.exception(f"❌ Failed to initialize: {str(e)}")
+            raise
     
     # ==========================================================
-    # BLOCK 8: MAIN ROUTING METHOD (Preserved with built-in intent)
+    # MAIN ROUTING METHOD
     # ==========================================================
     
     async def process_whatsapp_query(
@@ -822,39 +659,22 @@ class WhatsAppProviderService:
         """
         Process a WhatsApp query - MAIN ENTRY POINT.
         
-        This is the single entry point for all WhatsApp messages.
-        
-        Args:
-            message: WhatsApp message text
-            sender_id: WhatsApp sender ID
-            
-        Returns:
-            Dict with response for WhatsApp
+        NO DEPENDENCY ON ai_query_service.py.
+        Uses built-in intent detection.
         """
-        logger.info(f"📩 Processing WhatsApp query: '{message[:100]}' from {sender_id}")
+        logger.info(f"📩 Processing WhatsApp query: '{message[:100]}'")
         
         try:
-            # ==========================================================
-            # STEP 1: Detect Intent using built-in engine
-            # ==========================================================
-            
+            # STEP 1: Detect intent using built-in engine
             routing_decision = self.intent_engine.detect_intent(message)
+            logger.info(f"🎯 Intent: {routing_decision.intent}, Service: {routing_decision.service_key}")
             
-            logger.info(f"🎯 Routing Decision: {routing_decision.to_dict()}")
-            
-            # ==========================================================
-            # STEP 2: Check if this needs Groq (language layer only)
-            # ==========================================================
-            
+            # STEP 2: Check if this needs Groq
             if routing_decision.needs_groq or routing_decision.service_key == "groq":
-                return await self._handle_groq_query(message, routing_decision)
+                return await self._handle_groq(message, routing_decision)
             
-            # ==========================================================
             # STEP 3: Check Service Readiness
-            # ==========================================================
-            
             service_key = routing_decision.service_key
-            
             if not self.registry.is_service_ready(service_key):
                 return self._format_module_unavailable(
                     message,
@@ -862,11 +682,8 @@ class WhatsAppProviderService:
                     self.registry.get_service_info(service_key)
                 )
             
-            # ==========================================================
             # STEP 4: Execute Service
-            # ==========================================================
-            
-            result = await self._execute_routing_decision(routing_decision)
+            result = await self._execute_service(routing_decision)
             
             if result.get("success", False):
                 return self._format_response(message, result.get("data"), error=False)
@@ -878,7 +695,7 @@ class WhatsAppProviderService:
                 )
             
         except Exception as e:
-            logger.exception(f"❌ Failed to process WhatsApp query: {e}")
+            logger.exception(f"❌ Failed: {e}")
             return self._format_response(
                 message,
                 f"⚠️ An unexpected error occurred.\n\nPlease try again later.",
@@ -886,116 +703,11 @@ class WhatsAppProviderService:
             )
     
     # ==========================================================
-    # BLOCK 9: INTENT MAPPING (Preserved)
+    # GROQ HANDLING
     # ==========================================================
     
-    def _map_intent_to_service_key(self, intent: str) -> str:
-        """Map intent to service key."""
-        intent_to_service = {
-            "dn_lookup": "dn",
-            "dealer_dashboard": "dealer",
-            "dealer_profile": "dealer",
-            "compare_dealers": "dealer",
-            "top_dealers": "dealer",
-            "top_dealers_revenue": "dealer",
-            "top_dealers_units": "dealer",
-            "bottom_dealers": "dealer",
-            "city_dashboard": "city",
-            "warehouse_dashboard": "warehouse",
-            "product_dashboard": "product",
-            "pending_dn": "dn",
-            "pending_pgi": "dn",
-            "pending_pod": "dn",
-            "top_cities": "city",
-            "top_warehouses": "warehouse",
-            "top_products": "product",
-            "national_kpi": "national_kpi",
-            "executive_insight": "national_kpi"
-        }
-        
-        return intent_to_service.get(intent, "unknown")
-    
-    # ==========================================================
-    # BLOCK 10: GROQ HANDLING (Language Layer Only - Preserved)
-    # ==========================================================
-    
-    def _is_greeting(self, message: str) -> bool:
-        """Check if message is a greeting."""
-        greetings = ['hello', 'hi', 'hey', 'good morning', 'good evening', 'good afternoon', 'howdy', 'greetings']
-        return any(g in message.lower() for g in greetings)
-    
-    def _is_help(self, message: str) -> bool:
-        """Check if message is a help request."""
-        help_terms = ['help', 'menu', 'commands', 'what can you do', 'capabilities', 'how to use']
-        return any(h in message.lower() for h in help_terms)
-    
-    def _is_explanation_query(self, message: str) -> bool:
-        """Check if message is asking for explanation."""
-        explanation_terms = [
-            'what is pod', 'what is pgi', 'what is dn', 'explain',
-            'what does pod mean', 'what does pgi mean', 'what does aging mean',
-            'definition', 'meaning'
-        ]
-        return any(e in message.lower() for e in explanation_terms)
-    
-    def _should_use_groq(self, routing_decision: RoutingDecision) -> bool:
-        """
-        Check if this query should use Groq.
-        
-        Groq is ONLY for:
-        - Greetings
-        - Help
-        - Definitions
-        - Explanations
-        - Formatting
-        - Executive Summaries of PostgreSQL Results
-        
-        Groq is NEVER for:
-        - DN Queries
-        - Dealer Queries
-        - Warehouse Queries
-        - City Queries
-        - Product Queries
-        - Revenue Queries
-        - KPI Queries
-        - Pending Queries
-        - Distance Queries
-        - Analytics Queries
-        """
-        # Always allow Groq for help and greetings
-        if routing_decision.intent in ['help', 'greeting']:
-            return True
-        
-        # Executive insight may use Groq for summarization ONLY
-        if routing_decision.intent == 'executive_insight':
-            return True
-        
-        # General AI queries use Groq
-        if routing_decision.intent == 'general_ai':
-            return True
-        
-        # Groq is allowed if explicitly requested
-        if routing_decision.needs_groq:
-            return True
-        
-        # Block Groq for all analytics queries
-        analytics_intents = [
-            'dn_lookup', 'dealer_dashboard', 'dealer_profile',
-            'compare_dealers', 'top_dealers', 'bottom_dealers',
-            'city_dashboard', 'warehouse_dashboard', 'product_dashboard',
-            'pending_dn', 'pending_pgi', 'pending_pod',
-            'top_cities', 'top_warehouses', 'top_products',
-            'national_kpi'
-        ]
-        
-        if routing_decision.intent in analytics_intents:
-            return False
-        
-        # Default: use Groq
-        return True
-    
-    async def _handle_greeting_or_help(self, message: str) -> Dict[str, Any]:
-        """Handle greeting or help queries."""
+    async def _handle_groq(self, message: str, decision: RoutingDecision) -> Dict[str, Any]:
+        """Handle Groq queries."""
         if self._groq_service:
             try:
                 if hasattr(self._groq_service, 'process_query'):
@@ -1003,45 +715,16 @@ class WhatsAppProviderService:
                     if response and response.get("response"):
                         return self._format_response(message, response.get("response"), error=False)
             except Exception as e:
-                logger.error(f"❌ Groq processing failed: {e}")
+                logger.error(f"❌ Groq failed: {e}")
         
-        # Fallback response if Groq unavailable
-        fallback = """Welcome to the Logistics WhatsApp AI Agent!
-
-I can help you with:
-
-📦 DN Tracking - Get delivery status and details
-🏪 Dealer Analytics - View dealer performance and KPIs
-🏭 Warehouse Analytics - Monitor warehouse operations
-🏙️ City Analytics - Analyze city-level performance
-📊 National KPIs - View Pakistan-wide metrics
-
-To get started, try:
-- Send a DN number (8-12 digits)
-- Ask about a dealer name
-- Ask about a warehouse
-- Ask about a city
-- Ask for help
-
-All data comes directly from PostgreSQL."""
-        
-        return self._format_response(message, fallback, error=False)
-    
-    async def _handle_groq_query(self, message: str, routing_decision: RoutingDecision) -> Dict[str, Any]:
-        """Handle Groq query (language layer only)."""
-        if self._groq_service:
-            try:
-                if hasattr(self._groq_service, 'process_query'):
-                    response = await self._groq_service.process_query(message)
-                    if response and response.get("response"):
-                        return self._format_response(message, response.get("response"), error=False)
-            except Exception as e:
-                logger.error(f"❌ Groq processing failed: {e}")
-        
-        # Fallback for common queries
-        if routing_decision.intent == "greeting":
-            return self._format_response(message, "Hello! How can I help you with your logistics today?", error=False)
-        elif routing_decision.intent == "help":
+        # Fallback
+        if decision.intent == "greeting":
+            return self._format_response(
+                message,
+                "Hello! How can I help you with your logistics today?",
+                error=False
+            )
+        elif decision.intent == "help":
             return self._format_response(
                 message,
                 "📋 Available Commands:\n\n"
@@ -1070,32 +753,20 @@ All data comes directly from PostgreSQL."""
             )
     
     # ==========================================================
-    # BLOCK 11: SERVICE EXECUTION (Preserved)
+    # SERVICE EXECUTION
     # ==========================================================
     
-    async def _execute_routing_decision(self, decision: RoutingDecision) -> Dict[str, Any]:
-        """Execute a routing decision."""
-        service_key = decision.service_key
-        
-        # Get service instance
-        service_instance = self.registry.get_service_instance(service_key)
-        
+    async def _execute_service(self, decision: RoutingDecision) -> Dict[str, Any]:
+        """Execute service."""
+        service_instance = self.registry.get_service_instance(decision.service_key)
         if not service_instance:
-            return {
-                "success": False,
-                "error": f"Service '{service_key}' is not available"
-            }
+            return {"success": False, "error": f"Service '{decision.service_key}' not available"}
         
-        # Execute method
         try:
             method = getattr(service_instance, decision.method, None)
             if not method:
-                return {
-                    "success": False,
-                    "error": f"Method '{decision.method}' not found in service '{service_key}'"
-                }
+                return {"success": False, "error": f"Method '{decision.method}' not found"}
             
-            # Prepare arguments
             if decision.entity:
                 if decision.entity2:
                     result = method(decision.entity, decision.entity2)
@@ -1104,7 +775,6 @@ All data comes directly from PostgreSQL."""
             else:
                 result = method()
             
-            # Handle async methods
             if inspect.iscoroutine(result):
                 result = await result
             
@@ -1112,17 +782,13 @@ All data comes directly from PostgreSQL."""
             
         except Exception as e:
             logger.exception(f"❌ Service execution failed: {e}")
-            return {
-                "success": False,
-                "error": f"Service execution failed: {str(e)}"
-            }
+            return {"success": False, "error": str(e)}
     
     # ==========================================================
-    # BLOCK 12: RESPONSE FORMATTING (Preserved)
+    # RESPONSE FORMATTING
     # ==========================================================
     
     def _format_response(self, original_message: str, data: Any, error: bool = False) -> Dict[str, Any]:
-        """Format response for WhatsApp."""
         return {
             "success": not error,
             "message": original_message,
@@ -1132,7 +798,6 @@ All data comes directly from PostgreSQL."""
         }
     
     def _format_module_unavailable(self, original_message: str, service_key: str, info: Dict[str, Any]) -> Dict[str, Any]:
-        """Format module unavailable response."""
         status_text = info.get("status", "UNKNOWN")
         errors = info.get("errors", [])
         checks_passed = info.get("checks_passed", 0)
@@ -1150,45 +815,24 @@ Readiness:
 {checks_passed}/{checks_total} checks passed
 
 """
-        
         if errors:
             message += f"\nMissing:\n{chr(10).join(['- ' + e for e in errors[:3]])}"
-        
-        message += """
-
-Please try again after development is completed."""
-        
-        return self._format_response(original_message, message, error=True)
-    
-    def _format_database_error(self, original_message: str, error: str) -> Dict[str, Any]:
-        """Format database error response."""
-        message = f"""⚠️ Database Connection Unavailable
-
-Service: All Services
-Source: PostgreSQL
-
-Error: {error}
-
-Please contact administrator."""
+        message += "\n\nPlease try again after development is completed."
         
         return self._format_response(original_message, message, error=True)
     
     # ==========================================================
-    # BLOCK 13: DIAGNOSTIC METHODS (Preserved)
+    # DIAGNOSTIC METHODS
     # ==========================================================
     
     def get_service_registry_status(self) -> Dict[str, Any]:
-        """Get service registry status."""
         return self.registry.get_health_report()
     
     def validate_all_services(self) -> Dict[str, Any]:
-        """Validate all services."""
-        return self.registry.validate_all_services(force=True)
+        return self.registry.validate_all_services()
     
     def get_system_health(self) -> Dict[str, Any]:
-        """Get comprehensive system health report."""
         service_health = self.registry.get_health_report()
-        
         return {
             "services": service_health,
             "system_status": "healthy" if service_health.get("readiness_score", 0) > 50 else "degraded",
@@ -1197,31 +841,26 @@ Please contact administrator."""
         }
     
     def get_service_info(self, service_key: str) -> Dict[str, Any]:
-        """Get detailed service information."""
         return self.registry.get_service_info(service_key)
     
     def refresh_service_status(self, service_key: str = None) -> Dict[str, Any]:
-        """Refresh service status."""
         if service_key:
             self.registry._status_cache.pop(service_key, None)
             self.registry._instance_cache.pop(service_key, None)
             return self.registry.get_service_status(service_key)
         else:
-            return self.registry.validate_all_services(force=True)
+            return self.registry.validate_all_services()
 
 
 # ==========================================================
-# BLOCK 14: THREAD-SAFE SINGLETON (Preserved)
+# BLOCK 8: THREAD-SAFE SINGLETON
 # ==========================================================
 
 _whatsapp_provider_service = None
 _provider_service_lock = threading.Lock()
 
-
 def get_whatsapp_provider_service() -> WhatsAppProviderService:
-    """Thread-safe singleton getter."""
     global _whatsapp_provider_service
-    
     if _whatsapp_provider_service is None:
         with _provider_service_lock:
             if _whatsapp_provider_service is None:
@@ -1229,14 +868,13 @@ def get_whatsapp_provider_service() -> WhatsAppProviderService:
                     _whatsapp_provider_service = WhatsAppProviderService()
                     logger.info("✅ WhatsAppProviderService singleton initialized")
                 except Exception as e:
-                    logger.exception(f"❌ WhatsAppProviderService initialization failed: {e}")
+                    logger.exception(f"❌ Initialization failed: {e}")
                     raise
-    
     return _whatsapp_provider_service
 
 
 # ==========================================================
-# BLOCK 15: EXPORTS (Preserved)
+# BLOCK 9: EXPORTS
 # ==========================================================
 
 __all__ = [
@@ -1244,54 +882,19 @@ __all__ = [
     'get_whatsapp_provider_service',
     'ServiceRegistry',
     'ServiceStatus',
-    'PostgreSQLValidator',
     'RoutingDecision',
     'IntentDetectionEngine'
 ]
 
 
 # ==========================================================
-# MODULE INITIALIZATION (Preserved)
+# MODULE INITIALIZATION
 # ==========================================================
 
-logger.debug("=" * 70)
-logger.debug("AI Provider Service v5.0 - PRODUCTION GRADE")
-logger.debug("=" * 70)
-logger.debug("")
-logger.debug("   ROUTING ARCHITECTURE:")
-logger.debug("   WhatsApp User → webhook.py → ai_provider_service.py")
-logger.debug("   ↓")
-logger.debug("   Intent Detection (BUILT-IN - NO ai_query_service.py)")
-logger.debug("   ↓")
-logger.debug("   Auto-Discover Service Registry")
-logger.debug("   ↓")
-logger.debug("   True Service Readiness Validation")
-logger.debug("   ↓")
-logger.debug("   PostgreSQL Validation")
-logger.debug("   ↓")
-logger.debug("   Route To Correct Service")
-logger.debug("   ↓")
-logger.debug("   Return Result")
-logger.debug("")
-logger.debug("   ROUTER RULES:")
-logger.debug("   ✅ Only READY services execute")
-logger.debug("   ✅ Services auto-activate when ready")
-logger.debug("   ✅ Groq = Language layer only")
-logger.debug("   ✅ PostgreSQL = Only data source")
-logger.debug("   ✅ Intent detection built-in (no external dependency)")
-logger.debug("   ❌ No mock data")
-logger.debug("   ❌ No fake analytics")
-logger.debug("   ❌ No execution of incomplete modules")
-logger.debug("   ❌ Groq never becomes data source")
-logger.debug("")
-logger.debug("   SERVICE READINESS CHECKS:")
-logger.debug("   1️⃣ PostgreSQL validated")
-logger.debug("   2️⃣ Module exists")
-logger.debug("   3️⃣ Class exists")
-logger.debug("   4️⃣ Required methods exist")
-logger.debug("   5️⃣ Service instantiates")
-logger.debug("   6️⃣ health_check passes")
-logger.debug("   7️⃣ validation_query executes")
-logger.debug("")
-logger.debug("   STATUS: ✅ PRODUCTION GRADE")
-logger.debug("=" * 70)
+logger.info("=" * 70)
+logger.info("AI Provider Service v5.0 - NO ai_query_service.py")
+logger.info("=" * 70)
+logger.info("✅ Intent detection built-in")
+logger.info("✅ No external routing dependencies")
+logger.info("✅ Ready for production")
+logger.info("=" * 70)
