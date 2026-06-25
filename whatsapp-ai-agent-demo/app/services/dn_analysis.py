@@ -9,7 +9,7 @@
 # INTEGRATION: Railway PostgreSQL
 #
 # BUSINESS DATE ENGINE (v5.0):
-# - ✅ Centralized date conversion in _parse_date() only
+# - ✅ Centralized date conversion in _build_business_date() only
 # - ✅ PostgreSQL YYYY-MM-DD → Business Date (YYYY-DD-MM)
 # - ✅ All aging calculations use Business Date Engine
 # - ✅ No duplicate date conversion logic anywhere
@@ -54,7 +54,7 @@ class DNAnalysisService:
     All data comes from delivery_reports table.
     
     BUSINESS DATE ENGINE (v5.0):
-    All aging calculations use the centralized _parse_date() method.
+    All aging calculations use the centralized _build_business_date() method.
     PostgreSQL YYYY-MM-DD → Business Date (YYYY-DD-MM).
     
     COMPATIBLE WITH: ai_provider_service.py v5.0
@@ -114,8 +114,6 @@ class DNAnalysisService:
     def _execute_query(self, query: str, params: Dict[str, Any] = None) -> List[Dict[str, Any]]:
         """
         Execute raw SQL query and return results as dicts.
-        
-        ✅ FIXED: Full exception logging with traceback
         """
         session = None
         try:
@@ -158,9 +156,7 @@ class DNAnalysisService:
         return normalized
     
     def _build_normalized_dn_query(self, dn_no: str) -> str:
-        """
-        Build DN query with multiple matching strategies.
-        """
+        """Build DN query with multiple matching strategies."""
         return """
             SELECT 
                 dn_no,
@@ -195,9 +191,7 @@ class DNAnalysisService:
         """
     
     def _build_exact_match_query(self, dn_no: str) -> str:
-        """
-        Build exact match query for diagnostic purposes.
-        """
+        """Build exact match query for diagnostic purposes."""
         return """
             SELECT *
             FROM delivery_reports
@@ -206,9 +200,7 @@ class DNAnalysisService:
         """
     
     def _build_count_query(self, dn_no: str) -> str:
-        """
-        Build count query for diagnostic purposes.
-        """
+        """Build count query for diagnostic purposes."""
         return """
             SELECT COUNT(*) as count
             FROM delivery_reports
@@ -216,9 +208,7 @@ class DNAnalysisService:
         """
     
     def _build_fallback_dn_query(self, dn_no: str) -> str:
-        """
-        Build fallback DN query for partial matches.
-        """
+        """Build fallback DN query for partial matches."""
         return """
             SELECT DISTINCT dn_no
             FROM delivery_reports
@@ -227,9 +217,7 @@ class DNAnalysisService:
         """
     
     def _build_raw_dn_query(self, dn_no: str) -> str:
-        """
-        Build raw DN query to check if DN exists without normalization.
-        """
+        """Build raw DN query to check if DN exists without normalization."""
         return """
             SELECT DISTINCT dn_no
             FROM delivery_reports
@@ -256,13 +244,11 @@ class DNAnalysisService:
         }
         
         try:
-            # Check 1: SessionLocal exists
             if not SessionLocal:
                 result["errors"].append("SessionLocal not available")
                 logger.error("❌ Health check failed: SessionLocal not available")
                 return result
             
-            # Check 2: Test connection
             session = SessionLocal()
             try:
                 session.execute(text("SELECT 1"))
@@ -273,7 +259,6 @@ class DNAnalysisService:
                 logger.error(f"❌ Database connection failed: {e}")
                 return result
             
-            # Check 3: Check table exists
             try:
                 inspector = inspect(session.bind)
                 tables = inspector.get_table_names()
@@ -287,7 +272,6 @@ class DNAnalysisService:
                 logger.error(f"❌ Table check failed: {e}")
                 return result
             
-            # Check 4: Check required columns AND log column types
             try:
                 required_columns = [
                     "dn_no", "customer_name", "dealer_code", "customer_code",
@@ -315,7 +299,6 @@ class DNAnalysisService:
                 logger.error(f"❌ Column check failed: {e}")
                 return result
             
-            # Check 5: Test query execution
             try:
                 test_query = "SELECT COUNT(DISTINCT dn_no) as count FROM delivery_reports LIMIT 1"
                 session.execute(text(test_query))
@@ -325,7 +308,6 @@ class DNAnalysisService:
                 logger.error(f"❌ Test query failed: {e}")
                 return result
             
-            # All checks passed
             result["healthy"] = True
             result["database"] = "connected"
             self._status = "READY"
@@ -340,10 +322,6 @@ class DNAnalysisService:
         finally:
             if session:
                 session.close()
-    
-    # ==========================================================
-    # ✅ FIXED: validation_query() - Uses raw SQL
-    # ==========================================================
     
     def validation_query(self) -> Dict[str, Any]:
         """Used by ai_provider_service.py for validation."""
@@ -407,7 +385,7 @@ class DNAnalysisService:
                 "diagnose_dn",
                 "check_dn_raw",
                 "test_dn_lookup",
-                "test_date_calculation",
+                "test_business_date_engine",
                 "get_pending_dns",
                 "get_pending_pgi",
                 "get_pending_pod",
@@ -422,7 +400,7 @@ class DNAnalysisService:
     # BLOCK 6: BUSINESS DATE ENGINE (SINGLE SOURCE OF TRUTH)
     # ==========================================================
     
-    def _parse_date(self, date_value) -> Optional[datetime]:
+    def _build_business_date(self, postgres_date) -> Optional[datetime]:
         """
         BUSINESS DATE ENGINE - Single source of truth for date conversion.
         
@@ -434,9 +412,11 @@ class DNAnalysisService:
         - PostgreSQL: 2026-03-05 → Business Date: 3 May 2026
         - PostgreSQL: 2026-05-05 → Business Date: 5 May 2026
         - PostgreSQL: 2026-05-15 → Business Date: 15 May 2026
+        - PostgreSQL: 2026-06-05 → Business Date: 6 May 2026
+        - PostgreSQL: 2026-07-05 → Business Date: 7 May 2026
         
         Args:
-            date_value: Date from PostgreSQL (date object, datetime, or string)
+            postgres_date: Date from PostgreSQL (date object, datetime, or string)
             
         Returns:
             datetime object representing Business Date, or None if invalid
@@ -444,102 +424,148 @@ class DNAnalysisService:
         LOGGING:
             Always logs the conversion for debugging:
             "📅 Business Date: PostgreSQL 2026-03-05 → 3 May 2026"
+            
+        VALIDATION:
+            If Business Date cannot be created:
+            - Log error with details
+            - Return None
+            - Never crash the application
         """
-        if not date_value:
+        if not postgres_date:
+            logger.warning("⚠️ Business Date Engine: Received None/Null date")
             return None
         
         try:
-            # Handle PostgreSQL date objects
-            if isinstance(date_value, date) and not isinstance(date_value, datetime):
-                # PostgreSQL: date(2026, 3, 5) → Business: 3 May 2026
-                # Year = PostgreSQL Year
-                # Day = PostgreSQL Month (3)
-                # Month = PostgreSQL Day (5)
+            # Extract PostgreSQL Year, Month, Day
+            if isinstance(postgres_date, date) and not isinstance(postgres_date, datetime):
+                # PostgreSQL date object: date(2026, 3, 5)
+                pg_year = postgres_date.year
+                pg_month = postgres_date.month  # PostgreSQL Month = 3
+                pg_day = postgres_date.day      # PostgreSQL Day = 5
+                
+                # Apply Company Business Rule: Swap Month and Day
+                # Business Year = PostgreSQL Year
+                # Business Day = PostgreSQL Month
+                # Business Month = PostgreSQL Day
                 business_date = datetime(
-                    year=date_value.year,
-                    month=date_value.day,   # PostgreSQL Day becomes Business Month
-                    day=date_value.month    # PostgreSQL Month becomes Business Day
+                    year=pg_year,
+                    month=pg_day,      # PostgreSQL Day becomes Business Month
+                    day=pg_month       # PostgreSQL Month becomes Business Day
                 )
-                logger.info(f"📅 Business Date: PostgreSQL {date_value.strftime('%Y-%m-%d')} → {business_date.strftime('%-d %B %Y')}")
+                
+                # Validate the Business Date
+                self._validate_business_date(business_date, postgres_date)
+                
+                logger.info(f"📅 Business Date: PostgreSQL {postgres_date.strftime('%Y-%m-%d')} → {business_date.strftime('%-d %B %Y')}")
                 return business_date
             
-            # Handle datetime objects
-            elif isinstance(date_value, datetime):
+            elif isinstance(postgres_date, datetime):
+                pg_year = postgres_date.year
+                pg_month = postgres_date.month
+                pg_day = postgres_date.day
+                
                 business_date = datetime(
-                    year=date_value.year,
-                    month=date_value.day,
-                    day=date_value.month
+                    year=pg_year,
+                    month=pg_day,
+                    day=pg_month
                 )
-                logger.info(f"📅 Business Date: PostgreSQL {date_value.strftime('%Y-%m-%d')} → {business_date.strftime('%-d %B %Y')}")
+                
+                self._validate_business_date(business_date, postgres_date)
+                
+                logger.info(f"📅 Business Date: PostgreSQL {postgres_date.strftime('%Y-%m-%d')} → {business_date.strftime('%-d %B %Y')}")
                 return business_date
             
-            # Handle string dates
-            elif isinstance(date_value, str):
-                parts = date_value.split('-')
+            elif isinstance(postgres_date, str):
+                # Parse string date
+                parts = postgres_date.split('-')
                 if len(parts) == 3:
-                    year = int(parts[0])
-                    month = int(parts[1])  # PostgreSQL Month
-                    day = int(parts[2])    # PostgreSQL Day
-                    # Swap: PostgreSQL Day becomes Business Month
-                    #       PostgreSQL Month becomes Business Day
+                    pg_year = int(parts[0])
+                    pg_month = int(parts[1])
+                    pg_day = int(parts[2])
+                    
                     business_date = datetime(
-                        year=year,
-                        month=day,
-                        day=month
+                        year=pg_year,
+                        month=pg_day,
+                        day=pg_month
                     )
-                    logger.info(f"📅 Business Date: PostgreSQL {date_value} → {business_date.strftime('%-d %B %Y')}")
+                    
+                    self._validate_business_date(business_date, postgres_date)
+                    
+                    logger.info(f"📅 Business Date: PostgreSQL {postgres_date} → {business_date.strftime('%-d %B %Y')}")
                     return business_date
                 else:
                     # Try standard parsing for other formats
-                    parsed = datetime.strptime(date_value, "%Y-%m-%d")
+                    parsed = datetime.strptime(postgres_date, "%Y-%m-%d")
                     business_date = datetime(
                         year=parsed.year,
                         month=parsed.day,
                         day=parsed.month
                     )
-                    logger.info(f"📅 Business Date: PostgreSQL {date_value} → {business_date.strftime('%-d %B %Y')}")
+                    
+                    self._validate_business_date(business_date, postgres_date)
+                    
+                    logger.info(f"📅 Business Date: PostgreSQL {postgres_date} → {business_date.strftime('%-d %B %Y')}")
                     return business_date
             
-            logger.warning(f"⚠️ Unsupported date type: {type(date_value)} - {date_value}")
+            logger.warning(f"⚠️ Business Date Engine: Unsupported date type: {type(postgres_date)} - {postgres_date}")
             return None
             
         except ValueError as e:
             # Invalid date (e.g., month 0, day 32, etc.)
-            logger.warning(f"⚠️ Invalid Business Date conversion: {date_value} - {e}")
+            logger.error(f"❌ Business Date Engine: Invalid date conversion for {postgres_date} - {e}")
             return None
         except Exception as e:
-            logger.error(f"❌ Business Date parsing error for {date_value}: {e}")
+            logger.error(f"❌ Business Date Engine: Unexpected error for {postgres_date} - {e}")
+            logger.error(f"   Traceback: {traceback.format_exc()}")
             return None
     
-    def _get_business_date(self, date_value) -> Optional[datetime]:
+    def _validate_business_date(self, business_date: datetime, original_date) -> None:
         """
-        Alias for _parse_date() - returns Business Date.
-        
-        This method exists for clarity and future compatibility.
-        All services should call this method for date conversion.
+        Validate that the Business Date was created correctly.
         
         Args:
-            date_value: PostgreSQL date object or string
+            business_date: The created Business Date
+            original_date: The original PostgreSQL date
             
-        Returns:
-            datetime object representing Business Date, or None if invalid
+        Logs:
+            - Warning if validation fails
+            - Error if validation fails with exception
         """
-        return self._parse_date(date_value)
+        try:
+            # Check if business date is valid
+            if business_date.month < 1 or business_date.month > 12:
+                logger.warning(f"⚠️ Business Date Engine: Invalid month {business_date.month} from {original_date}")
+            if business_date.day < 1 or business_date.day > 31:
+                logger.warning(f"⚠️ Business Date Engine: Invalid day {business_date.day} from {original_date}")
+            
+            # Check if the business date makes sense
+            # Business Day = PostgreSQL Month, so it should be 1-31
+            # Business Month = PostgreSQL Day, so it should be 1-12
+            if business_date.day > 31:
+                logger.warning(f"⚠️ Business Date Engine: Business day {business_date.day} > 31 from {original_date}")
+            if business_date.month > 12:
+                logger.warning(f"⚠️ Business Date Engine: Business month {business_date.month} > 12 from {original_date}")
+                
+        except Exception as e:
+            logger.error(f"❌ Business Date Engine: Validation error for {original_date} - {e}")
     
-    def _format_business_date(self, date_value) -> str:
+    def _get_current_business_date(self) -> datetime:
         """
-        Format Business Date for display in logs and debugging.
+        Get the current date as a Business Date.
         
-        Args:
-            date_value: PostgreSQL date object or string
-            
+        Used when PGI or POD dates are missing.
+        
         Returns:
-            Formatted business date string (e.g., "3 May 2026")
+            Current datetime converted to Business Date
         """
-        business_date = self._parse_date(date_value)
-        if business_date:
-            return business_date.strftime('%-d %B %Y')
-        return 'Invalid Date'
+        current = datetime.now()
+        business_date = datetime(
+            year=current.year,
+            month=current.day,
+            day=current.month
+        )
+        logger.info(f"📅 Current Business Date: {business_date.strftime('%-d %B %Y')}")
+        return business_date
     
     def _format_display_date(self, date_value) -> str:
         """
@@ -563,219 +589,19 @@ class DNAnalysisService:
         else:
             return str(date_value)
     
-    # ==========================================================
-    # BLOCK 6A: AGING CALCULATION METHODS (USING BUSINESS DATE ENGINE)
-    # ==========================================================
-    
-    def calculate_delivery_aging(self, dn_create_date, good_issue_date) -> int:
+    def _format_business_date_display(self, business_date: datetime) -> str:
         """
-        Calculate delivery aging using Business Date Engine.
-        
-        COMPANY BUSINESS RULE:
-        - Convert PostgreSQL dates to Business Dates using _parse_date()
-        - Calculate difference using Business Dates only
-        
-        Formula: Business PGI Date - Business DN Create Date
-        
-        If PGI is missing, use Current Date (Business Date).
+        Format Business Date for display in logs and debugging.
         
         Args:
-            dn_create_date: DN Create date (PostgreSQL date object)
-            good_issue_date: PGI date (PostgreSQL date object)
+            business_date: Business Date datetime object
             
         Returns:
-            Delivery aging in days (0 = Same Day)
+            Formatted business date string (e.g., "3 May 2026")
         """
-        try:
-            # Convert to Business Dates using the single source of truth
-            business_dn_create = self._parse_date(dn_create_date)
-            
-            if business_dn_create is None:
-                logger.warning("⚠️ DN Create Date invalid - Returning 0")
-                return 0
-            
-            # If PGI is missing, use Current Business Date
-            if good_issue_date is None:
-                logger.info("📊 PGI missing - Using Current Date")
-                business_pgi = datetime.now()
-                # Convert current date to Business Date
-                business_pgi = datetime(
-                    year=business_pgi.year,
-                    month=business_pgi.day,
-                    day=business_pgi.month
-                )
-                logger.info(f"📅 Current Business Date: {business_pgi.strftime('%-d %B %Y')}")
-            else:
-                business_pgi = self._parse_date(good_issue_date)
-                if business_pgi is None:
-                    logger.warning("⚠️ PGI Date invalid - Returning 0")
-                    return 0
-            
-            # Calculate day difference using Business Dates
-            delta = business_pgi - business_dn_create
-            days = delta.days
-            
-            # Negative protection
-            if days < 0:
-                logger.warning(
-                    f"⚠️ Invalid Delivery Aging: PGI Business Date ({business_pgi.strftime('%-d %B %Y')}) "
-                    f"< DN Create Business Date ({business_dn_create.strftime('%-d %B %Y')}) - Returning 0"
-                )
-                return 0
-            
-            logger.info(
-                f"✅ Delivery Aging: "
-                f"DN Create: {self._format_display_date(dn_create_date)} "
-                f"({business_dn_create.strftime('%-d %B %Y')}) → "
-                f"PGI: {self._format_display_date(good_issue_date)} "
-                f"({business_pgi.strftime('%-d %B %Y')}) = {days} days"
-            )
-            return days
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to calculate delivery aging: {e}")
-            return 0
-    
-    def calculate_pod_aging(self, good_issue_date, pod_date) -> int:
-        """
-        Calculate POD aging using Business Date Engine.
-        
-        COMPANY BUSINESS RULE:
-        - Convert PostgreSQL dates to Business Dates using _parse_date()
-        - Calculate difference using Business Dates only
-        
-        Formula: Business POD Date - Business PGI Date
-        
-        If POD is missing, use Current Date (Business Date).
-        
-        Args:
-            good_issue_date: PGI date (PostgreSQL date object)
-            pod_date: POD date (PostgreSQL date object)
-            
-        Returns:
-            POD aging in days (0 = Same Day)
-        """
-        try:
-            # If PGI is missing, POD aging cannot be calculated
-            if good_issue_date is None:
-                logger.info("📊 PGI missing - POD aging cannot be calculated")
-                return 0
-            
-            business_pgi = self._parse_date(good_issue_date)
-            if business_pgi is None:
-                logger.warning("⚠️ PGI Date invalid - Returning 0")
-                return 0
-            
-            # If POD is missing, use Current Business Date
-            if pod_date is None:
-                logger.info("📊 POD missing - Using Current Date")
-                business_pod = datetime.now()
-                # Convert current date to Business Date
-                business_pod = datetime(
-                    year=business_pod.year,
-                    month=business_pod.day,
-                    day=business_pod.month
-                )
-                logger.info(f"📅 Current Business Date: {business_pod.strftime('%-d %B %Y')}")
-            else:
-                business_pod = self._parse_date(pod_date)
-                if business_pod is None:
-                    logger.warning("⚠️ POD Date invalid - Returning 0")
-                    return 0
-            
-            # Calculate day difference using Business Dates
-            delta = business_pod - business_pgi
-            days = delta.days
-            
-            # Negative protection
-            if days < 0:
-                logger.warning(
-                    f"⚠️ Invalid POD Aging: POD Business Date ({business_pod.strftime('%-d %B %Y')}) "
-                    f"< PGI Business Date ({business_pgi.strftime('%-d %B %Y')}) - Returning 0"
-                )
-                return 0
-            
-            logger.info(
-                f"✅ POD Aging: "
-                f"PGI: {self._format_display_date(good_issue_date)} "
-                f"({business_pgi.strftime('%-d %B %Y')}) → "
-                f"POD: {self._format_display_date(pod_date)} "
-                f"({business_pod.strftime('%-d %B %Y')}) = {days} days"
-            )
-            return days
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to calculate POD aging: {e}")
-            return 0
-    
-    def calculate_total_cycle(self, dn_create_date, pod_date) -> int:
-        """
-        Calculate total cycle using Business Date Engine.
-        
-        COMPANY BUSINESS RULE:
-        - Convert PostgreSQL dates to Business Dates using _parse_date()
-        - Calculate difference using Business Dates only
-        
-        Formula: Business POD Date - Business DN Create Date
-        
-        If POD is missing, use Current Date (Business Date).
-        
-        Args:
-            dn_create_date: DN Create date (PostgreSQL date object)
-            pod_date: POD date (PostgreSQL date object)
-            
-        Returns:
-            Total cycle time in days (0 = Same Day)
-        """
-        try:
-            # Convert to Business Dates using the single source of truth
-            business_dn_create = self._parse_date(dn_create_date)
-            
-            if business_dn_create is None:
-                logger.warning("⚠️ DN Create Date invalid - Returning 0")
-                return 0
-            
-            # If POD is missing, use Current Business Date
-            if pod_date is None:
-                logger.info("📊 POD missing - Using Current Date")
-                business_pod = datetime.now()
-                # Convert current date to Business Date
-                business_pod = datetime(
-                    year=business_pod.year,
-                    month=business_pod.day,
-                    day=business_pod.month
-                )
-                logger.info(f"📅 Current Business Date: {business_pod.strftime('%-d %B %Y')}")
-            else:
-                business_pod = self._parse_date(pod_date)
-                if business_pod is None:
-                    logger.warning("⚠️ POD Date invalid - Returning 0")
-                    return 0
-            
-            # Calculate day difference using Business Dates
-            delta = business_pod - business_dn_create
-            days = delta.days
-            
-            # Negative protection
-            if days < 0:
-                logger.warning(
-                    f"⚠️ Invalid Total Cycle: POD Business Date ({business_pod.strftime('%-d %B %Y')}) "
-                    f"< DN Create Business Date ({business_dn_create.strftime('%-d %B %Y')}) - Returning 0"
-                )
-                return 0
-            
-            logger.info(
-                f"✅ Total Cycle: "
-                f"DN Create: {self._format_display_date(dn_create_date)} "
-                f"({business_dn_create.strftime('%-d %B %Y')}) → "
-                f"POD: {self._format_display_date(pod_date)} "
-                f"({business_pod.strftime('%-d %B %Y')}) = {days} days"
-            )
-            return days
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to calculate total cycle: {e}")
-            return 0
+        if not business_date:
+            return 'Invalid Date'
+        return business_date.strftime('%-d %B %Y')
     
     def _format_aging_text(self, days: int) -> str:
         """
@@ -803,6 +629,202 @@ class DNAnalysisService:
             return f"{days} Days ({days // 30} Months)"
     
     # ==========================================================
+    # BLOCK 6A: AGING CALCULATION METHODS (USING BUSINESS DATE ENGINE)
+    # ==========================================================
+    
+    def calculate_delivery_aging(self, dn_create_date, good_issue_date) -> int:
+        """
+        Calculate delivery aging using Business Date Engine.
+        
+        COMPANY BUSINESS RULE:
+        - Convert PostgreSQL dates to Business Dates using _build_business_date()
+        - Calculate difference using Business Dates only
+        
+        Formula: Business PGI - Business DN Create
+        
+        If PGI is missing, use Current Business Date.
+        
+        Args:
+            dn_create_date: DN Create date (PostgreSQL date object)
+            good_issue_date: PGI date (PostgreSQL date object)
+            
+        Returns:
+            Delivery aging in days (0 = Same Day)
+        """
+        try:
+            # Convert to Business Dates using the single source of truth
+            business_dn = self._build_business_date(dn_create_date)
+            
+            if business_dn is None:
+                logger.warning("⚠️ Delivery Aging: DN Create Date invalid - Returning 0")
+                return 0
+            
+            # If PGI is missing, use Current Business Date
+            if good_issue_date is None:
+                logger.info("📊 Delivery Aging: PGI missing - Using Current Date")
+                business_pgi = self._get_current_business_date()
+            else:
+                business_pgi = self._build_business_date(good_issue_date)
+                if business_pgi is None:
+                    logger.warning("⚠️ Delivery Aging: PGI Date invalid - Returning 0")
+                    return 0
+            
+            # Calculate day difference using Business Dates
+            delta = business_pgi - business_dn
+            days = delta.days
+            
+            # Negative protection
+            if days < 0:
+                logger.warning(
+                    f"⚠️ Delivery Aging: PGI Business Date ({self._format_business_date_display(business_pgi)}) "
+                    f"< DN Create Business Date ({self._format_business_date_display(business_dn)}) - Returning 0"
+                )
+                return 0
+            
+            logger.info(
+                f"✅ Delivery Aging: "
+                f"DN Create: {self._format_display_date(dn_create_date)} "
+                f"({self._format_business_date_display(business_dn)}) → "
+                f"PGI: {self._format_display_date(good_issue_date)} "
+                f"({self._format_business_date_display(business_pgi)}) = {days} days"
+            )
+            return days
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to calculate delivery aging: {e}")
+            logger.error(f"   Traceback: {traceback.format_exc()}")
+            return 0
+    
+    def calculate_pod_aging(self, good_issue_date, pod_date) -> int:
+        """
+        Calculate POD aging using Business Date Engine.
+        
+        COMPANY BUSINESS RULE:
+        - Convert PostgreSQL dates to Business Dates using _build_business_date()
+        - Calculate difference using Business Dates only
+        
+        Formula: Business POD - Business PGI
+        
+        If POD is missing, use Current Business Date.
+        
+        Args:
+            good_issue_date: PGI date (PostgreSQL date object)
+            pod_date: POD date (PostgreSQL date object)
+            
+        Returns:
+            POD aging in days (0 = Same Day)
+        """
+        try:
+            # If PGI is missing, POD aging cannot be calculated
+            if good_issue_date is None:
+                logger.info("📊 POD Aging: PGI missing - Cannot calculate")
+                return 0
+            
+            business_pgi = self._build_business_date(good_issue_date)
+            if business_pgi is None:
+                logger.warning("⚠️ POD Aging: PGI Date invalid - Returning 0")
+                return 0
+            
+            # If POD is missing, use Current Business Date
+            if pod_date is None:
+                logger.info("📊 POD Aging: POD missing - Using Current Date")
+                business_pod = self._get_current_business_date()
+            else:
+                business_pod = self._build_business_date(pod_date)
+                if business_pod is None:
+                    logger.warning("⚠️ POD Aging: POD Date invalid - Returning 0")
+                    return 0
+            
+            # Calculate day difference using Business Dates
+            delta = business_pod - business_pgi
+            days = delta.days
+            
+            # Negative protection
+            if days < 0:
+                logger.warning(
+                    f"⚠️ POD Aging: POD Business Date ({self._format_business_date_display(business_pod)}) "
+                    f"< PGI Business Date ({self._format_business_date_display(business_pgi)}) - Returning 0"
+                )
+                return 0
+            
+            logger.info(
+                f"✅ POD Aging: "
+                f"PGI: {self._format_display_date(good_issue_date)} "
+                f"({self._format_business_date_display(business_pgi)}) → "
+                f"POD: {self._format_display_date(pod_date)} "
+                f"({self._format_business_date_display(business_pod)}) = {days} days"
+            )
+            return days
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to calculate POD aging: {e}")
+            logger.error(f"   Traceback: {traceback.format_exc()}")
+            return 0
+    
+    def calculate_total_cycle(self, dn_create_date, pod_date) -> int:
+        """
+        Calculate total cycle using Business Date Engine.
+        
+        COMPANY BUSINESS RULE:
+        - Convert PostgreSQL dates to Business Dates using _build_business_date()
+        - Calculate difference using Business Dates only
+        
+        Formula: Business POD - Business DN Create
+        
+        If POD is missing, use Current Business Date.
+        
+        Args:
+            dn_create_date: DN Create date (PostgreSQL date object)
+            pod_date: POD date (PostgreSQL date object)
+            
+        Returns:
+            Total cycle time in days (0 = Same Day)
+        """
+        try:
+            # Convert to Business Dates using the single source of truth
+            business_dn = self._build_business_date(dn_create_date)
+            
+            if business_dn is None:
+                logger.warning("⚠️ Total Cycle: DN Create Date invalid - Returning 0")
+                return 0
+            
+            # If POD is missing, use Current Business Date
+            if pod_date is None:
+                logger.info("📊 Total Cycle: POD missing - Using Current Date")
+                business_pod = self._get_current_business_date()
+            else:
+                business_pod = self._build_business_date(pod_date)
+                if business_pod is None:
+                    logger.warning("⚠️ Total Cycle: POD Date invalid - Returning 0")
+                    return 0
+            
+            # Calculate day difference using Business Dates
+            delta = business_pod - business_dn
+            days = delta.days
+            
+            # Negative protection
+            if days < 0:
+                logger.warning(
+                    f"⚠️ Total Cycle: POD Business Date ({self._format_business_date_display(business_pod)}) "
+                    f"< DN Create Business Date ({self._format_business_date_display(business_dn)}) - Returning 0"
+                )
+                return 0
+            
+            logger.info(
+                f"✅ Total Cycle: "
+                f"DN Create: {self._format_display_date(dn_create_date)} "
+                f"({self._format_business_date_display(business_dn)}) → "
+                f"POD: {self._format_display_date(pod_date)} "
+                f"({self._format_business_date_display(business_pod)}) = {days} days"
+            )
+            return days
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to calculate total cycle: {e}")
+            logger.error(f"   Traceback: {traceback.format_exc()}")
+            return 0
+    
+    # ==========================================================
     # BLOCK 6.5: DEBUG METHOD (USING BUSINESS DATE ENGINE)
     # ==========================================================
     
@@ -823,9 +845,9 @@ class DNAnalysisService:
         logger.info("🔍 Running debug_aging_calculation...")
         
         # Convert to Business Dates using the single source of truth
-        business_dn = self._parse_date(dn_create_date)
-        business_pgi = self._parse_date(good_issue_date)
-        business_pod = self._parse_date(pod_date)
+        business_dn = self._build_business_date(dn_create_date)
+        business_pgi = self._build_business_date(good_issue_date)
+        business_pod = self._build_business_date(pod_date)
         
         # Calculate aging (using Business Dates)
         delivery_aging = self.calculate_delivery_aging(dn_create_date, good_issue_date)
@@ -840,9 +862,9 @@ class DNAnalysisService:
                 "pod_date": self._format_display_date(pod_date)
             },
             "business_dates": {
-                "dn_create_date": business_dn.strftime('%d %B %Y') if business_dn else None,
-                "pgi_date": business_pgi.strftime('%d %B %Y') if business_pgi else None,
-                "pod_date": business_pod.strftime('%d %B %Y') if business_pod else None
+                "dn_create_date": self._format_business_date_display(business_dn) if business_dn else None,
+                "pgi_date": self._format_business_date_display(business_pgi) if business_pgi else None,
+                "pod_date": self._format_business_date_display(business_pod) if business_pod else None
             },
             "calculations": {
                 "delivery_aging_days": delivery_aging,
@@ -1231,10 +1253,10 @@ Please verify the DN number."""
         return {"success": True, "data": data}
     
     # ==========================================================
-    # BLOCK 8.5: DATE VALIDATION TEST (UPDATED FOR BUSINESS DATE ENGINE)
+    # BLOCK 8.5: BUSINESS DATE ENGINE VALIDATION TESTS
     # ==========================================================
     
-    def test_date_calculation(self) -> Dict[str, Any]:
+    def test_business_date_engine(self) -> Dict[str, Any]:
         """
         Test Business Date Engine calculations.
         
@@ -1247,8 +1269,13 @@ Please verify the DN number."""
         - PostgreSQL: DN Create: 2026-06-05, PGI: 2026-06-05, POD: 2026-07-05
         - Business Dates: 6 May 2026, 6 May 2026, 7 May 2026
         - Expected: Delivery Aging=0, POD Aging=1, Total Cycle=1
+        
+        Test Case 3:
+        - PostgreSQL: DN Create: 2026-12-31, PGI: 2026-12-31, POD: 2026-12-31
+        - Business Dates: 31 Dec 2026, 31 Dec 2026, 31 Dec 2026
+        - Expected: Delivery Aging=0, POD Aging=0, Total Cycle=0
         """
-        logger.info("🧪 Running Business Date Engine tests...")
+        logger.info("🧪 Running Business Date Engine validation tests...")
         
         from datetime import date as date_type
         
@@ -1262,14 +1289,23 @@ Please verify the DN number."""
         tc2_pgi = date_type(2026, 6, 5)         # PostgreSQL: 2026-06-05
         tc2_pod = date_type(2026, 7, 5)         # PostgreSQL: 2026-07-05
         
-        # Parse Business Dates
-        tc1_business_dn = self._parse_date(tc1_dn_create)
-        tc1_business_pgi = self._parse_date(tc1_pgi)
-        tc1_business_pod = self._parse_date(tc1_pod)
+        # Test Case 3
+        tc3_dn_create = date_type(2026, 12, 31)  # PostgreSQL: 2026-12-31
+        tc3_pgi = date_type(2026, 12, 31)        # PostgreSQL: 2026-12-31
+        tc3_pod = date_type(2026, 12, 31)        # PostgreSQL: 2026-12-31
         
-        tc2_business_dn = self._parse_date(tc2_dn_create)
-        tc2_business_pgi = self._parse_date(tc2_pgi)
-        tc2_business_pod = self._parse_date(tc2_pod)
+        # Parse Business Dates
+        tc1_business_dn = self._build_business_date(tc1_dn_create)
+        tc1_business_pgi = self._build_business_date(tc1_pgi)
+        tc1_business_pod = self._build_business_date(tc1_pod)
+        
+        tc2_business_dn = self._build_business_date(tc2_dn_create)
+        tc2_business_pgi = self._build_business_date(tc2_pgi)
+        tc2_business_pod = self._build_business_date(tc2_pod)
+        
+        tc3_business_dn = self._build_business_date(tc3_dn_create)
+        tc3_business_pgi = self._build_business_date(tc3_pgi)
+        tc3_business_pod = self._build_business_date(tc3_pod)
         
         # Calculate aging
         tc1_delivery = self.calculate_delivery_aging(tc1_dn_create, tc1_pgi)
@@ -1279,6 +1315,10 @@ Please verify the DN number."""
         tc2_delivery = self.calculate_delivery_aging(tc2_dn_create, tc2_pgi)
         tc2_pod_aging = self.calculate_pod_aging(tc2_pgi, tc2_pod)
         tc2_total = self.calculate_total_cycle(tc2_dn_create, tc2_pod)
+        
+        tc3_delivery = self.calculate_delivery_aging(tc3_dn_create, tc3_pgi)
+        tc3_pod_aging = self.calculate_pod_aging(tc3_pgi, tc3_pod)
+        tc3_total = self.calculate_total_cycle(tc3_dn_create, tc3_pod)
         
         # Build result
         result = {
@@ -1292,9 +1332,9 @@ Please verify the DN number."""
                         "pod": str(tc1_pod)
                     },
                     "business_dates": {
-                        "dn_create": tc1_business_dn.strftime("%d %B %Y") if tc1_business_dn else None,
-                        "pgi": tc1_business_pgi.strftime("%d %B %Y") if tc1_business_pgi else None,
-                        "pod": tc1_business_pod.strftime("%d %B %Y") if tc1_business_pod else None
+                        "dn_create": self._format_business_date_display(tc1_business_dn),
+                        "pgi": self._format_business_date_display(tc1_business_pgi),
+                        "pod": self._format_business_date_display(tc1_business_pod)
                     },
                     "calculations": {
                         "delivery_aging": tc1_delivery,
@@ -1320,9 +1360,9 @@ Please verify the DN number."""
                         "pod": str(tc2_pod)
                     },
                     "business_dates": {
-                        "dn_create": tc2_business_dn.strftime("%d %B %Y") if tc2_business_dn else None,
-                        "pgi": tc2_business_pgi.strftime("%d %B %Y") if tc2_business_pgi else None,
-                        "pod": tc2_business_pod.strftime("%d %B %Y") if tc2_business_pod else None
+                        "dn_create": self._format_business_date_display(tc2_business_dn),
+                        "pgi": self._format_business_date_display(tc2_business_pgi),
+                        "pod": self._format_business_date_display(tc2_business_pod)
                     },
                     "calculations": {
                         "delivery_aging": tc2_delivery,
@@ -1339,11 +1379,40 @@ Please verify the DN number."""
                         tc2_pod_aging == 1 and
                         tc2_total == 1
                     )
+                },
+                {
+                    "name": "Test Case 3: PostgreSQL 2026-12-31 → 31 Dec 2026",
+                    "postgresql_dates": {
+                        "dn_create": str(tc3_dn_create),
+                        "pgi": str(tc3_pgi),
+                        "pod": str(tc3_pod)
+                    },
+                    "business_dates": {
+                        "dn_create": self._format_business_date_display(tc3_business_dn),
+                        "pgi": self._format_business_date_display(tc3_business_pgi),
+                        "pod": self._format_business_date_display(tc3_business_pod)
+                    },
+                    "calculations": {
+                        "delivery_aging": tc3_delivery,
+                        "pod_aging": tc3_pod_aging,
+                        "total_cycle": tc3_total
+                    },
+                    "expected": {
+                        "delivery_aging": 0,
+                        "pod_aging": 0,
+                        "total_cycle": 0
+                    },
+                    "passed": (
+                        tc3_delivery == 0 and
+                        tc3_pod_aging == 0 and
+                        tc3_total == 0
+                    )
                 }
             ],
             "all_passed": (
                 tc1_delivery == 2 and tc1_pod_aging == 10 and tc1_total == 12 and
-                tc2_delivery == 0 and tc2_pod_aging == 1 and tc2_total == 1
+                tc2_delivery == 0 and tc2_pod_aging == 1 and tc2_total == 1 and
+                tc3_delivery == 0 and tc3_pod_aging == 0 and tc3_total == 0
             ),
             "timestamp": datetime.now().isoformat()
         }
@@ -1356,18 +1425,18 @@ Please verify the DN number."""
         
         for i, test in enumerate(result["tests"], 1):
             logger.info(f"📋 {test['name']}:")
-            logger.info(f"   PostgreSQL Dates:")
+            logger.info(f"   PostgreSQL Dates (Display):")
             logger.info(f"     ├── DN Create: {test['postgresql_dates']['dn_create']}")
             logger.info(f"     ├── PGI:       {test['postgresql_dates']['pgi']}")
             logger.info(f"     └── POD:       {test['postgresql_dates']['pod']}")
-            logger.info(f"   Business Dates:")
+            logger.info(f"   Business Dates (Internal):")
             logger.info(f"     ├── DN Create: {test['business_dates']['dn_create']}")
             logger.info(f"     ├── PGI:       {test['business_dates']['pgi']}")
             logger.info(f"     └── POD:       {test['business_dates']['pod']}")
             logger.info(f"   Calculations:")
-            logger.info(f"     ├── Delivery Aging: {test['calculations']['delivery_aging']} (Expected: {test['expected']['delivery_aging']}) {'✅' if test['calculations']['delivery_aging'] == test['expected']['delivery_aging'] else '❌'}")
-            logger.info(f"     ├── POD Aging:      {test['calculations']['pod_aging']} (Expected: {test['expected']['pod_aging']}) {'✅' if test['calculations']['pod_aging'] == test['expected']['pod_aging'] else '❌'}")
-            logger.info(f"     └── Total Cycle:    {test['calculations']['total_cycle']} (Expected: {test['expected']['total_cycle']}) {'✅' if test['calculations']['total_cycle'] == test['expected']['total_cycle'] else '❌'}")
+            logger.info(f"     ├── Delivery Aging: {test['calculations']['delivery_aging']} days (Expected: {test['expected']['delivery_aging']}) {'✅' if test['calculations']['delivery_aging'] == test['expected']['delivery_aging'] else '❌'}")
+            logger.info(f"     ├── POD Aging:      {test['calculations']['pod_aging']} days (Expected: {test['expected']['pod_aging']}) {'✅' if test['calculations']['pod_aging'] == test['expected']['pod_aging'] else '❌'}")
+            logger.info(f"     └── Total Cycle:    {test['calculations']['total_cycle']} days (Expected: {test['expected']['total_cycle']}) {'✅' if test['calculations']['total_cycle'] == test['expected']['total_cycle'] else '❌'}")
             logger.info(f"   Result: {'✅ PASSED' if test['passed'] else '❌ FAILED'}")
             logger.info("")
         
@@ -1867,14 +1936,14 @@ Please verify the DN number."""
         lines.append("Materials: {}".format(material_count))
         lines.append("")
         
-        # ✅ Dates - Display as YYYY-MM-DD (PostgreSQL format)
+        # ✅ Dates - Display as YYYY-MM-DD (PostgreSQL format - NEVER change)
         lines.append("*📅 Dates:*")
         lines.append("DN Create: {}".format(data.get('dn_create_date', 'N/A')))
         lines.append("PGI: {}".format(data.get('good_issue_date', 'N/A')))
         lines.append("POD: {}".format(data.get('pod_date', 'N/A')))
         lines.append("")
         
-        # Aging - Calculated using Business Date Engine
+        # Aging - Calculated using Business Date Engine (internal only)
         lines.append("*⏳ Aging:*")
         lines.append("Delivery: {}".format(data.get('delivery_aging_text', 'N/A')))
         lines.append("POD: {}".format(data.get('pod_aging_text', 'N/A')))
@@ -1958,14 +2027,17 @@ logger.info("   ✅ Compatible: ai_provider_service.py v5.0")
 logger.info("")
 logger.info("   BUSINESS DATE ENGINE (SINGLE SOURCE OF TRUTH):")
 logger.info("   ✅ PostgreSQL YYYY-MM-DD → Business Date YYYY-DD-MM")
-logger.info("   ✅ All aging calculations use Business Date Engine")
+logger.info("   ✅ All aging calculations use _build_business_date()")
 logger.info("   ✅ No duplicate date conversion logic anywhere")
 logger.info("   ✅ Display dates remain as PostgreSQL YYYY-MM-DD")
+logger.info("   ✅ Safe error handling with validation")
 logger.info("")
 logger.info("   EXAMPLES:")
 logger.info("   ✅ PostgreSQL 2026-03-05 → 3 May 2026")
 logger.info("   ✅ PostgreSQL 2026-05-05 → 5 May 2026")
 logger.info("   ✅ PostgreSQL 2026-05-15 → 15 May 2026")
+logger.info("   ✅ PostgreSQL 2026-06-05 → 6 May 2026")
+logger.info("   ✅ PostgreSQL 2026-07-05 → 7 May 2026")
 logger.info("")
 logger.info("   AVAILABLE METHODS:")
 logger.info("   ✅ health_check()")
@@ -1977,7 +2049,7 @@ logger.info("   ✅ get_dn_dashboard()")
 logger.info("   ✅ diagnose_dn()")
 logger.info("   ✅ check_dn_raw()")
 logger.info("   ✅ test_dn_lookup()")
-logger.info("   ✅ test_date_calculation()")
+logger.info("   ✅ test_business_date_engine()")
 logger.info("   ✅ get_pending_dns()")
 logger.info("   ✅ get_pending_pgi()")
 logger.info("   ✅ get_pending_pod()")
@@ -1987,9 +2059,9 @@ logger.info("   ✅ calculate_total_cycle()")
 logger.info("   ✅ format_dn_dashboard()")
 logger.info("")
 logger.info("   RULES:")
-logger.info("   ✅ Business Date Engine: _parse_date() ONLY")
-logger.info("   ✅ Date Format (Display): YYYY-MM-DD")
-logger.info("   ✅ Date Format (Calculation): YYYY-DD-MM")
+logger.info("   ✅ Business Date Engine: _build_business_date() ONLY")
+logger.info("   ✅ Date Format (Display): YYYY-MM-DD (NEVER change)")
+logger.info("   ✅ Date Format (Calculation): YYYY-DD-MM (Internal only)")
 logger.info("   ✅ DN Count = COUNT(DISTINCT dn_no)")
 logger.info("   ✅ Units = SUM(dn_qty)")
 logger.info("   ✅ Revenue = SUM(dn_amount)")
@@ -2003,7 +2075,7 @@ logger.info("=" * 70)
 # ✅ Run Business Date Engine test on startup
 try:
     service = get_dn_analytics_service()
-    test_result = service.test_date_calculation()
+    test_result = service.test_business_date_engine()
     if test_result.get("all_passed"):
         logger.info("✅ Business Date Engine: ALL TESTS PASSED")
     else:
