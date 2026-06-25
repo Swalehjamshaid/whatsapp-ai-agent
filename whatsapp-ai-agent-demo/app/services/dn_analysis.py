@@ -1,21 +1,12 @@
 # ==========================================================
-# FILE: app/services/dn_analysis.py (v6.0 - ENTERPRISE EDITION)
+# FILE: app/services/dn_analysis.py (v6.1 - FIXED)
 # ==========================================================
 # PURPOSE: DN Analytics Service - Direct PostgreSQL Integration
 # SOURCE: delivery_reports table ONLY
-# VERSION: 6.0 - ENTERPRISE PRODUCTION GRADE
+# VERSION: 6.1 - HEALTH CHECK FIXED
 #
 # COMPATIBLE WITH: ai_provider_service.py v5.0
 # INTEGRATION: Railway PostgreSQL
-#
-# ARCHITECTURE:
-# - BusinessDateEngine: Single source of truth for date conversion
-# - DatabaseManager: Connection and query execution
-# - DNSearchEngine: DN search with multiple strategies
-# - AnalyticsCalculator: Aging and KPI calculations
-# - DashboardBuilder: Assemble dashboard data
-# - Formatter: WhatsApp and display formatting
-# - HealthMonitor: Service health validation
 # ==========================================================
 
 import logging
@@ -61,14 +52,6 @@ class ValidationStatus(Enum):
     LEAP_YEAR_ERROR = "leap_year_error"
 
 
-class DNStatus(Enum):
-    """DN delivery status."""
-    DELIVERED = "delivered"
-    IN_TRANSIT = "in_transit"
-    PENDING = "pending"
-    UNKNOWN = "unknown"
-
-
 @dataclass
 class BusinessDate:
     """
@@ -103,84 +86,6 @@ class BusinessDate:
             "source": self.source,
             "error_message": self.error_message
         }
-
-
-@dataclass
-class DNProfile:
-    """DN profile data from database."""
-    dn_no: str
-    dealer_name: str
-    warehouse: str
-    city: str
-    delivery_location: Optional[str]
-    sales_manager: Optional[str]
-    division: Optional[str]
-    total_units: int
-    total_revenue: float
-    material_count: int
-    dn_create_date: Optional[str]
-    good_issue_date: Optional[str]
-    pod_date: Optional[str]
-    delivery_status: str
-    pgi_status: str
-    pod_status: str
-    pending_flag: bool
-
-
-@dataclass
-class DeliveryMetrics:
-    """Delivery aging metrics."""
-    delivery_aging_days: int
-    pod_aging_days: int
-    total_cycle_days: int
-    delivery_aging_text: str
-    pod_aging_text: str
-    total_cycle_text: str
-
-
-@dataclass
-class DashboardResult:
-    """Complete dashboard result."""
-    profile: DNProfile
-    metrics: DeliveryMetrics
-    status_emoji: str
-    status_text: str
-    pgi_status_text: str
-    pod_status_text: str
-    pending_flag_text: str
-
-
-@dataclass
-class HealthResult:
-    """Health check result."""
-    healthy: bool
-    service: str
-    version: str
-    database: str
-    errors: List[str] = field(default_factory=list)
-    warnings: List[str] = field(default_factory=list)
-    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for API compatibility."""
-        return {
-            "healthy": self.healthy,
-            "service": self.service,
-            "version": self.version,
-            "database": self.database,
-            "errors": self.errors,
-            "warnings": self.warnings,
-            "timestamp": self.timestamp
-        }
-
-
-@dataclass
-class SearchResult:
-    """DN search result."""
-    success: bool
-    data: Optional[Dict[str, Any]]
-    error: Optional[str] = None
-    similar_dns: List[str] = field(default_factory=list)
 
 
 # ==========================================================
@@ -452,18 +357,18 @@ class DNAnalysisService:
     def __init__(self):
         """Initialize DN Analytics Service."""
         self._service_name = "dn_analysis"
-        self._version = "6.0"
+        self._version = "6.1"
         self._status = "INITIALIZING"
         logger.info(f"🔧 DNAnalysisService v{self._version} initializing...")
         
         # Run health check
         health = self.health_check()
-        if health.healthy:
+        if health.get("healthy", False):
             self._status = "READY"
             logger.info("✅ DNAnalysisService is READY")
         else:
             self._status = "ERROR"
-            logger.error(f"❌ DNAnalysisService initialization FAILED: {health.errors}")
+            logger.error(f"❌ DNAnalysisService initialization FAILED: {health.get('errors', [])}")
     
     # ==========================================================
     # BLOCK 5: DATABASE METHODS
@@ -522,7 +427,7 @@ class DNAnalysisService:
     # BLOCK 7: DN SEARCH ENGINE
     # ==========================================================
     
-    def search_dn(self, dn_no: str) -> SearchResult:
+    def search_dn(self, dn_no: str) -> Dict[str, Any]:
         """
         Search for DN with multiple matching strategies.
         
@@ -535,11 +440,11 @@ class DNAnalysisService:
         logger.info(f"🔍 Searching for DN: '{dn_no}'")
         
         if not dn_no:
-            return SearchResult(success=False, error="DN number required")
+            return {"success": False, "error": "DN number required"}
         
         normalized = self._normalize_dn(dn_no)
         if not self._is_valid_dn_format(normalized):
-            return SearchResult(success=False, error=f"Invalid DN format: {dn_no}")
+            return {"success": False, "error": f"Invalid DN format: {dn_no}"}
         
         # Build query with multiple match strategies
         query = """
@@ -579,7 +484,7 @@ class DNAnalysisService:
         
         if results:
             logger.info(f"✅ DN {dn_no} found with {results[0].get('material_count', 1)} materials")
-            return SearchResult(success=True, data=results[0])
+            return {"success": True, "data": results[0]}
         
         # Fallback: partial match search
         fallback_query = """
@@ -592,20 +497,20 @@ class DNAnalysisService:
         similar_dns = [str(r.get('dn_no', '')) for r in fallback_results if r.get('dn_no')]
         
         if similar_dns:
-            return SearchResult(
-                success=False,
-                error=f"DN {dn_no} not found",
-                similar_dns=similar_dns[:5]
-            )
+            return {
+                "success": False,
+                "error": f"DN {dn_no} not found",
+                "similar_dns": similar_dns[:5]
+            }
         
-        return SearchResult(success=False, error=f"DN {dn_no} not found")
+        return {"success": False, "error": f"DN {dn_no} not found"}
     
     def verify_dn(self, dn_no: str) -> Dict[str, Any]:
         """Verify if DN exists."""
         result = self.search_dn(dn_no)
         return {
             "success": True,
-            "exists": result.success,
+            "exists": result.get("success", False),
             "dn": dn_no
         }
     
@@ -715,8 +620,8 @@ class DNAnalysisService:
             return {"success": False, "error": "DN number required"}
         
         search_result = self.search_dn(dn_no)
-        if not search_result.success:
-            similar = search_result.similar_dns
+        if not search_result.get("success"):
+            similar = search_result.get("similar_dns", [])
             if similar:
                 return {
                     "success": False,
@@ -724,7 +629,7 @@ class DNAnalysisService:
                 }
             return {"success": False, "error": f"DN {dn_no} not found"}
         
-        data = search_result.data
+        data = search_result["data"]
         
         # Calculate aging
         delivery_aging = self.calculate_delivery_aging(
@@ -1138,37 +1043,45 @@ class DNAnalysisService:
             return {"success": False, "error": str(e)}
     
     # ==========================================================
-    # BLOCK 12: HEALTH CHECK
+    # BLOCK 12: HEALTH CHECK - FIXED TO RETURN DICT
     # ==========================================================
     
-    def health_check(self) -> HealthResult:
-        """Validate service readiness."""
+    def health_check(self) -> Dict[str, Any]:
+        """
+        Validate service readiness.
+        
+        Returns:
+            Dict with health status (compatible with ai_provider_service.py)
+        """
         logger.info("🔍 Running health check...")
         session = None
         
-        result = HealthResult(
-            healthy=False,
-            service=self._service_name,
-            version=self._version,
-            database="disconnected"
-        )
+        result = {
+            "healthy": False,
+            "service": self._service_name,
+            "version": self._version,
+            "database": "disconnected",
+            "errors": [],
+            "warnings": [],
+            "timestamp": datetime.now().isoformat()
+        }
         
         try:
             # Check SessionLocal
             if not SessionLocal:
-                result.errors.append("SessionLocal not available")
+                result["errors"].append("SessionLocal not available")
                 return result
             
             # Test connection
             session = SessionLocal()
             session.execute(text("SELECT 1"))
-            result.database = "connected"
+            result["database"] = "connected"
             
             # Check table exists
             inspector = inspect(session.bind)
             tables = inspector.get_table_names()
             if "delivery_reports" not in tables:
-                result.errors.append("Table 'delivery_reports' does not exist")
+                result["errors"].append("Table 'delivery_reports' does not exist")
                 return result
             
             # Check required columns
@@ -1184,16 +1097,16 @@ class DNAnalysisService:
             
             missing = [col for col in required_columns if col not in columns]
             if missing:
-                result.warnings.append(f"Missing columns: {missing}")
+                result["warnings"].append(f"Missing columns: {missing}")
             
             # Test query
             session.execute(text("SELECT COUNT(DISTINCT dn_no) as count FROM delivery_reports LIMIT 1"))
             
-            result.healthy = True
+            result["healthy"] = True
             logger.info("✅ Health check PASSED - Service is READY")
             
         except Exception as e:
-            result.errors.append(f"Health check failed: {str(e)}")
+            result["errors"].append(f"Health check failed: {str(e)}")
             logger.error(f"❌ Health check failed: {e}")
         finally:
             if session:
@@ -1558,9 +1471,7 @@ __all__ = [
     'get_dn_analytics_service',
     'BusinessDateEngine',
     'BusinessDate',
-    'ValidationStatus',
-    'HealthResult',
-    'SearchResult'
+    'ValidationStatus'
 ]
 
 
@@ -1569,31 +1480,22 @@ __all__ = [
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("DNAnalysisService v6.0 - ENTERPRISE EDITION")
+logger.info("DNAnalysisService v6.1 - ENTERPRISE EDITION (FIXED)")
 logger.info("=" * 70)
 logger.info("")
 logger.info("   SERVICE DETAILS:")
 logger.info("   ✅ Service Name: dn_analysis")
-logger.info("   ✅ Version: 6.0")
+logger.info("   ✅ Version: 6.1")
 logger.info("   ✅ Source: PostgreSQL (delivery_reports)")
 logger.info("   ✅ Compatible: ai_provider_service.py v5.0")
 logger.info("")
 logger.info("   BUSINESS DATE ENGINE:")
 logger.info("   ✅ PostgreSQL YYYY-MM-DD → Business Date YYYY-DD-MM")
 logger.info("   ✅ All aging calculations use BusinessDateEngine")
-logger.info("   ✅ No duplicate date conversion logic")
 logger.info("   ✅ Display dates remain as PostgreSQL YYYY-MM-DD")
 logger.info("")
-logger.info("   OFFICIAL MAPPINGS:")
-logger.info("   ✅ 2026-03-05 → 3 May 2026")
-logger.info("   ✅ 2026-05-05 → 5 May 2026")
-logger.info("   ✅ 2026-05-15 → 15 May 2026")
-logger.info("   ✅ 2026-06-05 → 6 May 2026")
-logger.info("   ✅ 2026-07-05 → 7 May 2026")
-logger.info("   ✅ 2026-12-31 → 31 Dec 2026")
-logger.info("")
 logger.info("   AVAILABLE METHODS:")
-logger.info("   ✅ health_check()")
+logger.info("   ✅ health_check() - Returns Dict (compatible)")
 logger.info("   ✅ validation_query()")
 logger.info("   ✅ get_service_metadata()")
 logger.info("   ✅ search_dn()")
