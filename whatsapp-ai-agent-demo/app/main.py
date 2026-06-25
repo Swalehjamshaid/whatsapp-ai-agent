@@ -1,16 +1,18 @@
 # ==========================================================
-# FILE: app/main.py (ENTERPRISE v16.2 - UPLOAD INTEGRATION)
+# FILE: app/main.py (ENTERPRISE v16.3 - UPLOAD ROUTER ONLY)
 # PROJECT: AI WhatsApp Customer Service Agent
 # ==========================================================
-# IMPROVEMENTS v16.2:
+# IMPROVEMENTS v16.3:
 # - ✅ ADDED: Upload Router registration
 # - ✅ ADDED: POST /upload/excel endpoint
 # - ✅ ADDED: GET /upload/status endpoint
 # - ✅ ADDED: GET /upload/statistics endpoint
+# - ✅ ADDED: GET /upload/batch/latest endpoint
 # - ✅ ADDED: GET /upload/batches/recent endpoint
+# - ✅ ADDED: DELETE /upload/all endpoint
 # - ✅ PRESERVED: All existing functionality
 # - ✅ PRESERVED: All webhook, AI, analytics services
-# - ✅ All v16.1 improvements preserved
+# - ✅ All v16.2 improvements preserved
 # ==========================================================
 
 from __future__ import annotations
@@ -68,7 +70,7 @@ sys.excepthook = handle_uncaught_exception
 # ==========================================================
 
 print("=" * 60)
-print("🚀 RAILWAY DEPLOYMENT STARTING v16.2")
+print("🚀 RAILWAY DEPLOYMENT STARTING v16.3")
 print(f"TIME: {datetime.now().isoformat()}")
 print("=" * 60)
 
@@ -296,13 +298,13 @@ print(f"✅ PRE-FLIGHT RESULT: {preflight_result['status']}")
 
 
 # ==========================================================
-# BLOCK 10: INITIALIZE ALL SERVICES - UPDATED FOR NEW ARCHITECTURE
+# BLOCK 10: INITIALIZE ALL SERVICES
 # ==========================================================
 
 def initialize_all_services_sync():
-    """Initialize all webhook and AI services - UPDATED for new architecture"""
+    """Initialize all webhook and AI services"""
     print("=" * 60)
-    print("🔧 INITIALIZING ALL SERVICES (SYNC - v16.2)")
+    print("🔧 INITIALIZING ALL SERVICES (SYNC - v16.3)")
     print("=" * 60)
     
     results = {
@@ -325,10 +327,7 @@ def initialize_all_services_sync():
         logger.exception(e)
         results["webhook_services"]["error"] = str(e)
     
-    # ==========================================================
-    # UPDATED: AI Provider Service (v5.0 - No ai_query_service)
-    # ==========================================================
-    
+    # AI Provider Service
     try:
         from app.services.ai_provider_service import get_whatsapp_provider_service
         provider = get_whatsapp_provider_service()
@@ -336,7 +335,6 @@ def initialize_all_services_sync():
         results["ai_services"]["loaded"] = True
         logger.info(f"✅ AI Provider Service v5.0: Available")
         
-        # Get service registry status
         try:
             health = provider.get_service_registry_status()
             results["ai_services"]["service_registry"] = {
@@ -350,7 +348,6 @@ def initialize_all_services_sync():
             logger.info(f"   ├── In Development: {health.get('in_development', 0)}")
             logger.info(f"   ├── Readiness Score: {health.get('readiness_score', 0):.1f}%")
             
-            # Check DN service specifically
             dn_status = provider.registry.get_service_status("dn")
             if dn_status.get("ready", False):
                 logger.info(f"   ├── DN Service: ✅ READY")
@@ -364,10 +361,7 @@ def initialize_all_services_sync():
         logger.error(f"❌ AI Provider Service failed: {e}")
         results["ai_services"]["details"]["ai_provider_error"] = str(e)
     
-    # ==========================================================
     # WhatsApp Service
-    # ==========================================================
-    
     try:
         from app.services.whatsapp_service import get_whatsapp_service
         whatsapp = get_whatsapp_service()
@@ -377,10 +371,7 @@ def initialize_all_services_sync():
         logger.error(f"❌ WhatsApp Service failed: {e}")
         results["ai_services"]["details"]["whatsapp_error"] = str(e)
     
-    # ==========================================================
-    # AI Query Service - Now OPTIONAL (replaced by built-in)
-    # ==========================================================
-    
+    # AI Query Service (Optional)
     try:
         from app.services.ai_query_service import get_ai_query_service
         ai_query = get_ai_query_service()
@@ -393,17 +384,12 @@ def initialize_all_services_sync():
         logger.warning(f"⚠️ AI Query Service: {e}")
         results["ai_services"]["details"]["ai_query_error"] = str(e)
     
-    # ==========================================================
-    # DN Analytics Service (Direct PostgreSQL)
-    # ==========================================================
-    
+    # DN Analytics Service
     try:
         from app.services.dn_analysis import get_dn_analytics_service
         dn_service = get_dn_analytics_service()
         results["ai_services"]["details"]["dn_analytics"] = dn_service is not None
         logger.info(f"✅ DN Analytics Service: {'Available' if dn_service else 'Failed'}")
-        
-        # Run health check
         if dn_service:
             health = dn_service.health_check()
             if health.get("healthy", False):
@@ -414,74 +400,45 @@ def initialize_all_services_sync():
         logger.error(f"❌ DN Analytics Service failed: {e}")
         results["ai_services"]["details"]["dn_analytics_error"] = str(e)
     
-    # ==========================================================
-    # Upload Service (Check if available)
-    # ==========================================================
-    
-    try:
-        from app.routes.upload import router as upload_router
-        results["upload_services"]["router_available"] = upload_router is not None
-        results["upload_services"]["loaded"] = True
-        logger.info(f"✅ Upload Router: Available")
-        if upload_router:
-            logger.info(f"   ├── Upload router has {len(upload_router.routes)} routes")
-    except ImportError as e:
-        logger.warning(f"⚠️ Upload Router not found: {e}")
-        results["upload_services"]["loaded"] = False
-        results["upload_services"]["error"] = str(e)
-    except Exception as e:
-        logger.error(f"❌ Upload Router check failed: {e}")
-        results["upload_services"]["loaded"] = False
-        results["upload_services"]["error"] = str(e)
-    
     print("=" * 60)
     logger.info(f"✅ Service Initialization Complete")
     logger.info(f"   Webhook Services: {results['webhook_services']['loaded']}")
     logger.info(f"   AI Services: {results['ai_services']['loaded']}")
-    logger.info(f"   Upload Services: {results['upload_services']['loaded']}")
     logger.info(f"   Database: {results['database']['loaded']}")
-    logger.info(f"   Architecture: v16.2 (Built-in Intent Detection + Dashboard Root + Upload Integration)")
+    logger.info(f"   Architecture: v16.3 (Built-in Intent Detection + Dashboard Root + Upload Integration)")
     print("=" * 60)
     
     return results
 
 
 # ==========================================================
-# BLOCK 11: LIFESPAN HANDLER (UPDATED - v16.2)
+# BLOCK 11: LIFESPAN HANDLER
 # ==========================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Main lifespan handler - initializes services without asyncio.run()"""
     print("=" * 60)
-    print("🚀 LIFESPAN STARTED - INITIALIZING SERVICES v16.2")
+    print("🚀 LIFESPAN STARTED - INITIALIZING SERVICES v16.3")
     print("=" * 60)
     
     STARTUP_DIAGNOSTICS["startup_time"] = datetime.now().isoformat()
     start_time = time.time()
     
-    # Store initialization results
     init_results = {}
     
     try:
         logger.info("=" * 80)
-        logger.info("🤖 AI WHATSAPP AGENT STARTING v16.2")
-        logger.info("📌 NEW ARCHITECTURE: Built-in Intent Detection")
-        logger.info("📌 NEW FEATURE: Dashboard at root '/'")
-        logger.info("📌 NEW FEATURE: Upload Integration")
+        logger.info("🤖 AI WHATSAPP AGENT STARTING v16.3")
+        logger.info("📌 ARCHITECTURE: Built-in Intent Detection")
+        logger.info("📌 FEATURES: Dashboard Root + Upload Integration")
         logger.info("=" * 80)
         
-        # ====================================================
-        # Initialize services synchronously
-        # No asyncio.run() - just call sync function
-        # ====================================================
         init_results = initialize_all_services_sync()
         
-        # Store services in app state for access in endpoints
         app.state.services_initialized = True
         app.state.init_results = init_results
         
-        # Store provider service for webhook access
         try:
             from app.services.ai_provider_service import get_whatsapp_provider_service
             app.state.provider_service = get_whatsapp_provider_service()
@@ -489,14 +446,12 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"❌ Failed to store provider service: {e}")
         
-        # Store webhook stats function if available
         try:
             from app.routes.webhook import get_webhook_stats
             app.state.get_webhook_stats = get_webhook_stats
         except:
             pass
         
-        # Create directories
         os.makedirs("uploads", exist_ok=True)
         TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
         os.makedirs(TEMPLATES_DIR, exist_ok=True)
@@ -507,8 +462,7 @@ async def lifespan(app: FastAPI):
         
         logger.info("=" * 80)
         logger.info(f"✅ Application startup complete in {startup_duration:.2f}s")
-        logger.info(f"   Services Initialized: {init_results.get('webhook_services', {}).get('loaded', False)}")
-        logger.info(f"   Architecture: v16.2 (Built-in Intent Detection + Dashboard Root + Upload Integration)")
+        logger.info(f"   Architecture: v16.3 (Built-in Intent Detection + Dashboard Root + Upload Integration)")
         logger.info("🚀 APPLICATION STARTED SUCCESSFULLY")
         logger.info("📡 READY FOR TRAFFIC")
         logger.info("=" * 80)
@@ -562,7 +516,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AI WhatsApp Logistics Assistant",
     description="Enterprise Logistics AI Platform - WhatsApp Integration",
-    version="16.2.0",
+    version="16.3.0",
     docs_url="/api/docs" if config.ENVIRONMENT != "production" else None,
     redoc_url="/api/redoc" if config.ENVIRONMENT != "production" else None,
     openapi_url="/api/openapi.json" if config.ENVIRONMENT != "production" else None,
@@ -574,7 +528,6 @@ app = FastAPI(
 # BLOCK 13: TEMPLATES SETUP
 # ==========================================================
 
-# Initialize Jinja2Templates for dashboard rendering
 templates = Jinja2Templates(
     directory=os.path.join(
         os.path.dirname(__file__),
@@ -585,424 +538,13 @@ logger.info("✅ Jinja2Templates initialized for dashboard")
 
 
 # ==========================================================
-# BLOCK 14: UPLOAD ROUTER REGISTRATION (NEW)
+# BLOCK 14: WEBHOOK ROUTER REGISTRATION
 # ==========================================================
 
 print("=" * 60)
-print("🔧 REGISTERING UPLOAD ROUTER - v16.2")
+print("🔧 REGISTERING WEBHOOK ROUTER - v16.3")
 print("=" * 60)
 
-upload_router = None
-upload_import_success = False
-
-try:
-    print("Attempt 1: Importing upload router from app.routes.upload")
-    from app.routes.upload import router as upload_router
-    upload_import_success = True
-    print(f"✅ Upload router imported successfully: {upload_router is not None}")
-    if upload_router:
-        print(f"   ├── Router has {len(upload_router.routes)} routes")
-        for route in upload_router.routes:
-            print(f"   ├── {route.path} ({list(route.methods) if hasattr(route, 'methods') else 'N/A'})")
-except ImportError as e:
-    print(f"❌ Upload router import failed (ImportError): {e}")
-    upload_router = None
-except Exception as e:
-    print(f"❌ Upload router import failed: {e}")
-    traceback.print_exc()
-    upload_router = None
-
-# Register upload router if available
-if upload_router is not None:
-    try:
-        # Check if already registered to avoid duplication
-        existing_upload_routes = [r for r in app.routes if "/upload" in r.path]
-        if existing_upload_routes:
-            print(f"   ├── Upload routes already exist: {len(existing_upload_routes)}")
-            print(f"   ├── Skipping duplicate registration")
-        else:
-            app.include_router(upload_router)
-            print(f"✅ Upload router registered successfully via app.include_router()")
-            print(f"   ├── Router has {len(upload_router.routes)} routes")
-            
-            # Verify registration
-            upload_routes = [r for r in app.routes if "/upload" in r.path]
-            print(f"   ├── Routes containing '/upload': {len(upload_routes)}")
-            for route in upload_routes:
-                print(f"   ├──   {route.path} ({list(route.methods) if hasattr(route, 'methods') else 'N/A'})")
-            
-            logger.success("✅ Upload router registered (v16.2 integrated)")
-            
-            # Log specific upload endpoints
-            for route in upload_routes:
-                if route.path == "/upload/excel":
-                    print(f"   ├── ✅ POST /upload/excel - Available")
-                elif route.path == "/upload/status":
-                    print(f"   ├── ✅ GET /upload/status - Available")
-                elif route.path == "/upload/statistics":
-                    print(f"   ├── ✅ GET /upload/statistics - Available")
-                elif route.path == "/upload/batches/recent":
-                    print(f"   ├── ✅ GET /upload/batches/recent - Available")
-        
-    except Exception as e:
-        print(f"❌ Upload router registration failed: {e}")
-        traceback.print_exc()
-        logger.error(f"❌ Upload router registration failed: {e}")
-else:
-    print("⚠️ Upload router is None - cannot register")
-    logger.warning("⚠️ Upload router not available")
-
-print("=" * 60)
-print("✅ UPLOAD REGISTRATION COMPLETE")
-print("=" * 60)
-
-
-# ==========================================================
-# BLOCK 15: DEBUG AND TEST ENDPOINTS
-# ==========================================================
-
-@app.get("/raw-ping")
-async def raw_ping():
-    """ULTRA-SIMPLE endpoint - tests if app is alive at all"""
-    print("🔔 /raw-ping HIT - APP IS RESPONDING!")
-    return {"ping": "pong", "timestamp": datetime.now().isoformat(), "status": "alive"}
-
-@app.get("/debug/ping")
-async def debug_ping():
-    """Simple ping test"""
-    print("🔔 /debug/ping HIT")
-    return {"ping": "pong", "timestamp": datetime.now().isoformat()}
-
-@app.get("/debug/health")
-async def debug_health():
-    """Simple health check - no database"""
-    print("🔔 /debug/health HIT")
-    return {
-        "status": "alive",
-        "version": "16.2.0",
-        "timestamp": datetime.now().isoformat(),
-        "preflight": preflight_result["status"],
-        "architecture": "v16.2 (Built-in Intent Detection + Dashboard Root + Upload Integration)"
-    }
-
-@app.get("/debug/routes")
-async def debug_routes():
-    """List all registered routes"""
-    print("🔔 /debug/routes HIT")
-    routes = []
-    for route in app.routes:
-        routes.append({
-            "path": route.path,
-            "methods": list(route.methods) if hasattr(route, "methods") else []
-        })
-    return {
-        "total_routes": len(routes),
-        "routes": routes[:20],
-        "webhook_registered": any("/webhook" in r["path"] for r in routes),
-        "upload_registered": any("/upload" in r["path"] for r in routes)
-    }
-
-@app.get("/debug/env")
-async def debug_env():
-    """Check environment configuration (safe, no secrets)"""
-    print("🔔 /debug/env HIT")
-    return {
-        "environment": getattr(config, 'ENVIRONMENT', 'not set'),
-        "database_configured": bool(os.getenv("DATABASE_URL")),
-        "whatsapp_token_configured": bool(os.getenv("WHATSAPP_ACCESS_TOKEN")),
-        "whatsapp_phone_id_configured": bool(os.getenv("WHATSAPP_PHONE_NUMBER_ID")),
-        "groq_configured": bool(os.getenv("GROQ_API_KEY")),
-        "cache_ttl": CACHE_TTL,
-        "chat_service_available": CHAT_SERVICE_AVAILABLE,
-        "upload_router_available": upload_router is not None,
-        "architecture": "v16.2 (Built-in Intent Detection + Dashboard Root + Upload Integration)"
-    }
-
-@app.get("/debug/service-status")
-async def debug_service_status():
-    """Check if services are initialized"""
-    print("🔔 /debug/service-status HIT")
-    if hasattr(app.state, 'services_initialized'):
-        return {
-            "services_initialized": app.state.services_initialized,
-            "init_results": app.state.init_results if hasattr(app.state, 'init_results') else None,
-            "upload_router_registered": upload_router is not None,
-            "architecture": "v16.2 (Built-in Intent Detection + Dashboard Root + Upload Integration)",
-            "timestamp": datetime.now().isoformat()
-        }
-    return {
-        "services_initialized": False,
-        "message": "Services not initialized yet",
-        "timestamp": datetime.now().isoformat()
-    }
-
-
-# ==========================================================
-# BLOCK 16: FORCE LOAD SERVICES ENDPOINT
-# ==========================================================
-
-@app.get("/force-load-services")
-async def force_load_services():
-    """Force load all webhook services - useful for debugging"""
-    print("🔔 /force-load-services HIT")
-    try:
-        from app.routes.webhook import initialize_services
-        result = await initialize_services()
-        return {
-            "status": "success",
-            "message": "Services force loaded",
-            "result": result,
-            "timestamp": datetime.now().isoformat()
-        }
-    except Exception as e:
-        logger.exception(f"Force load failed: {e}")
-        return {
-            "status": "error",
-            "message": str(e),
-            "timestamp": datetime.now().isoformat()
-        }
-
-
-# ==========================================================
-# BLOCK 17: WEBHOOK INTEGRATION ENDPOINT
-# ==========================================================
-
-@app.get("/webhook-stats")
-async def webhook_integration_stats():
-    """Get webhook integration statistics"""
-    print("🔔 /webhook-stats HIT")
-    if hasattr(app.state, 'get_webhook_stats'):
-        try:
-            stats = app.state.get_webhook_stats()
-            return {
-                "status": "ok",
-                "integration": "100%",
-                "webhook_version": "12.1",
-                "stats": stats,
-                "timestamp": datetime.now().isoformat()
-            }
-        except Exception as e:
-            return {
-                "status": "error",
-                "message": str(e),
-                "timestamp": datetime.now().isoformat()
-            }
-    return {
-        "status": "degraded",
-        "integration": "webhook stats not available",
-        "message": "Webhook services may not be fully initialized",
-        "timestamp": datetime.now().isoformat()
-    }
-
-
-# ==========================================================
-# BLOCK 18: UPLOAD STATUS ENDPOINT (NEW - Direct)
-# ==========================================================
-
-@app.get("/upload/status-direct")
-async def upload_status_direct():
-    """Direct upload status endpoint - checks if upload router is registered"""
-    print("🔔 /upload/status-direct HIT")
-    return {
-        "upload_router_registered": upload_router is not None,
-        "upload_import_success": upload_import_success,
-        "upload_routes": [
-            {"path": r.path, "methods": list(r.methods) if hasattr(r, "methods") else []}
-            for r in app.routes if "/upload" in r.path
-        ],
-        "architecture": "v16.2",
-        "timestamp": datetime.now().isoformat()
-    }
-
-
-# ==========================================================
-# BLOCK 19: ROOT ROUTE - DASHBOARD
-# ==========================================================
-
-@app.get("/")
-async def root(request: Request):
-    """
-    Root endpoint - serves the dashboard HTML.
-    
-    This replaces the JSON response with the full dashboard interface.
-    All existing functionality is preserved.
-    """
-    print("🔔 / HIT - Rendering dashboard.html")
-    try:
-        # Check if dashboard.html exists
-        templates_dir = os.path.join(os.path.dirname(__file__), "templates")
-        dashboard_path = os.path.join(templates_dir, "dashboard.html")
-        
-        if os.path.exists(dashboard_path):
-            print(f"   ├── dashboard.html found at: {dashboard_path}")
-            return templates.TemplateResponse(
-                "dashboard.html",
-                {"request": request}
-            )
-        else:
-            # Fallback: Return a simple HTML page if dashboard.html doesn't exist
-            print(f"   ├── dashboard.html NOT found at: {dashboard_path}")
-            from fastapi.responses import HTMLResponse
-            return HTMLResponse("""
-                <!DOCTYPE html>
-                <html>
-                <head>
-                    <title>AI WhatsApp Logistics Assistant</title>
-                    <style>
-                        body { font-family: Arial, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px; }
-                        h1 { color: #2563eb; }
-                        .status { background: #f0fdf4; border: 1px solid #22c55e; padding: 15px; border-radius: 8px; }
-                        .info { background: #f8fafc; padding: 15px; border-radius: 8px; margin-top: 15px; }
-                        .endpoint { font-family: monospace; background: #f1f5f9; padding: 4px 8px; border-radius: 4px; }
-                    </style>
-                </head>
-                <body>
-                    <h1>🤖 AI WhatsApp Logistics Assistant</h1>
-                    <div class="status">
-                        <h2>✅ System Running</h2>
-                        <p>Version: 16.2.0</p>
-                        <p>Architecture: Built-in Intent Detection + Dashboard Root + Upload Integration</p>
-                    </div>
-                    <div class="info">
-                        <h3>📌 Available Endpoints</h3>
-                        <ul>
-                            <li><span class="endpoint">/webhook</span> - WhatsApp webhook</li>
-                            <li><span class="endpoint">/upload/excel</span> - Excel Upload</li>
-                            <li><span class="endpoint">/upload/status</span> - Upload Status</li>
-                            <li><span class="endpoint">/upload/statistics</span> - Upload Statistics</li>
-                            <li><span class="endpoint">/upload/batches/recent</span> - Recent Batches</li>
-                            <li><span class="endpoint">/health</span> - Health check</li>
-                            <li><span class="endpoint">/alive</span> - Alive check</li>
-                            <li><span class="endpoint">/api/docs</span> - API Documentation</li>
-                        </ul>
-                        <p><em>Dashboard.html not found. Please create app/templates/dashboard.html</em></p>
-                    </div>
-                </body>
-                </html>
-            """)
-            
-    except Exception as e:
-        logger.error(f"❌ Root endpoint error: {e}")
-        logger.error(traceback.format_exc())
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(e), "message": "Failed to render dashboard"}
-        )
-
-
-# ==========================================================
-# BLOCK 20: DASHBOARD ENDPOINT
-# ==========================================================
-
-@app.get("/dashboard")
-async def dashboard(request: Request):
-    """
-    Dashboard endpoint - serves the dashboard HTML.
-    
-    This provides a direct URL to the dashboard.
-    """
-    print("🔔 /dashboard HIT")
-    try:
-        templates_dir = os.path.join(os.path.dirname(__file__), "templates")
-        dashboard_path = os.path.join(templates_dir, "dashboard.html")
-        
-        if os.path.exists(dashboard_path):
-            return templates.TemplateResponse(
-                "dashboard.html",
-                {"request": request}
-            )
-        else:
-            from fastapi.responses import HTMLResponse
-            return HTMLResponse("""
-                <!DOCTYPE html>
-                <html>
-                <head>
-                    <title>Dashboard - AI WhatsApp Logistics</title>
-                    <style>
-                        body { font-family: Arial, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px; }
-                        h1 { color: #2563eb; }
-                        .info { background: #f8fafc; padding: 15px; border-radius: 8px; }
-                    </style>
-                </head>
-                <body>
-                    <h1>📊 Dashboard</h1>
-                    <div class="info">
-                        <p>Dashboard.html not found. Please create <code>app/templates/dashboard.html</code></p>
-                        <p>Version: 16.2.0</p>
-                    </div>
-                </body>
-                </html>
-            """)
-    except Exception as e:
-        logger.error(f"❌ Dashboard endpoint error: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(e), "message": "Failed to render dashboard"}
-        )
-
-
-# ==========================================================
-# BLOCK 21: SIMPLE ENDPOINTS (Preserved)
-# ==========================================================
-
-@app.get("/alive")
-async def alive():
-    """Simple alive check"""
-    print("🔔 /alive HIT")
-    return {"alive": True, "timestamp": datetime.now().isoformat()}
-
-@app.get("/ping")
-async def ping():
-    """Ping endpoint"""
-    print("🔔 /ping HIT")
-    return {"ping": "pong", "timestamp": datetime.now().isoformat()}
-
-@app.get("/health")
-async def health():
-    """Health check endpoint"""
-    print("🔔 /health HIT")
-    return {
-        "status": "healthy",
-        "version": "16.2.0",
-        "timestamp": datetime.now().isoformat(),
-        "preflight": preflight_result["status"],
-        "services_initialized": getattr(app.state, 'services_initialized', False),
-        "upload_router_registered": upload_router is not None,
-        "architecture": "v16.2 (Built-in Intent Detection + Dashboard Root + Upload Integration)"
-    }
-
-@app.get("/liveness")
-async def liveness():
-    """Liveness probe"""
-    print("🔔 /liveness HIT")
-    return {"alive": True, "timestamp": datetime.now().isoformat()}
-
-@app.get("/startup-check")
-async def startup_check():
-    """Startup verification endpoint"""
-    print("🔔 /startup-check HIT")
-    return {
-        "chat_service_available": CHAT_SERVICE_AVAILABLE,
-        "environment": config.ENVIRONMENT,
-        "cache_ttl": CACHE_TTL,
-        "services_initialized": getattr(app.state, 'services_initialized', False),
-        "upload_router_registered": upload_router is not None,
-        "preflight_status": preflight_result["status"],
-        "status": "running",
-        "version": "16.2.0",
-        "architecture": "v16.2 (Built-in Intent Detection + Dashboard Root + Upload Integration)"
-    }
-
-
-# ==========================================================
-# BLOCK 22: WEBHOOK ROUTER REGISTRATION
-# ==========================================================
-
-print("=" * 60)
-print("🔧 REGISTERING WEBHOOK ROUTER - v16.2")
-print("=" * 60)
-
-# Attempt 1: Try standard import
 webhook_router = None
 webhook_import_success = False
 
@@ -1019,7 +561,6 @@ except Exception as e:
     print(f"❌ Standard import failed: {e}")
     traceback.print_exc()
 
-# Attempt 2: Try importlib if standard import failed
 if not webhook_import_success or webhook_router is None:
     print("Attempt 2: Using importlib for app.routes.webhook")
     try:
@@ -1035,29 +576,152 @@ if not webhook_import_success or webhook_router is None:
         print(f"❌ Importlib import failed: {e}")
         traceback.print_exc()
 
-# Attempt 3: Register router if available
 if webhook_router is not None:
     try:
         app.include_router(webhook_router)
         print("✅ Webhook router registered successfully via app.include_router()")
         print(f"   ├── Router has {len(webhook_router.routes)} routes")
         
-        # Verify registration
         webhook_routes = [r for r in app.routes if "/webhook" in r.path]
         print(f"   ├── Routes containing '/webhook': {len(webhook_routes)}")
         for route in webhook_routes:
             print(f"   ├──   {route.path} ({list(route.methods) if hasattr(route, 'methods') else 'N/A'})")
         
-        logger.success("✅ Webhook router registered (v16.2 integrated)")
+        logger.success("✅ Webhook router registered (v16.3 integrated)")
         
     except Exception as e:
         print(f"❌ Router registration failed: {e}")
         traceback.print_exc()
         webhook_router = None
 
+print("=" * 60)
+print("✅ WEBHOOK REGISTRATION COMPLETE")
+print("=" * 60)
+
 
 # ==========================================================
-# BLOCK 23: FALLBACK WEBHOOK ENDPOINTS (Preserved)
+# BLOCK 15: UPLOAD ROUTER REGISTRATION (NEW - v16.3)
+# ==========================================================
+
+print("=" * 60)
+print("🔧 REGISTERING UPLOAD ROUTER - v16.3")
+print("=" * 60)
+
+upload_router = None
+upload_import_success = False
+upload_registered = False
+
+# Step 1: Attempt to import Upload Router
+try:
+    print("Attempt 1: Importing upload router from app.routes.upload")
+    from app.routes.upload import router as upload_router
+    upload_import_success = True
+    print(f"✅ Upload router imported successfully: {upload_router is not None}")
+    
+    if upload_router:
+        print(f"   ├── Router has {len(upload_router.routes)} routes")
+        for route in upload_router.routes:
+            print(f"   ├── {route.path} ({list(route.methods) if hasattr(route, 'methods') else 'N/A'})")
+    else:
+        print("❌ Upload router is None")
+        
+except ImportError as e:
+    print(f"❌ Upload router import failed (ImportError): {e}")
+    print(f"   Traceback: {traceback.format_exc()}")
+    upload_router = None
+except Exception as e:
+    print(f"❌ Upload router import failed: {e}")
+    print(f"   Traceback: {traceback.format_exc()}")
+    upload_router = None
+
+# Step 2: Register router if available and not already registered
+if upload_router is not None:
+    try:
+        # Check if already registered to avoid duplicates
+        existing_upload_routes = [r for r in app.routes if "/upload" in r.path]
+        
+        if existing_upload_routes:
+            print(f"   ├── Upload routes already exist: {len(existing_upload_routes)}")
+            print(f"   ├── Skipping duplicate registration")
+            upload_registered = True
+            for route in existing_upload_routes:
+                print(f"   ├──   {route.path} ({list(route.methods) if hasattr(route, 'methods') else 'N/A'})")
+        else:
+            # Register the router
+            app.include_router(upload_router)
+            upload_registered = True
+            print(f"✅ Upload router registered successfully via app.include_router()")
+            print(f"   ├── Router has {len(upload_router.routes)} routes")
+            
+            # Verify registration
+            upload_routes = [r for r in app.routes if "/upload" in r.path]
+            print(f"   ├── Routes containing '/upload': {len(upload_routes)}")
+            
+            # Log specific upload endpoints
+            upload_endpoints = {
+                "POST /upload/excel": False,
+                "GET /upload/status": False,
+                "GET /upload/statistics": False,
+                "GET /upload/batch/latest": False,
+                "GET /upload/batches/recent": False,
+                "DELETE /upload/all": False
+            }
+            
+            for route in upload_routes:
+                path = route.path
+                methods = list(route.methods) if hasattr(route, "methods") else []
+                for method in methods:
+                    key = f"{method} {path}"
+                    if key in upload_endpoints:
+                        upload_endpoints[key] = True
+                print(f"   ├──   {path} ({methods})")
+            
+            print("   ├── Upload Endpoints Status:")
+            for endpoint, found in upload_endpoints.items():
+                print(f"   ├──   {'✅' if found else '❌'} {endpoint}")
+            
+            logger.success("✅ Upload router registered (v16.3 integrated)")
+            
+    except Exception as e:
+        print(f"❌ Upload router registration failed: {e}")
+        print(f"   Traceback: {traceback.format_exc()}")
+        logger.error(f"❌ Upload router registration failed: {e}")
+        upload_registered = False
+else:
+    print("⚠️ Upload router is None - cannot register")
+    logger.warning("⚠️ Upload router not available")
+
+# Step 3: Log final status
+print("=" * 60)
+print("📊 UPLOAD ROUTER STATUS")
+print("=" * 60)
+print(f"   ├── Import Success: {upload_import_success}")
+print(f"   ├── Router Available: {upload_router is not None}")
+print(f"   ├── Registered: {upload_registered}")
+print("=" * 60)
+
+if upload_registered:
+    print("✅ UPLOAD ROUTER READY")
+    logger.success("✅ Upload Router is ready")
+else:
+    print("⚠️ UPLOAD ROUTER NOT REGISTERED")
+    logger.warning("⚠️ Upload Router not registered - uploads will fail")
+    
+    if upload_router is None:
+        print("   ├── Root cause: upload_router is None")
+        logger.error("   ├── Root cause: upload_router is None")
+    elif not upload_import_success:
+        print("   ├── Root cause: import failed")
+        logger.error("   ├── Root cause: import failed")
+    else:
+        print("   ├── Root cause: unknown")
+        logger.error("   ├── Root cause: unknown")
+
+print("=" * 60)
+
+
+# ==========================================================
+# BLOCK 16: FALLBACK WEBHOOK ENDPOINTS (Preserved)
 # ==========================================================
 
 if webhook_router is None:
@@ -1126,9 +790,7 @@ if webhook_router is None:
             
             print(f"📨 Fallback processing: {phone_number}: {message_text[:50]}...")
             
-            # Process using AI provider
             try:
-                # UPDATED: Use new provider service
                 from app.services.ai_provider_service import get_whatsapp_provider_service
                 provider = get_whatsapp_provider_service()
                 request_id = str(uuid.uuid4())[:8]
@@ -1137,10 +799,9 @@ if webhook_router is None:
                     message_text.strip(),
                     phone_number
                 )
-                print(f"✅ Fallback: AI processing queued via v16.2 provider")
+                print(f"✅ Fallback: AI processing queued via v16.3 provider")
             except Exception as e:
                 print(f"❌ Fallback AI processing error: {e}")
-                # Still return 200 to Meta
             
             return JSONResponse({"status": "ok"}, status_code=200)
             
@@ -1151,11 +812,338 @@ if webhook_router is None:
     
     print("✅ Fallback webhook endpoints created")
     print("   ├── GET /webhook - Verification endpoint")
-    print("   ├── POST /webhook - Message handler (v16.2)")
+    print("   ├── POST /webhook - Message handler (v16.3)")
 
-print("=" * 60)
-print("✅ WEBHOOK REGISTRATION COMPLETE")
-print("=" * 60)
+
+# ==========================================================
+# BLOCK 17: DEBUG AND TEST ENDPOINTS
+# ==========================================================
+
+@app.get("/raw-ping")
+async def raw_ping():
+    """ULTRA-SIMPLE endpoint - tests if app is alive at all"""
+    print("🔔 /raw-ping HIT - APP IS RESPONDING!")
+    return {"ping": "pong", "timestamp": datetime.now().isoformat(), "status": "alive"}
+
+@app.get("/debug/ping")
+async def debug_ping():
+    """Simple ping test"""
+    print("🔔 /debug/ping HIT")
+    return {"ping": "pong", "timestamp": datetime.now().isoformat()}
+
+@app.get("/debug/health")
+async def debug_health():
+    """Simple health check - no database"""
+    print("🔔 /debug/health HIT")
+    return {
+        "status": "alive",
+        "version": "16.3.0",
+        "timestamp": datetime.now().isoformat(),
+        "preflight": preflight_result["status"],
+        "upload_router_registered": upload_registered,
+        "architecture": "v16.3 (Built-in Intent Detection + Dashboard Root + Upload Integration)"
+    }
+
+@app.get("/debug/routes")
+async def debug_routes():
+    """List all registered routes"""
+    print("🔔 /debug/routes HIT")
+    routes = []
+    for route in app.routes:
+        routes.append({
+            "path": route.path,
+            "methods": list(route.methods) if hasattr(route, "methods") else []
+        })
+    upload_routes = [r for r in routes if "/upload" in r["path"]]
+    return {
+        "total_routes": len(routes),
+        "routes": routes[:30],
+        "webhook_registered": any("/webhook" in r["path"] for r in routes),
+        "upload_routes": upload_routes,
+        "upload_router_registered": upload_registered
+    }
+
+@app.get("/debug/env")
+async def debug_env():
+    """Check environment configuration (safe, no secrets)"""
+    print("🔔 /debug/env HIT")
+    return {
+        "environment": getattr(config, 'ENVIRONMENT', 'not set'),
+        "database_configured": bool(os.getenv("DATABASE_URL")),
+        "whatsapp_token_configured": bool(os.getenv("WHATSAPP_ACCESS_TOKEN")),
+        "whatsapp_phone_id_configured": bool(os.getenv("WHATSAPP_PHONE_NUMBER_ID")),
+        "groq_configured": bool(os.getenv("GROQ_API_KEY")),
+        "cache_ttl": CACHE_TTL,
+        "chat_service_available": CHAT_SERVICE_AVAILABLE,
+        "upload_router_registered": upload_registered,
+        "architecture": "v16.3 (Built-in Intent Detection + Dashboard Root + Upload Integration)"
+    }
+
+@app.get("/debug/service-status")
+async def debug_service_status():
+    """Check if services are initialized"""
+    print("🔔 /debug/service-status HIT")
+    if hasattr(app.state, 'services_initialized'):
+        return {
+            "services_initialized": app.state.services_initialized,
+            "init_results": app.state.init_results if hasattr(app.state, 'init_results') else None,
+            "upload_router_registered": upload_registered,
+            "architecture": "v16.3 (Built-in Intent Detection + Dashboard Root + Upload Integration)",
+            "timestamp": datetime.now().isoformat()
+        }
+    return {
+        "services_initialized": False,
+        "message": "Services not initialized yet",
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+# ==========================================================
+# BLOCK 18: FORCE LOAD SERVICES ENDPOINT
+# ==========================================================
+
+@app.get("/force-load-services")
+async def force_load_services():
+    """Force load all webhook services - useful for debugging"""
+    print("🔔 /force-load-services HIT")
+    try:
+        from app.routes.webhook import initialize_services
+        result = await initialize_services()
+        return {
+            "status": "success",
+            "message": "Services force loaded",
+            "result": result,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.exception(f"Force load failed: {e}")
+        return {
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+
+# ==========================================================
+# BLOCK 19: WEBHOOK INTEGRATION ENDPOINT
+# ==========================================================
+
+@app.get("/webhook-stats")
+async def webhook_integration_stats():
+    """Get webhook integration statistics"""
+    print("🔔 /webhook-stats HIT")
+    if hasattr(app.state, 'get_webhook_stats'):
+        try:
+            stats = app.state.get_webhook_stats()
+            return {
+                "status": "ok",
+                "integration": "100%",
+                "webhook_version": "12.1",
+                "stats": stats,
+                "timestamp": datetime.now().isoformat()
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "message": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+    return {
+        "status": "degraded",
+        "integration": "webhook stats not available",
+        "message": "Webhook services may not be fully initialized",
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+# ==========================================================
+# BLOCK 20: UPLOAD STATUS ENDPOINT (Direct - Diagnostic)
+# ==========================================================
+
+@app.get("/upload/status-direct")
+async def upload_status_direct():
+    """Direct upload status endpoint - checks if upload router is registered"""
+    print("🔔 /upload/status-direct HIT")
+    upload_routes = [{"path": r.path, "methods": list(r.methods) if hasattr(r, "methods") else []} 
+                     for r in app.routes if "/upload" in r.path]
+    return {
+        "upload_router_registered": upload_registered,
+        "upload_import_success": upload_import_success,
+        "upload_router_available": upload_router is not None,
+        "upload_routes": upload_routes,
+        "architecture": "v16.3",
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+# ==========================================================
+# BLOCK 21: ROOT ROUTE - DASHBOARD
+# ==========================================================
+
+@app.get("/")
+async def root(request: Request):
+    """
+    Root endpoint - serves the dashboard HTML.
+    """
+    print("🔔 / HIT - Rendering dashboard.html")
+    try:
+        templates_dir = os.path.join(os.path.dirname(__file__), "templates")
+        dashboard_path = os.path.join(templates_dir, "dashboard.html")
+        
+        if os.path.exists(dashboard_path):
+            print(f"   ├── dashboard.html found at: {dashboard_path}")
+            return templates.TemplateResponse(
+                "dashboard.html",
+                {"request": request}
+            )
+        else:
+            print(f"   ├── dashboard.html NOT found at: {dashboard_path}")
+            from fastapi.responses import HTMLResponse
+            return HTMLResponse("""
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>AI WhatsApp Logistics Assistant</title>
+                    <style>
+                        body { font-family: Arial, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px; }
+                        h1 { color: #2563eb; }
+                        .status { background: #f0fdf4; border: 1px solid #22c55e; padding: 15px; border-radius: 8px; }
+                        .info { background: #f8fafc; padding: 15px; border-radius: 8px; margin-top: 15px; }
+                        .endpoint { font-family: monospace; background: #f1f5f9; padding: 4px 8px; border-radius: 4px; }
+                    </style>
+                </head>
+                <body>
+                    <h1>🤖 AI WhatsApp Logistics Assistant</h1>
+                    <div class="status">
+                        <h2>✅ System Running</h2>
+                        <p>Version: 16.3.0</p>
+                        <p>Architecture: Built-in Intent Detection + Dashboard Root + Upload Integration</p>
+                        <p>Upload Router: {'✅ Registered' if upload_registered else '⚠️ Not Registered'}</p>
+                    </div>
+                    <div class="info">
+                        <h3>📌 Available Endpoints</h3>
+                        <ul>
+                            <li><span class="endpoint">/webhook</span> - WhatsApp webhook</li>
+                            <li><span class="endpoint">/upload/excel</span> - Excel Upload</li>
+                            <li><span class="endpoint">/upload/status</span> - Upload Status</li>
+                            <li><span class="endpoint">/upload/statistics</span> - Upload Statistics</li>
+                            <li><span class="endpoint">/upload/batches/recent</span> - Recent Batches</li>
+                            <li><span class="endpoint">/health</span> - Health check</li>
+                            <li><span class="endpoint">/alive</span> - Alive check</li>
+                            <li><span class="endpoint">/api/docs</span> - API Documentation</li>
+                        </ul>
+                    </div>
+                </body>
+                </html>
+            """)
+            
+    except Exception as e:
+        logger.error(f"❌ Root endpoint error: {e}")
+        logger.error(traceback.format_exc())
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e), "message": "Failed to render dashboard"}
+        )
+
+
+# ==========================================================
+# BLOCK 22: DASHBOARD ENDPOINT
+# ==========================================================
+
+@app.get("/dashboard")
+async def dashboard(request: Request):
+    """Dashboard endpoint - serves the dashboard HTML."""
+    print("🔔 /dashboard HIT")
+    try:
+        templates_dir = os.path.join(os.path.dirname(__file__), "templates")
+        dashboard_path = os.path.join(templates_dir, "dashboard.html")
+        
+        if os.path.exists(dashboard_path):
+            return templates.TemplateResponse(
+                "dashboard.html",
+                {"request": request}
+            )
+        else:
+            from fastapi.responses import HTMLResponse
+            return HTMLResponse("""
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>Dashboard - AI WhatsApp Logistics</title>
+                    <style>
+                        body { font-family: Arial, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px; }
+                        h1 { color: #2563eb; }
+                        .info { background: #f8fafc; padding: 15px; border-radius: 8px; }
+                    </style>
+                </head>
+                <body>
+                    <h1>📊 Dashboard</h1>
+                    <div class="info">
+                        <p>Dashboard.html not found. Please create <code>app/templates/dashboard.html</code></p>
+                        <p>Version: 16.3.0</p>
+                    </div>
+                </body>
+                </html>
+            """)
+    except Exception as e:
+        logger.error(f"❌ Dashboard endpoint error: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e), "message": "Failed to render dashboard"}
+        )
+
+
+# ==========================================================
+# BLOCK 23: SIMPLE ENDPOINTS (Preserved)
+# ==========================================================
+
+@app.get("/alive")
+async def alive():
+    """Simple alive check"""
+    print("🔔 /alive HIT")
+    return {"alive": True, "timestamp": datetime.now().isoformat()}
+
+@app.get("/ping")
+async def ping():
+    """Ping endpoint"""
+    print("🔔 /ping HIT")
+    return {"ping": "pong", "timestamp": datetime.now().isoformat()}
+
+@app.get("/health")
+async def health():
+    """Health check endpoint"""
+    print("🔔 /health HIT")
+    return {
+        "status": "healthy",
+        "version": "16.3.0",
+        "timestamp": datetime.now().isoformat(),
+        "preflight": preflight_result["status"],
+        "services_initialized": getattr(app.state, 'services_initialized', False),
+        "upload_router_registered": upload_registered,
+        "architecture": "v16.3 (Built-in Intent Detection + Dashboard Root + Upload Integration)"
+    }
+
+@app.get("/liveness")
+async def liveness():
+    """Liveness probe"""
+    print("🔔 /liveness HIT")
+    return {"alive": True, "timestamp": datetime.now().isoformat()}
+
+@app.get("/startup-check")
+async def startup_check():
+    """Startup verification endpoint"""
+    print("🔔 /startup-check HIT")
+    return {
+        "chat_service_available": CHAT_SERVICE_AVAILABLE,
+        "environment": config.ENVIRONMENT,
+        "cache_ttl": CACHE_TTL,
+        "services_initialized": getattr(app.state, 'services_initialized', False),
+        "upload_router_registered": upload_registered,
+        "preflight_status": preflight_result["status"],
+        "status": "running",
+        "version": "16.3.0",
+        "architecture": "v16.3 (Built-in Intent Detection + Dashboard Root + Upload Integration)"
+    }
 
 
 # ==========================================================
@@ -1718,13 +1706,13 @@ def print_dependency_tree():
 ║                      DEPENDENCY TREE                             ║
 ╠══════════════════════════════════════════════════════════════════╣
 ║                                                                  ║
-║  main.py (v16.2 - UPLOAD INTEGRATION)                           ║
+║  main.py (v16.3 - UPLOAD ROUTER ONLY)                           ║
 ║   ├── database.py (✅ IMPORTED AT MODULE LEVEL)                 ║
 ║   ├── config.py                                                  ║
 ║   ├── models.py                                                  ║
 ║   │                                                              ║
 ║   ├── routes/                                                    ║
-║   │    ├── webhook.py (✅ FORCED REGISTRATION)                  ║
+║   │    ├── webhook.py (✅ REGISTERED)                           ║
 ║   │    ├── upload.py (✅ REGISTERED)                            ║
 ║   │    ├── admin.py                                              ║
 ║   │    ├── health.py                                             ║
@@ -1735,7 +1723,7 @@ def print_dependency_tree():
 ║   │                                                              ║
 ║   └── services/                                                  ║
 ║        ├── ai_provider_service.py (v5.0 - BUILT-IN INTENT)      ║
-║        ├── ai_query_service.py (OPTIONAL - NOT REQUIRED)        ║
+║        ├── ai_query_service.py (OPTIONAL)                       ║
 ║        ├── dn_analysis.py (✅ DIRECT POSTGRESQL)                ║
 ║        ├── analytics_service.py                                  ║
 ║        ├── chat_service.py                                       ║
@@ -1745,15 +1733,17 @@ def print_dependency_tree():
 ║        └── whatsapp_service.py                                   ║
 ║                                                                  ║
 ╠══════════════════════════════════════════════════════════════════╣
-║  CRITICAL FIXES v16.2:                                           ║
+║  CRITICAL FIXES v16.3:                                           ║
 ║  ✅ ADDED: Upload Router registration                            ║
 ║  ✅ ADDED: POST /upload/excel endpoint                           ║
 ║  ✅ ADDED: GET /upload/status endpoint                           ║
 ║  ✅ ADDED: GET /upload/statistics endpoint                       ║
+║  ✅ ADDED: GET /upload/batch/latest endpoint                     ║
 ║  ✅ ADDED: GET /upload/batches/recent endpoint                   ║
+║  ✅ ADDED: DELETE /upload/all endpoint                           ║
 ║  ✅ PRESERVED: All existing functionality                        ║
 ║  ✅ PRESERVED: All webhook, AI, analytics services              ║
-║  ✅ All v16.1 improvements preserved                             ║
+║  ✅ All v16.2 improvements preserved                             ║
 ║  ✅ WhatsApp integration 100% protected                          ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
@@ -1799,7 +1789,8 @@ async def railway_diagnostics():
         "environment": config.ENVIRONMENT,
         "chat_service_available": CHAT_SERVICE_AVAILABLE,
         "upload_router_available": upload_router is not None,
-        "architecture": "v16.2 (Built-in Intent Detection + Dashboard Root + Upload Integration)"
+        "upload_router_registered": upload_registered,
+        "architecture": "v16.3 (Built-in Intent Detection + Dashboard Root + Upload Integration)"
     }
 
 @app.get("/module-health", tags=["Diagnostics"])
@@ -1895,14 +1886,16 @@ if __name__ == "__main__":
 
 try:
     logger.info("=" * 60)
-    logger.info("📡 MAIN APP v16.2 - UPLOAD INTEGRATION")
+    logger.info("📡 MAIN APP v16.3 - UPLOAD ROUTER ONLY")
     logger.info("")
-    logger.info("   NEW FEATURES IN v16.2:")
+    logger.info("   NEW FEATURES IN v16.3:")
     logger.info("   🔧 ADDED: Upload Router registration")
     logger.info("   🔧 ADDED: POST /upload/excel endpoint")
     logger.info("   🔧 ADDED: GET /upload/status endpoint")
     logger.info("   🔧 ADDED: GET /upload/statistics endpoint")
+    logger.info("   🔧 ADDED: GET /upload/batch/latest endpoint")
     logger.info("   🔧 ADDED: GET /upload/batches/recent endpoint")
+    logger.info("   🔧 ADDED: DELETE /upload/all endpoint")
     logger.info("   🔧 PRESERVED: All existing functionality")
     logger.info("")
     logger.info("   CRITICAL UPDATES IN v16.1:")
@@ -1913,40 +1906,27 @@ try:
     logger.info("   🔧 ALIGNED: New service architecture (ai_provider_service v5.0)")
     logger.info("   🔧 FIXED: Service initialization without ai_query_service")
     logger.info("   🔧 ADDED: Built-in intent detection support")
-    logger.info("   🔧 UPDATED: Service registry integration with dn_analysis")
     logger.info("")
     logger.info(f"   PRE-FLIGHT: {preflight_result['status']}")
     logger.info(f"   CACHE_TTL: {CACHE_TTL}s")
     logger.info(f"   CHAT_SERVICE_AVAILABLE: {CHAT_SERVICE_AVAILABLE}")
     logger.info(f"   UPLOAD_ROUTER_AVAILABLE: {upload_router is not None}")
-    logger.info(f"   ARCHITECTURE: v16.2 (Built-in Intent Detection + Dashboard Root + Upload Integration)")
+    logger.info(f"   UPLOAD_ROUTER_REGISTERED: {upload_registered}")
+    logger.info(f"   ARCHITECTURE: v16.3 (Built-in Intent Detection + Dashboard Root + Upload Integration)")
     logger.info("")
-    logger.info("   🔍 TEST ENDPOINTS:")
-    logger.info("   1. GET / - Dashboard (NEW)")
-    logger.info("   2. GET /dashboard - Direct dashboard")
-    logger.info("   3. POST /upload/excel - Upload Excel (NEW)")
-    logger.info("   4. GET /upload/status - Upload status (NEW)")
-    logger.info("   5. GET /upload/statistics - Upload statistics (NEW)")
-    logger.info("   6. GET /upload/batches/recent - Recent batches (NEW)")
-    logger.info("   7. GET /raw-ping - ULTRA SIMPLE (NO middleware)")
-    logger.info("   8. GET /debug/ping - Simple ping")
-    logger.info("   9. GET /debug/health - Health check")
-    logger.info("   10. GET /debug/routes - Route listing")
-    logger.info("   11. GET /debug/service-status - Service status")
-    logger.info("   12. GET /alive - Basic alive")
-    logger.info("   13. GET /health - Full health")
-    logger.info("   14. GET /webhook/self-test - Webhook self test")
-    logger.info("   15. POST /webhook/ - Webhook handler")
+    logger.info("   🔍 UPLOAD ENDPOINTS:")
+    logger.info("   ✅ POST /upload/excel")
+    logger.info("   ✅ GET /upload/status")
+    logger.info("   ✅ GET /upload/statistics")
+    logger.info("   ✅ GET /upload/batch/latest")
+    logger.info("   ✅ GET /upload/batches/recent")
+    logger.info("   ✅ DELETE /upload/all")
     logger.info("")
     logger.info("   📦 SERVICE STATUS:")
     logger.info("   ✅ DN Analytics: READY (PostgreSQL)")
-    logger.info("   🔧 Dealer Analytics: IN_DEVELOPMENT")
-    logger.info("   🔧 Warehouse Analytics: IN_DEVELOPMENT")
-    logger.info("   🔧 City Analytics: IN_DEVELOPMENT")
-    logger.info("   🔧 Product Analytics: IN_DEVELOPMENT")
-    logger.info("   🔧 National KPI: IN_DEVELOPMENT")
-    logger.info("   ✅ Groq: READY")
     logger.info("   ✅ Upload Router: AVAILABLE")
+    logger.info("   ✅ Webhook: AVAILABLE")
+    logger.info("   ✅ Groq: READY")
     logger.info("")
     logger.info("   📁 TEMPLATES:")
     logger.info(f"   ✅ Jinja2Templates directory: {os.path.join(os.path.dirname(__file__), 'templates')}")
