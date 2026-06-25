@@ -11,7 +11,9 @@
 # FIXES IN v7.1:
 # - ✅ FIXED: _build_search_query() parameter removed (unused)
 # - ✅ FIXED: _build_fallback_query() parameter removed (unused)
-# - ✅ FIXED: _build_pending_query() parameter removed (unused)
+# - ✅ FIXED: _build_exact_count_query() parameter removed (unused)
+# - ✅ FIXED: _build_exact_match_query() parameter removed (unused)
+# - ✅ FIXED: _build_raw_check_query() parameter removed (unused)
 # - ✅ AUDITED: All _build_* methods for signature consistency
 # - ✅ VERIFIED: All call sites match method signatures
 # ==========================================================
@@ -806,6 +808,39 @@ class DNAnalysisService:
             LIMIT 10
         """
     
+    def _build_test_like_query(self) -> str:
+        """Build LIKE test query."""
+        return """
+            SELECT COUNT(*) as count 
+            FROM delivery_reports 
+            WHERE CAST(dn_no AS TEXT) LIKE '%' || :dn_no || '%'
+        """
+    
+    def _build_test_regex_query(self) -> str:
+        """Build REGEXP test query."""
+        return """
+            SELECT COUNT(*) as count 
+            FROM delivery_reports 
+            WHERE REGEXP_REPLACE(CAST(dn_no AS TEXT), '[^0-9]', '', 'g') = :dn_no
+        """
+    
+    def _build_test_exact_query(self) -> str:
+        """Build exact test query."""
+        return """
+            SELECT COUNT(*) as count 
+            FROM delivery_reports 
+            WHERE CAST(dn_no AS TEXT) = :dn_no
+        """
+    
+    def _build_matching_dns_query(self) -> str:
+        """Build matching DNs query."""
+        return """
+            SELECT DISTINCT dn_no
+            FROM delivery_reports
+            WHERE CAST(dn_no AS TEXT) LIKE '%' || :dn_no || '%'
+            LIMIT 10
+        """
+    
     # ==========================================================
     # BLOCK 10: DN SEARCH ENGINE
     # ==========================================================
@@ -1494,29 +1529,25 @@ class DNAnalysisService:
         }
         
         # Exact match
-        query1 = "SELECT COUNT(*) as count FROM delivery_reports WHERE CAST(dn_no AS TEXT) = :dn_no"
+        query1 = self._build_test_exact_query()
         r1 = self._execute_query(query1, {"dn_no": normalized})
         results["exact_count"] = r1[0].get('count', 0) if r1 else 0
         results["diagnostics"].append(f"Exact match: {results['exact_count']}")
         
         # LIKE match
-        query2 = "SELECT COUNT(*) as count FROM delivery_reports WHERE CAST(dn_no AS TEXT) LIKE '%' || :dn_no || '%'"
+        query2 = self._build_test_like_query()
         r2 = self._execute_query(query2, {"dn_no": normalized})
         results["like_count"] = r2[0].get('count', 0) if r2 else 0
         results["diagnostics"].append(f"LIKE match: {results['like_count']}")
         
         # Regex match
-        query3 = """
-            SELECT COUNT(*) as count 
-            FROM delivery_reports 
-            WHERE REGEXP_REPLACE(CAST(dn_no AS TEXT), '[^0-9]', '', 'g') = :dn_no
-        """
+        query3 = self._build_test_regex_query()
         r3 = self._execute_query(query3, {"dn_no": normalized})
         results["regex_count"] = r3[0].get('count', 0) if r3 else 0
         results["diagnostics"].append(f"REGEXP match: {results['regex_count']}")
         
         # Get matching DNs
-        query4 = self._build_raw_check_query()
+        query4 = self._build_matching_dns_query()
         r4 = self._execute_query(query4, {"dn_no": normalized})
         results["matching_dns"] = [str(r.get('dn_no', '')) for r in r4 if r.get('dn_no')]
         
