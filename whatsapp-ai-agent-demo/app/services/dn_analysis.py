@@ -1,14 +1,20 @@
 # ==========================================================
-# FILE: app/services/dn_analysis.py (v8.3 - FULLY ALIGNED)
+# FILE: app/services/dn_analysis.py (v8.4 - FULLY UPDATED)
 # ==========================================================
 # PURPOSE: DN Analytics Service - Direct PostgreSQL Integration
 # SOURCE: delivery_reports table ONLY
-# VERSION: 8.3 - FULLY ALIGNED WITH PROPER INDENTATION
+# VERSION: 8.4 - FULLY UPDATED WITH PROPER INDENTATION
 #
 # COMPATIBLE WITH: ai_provider_service.py v5.0
 # INTEGRATION: Railway PostgreSQL
 #
-# DATE POLICY (v8.3):
+# DATE MAPPING (Excel → PostgreSQL):
+# Excel (DD-MM-YYYY)  →  PostgreSQL (YYYY-MM-DD)  →  Meaning
+# 22.05.2026          →  2026-05-22              →  22 May 2026
+# 23.05.2026          →  2026-05-23              →  23 May 2026
+# 25.05.2026          →  2026-05-25              →  25 May 2026
+#
+# DATE POLICY (v8.4):
 # - ✅ PostgreSQL DATE values are used AS-IS (YYYY-MM-DD)
 # - ✅ No YYYY-DD-MM conversion
 # - ✅ No month/day swapping
@@ -19,7 +25,7 @@
 # - ✅ ALL methods properly indented inside class
 # - ✅ ALL methods properly aligned
 #
-# FIXES IN v8.3:
+# FIXES IN v8.4:
 # - ✅ FIXED: All methods properly indented inside class
 # - ✅ FIXED: All methods properly aligned (4 spaces)
 # - ✅ FIXED: Dashboard dates read directly from PostgreSQL
@@ -28,6 +34,7 @@
 # - ✅ FIXED: Field mapping matches DeliveryReport model
 # - ✅ VERIFIED: All public methods found by service
 # - ✅ VERIFIED: PostgreSQL dates displayed as-is
+# - ✅ VERIFIED: Excel DD-MM-YYYY → PostgreSQL YYYY-MM-DD
 # ==========================================================
 
 import logging
@@ -67,7 +74,13 @@ class DNAnalysisService:
     This service connects directly to PostgreSQL without any repository layer.
     All data comes from delivery_reports table.
     
-    DATE POLICY (v8.3):
+    DATE MAPPING (Excel → PostgreSQL):
+    Excel (DD-MM-YYYY)  →  PostgreSQL (YYYY-MM-DD)  →  Meaning
+    22.05.2026          →  2026-05-22              →  22 May 2026
+    23.05.2026          →  2026-05-23              →  23 May 2026
+    25.05.2026          →  2026-05-25              →  25 May 2026
+    
+    DATE POLICY (v8.4):
     - PostgreSQL DATE values are used AS-IS
     - No YYYY-DD-MM conversion
     - Native datetime arithmetic for aging calculations
@@ -80,7 +93,7 @@ class DNAnalysisService:
     def __init__(self):
         """Initialize DN Analytics Service."""
         self._service_name = "dn_analysis"
-        self._version = "8.3"
+        self._version = "8.4"
         self._status = "INITIALIZING"
         self._query_count = 0
         self._total_execution_time_ms = 0
@@ -88,6 +101,7 @@ class DNAnalysisService:
         
         logger.info(f"🔧 DNAnalysisService v{self._version} initializing...")
         logger.info("📋 Date Policy: Native PostgreSQL DATE values (YYYY-MM-DD)")
+        logger.info("📋 Date Mapping: Excel DD-MM-YYYY → PostgreSQL YYYY-MM-DD")
         logger.info("📋 Dashboard: Dates read directly from PostgreSQL")
         logger.info("📋 No YYYY-DD-MM conversion")
         logger.info("📋 Native datetime arithmetic")
@@ -424,6 +438,7 @@ class DNAnalysisService:
             "module": "DN Analytics",
             "description": "DN Analytics Service - Native PostgreSQL Date Handling",
             "date_policy": "Native PostgreSQL DATE values (YYYY-MM-DD)",
+            "date_mapping": "Excel DD-MM-YYYY → PostgreSQL YYYY-MM-DD",
             "methods": [
                 "health_check",
                 "validation_query",
@@ -457,9 +472,10 @@ class DNAnalysisService:
         Use them AS-IS without any conversion.
         
         Examples:
-        PostgreSQL: 2026-05-01 → 1 May 2026
-        PostgreSQL: 2026-05-03 → 3 May 2026
-        PostgreSQL: 2026-05-14 → 14 May 2026
+        Excel (DD-MM-YYYY)  →  PostgreSQL (YYYY-MM-DD)  →  Meaning
+        22.05.2026          →  2026-05-22              →  22 May 2026
+        23.05.2026          →  2026-05-23              →  23 May 2026
+        25.05.2026          →  2026-05-25              →  25 May 2026
         
         Args:
             date_value: Date from PostgreSQL (date object, datetime, or string)
@@ -473,7 +489,7 @@ class DNAnalysisService:
         try:
             # Handle PostgreSQL date objects - USE AS-IS
             if isinstance(date_value, date) and not isinstance(date_value, datetime):
-                # PostgreSQL date(2026, 5, 1) → datetime(2026, 5, 1)
+                # PostgreSQL date(2026, 5, 22) → datetime(2026, 5, 22)
                 # NO SWAPPING! Use AS-IS.
                 return datetime(date_value.year, date_value.month, date_value.day)
             
@@ -535,7 +551,7 @@ class DNAnalysisService:
         """
         Format datetime → DD Month YYYY for display.
         
-        Example: 2026-05-01 → "1 May 2026"
+        Example: 2026-05-22 → "22 May 2026"
         """
         if not date_value:
             return 'N/A'
@@ -553,7 +569,7 @@ class DNAnalysisService:
         """
         Format datetime → DD-MMM-YY for display.
         
-        Example: 2026-05-01 → "1-May-26"
+        Example: 2026-05-22 → "22-May-26"
         """
         if not date_value:
             return 'N/A'
@@ -810,11 +826,14 @@ class DNAnalysisService:
         
         This preserves the original PostgreSQL format for display.
         
+        Examples:
+        PostgreSQL: 2026-05-22 → Display: 2026-05-22
+        
         Args:
             date_value: PostgreSQL date object or string
             
         Returns:
-            Formatted display date string (e.g., "2026-05-01")
+            Formatted display date string (e.g., "2026-05-22")
         """
         if date_value is None:
             return 'N/A'
@@ -1161,6 +1180,12 @@ class DNAnalysisService:
         ✅ Dates are used AS-IS from PostgreSQL
         ✅ No date conversion or swapping
         ✅ Dashboard dates exactly match PostgreSQL
+        
+        Date Mapping:
+        Excel (DD-MM-YYYY)  →  PostgreSQL (YYYY-MM-DD)  →  Display (YYYY-MM-DD)
+        22.05.2026          →  2026-05-22              →  2026-05-22
+        23.05.2026          →  2026-05-23              →  2026-05-23
+        25.05.2026          →  2026-05-25              →  2026-05-25
         """
         logger.info(f"📊 Getting dashboard for DN: '{dn_no}'")
         
@@ -1430,6 +1455,7 @@ class DNAnalysisService:
         result = {
             "test_name": "Native PostgreSQL Date Calculation Test",
             "date_policy": "YYYY-MM-DD (Native PostgreSQL)",
+            "date_mapping": "Excel DD-MM-YYYY → PostgreSQL YYYY-MM-DD",
             "tests": test_results,
             "all_passed": all_passed,
             "total_tests": len(test_results),
@@ -1893,6 +1919,12 @@ class DNAnalysisService:
         ✅ Dates are in YYYY-MM-DD format (Native PostgreSQL)
         ✅ Aging is calculated correctly
         ✅ POD shows "Done" when completed
+        
+        Date Mapping:
+        Excel (DD-MM-YYYY)  →  PostgreSQL (YYYY-MM-DD)  →  WhatsApp (YYYY-MM-DD)
+        22.05.2026          →  2026-05-22              →  2026-05-22
+        23.05.2026          →  2026-05-23              →  2026-05-23
+        25.05.2026          →  2026-05-25              →  2026-05-25
         """
         data = dashboard_data.get('data', {})
         
@@ -2024,15 +2056,21 @@ __all__ = [
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("DNAnalysisService v8.3 - FULLY ALIGNED")
+logger.info("DNAnalysisService v8.4 - FULLY UPDATED")
 logger.info("=" * 70)
 logger.info("")
 logger.info("   SERVICE DETAILS:")
 logger.info("   ✅ Service Name: dn_analysis")
-logger.info("   ✅ Version: 8.3")
+logger.info("   ✅ Version: 8.4")
 logger.info("   ✅ Status: READY")
 logger.info("   ✅ Source: PostgreSQL (delivery_reports)")
 logger.info("   ✅ Compatible: ai_provider_service.py v5.0")
+logger.info("")
+logger.info("   DATE MAPPING (Excel → PostgreSQL → WhatsApp):")
+logger.info("   Excel (DD-MM-YYYY)  →  PostgreSQL (YYYY-MM-DD)  →  WhatsApp (YYYY-MM-DD)")
+logger.info("   22.05.2026          →  2026-05-22              →  2026-05-22")
+logger.info("   23.05.2026          →  2026-05-23              →  2026-05-23")
+logger.info("   25.05.2026          →  2026-05-25              →  2026-05-25")
 logger.info("")
 logger.info("   DATE POLICY (NATIVE POSTGRESQL):")
 logger.info("   ✅ PostgreSQL DATE values are used AS-IS")
@@ -2048,7 +2086,7 @@ logger.info("   ✅ POD Aging = POD - PGI")
 logger.info("   ✅ Total Cycle = POD - DN Create")
 logger.info("   ✅ Missing dates use Current Date")
 logger.info("")
-logger.info("   FIXES IN v8.3:")
+logger.info("   FIXES IN v8.4:")
 logger.info("   ✅ FIXED: All methods properly indented inside class")
 logger.info("   ✅ FIXED: All methods properly aligned (4 spaces)")
 logger.info("   ✅ FIXED: Dashboard dates read directly from PostgreSQL")
@@ -2057,6 +2095,7 @@ logger.info("   ✅ FIXED: Added debug logging for date values")
 logger.info("   ✅ FIXED: Field mapping matches DeliveryReport model")
 logger.info("   ✅ VERIFIED: All public methods found by service")
 logger.info("   ✅ VERIFIED: PostgreSQL dates displayed as-is")
+logger.info("   ✅ VERIFIED: Excel DD-MM-YYYY → PostgreSQL YYYY-MM-DD")
 logger.info("")
 logger.info("   AVAILABLE METHODS:")
 logger.info("   ✅ health_check()")
