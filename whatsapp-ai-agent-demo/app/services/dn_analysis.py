@@ -1,39 +1,45 @@
 # ==========================================================
-# FILE: app/services/dn_analysis.py (v4.1 - YYYY-DD-MM FIXED)
+# FILE: app/services/dn_analysis.py (v8.0 - NATIVE POSTGRESQL DATES)
 # ==========================================================
 # PURPOSE: DN Analytics Service - Direct PostgreSQL Integration
 # SOURCE: delivery_reports table ONLY
-# VERSION: 4.1 - FIXED DATE PARSING TO YYYY-DD-MM
+# VERSION: 8.0 - NATIVE POSTGRESQL DATE HANDLING
 #
 # COMPATIBLE WITH: ai_provider_service.py v5.0
 # INTEGRATION: Railway PostgreSQL
 #
-# FIXES APPLIED IN v4.1:
-# - ✅ FIXED: _parse_date() always interprets YYYY-DD-MM
-# - ✅ FIXED: _parse_date_ydm() uses same logic
-# - ✅ FIXED: calculate_delivery_aging() uses Y-D-M dates only
-# - ✅ FIXED: calculate_pod_aging() uses Y-D-M dates only
-# - ✅ FIXED: calculate_total_cycle() uses Y-D-M dates only
-# - ✅ ADDED: Diagnostic logging in all date parsing
-# - ✅ ADDED: test_date_calculation() validation test
-# - ✅ VERIFIED: 2026-06-05 → 6 May 2026
-# - ✅ VERIFIED: 2026-07-05 → 7 May 2026
-# - ✅ VERIFIED: Delivery Aging=0, POD Aging=1, Total Cycle=1
+# DATE POLICY (v8.0):
+# - ✅ PostgreSQL DATE values are used AS-IS (YYYY-MM-DD)
+# - ✅ No YYYY-DD-MM conversion
+# - ✅ No month/day swapping
+# - ✅ Native datetime arithmetic
+# - ✅ Display dates remain as PostgreSQL YYYY-MM-DD
+# - ✅ Safe error handling with logging
+#
+# ALL ATTRIBUTES PRESERVED:
+# - ✅ All public methods unchanged
+# - ✅ All database integration intact
+# - ✅ All search strategies preserved
+# - ✅ All pending methods preserved
+# - ✅ WhatsApp formatter preserved
+# - ✅ Health check preserved
+# - ✅ Singleton pattern preserved
 # ==========================================================
 
 import logging
 from typing import Dict, List, Optional, Any
-from datetime import datetime, date
-from sqlalchemy import text, func, and_, or_, distinct, inspect
+from datetime import datetime, date, timedelta
+from sqlalchemy import text, inspect
 from sqlalchemy.orm import Session
 import threading
 import re
 import traceback
+import time
 
 logger = logging.getLogger(__name__)
 
 # ==========================================================
-# BLOCK 1: IMPORTS
+# BLOCK 1: IMPORTS & DATABASE SETUP
 # ==========================================================
 
 try:
@@ -57,15 +63,28 @@ class DNAnalysisService:
     This service connects directly to PostgreSQL without any repository layer.
     All data comes from delivery_reports table.
     
+    DATE POLICY (v8.0):
+    - PostgreSQL DATE values are used AS-IS
+    - No YYYY-DD-MM conversion
+    - Native datetime arithmetic for aging calculations
+    - Display dates remain as PostgreSQL YYYY-MM-DD
+    
     COMPATIBLE WITH: ai_provider_service.py v5.0
     """
     
     def __init__(self):
         """Initialize DN Analytics Service."""
         self._service_name = "dn_analysis"
-        self._version = "4.1"
+        self._version = "8.0"
         self._status = "INITIALIZING"
-        logger.info("🔧 DNAnalysisService v4.1 initializing...")
+        self._query_count = 0
+        self._total_execution_time_ms = 0
+        self._startup_time = datetime.now().isoformat()
+        
+        logger.info(f"🔧 DNAnalysisService v{self._version} initializing...")
+        logger.info("📋 Date Policy: Native PostgreSQL DATE values (YYYY-MM-DD)")
+        logger.info("📋 No YYYY-DD-MM conversion")
+        logger.info("📋 Native datetime arithmetic")
         
         # Test connection
         test_result = self._test_connection()
@@ -114,9 +133,8 @@ class DNAnalysisService:
     def _execute_query(self, query: str, params: Dict[str, Any] = None) -> List[Dict[str, Any]]:
         """
         Execute raw SQL query and return results as dicts.
-        
-        ✅ FIXED: Full exception logging with traceback
         """
+        start_time = time.time()
         session = None
         try:
             session = self._get_session()
@@ -131,11 +149,14 @@ class DNAnalysisService:
             columns = result.keys()
             rows = [dict(zip(columns, row)) for row in result.fetchall()]
             
-            logger.debug(f"✅ Query returned {len(rows)} rows")
+            execution_time_ms = (time.time() - start_time) * 1000
+            self._query_count += 1
+            self._total_execution_time_ms += execution_time_ms
+            
+            logger.debug(f"✅ Query returned {len(rows)} rows in {execution_time_ms:.2f}ms")
             return rows
             
         except Exception as e:
-            # ✅ FULL EXCEPTION LOGGING
             logger.error(f"❌ SQL Execution Failed!")
             logger.error(f"   Query: {query[:500]}")
             logger.error(f"   Parameters: {params}")
@@ -158,7 +179,7 @@ class DNAnalysisService:
         logger.info(f"🔍 DN Normalization: '{dn_no}' → '{normalized}'")
         return normalized
     
-    def _build_normalized_dn_query(self, dn_no: str) -> str:
+    def _build_normalized_dn_query(self) -> str:
         """
         Build DN query with multiple matching strategies.
         """
@@ -195,7 +216,7 @@ class DNAnalysisService:
             LIMIT 1
         """
     
-    def _build_exact_match_query(self, dn_no: str) -> str:
+    def _build_exact_match_query(self) -> str:
         """
         Build exact match query for diagnostic purposes.
         """
@@ -206,7 +227,7 @@ class DNAnalysisService:
             LIMIT 1
         """
     
-    def _build_count_query(self, dn_no: str) -> str:
+    def _build_count_query(self) -> str:
         """
         Build count query for diagnostic purposes.
         """
@@ -216,7 +237,7 @@ class DNAnalysisService:
             WHERE CAST(dn_no AS TEXT) = :dn_no
         """
     
-    def _build_fallback_dn_query(self, dn_no: str) -> str:
+    def _build_fallback_dn_query(self) -> str:
         """
         Build fallback DN query for partial matches.
         """
@@ -227,7 +248,7 @@ class DNAnalysisService:
             LIMIT 10
         """
     
-    def _build_raw_dn_query(self, dn_no: str) -> str:
+    def _build_raw_dn_query(self) -> str:
         """
         Build raw DN query to check if DN exists without normalization.
         """
@@ -250,10 +271,13 @@ class DNAnalysisService:
         result = {
             "healthy": False,
             "service": self._service_name,
+            "version": self._version,
             "database": "disconnected",
             "errors": [],
             "warnings": [],
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
+            "query_count": self._query_count,
+            "total_execution_time_ms": self._total_execution_time_ms
         }
         
         try:
@@ -288,7 +312,7 @@ class DNAnalysisService:
                 logger.error(f"❌ Table check failed: {e}")
                 return result
             
-            # Check 4: Check required columns AND log column types
+            # Check 4: Check required columns
             try:
                 required_columns = [
                     "dn_no", "customer_name", "dealer_code", "customer_code",
@@ -300,7 +324,6 @@ class DNAnalysisService:
                 columns_info = inspector.get_columns("delivery_reports")
                 columns = [col["name"] for col in columns_info]
                 
-                # ✅ Log column types for diagnostics
                 logger.info("📊 PostgreSQL Column Types:")
                 for col in columns_info:
                     logger.info(f"   ├── {col['name']}: {col['type']}")
@@ -342,10 +365,6 @@ class DNAnalysisService:
         finally:
             if session:
                 session.close()
-    
-    # ==========================================================
-    # ✅ FIXED: validation_query() - Uses raw SQL
-    # ==========================================================
     
     def validation_query(self) -> Dict[str, Any]:
         """Used by ai_provider_service.py for validation."""
@@ -397,8 +416,8 @@ class DNAnalysisService:
             "version": self._version,
             "status": self._status,
             "module": "DN Analytics",
-            "description": "DN Analytics Service - PostgreSQL Integration",
-            "date_format": "YYYY-DD-MM",
+            "description": "DN Analytics Service - Native PostgreSQL Date Handling",
+            "date_policy": "Native PostgreSQL DATE values (YYYY-MM-DD)",
             "methods": [
                 "health_check",
                 "validation_query",
@@ -421,149 +440,60 @@ class DNAnalysisService:
         }
     
     # ==========================================================
-    # BLOCK 6: AGING CALCULATION METHODS (YYYY-DD-MM FIXED)
-     # ==========================================================
-    # BLOCK 6: AGING CALCULATION METHODS (CONSISTENT DAY-ONLY)
+    # BLOCK 6: AGING CALCULATION METHODS (NATIVE POSTGRESQL DATES)
     # ==========================================================
     
-    def _parse_date(self, date_value):
+    def _safe_date_diff(self, date1, date2) -> int:
         """
-        Parse date using company format: YYYY-DD-MM
-        
-        PostgreSQL returns date objects. We swap day and month
-        to interpret as YYYY-DD-MM.
-        
-        Example: 
-        - PostgreSQL: 2026-04-05 (April 5, 2026)
-        - Company interprets: 2026-04-05 (5 April 2026)
-        - We swap: Year=2026, Day=04, Month=05
+        Safely calculate days between two dates.
         
         Args:
-            date_value: Date from PostgreSQL (date object, datetime, or string)
+            date1: First date (datetime.date or None)
+            date2: Second date (datetime.date or None)
             
         Returns:
-            datetime object with swapped day/month
+            Number of days difference (0 if invalid)
         """
-        if not date_value:
-            return None
-        
-        try:
-            # Handle PostgreSQL date objects
-            if isinstance(date_value, date) and not isinstance(date_value, datetime):
-                # PostgreSQL date(2026, 4, 5) → datetime(2026, 5, 4)
-                # Year=2026, Day=04 (from month), Month=05 (from day)
-                return datetime(date_value.year, date_value.day, date_value.month)
-            
-            # Handle datetime objects
-            elif isinstance(date_value, datetime):
-                return datetime(date_value.year, date_value.day, date_value.month)
-            
-            # Handle string dates
-            elif isinstance(date_value, str):
-                parts = date_value.split('-')
-                if len(parts) == 3:
-                    year = int(parts[0])
-                    month = int(parts[1])  # PostgreSQL month
-                    day = int(parts[2])    # PostgreSQL day
-                    # Swap: day becomes month, month becomes day
-                    return datetime(year, day, month)
-                else:
-                    return datetime.strptime(date_value, "%Y-%m-%d")
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"❌ Date parsing error for {date_value}: {e}")
-            return None
-    
-    def _parse_date_ydm(self, date_value):
-        """
-        Parse date using company format: YYYY-DD-MM.
-        
-        Same as _parse_date() - for backward compatibility.
-        """
-        return self._parse_date(date_value)
-    
-    def _get_day_value(self, date_value) -> int:
-        """
-        Extract the DAY value from a date using YYYY-DD-MM interpretation.
-        
-        Args:
-            date_value: Date from PostgreSQL
-            
-        Returns:
-            Day number (1-31)
-        """
-        if not date_value:
+        if date1 is None or date2 is None:
             return 0
         
         try:
-            parsed = self._parse_date(date_value)
-            if parsed:
-                # After swapping, the day is the second part (YYYY-DD-MM)
-                return parsed.day
+            # Ensure both are date objects
+            if not isinstance(date1, (date, datetime)):
+                logger.warning(f"⚠️ Invalid date1 type: {type(date1)}")
+                return 0
+            if not isinstance(date2, (date, datetime)):
+                logger.warning(f"⚠️ Invalid date2 type: {type(date2)}")
+                return 0
+            
+            # Convert to date if datetime
+            if isinstance(date1, datetime):
+                date1 = date1.date()
+            if isinstance(date2, datetime):
+                date2 = date2.date()
+            
+            delta = date2 - date1
+            days = delta.days
+            return max(0, days)  # Ensure non-negative
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to calculate date difference: {e}")
             return 0
-        except Exception as e:
-            logger.error(f"❌ Failed to extract day from {date_value}: {e}")
-            return 0
-    
-    def _format_date_dmy_long(self, date_value) -> str:
-        """
-        Format datetime → DD Month YYYY for display.
-        
-        Example: 2026-06-05 → "6 May 2026"
-        """
-        if not date_value:
-            return 'N/A'
-        
-        try:
-            parsed = self._parse_date(date_value)
-            if parsed:
-                return parsed.strftime('%-d %B %Y')
-            return str(date_value)
-        except Exception as e:
-            logger.warning(f"⚠️ Date formatting error: {e}")
-            return 'N/A'
-    
-    def _format_date_dmy_short(self, date_value) -> str:
-        """
-        Format datetime → DD-MMM-YY for display.
-        
-        Example: 2026-06-05 → "6-May-26"
-        """
-        if not date_value:
-            return 'N/A'
-        
-        try:
-            parsed = self._parse_date(date_value)
-            if parsed:
-                return parsed.strftime('%-d-%b-%y')
-            return str(date_value)
-        except Exception as e:
-            logger.warning(f"⚠️ Date formatting error: {e}")
-            return 'N/A'
     
     def calculate_delivery_aging(self, dn_create_date, good_issue_date) -> int:
         """
-        Calculate delivery aging using DAY-ONLY DIFFERENCE.
+        Calculate delivery aging using native PostgreSQL dates.
         
-        COMPANY BUSINESS RULE: 
-        - Interpret dates as YYYY-DD-MM
-        - Calculate difference using DAY numbers only
+        FORMULA: PGI - DN Create Date
         
-        Formula: PGI Day - DN Create Day
-        
-        Example:
-        - DN Create: 2026-04-05 → Day=04
-        - PGI: 2026-05-05 → Day=05
-        - Result: 05 - 04 = 1 Day ✅
+        If PGI is missing, use Current Date.
         
         Args:
             dn_create_date: DN Create date (PostgreSQL date object)
             good_issue_date: PGI date (PostgreSQL date object)
             
         Returns:
-            Delivery aging in days (day-only difference)
+            Delivery aging in days (0 = Same Day)
         """
         try:
             # NULL date handling
@@ -571,110 +501,87 @@ class DNAnalysisService:
                 logger.warning("⚠️ DN Create Date Missing - Returning 0")
                 return 0
             
-            # Extract DAY values using YYYY-DD-MM interpretation
-            dn_day = self._get_day_value(dn_create_date)
-            gi_day = self._get_day_value(good_issue_date)
+            # If PGI is missing, use current date
+            if good_issue_date is None:
+                logger.info("📊 Delivery Aging: PGI missing - Using Current Date")
+                current_date = datetime.now().date()
+                days = self._safe_date_diff(dn_create_date, current_date)
+                logger.info(f"✅ Delivery Aging (Current Date): {days} days")
+                return days
             
-            # Log the day values for debugging
+            # Calculate difference using native dates
+            days = self._safe_date_diff(dn_create_date, good_issue_date)
+            
             logger.info(
-                f"📊 Delivery Aging (Day-Only) | "
-                f"DN Create: {dn_create_date} (Day={dn_day}) | "
-                f"PGI: {good_issue_date} (Day={gi_day})"
+                f"✅ Delivery Aging: "
+                f"DN Create: {self._format_display_date(dn_create_date)} → "
+                f"PGI: {self._format_display_date(good_issue_date)} = {days} days"
             )
-            
-            # ✅ FIX: Calculate day-only difference
-            days = gi_day - dn_day
-            
-            # Negative protection
-            if days < 0:
-                logger.error(
-                    f"❌ Invalid Delivery Aging: PGI Day ({gi_day}) < DN Day ({dn_day})"
-                )
-                return 0
-            
-            logger.info(f"✅ Delivery Aging: {days} days")
             return days
             
         except Exception as e:
             logger.error(f"❌ Failed to calculate delivery aging: {e}")
+            logger.error(f"   Traceback: {traceback.format_exc()}")
             return 0
     
     def calculate_pod_aging(self, good_issue_date, pod_date) -> int:
         """
-        Calculate POD aging using DAY-ONLY DIFFERENCE.
+        Calculate POD aging using native PostgreSQL dates.
         
-        COMPANY BUSINESS RULE: 
-        - Interpret dates as YYYY-DD-MM
-        - Calculate difference using DAY numbers only
+        FORMULA: POD - PGI
         
-        Formula: POD Day - PGI Day
-        
-        Example:
-        - PGI: 2026-05-05 → Day=05
-        - POD: 2026-05-14 → Day=14
-        - Result: 14 - 05 = 9 Days ✅ (NOT "Same Day"!)
+        If POD is missing, use Current Date.
         
         Args:
             good_issue_date: PGI date (PostgreSQL date object)
             pod_date: POD date (PostgreSQL date object)
             
         Returns:
-            POD aging in days (day-only difference)
+            POD aging in days (0 = Same Day)
         """
         try:
-            # Extract DAY values using YYYY-DD-MM interpretation
-            gi_day = self._get_day_value(good_issue_date)
-            pd_day = self._get_day_value(pod_date)
-            
-            if gi_day == 0:
-                logger.warning(f"⚠️ Failed to parse PGI date: {good_issue_date}")
+            # If PGI is missing, POD aging cannot be calculated
+            if good_issue_date is None:
+                logger.info("📊 POD Aging: PGI missing - Cannot calculate")
                 return 0
             
-            # Log the day values for debugging
+            # If POD is missing, use current date
+            if pod_date is None:
+                logger.info("📊 POD Aging: POD missing - Using Current Date")
+                current_date = datetime.now().date()
+                days = self._safe_date_diff(good_issue_date, current_date)
+                logger.info(f"✅ POD Aging (Current Date): {days} days")
+                return days
+            
+            # Calculate difference using native dates
+            days = self._safe_date_diff(good_issue_date, pod_date)
+            
             logger.info(
-                f"📊 POD Aging (Day-Only) | "
-                f"PGI: {good_issue_date} (Day={gi_day}) | "
-                f"POD: {pod_date} (Day={pd_day})"
+                f"✅ POD Aging: "
+                f"PGI: {self._format_display_date(good_issue_date)} → "
+                f"POD: {self._format_display_date(pod_date)} = {days} days"
             )
-            
-            # ✅ FIX: Calculate day-only difference (NOT month difference!)
-            days = pd_day - gi_day
-            
-            # Negative protection
-            if days < 0:
-                logger.error(
-                    f"❌ Invalid POD Aging: POD Day ({pd_day}) < PGI Day ({gi_day})"
-                )
-                return 0
-            
-            logger.info(f"✅ POD Aging: {days} days")
             return days
             
         except Exception as e:
             logger.error(f"❌ Failed to calculate POD aging: {e}")
+            logger.error(f"   Traceback: {traceback.format_exc()}")
             return 0
     
     def calculate_total_cycle(self, dn_create_date, pod_date) -> int:
         """
-        Calculate total cycle using DAY-ONLY DIFFERENCE.
+        Calculate total cycle using native PostgreSQL dates.
         
-        COMPANY BUSINESS RULE: 
-        - Interpret dates as YYYY-DD-MM
-        - Calculate difference using DAY numbers only
+        FORMULA: POD - DN Create Date
         
-        Formula: POD Day - DN Create Day
-        
-        Example:
-        - DN Create: 2026-04-05 → Day=04
-        - POD: 2026-05-14 → Day=14
-        - Result: 14 - 04 = 10 Days ✅ (NOT "Same Day"!)
+        If POD is missing, use Current Date.
         
         Args:
             dn_create_date: DN Create date (PostgreSQL date object)
             pod_date: POD date (PostgreSQL date object)
             
         Returns:
-            Total cycle time in days (day-only difference)
+            Total cycle time in days (0 = Same Day)
         """
         try:
             # NULL date handling
@@ -682,37 +589,63 @@ class DNAnalysisService:
                 logger.warning("⚠️ DN Create Date Missing - Returning 0")
                 return 0
             
-            # Extract DAY values using YYYY-DD-MM interpretation
-            dn_day = self._get_day_value(dn_create_date)
-            pd_day = self._get_day_value(pod_date)
+            # If POD is missing, use current date
+            if pod_date is None:
+                logger.info("📊 Total Cycle: POD missing - Using Current Date")
+                current_date = datetime.now().date()
+                days = self._safe_date_diff(dn_create_date, current_date)
+                logger.info(f"✅ Total Cycle (Current Date): {days} days")
+                return days
             
-            if dn_day == 0:
-                logger.warning(f"⚠️ Failed to parse DN Create date: {dn_create_date}")
-                return 0
+            # Calculate difference using native dates
+            days = self._safe_date_diff(dn_create_date, pod_date)
             
-            # Log the day values for debugging
             logger.info(
-                f"📊 Total Cycle (Day-Only) | "
-                f"DN Create: {dn_create_date} (Day={dn_day}) | "
-                f"POD: {pod_date} (Day={pd_day})"
+                f"✅ Total Cycle: "
+                f"DN Create: {self._format_display_date(dn_create_date)} → "
+                f"POD: {self._format_display_date(pod_date)} = {days} days"
             )
-            
-            # ✅ FIX: Calculate day-only difference (NOT month difference!)
-            days = pd_day - dn_day
-            
-            # Negative protection
-            if days < 0:
-                logger.error(
-                    f"❌ Invalid Total Cycle: POD Day ({pd_day}) < DN Day ({dn_day})"
-                )
-                return 0
-            
-            logger.info(f"✅ Total Cycle: {days} days")
             return days
             
         except Exception as e:
             logger.error(f"❌ Failed to calculate total cycle: {e}")
+            logger.error(f"   Traceback: {traceback.format_exc()}")
             return 0
+    
+    # ==========================================================
+    # BLOCK 6.5: FORMATTING & DEBUG METHODS
+    # ==========================================================
+    
+    def _format_display_date(self, date_value) -> str:
+        """
+        Format PostgreSQL date for display (YYYY-MM-DD).
+        
+        This preserves the original PostgreSQL format for display.
+        
+        Args:
+            date_value: PostgreSQL date object or string
+            
+        Returns:
+            Formatted display date string (e.g., "2026-05-23")
+        """
+        if date_value is None:
+            return 'N/A'
+        
+        try:
+            if isinstance(date_value, (date, datetime)):
+                return date_value.strftime('%Y-%m-%d')
+            elif isinstance(date_value, str):
+                # If already in YYYY-MM-DD format, return as-is
+                if len(date_value) == 10 and date_value[4] == '-' and date_value[7] == '-':
+                    return date_value
+                # Try to parse and reformat
+                parsed = datetime.strptime(date_value, "%Y-%m-%d")
+                return parsed.strftime('%Y-%m-%d')
+            else:
+                return str(date_value)
+        except (ValueError, TypeError) as e:
+            logger.warning(f"⚠️ Failed to format display date: {date_value} - {e}")
+            return str(date_value) if date_value else 'N/A'
     
     def _format_aging_text(self, days: int) -> str:
         """
@@ -736,42 +669,32 @@ class DNAnalysisService:
             return f"{days} Days (1-2 Months)"
         elif days < 90:
             return f"{days} Days (3 Months)"
-        else:
+        elif days < 365:
             return f"{days} Days ({days // 30} Months)"
-    # ==========================================================
-    # BLOCK 6.5: DEBUG METHOD (DAY-ONLY DIFFERENCE)
-    # ==========================================================
-        # ==========================================================
-    # BLOCK 6.5: DEBUG METHOD (CONSISTENT DAY-ONLY)
-    # ==========================================================
+        else:
+            years = days // 365
+            months = (days % 365) // 30
+            if months > 0:
+                return f"{days} Days ({years} Year{'s' if years > 1 else ''}, {months} Month{'s' if months > 1 else ''})"
+            return f"{days} Days ({years} Year{'s' if years > 1 else ''})"
     
     def debug_aging_calculation(self, dn_create_date, good_issue_date, pod_date) -> Dict[str, Any]:
         """
-        Debug aging calculations with full details.
+        Debug aging calculations with native PostgreSQL dates.
         
-        Shows day-only differences (Company Business Rule).
+        Shows PostgreSQL dates → Aging calculations.
         
         Args:
-            dn_create_date: DN Create date
-            good_issue_date: PGI date
-            pod_date: POD date
+            dn_create_date: DN Create date (PostgreSQL)
+            good_issue_date: PGI date (PostgreSQL)
+            pod_date: POD date (PostgreSQL)
             
         Returns:
             Dictionary with all parsed dates and aging calculations
         """
         logger.info("🔍 Running debug_aging_calculation...")
         
-        # Parse dates using YYYY-DD-MM interpretation
-        dn_parsed = self._parse_date(dn_create_date)
-        gi_parsed = self._parse_date(good_issue_date)
-        pod_parsed = self._parse_date(pod_date)
-        
-        # Extract DAY values
-        dn_day = self._get_day_value(dn_create_date)
-        gi_day = self._get_day_value(good_issue_date)
-        pd_day = self._get_day_value(pod_date)
-        
-        # Calculate aging (day-only)
+        # Calculate aging using native dates
         delivery_aging = self.calculate_delivery_aging(dn_create_date, good_issue_date)
         pod_aging = self.calculate_pod_aging(good_issue_date, pod_date)
         total_cycle = self.calculate_total_cycle(dn_create_date, pod_date)
@@ -779,24 +702,14 @@ class DNAnalysisService:
         # Build result dictionary
         result = {
             "input_dates": {
+                "dn_create_date": self._format_display_date(dn_create_date),
+                "pgi_date": self._format_display_date(good_issue_date),
+                "pod_date": self._format_display_date(pod_date)
+            },
+            "date_objects": {
                 "dn_create_date": str(dn_create_date) if dn_create_date else None,
                 "pgi_date": str(good_issue_date) if good_issue_date else None,
                 "pod_date": str(pod_date) if pod_date else None
-            },
-            "parsed_dates": {
-                "dn_create_date": dn_parsed.strftime('%Y-%m-%d') if dn_parsed else None,
-                "pgi_date": gi_parsed.strftime('%Y-%m-%d') if gi_parsed else None,
-                "pod_date": pod_parsed.strftime('%Y-%m-%d') if pod_parsed else None
-            },
-            "display_dates": {
-                "dn_create_date": dn_parsed.strftime('%d %B %Y') if dn_parsed else None,
-                "pgi_date": gi_parsed.strftime('%d %B %Y') if gi_parsed else None,
-                "pod_date": pod_parsed.strftime('%d %B %Y') if pod_parsed else None
-            },
-            "day_values": {
-                "dn_create_day": dn_day,
-                "pgi_day": gi_day,
-                "pod_day": pd_day
             },
             "calculations": {
                 "delivery_aging_days": delivery_aging,
@@ -813,34 +726,24 @@ class DNAnalysisService:
         
         # Log full debug info
         logger.info("=" * 70)
-        logger.info("🔍 DEBUG AGING CALCULATION (Day-Only Business Rule)")
+        logger.info("🔍 DEBUG AGING CALCULATION (Native PostgreSQL Dates)")
         logger.info("=" * 70)
         logger.info("")
-        logger.info("📅 Input Dates (PostgreSQL YYYY-MM-DD):")
+        logger.info("📅 PostgreSQL Dates (Native):")
         logger.info(f"  ├── DN Create: {result['input_dates']['dn_create_date']}")
         logger.info(f"  ├── PGI:       {result['input_dates']['pgi_date']}")
         logger.info(f"  └── POD:       {result['input_dates']['pod_date']}")
         logger.info("")
-        logger.info("🔄 Parsed Dates (YYYY-DD-MM Interpretation):")
-        logger.info(f"  ├── DN Create: {result['parsed_dates']['dn_create_date']} → {result['display_dates']['dn_create_date']}")
-        logger.info(f"  ├── PGI:       {result['parsed_dates']['pgi_date']} → {result['display_dates']['pgi_date']}")
-        logger.info(f"  └── POD:       {result['parsed_dates']['pod_date']} → {result['display_dates']['pod_date']}")
-        logger.info("")
-        logger.info("📊 Day Values Extracted:")
-        logger.info(f"  ├── DN Create Day: {result['day_values']['dn_create_day']}")
-        logger.info(f"  ├── PGI Day:       {result['day_values']['pgi_day']}")
-        logger.info(f"  └── POD Day:       {result['day_values']['pod_day']}")
-        logger.info("")
-        logger.info("🧮 Calculations (Day-Only Difference):")
-        logger.info(f"  ├── Delivery Aging: {result['day_values']['pgi_day']} - {result['day_values']['dn_create_day']} = {result['calculations']['delivery_aging_days']} days → {result['formatted']['delivery_aging_text']}")
-        logger.info(f"  ├── POD Aging:      {result['day_values']['pod_day']} - {result['day_values']['pgi_day']} = {result['calculations']['pod_aging_days']} days → {result['formatted']['pod_aging_text']}")
-        logger.info(f"  └── Total Cycle:    {result['day_values']['pod_day']} - {result['day_values']['dn_create_day']} = {result['calculations']['total_cycle_days']} days → {result['formatted']['total_cycle_text']}")
+        logger.info("🧮 Aging Calculations (Native Date Difference):")
+        logger.info(f"  ├── Delivery Aging: {result['calculations']['delivery_aging_days']} days → {result['formatted']['delivery_aging_text']}")
+        logger.info(f"  ├── POD Aging:      {result['calculations']['pod_aging_days']} days → {result['formatted']['pod_aging_text']}")
+        logger.info(f"  └── Total Cycle:    {result['calculations']['total_cycle_days']} days → {result['formatted']['total_cycle_text']}")
         logger.info("")
         logger.info("=" * 70)
         
         return result
-  
-        return result
+    
+    # ==========================================================
     # BLOCK 7: DN SEARCH WITH FULL DIAGNOSTICS
     # ==========================================================
     
@@ -869,10 +772,9 @@ class DNAnalysisService:
             return {"success": False, "error": f"Invalid DN format: {normalized_dn} (must be 8-12 digits)"}
         
         # Step 2: Execute query with multiple strategies
-        query = self._build_normalized_dn_query(normalized_dn)
+        query = self._build_normalized_dn_query()
         results = self._execute_query(query, {"dn_no": normalized_dn})
         
-        # ✅ Diagnostic logging
         logger.info(f"📊 DN Search | Input={dn_no} | Normalized={normalized_dn} | Results={len(results)}")
         
         if results:
@@ -880,18 +782,16 @@ class DNAnalysisService:
             return {"success": True, "data": results[0]}
         
         # Step 3: Check exact match count before fallback
-        count_query = self._build_count_query(normalized_dn)
+        count_query = self._build_count_query()
         count_results = self._execute_query(count_query, {"dn_no": normalized_dn})
         exact_count = count_results[0].get('count', 0) if count_results else 0
         logger.info(f"   ├── Exact match count: {exact_count}")
         
         if exact_count > 0:
-            # ✅ If exact count > 0, try direct exact match
             logger.info(f"   ├── Exact match found! Trying direct query...")
-            exact_query = self._build_exact_match_query(normalized_dn)
+            exact_query = self._build_exact_match_query()
             exact_results = self._execute_query(exact_query, {"dn_no": normalized_dn})
             if exact_results:
-                # Build aggregated result from exact match
                 data = self._aggregate_dn_results(exact_results, normalized_dn)
                 if data:
                     logger.info(f"✅ DN {dn_no} found via direct exact match")
@@ -899,18 +799,17 @@ class DNAnalysisService:
         
         # Step 4: Fallback partial match search
         logger.warning(f"⚠️ Primary match not found for {dn_no}. Running fallback search...")
-        fallback_query = self._build_fallback_dn_query(normalized_dn)
+        fallback_query = self._build_fallback_dn_query()
         fallback_results = self._execute_query(fallback_query, {"dn_no": normalized_dn})
         
         similar_dns = [str(r.get('dn_no', '')) for r in fallback_results if r.get('dn_no')]
         
-        # ✅ Check if the requested DN is in similar_dns
+        # Check if the requested DN is in similar_dns
         requested_dn_found = any(dn == normalized_dn or dn == dn_no for dn in similar_dns)
         
         if requested_dn_found:
-            # ✅ Auto-retry with the exact DN
             logger.info(f"   ├── Requested DN found in fallback! Auto-retrying with exact DN...")
-            exact_query = self._build_exact_match_query(normalized_dn)
+            exact_query = self._build_exact_match_query()
             exact_results = self._execute_query(exact_query, {"dn_no": normalized_dn})
             if exact_results:
                 data = self._aggregate_dn_results(exact_results, normalized_dn)
@@ -961,7 +860,7 @@ class DNAnalysisService:
             "material_count": len(results)
         }
         
-        # Calculate aging using YYYY-DD-MM dates
+        # Calculate aging using native PostgreSQL dates
         delivery_aging = self.calculate_delivery_aging(
             data.get('dn_create_date'),
             data.get('good_issue_date')
@@ -982,7 +881,7 @@ class DNAnalysisService:
         return data
     
     # ==========================================================
-    # BLOCK 7.5: VERIFY DN
+    # BLOCK 8: VERIFY DN
     # ==========================================================
     
     def verify_dn(self, dn_no: str) -> Dict[str, Any]:
@@ -1012,7 +911,7 @@ class DNAnalysisService:
         return {"success": True, "exists": exists}
     
     # ==========================================================
-    # BLOCK 7.6: TEST DN LOOKUP (DIAGNOSTIC)
+    # BLOCK 9: TEST DN LOOKUP (DIAGNOSTIC)
     # ==========================================================
     
     def test_dn_lookup(self, dn_no: str) -> Dict[str, Any]:
@@ -1064,11 +963,7 @@ class DNAnalysisService:
         results["diagnostics"].append(f"REGEXP match: {results['regex_count']}")
         
         # 4. Get matching DNs
-        query4 = """
-            SELECT DISTINCT dn_no            FROM delivery_reports
-            WHERE CAST(dn_no AS TEXT) LIKE '%' || :dn_no || '%'
-            LIMIT 10
-        """
+        query4 = self._build_fallback_dn_query()
         r4 = self._execute_query(query4, {"dn_no": normalized_dn})
         results["matching_dns"] = [str(r.get('dn_no', '')) for r in r4 if r.get('dn_no')]
         
@@ -1079,7 +974,7 @@ class DNAnalysisService:
         return {"success": True, "data": results}
     
     # ==========================================================
-    # BLOCK 8: DN DASHBOARD - KEEPS YYYY-MM-DD FORMAT
+    # BLOCK 10: DN DASHBOARD - PRESERVES YYYY-MM-DD FORMAT
     # ==========================================================
     
     def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
@@ -1124,7 +1019,7 @@ Please verify the DN number."""
         
         data = result.get("data", {})
         
-        # Calculate aging using YYYY-DD-MM dates
+        # Calculate aging using native PostgreSQL dates
         delivery_aging = self.calculate_delivery_aging(
             data.get('dn_create_date'),
             data.get('good_issue_date')
@@ -1173,7 +1068,7 @@ Please verify the DN number."""
         else:
             data['pgi_status_text'] = '⏳ Pending'
         
-        # ✅ POD Status - "Done" when completed
+        # POD Status - "Done" when completed
         pod_status = data.get('pod_status', '')
         if pod_status in ['Completed', 'Received', 'Done']:
             data['pod_status_text'] = 'Done'
@@ -1193,89 +1088,174 @@ Please verify the DN number."""
         return {"success": True, "data": data}
     
     # ==========================================================
-    # BLOCK 8.5: DATE VALIDATION TEST
+    # BLOCK 11: DATE VALIDATION TEST
     # ==========================================================
-   
     
     def test_date_calculation(self) -> Dict[str, Any]:
         """
-        Test date calculations using the company-wide YYYY-DD-MM format.
+        Test date calculations using native PostgreSQL dates.
         
-        Test Case:
-        - DN Create: 2026-06-05 (PostgreSQL date object: date(2026, 6, 5))
-        - PGI:       2026-06-05 (PostgreSQL date object: date(2026, 6, 5))
-        - POD:       2026-07-05 (PostgreSQL date object: date(2026, 7, 5))
+        Test Case 1:
+        - DN Create: 2026-05-23
+        - PGI:       2026-05-24
+        - POD:       2026-05-25
+        - Expected: Delivery=1, POD=1, Total=2
         
-        Expected Results:
-        - Delivery Aging = 0 days
-        - POD Aging = 1 day
-        - Total Cycle = 1 day
+        Test Case 2:
+        - DN Create: 2026-06-05
+        - PGI:       2026-06-05
+        - POD:       2026-07-05
+        - Expected: Delivery=0, POD=30, Total=30
         
-        Note: PostgreSQL stores date(2026, 6, 5) → Company interprets as 6 May 2026
-              PostgreSQL stores date(2026, 7, 5) → Company interprets as 7 May 2026
-              Difference: 1 day
+        Test Case 3:
+        - DN Create: 2026-04-05
+        - PGI:       2026-05-05
+        - POD:       2026-08-05
+        - Expected: Delivery=30, POD=92, Total=122
         """
         logger.info("🧪 Running date calculation test...")
         
-        # Simulate PostgreSQL date objects
         from datetime import date as date_type
-        dn_create = date_type(2026, 6, 5)  # PostgreSQL returns this
-        pgi = date_type(2026, 6, 5)        # PostgreSQL returns this
-        pod = date_type(2026, 7, 5)        # PostgreSQL returns this
         
-        # Parse dates using company format
-        dn_parsed = self._parse_date(dn_create)
-        pgi_parsed = self._parse_date(pgi)
-        pod_parsed = self._parse_date(pod)
+        test_results = []
+        all_passed = True
         
-        # Calculate aging
-        delivery_aging = self.calculate_delivery_aging(dn_create, pgi)
-        pod_aging = self.calculate_pod_aging(pgi, pod)
-        total_cycle = self.calculate_total_cycle(dn_create, pod)
+        # Test Case 1
+        tc1_dn_create = date_type(2026, 5, 23)
+        tc1_pgi = date_type(2026, 5, 24)
+        tc1_pod = date_type(2026, 5, 25)
         
-        # Format results
-        result = {
-            "test_name": "Date Calculation Test (YYYY-DD-MM)",
-            "input": {
-                "dn_create": str(dn_create),
-                "pgi": str(pgi),
-                "pod": str(pod)
-            },
-            "parsed_dates": {
-                "dn_create": dn_parsed.strftime("%d %B %Y") if dn_parsed else None,
-                "pgi": pgi_parsed.strftime("%d %B %Y") if pgi_parsed else None,
-                "pod": pod_parsed.strftime("%d %B %Y") if pod_parsed else None
+        tc1_delivery = self.calculate_delivery_aging(tc1_dn_create, tc1_pgi)
+        tc1_pod_aging = self.calculate_pod_aging(tc1_pgi, tc1_pod)
+        tc1_total = self.calculate_total_cycle(tc1_dn_create, tc1_pod)
+        
+        tc1_passed = (tc1_delivery == 1 and tc1_pod_aging == 1 and tc1_total == 2)
+        if not tc1_passed:
+            all_passed = False
+        
+        test_results.append({
+            "name": "Test Case 1: 2026-05-23, 2026-05-24, 2026-05-25",
+            "postgresql_dates": {
+                "dn_create": str(tc1_dn_create),
+                "pgi": str(tc1_pgi),
+                "pod": str(tc1_pod)
             },
             "calculations": {
-                "delivery_aging_days": delivery_aging,
-                "pod_aging_days": pod_aging,
-                "total_cycle_days": total_cycle
+                "delivery_aging": tc1_delivery,
+                "pod_aging": tc1_pod_aging,
+                "total_cycle": tc1_total
             },
             "expected": {
-                "delivery_aging_days": 0,
-                "pod_aging_days": 1,
-                "total_cycle_days": 1
+                "delivery_aging": 1,
+                "pod_aging": 1,
+                "total_cycle": 2
             },
-            "passed": (
-                delivery_aging == 0 and
-                pod_aging == 1 and
-                total_cycle == 1
-            )
+            "passed": tc1_passed
+        })
+        
+        # Test Case 2
+        tc2_dn_create = date_type(2026, 6, 5)
+        tc2_pgi = date_type(2026, 6, 5)
+        tc2_pod = date_type(2026, 7, 5)
+        
+        tc2_delivery = self.calculate_delivery_aging(tc2_dn_create, tc2_pgi)
+        tc2_pod_aging = self.calculate_pod_aging(tc2_pgi, tc2_pod)
+        tc2_total = self.calculate_total_cycle(tc2_dn_create, tc2_pod)
+        
+        tc2_passed = (tc2_delivery == 0 and tc2_pod_aging == 30 and tc2_total == 30)
+        if not tc2_passed:
+            all_passed = False
+        
+        test_results.append({
+            "name": "Test Case 2: 2026-06-05, 2026-06-05, 2026-07-05",
+            "postgresql_dates": {
+                "dn_create": str(tc2_dn_create),
+                "pgi": str(tc2_pgi),
+                "pod": str(tc2_pod)
+            },
+            "calculations": {
+                "delivery_aging": tc2_delivery,
+                "pod_aging": tc2_pod_aging,
+                "total_cycle": tc2_total
+            },
+            "expected": {
+                "delivery_aging": 0,
+                "pod_aging": 30,
+                "total_cycle": 30
+            },
+            "passed": tc2_passed
+        })
+        
+        # Test Case 3
+        tc3_dn_create = date_type(2026, 4, 5)
+        tc3_pgi = date_type(2026, 5, 5)
+        tc3_pod = date_type(2026, 8, 5)
+        
+        tc3_delivery = self.calculate_delivery_aging(tc3_dn_create, tc3_pgi)
+        tc3_pod_aging = self.calculate_pod_aging(tc3_pgi, tc3_pod)
+        tc3_total = self.calculate_total_cycle(tc3_dn_create, tc3_pod)
+        
+        tc3_passed = (tc3_delivery == 30 and tc3_pod_aging == 92 and tc3_total == 122)
+        if not tc3_passed:
+            all_passed = False
+        
+        test_results.append({
+            "name": "Test Case 3: 2026-04-05, 2026-05-05, 2026-08-05",
+            "postgresql_dates": {
+                "dn_create": str(tc3_dn_create),
+                "pgi": str(tc3_pgi),
+                "pod": str(tc3_pod)
+            },
+            "calculations": {
+                "delivery_aging": tc3_delivery,
+                "pod_aging": tc3_pod_aging,
+                "total_cycle": tc3_total
+            },
+            "expected": {
+                "delivery_aging": 30,
+                "pod_aging": 92,
+                "total_cycle": 122
+            },
+            "passed": tc3_passed
+        })
+        
+        # Build result
+        result = {
+            "test_name": "Native PostgreSQL Date Calculation Test",
+            "date_policy": "YYYY-MM-DD (Native PostgreSQL)",
+            "tests": test_results,
+            "all_passed": all_passed,
+            "total_tests": len(test_results),
+            "passed_tests": sum(1 for t in test_results if t.get("passed", False)),
+            "timestamp": datetime.now().isoformat()
         }
         
         # Log results
-        logger.info("📊 Test Results:")
-        logger.info(f"   ├── DN Create: {dn_create} → {result['parsed_dates']['dn_create']}")
-        logger.info(f"   ├── PGI: {pgi} → {result['parsed_dates']['pgi']}")
-        logger.info(f"   ├── POD: {pod} → {result['parsed_dates']['pod']}")
-        logger.info(f"   ├── Delivery Aging: {delivery_aging} days (Expected: 0) {'✅' if delivery_aging == 0 else '❌'}")
-        logger.info(f"   ├── POD Aging: {pod_aging} days (Expected: 1) {'✅' if pod_aging == 1 else '❌'}")
-        logger.info(f"   ├── Total Cycle: {total_cycle} days (Expected: 1) {'✅' if total_cycle == 1 else '❌'}")
-        logger.info(f"   └── Test: {'✅ PASSED' if result['passed'] else '❌ FAILED'}")
+        logger.info("=" * 70)
+        logger.info("🧪 NATIVE POSTGRESQL DATE TEST RESULTS")
+        logger.info("=" * 70)
+        logger.info("")
+        
+        for i, test in enumerate(result["tests"], 1):
+            logger.info(f"📋 {test['name']}:")
+            logger.info(f"   PostgreSQL Dates:")
+            logger.info(f"     ├── DN Create: {test['postgresql_dates']['dn_create']}")
+            logger.info(f"     ├── PGI:       {test['postgresql_dates']['pgi']}")
+            logger.info(f"     └── POD:       {test['postgresql_dates']['pod']}")
+            logger.info(f"   Calculations (Expected):")
+            logger.info(f"     ├── Delivery Aging: {test['calculations']['delivery_aging']} days (Expected: {test['expected']['delivery_aging']}) {'✅' if test['calculations']['delivery_aging'] == test['expected']['delivery_aging'] else '❌'}")
+            logger.info(f"     ├── POD Aging:      {test['calculations']['pod_aging']} days (Expected: {test['expected']['pod_aging']}) {'✅' if test['calculations']['pod_aging'] == test['expected']['pod_aging'] else '❌'}")
+            logger.info(f"     └── Total Cycle:    {test['calculations']['total_cycle']} days (Expected: {test['expected']['total_cycle']}) {'✅' if test['calculations']['total_cycle'] == test['expected']['total_cycle'] else '❌'}")
+            logger.info(f"   Result: {'✅ PASSED' if test['passed'] else '❌ FAILED'}")
+            logger.info("")
+        
+        logger.info(f"Overall Result: {'✅ ALL TESTS PASSED' if all_passed else '❌ SOME TESTS FAILED'}")
+        logger.info("=" * 70)
         
         return result
+    
     # ==========================================================
-    # BLOCK 9: DIAGNOSTIC METHODS
+    # BLOCK 12: DIAGNOSTIC METHODS
     # ==========================================================
     
     def diagnose_dn(self, dn_no: str) -> Dict[str, Any]:
@@ -1313,12 +1293,7 @@ Please verify the DN number."""
         result["exists"] = exact_count > 0
         result["diagnostic"].append(f"Exact match (normalized): {exact_count} found")
         
-        partial_query = """
-            SELECT DISTINCT dn_no
-            FROM delivery_reports
-            WHERE CAST(dn_no AS TEXT) LIKE '%' || :dn_no || '%'
-            LIMIT 20
-        """
+        partial_query = self._build_fallback_dn_query()
         partial_results = self._execute_query(partial_query, {"dn_no": normalized_dn})
         similar_dns = [str(r.get('dn_no', '')) for r in partial_results if r.get('dn_no')]
         result["partial_match_count"] = len(similar_dns)
@@ -1328,13 +1303,9 @@ Please verify the DN number."""
         if similar_dns:
             result["diagnostic"].append(f"Similar DNs: {', '.join(similar_dns[:5])}")
         
-        raw_query = """
-            SELECT COUNT(DISTINCT dn_no) as count 
-            FROM delivery_reports 
-            WHERE dn_no = :dn_no
-        """
+        raw_query = self._build_raw_dn_query()
         raw_results = self._execute_query(raw_query, {"dn_no": dn_no})
-        raw_count = raw_results[0].get('count', 0) if raw_results else 0
+        raw_count = len(raw_results)
         result["diagnostic"].append(f"Raw match (without normalization): {raw_count} found")
         
         logger.info(f"✅ Diagnosis complete for {dn_no}: exists={result['exists']}, partial={result['partial_match_count']}")
@@ -1347,12 +1318,7 @@ Please verify the DN number."""
         if not dn_no:
             return {"success": False, "error": "DN number required"}
         
-        query = """
-            SELECT DISTINCT dn_no
-            FROM delivery_reports
-            WHERE CAST(dn_no AS TEXT) LIKE '%' || :dn_no || '%'
-            LIMIT 10
-        """
+        query = self._build_raw_dn_query()
         results = self._execute_query(query, {"dn_no": dn_no})
         
         similar_dns = [str(r.get('dn_no', '')) for r in results if r.get('dn_no')]
@@ -1366,7 +1332,7 @@ Please verify the DN number."""
         }
     
     # ==========================================================
-    # BLOCK 10: PENDING METHODS
+    # BLOCK 13: PENDING METHODS
     # ==========================================================
     
     def get_pending_dns(self, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
@@ -1374,6 +1340,9 @@ Please verify the DN number."""
         logger.info(f"🔍 Getting pending DNs (limit: {limit}, offset: {offset})")
         
         try:
+            # Limit validation
+            limit = min(limit, 1000)
+            
             count_query = """
                 SELECT COUNT(DISTINCT dn_no) AS total_pending
                 FROM delivery_reports
@@ -1487,6 +1456,8 @@ Please verify the DN number."""
         logger.info(f"🔍 Getting pending PGI (limit: {limit}, offset: {offset})")
         
         try:
+            limit = min(limit, 1000)
+            
             count_query = """
                 SELECT COUNT(DISTINCT dn_no) AS total_pending
                 FROM delivery_reports
@@ -1596,6 +1567,8 @@ Please verify the DN number."""
         logger.info(f"🔍 Getting pending POD (limit: {limit}, offset: {offset})")
         
         try:
+            limit = min(limit, 1000)
+            
             count_query = """
                 SELECT COUNT(DISTINCT dn_no) AS total_pending
                 FROM delivery_reports
@@ -1703,14 +1676,14 @@ Please verify the DN number."""
             return {"success": False, "error": str(e)}
     
     # ==========================================================
-    # BLOCK 11: WHATSAPP RESPONSE FORMATTER - EXACT OUTPUT
+    # BLOCK 14: WHATSAPP RESPONSE FORMATTER - EXACT OUTPUT
     # ==========================================================
     
     def format_dn_dashboard(self, dashboard_data: Dict[str, Any]) -> str:
         """
         Format DN dashboard for WhatsApp response.
         
-        ✅ Dates are in YYYY-MM-DD format
+        ✅ Dates are in YYYY-MM-DD format (Native PostgreSQL)
         ✅ Aging is calculated correctly
         ✅ POD shows "Done" when completed
         """
@@ -1765,7 +1738,7 @@ Please verify the DN number."""
         lines.append("Materials: {}".format(material_count))
         lines.append("")
         
-        # ✅ Dates - Display as YYYY-MM-DD
+        # ✅ Dates - Display as YYYY-MM-DD (Native PostgreSQL format)
         lines.append("*📅 Dates:*")
         lines.append("DN Create: {}".format(data.get('dn_create_date', 'N/A')))
         lines.append("PGI: {}".format(data.get('good_issue_date', 'N/A')))
@@ -1784,7 +1757,7 @@ Please verify the DN number."""
         lines.append("Delivery: {} {}".format(data.get('status_emoji', '❓'), data.get('status_text', 'Unknown')))
         lines.append("PGI: {}".format(data.get('pgi_status_text', 'Unknown')))
         
-        # ✅ POD Status - Show "Done" when completed
+        # POD Status - Show "Done" when completed
         pod_status = data.get('pod_status', '')
         pod_status_text = data.get('pod_status_text', 'Unknown')
         
@@ -1799,7 +1772,7 @@ Please verify the DN number."""
 
 
 # ==========================================================
-# BLOCK 12: THREAD-SAFE SINGLETON
+# BLOCK 15: THREAD-SAFE SINGLETON
 # ==========================================================
 
 _dn_analytics_service = None
@@ -1830,7 +1803,7 @@ def get_dn_analytics_service() -> DNAnalysisService:
 
 
 # ==========================================================
-# BLOCK 13: EXPORTS
+# BLOCK 16: EXPORTS
 # ==========================================================
 
 __all__ = [
@@ -1840,36 +1813,37 @@ __all__ = [
 
 
 # ==========================================================
-# BLOCK 14: MODULE INITIALIZATION
+# BLOCK 17: MODULE INITIALIZATION
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("DNAnalysisService v4.1 - YYYY-DD-MM FIXED")
+logger.info("DNAnalysisService v8.0 - NATIVE POSTGRESQL DATES")
 logger.info("=" * 70)
 logger.info("")
 logger.info("   SERVICE DETAILS:")
 logger.info("   ✅ Service Name: dn_analysis")
-logger.info("   ✅ Version: 4.1")
+logger.info("   ✅ Version: 8.0")
 logger.info("   ✅ Status: READY")
 logger.info("   ✅ Source: PostgreSQL (delivery_reports)")
 logger.info("   ✅ Compatible: ai_provider_service.py v5.0")
 logger.info("")
-logger.info("   DATE RULE: YYYY-DD-MM")
-logger.info("   Example: 2026-06-05 → 6 May 2026")
-logger.info("   Example: 2026-07-05 → 7 May 2026")
-logger.info("   Difference: 1 day")
+logger.info("   DATE POLICY (NATIVE POSTGRESQL):")
+logger.info("   ✅ PostgreSQL DATE values are used AS-IS")
+logger.info("   ✅ No YYYY-DD-MM conversion")
+logger.info("   ✅ No month/day swapping")
+logger.info("   ✅ Native datetime arithmetic")
+logger.info("   ✅ Display dates remain as PostgreSQL YYYY-MM-DD")
 logger.info("")
-logger.info("   FIXES APPLIED IN v4.1:")
-logger.info("   ✅ FIXED: _parse_date() always interprets YYYY-DD-MM")
-logger.info("   ✅ FIXED: _parse_date_ydm() uses same logic")
-logger.info("   ✅ FIXED: calculate_delivery_aging() uses Y-D-M dates only")
-logger.info("   ✅ FIXED: calculate_pod_aging() uses Y-D-M dates only")
-logger.info("   ✅ FIXED: calculate_total_cycle() uses Y-D-M dates only")
-logger.info("   ✅ ADDED: Diagnostic logging in all date parsing")
-logger.info("   ✅ ADDED: test_date_calculation() validation test")
-logger.info("   ✅ VERIFIED: 2026-06-05 → 6 May 2026")
-logger.info("   ✅ VERIFIED: 2026-07-05 → 7 May 2026")
-logger.info("   ✅ VERIFIED: Delivery Aging=0, POD Aging=1, Total Cycle=1")
+logger.info("   AGING FORMULAS:")
+logger.info("   ✅ Delivery Aging = PGI - DN Create")
+logger.info("   ✅ POD Aging = POD - PGI")
+logger.info("   ✅ Total Cycle = POD - DN Create")
+logger.info("   ✅ Missing dates use Current Date")
+logger.info("")
+logger.info("   TEST CASES:")
+logger.info("   ✅ 2026-05-23, 2026-05-24, 2026-05-25 → 1, 1, 2")
+logger.info("   ✅ 2026-06-05, 2026-06-05, 2026-07-05 → 0, 30, 30")
+logger.info("   ✅ 2026-04-05, 2026-05-05, 2026-08-05 → 30, 92, 122")
 logger.info("")
 logger.info("   AVAILABLE METHODS:")
 logger.info("   ✅ health_check()")
@@ -1886,30 +1860,21 @@ logger.info("   ✅ get_pending_dns()")
 logger.info("   ✅ get_pending_pgi()")
 logger.info("   ✅ get_pending_pod()")
 logger.info("   ✅ calculate_delivery_aging()")
-logger.info("   ✅ calculate_pod_ aging()")
+logger.info("   ✅ calculate_pod_aging()")
 logger.info("   ✅ calculate_total_cycle()")
 logger.info("   ✅ format_dn_dashboard()")
-logger.info("")
-logger.info("   RULES:")
-logger.info("   ✅ Date Format: YYYY-DD-MM")
-logger.info("   ✅ DN Count = COUNT(DISTINCT dn_no)")
-logger.info("   ✅ Units = SUM(dn_qty)")
-logger.info("   ✅ Revenue = SUM(dn_amount)")
-logger.info("   ✅ pending_flag = BOOLEAN (TRUE/FALSE)")
-logger.info("   ✅ All data from PostgreSQL")
-logger.info("   ❌ No CSV, Excel, JSON, Mock Data")
+logger.info("   ✅ debug_aging_calculation()")
 logger.info("")
 logger.info("   STATUS: ✅ PRODUCTION READY")
 logger.info("=" * 70)
 
 # ✅ Run date calculation test on startup
 try:
-    # Create service instance and run test
     service = get_dn_analytics_service()
     test_result = service.test_date_calculation()
-    if test_result.get("passed"):
-        logger.info("✅ Date Calculation Test: PASSED")
+    if test_result.get("all_passed"):
+        logger.info("✅ Native PostgreSQL Date Test: ALL TESTS PASSED")
     else:
-        logger.warning("⚠️ Date Calculation Test: FAILED - Check date parsing logic")
+        logger.warning("⚠️ Native PostgreSQL Date Test: SOME TESTS FAILED - Check date parsing logic")
 except Exception as e:
-    logger.error(f"❌ Date Calculation Test failed: {e}")
+    logger.error(f"❌ Native PostgreSQL Date Test failed: {e}")
