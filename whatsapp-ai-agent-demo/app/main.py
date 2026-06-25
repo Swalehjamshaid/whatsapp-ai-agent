@@ -1,13 +1,16 @@
 # ==========================================================
-# FILE: app/main.py (ENTERPRISE v16.1 - DASHBOARD ROOT)
+# FILE: app/main.py (ENTERPRISE v16.2 - UPLOAD INTEGRATION)
 # PROJECT: AI WhatsApp Customer Service Agent
 # ==========================================================
-# IMPROVEMENTS v16.1:
-# - ✅ ADDED: Dashboard rendering at root "/"
-# - ✅ ADDED: Jinja2Templates for dashboard.html
+# IMPROVEMENTS v16.2:
+# - ✅ ADDED: Upload Router registration
+# - ✅ ADDED: POST /upload/excel endpoint
+# - ✅ ADDED: GET /upload/status endpoint
+# - ✅ ADDED: GET /upload/statistics endpoint
+# - ✅ ADDED: GET /upload/batches/recent endpoint
 # - ✅ PRESERVED: All existing functionality
 # - ✅ PRESERVED: All webhook, AI, analytics services
-# - ✅ All v16.0 improvements preserved
+# - ✅ All v16.1 improvements preserved
 # ==========================================================
 
 from __future__ import annotations
@@ -65,7 +68,7 @@ sys.excepthook = handle_uncaught_exception
 # ==========================================================
 
 print("=" * 60)
-print("🚀 RAILWAY DEPLOYMENT STARTING v16.1")
+print("🚀 RAILWAY DEPLOYMENT STARTING v16.2")
 print(f"TIME: {datetime.now().isoformat()}")
 print("=" * 60)
 
@@ -299,15 +302,16 @@ print(f"✅ PRE-FLIGHT RESULT: {preflight_result['status']}")
 def initialize_all_services_sync():
     """Initialize all webhook and AI services - UPDATED for new architecture"""
     print("=" * 60)
-    print("🔧 INITIALIZING ALL SERVICES (SYNC - v16.1)")
+    print("🔧 INITIALIZING ALL SERVICES (SYNC - v16.2)")
     print("=" * 60)
     
     results = {
         "webhook_services": {"loaded": False, "details": {}},
         "ai_services": {"loaded": False, "details": {}},
         "database": {"loaded": DATABASE_AVAILABLE},
+        "upload_services": {"loaded": False, "details": {}},
         "new_architecture": True,
-        "v16_features": ["built_in_intent_detection", "no_ai_query_service", "dashboard_root"]
+        "v16_features": ["built_in_intent_detection", "no_ai_query_service", "dashboard_root", "upload_integration"]
     }
     
     # Initialize Webhook Services
@@ -410,26 +414,47 @@ def initialize_all_services_sync():
         logger.error(f"❌ DN Analytics Service failed: {e}")
         results["ai_services"]["details"]["dn_analytics_error"] = str(e)
     
+    # ==========================================================
+    # Upload Service (Check if available)
+    # ==========================================================
+    
+    try:
+        from app.routes.upload import router as upload_router
+        results["upload_services"]["router_available"] = upload_router is not None
+        results["upload_services"]["loaded"] = True
+        logger.info(f"✅ Upload Router: Available")
+        if upload_router:
+            logger.info(f"   ├── Upload router has {len(upload_router.routes)} routes")
+    except ImportError as e:
+        logger.warning(f"⚠️ Upload Router not found: {e}")
+        results["upload_services"]["loaded"] = False
+        results["upload_services"]["error"] = str(e)
+    except Exception as e:
+        logger.error(f"❌ Upload Router check failed: {e}")
+        results["upload_services"]["loaded"] = False
+        results["upload_services"]["error"] = str(e)
+    
     print("=" * 60)
     logger.info(f"✅ Service Initialization Complete")
     logger.info(f"   Webhook Services: {results['webhook_services']['loaded']}")
     logger.info(f"   AI Services: {results['ai_services']['loaded']}")
+    logger.info(f"   Upload Services: {results['upload_services']['loaded']}")
     logger.info(f"   Database: {results['database']['loaded']}")
-    logger.info(f"   Architecture: v16.1 (Built-in Intent Detection + Dashboard Root)")
+    logger.info(f"   Architecture: v16.2 (Built-in Intent Detection + Dashboard Root + Upload Integration)")
     print("=" * 60)
     
     return results
 
 
 # ==========================================================
-# BLOCK 11: LIFESPAN HANDLER (UPDATED - v16.1)
+# BLOCK 11: LIFESPAN HANDLER (UPDATED - v16.2)
 # ==========================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Main lifespan handler - initializes services without asyncio.run()"""
     print("=" * 60)
-    print("🚀 LIFESPAN STARTED - INITIALIZING SERVICES v16.1")
+    print("🚀 LIFESPAN STARTED - INITIALIZING SERVICES v16.2")
     print("=" * 60)
     
     STARTUP_DIAGNOSTICS["startup_time"] = datetime.now().isoformat()
@@ -440,9 +465,10 @@ async def lifespan(app: FastAPI):
     
     try:
         logger.info("=" * 80)
-        logger.info("🤖 AI WHATSAPP AGENT STARTING v16.1")
+        logger.info("🤖 AI WHATSAPP AGENT STARTING v16.2")
         logger.info("📌 NEW ARCHITECTURE: Built-in Intent Detection")
         logger.info("📌 NEW FEATURE: Dashboard at root '/'")
+        logger.info("📌 NEW FEATURE: Upload Integration")
         logger.info("=" * 80)
         
         # ====================================================
@@ -482,7 +508,7 @@ async def lifespan(app: FastAPI):
         logger.info("=" * 80)
         logger.info(f"✅ Application startup complete in {startup_duration:.2f}s")
         logger.info(f"   Services Initialized: {init_results.get('webhook_services', {}).get('loaded', False)}")
-        logger.info(f"   Architecture: v16.1 (Built-in Intent Detection + Dashboard Root)")
+        logger.info(f"   Architecture: v16.2 (Built-in Intent Detection + Dashboard Root + Upload Integration)")
         logger.info("🚀 APPLICATION STARTED SUCCESSFULLY")
         logger.info("📡 READY FOR TRAFFIC")
         logger.info("=" * 80)
@@ -536,7 +562,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="AI WhatsApp Logistics Assistant",
     description="Enterprise Logistics AI Platform - WhatsApp Integration",
-    version="16.1.0",
+    version="16.2.0",
     docs_url="/api/docs" if config.ENVIRONMENT != "production" else None,
     redoc_url="/api/redoc" if config.ENVIRONMENT != "production" else None,
     openapi_url="/api/openapi.json" if config.ENVIRONMENT != "production" else None,
@@ -545,7 +571,7 @@ app = FastAPI(
 
 
 # ==========================================================
-# BLOCK 13: TEMPLATES SETUP (NEW)
+# BLOCK 13: TEMPLATES SETUP
 # ==========================================================
 
 # Initialize Jinja2Templates for dashboard rendering
@@ -559,7 +585,80 @@ logger.info("✅ Jinja2Templates initialized for dashboard")
 
 
 # ==========================================================
-# BLOCK 14: DEBUG AND TEST ENDPOINTS
+# BLOCK 14: UPLOAD ROUTER REGISTRATION (NEW)
+# ==========================================================
+
+print("=" * 60)
+print("🔧 REGISTERING UPLOAD ROUTER - v16.2")
+print("=" * 60)
+
+upload_router = None
+upload_import_success = False
+
+try:
+    print("Attempt 1: Importing upload router from app.routes.upload")
+    from app.routes.upload import router as upload_router
+    upload_import_success = True
+    print(f"✅ Upload router imported successfully: {upload_router is not None}")
+    if upload_router:
+        print(f"   ├── Router has {len(upload_router.routes)} routes")
+        for route in upload_router.routes:
+            print(f"   ├── {route.path} ({list(route.methods) if hasattr(route, 'methods') else 'N/A'})")
+except ImportError as e:
+    print(f"❌ Upload router import failed (ImportError): {e}")
+    upload_router = None
+except Exception as e:
+    print(f"❌ Upload router import failed: {e}")
+    traceback.print_exc()
+    upload_router = None
+
+# Register upload router if available
+if upload_router is not None:
+    try:
+        # Check if already registered to avoid duplication
+        existing_upload_routes = [r for r in app.routes if "/upload" in r.path]
+        if existing_upload_routes:
+            print(f"   ├── Upload routes already exist: {len(existing_upload_routes)}")
+            print(f"   ├── Skipping duplicate registration")
+        else:
+            app.include_router(upload_router)
+            print(f"✅ Upload router registered successfully via app.include_router()")
+            print(f"   ├── Router has {len(upload_router.routes)} routes")
+            
+            # Verify registration
+            upload_routes = [r for r in app.routes if "/upload" in r.path]
+            print(f"   ├── Routes containing '/upload': {len(upload_routes)}")
+            for route in upload_routes:
+                print(f"   ├──   {route.path} ({list(route.methods) if hasattr(route, 'methods') else 'N/A'})")
+            
+            logger.success("✅ Upload router registered (v16.2 integrated)")
+            
+            # Log specific upload endpoints
+            for route in upload_routes:
+                if route.path == "/upload/excel":
+                    print(f"   ├── ✅ POST /upload/excel - Available")
+                elif route.path == "/upload/status":
+                    print(f"   ├── ✅ GET /upload/status - Available")
+                elif route.path == "/upload/statistics":
+                    print(f"   ├── ✅ GET /upload/statistics - Available")
+                elif route.path == "/upload/batches/recent":
+                    print(f"   ├── ✅ GET /upload/batches/recent - Available")
+        
+    except Exception as e:
+        print(f"❌ Upload router registration failed: {e}")
+        traceback.print_exc()
+        logger.error(f"❌ Upload router registration failed: {e}")
+else:
+    print("⚠️ Upload router is None - cannot register")
+    logger.warning("⚠️ Upload router not available")
+
+print("=" * 60)
+print("✅ UPLOAD REGISTRATION COMPLETE")
+print("=" * 60)
+
+
+# ==========================================================
+# BLOCK 15: DEBUG AND TEST ENDPOINTS
 # ==========================================================
 
 @app.get("/raw-ping")
@@ -580,10 +679,10 @@ async def debug_health():
     print("🔔 /debug/health HIT")
     return {
         "status": "alive",
-        "version": "16.1.0",
+        "version": "16.2.0",
         "timestamp": datetime.now().isoformat(),
         "preflight": preflight_result["status"],
-        "architecture": "v16.1 (Built-in Intent Detection + Dashboard Root)"
+        "architecture": "v16.2 (Built-in Intent Detection + Dashboard Root + Upload Integration)"
     }
 
 @app.get("/debug/routes")
@@ -599,7 +698,8 @@ async def debug_routes():
     return {
         "total_routes": len(routes),
         "routes": routes[:20],
-        "webhook_registered": any("/webhook" in r["path"] for r in routes)
+        "webhook_registered": any("/webhook" in r["path"] for r in routes),
+        "upload_registered": any("/upload" in r["path"] for r in routes)
     }
 
 @app.get("/debug/env")
@@ -614,7 +714,8 @@ async def debug_env():
         "groq_configured": bool(os.getenv("GROQ_API_KEY")),
         "cache_ttl": CACHE_TTL,
         "chat_service_available": CHAT_SERVICE_AVAILABLE,
-        "architecture": "v16.1 (Built-in Intent Detection + Dashboard Root)"
+        "upload_router_available": upload_router is not None,
+        "architecture": "v16.2 (Built-in Intent Detection + Dashboard Root + Upload Integration)"
     }
 
 @app.get("/debug/service-status")
@@ -625,7 +726,8 @@ async def debug_service_status():
         return {
             "services_initialized": app.state.services_initialized,
             "init_results": app.state.init_results if hasattr(app.state, 'init_results') else None,
-            "architecture": "v16.1 (Built-in Intent Detection + Dashboard Root)",
+            "upload_router_registered": upload_router is not None,
+            "architecture": "v16.2 (Built-in Intent Detection + Dashboard Root + Upload Integration)",
             "timestamp": datetime.now().isoformat()
         }
     return {
@@ -636,7 +738,7 @@ async def debug_service_status():
 
 
 # ==========================================================
-# BLOCK 15: FORCE LOAD SERVICES ENDPOINT
+# BLOCK 16: FORCE LOAD SERVICES ENDPOINT
 # ==========================================================
 
 @app.get("/force-load-services")
@@ -662,7 +764,7 @@ async def force_load_services():
 
 
 # ==========================================================
-# BLOCK 16: WEBHOOK INTEGRATION ENDPOINT
+# BLOCK 17: WEBHOOK INTEGRATION ENDPOINT
 # ==========================================================
 
 @app.get("/webhook-stats")
@@ -694,7 +796,27 @@ async def webhook_integration_stats():
 
 
 # ==========================================================
-# BLOCK 17: ROOT ROUTE - DASHBOARD (UPDATED)
+# BLOCK 18: UPLOAD STATUS ENDPOINT (NEW - Direct)
+# ==========================================================
+
+@app.get("/upload/status-direct")
+async def upload_status_direct():
+    """Direct upload status endpoint - checks if upload router is registered"""
+    print("🔔 /upload/status-direct HIT")
+    return {
+        "upload_router_registered": upload_router is not None,
+        "upload_import_success": upload_import_success,
+        "upload_routes": [
+            {"path": r.path, "methods": list(r.methods) if hasattr(r, "methods") else []}
+            for r in app.routes if "/upload" in r.path
+        ],
+        "architecture": "v16.2",
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+# ==========================================================
+# BLOCK 19: ROOT ROUTE - DASHBOARD
 # ==========================================================
 
 @app.get("/")
@@ -738,17 +860,20 @@ async def root(request: Request):
                     <h1>🤖 AI WhatsApp Logistics Assistant</h1>
                     <div class="status">
                         <h2>✅ System Running</h2>
-                        <p>Version: 16.1.0</p>
-                        <p>Architecture: Built-in Intent Detection + Dashboard Root</p>
+                        <p>Version: 16.2.0</p>
+                        <p>Architecture: Built-in Intent Detection + Dashboard Root + Upload Integration</p>
                     </div>
                     <div class="info">
                         <h3>📌 Available Endpoints</h3>
                         <ul>
                             <li><span class="endpoint">/webhook</span> - WhatsApp webhook</li>
+                            <li><span class="endpoint">/upload/excel</span> - Excel Upload</li>
+                            <li><span class="endpoint">/upload/status</span> - Upload Status</li>
+                            <li><span class="endpoint">/upload/statistics</span> - Upload Statistics</li>
+                            <li><span class="endpoint">/upload/batches/recent</span> - Recent Batches</li>
                             <li><span class="endpoint">/health</span> - Health check</li>
                             <li><span class="endpoint">/alive</span> - Alive check</li>
                             <li><span class="endpoint">/api/docs</span> - API Documentation</li>
-                            <li><span class="endpoint">/debug/health</span> - Debug health</li>
                         </ul>
                         <p><em>Dashboard.html not found. Please create app/templates/dashboard.html</em></p>
                     </div>
@@ -766,7 +891,7 @@ async def root(request: Request):
 
 
 # ==========================================================
-# BLOCK 18: DASHBOARD ENDPOINT (NEW)
+# BLOCK 20: DASHBOARD ENDPOINT
 # ==========================================================
 
 @app.get("/dashboard")
@@ -803,7 +928,7 @@ async def dashboard(request: Request):
                     <h1>📊 Dashboard</h1>
                     <div class="info">
                         <p>Dashboard.html not found. Please create <code>app/templates/dashboard.html</code></p>
-                        <p>Version: 16.1.0</p>
+                        <p>Version: 16.2.0</p>
                     </div>
                 </body>
                 </html>
@@ -817,7 +942,7 @@ async def dashboard(request: Request):
 
 
 # ==========================================================
-# BLOCK 19: SIMPLE ENDPOINTS (Preserved)
+# BLOCK 21: SIMPLE ENDPOINTS (Preserved)
 # ==========================================================
 
 @app.get("/alive")
@@ -838,11 +963,12 @@ async def health():
     print("🔔 /health HIT")
     return {
         "status": "healthy",
-        "version": "16.1.0",
+        "version": "16.2.0",
         "timestamp": datetime.now().isoformat(),
         "preflight": preflight_result["status"],
         "services_initialized": getattr(app.state, 'services_initialized', False),
-        "architecture": "v16.1 (Built-in Intent Detection + Dashboard Root)"
+        "upload_router_registered": upload_router is not None,
+        "architecture": "v16.2 (Built-in Intent Detection + Dashboard Root + Upload Integration)"
     }
 
 @app.get("/liveness")
@@ -860,19 +986,20 @@ async def startup_check():
         "environment": config.ENVIRONMENT,
         "cache_ttl": CACHE_TTL,
         "services_initialized": getattr(app.state, 'services_initialized', False),
+        "upload_router_registered": upload_router is not None,
         "preflight_status": preflight_result["status"],
         "status": "running",
-        "version": "16.1.0",
-        "architecture": "v16.1 (Built-in Intent Detection + Dashboard Root)"
+        "version": "16.2.0",
+        "architecture": "v16.2 (Built-in Intent Detection + Dashboard Root + Upload Integration)"
     }
 
 
 # ==========================================================
-# BLOCK 20: WEBHOOK ROUTER REGISTRATION (UPDATED)
+# BLOCK 22: WEBHOOK ROUTER REGISTRATION
 # ==========================================================
 
 print("=" * 60)
-print("🔧 REGISTERING WEBHOOK ROUTER - v16.1")
+print("🔧 REGISTERING WEBHOOK ROUTER - v16.2")
 print("=" * 60)
 
 # Attempt 1: Try standard import
@@ -921,7 +1048,7 @@ if webhook_router is not None:
         for route in webhook_routes:
             print(f"   ├──   {route.path} ({list(route.methods) if hasattr(route, 'methods') else 'N/A'})")
         
-        logger.success("✅ Webhook router registered (v16.1 integrated)")
+        logger.success("✅ Webhook router registered (v16.2 integrated)")
         
     except Exception as e:
         print(f"❌ Router registration failed: {e}")
@@ -930,7 +1057,7 @@ if webhook_router is not None:
 
 
 # ==========================================================
-# BLOCK 21: FALLBACK WEBHOOK ENDPOINTS (Preserved)
+# BLOCK 23: FALLBACK WEBHOOK ENDPOINTS (Preserved)
 # ==========================================================
 
 if webhook_router is None:
@@ -1010,7 +1137,7 @@ if webhook_router is None:
                     message_text.strip(),
                     phone_number
                 )
-                print(f"✅ Fallback: AI processing queued via v16.1 provider")
+                print(f"✅ Fallback: AI processing queued via v16.2 provider")
             except Exception as e:
                 print(f"❌ Fallback AI processing error: {e}")
                 # Still return 200 to Meta
@@ -1024,7 +1151,7 @@ if webhook_router is None:
     
     print("✅ Fallback webhook endpoints created")
     print("   ├── GET /webhook - Verification endpoint")
-    print("   ├── POST /webhook - Message handler (v16.1)")
+    print("   ├── POST /webhook - Message handler (v16.2)")
 
 print("=" * 60)
 print("✅ WEBHOOK REGISTRATION COMPLETE")
@@ -1032,7 +1159,7 @@ print("=" * 60)
 
 
 # ==========================================================
-# BLOCK 22: GLOBAL EXCEPTION HANDLER
+# BLOCK 24: GLOBAL EXCEPTION HANDLER
 # ==========================================================
 
 @app.exception_handler(Exception)
@@ -1060,7 +1187,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # ==========================================================
-# BLOCK 23: CORS CONFIGURATION (Preserved)
+# BLOCK 25: CORS CONFIGURATION (Preserved)
 # ==========================================================
 
 FRONTEND_URL = getattr(config, 'FRONTEND_URL', os.getenv("FRONTEND_URL", "http://localhost:3000"))
@@ -1085,7 +1212,7 @@ else:
 
 
 # ==========================================================
-# BLOCK 24: RATE LIMITER (Preserved)
+# BLOCK 26: RATE LIMITER (Preserved)
 # ==========================================================
 
 limiter = Limiter(key_func=get_remote_address, default_limits=["5 per second"])
@@ -1095,7 +1222,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 # ==========================================================
-# BLOCK 25: CRASH CLASSIFICATION (Preserved)
+# BLOCK 27: CRASH CLASSIFICATION (Preserved)
 # ==========================================================
 
 class CrashType:
@@ -1137,7 +1264,7 @@ def classify_crash(exc: Exception) -> str:
 
 
 # ==========================================================
-# BLOCK 26: FILE RANKING SYSTEM (Preserved)
+# BLOCK 28: FILE RANKING SYSTEM (Preserved)
 # ==========================================================
 
 CRASH_SCORE = defaultdict(int)
@@ -1151,7 +1278,7 @@ def get_top_crash_files(limit: int = 5) -> List[Tuple[str, int]]:
 
 
 # ==========================================================
-# BLOCK 27: IMPORT DEPENDENCY SCANNER (Preserved)
+# BLOCK 29: IMPORT DEPENDENCY SCANNER (Preserved)
 # ==========================================================
 
 IMPORT_TREE = {}
@@ -1200,7 +1327,7 @@ def print_import_tree(module_name: str, indent: str = ""):
 
 
 # ==========================================================
-# BLOCK 28: CONSTRUCTOR STEP-BY-STEP TRACKING (Preserved)
+# BLOCK 30: CONSTRUCTOR STEP-BY-STEP TRACKING (Preserved)
 # ==========================================================
 
 class ConstructorTracker:
@@ -1237,14 +1364,14 @@ class ConstructorTracker:
 
 
 # ==========================================================
-# BLOCK 29: RUNTIME DIAGNOSTICS (Preserved)
+# BLOCK 31: RUNTIME DIAGNOSTICS (Preserved)
 # ==========================================================
 
 LAST_REQUEST_ERROR = None
 
 
 # ==========================================================
-# BLOCK 30: CRASH LOCATION FUNCTIONS (Preserved)
+# BLOCK 32: CRASH LOCATION FUNCTIONS (Preserved)
 # ==========================================================
 
 def crash_location(exc: Exception) -> Optional[Dict[str, Any]]:
@@ -1281,7 +1408,7 @@ def full_crash_analysis(exc: Exception, max_frames: int = 10) -> List[Dict[str, 
 
 
 # ==========================================================
-# BLOCK 31: ROOT CAUSE STORAGE (Preserved)
+# BLOCK 33: ROOT CAUSE STORAGE (Preserved)
 # ==========================================================
 
 _ROOT_CAUSE = None
@@ -1321,7 +1448,7 @@ def get_root_cause() -> Optional[Dict[str, Any]]:
 
 
 # ==========================================================
-# BLOCK 32: CRASH HISTORY (Preserved)
+# BLOCK 34: CRASH HISTORY (Preserved)
 # ==========================================================
 
 MAX_CRASH_HISTORY = 100
@@ -1370,7 +1497,7 @@ def write_crash_report(exc: Exception, stage: str = "unknown"):
 
 
 # ==========================================================
-# BLOCK 33: MODULE FINGERPRINTING (Preserved)
+# BLOCK 35: MODULE FINGERPRINTING (Preserved)
 # ==========================================================
 
 MODULE_FINGERPRINTS = {}
@@ -1388,7 +1515,7 @@ def update_module_fingerprint(module_name: str, status: str, import_time: float 
 
 
 # ==========================================================
-# BLOCK 34: ENHANCED IMPORT DIAGNOSTICS (Preserved)
+# BLOCK 36: ENHANCED IMPORT DIAGNOSTICS (Preserved)
 # ==========================================================
 
 def diagnose_import(module_name: str, use_cache: bool = True):
@@ -1424,7 +1551,7 @@ def diagnose_import(module_name: str, use_cache: bool = True):
 
 
 # ==========================================================
-# BLOCK 35: ENHANCED CONSTRUCTOR DIAGNOSTICS (Preserved)
+# BLOCK 37: ENHANCED CONSTRUCTOR DIAGNOSTICS (Preserved)
 # ==========================================================
 
 def diagnose_constructor(service_name: str, constructor_func, *args, **kwargs):
@@ -1453,7 +1580,7 @@ def diagnose_constructor(service_name: str, constructor_func, *args, **kwargs):
 
 
 # ==========================================================
-# BLOCK 36: SERVICE FILES TO DIAGNOSE (Preserved)
+# BLOCK 38: SERVICE FILES TO DIAGNOSE (Preserved)
 # ==========================================================
 
 ALL_FILES_TO_DIAGNOSE = [
@@ -1472,7 +1599,7 @@ ALL_FILES_TO_DIAGNOSE = [
 
 
 # ==========================================================
-# BLOCK 37: STARTUP DIAGNOSTICS REGISTRY (Preserved)
+# BLOCK 39: STARTUP DIAGNOSTICS REGISTRY (Preserved)
 # ==========================================================
 
 STARTUP_DIAGNOSTICS = {
@@ -1488,7 +1615,7 @@ STARTUP_DIAGNOSTICS = {
 
 
 # ==========================================================
-# BLOCK 38: THREAD-SAFE METRICS (Preserved)
+# BLOCK 40: THREAD-SAFE METRICS (Preserved)
 # ==========================================================
 
 class ThreadSafeMetrics:
@@ -1532,7 +1659,7 @@ request_metrics = ThreadSafeMetrics()
 
 
 # ==========================================================
-# BLOCK 39: PROMETHEUS METRICS (Preserved)
+# BLOCK 41: PROMETHEUS METRICS (Preserved)
 # ==========================================================
 
 whatsapp_messages_total = Counter('whatsapp_messages_total', 'Total WhatsApp messages', ['type'])
@@ -1543,7 +1670,7 @@ active_requests = Gauge('active_requests', 'Active requests')
 
 
 # ==========================================================
-# BLOCK 40: SERVICE REGISTRY (Preserved)
+# BLOCK 42: SERVICE REGISTRY (Preserved)
 # ==========================================================
 
 class ServiceRegistry:
@@ -1565,7 +1692,7 @@ class ServiceRegistry:
 
 
 # ==========================================================
-# BLOCK 41: HELPER FUNCTIONS (Preserved)
+# BLOCK 43: HELPER FUNCTIONS (Preserved)
 # ==========================================================
 
 def diagnose_service(service_name: str, func, *args, **kwargs):
@@ -1591,14 +1718,14 @@ def print_dependency_tree():
 ║                      DEPENDENCY TREE                             ║
 ╠══════════════════════════════════════════════════════════════════╣
 ║                                                                  ║
-║  main.py (v16.1 - DASHBOARD ROOT)                               ║
+║  main.py (v16.2 - UPLOAD INTEGRATION)                           ║
 ║   ├── database.py (✅ IMPORTED AT MODULE LEVEL)                 ║
 ║   ├── config.py                                                  ║
 ║   ├── models.py                                                  ║
 ║   │                                                              ║
 ║   ├── routes/                                                    ║
 ║   │    ├── webhook.py (✅ FORCED REGISTRATION)                  ║
-║   │    ├── upload.py                                             ║
+║   │    ├── upload.py (✅ REGISTERED)                            ║
 ║   │    ├── admin.py                                              ║
 ║   │    ├── health.py                                             ║
 ║   │    └── logistics.py                                          ║
@@ -1618,12 +1745,15 @@ def print_dependency_tree():
 ║        └── whatsapp_service.py                                   ║
 ║                                                                  ║
 ╠══════════════════════════════════════════════════════════════════╣
-║  CRITICAL FIXES v16.1:                                           ║
-║  ✅ ADDED: Dashboard rendering at root "/"                      ║
-║  ✅ ADDED: Jinja2Templates for dashboard.html                   ║
+║  CRITICAL FIXES v16.2:                                           ║
+║  ✅ ADDED: Upload Router registration                            ║
+║  ✅ ADDED: POST /upload/excel endpoint                           ║
+║  ✅ ADDED: GET /upload/status endpoint                           ║
+║  ✅ ADDED: GET /upload/statistics endpoint                       ║
+║  ✅ ADDED: GET /upload/batches/recent endpoint                   ║
 ║  ✅ PRESERVED: All existing functionality                        ║
 ║  ✅ PRESERVED: All webhook, AI, analytics services              ║
-║  ✅ All v16.0 improvements preserved                             ║
+║  ✅ All v16.1 improvements preserved                             ║
 ║  ✅ WhatsApp integration 100% protected                          ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
@@ -1631,14 +1761,14 @@ def print_dependency_tree():
 
 
 # ==========================================================
-# BLOCK 42: CACHE (Preserved)
+# BLOCK 44: CACHE (Preserved)
 # ==========================================================
 
 dashboard_cache = TTLCache(maxsize=100, ttl=CACHE_TTL)
 
 
 # ==========================================================
-# BLOCK 43: DIAGNOSTICS ENDPOINTS (Preserved)
+# BLOCK 45: DIAGNOSTICS ENDPOINTS (Preserved)
 # ==========================================================
 
 @app.get("/root-cause", tags=["Diagnostics"])
@@ -1668,7 +1798,8 @@ async def railway_diagnostics():
         "python_version": sys.version,
         "environment": config.ENVIRONMENT,
         "chat_service_available": CHAT_SERVICE_AVAILABLE,
-        "architecture": "v16.1 (Built-in Intent Detection + Dashboard Root)"
+        "upload_router_available": upload_router is not None,
+        "architecture": "v16.2 (Built-in Intent Detection + Dashboard Root + Upload Integration)"
     }
 
 @app.get("/module-health", tags=["Diagnostics"])
@@ -1708,7 +1839,7 @@ async def crash_classification():
 
 
 # ==========================================================
-# BLOCK 44: REQUEST MODELS (Preserved)
+# BLOCK 46: REQUEST MODELS (Preserved)
 # ==========================================================
 
 from pydantic import BaseModel, Field
@@ -1724,7 +1855,7 @@ class ChatResponse(BaseModel):
 
 
 # ==========================================================
-# BLOCK 45: CHAT ENDPOINT (Preserved)
+# BLOCK 47: CHAT ENDPOINT (Preserved)
 # ==========================================================
 
 @app.get("/chat-status", tags=["Chat"])
@@ -1737,7 +1868,7 @@ async def chat_status():
 
 
 # ==========================================================
-# BLOCK 46: CRASH TEST ENDPOINT (Preserved)
+# BLOCK 48: CRASH TEST ENDPOINT (Preserved)
 # ==========================================================
 
 if config.ENVIRONMENT != "production":
@@ -1747,7 +1878,7 @@ if config.ENVIRONMENT != "production":
 
 
 # ==========================================================
-# BLOCK 47: ENTRY POINT (Preserved)
+# BLOCK 49: ENTRY POINT (Preserved)
 # ==========================================================
 
 if __name__ == "__main__":
@@ -1759,17 +1890,24 @@ if __name__ == "__main__":
 
 
 # ==========================================================
-# BLOCK 48: INITIALIZATION LOG (Preserved)
+# BLOCK 50: INITIALIZATION LOG (Preserved)
 # ==========================================================
 
 try:
     logger.info("=" * 60)
-    logger.info("📡 MAIN APP v16.1 - DASHBOARD ROOT")
+    logger.info("📡 MAIN APP v16.2 - UPLOAD INTEGRATION")
     logger.info("")
-    logger.info("   NEW FEATURES IN v16.1:")
+    logger.info("   NEW FEATURES IN v16.2:")
+    logger.info("   🔧 ADDED: Upload Router registration")
+    logger.info("   🔧 ADDED: POST /upload/excel endpoint")
+    logger.info("   🔧 ADDED: GET /upload/status endpoint")
+    logger.info("   🔧 ADDED: GET /upload/statistics endpoint")
+    logger.info("   🔧 ADDED: GET /upload/batches/recent endpoint")
+    logger.info("   🔧 PRESERVED: All existing functionality")
+    logger.info("")
+    logger.info("   CRITICAL UPDATES IN v16.1:")
     logger.info("   🔧 ADDED: Dashboard rendering at root '/'")
     logger.info("   🔧 ADDED: Jinja2Templates for dashboard.html")
-    logger.info("   🔧 PRESERVED: All existing functionality")
     logger.info("")
     logger.info("   CRITICAL UPDATES IN v16.0:")
     logger.info("   🔧 ALIGNED: New service architecture (ai_provider_service v5.0)")
@@ -1780,20 +1918,25 @@ try:
     logger.info(f"   PRE-FLIGHT: {preflight_result['status']}")
     logger.info(f"   CACHE_TTL: {CACHE_TTL}s")
     logger.info(f"   CHAT_SERVICE_AVAILABLE: {CHAT_SERVICE_AVAILABLE}")
-    logger.info(f"   ARCHITECTURE: v16.1 (Built-in Intent Detection + Dashboard Root)")
+    logger.info(f"   UPLOAD_ROUTER_AVAILABLE: {upload_router is not None}")
+    logger.info(f"   ARCHITECTURE: v16.2 (Built-in Intent Detection + Dashboard Root + Upload Integration)")
     logger.info("")
     logger.info("   🔍 TEST ENDPOINTS:")
     logger.info("   1. GET / - Dashboard (NEW)")
     logger.info("   2. GET /dashboard - Direct dashboard")
-    logger.info("   3. GET /raw-ping - ULTRA SIMPLE (NO middleware)")
-    logger.info("   4. GET /debug/ping - Simple ping")
-    logger.info("   5. GET /debug/health - Health check")
-    logger.info("   6. GET /debug/routes - Route listing")
-    logger.info("   7. GET /debug/service-status - Service status")
-    logger.info("   8. GET /alive - Basic alive")
-    logger.info("   9. GET /health - Full health")
-    logger.info("   10. GET /webhook/self-test - Webhook self test")
-    logger.info("   11. POST /webhook/ - Webhook handler")
+    logger.info("   3. POST /upload/excel - Upload Excel (NEW)")
+    logger.info("   4. GET /upload/status - Upload status (NEW)")
+    logger.info("   5. GET /upload/statistics - Upload statistics (NEW)")
+    logger.info("   6. GET /upload/batches/recent - Recent batches (NEW)")
+    logger.info("   7. GET /raw-ping - ULTRA SIMPLE (NO middleware)")
+    logger.info("   8. GET /debug/ping - Simple ping")
+    logger.info("   9. GET /debug/health - Health check")
+    logger.info("   10. GET /debug/routes - Route listing")
+    logger.info("   11. GET /debug/service-status - Service status")
+    logger.info("   12. GET /alive - Basic alive")
+    logger.info("   13. GET /health - Full health")
+    logger.info("   14. GET /webhook/self-test - Webhook self test")
+    logger.info("   15. POST /webhook/ - Webhook handler")
     logger.info("")
     logger.info("   📦 SERVICE STATUS:")
     logger.info("   ✅ DN Analytics: READY (PostgreSQL)")
@@ -1803,6 +1946,7 @@ try:
     logger.info("   🔧 Product Analytics: IN_DEVELOPMENT")
     logger.info("   🔧 National KPI: IN_DEVELOPMENT")
     logger.info("   ✅ Groq: READY")
+    logger.info("   ✅ Upload Router: AVAILABLE")
     logger.info("")
     logger.info("   📁 TEMPLATES:")
     logger.info(f"   ✅ Jinja2Templates directory: {os.path.join(os.path.dirname(__file__), 'templates')}")
