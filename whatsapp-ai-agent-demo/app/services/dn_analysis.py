@@ -1161,9 +1161,8 @@ class DNAnalysisService:
     
     # ==========================================================
     # BLOCK 10: DN DASHBOARD - WITH FULL VERIFICATION
-    # ==========================================================
-        # ==========================================================
-    # BLOCK 10: DN DASHBOARD - WITH INTELLIGENT BUSINESS LOGIC
+       # ==========================================================
+    # BLOCK 10: DN DASHBOARD - WITH MODEL DETAILS
     # ==========================================================
     
     def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
@@ -1171,14 +1170,11 @@ class DNAnalysisService:
         Get complete DN dashboard with intelligent business logic.
         
         Steps:
-        1. Query PostgreSQL
-        2. Log RAW PostgreSQL values (HIGHEST PRIORITY)
-        3. Validate each date
-        4. Check date integrity (DN <= PGI <= POD)
-        5. Calculate aging with business rules
-        6. Determine shipment stage from dates (NOT status columns)
-        7. Build dashboard
-        8. Return dashboard
+        1. Query PostgreSQL for DN summary
+        2. Query PostgreSQL for model details
+        3. Determine shipment stage from dates (NOT status columns)
+        4. Build dashboard with model details
+        5. Return dashboard
         """
         logger.info(f"📊 Getting dashboard for DN: '{dn_no}'")
         
@@ -1186,7 +1182,7 @@ class DNAnalysisService:
             return {"success": False, "error": "DN number required"}
         
         # ==========================================================
-        # STEP 1: QUERY POSTGRESQL
+        # STEP 1: QUERY POSTGRESQL FOR DN SUMMARY
         # ==========================================================
         
         search_result = self.search_dn(dn_no)
@@ -1203,7 +1199,40 @@ class DNAnalysisService:
         data = search_result.get("data", {})
         
         # ==========================================================
-        # STEP 2: LOG RAW POSTGRESQL VALUES (HIGHEST PRIORITY)
+        # STEP 2: QUERY FOR MODEL DETAILS
+        # ==========================================================
+        
+        model_query = """
+            SELECT 
+                customer_model AS model_name,
+                SUM(dn_qty) AS quantity,
+                COUNT(*) AS item_count
+            FROM delivery_reports
+            WHERE 
+                CAST(dn_no AS TEXT) = :dn_no
+                OR CAST(dn_no AS TEXT) LIKE '%' || :dn_no || '%'
+                OR REPLACE(CAST(dn_no AS TEXT), '-', '') = :dn_no
+                OR REGEXP_REPLACE(CAST(dn_no AS TEXT), '[^0-9]', '', 'g') = :dn_no
+            GROUP BY customer_model
+            ORDER BY quantity DESC
+            LIMIT 20
+        """
+        
+        normalized_dn = self._normalize_dn(dn_no)
+        model_results = self._execute_query(model_query, {"dn_no": normalized_dn})
+        
+        models = []
+        for row in model_results:
+            model_name = row.get('model_name')
+            if model_name:
+                models.append({
+                    'name': str(model_name),
+                    'qty': int(row.get('quantity', 0) or 0),
+                    'items': int(row.get('item_count', 0) or 0)
+                })
+        
+        # ==========================================================
+        # STEP 3: LOG RAW POSTGRESQL VALUES
         # ==========================================================
         
         self._log_raw_postgresql_values(data, dn_no)
@@ -1213,7 +1242,7 @@ class DNAnalysisService:
         raw_pod_date = data.get('pod_date')
         
         # ==========================================================
-        # STEP 3: VALIDATE DATES
+        # STEP 4: VALIDATE DATES
         # ==========================================================
         
         dn_validation = self._validate_postgresql_date(raw_dn_create_date, "dn_create_date")
@@ -1221,7 +1250,7 @@ class DNAnalysisService:
         pod_validation = self._validate_postgresql_date(raw_pod_date, "pod_date")
         
         # ==========================================================
-        # STEP 4: CHECK DATE INTEGRITY
+        # STEP 5: CHECK DATE INTEGRITY
         # ==========================================================
         
         integrity = self._check_date_integrity(
@@ -1232,7 +1261,7 @@ class DNAnalysisService:
         )
         
         # ==========================================================
-        # STEP 5: CALCULATE AGING WITH BUSINESS RULES
+        # STEP 6: CALCULATE AGING
         # ==========================================================
         
         delivery_aging = self.calculate_delivery_aging(
@@ -1249,7 +1278,7 @@ class DNAnalysisService:
         )
         
         # ==========================================================
-        # STEP 6: DETERMINE SHIPMENT STAGE FROM DATES (NOT STATUS COLUMNS)
+        # STEP 7: DETERMINE SHIPMENT STAGE FROM DATES
         # ==========================================================
         
         stage_info = self._determine_shipment_stage(
@@ -1259,7 +1288,7 @@ class DNAnalysisService:
         )
         
         # ==========================================================
-        # STEP 7: FORMAT DATES
+        # STEP 8: FORMAT DATES
         # ==========================================================
         
         formatted_dn_create = self._format_date_dmy_long(raw_dn_create_date)
@@ -1267,8 +1296,11 @@ class DNAnalysisService:
         formatted_pod = self._format_date_dmy_long(raw_pod_date)
         
         # ==========================================================
-        # STEP 8: BUILD DASHBOARD WITH INTELLIGENT LOGIC
+        # STEP 9: BUILD DASHBOARD WITH MODEL DETAILS
         # ==========================================================
+        
+        total_units = data.get('total_units')
+        total_revenue = data.get('total_revenue')
         
         dashboard = {
             "dn_no": data.get('dn_no'),
@@ -1279,12 +1311,16 @@ class DNAnalysisService:
             "sales_manager": data.get('sales_manager'),
             "division": data.get('division'),
             
-            # Metrics with intelligent NULL handling
-            "total_units": int(data.get('total_units', 0)),
-            "total_revenue": float(data.get('total_revenue', 0)),
+            # Metrics
+            "total_units": total_units,
+            "total_revenue": total_revenue,
             "material_count": data.get('material_count', 1),
+            "model_count": len(models),
             
-            # Display Dates (DD-MMM-YYYY for WhatsApp)
+            # Model Details (NEW)
+            "models": models,
+            
+            # Display Dates
             "dn_create_date": formatted_dn_create,
             "good_issue_date": formatted_good_issue,
             "pod_date": formatted_pod,
@@ -1294,24 +1330,14 @@ class DNAnalysisService:
             "_good_issue_date": raw_good_issue_date,
             "_pod_date": raw_pod_date,
             
-            # INTELLIGENT SHIPMENT STAGE (from dates, NOT status columns)
-            "delivery_status": stage_info["stage"],
-            "pgi_status": stage_info["stage"],
-            "pod_status": stage_info["stage"],
-            "pending_flag": stage_info["pending"],
-            "status_emoji": stage_info["stage_emoji"],
-            "status_text": stage_info["stage"],
-            "pgi_status_text": "✅ Completed" if stage_info["stage"] in ["Delivered", "In Transit"] else "⏳ Pending",
-            "pod_status_text": "Done" if stage_info["stage"] == "Delivered" else "⏳ Pending",
-            "pending_flag_text": "⚠️ Yes" if stage_info["pending"] else "🟢 No",
-            
-            # Stage Information
+            # Intelligent Shipment Stage
             "stage": stage_info["stage"],
             "stage_emoji": stage_info["stage_emoji"],
             "health": stage_info["health"],
             "health_emoji": stage_info["health_emoji"],
             "progress": stage_info["progress"],
             "recommendation": stage_info["recommendation"],
+            "pending_flag": stage_info["pending"],
             
             # Aging
             "delivery_aging_days": delivery_aging,
@@ -1323,52 +1349,17 @@ class DNAnalysisService:
         }
         
         # ==========================================================
-        # STEP 9: VERIFY DASHBOARD MATCHES DATABASE
-        # ==========================================================
-        
-        dashboard_dn_create = dashboard.get('dn_create_date')
-        dashboard_good_issue = dashboard.get('good_issue_date')
-        dashboard_pod = dashboard.get('pod_date')
-        
-        raw_dn_create_str = self._format_display_date(raw_dn_create_date)
-        raw_good_issue_str = self._format_display_date(raw_good_issue_date)
-        raw_pod_str = self._format_display_date(raw_pod_date)
-        
-        # Check each date
-        if dashboard_dn_create != raw_dn_create_str:
-            logger.error(f"❌ DN {dn_no}: DN Create date mismatch!")
-            logger.error(f"   Database: {raw_dn_create_str}")
-            logger.error(f"   Dashboard: {dashboard_dn_create}")
-        
-        if dashboard_good_issue != raw_good_issue_str:
-            logger.error(f"❌ DN {dn_no}: PGI date mismatch!")
-            logger.error(f"   Database: {raw_good_issue_str}")
-            logger.error(f"   Dashboard: {dashboard_good_issue}")
-        
-        if dashboard_pod != raw_pod_str:
-            logger.error(f"❌ DN {dn_no}: POD date mismatch!")
-            logger.error(f"   Database: {raw_pod_str}")
-            logger.error(f"   Dashboard: {dashboard_pod}")
-        
-        # ==========================================================
         # STEP 10: LOG DASHBOARD SUMMARY
         # ==========================================================
         
         logger.info(f"📊 DASHBOARD SUMMARY for DN {dn_no}:")
-        logger.info(f"   DN Create: {dashboard['dn_create_date']} (DB: {raw_dn_create_str}) {'✅' if dashboard['dn_create_date'] == raw_dn_create_str else '❌'}")
-        logger.info(f"   PGI:       {dashboard['good_issue_date']} (DB: {raw_good_issue_str}) {'✅' if dashboard['good_issue_date'] == raw_good_issue_str else '❌'}")
-        logger.info(f"   POD:       {dashboard['pod_date']} (DB: {raw_pod_str}) {'✅' if dashboard['pod_date'] == raw_pod_str else '❌'}")
-        logger.info(f"   Integrity: {'✅ PASSED' if integrity['valid'] else '⚠️ ISSUES'}")
+        logger.info(f"   DN Create: {dashboard['dn_create_date']}")
+        logger.info(f"   PGI:       {dashboard['good_issue_date']}")
+        logger.info(f"   POD:       {dashboard['pod_date']}")
         logger.info(f"   Stage:     {dashboard['stage_emoji']} {dashboard['stage']}")
-        logger.info(f"   Pending:   {dashboard['pending_flag_text']}")
-        logger.info(f"   Delivery Aging: {delivery_aging} days")
-        logger.info(f"   POD Aging: {pod_aging} days")
-        logger.info(f"   Total Cycle: {total_cycle} days")
-        
-        if not integrity['valid']:
-            logger.warning(f"⚠️ DN {dn_no}: Date integrity issues detected:")
-            for error in integrity['errors']:
-                logger.warning(f"   └── {error}")
+        logger.info(f"   Models:    {dashboard['model_count']}")
+        logger.info(f"   Units:     {dashboard['total_units']}")
+        logger.info(f"   Revenue:   {dashboard['total_revenue']}")
         
         logger.info(f"✅ Dashboard returned for DN {dn_no}")
         return {"success": True, "data": dashboard}
@@ -1850,7 +1841,7 @@ class DNAnalysisService:
     
     # ==========================================================
     # BLOCK 13: WHATSAPP RESPONSE FORMATTER
-          # ==========================================================
+           # ==========================================================
     # BLOCK 13: WHATSAPP RESPONSE FORMATTER (WITH MODELS & QUALITY)
     # ==========================================================
     
@@ -1861,9 +1852,8 @@ class DNAnalysisService:
         ✅ Intelligent status from dates (not status columns)
         ✅ Professional WhatsApp formatting
         ✅ Business recommendations
-        ✅ Product models count
+        ✅ Product models with quantities
         ✅ Data quality metrics
-        ✅ Actual units and revenue values
         """
         data = dashboard_data.get('data', {})
         
@@ -1878,18 +1868,18 @@ class DNAnalysisService:
         sales_manager = data.get('sales_manager')
         division = data.get('division')
         
-        # Metrics - FIXED: Show actual values, not "Not Available"
+        # Metrics
         material_count = data.get('material_count', 1)
-        model_count = data.get('model_count', 1)
+        model_count = data.get('model_count', 0)
         
-        # FIX: Show actual units value or "Not Available" only if truly NULL
+        # Units - Show actual value or "Not Available"
         units = data.get('total_units')
         if units is None:
             total_units = "Not Available"
         else:
-            total_units = str(int(units))  # Convert to int and then string
+            total_units = str(int(units))
         
-        # FIX: Show actual revenue value or "Not Available" only if truly NULL
+        # Revenue - Show actual value or "Not Available"
         revenue = data.get('total_revenue')
         if revenue is None:
             total_revenue = "Not Available"
@@ -1907,7 +1897,7 @@ class DNAnalysisService:
         total_cycle_text = data.get('total_cycle_text', 'N/A')
         
         # ==========================================================
-        # INTELLIGENT STATUS (from dates, NOT status columns)
+        # INTELLIGENT STATUS
         # ==========================================================
         
         stage = data.get('stage', 'Unknown')
@@ -1919,14 +1909,18 @@ class DNAnalysisService:
         pending_flag_text = data.get('pending_flag_text', 'Yes')
         
         # ==========================================================
+        # MODEL DETAILS
+        # ==========================================================
+        
+        models = data.get('models', [])
+        
+        # ==========================================================
         # DATA QUALITY METRICS
         # ==========================================================
         
-        # Check data completeness
         quality_score = 100
         quality_issues = []
         
-        # Check required fields
         if not dn_no or dn_no == 'N/A':
             quality_score -= 20
             quality_issues.append("DN Number missing")
@@ -1943,7 +1937,6 @@ class DNAnalysisService:
             quality_score -= 10
             quality_issues.append("Destination missing")
         
-        # Check date completeness
         if dn_create_date == 'N/A' or dn_create_date is None:
             quality_score -= 20
             quality_issues.append("DN Create Date missing")
@@ -1956,15 +1949,17 @@ class DNAnalysisService:
             quality_score -= 10
             quality_issues.append("POD Date missing")
         
-        # Check units - FIXED: Only flag if truly NULL
         if units is None:
             quality_score -= 5
             quality_issues.append("Units not recorded")
         
-        # Check revenue - FIXED: Only flag if truly NULL
         if revenue is None:
             quality_score -= 5
             quality_issues.append("Revenue not recorded")
+        
+        if not models:
+            quality_score -= 5
+            quality_issues.append("Model details missing")
         
         # Quality emoji
         if quality_score >= 90:
@@ -2019,8 +2014,8 @@ class DNAnalysisService:
         lines.append("")
         lines.append(f"📦 DN Count: {material_count}")
         lines.append(f"📦 Product Models: {model_count}")
-        lines.append(f"📦 Total Units: {total_units}")  # FIXED: Shows actual value
-        lines.append(f"💰 Shipment Value: {total_revenue}")  # FIXED: Shows actual value
+        lines.append(f"📦 Total Units: {total_units}")
+        lines.append(f"💰 Shipment Value: {total_revenue}")
         lines.append("")
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
@@ -2116,24 +2111,33 @@ class DNAnalysisService:
         lines.append("")
         
         # ==========================================================
-        # PRODUCT MODELS SECTION
+        # PRODUCT MODELS SECTION (WITH QUANTITIES)
         # ==========================================================
         
         lines.append("📦 *Product Models*")
         lines.append("")
-        lines.append(f"Total Models: {model_count}")
         
-        # Get model details from data if available
-        models = data.get('models', [])
         if models:
-            for model in models[:5]:  # Show first 5 models
+            lines.append(f"Total Models: {model_count}")
+            lines.append("")
+            lines.append("*Model Breakdown:*")
+            for model in models[:10]:  # Show first 10 models
                 model_name = model.get('name', 'Unknown')
                 model_qty = model.get('qty', 0)
+                # Truncate long model names
+                if len(model_name) > 30:
+                    model_name = model_name[:27] + "..."
                 lines.append(f"  • {model_name}: {model_qty} units")
-            if len(models) > 5:
-                lines.append(f"  • ... and {len(models) - 5} more models")
+            
+            if len(models) > 10:
+                lines.append(f"  • ... and {len(models) - 10} more models")
+            
+            # Total units summary
+            total_model_units = sum(m.get('qty', 0) for m in models)
+            lines.append("")
+            lines.append(f"Total Model Units: {total_model_units}")
         else:
-            lines.append("  • Model details not available")
+            lines.append("No model details available")
         lines.append("")
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
@@ -2166,7 +2170,6 @@ class DNAnalysisService:
         lines.append("💡 *AI Recommendation*")
         lines.append("")
         
-        # Enhanced recommendation with quality context
         if quality_score < 70:
             lines.append(f"{recommendation}")
             lines.append("")
