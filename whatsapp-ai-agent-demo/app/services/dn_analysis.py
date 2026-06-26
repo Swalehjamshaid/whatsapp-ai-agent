@@ -882,8 +882,103 @@ class DNAnalysisService:
             logger.error(f"   Traceback: {traceback.format_exc()}")
             return 0
     
+      # ==========================================================
+    # BLOCK 6.5: INTELLIGENT SHIPMENT STAGE DETERMINATION (NEW)
+    # ==========================================================
+    
+    def _determine_shipment_stage(self, dn_create_date, good_issue_date, pod_date) -> Dict[str, Any]:
+        """
+        Determine shipment stage from dates - NOT from status columns.
+        
+        BUSINESS RULES:
+        - POD exists → Delivered
+        - PGI exists, POD missing → In Transit
+        - PGI missing → Pending Dispatch
+        """
+        
+        # Check if dates exist
+        pgi_exists = good_issue_date is not None
+        pod_exists = pod_date is not None
+        
+        def fmt_date(d):
+            if d is None:
+                return 'N/A'
+            if isinstance(d, (date, datetime)):
+                return d.strftime('%d-%b-%Y')
+            return str(d)
+        
+        # CASE 1: POD exists → Delivered
+        if pod_exists and pgi_exists:
+            logger.info(f"✅ Stage: Delivered (PGI: {good_issue_date}, POD: {pod_date})")
+            return {
+                "stage": "Delivered",
+                "stage_emoji": "✅",
+                "pgi_status": "Completed",
+                "pod_status": "Received",
+                "pgi_status_text": "✅ Completed",
+                "pod_status_text": "Done",
+                "pending": False,
+                "health": "Completed Successfully",
+                "health_emoji": "🟢",
+                "recommendation": "Shipment completed successfully. Review performance if delivery exceeded expected time.",
+                "progress": [
+                    {"step": "DN Created", "status": "✅", "date": fmt_date(dn_create_date)},
+                    {"step": "PGI Completed", "status": "✅", "date": fmt_date(good_issue_date)},
+                    {"step": "POD Received", "status": "✅", "date": fmt_date(pod_date)}
+                ]
+            }
+        
+        # CASE 2: PGI exists, POD missing → In Transit
+        if pgi_exists and not pod_exists:
+            logger.info(f"🚚 Stage: In Transit (PGI: {good_issue_date}, POD: None)")
+            return {
+                "stage": "In Transit",
+                "stage_emoji": "🚚",
+                "pgi_status": "Completed",
+                "pod_status": "Pending",
+                "pgi_status_text": "✅ Completed",
+                "pod_status_text": "⏳ Pending",
+                "pending": True,
+                "health": "On Route",
+                "health_emoji": "🟡",
+                "recommendation": "Follow up with transporter for POD confirmation.",
+                "progress": [
+                    {"step": "DN Created", "status": "✅", "date": fmt_date(dn_create_date)},
+                    {"step": "PGI Completed", "status": "✅", "date": fmt_date(good_issue_date)},
+                    {"step": "POD Pending", "status": "⏳", "date": "Pending"}
+                ]
+            }
+        
+        # CASE 3: PGI missing → Pending Dispatch
+        else:
+            logger.info(f"🟡 Stage: Pending Dispatch (PGI: None)")
+            return {
+                "stage": "Pending Dispatch",
+                "stage_emoji": "⏳",
+                "pgi_status": "Pending",
+                "pod_status": "Pending",
+                "pgi_status_text": "⏳ Pending",
+                "pod_status_text": "⏳ Pending",
+                "pending": True,
+                "health": "Awaiting Warehouse Dispatch",
+                "health_emoji": "🟡",
+                "recommendation": "Warehouse should complete PGI immediately.",
+                "progress": [
+                    {"step": "DN Created", "status": "✅", "date": fmt_date(dn_create_date)},
+                    {"step": "PGI Pending", "status": "⏳", "date": "Pending"},
+                    {"step": "POD Not Started", "status": "⏳", "date": "Not Started"}
+                ]
+            }
+    
+    
+    
+
+    
     # ==========================================================
     # BLOCK 7: DN SEARCH
+    # ==========================================================
+      # ==========================================================
+    # BLOCK 7: DN SEARCH - WITH MODEL DETAILS
     # ==========================================================
     
     def search_dn(self, dn_no: str) -> Dict[str, Any]:
@@ -900,47 +995,30 @@ class DNAnalysisService:
         if len(normalized_dn) < 8:
             return {"success": False, "error": f"Invalid DN format: {normalized_dn} (must be 8-12 digits)"}
         
+        # Main query with model count
         query = self._build_normalized_dn_query()
         results = self._execute_query(query, {"dn_no": normalized_dn})
         
         logger.info(f"📊 DN Search | Input={dn_no} | Normalized={normalized_dn} | Results={len(results)}")
         
         if results:
-            logger.info(f"✅ DN {dn_no} found with {results[0].get('material_count', 1)} materials")
+            logger.info(f"✅ DN {dn_no} found")
             return {"success": True, "data": results[0]}
         
-        count_query = self._build_count_query()
-        count_results = self._execute_query(count_query, {"dn_no": normalized_dn})
-        exact_count = count_results[0].get('count', 0) if count_results else 0
-        logger.info(f"   ├── Exact match count: {exact_count}")
-        
-        if exact_count > 0:
-            logger.info(f"   ├── Exact match found! Trying direct query...")
-            exact_query = self._build_exact_match_query()
-            exact_results = self._execute_query(exact_query, {"dn_no": normalized_dn})
-            if exact_results:
-                data = self._aggregate_dn_results(exact_results, normalized_dn)
-                if data:
-                    logger.info(f"✅ DN {dn_no} found via direct exact match")
-                    return {"success": True, "data": data}
-        
-        logger.warning(f"⚠️ Primary match not found for {dn_no}. Running fallback search...")
+        # Fallback search
+        logger.warning(f"⚠️ Primary match not found for {dn_no}. Running fallback...")
         fallback_query = self._build_fallback_dn_query()
         fallback_results = self._execute_query(fallback_query, {"dn_no": normalized_dn})
         
         similar_dns = [str(r.get('dn_no', '')) for r in fallback_results if r.get('dn_no')]
         
-        requested_dn_found = any(dn == normalized_dn or dn == dn_no for dn in similar_dns)
-        
-        if requested_dn_found:
-            logger.info(f"   ├── Requested DN found in fallback! Auto-retrying with exact DN...")
-            exact_query = self._build_exact_match_query()
-            exact_results = self._execute_query(exact_query, {"dn_no": normalized_dn})
-            if exact_results:
-                data = self._aggregate_dn_results(exact_results, normalized_dn)
-                if data:
-                    logger.info(f"✅ DN {dn_no} found via fallback auto-retry")
-                    return {"success": True, "data": data}
+        # Check if exact DN exists in fallback
+        exact_match = any(dn == normalized_dn or dn == dn_no for dn in similar_dns)
+        if exact_match:
+            logger.info(f"   ├── Exact DN found in fallback! Retrying...")
+            results = self._execute_query(query, {"dn_no": normalized_dn})
+            if results:
+                return {"success": True, "data": results[0]}
         
         if similar_dns:
             logger.info(f"   ├── Similar DNs found: {similar_dns[:5]}")
@@ -953,54 +1031,35 @@ class DNAnalysisService:
         
         logger.warning(f"❌ DN {dn_no} not found - no similar matches")
         return {"success": False, "error": f"DN {dn_no} not found"}
+
+        # ==========================================================
+    # BLOCK 7.1: MODEL QUERY BUILDER (NEW)
+    # ==========================================================
     
-    def _aggregate_dn_results(self, results: List[Dict[str, Any]], dn_no: str) -> Optional[Dict[str, Any]]:
-        """Aggregate raw DN results into a single dashboard record."""
-        if not results:
-            return None
-        
-        data = {
-            "dn_no": dn_no,
-            "dealer_name": results[0].get('customer_name', 'Unknown'),
-            "customer_name": results[0].get('customer_name', 'Unknown'),
-            "dealer_code": results[0].get('dealer_code'),
-            "customer_code": results[0].get('customer_code'),
-            "warehouse": results[0].get('warehouse'),
-            "warehouse_code": results[0].get('warehouse_code'),
-            "city": results[0].get('ship_to_city'),
-            "delivery_location": results[0].get('delivery_location'),
-            "sales_manager": results[0].get('sales_manager'),
-            "division": results[0].get('division'),
-            "total_units": sum(r.get('dn_qty', 0) or 0 for r in results),
-            "total_revenue": sum(r.get('dn_amount', 0) or 0 for r in results),
-            "dn_create_date": min((r.get('dn_create_date') for r in results if r.get('dn_create_date')), default=None),
-            "good_issue_date": max((r.get('good_issue_date') for r in results if r.get('good_issue_date')), default=None),
-            "pod_date": max((r.get('pod_date') for r in results if r.get('pod_date')), default=None),
-            "delivery_status": results[0].get('delivery_status'),
-            "pgi_status": results[0].get('pgi_status'),
-            "pod_status": results[0].get('pod_status'),
-            "pending_flag": results[0].get('pending_flag'),
-            "material_count": len(results)
-        }
-        
-        delivery_aging = self.calculate_delivery_aging(
-            data.get('dn_create_date'),
-            data.get('good_issue_date')
-        )
-        pod_aging = self.calculate_pod_aging(
-            data.get('good_issue_date'),
-            data.get('pod_date')
-        )
-        total_cycle = self.calculate_total_cycle(
-            data.get('dn_create_date'),
-            data.get('pod_date')
-        )
-        
-        data['delivery_aging_days'] = delivery_aging
-        data['pod_aging_days'] = pod_aging
-        data['total_cycle_days'] = total_cycle
-        
-        return data
+    def _build_model_query(self) -> str:
+        """Build query to get model details with quantities."""
+        return """
+            SELECT 
+                customer_model AS model_name,
+                material_no AS material_number,
+                division,
+                SUM(dn_qty) AS quantity,
+                SUM(dn_amount) AS revenue,
+                COUNT(*) AS item_count
+            FROM delivery_reports
+            WHERE 
+                CAST(dn_no AS TEXT) = :dn_no
+                OR CAST(dn_no AS TEXT) LIKE '%' || :dn_no || '%'
+                OR REPLACE(CAST(dn_no AS TEXT), '-', '') = :dn_no
+                OR REGEXP_REPLACE(CAST(dn_no AS TEXT), '[^0-9]', '', 'g') = :dn_no
+            GROUP BY customer_model, material_no, division
+            ORDER BY quantity DESC
+            LIMIT 20
+        """
+    
+    
+    
+    
     
     # ==========================================================
     # BLOCK 8: VERIFY DN
@@ -1084,20 +1143,16 @@ class DNAnalysisService:
     # ==========================================================
     # BLOCK 10: DN DASHBOARD - WITH FULL VERIFICATION
     # ==========================================================
+     # ==========================================================
+    # BLOCK 10: DN DASHBOARD - WITH MODELS & INTELLIGENT STATUS
+    # ==========================================================
     
     def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
         """
-        Get complete DN dashboard with full PostgreSQL verification.
-        
-        Steps:
-        1. Query PostgreSQL
-        2. Log RAW PostgreSQL values (HIGHEST PRIORITY)
-        3. Validate each date
-        4. Check date integrity (DN <= PGI <= POD)
-        5. Calculate aging
-        6. Build dashboard
-        7. Verify dashboard matches database
-        8. Return dashboard
+        Get complete DN dashboard with:
+        1. Intelligent status from dates
+        2. Product models with quantities
+        3. Module-wise breakdown
         """
         logger.info(f"📊 Getting dashboard for DN: '{dn_no}'")
         
@@ -1105,7 +1160,7 @@ class DNAnalysisService:
             return {"success": False, "error": "DN number required"}
         
         # ==========================================================
-        # STEP 1: QUERY POSTGRESQL
+        # STEP 1: QUERY POSTGRESQL FOR DN SUMMARY
         # ==========================================================
         
         search_result = self.search_dn(dn_no)
@@ -1122,36 +1177,51 @@ class DNAnalysisService:
         data = search_result.get("data", {})
         
         # ==========================================================
-        # STEP 2: LOG RAW POSTGRESQL VALUES (HIGHEST PRIORITY)
+        # STEP 2: QUERY FOR MODEL DETAILS
         # ==========================================================
         
-        self._log_raw_postgresql_values(data, dn_no)
+        normalized_dn = self._normalize_dn(dn_no)
+        model_query = self._build_model_query()
+        model_results = self._execute_query(model_query, {"dn_no": normalized_dn})
+        
+        models = []
+        module_quantities = {}
+        total_model_units = 0
+        
+        for row in model_results:
+            model_name = row.get('model_name')
+            if model_name:
+                qty = int(row.get('quantity', 0) or 0)
+                revenue = float(row.get('revenue', 0) or 0)
+                division = row.get('division', 'Unknown')
+                material_no = row.get('material_number', 'N/A')
+                
+                models.append({
+                    'name': str(model_name),
+                    'material_no': str(material_no),
+                    'division': str(division),
+                    'qty': qty,
+                    'revenue': revenue
+                })
+                
+                # Aggregate module quantities
+                if division in module_quantities:
+                    module_quantities[division] += qty
+                else:
+                    module_quantities[division] = qty
+                
+                total_model_units += qty
+        
+        # ==========================================================
+        # STEP 3: GET RAW DATES
+        # ==========================================================
         
         raw_dn_create_date = data.get('dn_create_date')
         raw_good_issue_date = data.get('good_issue_date')
         raw_pod_date = data.get('pod_date')
         
         # ==========================================================
-        # STEP 3: VALIDATE DATES
-        # ==========================================================
-        
-        dn_validation = self._validate_postgresql_date(raw_dn_create_date, "dn_create_date")
-        pgi_validation = self._validate_postgresql_date(raw_good_issue_date, "good_issue_date")
-        pod_validation = self._validate_postgresql_date(raw_pod_date, "pod_date")
-        
-        # ==========================================================
-        # STEP 4: CHECK DATE INTEGRITY
-        # ==========================================================
-        
-        integrity = self._check_date_integrity(
-            dn_no,
-            raw_dn_create_date,
-            raw_good_issue_date,
-            raw_pod_date
-        )
-        
-        # ==========================================================
-        # STEP 5: CALCULATE AGING
+        # STEP 4: CALCULATE AGING
         # ==========================================================
         
         delivery_aging = self.calculate_delivery_aging(
@@ -1168,16 +1238,31 @@ class DNAnalysisService:
         )
         
         # ==========================================================
+        # STEP 5: DETERMINE SHIPMENT STAGE FROM DATES
+        # ==========================================================
+        
+        stage_info = self._determine_shipment_stage(
+            raw_dn_create_date,
+            raw_good_issue_date,
+            raw_pod_date
+        )
+        
+        # ==========================================================
         # STEP 6: FORMAT DATES
         # ==========================================================
         
-        formatted_dn_create = self._format_display_date(raw_dn_create_date)
-        formatted_good_issue = self._format_display_date(raw_good_issue_date)
-        formatted_pod = self._format_display_date(raw_pod_date)
+        formatted_dn_create = self._format_date_dmy_long(raw_dn_create_date)
+        formatted_good_issue = self._format_date_dmy_long(raw_good_issue_date)
+        formatted_pod = self._format_date_dmy_long(raw_pod_date)
         
         # ==========================================================
         # STEP 7: BUILD DASHBOARD
         # ==========================================================
+        
+        total_units = data.get('total_units')
+        total_revenue = data.get('total_revenue')
+        model_count = data.get('model_count', 0)
+        material_count = data.get('material_count', 0)
         
         dashboard = {
             "dn_no": data.get('dn_no'),
@@ -1186,107 +1271,59 @@ class DNAnalysisService:
             "city": data.get('city', 'Unknown'),
             "delivery_location": data.get('delivery_location'),
             "sales_manager": data.get('sales_manager'),
-            "division": data.get('division'),
-            "total_units": int(data.get('total_units', 0)),
-            "total_revenue": float(data.get('total_revenue', 0)),
-            "material_count": data.get('material_count', 1),
+            "division": data.get('division', 'Unknown'),
+            
+            # Metrics
+            "total_units": total_units,
+            "total_revenue": total_revenue,
+            "material_count": material_count or 1,
+            "model_count": model_count,
+            
+            # Models (NEW)
+            "models": models,
+            "module_quantities": module_quantities,
+            "total_model_units": total_model_units,
             
             # Display Dates
             "dn_create_date": formatted_dn_create,
             "good_issue_date": formatted_good_issue,
             "pod_date": formatted_pod,
             
-            # Status fields
-            "delivery_status": data.get('delivery_status', 'Unknown'),
-            "pgi_status": data.get('pgi_status', 'Unknown'),
-            "pod_status": data.get('pod_status', 'Unknown'),
-            "pending_flag": data.get('pending_flag', False),
+            # Raw dates for calculations
+            "_dn_create_date": raw_dn_create_date,
+            "_good_issue_date": raw_good_issue_date,
+            "_pod_date": raw_pod_date,
+            
+            # Intelligent Status (from dates)
+            "delivery_status": stage_info["stage"],
+            "pgi_status": stage_info["pgi_status"],
+            "pod_status": stage_info["pod_status"],
+            "pending_flag": stage_info["pending"],
+            "status_emoji": stage_info["stage_emoji"],
+            "status_text": stage_info["stage"],
+            "pgi_status_text": stage_info["pgi_status_text"],
+            "pod_status_text": stage_info["pod_status_text"],
+            "pending_flag_text": "⚠️ Yes" if stage_info["pending"] else "🟢 No",
+            
+            # Stage Information
+            "stage": stage_info["stage"],
+            "stage_emoji": stage_info["stage_emoji"],
+            "health": stage_info["health"],
+            "health_emoji": stage_info["health_emoji"],
+            "progress": stage_info["progress"],
+            "recommendation": stage_info["recommendation"],
             
             # Aging
             "delivery_aging_days": delivery_aging,
             "pod_aging_days": pod_aging,
             "total_cycle_days": total_cycle,
             "delivery_aging_text": self._format_aging_text(delivery_aging),
-            "pod_aging_text": self._format_aging_text(pod_aging),
+            "pod_aging_text": self._format_aging_text(pod_aging) if pod_aging > 0 else "Not Started",
             "total_cycle_text": self._format_aging_text(total_cycle)
         }
         
-        # ==========================================================
-        # STEP 8: VERIFY DASHBOARD MATCHES DATABASE
-        # ==========================================================
-        
-        dashboard_dn_create = dashboard.get('dn_create_date')
-        dashboard_good_issue = dashboard.get('good_issue_date')
-        dashboard_pod = dashboard.get('pod_date')
-        
-        raw_dn_create_str = self._format_display_date(raw_dn_create_date)
-        raw_good_issue_str = self._format_display_date(raw_good_issue_date)
-        raw_pod_str = self._format_display_date(raw_pod_date)
-        
-        # Check each date
-        if dashboard_dn_create != raw_dn_create_str:
-            logger.error(f"❌ DN {dn_no}: DN Create date mismatch!")
-            logger.error(f"   Database: {raw_dn_create_str}")
-            logger.error(f"   Dashboard: {dashboard_dn_create}")
-        
-        if dashboard_good_issue != raw_good_issue_str:
-            logger.error(f"❌ DN {dn_no}: PGI date mismatch!")
-            logger.error(f"   Database: {raw_good_issue_str}")
-            logger.error(f"   Dashboard: {dashboard_good_issue}")
-        
-        if dashboard_pod != raw_pod_str:
-            logger.error(f"❌ DN {dn_no}: POD date mismatch!")
-            logger.error(f"   Database: {raw_pod_str}")
-            logger.error(f"   Dashboard: {dashboard_pod}")
-        
-        # ==========================================================
-        # STEP 9: ADD STATUS EMOJIS
-        # ==========================================================
-        
-        status = dashboard.get('delivery_status', '')
-        if status in ['Completed', 'Delivered', 'Closed']:
-            dashboard['status_emoji'] = '✅'
-            dashboard['status_text'] = 'Delivered'
-        elif status in ['In Transit', 'Transit']:
-            dashboard['status_emoji'] = '🚚'
-            dashboard['status_text'] = 'In Transit'
-        elif status in ['Pending', 'Open']:
-            dashboard['status_emoji'] = '⏳'
-            dashboard['status_text'] = 'Pending'
-        else:
-            dashboard['status_emoji'] = '❓'
-            dashboard['status_text'] = status or 'Unknown'
-        
-        pgi_status = dashboard.get('pgi_status', '')
-        dashboard['pgi_status_text'] = '✅ Completed' if pgi_status == 'Completed' else '⏳ Pending'
-        
-        pod_status = dashboard.get('pod_status', '')
-        dashboard['pod_status_text'] = 'Done' if pod_status in ['Completed', 'Received', 'Done'] else '⏳ Pending'
-        
-        pending = dashboard.get('pending_flag', False)
-        dashboard['pending_flag_text'] = '⚠️ Yes' if pending else '🟢 No'
-        
-        # ==========================================================
-        # STEP 10: LOG DASHBOARD SUMMARY
-        # ==========================================================
-        
-        logger.info(f"📊 DASHBOARD SUMMARY for DN {dn_no}:")
-        logger.info(f"   DN Create: {dashboard['dn_create_date']} (DB: {raw_dn_create_str}) {'✅' if dashboard['dn_create_date'] == raw_dn_create_str else '❌'}")
-        logger.info(f"   PGI:       {dashboard['good_issue_date']} (DB: {raw_good_issue_str}) {'✅' if dashboard['good_issue_date'] == raw_good_issue_str else '❌'}")
-        logger.info(f"   POD:       {dashboard['pod_date']} (DB: {raw_pod_str}) {'✅' if dashboard['pod_date'] == raw_pod_str else '❌'}")
-        logger.info(f"   Integrity: {'✅ PASSED' if integrity['valid'] else '⚠️ ISSUES'}")
-        logger.info(f"   Delivery Aging: {delivery_aging} days")
-        logger.info(f"   POD Aging: {pod_aging} days")
-        logger.info(f"   Total Cycle: {total_cycle} days")
-        
-        if not integrity['valid']:
-            logger.warning(f"⚠️ DN {dn_no}: Date integrity issues detected:")
-            for error in integrity['errors']:
-                logger.warning(f"   └── {error}")
-        
         logger.info(f"✅ Dashboard returned for DN {dn_no}")
         return {"success": True, "data": dashboard}
-    
     # ==========================================================
     # BLOCK 11: DIAGNOSTIC METHODS
     # ==========================================================
@@ -1766,87 +1803,180 @@ class DNAnalysisService:
     # ==========================================================
     # BLOCK 13: WHATSAPP RESPONSE FORMATTER
     # ==========================================================
+        # ==========================================================
+    # BLOCK 13: WHATSAPP RESPONSE FORMATTER - WITH MODELS
+    # ==========================================================
     
     def format_dn_dashboard(self, dashboard_data: Dict[str, Any]) -> str:
         """
-        Format DN dashboard for WhatsApp response.
-        
-        ✅ Dates are in YYYY-MM-DD format (Native PostgreSQL)
-        ✅ Aging is calculated correctly
-        ✅ POD shows "Done" when completed
+        Format DN dashboard for WhatsApp with:
+        1. Intelligent status from dates
+        2. Actual Units and Revenue
+        3. Product models with quantities
+        4. Module-wise breakdown
         """
         data = dashboard_data.get('data', {})
         
+        # ==========================================================
+        # EXTRACT DATA
+        # ==========================================================
+        
+        dn_no = data.get('dn_no', 'N/A')
+        dealer_name = data.get('dealer_name', 'Unknown')
+        warehouse = data.get('warehouse', 'Unknown')
+        city = data.get('city', 'Unknown')
+        sales_manager = data.get('sales_manager')
+        division = data.get('division')
+        
+        material_count = data.get('material_count', 1)
+        model_count = data.get('model_count', 0)
+        
+        # FIX: Show actual units value
+        units = data.get('total_units')
+        if units is None:
+            total_units = 0
+        else:
+            total_units = int(units)
+        
+        # FIX: Show actual revenue value
+        revenue = data.get('total_revenue')
+        if revenue is None:
+            total_revenue = 0
+        else:
+            total_revenue = float(revenue)
+        
+        dn_create_date = data.get('dn_create_date', 'N/A')
+        good_issue_date = data.get('good_issue_date', 'N/A')
+        pod_date = data.get('pod_date', 'N/A')
+        
+        delivery_aging_text = data.get('delivery_aging_text', 'N/A')
+        pod_aging_text = data.get('pod_aging_text', 'Not Started')
+        total_cycle_text = data.get('total_cycle_text', 'N/A')
+        
+        # ==========================================================
+        # INTELLIGENT STATUS (from dates, NOT status columns)
+        # ==========================================================
+        
+        stage = data.get('stage', 'Unknown')
+        stage_emoji = data.get('stage_emoji', '❓')
+        health = data.get('health', 'Unknown')
+        health_emoji = data.get('health_emoji', '❓')
+        progress = data.get('progress', [])
+        recommendation = data.get('recommendation', 'Unable to determine shipment status.')
+        pending_flag_text = data.get('pending_flag_text', 'Yes')
+        pgi_status_text = data.get('pgi_status_text', 'Unknown')
+        pod_status_text = data.get('pod_status_text', 'Unknown')
+        
+        # ==========================================================
+        # MODELS DATA
+        # ==========================================================
+        
+        models = data.get('models', [])
+        module_quantities = data.get('module_quantities', {})
+        
+        # ==========================================================
+        # BUILD WHATSAPP RESPONSE
+        # ==========================================================
+        
         lines = []
-        lines.append("📦 *DN: {}*".format(data.get('dn_no', 'N/A')))
+        lines.append("📦 *DN: {}*".format(dn_no))
         lines.append("")
         lines.append("*Dealer:*")
-        lines.append("{}".format(data.get('dealer_name', 'Unknown')))
+        lines.append("{}".format(dealer_name))
         lines.append("")
         lines.append("*Warehouse:*")
-        lines.append("{}".format(data.get('warehouse', 'Unknown')))
+        lines.append("{}".format(warehouse))
         lines.append("")
         lines.append("*City:*")
-        lines.append("{}".format(data.get('city', 'Unknown')))
+        lines.append("{}".format(city))
         lines.append("")
         
-        delivery_location = data.get('delivery_location')
-        if delivery_location:
-            lines.append("*Delivery Location:*")
-            lines.append("{}".format(delivery_location))
-            lines.append("")
-        
-        sales_manager = data.get('sales_manager')
         if sales_manager:
             lines.append("*Sales Manager:*")
             lines.append("{}".format(sales_manager))
             lines.append("")
         
-        division = data.get('division')
         if division:
             lines.append("*Division:*")
             lines.append("{}".format(division))
             lines.append("")
         
+        # ==========================================================
+        # METRICS
+        # ==========================================================
+        
         lines.append("*📊 Metrics:*")
-        lines.append("Units: {}".format(data.get('total_units', 0)))
-        revenue = data.get('total_revenue', 0)
-        if revenue:
-            lines.append("Revenue: PKR {:,}".format(revenue))
+        lines.append("Units: {}".format(total_units))
+        if total_revenue:
+            lines.append("Revenue: PKR {:,}".format(total_revenue))
         else:
             lines.append("Revenue: PKR 0")
         lines.append("")
-        lines.append("Materials: {}".format(data.get('material_count', 1)))
+        lines.append("Materials: {}".format(material_count))
         lines.append("")
+        
+        # ==========================================================
+        # DATES
+        # ==========================================================
         
         lines.append("*📅 Dates:*")
-        lines.append("DN Create: {}".format(data.get('dn_create_date', 'N/A')))
-        lines.append("PGI: {}".format(data.get('good_issue_date', 'N/A')))
-        lines.append("POD: {}".format(data.get('pod_date', 'N/A')))
+        lines.append("DN Create: {}".format(dn_create_date))
+        lines.append("PGI: {}".format(good_issue_date))
+        lines.append("POD: {}".format(pod_date))
         lines.append("")
+        
+        # ==========================================================
+        # AGING
+        # ==========================================================
         
         lines.append("*⏳ Aging:*")
-        lines.append("Delivery: {}".format(data.get('delivery_aging_text', 'N/A')))
-        lines.append("POD: {}".format(data.get('pod_aging_text', 'N/A')))
-        lines.append("Total Cycle: {}".format(data.get('total_cycle_text', 'N/A')))
+        lines.append("Delivery: {}".format(delivery_aging_text))
+        lines.append("POD: {}".format(pod_aging_text))
+        lines.append("Total Cycle: {}".format(total_cycle_text))
         lines.append("")
         
+        # ==========================================================
+        # STATUS
+        # ==========================================================
+        
         lines.append("*📋 Status:*")
-        lines.append("Delivery: {} {}".format(data.get('status_emoji', '❓'), data.get('status_text', 'Unknown')))
-        lines.append("PGI: {}".format(data.get('pgi_status_text', 'Unknown')))
+        lines.append("Delivery: {} {}".format(stage_emoji, stage))
+        lines.append("PGI: {}".format(pgi_status_text))
+        lines.append("POD: {}".format(pod_status_text))
+        lines.append("Pending: {}".format(pending_flag_text))
         
-        pod_status = data.get('pod_status', '')
-        pod_status_text = data.get('pod_status_text', 'Unknown')
+        # ==========================================================
+        # PRODUCT MODELS (NEW)
+        # ==========================================================
         
-        if pod_status in ['Completed', 'Received', 'Done'] or pod_status_text == 'Done':
-            lines.append("POD: Done")
-        else:
-            lines.append("POD: {}".format(pod_status_text))
+        if models:
+            lines.append("")
+            lines.append("*📦 Product Models:*")
+            for model in models[:10]:
+                model_name = model.get('name', 'Unknown')
+                model_qty = model.get('qty', 0)
+                material_no = model.get('material_no', 'N/A')
+                if len(model_name) > 30:
+                    model_name = model_name[:27] + "..."
+                lines.append("  • {}: {} units".format(model_name, model_qty))
+                lines.append("    Material: {}".format(material_no))
+            
+            if len(models) > 10:
+                lines.append("  • ... and {} more models".format(len(models) - 10))
         
-        lines.append("Pending: {}".format(data.get('pending_flag_text', 'Unknown')))
+        # ==========================================================
+        # MODULE-WISE QUANTITY (NEW)
+        # ==========================================================
+        
+        if module_quantities:
+            lines.append("")
+            lines.append("*📦 Module-wise Quantity:*")
+            sorted_modules = sorted(module_quantities.items(), key=lambda x: x[1], reverse=True)
+            for module_name, qty in sorted_modules:
+                lines.append("  • {}: {} units".format(module_name, qty))
         
         return "\n".join(lines)
-    
+        
     # ==========================================================
     # BLOCK 14: REGRESSION TESTS
     # ==========================================================
