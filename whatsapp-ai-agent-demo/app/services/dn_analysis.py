@@ -1,23 +1,23 @@
 # ==========================================================
-# FILE: app/services/dn_analysis.py (v13.0 - ENTERPRISE PRODUCTION)
+# FILE: app/services/dn_analysis.py (v14.0 - ENTERPRISE PRODUCTION)
 # ==========================================================
-# PURPOSE: DN Analytics Service - Direct PostgreSQL Integration
-# SOURCE: delivery_reports table ONLY
-# VERSION: 13.0 - ENTERPRISE PRODUCTION WITH LOGISTICS & DISTANCE
+# PURPOSE: DN Analytics Service - Enterprise Logistics Dashboard
+# SOURCE: delivery_reports table ONLY (PostgreSQL Single Source of Truth)
+# VERSION: 14.0 - HAIER PAKISTAN LOGISTICS ENTERPRISE
 #
 # COMPATIBLE WITH: ai_provider_service.py v5.0
 # INTEGRATION: Railway PostgreSQL, OpenRouteService
 #
-# ENHANCEMENTS v13.0:
-# - ✅ Distance calculation with OpenRouteService + geopy fallback
-# - ✅ Logistics KPIs (Distance, Duration, Expected Delivery)
+# ENHANCEMENTS v14.0:
+# - ✅ Enterprise Logistics Dashboard for Haier Pakistan
 # - ✅ Intelligent shipment stage from dates (not status columns)
-# - ✅ Professional WhatsApp dashboard with emojis
+# - ✅ Road distance with OpenRouteService + geopy fallback
+# - ✅ Expected vs Actual delivery performance
+# - ✅ Route efficiency calculations
+# - ✅ Professional WhatsApp formatting
 # - ✅ Business recommendations
-# - ✅ Smart aging calculations
-# - ✅ Redis caching for routes
-# - ✅ Distance categories
-# - ✅ Performance metrics
+# - ✅ Route caching (30 days)
+# - ✅ 100% backward compatible
 # ==========================================================
 
 import logging
@@ -64,7 +64,7 @@ DEBUG_MODE = os.environ.get("DN_DEBUG_MODE", "false").lower() == "true"
 
 # GIS Configuration
 OPENROUTE_API_KEY = os.environ.get("OPENROUTE_API_KEY", "")
-GEOCODE_USER_AGENT = "whatsapp-logistics-agent"
+GEOCODE_USER_AGENT = "haier-logistics-agent"
 
 # Cache configuration
 CACHE_TTL_DAYS = 30
@@ -111,7 +111,6 @@ class DistanceService:
         cached = self._cache.get(cache_key)
         
         if cached:
-            # Check if cache is still valid (30 days)
             cache_time = cached.get('timestamp')
             if cache_time:
                 age_days = (datetime.now() - cache_time).days
@@ -141,13 +140,11 @@ class DistanceService:
             return None
         
         try:
-            # Try with city name
             geocode_result = self._geolocator.geocode(location, timeout=10)
             if geocode_result:
                 logger.info(f"📍 Geocoded: {location} → ({geocode_result.latitude}, {geocode_result.longitude})")
                 return (geocode_result.latitude, geocode_result.longitude)
             
-            # Try with country context
             geocode_result = self._geolocator.geocode(f"{location}, Pakistan", timeout=10)
             if geocode_result:
                 logger.info(f"📍 Geocoded with country: {location} → ({geocode_result.latitude}, {geocode_result.longitude})")
@@ -166,7 +163,6 @@ class DistanceService:
             return None
         
         try:
-            # Geocode locations
             origin_coords = self._geocode(origin)
             dest_coords = self._geocode(destination)
             
@@ -174,10 +170,8 @@ class DistanceService:
                 logger.warning(f"⚠️ Could not geocode: {origin} or {destination}")
                 return None
             
-            # OpenRouteService expects [longitude, latitude]
             coords = [[origin_coords[1], origin_coords[0]], [dest_coords[1], dest_coords[0]]]
             
-            # Calculate route
             routes = self._client.directions(
                 coordinates=coords,
                 profile='driving-car',
@@ -191,7 +185,7 @@ class DistanceService:
                 
                 if segments:
                     segment = segments[0]
-                    distance_km = segment.get('distance', 0) / 1000  # meters to km
+                    distance_km = segment.get('distance', 0) / 1000
                     duration_sec = segment.get('duration', 0)
                     duration_hours = duration_sec / 3600
                     
@@ -224,10 +218,8 @@ class DistanceService:
             if not origin_coords or not dest_coords:
                 return None
             
-            # Calculate geodesic distance
             distance_km = geodesic(origin_coords, dest_coords).kilometers
             
-            # Estimate duration (average speed: 60 km/h)
             duration_hours = distance_km / 60
             duration_sec = duration_hours * 3600
             
@@ -265,15 +257,7 @@ class DistanceService:
             return f"{days}d {hours}h"
     
     def get_distance(self, origin: str, destination: str) -> Dict[str, Any]:
-        """
-        Get distance between origin and destination.
-        
-        Fallback order:
-        1. Cached route
-        2. OpenRouteService
-        3. Geopy approximate
-        4. Default estimate
-        """
+        """Get distance between origin and destination."""
         if not origin or not destination:
             return {
                 'distance_km': 0,
@@ -284,28 +268,24 @@ class DistanceService:
                 'error': 'Missing origin or destination'
             }
         
-        # Check cache
         cached = self._get_cached_route(origin, destination)
         if cached:
             return cached
         
         result = None
         
-        # Try OpenRouteService
         if self._client:
             result = self._calculate_distance_openroute(origin, destination)
             if result:
                 self._cache_route(origin, destination, result)
                 return result
         
-        # Try geopy as fallback
         if GEO_AVAILABLE:
             result = self._calculate_distance_geopy(origin, destination)
             if result:
                 self._cache_route(origin, destination, result)
                 return result
         
-        # Default fallback
         logger.warning(f"⚠️ No distance data available for {origin} → {destination}")
         return {
             'distance_km': 0,
@@ -317,11 +297,11 @@ class DistanceService:
         }
     
     def get_distance_category(self, distance_km: float) -> Dict[str, str]:
-        """Categorize distance."""
+        """Categorize distance for Haier Logistics."""
         if distance_km <= 0:
             return {'category': 'Unknown', 'emoji': '❓', 'description': 'Unknown'}
         elif distance_km <= 50:
-            return {'category': 'Nearby Route', 'emoji': '📍', 'description': '0-50 km'}
+            return {'category': 'Nearby', 'emoji': '📍', 'description': '0-50 km'}
         elif distance_km <= 150:
             return {'category': 'Short Route', 'emoji': '🚗', 'description': '51-150 km'}
         elif distance_km <= 300:
@@ -334,9 +314,9 @@ class DistanceService:
     def get_expected_delivery_days(self, distance_km: float) -> int:
         """Calculate expected delivery days based on distance."""
         if distance_km <= 0:
-            return 0
+            return 1
         elif distance_km <= 100:
-            return 1  # Next day
+            return 1
         elif distance_km <= 250:
             return 2
         elif distance_km <= 450:
@@ -361,21 +341,17 @@ class DistanceService:
 
 class DNAnalysisService:
     """
-    DN Analytics Service - Direct PostgreSQL Connection.
+    DN Analytics Service - Haier Pakistan Logistics Enterprise.
     
-    BUSINESS LOGIC (v13.0):
-    - Shipment stage determined from dates (not status columns)
-    - Distance calculation with OpenRouteService + geopy fallback
-    - Logistics KPIs (Distance, Duration, Expected Delivery)
-    - Intelligent pending flag from dates
-    - Business recommendations
-    - Professional WhatsApp dashboard
+    PostgreSQL is the ONLY Source of Truth.
+    Intelligent shipment stage from dates.
+    Professional WhatsApp dashboard.
     """
     
     def __init__(self):
         """Initialize DN Analytics Service."""
         self._service_name = "dn_analysis"
-        self._version = "13.0"
+        self._version = "14.0"
         self._status = "INITIALIZING"
         self._query_count = 0
         self._total_execution_time_ms = 0
@@ -385,11 +361,15 @@ class DNAnalysisService:
         # Initialize distance service
         self._distance_service = DistanceService()
         
-        logger.info(f"🔧 DNAnalysisService v{self._version} initializing...")
+        logger.info("=" * 70)
+        logger.info(f"🏭 DNAnalysisService v{self._version} - HAIER PAKISTAN LOGISTICS")
+        logger.info("=" * 70)
         logger.info(f"📋 Debug Mode: {'ENABLED' if self._debug_mode else 'DISABLED'}")
         logger.info("📋 Date Policy: Native PostgreSQL DATE values (YYYY-MM-DD)")
         logger.info("📋 Business Logic: Intelligent shipment stage from dates")
         logger.info("📋 GIS: OpenRouteService + geopy fallback")
+        logger.info("📋 Cache: 30-day TTL")
+        logger.info("=" * 70)
         
         # Test connection
         test_result = self._test_connection()
@@ -499,6 +479,7 @@ class DNAnalysisService:
                 MAX(division) AS division,
                 SUM(dn_qty) AS total_units,
                 SUM(dn_amount) AS total_revenue,
+                COUNT(DISTINCT customer_model) AS model_count,
                 MIN(dn_create_date) AS dn_create_date,
                 MAX(good_issue_date) AS good_issue_date,
                 MAX(pod_date) AS pod_date,
@@ -603,7 +584,6 @@ class DNAnalysisService:
                 logger.error(f"❌ Table check failed: {e}")
                 return result
             
-            # Check GIS
             if OPENROUTE_API_KEY:
                 result["gis"] = "openrouteservice"
             elif GEO_AVAILABLE:
@@ -677,7 +657,7 @@ class DNAnalysisService:
             "version": self._version,
             "status": self._status,
             "module": "DN Analytics",
-            "description": "DN Analytics Service - Intelligent Business Logic with Logistics",
+            "description": "Haier Pakistan Logistics - Enterprise DN Dashboard",
             "date_policy": "Native PostgreSQL DATE values (YYYY-MM-DD)",
             "business_logic": "Shipment stage from dates (not status columns)",
             "gis_provider": "OpenRouteService + geopy fallback",
@@ -708,22 +688,7 @@ class DNAnalysisService:
     # ==========================================================
     
     def _validate_postgresql_date(self, date_value, field_name: str = "date") -> Dict[str, Any]:
-        """
-        CENTRAL DATE VALIDATOR - Single source of truth for date validation.
-        
-        Responsibilities:
-        - Verify object type
-        - Reject invalid strings (with warning)
-        - Only allow YYYY-MM-DD format
-        - Log warnings for string inputs (should be date objects)
-        
-        Args:
-            date_value: Date from PostgreSQL
-            field_name: Name of the field for logging
-            
-        Returns:
-            Dict with validation results
-        """
+        """Validate PostgreSQL date."""
         result = {
             "valid": False,
             "value": None,
@@ -733,43 +698,34 @@ class DNAnalysisService:
             "field": field_name
         }
         
-        # Check for None
         if date_value is None:
             result["error"] = "NULL value"
             result["type"] = "NoneType"
             logger.warning(f"⚠️ {field_name}: NULL value received")
             return result
         
-        # Check type - Date object (preferred)
         if isinstance(date_value, date) and not isinstance(date_value, datetime):
             result["type"] = "date"
             result["value"] = date_value
             result["formatted"] = date_value.strftime('%Y-%m-%d')
             result["valid"] = True
             if self._debug_mode:
-                logger.debug(f"✅ {field_name}: Valid date object {result['formatted']} (type: date)")
+                logger.debug(f"✅ {field_name}: Valid date object {result['formatted']}")
             return result
         
-        # Check type - Datetime object
         elif isinstance(date_value, datetime):
             result["type"] = "datetime"
             result["value"] = date_value
             result["formatted"] = date_value.strftime('%Y-%m-%d')
             result["valid"] = True
             if self._debug_mode:
-                logger.debug(f"✅ {field_name}: Valid datetime object {result['formatted']} (type: datetime)")
+                logger.debug(f"✅ {field_name}: Valid datetime object {result['formatted']}")
             return result
         
-        # Check type - String (should not happen from PostgreSQL)
         elif isinstance(date_value, str):
             result["type"] = "string"
+            logger.warning(f"⚠️ {field_name}: Expected DATE object but received string: '{date_value}'")
             
-            # Log warning - PostgreSQL should return date objects
-            logger.warning(
-                f"⚠️ {field_name}: Expected PostgreSQL DATE object but received string: '{date_value}'"
-            )
-            
-            # Only accept YYYY-MM-DD format
             parts = date_value.split('-')
             if len(parts) == 3:
                 try:
@@ -777,44 +733,27 @@ class DNAnalysisService:
                     month = int(parts[1])
                     day = int(parts[2])
                     
-                    # Validate year, month, day ranges
-                    if year < 1:
-                        result["error"] = f"Invalid year: {year}"
-                        logger.warning(f"⚠️ {field_name}: Invalid year {year}")
-                        return result
-                    if month < 1 or month > 12:
-                        result["error"] = f"Invalid month: {month}"
-                        logger.warning(f"⚠️ {field_name}: Invalid month {month}")
-                        return result
-                    if day < 1 or day > 31:
-                        result["error"] = f"Invalid day: {day}"
-                        logger.warning(f"⚠️ {field_name}: Invalid day {day}")
+                    if year < 1 or month < 1 or month > 12 or day < 1 or day > 31:
+                        result["error"] = f"Invalid date components: {date_value}"
+                        logger.warning(f"⚠️ {field_name}: {result['error']}")
                         return result
                     
                     parsed = datetime(year, month, day)
                     result["value"] = parsed
                     result["formatted"] = parsed.strftime('%Y-%m-%d')
                     result["valid"] = True
-                    logger.info(f"✅ {field_name}: Parsed string date {result['formatted']} (format: YYYY-MM-DD)")
+                    logger.info(f"✅ {field_name}: Parsed string date {result['formatted']}")
                     return result
                     
                 except ValueError as e:
-                    result["error"] = f"Invalid date components: {date_value} - {e}"
+                    result["error"] = f"Invalid date: {date_value} - {e}"
                     logger.warning(f"⚠️ {field_name}: {result['error']}")
                     return result
             else:
-                # Check for other formats and reject
-                if '.' in date_value:
-                    result["error"] = f"Invalid format (contains .): {date_value} - expected YYYY-MM-DD"
-                elif '/' in date_value:
-                    result["error"] = f"Invalid format (contains /): {date_value} - expected YYYY-MM-DD"
-                else:
-                    result["error"] = f"Invalid format: {date_value} - expected YYYY-MM-DD"
-                
+                result["error"] = f"Invalid format: {date_value} - expected YYYY-MM-DD"
                 logger.error(f"❌ {field_name}: {result['error']}")
                 return result
         
-        # Unsupported type
         else:
             result["error"] = f"Unsupported type: {type(date_value)}"
             logger.warning(f"⚠️ {field_name}: {result['error']}")
@@ -825,13 +764,7 @@ class DNAnalysisService:
     # ==========================================================
     
     def _format_display_date(self, date_value) -> str:
-        """
-        Format PostgreSQL date for display (YYYY-MM-DD).
-        
-        ✅ ONLY formats, does NOT parse.
-        ✅ Preserves original PostgreSQL format.
-        ✅ No month/day swapping.
-        """
+        """Format PostgreSQL date for display (YYYY-MM-DD)."""
         if date_value is None:
             return 'N/A'
         
@@ -839,10 +772,8 @@ class DNAnalysisService:
             if isinstance(date_value, (date, datetime)):
                 return date_value.strftime('%Y-%m-%d')
             elif isinstance(date_value, str):
-                # If already in YYYY-MM-DD format, return as-is
                 if len(date_value) == 10 and date_value[4] == '-' and date_value[7] == '-':
                     return date_value
-                # Try to parse and reformat
                 parsed = datetime.strptime(date_value, "%Y-%m-%d")
                 return parsed.strftime('%Y-%m-%d')
             else:
@@ -923,13 +854,7 @@ class DNAnalysisService:
     # ==========================================================
     
     def _check_date_integrity(self, dn_no: str, dn_create_date, good_issue_date, pod_date) -> Dict[str, Any]:
-        """
-        Check date integrity before aging calculations.
-        
-        Verifies: DN Create <= PGI <= POD
-        
-        Logs detailed errors for any inconsistency.
-        """
+        """Check date integrity before aging calculations."""
         result = {
             "valid": True,
             "warnings": [],
@@ -939,7 +864,6 @@ class DNAnalysisService:
             "pod": self._format_display_date(pod_date)
         }
         
-        # Check if DN Create is after PGI
         if dn_create_date and good_issue_date:
             if dn_create_date > good_issue_date:
                 result["valid"] = False
@@ -947,7 +871,6 @@ class DNAnalysisService:
                 result["errors"].append(msg)
                 logger.error(f"❌ DN {dn_no}: {msg}")
         
-        # Check if PGI is after POD
         if good_issue_date and pod_date:
             if good_issue_date > pod_date:
                 result["valid"] = False
@@ -955,7 +878,6 @@ class DNAnalysisService:
                 result["errors"].append(msg)
                 logger.error(f"❌ DN {dn_no}: {msg}")
         
-        # Check if DN Create is after POD
         if dn_create_date and pod_date:
             if dn_create_date > pod_date:
                 result["valid"] = False
@@ -963,7 +885,6 @@ class DNAnalysisService:
                 result["errors"].append(msg)
                 logger.error(f"❌ DN {dn_no}: {msg}")
         
-        # Check for POD exists but PGI missing (data inconsistency)
         if pod_date and not good_issue_date:
             result["valid"] = False
             msg = f"POD exists ({self._format_display_date(pod_date)}) but PGI is missing"
@@ -986,32 +907,23 @@ class DNAnalysisService:
     # ==========================================================
     
     def _log_raw_postgresql_values(self, data: Dict[str, Any], dn_no: str) -> None:
-        """
-        Log raw PostgreSQL values before any processing.
-        
-        This is the HIGHEST PRIORITY check - it immediately tells us
-        whether the database or the service is responsible for any issues.
-        """
+        """Log raw PostgreSQL values before any processing."""
         logger.info("=" * 70)
         logger.info(f"📊 RAW POSTGRESQL VALUES for DN {dn_no}")
         logger.info("=" * 70)
         logger.info(f"DN: {data.get('dn_no')}")
         logger.info("")
         
-        # DN Create Date
         dn_create = data.get('dn_create_date')
         logger.info(f"DN Create: {dn_create!r} ({type(dn_create).__name__})")
         
-        # PGI Date
         pgi = data.get('good_issue_date')
         logger.info(f"PGI:       {pgi!r} ({type(pgi).__name__})")
         
-        # POD Date
         pod = data.get('pod_date')
         logger.info(f"POD:       {pod!r} ({type(pod).__name__})")
         logger.info("=" * 70)
         
-        # Validate each date
         for field, value in [("dn_create_date", dn_create), 
                             ("good_issue_date", pgi), 
                             ("pod_date", pod)]:
@@ -1050,13 +962,7 @@ class DNAnalysisService:
             return 0
     
     def calculate_delivery_aging(self, dn_create_date, good_issue_date) -> int:
-        """
-        Calculate delivery aging using native PostgreSQL dates.
-        
-        BUSINESS RULE:
-        - If PGI exists: PGI - DN Create
-        - If PGI missing: Today - DN Create
-        """
+        """Calculate delivery aging using native PostgreSQL dates."""
         try:
             if dn_create_date is None:
                 logger.warning("⚠️ DN Create Date Missing - Returning 0")
@@ -1068,7 +974,6 @@ class DNAnalysisService:
                 return 0
             
             if good_issue_date is None:
-                # PGI missing - use current date
                 logger.info("📊 Delivery Aging: PGI missing - Using Current Date")
                 current_date = datetime.now().date()
                 days = self._safe_date_diff(dn_date, current_date)
@@ -1095,14 +1000,7 @@ class DNAnalysisService:
             return 0
     
     def calculate_pod_aging(self, good_issue_date, pod_date) -> int:
-        """
-        Calculate POD aging using native PostgreSQL dates.
-        
-        BUSINESS RULE:
-        - If POD exists: POD - PGI
-        - If POD missing but PGI exists: Today - PGI
-        - If PGI missing: Not Started (0)
-        """
+        """Calculate POD aging using native PostgreSQL dates."""
         try:
             if good_issue_date is None:
                 logger.info("📊 POD Aging: PGI missing - Not Started")
@@ -1114,7 +1012,6 @@ class DNAnalysisService:
                 return 0
             
             if pod_date is None:
-                # POD missing but PGI exists - use current date
                 logger.info("📊 POD Aging: POD missing, PGI exists - Using Current Date")
                 current_date = datetime.now().date()
                 days = self._safe_date_diff(gi_date, current_date)
@@ -1141,13 +1038,7 @@ class DNAnalysisService:
             return 0
     
     def calculate_total_cycle(self, dn_create_date, pod_date) -> int:
-        """
-        Calculate total cycle using native PostgreSQL dates.
-        
-        BUSINESS RULE:
-        - If POD exists: POD - DN Create
-        - If POD missing: Today - DN Create
-        """
+        """Calculate total cycle using native PostgreSQL dates."""
         try:
             if dn_create_date is None:
                 logger.warning("⚠️ DN Create Date Missing - Returning 0")
@@ -1159,7 +1050,6 @@ class DNAnalysisService:
                 return 0
             
             if pod_date is None:
-                # POD missing - use current date
                 logger.info("📊 Total Cycle: POD missing - Using Current Date")
                 current_date = datetime.now().date()
                 days = self._safe_date_diff(dn_date, current_date)
@@ -1190,16 +1080,7 @@ class DNAnalysisService:
     # ==========================================================
     
     def _calculate_logistics(self, warehouse: str, destination: str) -> Dict[str, Any]:
-        """
-        Calculate logistics metrics including distance, duration, and expected delivery.
-        
-        Args:
-            warehouse: Warehouse location
-            destination: Destination location (city)
-            
-        Returns:
-            Dict with logistics metrics
-        """
+        """Calculate logistics metrics including distance, duration, and expected delivery."""
         result = {
             "distance_km": 0,
             "distance_text": "Not Available",
@@ -1216,7 +1097,6 @@ class DNAnalysisService:
             logger.warning(f"⚠️ Missing location: warehouse={warehouse}, destination={destination}")
             return result
         
-        # Get distance
         distance_data = self._distance_service.get_distance(warehouse, destination)
         
         if distance_data:
@@ -1226,18 +1106,15 @@ class DNAnalysisService:
                 result['distance_km'] = distance_km
                 result['distance_text'] = f"{distance_km:.1f} km"
                 
-                # Get distance category
                 category = self._distance_service.get_distance_category(distance_km)
                 result['distance_category'] = category['category']
                 result['distance_emoji'] = category['emoji']
                 
-                # Get duration
                 duration_sec = distance_data.get('duration_sec', 0)
                 if duration_sec > 0:
                     result['duration_hours'] = round(duration_sec / 3600, 1)
                     result['duration_text'] = distance_data.get('duration_text', 'Not Available')
                 
-                # Get expected delivery days
                 expected_days = self._distance_service.get_expected_delivery_days(distance_km)
                 result['expected_delivery_days'] = expected_days
                 result['expected_delivery_text'] = self._distance_service.get_expected_delivery_text(distance_km)
@@ -1262,9 +1139,6 @@ class DNAnalysisService:
         - POD exists → Delivered
         - PGI exists, POD missing → In Transit
         - PGI missing → Pending Dispatch
-        
-        Returns:
-            Dict with stage, emoji, progress, health, recommendation
         """
         result = {
             "stage": "Unknown",
@@ -1278,7 +1152,6 @@ class DNAnalysisService:
             "pending": True
         }
         
-        # Parse dates
         dn_valid = self._validate_postgresql_date(dn_create_date, "stage_dn")
         pgi_valid = self._validate_postgresql_date(good_issue_date, "stage_pgi")
         pod_valid = self._validate_postgresql_date(pod_date, "stage_pod")
@@ -1287,7 +1160,6 @@ class DNAnalysisService:
         pgi_exists = pgi_valid["valid"] and pgi_valid["value"] is not None
         pod_exists = pod_valid["valid"] and pod_valid["value"] is not None
         
-        # Check for data inconsistency
         if pod_exists and not pgi_exists:
             logger.warning("⚠️ Data inconsistency: POD exists but PGI missing")
             result["stage"] = "Data Inconsistency"
@@ -1300,7 +1172,6 @@ class DNAnalysisService:
             result["pending"] = True
             return result
         
-        # CASE 3: POD exists → Delivered
         if pod_exists and pgi_exists:
             result["stage"] = "Delivered"
             result["stage_emoji"] = "✅"
@@ -1310,14 +1181,13 @@ class DNAnalysisService:
                 {"step": "PGI Completed", "status": "✅", "date": self._format_date_dmy_long(good_issue_date)},
                 {"step": "POD Received", "status": "✅", "date": self._format_date_dmy_long(pod_date)}
             ]
-            result["health"] = "Successfully Delivered"
+            result["health"] = "Completed"
             result["health_emoji"] = "🟢"
-            result["health_text"] = "Successfully Delivered"
-            result["recommendation"] = "Shipment has been successfully delivered. Transit time exceeded expected delivery duration. Recommend reviewing transporter performance and route execution to improve future deliveries."
+            result["health_text"] = "Completed Successfully"
+            result["recommendation"] = "Shipment completed successfully. Review performance if delivery exceeded expected time."
             result["pending"] = False
             return result
         
-        # CASE 2: PGI exists, POD missing → In Transit
         if pgi_exists and not pod_exists:
             result["stage"] = "In Transit"
             result["stage_emoji"] = "🚚"
@@ -1327,14 +1197,13 @@ class DNAnalysisService:
                 {"step": "PGI Completed", "status": "✅", "date": self._format_date_dmy_long(good_issue_date)},
                 {"step": "POD Pending", "status": "⏳", "date": "Pending"}
             ]
-            result["health"] = "Shipment On Route"
+            result["health"] = "On Route"
             result["health_emoji"] = "🟡"
             result["health_text"] = "Shipment On Route"
-            result["recommendation"] = "Shipment has left the warehouse and is currently in transit. Please follow up with the transporter and obtain POD confirmation."
+            result["recommendation"] = "Follow up with transporter for POD confirmation."
             result["pending"] = True
             return result
         
-        # CASE 1: PGI missing → Pending Dispatch
         if dn_exists and not pgi_exists:
             result["stage"] = "Pending Dispatch"
             result["stage_emoji"] = "🟡"
@@ -1347,11 +1216,10 @@ class DNAnalysisService:
             result["health"] = "Awaiting Warehouse Dispatch"
             result["health_emoji"] = "🟡"
             result["health_text"] = "Awaiting Warehouse Dispatch"
-            result["recommendation"] = "Shipment has remained pending for dispatch. Please coordinate with the warehouse team to complete PGI immediately to avoid further delivery delays."
+            result["recommendation"] = "Warehouse should complete PGI immediately."
             result["pending"] = True
             return result
         
-        # Fallback
         result["stage"] = "Unknown"
         result["stage_emoji"] = "❓"
         result["stage_text"] = "Unknown"
@@ -1450,6 +1318,7 @@ class DNAnalysisService:
             "division": results[0].get('division'),
             "total_units": sum(r.get('dn_qty', 0) or 0 for r in results),
             "total_revenue": sum(r.get('dn_amount', 0) or 0 for r in results),
+            "model_count": results[0].get('model_count', 1),
             "dn_create_date": min((r.get('dn_create_date') for r in results if r.get('dn_create_date')), default=None),
             "good_issue_date": max((r.get('good_issue_date') for r in results if r.get('good_issue_date')), default=None),
             "pod_date": max((r.get('pod_date') for r in results if r.get('pod_date')), default=None),
@@ -1563,28 +1432,11 @@ class DNAnalysisService:
     # ==========================================================
     
     def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
-        """
-        Get complete DN dashboard with intelligent business logic.
-        
-        Steps:
-        1. Query PostgreSQL
-        2. Log RAW PostgreSQL values (HIGHEST PRIORITY)
-        3. Validate each date
-        4. Check date integrity (DN <= PGI <= POD)
-        5. Calculate aging with business rules
-        6. Determine shipment stage from dates (NOT status columns)
-        7. Calculate logistics (distance, duration, expected delivery)
-        8. Build dashboard
-        9. Return dashboard
-        """
+        """Get complete DN dashboard with intelligent business logic."""
         logger.info(f"📊 Getting dashboard for DN: '{dn_no}'")
         
         if not dn_no:
             return {"success": False, "error": "DN number required"}
-        
-        # ==========================================================
-        # STEP 1: QUERY POSTGRESQL
-        # ==========================================================
         
         search_result = self.search_dn(dn_no)
         
@@ -1599,10 +1451,6 @@ class DNAnalysisService:
         
         data = search_result.get("data", {})
         
-        # ==========================================================
-        # STEP 2: LOG RAW POSTGRESQL VALUES (HIGHEST PRIORITY)
-        # ==========================================================
-        
         self._log_raw_postgresql_values(data, dn_no)
         
         raw_dn_create_date = data.get('dn_create_date')
@@ -1611,17 +1459,9 @@ class DNAnalysisService:
         warehouse = data.get('warehouse', '')
         destination = data.get('city', '')
         
-        # ==========================================================
-        # STEP 3: VALIDATE DATES
-        # ==========================================================
-        
         dn_validation = self._validate_postgresql_date(raw_dn_create_date, "dn_create_date")
         pgi_validation = self._validate_postgresql_date(raw_good_issue_date, "good_issue_date")
         pod_validation = self._validate_postgresql_date(raw_pod_date, "pod_date")
-        
-        # ==========================================================
-        # STEP 4: CHECK DATE INTEGRITY
-        # ==========================================================
         
         integrity = self._check_date_integrity(
             dn_no,
@@ -1629,10 +1469,6 @@ class DNAnalysisService:
             raw_good_issue_date,
             raw_pod_date
         )
-        
-        # ==========================================================
-        # STEP 5: CALCULATE AGING WITH BUSINESS RULES
-        # ==========================================================
         
         delivery_aging = self.calculate_delivery_aging(
             raw_dn_create_date,
@@ -1647,35 +1483,18 @@ class DNAnalysisService:
             raw_pod_date
         )
         
-        # ==========================================================
-        # STEP 6: DETERMINE SHIPMENT STAGE FROM DATES
-        # ==========================================================
-        
         stage_info = self._determine_shipment_stage(
             raw_dn_create_date,
             raw_good_issue_date,
             raw_pod_date
         )
         
-        # ==========================================================
-        # STEP 7: CALCULATE LOGISTICS
-        # ==========================================================
-        
         logistics = self._calculate_logistics(warehouse, destination)
-        
-        # ==========================================================
-        # STEP 8: FORMAT DATES
-        # ==========================================================
         
         formatted_dn_create = self._format_date_dmy_long(raw_dn_create_date)
         formatted_good_issue = self._format_date_dmy_long(raw_good_issue_date)
         formatted_pod = self._format_date_dmy_long(raw_pod_date)
         
-        # ==========================================================
-        # STEP 9: BUILD DASHBOARD WITH INTELLIGENT LOGIC
-        # ==========================================================
-        
-        # Handle NULL values for units and revenue
         total_units = data.get('total_units')
         if total_units is None:
             total_units_display = "Not Available"
@@ -1692,6 +1511,8 @@ class DNAnalysisService:
             total_revenue_value = float(total_revenue)
             total_revenue_display = f"PKR {total_revenue_value:,.2f}"
         
+        model_count = data.get('model_count', 1)
+        
         dashboard = {
             "dn_no": data.get('dn_no'),
             "dealer_name": data.get('dealer_name', 'Unknown'),
@@ -1700,25 +1521,18 @@ class DNAnalysisService:
             "delivery_location": data.get('delivery_location'),
             "sales_manager": data.get('sales_manager'),
             "division": data.get('division'),
-            
-            # Metrics with intelligent NULL handling
             "total_units": total_units_value,
             "total_units_display": total_units_display,
             "total_revenue": total_revenue_value,
             "total_revenue_display": total_revenue_display,
+            "model_count": model_count,
             "material_count": data.get('material_count', 1),
-            
-            # Display Dates (DD-MMM-YYYY for WhatsApp)
             "dn_create_date": formatted_dn_create,
             "good_issue_date": formatted_good_issue,
             "pod_date": formatted_pod,
-            
-            # Raw dates for calculations
             "_dn_create_date": raw_dn_create_date,
             "_good_issue_date": raw_good_issue_date,
             "_pod_date": raw_pod_date,
-            
-            # Intelligent Shipment Stage (primary)
             "stage": stage_info["stage"],
             "stage_emoji": stage_info["stage_emoji"],
             "stage_text": stage_info["stage_text"],
@@ -1727,20 +1541,14 @@ class DNAnalysisService:
             "health_emoji": stage_info["health_emoji"],
             "health_text": stage_info["health_text"],
             "recommendation": stage_info["recommendation"],
-            
-            # Intelligent Pending Flag
             "pending_flag": stage_info["pending"],
             "pending_flag_text": "Yes" if stage_info["pending"] else "No",
-            
-            # Aging
             "delivery_aging_days": delivery_aging,
             "pod_aging_days": pod_aging,
             "total_cycle_days": total_cycle,
             "delivery_aging_text": self._format_aging_text(delivery_aging),
             "pod_aging_text": self._format_aging_text(pod_aging) if pod_aging > 0 else "Not Started",
             "total_cycle_text": self._format_aging_text(total_cycle),
-            
-            # Logistics
             "distance_km": logistics.get('distance_km', 0),
             "distance_text": logistics.get('distance_text', 'Not Available'),
             "distance_category": logistics.get('distance_category', 'Unknown'),
@@ -1836,12 +1644,10 @@ class DNAnalysisService:
         """Debug aging calculations with native PostgreSQL dates."""
         logger.info("🔍 Running debug_aging_calculation...")
         
-        # Validate dates
         dn_valid = self._validate_postgresql_date(dn_create_date, "debug_dn_create")
         gi_valid = self._validate_postgresql_date(good_issue_date, "debug_pgi")
         pod_valid = self._validate_postgresql_date(pod_date, "debug_pod")
         
-        # Calculate aging using native dates
         delivery_aging = self.calculate_delivery_aging(dn_create_date, good_issue_date)
         pod_aging = self.calculate_pod_aging(good_issue_date, pod_date)
         total_cycle = self.calculate_total_cycle(dn_create_date, pod_date)
@@ -1953,7 +1759,6 @@ class DNAnalysisService:
             
             formatted_results = []
             for row in results:
-                # Determine stage
                 stage_info = self._determine_shipment_stage(
                     row.get('dn_create_date'),
                     row.get('good_issue_date'),
@@ -1965,7 +1770,6 @@ class DNAnalysisService:
                     row.get('good_issue_date')
                 )
                 
-                # Calculate logistics
                 warehouse = row.get('warehouse', '')
                 city = row.get('city', '')
                 logistics = self._calculate_logistics(warehouse, city)
@@ -2074,7 +1878,6 @@ class DNAnalysisService:
             
             formatted_results = []
             for row in results:
-                # Determine stage
                 stage_info = self._determine_shipment_stage(
                     row.get('dn_create_date'),
                     row.get('good_issue_date'),
@@ -2086,7 +1889,6 @@ class DNAnalysisService:
                     row.get('good_issue_date')
                 )
                 
-                # Calculate logistics
                 warehouse = row.get('warehouse', '')
                 city = row.get('city', '')
                 logistics = self._calculate_logistics(warehouse, city)
@@ -2197,7 +1999,6 @@ class DNAnalysisService:
             
             formatted_results = []
             for row in results:
-                # Determine stage
                 stage_info = self._determine_shipment_stage(
                     row.get('dn_create_date'),
                     row.get('good_issue_date'),
@@ -2209,7 +2010,6 @@ class DNAnalysisService:
                     row.get('pod_date')
                 )
                 
-                # Calculate logistics
                 warehouse = row.get('warehouse', '')
                 city = row.get('city', '')
                 logistics = self._calculate_logistics(warehouse, city)
@@ -2260,94 +2060,68 @@ class DNAnalysisService:
             return {"success": False, "error": str(e)}
     
     # ==========================================================
-    # BLOCK 14: WHATSAPP RESPONSE FORMATTER (PROFESSIONAL DASHBOARD)
+    # BLOCK 14: WHATSAPP RESPONSE FORMATTER (ENTERPRISE DASHBOARD)
     # ==========================================================
     
     def format_dn_dashboard(self, dashboard_data: Dict[str, Any]) -> str:
         """
-        Format DN dashboard for WhatsApp response with intelligent status.
+        Format DN dashboard for WhatsApp - Enterprise Logistics Dashboard.
         
-        ✅ Status from dates (not status columns)
-        ✅ Professional dashboard format with emojis
-        ✅ Business recommendations
-        ✅ No status contradictions
-        ✅ Logistics & distance information
-        ✅ Performance metrics
+        This produces the exact Haier Pakistan Logistics dashboard format.
         """
         data = dashboard_data.get('data', {})
         
         # ==========================================================
-        # INTELLIGENT STATUS FROM DATES (NOT STATUS COLUMNS)
+        # EXTRACT DATA
         # ==========================================================
         
-        # Get date values
-        dn_create_date = data.get('dn_create_date')
-        good_issue_date = data.get('good_issue_date')
-        pod_date = data.get('pod_date')
+        dn_no = data.get('dn_no', 'N/A')
+        dealer_name = data.get('dealer_name', 'Unknown')
+        warehouse = data.get('warehouse', 'Unknown')
+        city = data.get('city', 'Unknown')
+        sales_manager = data.get('sales_manager')
+        division = data.get('division')
         
-        # Helper to check if date exists
-        def date_exists(date_val):
-            if date_val is None:
-                return False
-            if isinstance(date_val, str):
-                return date_val not in ['N/A', 'Unknown', 'None', '']
-            return True
+        material_count = data.get('material_count', 1)
+        model_count = data.get('model_count', 1)
+        total_units = data.get('total_units_display', 'Not Available')
+        total_revenue = data.get('total_revenue_display', 'Not Available')
         
-        pgi_exists = date_exists(good_issue_date)
-        pod_exists = date_exists(pod_date)
+        dn_create_date = data.get('dn_create_date', 'N/A')
+        good_issue_date = data.get('good_issue_date', 'N/A')
+        pod_date = data.get('pod_date', 'N/A')
         
-        # Determine intelligent status from dates
-        if pod_exists and pgi_exists:
-            # CASE 1: Delivered
-            status_stage = "✅ Delivered"
-            status_health = "🟢 Successfully Delivered"
-            pgi_display = f"✅ PGI Completed"
-            pod_display = f"✅ POD Received"
-            pgi_date_display = good_issue_date
-            pod_date_display = pod_date
-            pending_display = "🟢 No"
-            stage_emoji = "✅"
-            health_emoji = "🟢"
-            recommendation = "Shipment has been successfully delivered. Transit time exceeded the expected delivery duration. Recommend reviewing transporter performance and route execution to improve future deliveries."
-            
-        elif pgi_exists and not pod_exists:
-            # CASE 2: In Transit
-            status_stage = "🚚 In Transit"
-            status_health = "🟡 Shipment On Route"
-            pgi_display = f"✅ PGI Completed"
-            pod_display = "⏳ POD Pending"
-            pgi_date_display = good_issue_date
-            pod_date_display = "Pending"
-            pending_display = "⚠️ Yes"
-            stage_emoji = "🚚"
-            health_emoji = "🟡"
-            recommendation = "Shipment has left the warehouse and is currently in transit. Please follow up with the transporter and obtain POD confirmation."
-            
-        else:
-            # CASE 3: Pending Dispatch
-            status_stage = "🟡 Pending Dispatch"
-            status_health = "🟡 Awaiting Warehouse Dispatch"
-            pgi_display = "⏳ PGI Pending"
-            pod_display = "⏳ POD Pending"
-            pgi_date_display = "Pending"
-            pod_date_display = "Pending"
-            pending_display = "⚠️ Yes"
-            stage_emoji = "🟡"
-            health_emoji = "🟡"
-            recommendation = "Shipment has remained pending for dispatch. Please coordinate with the warehouse team to complete PGI immediately to avoid further delivery delays."
+        delivery_aging_text = data.get('delivery_aging_text', 'N/A')
+        pod_aging_text = data.get('pod_aging_text', 'Not Started')
+        total_cycle_text = data.get('total_cycle_text', 'N/A')
+        
+        distance_text = data.get('distance_text', 'Not Available')
+        duration_text = data.get('duration_text', 'Not Available')
+        expected_delivery_text = data.get('expected_delivery_text', 'Not Available')
+        distance_category = data.get('distance_category', 'Unknown')
+        distance_emoji = data.get('distance_emoji', '📍')
+        
+        stage = data.get('stage', 'Unknown')
+        stage_emoji = data.get('stage_emoji', '❓')
+        health = data.get('health', 'Unknown')
+        health_emoji = data.get('health_emoji', '❓')
+        progress = data.get('progress', [])
+        recommendation = data.get('recommendation', 'Unable to determine shipment status.')
+        pending_flag_text = data.get('pending_flag_text', 'Yes')
         
         # ==========================================================
-        # CALCULATE PERFORMANCE METRICS
+        # PERFORMANCE METRICS
         # ==========================================================
         
-        expected_delivery_days = data.get('expected_delivery_days', 0)
         total_cycle_days = data.get('total_cycle_days', 0)
+        expected_delivery_days = data.get('expected_delivery_days', 1)
         
         if expected_delivery_days > 0 and total_cycle_days > 0:
-            delivery_delay = max(0, total_cycle_days - expected_delivery_days)
+            delay = max(0, total_cycle_days - expected_delivery_days)
             efficiency = round((expected_delivery_days / total_cycle_days) * 100, 1) if total_cycle_days > 0 else 0
+            efficiency = min(efficiency, 100)
         else:
-            delivery_delay = 0
+            delay = 0
             efficiency = 0
         
         # ==========================================================
@@ -2355,30 +2129,40 @@ class DNAnalysisService:
         # ==========================================================
         
         lines = []
+        
+        # Header
         lines.append("📦 *Haier Logistics - DN Dashboard*")
         lines.append("")
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
+        
+        # Delivery Note
         lines.append("🆔 *Delivery Note*")
-        lines.append(data.get('dn_no', 'N/A'))
-        lines.append("")
-        lines.append("🏪 *Dealer*")
-        lines.append(data.get('dealer_name', 'Unknown'))
-        lines.append("")
-        lines.append("🏢 *Warehouse*")
-        lines.append(data.get('warehouse', 'Unknown'))
-        lines.append("")
-        lines.append("📍 *Destination*")
-        lines.append(data.get('city', 'Unknown'))
+        lines.append(dn_no)
         lines.append("")
         
-        sales_manager = data.get('sales_manager')
+        # Dealer
+        lines.append("🏪 *Dealer*")
+        lines.append(dealer_name)
+        lines.append("")
+        
+        # Warehouse
+        lines.append("🏢 *Warehouse*")
+        lines.append(warehouse)
+        lines.append("")
+        
+        # Destination
+        lines.append("📍 *Destination*")
+        lines.append(city)
+        lines.append("")
+        
+        # Sales Manager
         if sales_manager:
             lines.append("👤 *Sales Manager*")
             lines.append(sales_manager)
             lines.append("")
         
-        division = data.get('division')
+        # Division
         if division:
             lines.append("📦 *Division*")
             lines.append(division)
@@ -2393,78 +2177,78 @@ class DNAnalysisService:
         
         lines.append("📊 *Shipment Summary*")
         lines.append("")
-        lines.append(f"📦 DN Count: {data.get('material_count', 1)}")
-        lines.append(f"📦 Product Models: {data.get('material_count', 1)}")
-        
-        units = data.get('total_units')
-        if units is None or units == 0:
-            lines.append("📦 Total Units: Not Available")
-        else:
-            lines.append(f"📦 Total Units: {units}")
-        
-        revenue = data.get('total_revenue')
-        if revenue is None or revenue == 0:
-            lines.append("💰 Shipment Value: Not Available")
-        else:
-            lines.append(f"💰 Shipment Value: PKR {revenue:,.0f}")
+        lines.append(f"📦 DN Count: {material_count}")
+        lines.append(f"📦 Product Models: {model_count}")
+        lines.append(f"📦 Total Units: {total_units}")
+        lines.append(f"💰 Shipment Value: {total_revenue}")
         lines.append("")
         
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
         
         # ==========================================================
-        # TIMELINE
+        # SHIPMENT TIMELINE
         # ==========================================================
         
         lines.append("📅 *Shipment Timeline*")
         lines.append("")
         lines.append(f"✅ DN Created")
-        lines.append(data.get('dn_create_date', 'N/A'))
+        lines.append(dn_create_date)
         lines.append("")
-        lines.append(pgi_display)
-        lines.append(pgi_date_display)
+        
+        if good_issue_date != 'N/A':
+            lines.append(f"✅ PGI Completed")
+        else:
+            lines.append(f"⏳ PGI")
+        lines.append(good_issue_date)
         lines.append("")
-        lines.append(pod_display)
-        lines.append(pod_date_display)
+        
+        if pod_date != 'N/A':
+            lines.append(f"✅ POD Received")
+        elif good_issue_date != 'N/A':
+            lines.append(f"⏳ POD Pending")
+        else:
+            lines.append(f"⏳ POD")
+        lines.append(pod_date)
         lines.append("")
         
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
         
         # ==========================================================
-        # AGING
+        # SHIPMENT AGING
         # ==========================================================
         
         lines.append("⏳ *Shipment Aging*")
         lines.append("")
         
-        if pod_exists and pgi_exists:
+        if good_issue_date != 'N/A' and pod_date != 'N/A':
             lines.append(f"Dispatch Time")
-            lines.append(data.get('delivery_aging_text', 'N/A'))
+            lines.append(delivery_aging_text)
             lines.append("")
             lines.append(f"Transit Time")
-            lines.append(data.get('pod_aging_text', 'N/A'))
+            lines.append(pod_aging_text)
             lines.append("")
             lines.append(f"Total Delivery Cycle")
-            lines.append(data.get('total_cycle_text', 'N/A'))
-        elif pgi_exists and not pod_exists:
+            lines.append(total_cycle_text)
+        elif good_issue_date != 'N/A' and pod_date == 'N/A':
             lines.append(f"Dispatch Time")
-            lines.append(data.get('delivery_aging_text', 'N/A'))
+            lines.append(delivery_aging_text)
             lines.append("")
             lines.append(f"Transit Time")
-            lines.append(data.get('pod_aging_text', 'Not Started'))
+            lines.append(pod_aging_text)
             lines.append("")
             lines.append(f"Overall Cycle")
-            lines.append(data.get('total_cycle_text', 'N/A'))
+            lines.append(total_cycle_text)
         else:
             lines.append(f"Dispatch Waiting")
-            lines.append(data.get('delivery_aging_text', 'N/A'))
+            lines.append(delivery_aging_text)
             lines.append("")
             lines.append(f"Transit")
             lines.append("Not Started")
             lines.append("")
             lines.append(f"Overall Cycle")
-            lines.append(data.get('total_cycle_text', 'N/A'))
+            lines.append(total_cycle_text)
         lines.append("")
         
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
@@ -2477,55 +2261,49 @@ class DNAnalysisService:
         lines.append("🚛 *Logistics Route*")
         lines.append("")
         lines.append("Warehouse")
-        lines.append(data.get('warehouse', 'Unknown'))
+        lines.append(warehouse)
         lines.append("")
         lines.append("Destination")
-        lines.append(data.get('city', 'Unknown'))
+        lines.append(city)
         lines.append("")
         
-        distance_text = data.get('distance_text', 'Not Available')
         if distance_text != 'Not Available':
             lines.append("Road Distance")
             lines.append(distance_text)
             lines.append("")
         
-        duration_text = data.get('duration_text', 'Not Available')
         if duration_text != 'Not Available':
-            lines.append("Estimated Drive")
+            lines.append("Estimated Drive Time")
             lines.append(duration_text)
             lines.append("")
         
-        expected_delivery = data.get('expected_delivery_text', 'Not Available')
-        if expected_delivery != 'Not Available':
+        if expected_delivery_text != 'Not Available':
             lines.append("Expected Delivery")
-            lines.append(expected_delivery)
+            lines.append(expected_delivery_text)
             lines.append("")
         
-        if pod_exists and pgi_exists:
+        if pod_date != 'N/A':
             lines.append("Actual Delivery")
-            lines.append(data.get('total_cycle_text', 'N/A'))
+            lines.append(total_cycle_text)
             lines.append("")
-            if delivery_delay > 0:
+            if delay > 0:
                 lines.append("Delivery Delay")
-                lines.append(f"{delivery_delay} Days")
+                lines.append(f"{delay} Days")
             else:
                 lines.append("Delivery Delay")
                 lines.append("On Time")
             lines.append("")
-        elif pgi_exists and not pod_exists:
-            lines.append("Actual Transit")
-            lines.append(data.get('pod_aging_text', 'Not Started'))
-            lines.append("")
-            lines.append("Delay")
-            lines.append(f"{data.get('pod_aging_days', 0)} Days")
-            lines.append("")
         
-        distance_category = data.get('distance_category', 'Unknown')
-        distance_emoji = data.get('distance_emoji', '📍')
         if distance_category != 'Unknown':
             lines.append("Distance Category")
             lines.append(f"{distance_emoji} {distance_category}")
         lines.append("")
+        
+        if pod_date != 'N/A':
+            if efficiency > 0 and efficiency <= 100:
+                lines.append("Route Efficiency")
+                lines.append(f"{efficiency}%")
+                lines.append("")
         
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
@@ -2538,46 +2316,45 @@ class DNAnalysisService:
         lines.append("")
         lines.append("Current Stage")
         lines.append("")
-        lines.append(f"{stage_emoji} {status_stage}")
+        lines.append(f"{stage_emoji} {stage}")
         lines.append("")
         lines.append("Shipment Health")
         lines.append("")
-        lines.append(f"{health_emoji} {status_health}")
+        lines.append(f"{health_emoji} {health}")
         lines.append("")
         lines.append("Progress")
         lines.append("")
-        lines.append(f"✅ DN Created")
-        if pgi_exists:
-            lines.append(f"✅ PGI Completed")
-        else:
-            lines.append(f"⏳ PGI Pending")
-        if pod_exists:
-            lines.append(f"✅ POD Received")
-        elif pgi_exists and not pod_exists:
-            lines.append(f"⏳ POD Pending")
-        else:
-            lines.append(f"⏳ POD Pending")
+        
+        for item in progress:
+            status = item.get('status', '⏳')
+            step = item.get('step', '')
+            date_val = item.get('date', '')
+            if date_val and date_val not in ['Pending', 'Not Started', 'N/A']:
+                lines.append(f"{status} {step}")
+                lines.append(date_val)
+            else:
+                lines.append(f"{status} {step}")
         lines.append("")
         
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
         
         # ==========================================================
-        # PERFORMANCE ANALYSIS (Only for Delivered shipments)
+        # PERFORMANCE ANALYSIS (Only for Delivered)
         # ==========================================================
         
-        if pod_exists and pgi_exists:
+        if pod_date != 'N/A':
             lines.append("📈 *Performance Analysis*")
             lines.append("")
             lines.append("Expected Delivery")
-            lines.append(expected_delivery if expected_delivery != 'Not Available' else 'N/A')
+            lines.append(expected_delivery_text if expected_delivery_text != 'Not Available' else 'N/A')
             lines.append("")
             lines.append("Actual Delivery")
-            lines.append(data.get('total_cycle_text', 'N/A'))
+            lines.append(total_cycle_text)
             lines.append("")
-            if delivery_delay > 0:
+            if delay > 0:
                 lines.append("Delay")
-                lines.append(f"{delivery_delay} Days")
+                lines.append(f"{delay} Days")
             else:
                 lines.append("Delay")
                 lines.append("No Delay")
@@ -2591,7 +2368,7 @@ class DNAnalysisService:
             lines.append("")
         
         # ==========================================================
-        # RECOMMENDATION
+        # AI RECOMMENDATION
         # ==========================================================
         
         lines.append("💡 *AI Recommendation*")
@@ -2602,7 +2379,7 @@ class DNAnalysisService:
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
         lines.append("🤖 Generated by")
-        lines.append("Haier Logistics AI")
+        lines.append("Haier Logistics AI Assistant")
         
         return "\n".join(lines)
     
@@ -2611,9 +2388,7 @@ class DNAnalysisService:
     # ==========================================================
     
     def test_date_calculation(self) -> Dict[str, Any]:
-        """
-        Regression tests for date calculations.
-        """
+        """Regression tests for date calculations."""
         logger.info("🧪 Running regression tests...")
         
         from datetime import date as date_type
@@ -2621,7 +2396,7 @@ class DNAnalysisService:
         test_results = []
         all_passed = True
         
-        # Test 1: Your data
+        # Test 1
         tc1_dn_create = date_type(2026, 5, 5)
         tc1_pgi = date_type(2026, 5, 7)
         tc1_pod = date_type(2026, 5, 25)
@@ -2701,7 +2476,7 @@ class DNAnalysisService:
             "passed": tc4_passed
         })
         
-        # Test 5: Month boundary
+        # Test 5
         tc5_dn_create = date_type(2026, 1, 31)
         tc5_pgi = date_type(2026, 2, 1)
         
@@ -2717,7 +2492,7 @@ class DNAnalysisService:
             "passed": tc5_passed
         })
         
-        # Test 6: Year boundary
+        # Test 6
         tc6_dn_create = date_type(2026, 12, 31)
         tc6_pgi = date_type(2027, 1, 1)
         
@@ -2733,7 +2508,7 @@ class DNAnalysisService:
             "passed": tc6_passed
         })
         
-        # Test 7: Leap Year
+        # Test 7
         tc7_dn_create = date_type(2024, 2, 28)
         tc7_pgi = date_type(2024, 2, 29)
         
@@ -2749,7 +2524,7 @@ class DNAnalysisService:
             "passed": tc7_passed
         })
         
-        # Test 8: NULL PGI
+        # Test 8
         tc8_dn_create = date_type(2026, 5, 5)
         tc8_delivery = self.calculate_delivery_aging(tc8_dn_create, None)
         tc8_passed = (tc8_delivery >= 0)
@@ -2761,7 +2536,7 @@ class DNAnalysisService:
             "passed": tc8_passed
         })
         
-        # Test 9: NULL POD
+        # Test 9
         tc9_pgi = date_type(2026, 5, 7)
         tc9_pod_aging = self.calculate_pod_aging(tc9_pgi, None)
         tc9_passed = (tc9_pod_aging >= 0)
@@ -2773,7 +2548,6 @@ class DNAnalysisService:
             "passed": tc9_passed
         })
         
-        # Build result
         result = {
             "test_name": "Regression Tests - Native PostgreSQL Dates",
             "date_policy": "YYYY-MM-DD (Native PostgreSQL)",
@@ -2784,7 +2558,6 @@ class DNAnalysisService:
             "timestamp": datetime.now().isoformat()
         }
         
-        # Log results
         logger.info("=" * 70)
         logger.info("🧪 REGRESSION TEST RESULTS")
         logger.info("=" * 70)
@@ -2846,12 +2619,12 @@ __all__ = [
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("DNAnalysisService v13.0 - ENTERPRISE PRODUCTION")
+logger.info("DNAnalysisService v14.0 - HAIER PAKISTAN LOGISTICS")
 logger.info("=" * 70)
 logger.info("")
 logger.info("   SERVICE DETAILS:")
 logger.info("   ✅ Service Name: dn_analysis")
-logger.info("   ✅ Version: 13.0")
+logger.info("   ✅ Version: 14.0")
 logger.info("   ✅ Status: READY")
 logger.info("   ✅ Source: PostgreSQL (delivery_reports)")
 logger.info("   ✅ Compatible: ai_provider_service.py v5.0")
@@ -2875,11 +2648,12 @@ logger.info("   ✅ Distance calculation (OpenRouteService + geopy fallback)")
 logger.info("   ✅ Distance categories (Nearby, Short, Medium, Long, Very Long)")
 logger.info("   ✅ Expected delivery days based on distance")
 logger.info("   ✅ Route caching (30 days TTL)")
+logger.info("   ✅ Performance metrics (Efficiency, Delay)")
 logger.info("")
 logger.info("   SHIPMENT STAGES:")
 logger.info("   ✅ Pending Dispatch (PGI NULL) → Awaiting Warehouse Dispatch")
 logger.info("   ✅ In Transit (PGI exists, POD NULL) → Shipment On Route")
-logger.info("   ✅ Delivered (POD exists) → Successfully Delivered")
+logger.info("   ✅ Delivered (POD exists) → Completed")
 logger.info("")
 logger.info("   STATUS: ✅ ENTERPRISE PRODUCTION READY")
 logger.info("=" * 70)
