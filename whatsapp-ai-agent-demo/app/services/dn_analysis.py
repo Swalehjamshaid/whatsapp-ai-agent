@@ -1,8 +1,8 @@
 # ==========================================================
-# FILE: app/services/dn_analysis.py (v14.0 - FAST ENTERPRISE)
+# FILE: app/services/dn_analysis.py (v14.0 - COMPLETE)
 # ==========================================================
-# PURPOSE: DN Analytics Service - FAST Enterprise Logistics Dashboard
-# VERSION: 14.0 - OPTIMIZED FOR SPEED
+# PURPOSE: DN Analytics Service - Complete with All Methods
+# VERSION: 14.0 - ALL METHODS INCLUDED
 # ==========================================================
 
 import logging
@@ -34,11 +34,11 @@ except ImportError as e:
 DEBUG_MODE = os.environ.get("DN_DEBUG_MODE", "false").lower() == "true"
 
 # ==========================================================
-# BLOCK 2: DNAnalysisService CLASS (OPTIMIZED)
+# BLOCK 2: DNAnalysisService CLASS (COMPLETE)
 # ==========================================================
 
 class DNAnalysisService:
-    """DN Analytics Service - Optimized for Fast Response."""
+    """DN Analytics Service - Complete with All Methods."""
     
     def __init__(self):
         self._service_name = "dn_analysis"
@@ -660,7 +660,362 @@ class DNAnalysisService:
         return "\n".join(lines)
     
     # ==========================================================
-    # BLOCK 10: HEALTH & VALIDATION
+    # BLOCK 10: GET PENDING DNS (REQUIRED)
+    # ==========================================================
+    
+    def get_pending_dns(self, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
+        """Get all pending DNs."""
+        logger.info(f"🔍 Getting pending DNs (limit: {limit}, offset: {offset})")
+        
+        try:
+            limit = min(limit, 1000)
+            
+            count_query = """
+                SELECT COUNT(DISTINCT dn_no) AS total_pending
+                FROM delivery_reports
+                WHERE good_issue_date IS NULL
+                   OR (good_issue_date IS NOT NULL AND pod_date IS NULL)
+            """
+            count_result = self._execute_query(count_query)
+            total_pending = count_result[0].get('total_pending', 0) if count_result else 0
+            
+            logger.info(f"📊 Total pending DNs: {total_pending}")
+            
+            if total_pending == 0:
+                return {
+                    "success": True,
+                    "data": [],
+                    "total": 0,
+                    "limit": limit,
+                    "offset": offset,
+                    "message": "No pending DNs found"
+                }
+            
+            pending_query = """
+                SELECT 
+                    dn_no,
+                    MAX(customer_name) AS dealer_name,
+                    MAX(warehouse) AS warehouse,
+                    MAX(ship_to_city) AS city,
+                    SUM(dn_qty) AS total_units,
+                    SUM(dn_amount) AS total_revenue,
+                    MIN(dn_create_date) AS dn_create_date,
+                    MAX(good_issue_date) AS good_issue_date,
+                    MAX(pod_date) AS pod_date,
+                    MAX(delivery_status) AS delivery_status,
+                    MAX(pgi_status) AS pgi_status,
+                    MAX(pod_status) AS pod_status,
+                    MAX(pending_flag) AS pending_flag,
+                    MAX(sales_manager) AS sales_manager,
+                    MAX(division) AS division,
+                    COUNT(*) AS material_count
+                FROM delivery_reports
+                WHERE good_issue_date IS NULL
+                   OR (good_issue_date IS NOT NULL AND pod_date IS NULL)
+                GROUP BY dn_no
+                ORDER BY MIN(dn_create_date) ASC
+                LIMIT :limit OFFSET :offset
+            """
+            
+            results = self._execute_query(
+                pending_query,
+                {"limit": limit, "offset": offset}
+            )
+            
+            formatted_results = []
+            for row in results:
+                stage_info = self._determine_shipment_stage(
+                    row.get('dn_create_date'),
+                    row.get('good_issue_date'),
+                    row.get('pod_date')
+                )
+                
+                delivery_aging = self.calculate_delivery_aging(
+                    row.get('dn_create_date'),
+                    row.get('good_issue_date')
+                )
+                
+                for date_field in ['dn_create_date', 'good_issue_date', 'pod_date']:
+                    if row.get(date_field):
+                        if isinstance(row[date_field], (datetime, date)):
+                            row[date_field] = row[date_field].strftime("%Y-%m-%d")
+                
+                formatted_row = {
+                    "dn_no": row.get('dn_no'),
+                    "dealer_name": row.get('dealer_name') or "Unknown Dealer",
+                    "warehouse": row.get('warehouse') or "Unknown Warehouse",
+                    "city": row.get('city') or "Unknown City",
+                    "total_units": int(row.get('total_units') or 0),
+                    "total_revenue": float(row.get('total_revenue') or 0),
+                    "dn_create_date": row.get('dn_create_date'),
+                    "good_issue_date": row.get('good_issue_date'),
+                    "pod_date": row.get('pod_date'),
+                    "stage": stage_info["stage"],
+                    "stage_emoji": stage_info["stage_emoji"],
+                    "stage_text": stage_info["stage"],
+                    "health_emoji": stage_info["health_emoji"],
+                    "health_text": stage_info["health"],
+                    "pending_flag": stage_info["pending"],
+                    "pending_flag_text": "Yes" if stage_info["pending"] else "No",
+                    "delivery_aging_days": delivery_aging,
+                    "delivery_aging_text": self._format_aging_text(delivery_aging),
+                    "sales_manager": row.get('sales_manager'),
+                    "division": row.get('division'),
+                    "material_count": row.get('material_count', 1)
+                }
+                formatted_results.append(formatted_row)
+            
+            return {
+                "success": True,
+                "data": formatted_results,
+                "total": total_pending,
+                "limit": limit,
+                "offset": offset,
+                "returned": len(formatted_results)
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to get pending DNs: {e}")
+            return {"success": False, "error": str(e)}
+    
+    # ==========================================================
+    # BLOCK 11: GET PENDING PGI (REQUIRED)
+    # ==========================================================
+    
+    def get_pending_pgi(self, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
+        """Get all pending PGI deliveries."""
+        logger.info(f"🔍 Getting pending PGI (limit: {limit}, offset: {offset})")
+        
+        try:
+            limit = min(limit, 1000)
+            
+            count_query = """
+                SELECT COUNT(DISTINCT dn_no) AS total_pending
+                FROM delivery_reports
+                WHERE good_issue_date IS NULL
+            """
+            count_result = self._execute_query(count_query)
+            total_pending = count_result[0].get('total_pending', 0) if count_result else 0
+            
+            logger.info(f"📊 Total pending PGI: {total_pending}")
+            
+            if total_pending == 0:
+                return {
+                    "success": True,
+                    "data": [],
+                    "total": 0,
+                    "limit": limit,
+                    "offset": offset,
+                    "message": "No pending PGI found"
+                }
+            
+            pending_query = """
+                SELECT 
+                    dn_no,
+                    MAX(customer_name) AS dealer_name,
+                    MAX(warehouse) AS warehouse,
+                    MAX(ship_to_city) AS city,
+                    SUM(dn_qty) AS total_units,
+                    SUM(dn_amount) AS total_revenue,
+                    MIN(dn_create_date) AS dn_create_date,
+                    MAX(good_issue_date) AS good_issue_date,
+                    MAX(pod_date) AS pod_date,
+                    MAX(delivery_status) AS delivery_status,
+                    MAX(pgi_status) AS pgi_status,
+                    MAX(pod_status) AS pod_status,
+                    MAX(pending_flag) AS pending_flag,
+                    MAX(sales_manager) AS sales_manager,
+                    MAX(division) AS division,
+                    COUNT(*) AS material_count
+                FROM delivery_reports
+                WHERE good_issue_date IS NULL
+                GROUP BY dn_no
+                ORDER BY MIN(dn_create_date) ASC
+                LIMIT :limit OFFSET :offset
+            """
+            
+            results = self._execute_query(
+                pending_query,
+                {"limit": limit, "offset": offset}
+            )
+            
+            formatted_results = []
+            for row in results:
+                stage_info = self._determine_shipment_stage(
+                    row.get('dn_create_date'),
+                    row.get('good_issue_date'),
+                    row.get('pod_date')
+                )
+                
+                delivery_aging = self.calculate_delivery_aging(
+                    row.get('dn_create_date'),
+                    row.get('good_issue_date')
+                )
+                
+                for date_field in ['dn_create_date', 'good_issue_date', 'pod_date']:
+                    if row.get(date_field):
+                        if isinstance(row[date_field], (datetime, date)):
+                            row[date_field] = row[date_field].strftime("%Y-%m-%d")
+                
+                formatted_row = {
+                    "dn_no": row.get('dn_no'),
+                    "dealer_name": row.get('dealer_name') or "Unknown Dealer",
+                    "warehouse": row.get('warehouse') or "Unknown Warehouse",
+                    "city": row.get('city') or "Unknown City",
+                    "total_units": int(row.get('total_units') or 0),
+                    "total_revenue": float(row.get('total_revenue') or 0),
+                    "dn_create_date": row.get('dn_create_date'),
+                    "good_issue_date": row.get('good_issue_date'),
+                    "pod_date": row.get('pod_date'),
+                    "stage": stage_info["stage"],
+                    "stage_emoji": stage_info["stage_emoji"],
+                    "stage_text": stage_info["stage"],
+                    "health_emoji": stage_info["health_emoji"],
+                    "health_text": stage_info["health"],
+                    "pending_flag": stage_info["pending"],
+                    "pending_flag_text": "Yes" if stage_info["pending"] else "No",
+                    "delivery_aging_days": delivery_aging,
+                    "delivery_aging_text": self._format_aging_text(delivery_aging),
+                    "sales_manager": row.get('sales_manager'),
+                    "division": row.get('division'),
+                    "material_count": row.get('material_count', 1)
+                }
+                formatted_results.append(formatted_row)
+            
+            return {
+                "success": True,
+                "data": formatted_results,
+                "total": total_pending,
+                "limit": limit,
+                "offset": offset,
+                "returned": len(formatted_results)
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to get pending PGI: {e}")
+            return {"success": False, "error": str(e)}
+    
+    # ==========================================================
+    # BLOCK 12: GET PENDING POD (REQUIRED)
+    # ==========================================================
+    
+    def get_pending_pod(self, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
+        """Get all pending POD deliveries."""
+        logger.info(f"🔍 Getting pending POD (limit: {limit}, offset: {offset})")
+        
+        try:
+            limit = min(limit, 1000)
+            
+            count_query = """
+                SELECT COUNT(DISTINCT dn_no) AS total_pending
+                FROM delivery_reports
+                WHERE good_issue_date IS NOT NULL
+                  AND pod_date IS NULL
+            """
+            count_result = self._execute_query(count_query)
+            total_pending = count_result[0].get('total_pending', 0) if count_result else 0
+            
+            logger.info(f"📊 Total pending POD: {total_pending}")
+            
+            if total_pending == 0:
+                return {
+                    "success": True,
+                    "data": [],
+                    "total": 0,
+                    "limit": limit,
+                    "offset": offset,
+                    "message": "No pending POD found"
+                }
+            
+            pending_query = """
+                SELECT 
+                    dn_no,
+                    MAX(customer_name) AS dealer_name,
+                    MAX(warehouse) AS warehouse,
+                    MAX(ship_to_city) AS city,
+                    SUM(dn_qty) AS total_units,
+                    SUM(dn_amount) AS total_revenue,
+                    MIN(dn_create_date) AS dn_create_date,
+                    MAX(good_issue_date) AS good_issue_date,
+                    MAX(pod_date) AS pod_date,
+                    MAX(delivery_status) AS delivery_status,
+                    MAX(pgi_status) AS pgi_status,
+                    MAX(pod_status) AS pod_status,
+                    MAX(pending_flag) AS pending_flag,
+                    MAX(sales_manager) AS sales_manager,
+                    MAX(division) AS division,
+                    COUNT(*) AS material_count
+                FROM delivery_reports
+                WHERE good_issue_date IS NOT NULL
+                  AND pod_date IS NULL
+                GROUP BY dn_no
+                ORDER BY MIN(dn_create_date) ASC
+                LIMIT :limit OFFSET :offset
+            """
+            
+            results = self._execute_query(
+                pending_query,
+                {"limit": limit, "offset": offset}
+            )
+            
+            formatted_results = []
+            for row in results:
+                stage_info = self._determine_shipment_stage(
+                    row.get('dn_create_date'),
+                    row.get('good_issue_date'),
+                    row.get('pod_date')
+                )
+                
+                pod_aging = self.calculate_pod_aging(
+                    row.get('good_issue_date'),
+                    row.get('pod_date')
+                )
+                
+                for date_field in ['dn_create_date', 'good_issue_date', 'pod_date']:
+                    if row.get(date_field):
+                        if isinstance(row[date_field], (datetime, date)):
+                            row[date_field] = row[date_field].strftime("%Y-%m-%d")
+                
+                formatted_row = {
+                    "dn_no": row.get('dn_no'),
+                    "dealer_name": row.get('dealer_name') or "Unknown Dealer",
+                    "warehouse": row.get('warehouse') or "Unknown Warehouse",
+                    "city": row.get('city') or "Unknown City",
+                    "total_units": int(row.get('total_units') or 0),
+                    "total_revenue": float(row.get('total_revenue') or 0),
+                    "dn_create_date": row.get('dn_create_date'),
+                    "good_issue_date": row.get('good_issue_date'),
+                    "pod_date": row.get('pod_date'),
+                    "stage": stage_info["stage"],
+                    "stage_emoji": stage_info["stage_emoji"],
+                    "stage_text": stage_info["stage"],
+                    "health_emoji": stage_info["health_emoji"],
+                    "health_text": stage_info["health"],
+                    "pending_flag": stage_info["pending"],
+                    "pending_flag_text": "Yes" if stage_info["pending"] else "No",
+                    "pod_aging_days": pod_aging,
+                    "pod_aging_text": self._format_aging_text(pod_aging) if pod_aging > 0 else "Not Started",
+                    "sales_manager": row.get('sales_manager'),
+                    "division": row.get('division'),
+                    "material_count": row.get('material_count', 1)
+                }
+                formatted_results.append(formatted_row)
+            
+            return {
+                "success": True,
+                "data": formatted_results,
+                "total": total_pending,
+                "limit": limit,
+                "offset": offset,
+                "returned": len(formatted_results)
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to get pending POD: {e}")
+            return {"success": False, "error": str(e)}
+    
+    # ==========================================================
+    # BLOCK 13: HEALTH & VALIDATION
     # ==========================================================
     
     def health_check(self) -> Dict[str, Any]:
@@ -733,7 +1088,10 @@ class DNAnalysisService:
                 "search_dn",
                 "verify_dn",
                 "get_dn_dashboard",
-                "format_dn_dashboard"
+                "format_dn_dashboard",
+                "get_pending_dns",
+                "get_pending_pgi",
+                "get_pending_pod"
             ]
         }
     
@@ -758,7 +1116,7 @@ class DNAnalysisService:
 
 
 # ==========================================================
-# BLOCK 11: THREAD-SAFE SINGLETON
+# BLOCK 14: THREAD-SAFE SINGLETON
 # ==========================================================
 
 _dn_analytics_service = None
@@ -781,7 +1139,7 @@ def get_dn_analytics_service() -> DNAnalysisService:
 
 
 # ==========================================================
-# BLOCK 12: EXPORTS
+# BLOCK 15: EXPORTS
 # ==========================================================
 
 __all__ = [
@@ -791,19 +1149,20 @@ __all__ = [
 
 
 # ==========================================================
-# BLOCK 13: MODULE INITIALIZATION
+# BLOCK 16: MODULE INITIALIZATION
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("DNAnalysisService v14.0 - FAST ENTERPRISE READY")
+logger.info("DNAnalysisService v14.0 - COMPLETE & READY")
 logger.info("=" * 70)
 logger.info("")
 logger.info("   ✅ Service: dn_analysis")
-logger.info("   ✅ Version: 14.0 (FAST)")
+logger.info("   ✅ Version: 14.0")
 logger.info("   ✅ Status: READY")
+logger.info("   ✅ Methods: ALL INCLUDED")
 logger.info("   ✅ Intelligent status from dates")
 logger.info("   ✅ Professional WhatsApp dashboard")
-logger.info("   ✅ Optimized for speed")
+logger.info("   ✅ Fast response optimized")
 logger.info("")
 logger.info("   STATUS: ✅ PRODUCTION READY")
 logger.info("=" * 70)
