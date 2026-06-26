@@ -1294,28 +1294,40 @@ class DNAnalysisService:
     # ==========================================================
     # BLOCK 10: DN DASHBOARD - WITH ENHANCED DATA
     # ==========================================================
+    # ==========================================================
+    # BLOCK 10: DN DASHBOARD BUILDER (ENTERPRISE SAFE UPGRADE)
+    # ==========================================================
     
     def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
         """
-        Get complete DN dashboard with full PostgreSQL verification.
+        Get complete DN dashboard with enterprise analytics.
         
         STEPS:
-        1. Query PostgreSQL (UNCHANGED)
+        1. Query PostgreSQL (UNCHANGED - EXISTING SEARCH LAYER)
         2. Log RAW PostgreSQL values (UNCHANGED)
-        3. Validate each date (UNCHANGED)
+        3. Validate dates (UNCHANGED)
         4. Check date integrity (UNCHANGED)
         5. Calculate aging (UNCHANGED)
         6. Get product details (NEW - NON-BREAKING)
-        7. Calculate distance (NEW - NON-BREAKING)
-        8. Build dashboard (ENHANCED - ONLY ADDING)
+        7. Get dealer/warehouse additional info (NEW - NON-BREAKING)
+        8. Calculate route analytics (NEW - NON-BREAKING)
+        9. Calculate KPIs (NEW - NON-BREAKING)
+        10. Generate recommendations (NEW - NON-BREAKING)
+        11. Build dashboard (ENHANCED - ONLY ADDING)
+        
+        Args:
+            dn_no: Delivery Note number
+            
+        Returns:
+            Dict with complete dashboard data
         """
-        logger.info(f"📊 Getting dashboard for DN: '{dn_no}'")
+        logger.info(f"📊 Building dashboard for DN: '{dn_no}'")
         
         if not dn_no:
             return {"success": False, "error": "DN number required"}
         
         # ==========================================================
-        # STEP 1: QUERY POSTGRESQL (UNCHANGED)
+        # STEP 1: QUERY POSTGRESQL (UNCHANGED - LOCKED)
         # ==========================================================
         
         search_result = self.search_dn(dn_no)
@@ -1396,6 +1408,8 @@ class DNAnalysisService:
         products = []
         total_units_calculated = 0
         total_revenue_calculated = 0
+        model_count = 0
+        material_count = 0
         
         for row in product_results:
             model_name = row.get('model_name')
@@ -1414,16 +1428,35 @@ class DNAnalysisService:
                 })
                 total_units_calculated += qty
                 total_revenue_calculated += revenue
+                if material_no != 'N/A':
+                    material_count += 1
+        
+        model_count = len(products)
         
         # ==========================================================
-        # STEP 8: CALCULATE DISTANCE (NEW - APPEND)
+        # STEP 8: GET ADDITIONAL INFO (NEW - APPEND)
+        # ==========================================================
+        
+        # Dealer info
+        dealer_code = data.get('dealer_code')
+        customer_code = data.get('customer_code')
+        sales_office = data.get('sales_office')
+        delivery_location = data.get('delivery_location')
+        warehouse_code = data.get('warehouse_code')
+        storage_location = data.get('storage_location')
+        order_type = data.get('order_type')
+        
+        # ==========================================================
+        # STEP 9: CALCULATE ROUTE ANALYTICS (NEW - NON-BREAKING)
         # ==========================================================
         
         distance_info = {
             "distance_km": 0,
             "distance_text": "Not Available",
             "duration_text": "Unknown",
-            "route_source": "unknown"
+            "eta_text": "Unknown",
+            "route_source": "unknown",
+            "route_confidence": "low"
         }
         
         warehouse = data.get('warehouse')
@@ -1432,22 +1465,104 @@ class DNAnalysisService:
         if warehouse and destination and self._distance_calculator:
             try:
                 dist_data = self._distance_calculator.calculate_distance(warehouse, destination)
-                distance_info = {
-                    "distance_km": dist_data.get('distance_km', 0),
-                    "distance_text": f"{dist_data.get('distance_km', 0):.1f} km" if dist_data.get('distance_km', 0) > 0 else "Not Available",
-                    "duration_text": dist_data.get('duration_text', 'Unknown'),
-                    "route_source": dist_data.get('source', 'unknown')
-                }
+                distance_km = dist_data.get('distance_km', 0)
+                
+                if distance_km > 0:
+                    # Distance
+                    distance_info = {
+                        "distance_km": round(distance_km, 1),
+                        "distance_text": f"{round(distance_km, 1)} km",
+                        "duration_text": dist_data.get('duration_text', 'Unknown'),
+                        "eta_text": self._estimate_delivery_eta(distance_km),
+                        "route_source": dist_data.get('source', 'unknown'),
+                        "route_confidence": dist_data.get('confidence', 'low')
+                    }
             except Exception as e:
-                logger.warning(f"⚠️ Distance calculation failed: {e}")
+                logger.warning(f"⚠️ Route calculation failed: {e}")
         
         # ==========================================================
-        # STEP 9: BUILD DASHBOARD (PRESERVE ALL EXISTING + ADD NEW)
+        # STEP 10: CALCULATE KPI ANALYTICS (NEW - NON-BREAKING)
+        # ==========================================================
+        
+        # Use existing values with fallback
+        total_units = total_units_calculated if total_units_calculated > 0 else data.get('total_units', 0)
+        total_revenue = total_revenue_calculated if total_revenue_calculated > 0 else data.get('total_revenue', 0)
+        material_count = data.get('material_count', 1)
+        
+        # KPI calculations
+        average_units_per_model = round(total_units / model_count, 1) if model_count > 0 else 0
+        average_revenue_per_model = round(total_revenue / model_count, 1) if model_count > 0 else 0
+        revenue_per_unit = round(total_revenue / total_units, 1) if total_units > 0 else 0
+        
+        # SLA calculation
+        expected_days = 1
+        if distance_info.get('eta_text') == "Same Day":
+            expected_days = 1
+        elif distance_info.get('eta_text') and distance_info.get('eta_text') != "Unknown":
+            try:
+                expected_days = int(distance_info['eta_text'].split()[0])
+            except:
+                expected_days = 2
+        
+        sla = self._calculate_sla(total_cycle, expected_days)
+        
+        # Performance grade
+        performance_grade = self._calculate_performance_grade(sla, total_cycle, expected_days)
+        
+        # Health score
+        health_score = self._calculate_health_score(
+            has_pgi=raw_good_issue_date is not None,
+            has_pod=raw_pod_date is not None,
+            has_products=len(products) > 0,
+            has_distance=distance_info.get('distance_km', 0) > 0,
+            sla_status=sla.get('status', 'Unknown')
+        )
+        
+        # ==========================================================
+        # STEP 11: GENERATE RECOMMENDATIONS (NEW - NON-BREAKING)
+        # ==========================================================
+        
+        recommendations = self._generate_recommendations(
+            has_pgi=raw_good_issue_date is not None,
+            has_pod=raw_pod_date is not None,
+            delivery_aging=delivery_aging,
+            pod_aging=pod_aging,
+            total_cycle=total_cycle,
+            distance_km=distance_info.get('distance_km', 0),
+            sla_status=sla.get('status', 'Unknown'),
+            has_products=len(products) > 0
+        )
+        
+        # ==========================================================
+        # STEP 12: DETERMINE SHIPMENT STAGE FROM DATES (NEW)
+        # ==========================================================
+        
+        pgi_exists = raw_good_issue_date is not None
+        pod_exists = raw_pod_date is not None
+        
+        if pod_exists and pgi_exists:
+            calculated_stage = "Delivered"
+            calculated_emoji = "✅"
+            calculated_health = "Completed Successfully"
+            calculated_health_emoji = "🟢"
+        elif pgi_exists and not pod_exists:
+            calculated_stage = "In Transit"
+            calculated_emoji = "🚚"
+            calculated_health = "On Route"
+            calculated_health_emoji = "🟡"
+        else:
+            calculated_stage = "Pending Dispatch"
+            calculated_emoji = "⏳"
+            calculated_health = "Awaiting Dispatch"
+            calculated_health_emoji = "🟡"
+        
+        # ==========================================================
+        # STEP 13: BUILD DASHBOARD (PRESERVE ALL EXISTING + ADD NEW)
         # ==========================================================
         
         dashboard = {
             # ==========================================================
-            # EXISTING FIELDS (UNCHANGED)
+            # EXISTING FIELDS (UNCHANGED - PRESERVED)
             # ==========================================================
             "dn_no": data.get('dn_no'),
             "dealer_name": data.get('dealer_name', 'Unknown'),
@@ -1462,7 +1577,7 @@ class DNAnalysisService:
             "good_issue_date": formatted_good_issue,
             "pod_date": formatted_pod,
             
-            # Aging
+            # Aging (PRESERVED)
             "delivery_aging_days": delivery_aging,
             "pod_aging_days": pod_aging,
             "total_cycle_days": total_cycle,
@@ -1470,7 +1585,7 @@ class DNAnalysisService:
             "pod_aging_text": self._format_aging_text(pod_aging),
             "total_cycle_text": self._format_aging_text(total_cycle),
             
-            # Status fields (existing)
+            # Status fields (PRESERVED for backward compatibility)
             "delivery_status": data.get('delivery_status', 'Unknown'),
             "pgi_status": data.get('pgi_status', 'Unknown'),
             "pod_status": data.get('pod_status', 'Unknown'),
@@ -1481,50 +1596,73 @@ class DNAnalysisService:
             "pod_status_text": data.get('pod_status_text', 'Unknown'),
             "pending_flag_text": data.get('pending_flag_text', 'Unknown'),
             
+            # Raw dates (PRESERVED)
+            "_dn_create_date": raw_dn_create_date,
+            "_good_issue_date": raw_good_issue_date,
+            "_pod_date": raw_pod_date,
+            
             # ==========================================================
             # NEW FIELDS - ENHANCED METRICS (FIXED)
             # ==========================================================
             
-            # Enhanced metrics - using calculated values
-            "total_units": total_units_calculated if total_units_calculated > 0 else data.get('total_units', 0),
-            "total_revenue": total_revenue_calculated if total_revenue_calculated > 0 else data.get('total_revenue', 0),
-            "material_count": data.get('material_count', 1),
-            "model_count": len(products),
+            # Metrics - using calculated values
+            "total_units": total_units,
+            "total_revenue": total_revenue,
+            "material_count": material_count,
+            "model_count": model_count,
             
             # ==========================================================
             # NEW FIELDS - ADDITIONAL INFORMATION
             # ==========================================================
             
-            # Additional dealer info
-            "dealer_code": data.get('dealer_code'),
-            "customer_code": data.get('customer_code'),
-            "warehouse_code": data.get('warehouse_code'),
-            "sales_office": data.get('sales_office'),
+            # Dealer additional info
+            "dealer_code": dealer_code,
+            "customer_code": customer_code,
+            "sales_office": sales_office,
+            "warehouse_code": warehouse_code,
+            "storage_location": storage_location,
+            "order_type": order_type,
             
             # Product details
             "products": products,
             
-            # Distance info
+            # Route Analytics
             "distance_km": distance_info.get('distance_km', 0),
             "distance_text": distance_info.get('distance_text', 'Not Available'),
             "duration_text": distance_info.get('duration_text', 'Unknown'),
+            "eta_text": distance_info.get('eta_text', 'Unknown'),
             "route_source": distance_info.get('route_source', 'unknown'),
+            "route_confidence": distance_info.get('route_confidence', 'low'),
             
-            # System info
+            # KPI Analytics
+            "average_units_per_model": average_units_per_model,
+            "average_revenue_per_model": average_revenue_per_model,
+            "revenue_per_unit": revenue_per_unit,
+            "sla_status": sla.get('status', 'Unknown'),
+            "sla_on_time": sla.get('on_time', False),
+            "sla_delay_days": sla.get('delay_days', 0),
+            "performance_grade": performance_grade,
+            "health_score": health_score,
+            
+            # Calculated Shipment Stage (from dates)
+            "calculated_stage": calculated_stage,
+            "calculated_emoji": calculated_emoji,
+            "calculated_health": calculated_health,
+            "calculated_health_emoji": calculated_health_emoji,
+            
+            # Recommendations
+            "recommendations": recommendations,
+            
+            # System Info
             "source_file": data.get('source_file'),
             "upload_batch_id": data.get('upload_batch_id'),
             "imported_at": data.get('imported_at'),
             "created_at": data.get('created_at'),
             "updated_at": data.get('updated_at'),
-            
-            # Raw dates
-            "_dn_create_date": raw_dn_create_date,
-            "_good_issue_date": raw_good_issue_date,
-            "_pod_date": raw_pod_date,
         }
         
         # ==========================================================
-        # STEP 10: LOG DASHBOARD SUMMARY (ENHANCED)
+        # STEP 14: LOG DASHBOARD SUMMARY (ENHANCED)
         # ==========================================================
         
         logger.info(f"📊 DASHBOARD SUMMARY for DN {dn_no}:")
@@ -1537,16 +1675,165 @@ class DNAnalysisService:
         logger.info(f"   Total Cycle: {total_cycle} days")
         logger.info(f"   Products: {len(products)}")
         logger.info(f"   Distance: {dashboard['distance_text']}")
+        logger.info(f"   Stage: {calculated_emoji} {calculated_stage}")
+        logger.info(f"   SLA: {sla.get('status', 'Unknown')}")
+        logger.info(f"   Health Score: {health_score}%")
         
         if not integrity['valid']:
             logger.warning(f"⚠️ DN {dn_no}: Date integrity issues detected:")
             for error in integrity['errors']:
                 logger.warning(f"   └── {error}")
         
-        logger.info(f"✅ Dashboard returned for DN {dn_no}")
+        if recommendations:
+            logger.info(f"   Recommendations: {len(recommendations)}")
+        
+        logger.info(f"✅ Dashboard built for DN {dn_no}")
         return {"success": True, "data": dashboard}
     
     # ==========================================================
+    # BLOCK 10.1: HELPER METHODS FOR DASHBOARD BUILDER
+    # ==========================================================
+    
+    def _estimate_delivery_eta(self, distance_km: float) -> str:
+        """Estimate delivery ETA based on distance."""
+        if distance_km <= 0:
+            return "Unknown"
+        elif distance_km <= 100:
+            return "Same Day"
+        elif distance_km <= 250:
+            return "1 Day"
+        elif distance_km <= 450:
+            return "2 Days"
+        elif distance_km <= 700:
+            return "3 Days"
+        else:
+            return "4+ Days"
+    
+    def _calculate_sla(self, actual_days: int, expected_days: int) -> Dict[str, Any]:
+        """Calculate SLA performance."""
+        if expected_days <= 0:
+            return {"status": "Unknown", "on_time": False, "delay_days": 0, "expected_days": expected_days, "actual_days": actual_days}
+        
+        delay = max(0, actual_days - expected_days) if actual_days > 0 else 0
+        on_time = delay == 0
+        
+        if on_time:
+            status = "On Time"
+        elif delay <= 1:
+            status = "Slightly Delayed"
+        elif delay <= 3:
+            status = "Delayed"
+        else:
+            status = "Significantly Delayed"
+        
+        return {
+            "status": status,
+            "on_time": on_time,
+            "delay_days": delay,
+            "expected_days": expected_days,
+            "actual_days": actual_days
+        }
+    
+    def _calculate_performance_grade(self, sla: Dict[str, Any], total_cycle: int, expected_days: int) -> str:
+        """Calculate performance grade."""
+        if not sla.get('on_time', False):
+            delay = sla.get('delay_days', 0)
+            if delay <= 1:
+                return "B+"
+            elif delay <= 3:
+                return "B-"
+            elif delay <= 7:
+                return "C+"
+            elif delay <= 14:
+                return "C-"
+            else:
+                return "D"
+        
+        if total_cycle <= expected_days:
+            return "A"
+        elif total_cycle <= expected_days + 1:
+            return "A-"
+        else:
+            return "B+"
+    
+    def _calculate_health_score(self, has_pgi: bool, has_pod: bool, has_products: bool, has_distance: bool, sla_status: str) -> int:
+        """Calculate overall health score (0-100)."""
+        score = 0
+        
+        # Data completeness (40 points)
+        if has_pgi:
+            score += 15
+        if has_pod:
+            score += 15
+        if has_products:
+            score += 10
+        
+        # Data quality (30 points)
+        if has_distance:
+            score += 15
+        if has_pgi and has_pod:
+            score += 15
+        
+        # Performance (30 points)
+        if sla_status == "On Time":
+            score += 30
+        elif sla_status == "Slightly Delayed":
+            score += 20
+        elif sla_status == "Delayed":
+            score += 10
+        elif sla_status == "Significantly Delayed":
+            score += 5
+        
+        return min(score, 100)
+    
+    def _generate_recommendations(self, **kwargs) -> List[str]:
+        """Generate business recommendations from dashboard data."""
+        recommendations = []
+        
+        # Check PGI status
+        if not kwargs.get('has_pgi', False):
+            recommendations.append("🚚 PGI Pending - Warehouse should complete PGI immediately.")
+        
+        # Check POD status
+        if kwargs.get('has_pgi', False) and not kwargs.get('has_pod', False):
+            recommendations.append("📋 POD Pending - Follow up with transporter for POD confirmation.")
+        
+        # Check delivery aging
+        delivery_aging = kwargs.get('delivery_aging', 0)
+        if delivery_aging > 3 and not kwargs.get('has_pgi', False):
+            recommendations.append(f"⏰ Dispatch Delay - Shipment has been waiting for dispatch for {delivery_aging} days.")
+        
+        # Check POD aging
+        pod_aging = kwargs.get('pod_aging', 0)
+        if pod_aging > 5 and kwargs.get('has_pgi', False) and not kwargs.get('has_pod', False):
+            recommendations.append(f"⏰ Transit Delay - Shipment has been in transit for {pod_aging} days.")
+        
+        # Check SLA
+        sla_status = kwargs.get('sla_status', 'Unknown')
+        if sla_status == "Delayed" or sla_status == "Significantly Delayed":
+            recommendations.append("⚠️ SLA Breach - Delivery time exceeded expected SLA.")
+        
+        # Check distance
+        distance_km = kwargs.get('distance_km', 0)
+        if distance_km > 500 and not kwargs.get('has_pod', False):
+            recommendations.append("🔄 Long Distance Route - Shipment has long distance transit. Monitor closely.")
+        
+        # Check products
+        if not kwargs.get('has_products', False):
+            recommendations.append("📦 Product details not available - Please verify shipment contents.")
+        
+        # Performance recommendation
+        if kwargs.get('has_pod', True) and kwargs.get('has_pgi', True):
+            total_cycle = kwargs.get('total_cycle', 0)
+            if total_cycle > 14:
+                recommendations.append(f"📊 Delivery completed in {total_cycle} days. Review transporter performance.")
+        
+        # If no recommendations, add a positive one
+        if not recommendations:
+            recommendations.append("✅ Shipment is on track. No action required.")
+        
+        return recommendations[:5]  # Limit to 5 recommendations    
+  # ==========================================================
     # BLOCK 11: DIAGNOSTIC METHODS
     # ==========================================================
     
