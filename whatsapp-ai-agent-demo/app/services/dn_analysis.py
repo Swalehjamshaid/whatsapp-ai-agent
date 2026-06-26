@@ -321,7 +321,7 @@ class DistanceService:
         if distance_km <= 0:
             return {'category': 'Unknown', 'emoji': '❓', 'description': 'Unknown'}
         elif distance_km <= 50:
-            return {'category': 'Nearby', 'emoji': '📍', 'description': '0-50 km'}
+            return {'category': 'Nearby Route', 'emoji': '📍', 'description': '0-50 km'}
         elif distance_km <= 150:
             return {'category': 'Short Route', 'emoji': '🚗', 'description': '51-150 km'}
         elif distance_km <= 300:
@@ -336,22 +336,20 @@ class DistanceService:
         if distance_km <= 0:
             return 0
         elif distance_km <= 100:
-            return 0  # Same day
+            return 1  # Next day
         elif distance_km <= 250:
-            return 1
-        elif distance_km <= 450:
             return 2
-        elif distance_km <= 700:
+        elif distance_km <= 450:
             return 3
-        else:
+        elif distance_km <= 700:
             return 4
+        else:
+            return 5
     
     def get_expected_delivery_text(self, distance_km: float) -> str:
         """Get human-readable expected delivery text."""
         days = self.get_expected_delivery_days(distance_km)
-        if days == 0:
-            return "Same Day"
-        elif days == 1:
+        if days == 1:
             return "1 Day"
         else:
             return f"{days} Days"
@@ -1312,10 +1310,10 @@ class DNAnalysisService:
                 {"step": "PGI Completed", "status": "✅", "date": self._format_date_dmy_long(good_issue_date)},
                 {"step": "POD Received", "status": "✅", "date": self._format_date_dmy_long(pod_date)}
             ]
-            result["health"] = "Completed Successfully"
+            result["health"] = "Successfully Delivered"
             result["health_emoji"] = "🟢"
-            result["health_text"] = "Completed Successfully"
-            result["recommendation"] = "Shipment successfully completed. No further action required."
+            result["health_text"] = "Successfully Delivered"
+            result["recommendation"] = "Shipment has been successfully delivered. Transit time exceeded expected delivery duration. Recommend reviewing transporter performance and route execution to improve future deliveries."
             result["pending"] = False
             return result
         
@@ -1329,27 +1327,27 @@ class DNAnalysisService:
                 {"step": "PGI Completed", "status": "✅", "date": self._format_date_dmy_long(good_issue_date)},
                 {"step": "POD Pending", "status": "⏳", "date": "Pending"}
             ]
-            result["health"] = "On Route"
+            result["health"] = "Shipment On Route"
             result["health_emoji"] = "🟡"
             result["health_text"] = "Shipment On Route"
-            result["recommendation"] = "Shipment has left the warehouse. Please obtain POD confirmation from transporter."
+            result["recommendation"] = "Shipment has left the warehouse and is currently in transit. Please follow up with the transporter and obtain POD confirmation."
             result["pending"] = True
             return result
         
         # CASE 1: PGI missing → Pending Dispatch
         if dn_exists and not pgi_exists:
             result["stage"] = "Pending Dispatch"
-            result["stage_emoji"] = "⏳"
+            result["stage_emoji"] = "🟡"
             result["stage_text"] = "Pending Dispatch"
             result["progress"] = [
                 {"step": "DN Created", "status": "✅", "date": self._format_date_dmy_long(dn_create_date)},
                 {"step": "PGI Pending", "status": "⏳", "date": "Pending"},
                 {"step": "POD Not Started", "status": "⏳", "date": "Not Started"}
             ]
-            result["health"] = "Awaiting Dispatch"
+            result["health"] = "Awaiting Warehouse Dispatch"
             result["health_emoji"] = "🟡"
             result["health_text"] = "Awaiting Warehouse Dispatch"
-            result["recommendation"] = "Shipment has not yet been dispatched. Warehouse should complete PGI immediately."
+            result["recommendation"] = "Shipment has remained pending for dispatch. Please coordinate with the warehouse team to complete PGI immediately to avoid further delivery delays."
             result["pending"] = True
             return result
         
@@ -2264,18 +2262,17 @@ class DNAnalysisService:
     # ==========================================================
     # BLOCK 14: WHATSAPP RESPONSE FORMATTER (PROFESSIONAL DASHBOARD)
     # ==========================================================
-    # ==========================================================
-    # BLOCK 14: WHATSAPP RESPONSE FORMATTER (PROFESSIONAL DASHBOARD)
-    # ==========================================================
     
     def format_dn_dashboard(self, dashboard_data: Dict[str, Any]) -> str:
         """
         Format DN dashboard for WhatsApp response with intelligent status.
         
         ✅ Status from dates (not status columns)
-        ✅ Professional dashboard format
+        ✅ Professional dashboard format with emojis
         ✅ Business recommendations
         ✅ No status contradictions
+        ✅ Logistics & distance information
+        ✅ Performance metrics
         """
         data = dashboard_data.get('data', {})
         
@@ -2303,149 +2300,309 @@ class DNAnalysisService:
         if pod_exists and pgi_exists:
             # CASE 1: Delivered
             status_stage = "✅ Delivered"
-            status_health = "🟢 Completed Successfully"
-            pgi_display = f"✅ PGI Completed ({good_issue_date})"
-            pod_display = f"✅ POD Received ({pod_date})"
+            status_health = "🟢 Successfully Delivered"
+            pgi_display = f"✅ PGI Completed"
+            pod_display = f"✅ POD Received"
+            pgi_date_display = good_issue_date
+            pod_date_display = pod_date
             pending_display = "🟢 No"
-            recommendation = "Shipment successfully completed. No further action required."
+            stage_emoji = "✅"
+            health_emoji = "🟢"
+            recommendation = "Shipment has been successfully delivered. Transit time exceeded the expected delivery duration. Recommend reviewing transporter performance and route execution to improve future deliveries."
             
         elif pgi_exists and not pod_exists:
             # CASE 2: In Transit
             status_stage = "🚚 In Transit"
-            status_health = "🟡 On Route"
-            pgi_display = f"✅ PGI Completed ({good_issue_date})"
+            status_health = "🟡 Shipment On Route"
+            pgi_display = f"✅ PGI Completed"
             pod_display = "⏳ POD Pending"
+            pgi_date_display = good_issue_date
+            pod_date_display = "Pending"
             pending_display = "⚠️ Yes"
-            recommendation = "Shipment has left the warehouse. Please obtain POD confirmation from transporter."
+            stage_emoji = "🚚"
+            health_emoji = "🟡"
+            recommendation = "Shipment has left the warehouse and is currently in transit. Please follow up with the transporter and obtain POD confirmation."
             
         else:
             # CASE 3: Pending Dispatch
-            status_stage = "⏳ Pending Dispatch"
-            status_health = "🟡 Awaiting Dispatch"
+            status_stage = "🟡 Pending Dispatch"
+            status_health = "🟡 Awaiting Warehouse Dispatch"
             pgi_display = "⏳ PGI Pending"
-            pod_display = "⏳ POD Not Started"
+            pod_display = "⏳ POD Pending"
+            pgi_date_display = "Pending"
+            pod_date_display = "Pending"
             pending_display = "⚠️ Yes"
-            recommendation = "Shipment has not yet been dispatched. Warehouse should complete PGI immediately."
+            stage_emoji = "🟡"
+            health_emoji = "🟡"
+            recommendation = "Shipment has remained pending for dispatch. Please coordinate with the warehouse team to complete PGI immediately to avoid further delivery delays."
+        
+        # ==========================================================
+        # CALCULATE PERFORMANCE METRICS
+        # ==========================================================
+        
+        expected_delivery_days = data.get('expected_delivery_days', 0)
+        total_cycle_days = data.get('total_cycle_days', 0)
+        
+        if expected_delivery_days > 0 and total_cycle_days > 0:
+            delivery_delay = max(0, total_cycle_days - expected_delivery_days)
+            efficiency = round((expected_delivery_days / total_cycle_days) * 100, 1) if total_cycle_days > 0 else 0
+        else:
+            delivery_delay = 0
+            efficiency = 0
         
         # ==========================================================
         # BUILD WHATSAPP RESPONSE
         # ==========================================================
         
         lines = []
-        lines.append(f"📦 *DN: {data.get('dn_no', 'N/A')}*")
+        lines.append("📦 *Haier Logistics - DN Dashboard*")
         lines.append("")
-        lines.append("*Dealer:*")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("")
+        lines.append("🆔 *Delivery Note*")
+        lines.append(data.get('dn_no', 'N/A'))
+        lines.append("")
+        lines.append("🏪 *Dealer*")
         lines.append(data.get('dealer_name', 'Unknown'))
         lines.append("")
-        lines.append("*Warehouse:*")
+        lines.append("🏢 *Warehouse*")
         lines.append(data.get('warehouse', 'Unknown'))
         lines.append("")
-        lines.append("*City:*")
+        lines.append("📍 *Destination*")
         lines.append(data.get('city', 'Unknown'))
         lines.append("")
         
         sales_manager = data.get('sales_manager')
         if sales_manager:
-            lines.append("*Sales Manager:*")
+            lines.append("👤 *Sales Manager*")
             lines.append(sales_manager)
             lines.append("")
         
         division = data.get('division')
         if division:
-            lines.append("*Division:*")
+            lines.append("📦 *Division*")
             lines.append(division)
             lines.append("")
         
-        lines.append("━━━━━━━━━━━━━━━━")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
         
         # ==========================================================
         # SHIPMENT SUMMARY
         # ==========================================================
         
-        lines.append("*📊 Shipment Summary*")
-        lines.append(f"DN Count: {data.get('material_count', 1)}")
+        lines.append("📊 *Shipment Summary*")
+        lines.append("")
+        lines.append(f"📦 DN Count: {data.get('material_count', 1)}")
+        lines.append(f"📦 Product Models: {data.get('material_count', 1)}")
         
         units = data.get('total_units')
         if units is None or units == 0:
-            lines.append("Units: Not Available")
+            lines.append("📦 Total Units: Not Available")
         else:
-            lines.append(f"Units: {units}")
+            lines.append(f"📦 Total Units: {units}")
         
         revenue = data.get('total_revenue')
         if revenue is None or revenue == 0:
-            lines.append("Shipment Value: Not Available")
+            lines.append("💰 Shipment Value: Not Available")
         else:
-            lines.append(f"Shipment Value: PKR {revenue:,.2f}")
+            lines.append(f"💰 Shipment Value: PKR {revenue:,.0f}")
         lines.append("")
         
-        lines.append("━━━━━━━━━━━━━━━━")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
         
         # ==========================================================
         # TIMELINE
         # ==========================================================
         
-        lines.append("*📅 Timeline*")
-        lines.append(f"✅ DN Created ({data.get('dn_create_date', 'N/A')})")
+        lines.append("📅 *Shipment Timeline*")
+        lines.append("")
+        lines.append(f"✅ DN Created")
+        lines.append(data.get('dn_create_date', 'N/A'))
+        lines.append("")
         lines.append(pgi_display)
+        lines.append(pgi_date_display)
+        lines.append("")
         lines.append(pod_display)
+        lines.append(pod_date_display)
         lines.append("")
         
-        lines.append("━━━━━━━━━━━━━━━━")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
         
         # ==========================================================
         # AGING
         # ==========================================================
         
-        lines.append("*⏳ Aging*")
-        lines.append(f"Dispatch Time: {data.get('delivery_aging_text', 'N/A')}")
-        
-        pod_aging = data.get('pod_aging_text', 'Not Started')
-        if pod_aging == 'Same Day' and not pod_exists:
-            pod_aging = 'Not Started'
-        lines.append(f"Transit Time: {pod_aging}")
-        
-        lines.append(f"Overall Cycle: {data.get('total_cycle_text', 'N/A')}")
+        lines.append("⏳ *Shipment Aging*")
         lines.append("")
         
-        lines.append("━━━━━━━━━━━━━━━━")
+        if pod_exists and pgi_exists:
+            lines.append(f"Dispatch Time")
+            lines.append(data.get('delivery_aging_text', 'N/A'))
+            lines.append("")
+            lines.append(f"Transit Time")
+            lines.append(data.get('pod_aging_text', 'N/A'))
+            lines.append("")
+            lines.append(f"Total Delivery Cycle")
+            lines.append(data.get('total_cycle_text', 'N/A'))
+        elif pgi_exists and not pod_exists:
+            lines.append(f"Dispatch Time")
+            lines.append(data.get('delivery_aging_text', 'N/A'))
+            lines.append("")
+            lines.append(f"Transit Time")
+            lines.append(data.get('pod_aging_text', 'Not Started'))
+            lines.append("")
+            lines.append(f"Overall Cycle")
+            lines.append(data.get('total_cycle_text', 'N/A'))
+        else:
+            lines.append(f"Dispatch Waiting")
+            lines.append(data.get('delivery_aging_text', 'N/A'))
+            lines.append("")
+            lines.append(f"Transit")
+            lines.append("Not Started")
+            lines.append("")
+            lines.append(f"Overall Cycle")
+            lines.append(data.get('total_cycle_text', 'N/A'))
+        lines.append("")
+        
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
         
         # ==========================================================
-        # SHIPMENT STATUS (INTELLIGENT FROM DATES)
+        # LOGISTICS ROUTE
         # ==========================================================
         
-        lines.append("*📋 Shipment Status*")
+        lines.append("🚛 *Logistics Route*")
         lines.append("")
-        lines.append("*Current Stage:*")
-        lines.append(status_stage)
+        lines.append("Warehouse")
+        lines.append(data.get('warehouse', 'Unknown'))
         lines.append("")
-        
-        lines.append("*Shipment Health:*")
-        lines.append(status_health)
-        lines.append("")
-        
-        lines.append("*Progress:*")
-        lines.append(f"✅ DN Created ({data.get('dn_create_date', 'N/A')})")
-        lines.append(pgi_display)
-        lines.append(pod_display)
+        lines.append("Destination")
+        lines.append(data.get('city', 'Unknown'))
         lines.append("")
         
-        lines.append(f"🔄 *Pending:* {pending_display}")
+        distance_text = data.get('distance_text', 'Not Available')
+        if distance_text != 'Not Available':
+            lines.append("Road Distance")
+            lines.append(distance_text)
+            lines.append("")
+        
+        duration_text = data.get('duration_text', 'Not Available')
+        if duration_text != 'Not Available':
+            lines.append("Estimated Drive")
+            lines.append(duration_text)
+            lines.append("")
+        
+        expected_delivery = data.get('expected_delivery_text', 'Not Available')
+        if expected_delivery != 'Not Available':
+            lines.append("Expected Delivery")
+            lines.append(expected_delivery)
+            lines.append("")
+        
+        if pod_exists and pgi_exists:
+            lines.append("Actual Delivery")
+            lines.append(data.get('total_cycle_text', 'N/A'))
+            lines.append("")
+            if delivery_delay > 0:
+                lines.append("Delivery Delay")
+                lines.append(f"{delivery_delay} Days")
+            else:
+                lines.append("Delivery Delay")
+                lines.append("On Time")
+            lines.append("")
+        elif pgi_exists and not pod_exists:
+            lines.append("Actual Transit")
+            lines.append(data.get('pod_aging_text', 'Not Started'))
+            lines.append("")
+            lines.append("Delay")
+            lines.append(f"{data.get('pod_aging_days', 0)} Days")
+            lines.append("")
+        
+        distance_category = data.get('distance_category', 'Unknown')
+        distance_emoji = data.get('distance_emoji', '📍')
+        if distance_category != 'Unknown':
+            lines.append("Distance Category")
+            lines.append(f"{distance_emoji} {distance_category}")
         lines.append("")
         
-        lines.append("━━━━━━━━━━━━━━━━")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
+        
+        # ==========================================================
+        # SHIPMENT STATUS
+        # ==========================================================
+        
+        lines.append("📋 *Shipment Status*")
+        lines.append("")
+        lines.append("Current Stage")
+        lines.append("")
+        lines.append(f"{stage_emoji} {status_stage}")
+        lines.append("")
+        lines.append("Shipment Health")
+        lines.append("")
+        lines.append(f"{health_emoji} {status_health}")
+        lines.append("")
+        lines.append("Progress")
+        lines.append("")
+        lines.append(f"✅ DN Created")
+        if pgi_exists:
+            lines.append(f"✅ PGI Completed")
+        else:
+            lines.append(f"⏳ PGI Pending")
+        if pod_exists:
+            lines.append(f"✅ POD Received")
+        elif pgi_exists and not pod_exists:
+            lines.append(f"⏳ POD Pending")
+        else:
+            lines.append(f"⏳ POD Pending")
+        lines.append("")
+        
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("")
+        
+        # ==========================================================
+        # PERFORMANCE ANALYSIS (Only for Delivered shipments)
+        # ==========================================================
+        
+        if pod_exists and pgi_exists:
+            lines.append("📈 *Performance Analysis*")
+            lines.append("")
+            lines.append("Expected Delivery")
+            lines.append(expected_delivery if expected_delivery != 'Not Available' else 'N/A')
+            lines.append("")
+            lines.append("Actual Delivery")
+            lines.append(data.get('total_cycle_text', 'N/A'))
+            lines.append("")
+            if delivery_delay > 0:
+                lines.append("Delay")
+                lines.append(f"{delivery_delay} Days")
+            else:
+                lines.append("Delay")
+                lines.append("No Delay")
+            lines.append("")
+            if efficiency > 0 and efficiency <= 100:
+                lines.append("Route Efficiency")
+                lines.append(f"{efficiency}%")
+            lines.append("")
+            
+            lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+            lines.append("")
         
         # ==========================================================
         # RECOMMENDATION
         # ==========================================================
         
-        lines.append("*💡 Recommendation*")
+        lines.append("💡 *AI Recommendation*")
+        lines.append("")
         lines.append(recommendation)
         lines.append("")
+        
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("")
+        lines.append("🤖 Generated by")
+        lines.append("Haier Logistics AI")
         
         return "\n".join(lines)
     
@@ -2456,17 +2613,6 @@ class DNAnalysisService:
     def test_date_calculation(self) -> Dict[str, Any]:
         """
         Regression tests for date calculations.
-        
-        Tests:
-        1. Your data: 2026-05-05, 2026-05-07, 2026-05-25 → 2, 18, 20
-        2. 2026-05-23, 2026-05-24, 2026-05-25 → 1, 1, 2
-        3. 2026-06-05, 2026-06-05, 2026-07-05 → 0, 30, 30
-        4. 2026-04-05, 2026-05-05, 2026-08-05 → 30, 92, 122
-        5. 2026-01-31, 2026-02-01 → 1
-        6. 2026-12-31, 2027-01-01 → 1
-        7. Leap Year: 2024-02-28, 2024-02-29 → 1
-        8. NULL PGI → 0
-        9. NULL POD → 0
         """
         logger.info("🧪 Running regression tests...")
         
@@ -2733,7 +2879,7 @@ logger.info("")
 logger.info("   SHIPMENT STAGES:")
 logger.info("   ✅ Pending Dispatch (PGI NULL) → Awaiting Warehouse Dispatch")
 logger.info("   ✅ In Transit (PGI exists, POD NULL) → Shipment On Route")
-logger.info("   ✅ Delivered (POD exists) → Completed Successfully")
+logger.info("   ✅ Delivered (POD exists) → Successfully Delivered")
 logger.info("")
 logger.info("   STATUS: ✅ ENTERPRISE PRODUCTION READY")
 logger.info("=" * 70)
