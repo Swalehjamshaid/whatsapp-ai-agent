@@ -1032,12 +1032,16 @@ class DNAnalysisService:
         # ==========================================================
     # BLOCK 10: DN SEARCH - COMPLETE FIX (COPY THIS EXACTLY)
     # ==========================================================
+        # ==========================================================
+    # BLOCK 10: DN SEARCH - COMPLETE FIX (COPY THIS EXACTLY)
+    # ==========================================================
     
     def search_dn(self, dn_no: str) -> Dict[str, Any]:
         """
         Search for a specific DN with multiple matching strategies.
         
         FIXED: Directly queries PostgreSQL with multiple patterns.
+        Uses the actual DN from database in fallback.
         """
         logger.info(f"🔍 Searching for DN: '{dn_no}'")
         
@@ -1052,7 +1056,7 @@ class DNAnalysisService:
             return {"success": False, "error": f"Invalid DN format: {cleaned_dn} (must be 8-12 digits)"}
         
         # ==========================================================
-        # SINGLE QUERY with multiple matching patterns
+        # STRATEGY 1: Direct query with multiple patterns (NO CAST)
         # ==========================================================
         
         query = """
@@ -1090,7 +1094,6 @@ class DNAnalysisService:
             FROM delivery_reports
             WHERE 
                 dn_no = :dn_no
-                OR dn_no = :dn_no_original
                 OR dn_no LIKE '%' || :dn_no || '%'
                 OR REPLACE(dn_no, '-', '') = :dn_no
                 OR REPLACE(dn_no, ' ', '') = :dn_no
@@ -1100,19 +1103,19 @@ class DNAnalysisService:
         """
         
         # Try with cleaned DN
-        results = self._execute_query(query, {"dn_no": cleaned_dn, "dn_no_original": dn_no})
+        results = self._execute_query(query, {"dn_no": cleaned_dn})
         if results:
             logger.info(f"✅ DN {dn_no} found with cleaned match")
             return {"success": True, "data": results[0]}
         
         # Try with original DN
-        results = self._execute_query(query, {"dn_no": dn_no, "dn_no_original": dn_no})
+        results = self._execute_query(query, {"dn_no": dn_no})
         if results:
             logger.info(f"✅ DN {dn_no} found with original match")
             return {"success": True, "data": results[0]}
         
         # ==========================================================
-        # FALLBACK: Find similar DNs and try each one
+        # STRATEGY 2: Fallback - Get actual DN from PostgreSQL
         # ==========================================================
         
         logger.warning(f"⚠️ Primary match not found for {dn_no}. Running fallback...")
@@ -1134,7 +1137,7 @@ class DNAnalysisService:
             logger.info(f"   ├── Found {len(similar_dns)} similar DNs: {similar_dns[:5]}")
             
             # ==========================================================
-            # Try EACH similar DN with exact match
+            # STRATEGY 3: Exact match using actual DN from database
             # ==========================================================
             
             exact_query = """
@@ -1181,6 +1184,14 @@ class DNAnalysisService:
                 if results:
                     logger.info(f"✅ DN found via similar match: {similar_dn}")
                     return {"success": True, "data": results[0]}
+            
+            # If none of the similar DNs worked, return the list
+            return {
+                "success": False,
+                "error": f"DN {dn_no} not found",
+                "similar_dns": similar_dns[:5],
+                "message": f"DN not found. Did you mean: {', '.join(similar_dns[:3])}?"
+            }
         
         logger.warning(f"❌ DN {dn_no} not found - no similar matches")
         return {"success": False, "error": f"DN {dn_no} not found"}
