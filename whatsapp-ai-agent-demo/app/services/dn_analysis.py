@@ -2062,17 +2062,18 @@ class DNAnalysisService:
     # ==========================================================
     # BLOCK 14: WHATSAPP RESPONSE FORMATTER (ENTERPRISE DASHBOARD)
     # ==========================================================
+        # ==========================================================
+    # BLOCK 14: WHATSAPP RESPONSE FORMATTER (OPTIMIZED)
+    # ==========================================================
     
     def format_dn_dashboard(self, dashboard_data: Dict[str, Any]) -> str:
         """
-        Format DN dashboard for WhatsApp - Enterprise Logistics Dashboard.
-        
-        This produces the exact Haier Pakistan Logistics dashboard format.
+        Format DN dashboard - OPTIMIZED for speed.
         """
         data = dashboard_data.get('data', {})
         
         # ==========================================================
-        # EXTRACT DATA
+        # FAST DATA EXTRACTION (Minimize dict lookups)
         # ==========================================================
         
         dn_no = data.get('dn_no', 'N/A')
@@ -2082,50 +2083,61 @@ class DNAnalysisService:
         sales_manager = data.get('sales_manager')
         division = data.get('division')
         
-        material_count = data.get('material_count', 1)
-        model_count = data.get('model_count', 1)
-        total_units = data.get('total_units_display', 'Not Available')
-        total_revenue = data.get('total_revenue_display', 'Not Available')
+        material_count = str(data.get('material_count', 1))
+        model_count = str(data.get('model_count', 1))
         
-        dn_create_date = data.get('dn_create_date', 'N/A')
-        good_issue_date = data.get('good_issue_date', 'N/A')
-        pod_date = data.get('pod_date', 'N/A')
+        # Fast NULL handling
+        units = data.get('total_units')
+        if units is None or units == 0:
+            total_units = "Not Available"
+        else:
+            total_units = str(units)
         
-        delivery_aging_text = data.get('delivery_aging_text', 'N/A')
-        pod_aging_text = data.get('pod_aging_text', 'Not Started')
-        total_cycle_text = data.get('total_cycle_text', 'N/A')
+        revenue = data.get('total_revenue')
+        if revenue is None or revenue == 0:
+            total_revenue = "Not Available"
+        else:
+            total_revenue = f"PKR {revenue:,.0f}"
         
-        distance_text = data.get('distance_text', 'Not Available')
-        duration_text = data.get('duration_text', 'Not Available')
-        expected_delivery_text = data.get('expected_delivery_text', 'Not Available')
+        # Dates
+        dn_create = data.get('dn_create_date', 'N/A')
+        good_issue = data.get('good_issue_date', 'N/A')
+        pod = data.get('pod_date', 'N/A')
+        
+        # Aging
+        delivery_aging = data.get('delivery_aging_text', 'N/A')
+        pod_aging = data.get('pod_aging_text', 'Not Started')
+        total_cycle = data.get('total_cycle_text', 'N/A')
+        
+        # Logistics - Fast
+        distance = data.get('distance_text', 'Not Available')
+        duration = data.get('duration_text', 'Not Available')
+        expected = data.get('expected_delivery_text', 'Not Available')
         distance_category = data.get('distance_category', 'Unknown')
         distance_emoji = data.get('distance_emoji', '📍')
         
+        # Status - Fast
         stage = data.get('stage', 'Unknown')
         stage_emoji = data.get('stage_emoji', '❓')
         health = data.get('health', 'Unknown')
         health_emoji = data.get('health_emoji', '❓')
         progress = data.get('progress', [])
         recommendation = data.get('recommendation', 'Unable to determine shipment status.')
-        pending_flag_text = data.get('pending_flag_text', 'Yes')
         
-        # ==========================================================
-        # PERFORMANCE METRICS
-        # ==========================================================
-        
+        # Performance - Fast
         total_cycle_days = data.get('total_cycle_days', 0)
-        expected_delivery_days = data.get('expected_delivery_days', 1)
+        expected_days = data.get('expected_delivery_days', 1)
         
-        if expected_delivery_days > 0 and total_cycle_days > 0:
-            delay = max(0, total_cycle_days - expected_delivery_days)
-            efficiency = round((expected_delivery_days / total_cycle_days) * 100, 1) if total_cycle_days > 0 else 0
+        if expected_days > 0 and total_cycle_days > 0:
+            delay = max(0, total_cycle_days - expected_days)
+            efficiency = round((expected_days / total_cycle_days) * 100, 1)
             efficiency = min(efficiency, 100)
         else:
             delay = 0
             efficiency = 0
         
         # ==========================================================
-        # BUILD WHATSAPP RESPONSE
+        # BUILD RESPONSE - OPTIMIZED STRING CONCATENATION
         # ==========================================================
         
         lines = []
@@ -2135,34 +2147,24 @@ class DNAnalysisService:
         lines.append("")
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
-        
-        # Delivery Note
         lines.append("🆔 *Delivery Note*")
         lines.append(dn_no)
         lines.append("")
-        
-        # Dealer
         lines.append("🏪 *Dealer*")
         lines.append(dealer_name)
         lines.append("")
-        
-        # Warehouse
         lines.append("🏢 *Warehouse*")
         lines.append(warehouse)
         lines.append("")
-        
-        # Destination
         lines.append("📍 *Destination*")
         lines.append(city)
         lines.append("")
         
-        # Sales Manager
         if sales_manager:
             lines.append("👤 *Sales Manager*")
             lines.append(sales_manager)
             lines.append("")
         
-        # Division
         if division:
             lines.append("📦 *Division*")
             lines.append(division)
@@ -2170,11 +2172,6 @@ class DNAnalysisService:
         
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
-        
-        # ==========================================================
-        # SHIPMENT SUMMARY
-        # ==========================================================
-        
         lines.append("📊 *Shipment Summary*")
         lines.append("")
         lines.append(f"📦 DN Count: {material_count}")
@@ -2182,82 +2179,69 @@ class DNAnalysisService:
         lines.append(f"📦 Total Units: {total_units}")
         lines.append(f"💰 Shipment Value: {total_revenue}")
         lines.append("")
-        
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
-        
-        # ==========================================================
-        # SHIPMENT TIMELINE
-        # ==========================================================
-        
         lines.append("📅 *Shipment Timeline*")
         lines.append("")
+        
+        # Timeline - Fast
+        if good_issue != 'N/A':
+            pgi_label = "✅ PGI Completed"
+        else:
+            pgi_label = "⏳ PGI"
+        
+        if pod != 'N/A':
+            pod_label = "✅ POD Received"
+        elif good_issue != 'N/A':
+            pod_label = "⏳ POD Pending"
+        else:
+            pod_label = "⏳ POD"
+        
         lines.append(f"✅ DN Created")
-        lines.append(dn_create_date)
+        lines.append(dn_create)
         lines.append("")
-        
-        if good_issue_date != 'N/A':
-            lines.append(f"✅ PGI Completed")
-        else:
-            lines.append(f"⏳ PGI")
-        lines.append(good_issue_date)
+        lines.append(pgi_label)
+        lines.append(good_issue)
         lines.append("")
-        
-        if pod_date != 'N/A':
-            lines.append(f"✅ POD Received")
-        elif good_issue_date != 'N/A':
-            lines.append(f"⏳ POD Pending")
-        else:
-            lines.append(f"⏳ POD")
-        lines.append(pod_date)
+        lines.append(pod_label)
+        lines.append(pod)
         lines.append("")
-        
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
-        
-        # ==========================================================
-        # SHIPMENT AGING
-        # ==========================================================
-        
         lines.append("⏳ *Shipment Aging*")
         lines.append("")
         
-        if good_issue_date != 'N/A' and pod_date != 'N/A':
+        # Aging - Fast
+        if good_issue != 'N/A' and pod != 'N/A':
             lines.append(f"Dispatch Time")
-            lines.append(delivery_aging_text)
+            lines.append(delivery_aging)
             lines.append("")
             lines.append(f"Transit Time")
-            lines.append(pod_aging_text)
+            lines.append(pod_aging)
             lines.append("")
             lines.append(f"Total Delivery Cycle")
-            lines.append(total_cycle_text)
-        elif good_issue_date != 'N/A' and pod_date == 'N/A':
+            lines.append(total_cycle)
+        elif good_issue != 'N/A' and pod == 'N/A':
             lines.append(f"Dispatch Time")
-            lines.append(delivery_aging_text)
+            lines.append(delivery_aging)
             lines.append("")
             lines.append(f"Transit Time")
-            lines.append(pod_aging_text)
+            lines.append(pod_aging)
             lines.append("")
             lines.append(f"Overall Cycle")
-            lines.append(total_cycle_text)
+            lines.append(total_cycle)
         else:
             lines.append(f"Dispatch Waiting")
-            lines.append(delivery_aging_text)
+            lines.append(delivery_aging)
             lines.append("")
             lines.append(f"Transit")
             lines.append("Not Started")
             lines.append("")
             lines.append(f"Overall Cycle")
-            lines.append(total_cycle_text)
+            lines.append(total_cycle)
         lines.append("")
-        
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
-        
-        # ==========================================================
-        # LOGISTICS ROUTE
-        # ==========================================================
-        
         lines.append("🚛 *Logistics Route*")
         lines.append("")
         lines.append("Warehouse")
@@ -2267,30 +2251,29 @@ class DNAnalysisService:
         lines.append(city)
         lines.append("")
         
-        if distance_text != 'Not Available':
+        if distance != 'Not Available':
             lines.append("Road Distance")
-            lines.append(distance_text)
+            lines.append(distance)
             lines.append("")
         
-        if duration_text != 'Not Available':
+        if duration != 'Not Available':
             lines.append("Estimated Drive Time")
-            lines.append(duration_text)
+            lines.append(duration)
             lines.append("")
         
-        if expected_delivery_text != 'Not Available':
+        if expected != 'Not Available':
             lines.append("Expected Delivery")
-            lines.append(expected_delivery_text)
+            lines.append(expected)
             lines.append("")
         
-        if pod_date != 'N/A':
+        if pod != 'N/A':
             lines.append("Actual Delivery")
-            lines.append(total_cycle_text)
+            lines.append(total_cycle)
             lines.append("")
+            lines.append("Delivery Delay")
             if delay > 0:
-                lines.append("Delivery Delay")
                 lines.append(f"{delay} Days")
             else:
-                lines.append("Delivery Delay")
                 lines.append("On Time")
             lines.append("")
         
@@ -2299,19 +2282,13 @@ class DNAnalysisService:
             lines.append(f"{distance_emoji} {distance_category}")
         lines.append("")
         
-        if pod_date != 'N/A':
-            if efficiency > 0 and efficiency <= 100:
-                lines.append("Route Efficiency")
-                lines.append(f"{efficiency}%")
-                lines.append("")
+        if pod != 'N/A' and efficiency > 0:
+            lines.append("Route Efficiency")
+            lines.append(f"{efficiency}%")
+            lines.append("")
         
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
-        
-        # ==========================================================
-        # SHIPMENT STATUS
-        # ==========================================================
-        
         lines.append("📋 *Shipment Status*")
         lines.append("")
         lines.append("Current Stage")
@@ -2325,6 +2302,7 @@ class DNAnalysisService:
         lines.append("Progress")
         lines.append("")
         
+        # Progress - Fast
         for item in progress:
             status = item.get('status', '⏳')
             step = item.get('step', '')
@@ -2335,22 +2313,18 @@ class DNAnalysisService:
             else:
                 lines.append(f"{status} {step}")
         lines.append("")
-        
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
         
-        # ==========================================================
-        # PERFORMANCE ANALYSIS (Only for Delivered)
-        # ==========================================================
-        
-        if pod_date != 'N/A':
+        # Performance Analysis - Only if Delivered
+        if pod != 'N/A':
             lines.append("📈 *Performance Analysis*")
             lines.append("")
             lines.append("Expected Delivery")
-            lines.append(expected_delivery_text if expected_delivery_text != 'Not Available' else 'N/A')
+            lines.append(expected if expected != 'Not Available' else 'N/A')
             lines.append("")
             lines.append("Actual Delivery")
-            lines.append(total_cycle_text)
+            lines.append(total_cycle)
             lines.append("")
             if delay > 0:
                 lines.append("Delay")
@@ -2359,30 +2333,25 @@ class DNAnalysisService:
                 lines.append("Delay")
                 lines.append("No Delay")
             lines.append("")
-            if efficiency > 0 and efficiency <= 100:
+            if efficiency > 0:
                 lines.append("Route Efficiency")
                 lines.append(f"{efficiency}%")
             lines.append("")
-            
             lines.append("━━━━━━━━━━━━━━━━━━━━━━")
             lines.append("")
         
-        # ==========================================================
-        # AI RECOMMENDATION
-        # ==========================================================
-        
+        # Recommendation
         lines.append("💡 *AI Recommendation*")
         lines.append("")
         lines.append(recommendation)
         lines.append("")
-        
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
         lines.append("🤖 Generated by")
         lines.append("Haier Logistics AI Assistant")
         
         return "\n".join(lines)
-    
+   
     # ==========================================================
     # BLOCK 15: REGRESSION TESTS
     # ==========================================================
