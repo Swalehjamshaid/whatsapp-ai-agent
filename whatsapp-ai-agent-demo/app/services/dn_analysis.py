@@ -1294,32 +1294,13 @@ class DNAnalysisService:
     # ==========================================================
     # BLOCK 10: DN DASHBOARD - WITH ENHANCED DATA
     # ==========================================================
-    # ==========================================================
-    # BLOCK 10: DN DASHBOARD BUILDER (ENTERPRISE SAFE UPGRADE)
+        # ==========================================================
+    # BLOCK 10: DN DASHBOARD BUILDER (ENHANCED)
     # ==========================================================
     
     def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
         """
         Get complete DN dashboard with enterprise analytics.
-        
-        STEPS:
-        1. Query PostgreSQL (UNCHANGED - EXISTING SEARCH LAYER)
-        2. Log RAW PostgreSQL values (UNCHANGED)
-        3. Validate dates (UNCHANGED)
-        4. Check date integrity (UNCHANGED)
-        5. Calculate aging (UNCHANGED)
-        6. Get product details (NEW - NON-BREAKING)
-        7. Get dealer/warehouse additional info (NEW - NON-BREAKING)
-        8. Calculate route analytics (NEW - NON-BREAKING)
-        9. Calculate KPIs (NEW - NON-BREAKING)
-        10. Generate recommendations (NEW - NON-BREAKING)
-        11. Build dashboard (ENHANCED - ONLY ADDING)
-        
-        Args:
-            dn_no: Delivery Note number
-            
-        Returns:
-            Dict with complete dashboard data
         """
         logger.info(f"📊 Building dashboard for DN: '{dn_no}'")
         
@@ -1327,7 +1308,7 @@ class DNAnalysisService:
             return {"success": False, "error": "DN number required"}
         
         # ==========================================================
-        # STEP 1: QUERY POSTGRESQL (UNCHANGED - LOCKED)
+        # STEP 1: QUERY POSTGRESQL (UNCHANGED)
         # ==========================================================
         
         search_result = self.search_dn(dn_no)
@@ -1344,36 +1325,15 @@ class DNAnalysisService:
         data = search_result.get("data", {})
         
         # ==========================================================
-        # STEP 2: LOG RAW POSTGRESQL VALUES (UNCHANGED)
+        # STEP 2: GET RAW DATA (UNCHANGED)
         # ==========================================================
-        
-        self._log_raw_postgresql_values(data, dn_no)
         
         raw_dn_create_date = data.get('dn_create_date')
         raw_good_issue_date = data.get('good_issue_date')
         raw_pod_date = data.get('pod_date')
         
         # ==========================================================
-        # STEP 3: VALIDATE DATES (UNCHANGED)
-        # ==========================================================
-        
-        dn_validation = self._validate_postgresql_date(raw_dn_create_date, "dn_create_date")
-        pgi_validation = self._validate_postgresql_date(raw_good_issue_date, "good_issue_date")
-        pod_validation = self._validate_postgresql_date(raw_pod_date, "pod_date")
-        
-        # ==========================================================
-        # STEP 4: CHECK DATE INTEGRITY (UNCHANGED)
-        # ==========================================================
-        
-        integrity = self._check_date_integrity(
-            dn_no,
-            raw_dn_create_date,
-            raw_good_issue_date,
-            raw_pod_date
-        )
-        
-        # ==========================================================
-        # STEP 5: CALCULATE AGING (UNCHANGED)
+        # STEP 3: CALCULATE AGING (UNCHANGED)
         # ==========================================================
         
         delivery_aging = self.calculate_delivery_aging(
@@ -1390,7 +1350,7 @@ class DNAnalysisService:
         )
         
         # ==========================================================
-        # STEP 6: FORMAT DATES (UNCHANGED)
+        # STEP 4: FORMAT DATES (UNCHANGED)
         # ==========================================================
         
         formatted_dn_create = self._format_display_date(raw_dn_create_date)
@@ -1398,7 +1358,7 @@ class DNAnalysisService:
         formatted_pod = self._format_display_date(raw_pod_date)
         
         # ==========================================================
-        # STEP 7: GET PRODUCT DETAILS (NEW - APPEND)
+        # STEP 5: GET PRODUCT DETAILS (NEW - CRITICAL)
         # ==========================================================
         
         normalized_dn = self._normalize_dn(dn_no)
@@ -1406,10 +1366,8 @@ class DNAnalysisService:
         product_results = self._execute_query(product_query, {"dn_no": normalized_dn})
         
         products = []
-        total_units_calculated = 0
-        total_revenue_calculated = 0
-        model_count = 0
-        material_count = 0
+        total_units = 0
+        total_revenue = 0
         
         for row in product_results:
             model_name = row.get('model_name')
@@ -1426,115 +1384,11 @@ class DNAnalysisService:
                     'qty': qty,
                     'revenue': revenue
                 })
-                total_units_calculated += qty
-                total_revenue_calculated += revenue
-                if material_no != 'N/A':
-                    material_count += 1
-        
-        model_count = len(products)
+                total_units += qty
+                total_revenue += revenue
         
         # ==========================================================
-        # STEP 8: GET ADDITIONAL INFO (NEW - APPEND)
-        # ==========================================================
-        
-        # Dealer info
-        dealer_code = data.get('dealer_code')
-        customer_code = data.get('customer_code')
-        sales_office = data.get('sales_office')
-        delivery_location = data.get('delivery_location')
-        warehouse_code = data.get('warehouse_code')
-        storage_location = data.get('storage_location')
-        order_type = data.get('order_type')
-        
-        # ==========================================================
-        # STEP 9: CALCULATE ROUTE ANALYTICS (NEW - NON-BREAKING)
-        # ==========================================================
-        
-        distance_info = {
-            "distance_km": 0,
-            "distance_text": "Not Available",
-            "duration_text": "Unknown",
-            "eta_text": "Unknown",
-            "route_source": "unknown",
-            "route_confidence": "low"
-        }
-        
-        warehouse = data.get('warehouse')
-        destination = data.get('delivery_location') or data.get('city')
-        
-        if warehouse and destination and self._distance_calculator:
-            try:
-                dist_data = self._distance_calculator.calculate_distance(warehouse, destination)
-                distance_km = dist_data.get('distance_km', 0)
-                
-                if distance_km > 0:
-                    # Distance
-                    distance_info = {
-                        "distance_km": round(distance_km, 1),
-                        "distance_text": f"{round(distance_km, 1)} km",
-                        "duration_text": dist_data.get('duration_text', 'Unknown'),
-                        "eta_text": self._estimate_delivery_eta(distance_km),
-                        "route_source": dist_data.get('source', 'unknown'),
-                        "route_confidence": dist_data.get('confidence', 'low')
-                    }
-            except Exception as e:
-                logger.warning(f"⚠️ Route calculation failed: {e}")
-        
-        # ==========================================================
-        # STEP 10: CALCULATE KPI ANALYTICS (NEW - NON-BREAKING)
-        # ==========================================================
-        
-        # Use existing values with fallback
-        total_units = total_units_calculated if total_units_calculated > 0 else data.get('total_units', 0)
-        total_revenue = total_revenue_calculated if total_revenue_calculated > 0 else data.get('total_revenue', 0)
-        material_count = data.get('material_count', 1)
-        
-        # KPI calculations
-        average_units_per_model = round(total_units / model_count, 1) if model_count > 0 else 0
-        average_revenue_per_model = round(total_revenue / model_count, 1) if model_count > 0 else 0
-        revenue_per_unit = round(total_revenue / total_units, 1) if total_units > 0 else 0
-        
-        # SLA calculation
-        expected_days = 1
-        if distance_info.get('eta_text') == "Same Day":
-            expected_days = 1
-        elif distance_info.get('eta_text') and distance_info.get('eta_text') != "Unknown":
-            try:
-                expected_days = int(distance_info['eta_text'].split()[0])
-            except:
-                expected_days = 2
-        
-        sla = self._calculate_sla(total_cycle, expected_days)
-        
-        # Performance grade
-        performance_grade = self._calculate_performance_grade(sla, total_cycle, expected_days)
-        
-        # Health score
-        health_score = self._calculate_health_score(
-            has_pgi=raw_good_issue_date is not None,
-            has_pod=raw_pod_date is not None,
-            has_products=len(products) > 0,
-            has_distance=distance_info.get('distance_km', 0) > 0,
-            sla_status=sla.get('status', 'Unknown')
-        )
-        
-        # ==========================================================
-        # STEP 11: GENERATE RECOMMENDATIONS (NEW - NON-BREAKING)
-        # ==========================================================
-        
-        recommendations = self._generate_recommendations(
-            has_pgi=raw_good_issue_date is not None,
-            has_pod=raw_pod_date is not None,
-            delivery_aging=delivery_aging,
-            pod_aging=pod_aging,
-            total_cycle=total_cycle,
-            distance_km=distance_info.get('distance_km', 0),
-            sla_status=sla.get('status', 'Unknown'),
-            has_products=len(products) > 0
-        )
-        
-        # ==========================================================
-        # STEP 12: DETERMINE SHIPMENT STAGE FROM DATES (NEW)
+        # STEP 6: DETERMINE SHIPMENT STAGE FROM DATES (NEW)
         # ==========================================================
         
         pgi_exists = raw_good_issue_date is not None
@@ -1543,26 +1397,24 @@ class DNAnalysisService:
         if pod_exists and pgi_exists:
             calculated_stage = "Delivered"
             calculated_emoji = "✅"
-            calculated_health = "Completed Successfully"
-            calculated_health_emoji = "🟢"
         elif pgi_exists and not pod_exists:
             calculated_stage = "In Transit"
             calculated_emoji = "🚚"
-            calculated_health = "On Route"
-            calculated_health_emoji = "🟡"
         else:
             calculated_stage = "Pending Dispatch"
             calculated_emoji = "⏳"
-            calculated_health = "Awaiting Dispatch"
-            calculated_health_emoji = "🟡"
         
         # ==========================================================
-        # STEP 13: BUILD DASHBOARD (PRESERVE ALL EXISTING + ADD NEW)
+        # STEP 7: BUILD DASHBOARD (ENHANCED)
         # ==========================================================
+        
+        # Get material count - use from data or calculate
+        material_count = data.get('material_count', 1)
+        model_count = len(products)
         
         dashboard = {
             # ==========================================================
-            # EXISTING FIELDS (UNCHANGED - PRESERVED)
+            # EXISTING FIELDS (PRESERVED)
             # ==========================================================
             "dn_no": data.get('dn_no'),
             "dealer_name": data.get('dealer_name', 'Unknown'),
@@ -1572,12 +1424,10 @@ class DNAnalysisService:
             "sales_manager": data.get('sales_manager'),
             "division": data.get('division'),
             
-            # Display Dates
             "dn_create_date": formatted_dn_create,
             "good_issue_date": formatted_good_issue,
             "pod_date": formatted_pod,
             
-            # Aging (PRESERVED)
             "delivery_aging_days": delivery_aging,
             "pod_aging_days": pod_aging,
             "total_cycle_days": total_cycle,
@@ -1585,111 +1435,46 @@ class DNAnalysisService:
             "pod_aging_text": self._format_aging_text(pod_aging),
             "total_cycle_text": self._format_aging_text(total_cycle),
             
-            # Status fields (PRESERVED for backward compatibility)
-            "delivery_status": data.get('delivery_status', 'Unknown'),
-            "pgi_status": data.get('pgi_status', 'Unknown'),
-            "pod_status": data.get('pod_status', 'Unknown'),
-            "pending_flag": data.get('pending_flag', False),
-            "status_emoji": data.get('status_emoji', '❓'),
-            "status_text": data.get('status_text', 'Unknown'),
-            "pgi_status_text": data.get('pgi_status_text', 'Unknown'),
-            "pod_status_text": data.get('pod_status_text', 'Unknown'),
-            "pending_flag_text": data.get('pending_flag_text', 'Unknown'),
-            
-            # Raw dates (PRESERVED)
-            "_dn_create_date": raw_dn_create_date,
-            "_good_issue_date": raw_good_issue_date,
-            "_pod_date": raw_pod_date,
-            
             # ==========================================================
-            # NEW FIELDS - ENHANCED METRICS (FIXED)
+            # ENHANCED METRICS (FIXED)
             # ==========================================================
-            
-            # Metrics - using calculated values
-            "total_units": total_units,
-            "total_revenue": total_revenue,
+            "total_units": total_units if total_units > 0 else data.get('total_units', 0),
+            "total_revenue": total_revenue if total_revenue > 0 else data.get('total_revenue', 0),
             "material_count": material_count,
             "model_count": model_count,
             
             # ==========================================================
-            # NEW FIELDS - ADDITIONAL INFORMATION
+            # NEW FIELDS
             # ==========================================================
-            
-            # Dealer additional info
-            "dealer_code": dealer_code,
-            "customer_code": customer_code,
-            "sales_office": sales_office,
-            "warehouse_code": warehouse_code,
-            "storage_location": storage_location,
-            "order_type": order_type,
-            
-            # Product details
             "products": products,
-            
-            # Route Analytics
-            "distance_km": distance_info.get('distance_km', 0),
-            "distance_text": distance_info.get('distance_text', 'Not Available'),
-            "duration_text": distance_info.get('duration_text', 'Unknown'),
-            "eta_text": distance_info.get('eta_text', 'Unknown'),
-            "route_source": distance_info.get('route_source', 'unknown'),
-            "route_confidence": distance_info.get('route_confidence', 'low'),
-            
-            # KPI Analytics
-            "average_units_per_model": average_units_per_model,
-            "average_revenue_per_model": average_revenue_per_model,
-            "revenue_per_unit": revenue_per_unit,
-            "sla_status": sla.get('status', 'Unknown'),
-            "sla_on_time": sla.get('on_time', False),
-            "sla_delay_days": sla.get('delay_days', 0),
-            "performance_grade": performance_grade,
-            "health_score": health_score,
-            
-            # Calculated Shipment Stage (from dates)
             "calculated_stage": calculated_stage,
             "calculated_emoji": calculated_emoji,
-            "calculated_health": calculated_health,
-            "calculated_health_emoji": calculated_health_emoji,
             
-            # Recommendations
-            "recommendations": recommendations,
+            # Raw dates for status determination
+            "_dn_create_date": raw_dn_create_date,
+            "_good_issue_date": raw_good_issue_date,
+            "_pod_date": raw_pod_date,
             
-            # System Info
+            # Additional info
+            "dealer_code": data.get('dealer_code'),
+            "customer_code": data.get('customer_code'),
+            "warehouse_code": data.get('warehouse_code'),
+            "sales_office": data.get('sales_office'),
             "source_file": data.get('source_file'),
             "upload_batch_id": data.get('upload_batch_id'),
             "imported_at": data.get('imported_at'),
             "created_at": data.get('created_at'),
             "updated_at": data.get('updated_at'),
+            
+            # Status fields (for backward compatibility)
+            "delivery_status": data.get('delivery_status', 'Unknown'),
+            "pgi_status": data.get('pgi_status', 'Unknown'),
+            "pod_status": data.get('pod_status', 'Unknown'),
+            "pending_flag": data.get('pending_flag', False),
         }
-        
-        # ==========================================================
-        # STEP 14: LOG DASHBOARD SUMMARY (ENHANCED)
-        # ==========================================================
-        
-        logger.info(f"📊 DASHBOARD SUMMARY for DN {dn_no}:")
-        logger.info(f"   DN Create: {dashboard['dn_create_date']} (DB: {formatted_dn_create})")
-        logger.info(f"   PGI:       {dashboard['good_issue_date']} (DB: {formatted_good_issue})")
-        logger.info(f"   POD:       {dashboard['pod_date']} (DB: {formatted_pod})")
-        logger.info(f"   Integrity: {'✅ PASSED' if integrity['valid'] else '⚠️ ISSUES'}")
-        logger.info(f"   Delivery Aging: {delivery_aging} days")
-        logger.info(f"   POD Aging: {pod_aging} days")
-        logger.info(f"   Total Cycle: {total_cycle} days")
-        logger.info(f"   Products: {len(products)}")
-        logger.info(f"   Distance: {dashboard['distance_text']}")
-        logger.info(f"   Stage: {calculated_emoji} {calculated_stage}")
-        logger.info(f"   SLA: {sla.get('status', 'Unknown')}")
-        logger.info(f"   Health Score: {health_score}%")
-        
-        if not integrity['valid']:
-            logger.warning(f"⚠️ DN {dn_no}: Date integrity issues detected:")
-            for error in integrity['errors']:
-                logger.warning(f"   └── {error}")
-        
-        if recommendations:
-            logger.info(f"   Recommendations: {len(recommendations)}")
         
         logger.info(f"✅ Dashboard built for DN {dn_no}")
         return {"success": True, "data": dashboard}
-    
     # ==========================================================
     # BLOCK 10.1: HELPER METHODS FOR DASHBOARD BUILDER
     # ==========================================================
@@ -2312,30 +2097,27 @@ class DNAnalysisService:
     # ==========================================================
     # BLOCK 13: WHATSAPP RESPONSE FORMATTER (FIXED - INTELLIGENT STATUS)
     # ==========================================================
+        # ==========================================================
+    # BLOCK 13: WHATSAPP RESPONSE FORMATTER (ENHANCED)
+    # ==========================================================
     
     def format_dn_dashboard(self, dashboard_data: Dict[str, Any]) -> str:
         """
         Format DN dashboard for WhatsApp response.
-        
-        ✅ Intelligent status from dates (NOT status columns)
-        ✅ Correct metrics (Units, Revenue, Materials)
-        ✅ Product details
-        ✅ Distance information
-        ✅ System information
         """
         data = dashboard_data.get('data', {})
         
         lines = []
         
         # ==========================================================
-        # SECTION 1: DN HEADER
+        # HEADER
         # ==========================================================
         
         lines.append("📦 *DN: {}*".format(data.get('dn_no', 'N/A')))
         lines.append("")
         
         # ==========================================================
-        # SECTION 2: DEALER & WAREHOUSE
+        # DEALER & WAREHOUSE
         # ==========================================================
         
         lines.append("*Dealer:*")
@@ -2350,41 +2132,29 @@ class DNAnalysisService:
         lines.append("{}".format(data.get('city', 'Unknown')))
         lines.append("")
         
-        # Delivery Location
         delivery_location = data.get('delivery_location')
         if delivery_location:
             lines.append("*Delivery Location:*")
             lines.append("{}".format(delivery_location))
             lines.append("")
         
-        # Sales Manager
         sales_manager = data.get('sales_manager')
         if sales_manager:
             lines.append("*Sales Manager:*")
             lines.append("{}".format(sales_manager))
             lines.append("")
         
-        # Division
         division = data.get('division')
         if division:
             lines.append("*Division:*")
             lines.append("{}".format(division))
             lines.append("")
         
-        # ==========================================================
-        # SECTION 3: ADDITIONAL INFO (NEW)
-        # ==========================================================
-        
+        # Additional info
         dealer_code = data.get('dealer_code')
         if dealer_code:
             lines.append("*Dealer Code:*")
             lines.append("{}".format(dealer_code))
-            lines.append("")
-        
-        customer_code = data.get('customer_code')
-        if customer_code:
-            lines.append("*Customer Code:*")
-            lines.append("{}".format(customer_code))
             lines.append("")
         
         warehouse_code = data.get('warehouse_code')
@@ -2393,23 +2163,15 @@ class DNAnalysisService:
             lines.append("{}".format(warehouse_code))
             lines.append("")
         
-        sales_office = data.get('sales_office')
-        if sales_office:
-            lines.append("*Sales Office:*")
-            lines.append("{}".format(sales_office))
-            lines.append("")
-        
         # ==========================================================
-        # SECTION 4: METRICS (FIXED)
+        # METRICS (FIXED - FROM BLOCK 10)
         # ==========================================================
         
         lines.append("*📊 Metrics:*")
         
-        # Units - show actual value
         units = data.get('total_units', 0)
         lines.append("Units: {}".format(units))
         
-        # Revenue - show actual value
         revenue = data.get('total_revenue', 0)
         if revenue:
             lines.append("Revenue: PKR {:,}".format(revenue))
@@ -2417,18 +2179,16 @@ class DNAnalysisService:
             lines.append("Revenue: PKR 0")
         lines.append("")
         
-        # Materials - show distinct count
         material_count = data.get('material_count', 1)
         lines.append("Materials: {}".format(material_count))
         
-        # Models - show distinct count (NEW)
         model_count = data.get('model_count', 0)
         if model_count > 0:
             lines.append("Models: {}".format(model_count))
         lines.append("")
         
         # ==========================================================
-        # SECTION 5: DATES
+        # DATES
         # ==========================================================
         
         lines.append("*📅 Dates:*")
@@ -2438,7 +2198,7 @@ class DNAnalysisService:
         lines.append("")
         
         # ==========================================================
-        # SECTION 6: AGING
+        # AGING
         # ==========================================================
         
         lines.append("*⏳ Aging:*")
@@ -2448,49 +2208,40 @@ class DNAnalysisService:
         lines.append("")
         
         # ==========================================================
-        # SECTION 7: STATUS - INTELLIGENT FROM DATES (FIXED)
+        # STATUS - INTELLIGENT FROM DATES (FIXED)
         # ==========================================================
         
-        # Get raw dates for intelligent status
+        calculated_stage = data.get('calculated_stage', 'Unknown')
+        calculated_emoji = data.get('calculated_emoji', '❓')
+        
         raw_good_issue = data.get('_good_issue_date')
         raw_pod = data.get('_pod_date')
         
-        # Determine if dates exist
         pgi_exists = raw_good_issue is not None
         pod_exists = raw_pod is not None
         
-        # Intelligent status logic
         if pod_exists and pgi_exists:
-            # CASE 1: Delivered
-            status_emoji = "✅"
-            status_text = "Delivered"
-            pgi_status = "✅ Completed"
-            pod_status = "Done"
-            pending_status = "🟢 No"
+            pgi_display = "✅ Completed"
+            pod_display = "Done"
+            pending_display = "🟢 No"
         elif pgi_exists and not pod_exists:
-            # CASE 2: In Transit
-            status_emoji = "🚚"
-            status_text = "In Transit"
-            pgi_status = "✅ Completed"
-            pod_status = "⏳ Pending"
-            pending_status = "⚠️ Yes"
+            pgi_display = "✅ Completed"
+            pod_display = "⏳ Pending"
+            pending_display = "⚠️ Yes"
         else:
-            # CASE 3: Pending Dispatch
-            status_emoji = "⏳"
-            status_text = "Pending Dispatch"
-            pgi_status = "⏳ Pending"
-            pod_status = "⏳ Pending"
-            pending_status = "⚠️ Yes"
+            pgi_display = "⏳ Pending"
+            pod_display = "⏳ Pending"
+            pending_display = "⚠️ Yes"
         
         lines.append("*📋 Status:*")
-        lines.append("Delivery: {} {}".format(status_emoji, status_text))
-        lines.append("PGI: {}".format(pgi_status))
-        lines.append("POD: {}".format(pod_status))
-        lines.append("Pending: {}".format(pending_status))
+        lines.append("Delivery: {} {}".format(calculated_emoji, calculated_stage))
+        lines.append("PGI: {}".format(pgi_display))
+        lines.append("POD: {}".format(pod_display))
+        lines.append("Pending: {}".format(pending_display))
         lines.append("")
         
         # ==========================================================
-        # SECTION 8: PRODUCT DETAILS (NEW)
+        # PRODUCT DETAILS (NEW)
         # ==========================================================
         
         products = data.get('products', [])
@@ -2511,50 +2262,7 @@ class DNAnalysisService:
                 lines.append("... and {} more models ({} units)".format(remaining, total_units_remaining))
             lines.append("")
         
-        # ==========================================================
-        # SECTION 9: DISTANCE (NEW)
-        # ==========================================================
-        
-        distance_text = data.get('distance_text', 'Not Available')
-        if distance_text != 'Not Available' and distance_text != '0.0 km':
-            lines.append("*🚛 Route Information:*")
-            lines.append("Distance: {}".format(distance_text))
-            duration_text = data.get('duration_text', 'Unknown')
-            if duration_text != 'Unknown':
-                lines.append("Estimated Drive: {}".format(duration_text))
-            route_source = data.get('route_source', 'unknown')
-            if route_source != 'unknown':
-                lines.append("Route Source: {}".format(route_source))
-            lines.append("")
-        
-        # ==========================================================
-        # SECTION 10: SYSTEM INFORMATION (NEW)
-        # ==========================================================
-        
-        source_file = data.get('source_file')
-        upload_batch = data.get('upload_batch_id')
-        imported_at = data.get('imported_at')
-        updated_at = data.get('updated_at')
-        
-        if source_file or upload_batch or imported_at or updated_at:
-            lines.append("*📁 System Information:*")
-            if source_file:
-                lines.append("Source: {}".format(source_file))
-            if upload_batch:
-                lines.append("Batch: {}".format(upload_batch))
-            if imported_at:
-                if isinstance(imported_at, datetime):
-                    imported_at = imported_at.strftime('%d-%b-%Y %H:%M')
-                lines.append("Imported: {}".format(imported_at))
-            if updated_at:
-                if isinstance(updated_at, datetime):
-                    updated_at = updated_at.strftime('%d-%b-%Y %H:%M')
-                lines.append("Updated: {}".format(updated_at))
-            lines.append("")
-        
         return "\n".join(lines)
-
-
 # ==========================================================
 # BLOCK 14: REGRESSION TESTS
 # ==========================================================
