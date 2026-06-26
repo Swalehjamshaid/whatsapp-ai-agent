@@ -174,14 +174,19 @@ class DNAnalysisService:
                 session.close()
     
     # ==========================================================
-    # BLOCK 4: DN SEARCH NORMALIZATION
-    # ==========================================================
-        # ==========================================================
-    # BLOCK 4: DN SEARCH QUERY - FIXED
+    # BLOCK 4: DN SEARCH QUERY BUILDERS
     # ==========================================================
     
+    def _normalize_dn(self, dn_no: str) -> str:
+        """Normalize DN number for search - removes non-numeric characters."""
+        if not dn_no:
+            return ""
+        normalized = re.sub(r'[^0-9]', '', dn_no.strip())
+        logger.info(f"🔍 DN Normalization: '{dn_no}' → '{normalized}'")
+        return normalized
+    
     def _build_normalized_dn_query(self) -> str:
-        """Build DN query with multiple matching strategies - FIXED."""
+        """Build DN query with multiple matching strategies."""
         return """
             SELECT 
                 dn_no,
@@ -218,9 +223,6 @@ class DNAnalysisService:
             GROUP BY dn_no
             LIMIT 1
         """
-        # ==========================================================
-    # BLOCK 4.1: FALLBACK QUERY BUILDER
-    # ==========================================================
     
     def _build_fallback_dn_query(self) -> str:
         """Build fallback DN query for partial matches."""
@@ -233,7 +235,38 @@ class DNAnalysisService:
                OR REGEXP_REPLACE(dn_no, '[^0-9]', '', 'g') LIKE '%' || :dn_no || '%'
             LIMIT 10
         """
-
+    
+    def _build_model_query(self) -> str:
+        """Build query to get model details with quantities."""
+        return """
+            SELECT 
+                customer_model AS model_name,
+                material_no AS material_number,
+                division,
+                SUM(dn_qty) AS quantity,
+                SUM(dn_amount) AS revenue,
+                COUNT(*) AS item_count
+            FROM delivery_reports
+            WHERE 
+                dn_no = :dn_no
+                OR dn_no LIKE '%' || :dn_no || '%'
+                OR REPLACE(dn_no, '-', '') = :dn_no
+                OR REPLACE(dn_no, ' ', '') = :dn_no
+                OR REGEXP_REPLACE(dn_no, '[^0-9]', '', 'g') = :dn_no
+            GROUP BY customer_model, material_no, division
+            ORDER BY quantity DESC
+            LIMIT 20
+        """
+    
+    def _build_raw_dn_query(self) -> str:
+        """Build raw DN query to check if DN exists without normalization."""
+        return """
+            SELECT DISTINCT dn_no
+            FROM delivery_reports
+            WHERE dn_no LIKE '%' || :dn_no || '%'
+            LIMIT 10
+        """
+    
     # ==========================================================
     # BLOCK 5: HEALTH & VALIDATION METHODS
     # ==========================================================
@@ -861,8 +894,8 @@ class DNAnalysisService:
             logger.error(f"   Traceback: {traceback.format_exc()}")
             return 0
     
-      # ==========================================================
-    # BLOCK 6.5: INTELLIGENT SHIPMENT STAGE DETERMINATION (NEW)
+    # ==========================================================
+    # BLOCK 6.5: INTELLIGENT SHIPMENT STAGE DETERMINATION
     # ==========================================================
     
     def _determine_shipment_stage(self, dn_create_date, good_issue_date, pod_date) -> Dict[str, Any]:
@@ -949,18 +982,12 @@ class DNAnalysisService:
                 ]
             }
     
-    
-    
-
-    
     # ==========================================================
     # BLOCK 7: DN SEARCH
-     # ==========================================================
-    # BLOCK 7: DN SEARCH - COMPLETE FIX
     # ==========================================================
     
     def search_dn(self, dn_no: str) -> Dict[str, Any]:
-        """Search for a specific DN with multiple matching strategies - FIXED."""
+        """Search for a specific DN with multiple matching strategies."""
         logger.info(f"🔍 Searching for DN: '{dn_no}'")
         
         if not dn_no:
@@ -973,84 +1000,26 @@ class DNAnalysisService:
         if len(cleaned_dn) < 8:
             return {"success": False, "error": f"Invalid DN format: {cleaned_dn} (must be 8-12 digits)"}
         
-        # ==========================================================
-        # STRATEGY 1: Try exact match with cleaned DN
-        # ==========================================================
-        
-        query = """
-            SELECT 
-                dn_no,
-                MAX(customer_name) AS dealer_name,
-                MAX(dealer_code) AS dealer_code,
-                MAX(customer_code) AS customer_code,
-                MAX(warehouse) AS warehouse,
-                MAX(warehouse_code) AS warehouse_code,
-                MAX(ship_to_city) AS city,
-                MAX(delivery_location) AS delivery_location,
-                MAX(sales_manager) AS sales_manager,
-                MAX(division) AS division,
-                SUM(dn_qty) AS total_units,
-                SUM(dn_amount) AS total_revenue,
-                COUNT(DISTINCT customer_model) AS model_count,
-                COUNT(DISTINCT material_no) AS material_count,
-                MIN(dn_create_date) AS dn_create_date,
-                MAX(good_issue_date) AS good_issue_date,
-                MAX(pod_date) AS pod_date,
-                MAX(delivery_status) AS delivery_status,
-                MAX(pgi_status) AS pgi_status,
-                MAX(pod_status) AS pod_status,
-                MAX(pending_flag) AS pending_flag,
-                COUNT(*) AS material_count_total
-            FROM delivery_reports
-            WHERE 
-                dn_no = :dn_no
-                OR dn_no LIKE '%' || :dn_no || '%'
-                OR REPLACE(dn_no, '-', '') = :dn_no
-                OR REPLACE(dn_no, ' ', '') = :dn_no
-                OR REGEXP_REPLACE(dn_no, '[^0-9]', '', 'g') = :dn_no
-            GROUP BY dn_no
-            LIMIT 1
-        """
+        query = self._build_normalized_dn_query()
         
         # Try with cleaned DN
         results = self._execute_query(query, {"dn_no": cleaned_dn})
-        
         if results:
             logger.info(f"✅ DN {dn_no} found with cleaned match")
             return {"success": True, "data": results[0]}
         
-        # ==========================================================
-        # STRATEGY 2: Try with original DN (as-is)
-        # ==========================================================
-        
+        # Try with original DN
         results = self._execute_query(query, {"dn_no": dn_no})
-        
         if results:
             logger.info(f"✅ DN {dn_no} found with original match")
             return {"success": True, "data": results[0]}
         
-        # ==========================================================
-        # STRATEGY 3: Try partial match
-        # ==========================================================
-        
-        logger.warning(f"⚠️ Primary match not found for {dn_no}. Running partial search...")
-        
-        partial_query = """
-            SELECT DISTINCT dn_no
-            FROM delivery_reports
-            WHERE dn_no LIKE '%' || :dn_no || '%'
-               OR REPLACE(dn_no, '-', '') LIKE '%' || :dn_no || '%'
-               OR REPLACE(dn_no, ' ', '') LIKE '%' || :dn_no || '%'
-               OR REGEXP_REPLACE(dn_no, '[^0-9]', '', 'g') LIKE '%' || :dn_no || '%'
-            LIMIT 10
-        """
-        
-        partial_results = self._execute_query(partial_query, {"dn_no": cleaned_dn})
-        similar_dns = [str(r.get('dn_no', '')) for r in partial_results if r.get('dn_no')]
+        # Try fallback
+        logger.warning(f"⚠️ Primary match not found for {dn_no}. Running fallback...")
+        fallback_results = self._execute_query(self._build_fallback_dn_query(), {"dn_no": cleaned_dn})
+        similar_dns = [str(r.get('dn_no', '')) for r in fallback_results if r.get('dn_no')]
         
         if similar_dns:
-            logger.info(f"   ├── Found {len(similar_dns)} similar DNs")
-            
             # Try each similar DN
             for similar_dn in similar_dns[:5]:
                 results = self._execute_query(query, {"dn_no": similar_dn})
@@ -1065,58 +1034,8 @@ class DNAnalysisService:
                 "message": f"DN not found. Did you mean: {', '.join(similar_dns[:3])}?"
             }
         
-        # ==========================================================
-        # STRATEGY 4: Try direct database query without casting
-        # ==========================================================
-        
-        logger.warning(f"⚠️ Trying direct database query...")
-        
-        direct_query = """
-            SELECT dn_no 
-            FROM delivery_reports 
-            WHERE dn_no = :dn_no
-            LIMIT 1
-        """
-        
-        direct_results = self._execute_query(direct_query, {"dn_no": cleaned_dn})
-        
-        if direct_results:
-            logger.info(f"✅ DN found via direct query")
-            # Now get full data
-            results = self._execute_query(query, {"dn_no": cleaned_dn})
-            if results:
-                return {"success": True, "data": results[0]}
-        
-        logger.warning(f"❌ DN {dn_no} not found - all strategies failed")
+        logger.warning(f"❌ DN {dn_no} not found - no similar matches")
         return {"success": False, "error": f"DN {dn_no} not found"}
-        # ==========================================================
-    # BLOCK 7.1: MODEL QUERY BUILDER (NEW)
-    # ==========================================================
-    
-    def _build_model_query(self) -> str:
-        """Build query to get model details with quantities."""
-        return """
-            SELECT 
-                customer_model AS model_name,
-                material_no AS material_number,
-                division,
-                SUM(dn_qty) AS quantity,
-                SUM(dn_amount) AS revenue,
-                COUNT(*) AS item_count
-            FROM delivery_reports
-            WHERE 
-                CAST(dn_no AS TEXT) = :dn_no
-                OR CAST(dn_no AS TEXT) LIKE '%' || :dn_no || '%'
-                OR REPLACE(CAST(dn_no AS TEXT), '-', '') = :dn_no
-                OR REGEXP_REPLACE(CAST(dn_no AS TEXT), '[^0-9]', '', 'g') = :dn_no
-            GROUP BY customer_model, material_no, division
-            ORDER BY quantity DESC
-            LIMIT 20
-        """
-    
-    
-    
-    
     
     # ==========================================================
     # BLOCK 8: VERIFY DN
@@ -1129,18 +1048,18 @@ class DNAnalysisService:
         if not dn_no:
             return {"success": False, "exists": False, "error": "DN number required"}
         
-        normalized_dn = self._normalize_dn(dn_no)
-        logger.info(f"   ├── Normalized: '{normalized_dn}'")
+        cleaned_dn = re.sub(r'[^0-9]', '', dn_no.strip())
         
         query = """
             SELECT COUNT(DISTINCT dn_no) as count 
             FROM delivery_reports 
-            WHERE CAST(dn_no AS TEXT) = :dn_no
-               OR CAST(dn_no AS TEXT) LIKE '%' || :dn_no || '%'
-               OR REPLACE(CAST(dn_no AS TEXT), '-', '') = :dn_no
-               OR REGEXP_REPLACE(CAST(dn_no AS TEXT), '[^0-9]', '', 'g') = :dn_no
+            WHERE dn_no = :dn_no
+               OR dn_no LIKE '%' || :dn_no || '%'
+               OR REPLACE(dn_no, '-', '') = :dn_no
+               OR REPLACE(dn_no, ' ', '') = :dn_no
+               OR REGEXP_REPLACE(dn_no, '[^0-9]', '', 'g') = :dn_no
         """
-        results = self._execute_query(query, {"dn_no": normalized_dn})
+        results = self._execute_query(query, {"dn_no": cleaned_dn})
         exists = results and results[0].get('count', 0) > 0
         
         logger.info(f"✅ DN {dn_no} exists: {exists}")
@@ -1157,10 +1076,10 @@ class DNAnalysisService:
         if not dn_no:
             return {"success": False, "error": "DN number required"}
         
-        normalized_dn = self._normalize_dn(dn_no)
+        cleaned_dn = re.sub(r'[^0-9]', '', dn_no.strip())
         results = {
             "dn": dn_no,
-            "normalized": normalized_dn,
+            "normalized": cleaned_dn,
             "exact_count": 0,
             "like_count": 0,
             "regex_count": 0,
@@ -1168,27 +1087,27 @@ class DNAnalysisService:
             "diagnostics": []
         }
         
-        query1 = "SELECT COUNT(*) as count FROM delivery_reports WHERE CAST(dn_no AS TEXT) = :dn_no"
-        r1 = self._execute_query(query1, {"dn_no": normalized_dn})
+        query1 = "SELECT COUNT(*) as count FROM delivery_reports WHERE dn_no = :dn_no"
+        r1 = self._execute_query(query1, {"dn_no": cleaned_dn})
         results["exact_count"] = r1[0].get('count', 0) if r1 else 0
         results["diagnostics"].append(f"Exact match: {results['exact_count']}")
         
-        query2 = "SELECT COUNT(*) as count FROM delivery_reports WHERE CAST(dn_no AS TEXT) LIKE '%' || :dn_no || '%'"
-        r2 = self._execute_query(query2, {"dn_no": normalized_dn})
+        query2 = "SELECT COUNT(*) as count FROM delivery_reports WHERE dn_no LIKE '%' || :dn_no || '%'"
+        r2 = self._execute_query(query2, {"dn_no": cleaned_dn})
         results["like_count"] = r2[0].get('count', 0) if r2 else 0
         results["diagnostics"].append(f"LIKE match: {results['like_count']}")
         
         query3 = """
             SELECT COUNT(*) as count 
             FROM delivery_reports 
-            WHERE REGEXP_REPLACE(CAST(dn_no AS TEXT), '[^0-9]', '', 'g') = :dn_no
+            WHERE REGEXP_REPLACE(dn_no, '[^0-9]', '', 'g') = :dn_no
         """
-        r3 = self._execute_query(query3, {"dn_no": normalized_dn})
+        r3 = self._execute_query(query3, {"dn_no": cleaned_dn})
         results["regex_count"] = r3[0].get('count', 0) if r3 else 0
         results["diagnostics"].append(f"REGEXP match: {results['regex_count']}")
         
         query4 = self._build_fallback_dn_query()
-        r4 = self._execute_query(query4, {"dn_no": normalized_dn})
+        r4 = self._execute_query(query4, {"dn_no": cleaned_dn})
         results["matching_dns"] = [str(r.get('dn_no', '')) for r in r4 if r.get('dn_no')]
         
         results["found"] = results["exact_count"] > 0 or results["like_count"] > 0
@@ -1198,9 +1117,6 @@ class DNAnalysisService:
         return {"success": True, "data": results}
     
     # ==========================================================
-    # BLOCK 10: DN DASHBOARD - WITH FULL VERIFICATION
-    # ==========================================================
-     # ==========================================================
     # BLOCK 10: DN DASHBOARD - WITH MODELS & INTELLIGENT STATUS
     # ==========================================================
     
@@ -1237,9 +1153,8 @@ class DNAnalysisService:
         # STEP 2: QUERY FOR MODEL DETAILS
         # ==========================================================
         
-        normalized_dn = self._normalize_dn(dn_no)
-        model_query = self._build_model_query()
-        model_results = self._execute_query(model_query, {"dn_no": normalized_dn})
+        cleaned_dn = re.sub(r'[^0-9]', '', dn_no.strip())
+        model_results = self._execute_query(self._build_model_query(), {"dn_no": cleaned_dn})
         
         models = []
         module_quantities = {}
@@ -1336,7 +1251,7 @@ class DNAnalysisService:
             "material_count": material_count or 1,
             "model_count": model_count,
             
-            # Models (NEW)
+            # Models
             "models": models,
             "module_quantities": module_quantities,
             "total_model_units": total_model_units,
@@ -1381,6 +1296,7 @@ class DNAnalysisService:
         
         logger.info(f"✅ Dashboard returned for DN {dn_no}")
         return {"success": True, "data": dashboard}
+    
     # ==========================================================
     # BLOCK 11: DIAGNOSTIC METHODS
     # ==========================================================
@@ -1392,11 +1308,11 @@ class DNAnalysisService:
         if not dn_no:
             return {"success": False, "error": "DN number required"}
         
-        normalized_dn = self._normalize_dn(dn_no)
+        cleaned_dn = re.sub(r'[^0-9]', '', dn_no.strip())
         
         result = {
             "dn": dn_no,
-            "normalized": normalized_dn,
+            "normalized": cleaned_dn,
             "exact_match_count": 0,
             "partial_match_count": 0,
             "similar_dns": [],
@@ -1407,21 +1323,15 @@ class DNAnalysisService:
         exact_query = """
             SELECT COUNT(DISTINCT dn_no) as count 
             FROM delivery_reports 
-            WHERE REGEXP_REPLACE(
-                CAST(dn_no AS TEXT),
-                '[^0-9]',
-                '',
-                'g'
-            ) = :dn_no
+            WHERE REGEXP_REPLACE(dn_no, '[^0-9]', '', 'g') = :dn_no
         """
-        exact_results = self._execute_query(exact_query, {"dn_no": normalized_dn})
+        exact_results = self._execute_query(exact_query, {"dn_no": cleaned_dn})
         exact_count = exact_results[0].get('count', 0) if exact_results else 0
         result["exact_match_count"] = exact_count
         result["exists"] = exact_count > 0
         result["diagnostic"].append(f"Exact match (normalized): {exact_count} found")
         
-        partial_query = self._build_fallback_dn_query()
-        partial_results = self._execute_query(partial_query, {"dn_no": normalized_dn})
+        partial_results = self._execute_query(self._build_fallback_dn_query(), {"dn_no": cleaned_dn})
         similar_dns = [str(r.get('dn_no', '')) for r in partial_results if r.get('dn_no')]
         result["partial_match_count"] = len(similar_dns)
         result["similar_dns"] = similar_dns[:10]
@@ -1430,8 +1340,7 @@ class DNAnalysisService:
         if similar_dns:
             result["diagnostic"].append(f"Similar DNs: {', '.join(similar_dns[:5])}")
         
-        raw_query = self._build_raw_dn_query()
-        raw_results = self._execute_query(raw_query, {"dn_no": dn_no})
+        raw_results = self._execute_query(self._build_raw_dn_query(), {"dn_no": cleaned_dn})
         raw_count = len(raw_results)
         result["diagnostic"].append(f"Raw match (without normalization): {raw_count} found")
         
@@ -1445,9 +1354,7 @@ class DNAnalysisService:
         if not dn_no:
             return {"success": False, "error": "DN number required"}
         
-        query = self._build_raw_dn_query()
-        results = self._execute_query(query, {"dn_no": dn_no})
-        
+        results = self._execute_query(self._build_raw_dn_query(), {"dn_no": dn_no})
         similar_dns = [str(r.get('dn_no', '')) for r in results if r.get('dn_no')]
         
         return {
@@ -1858,9 +1765,6 @@ class DNAnalysisService:
             return {"success": False, "error": str(e)}
     
     # ==========================================================
-    # BLOCK 13: WHATSAPP RESPONSE FORMATTER
-    # ==========================================================
-        # ==========================================================
     # BLOCK 13: WHATSAPP RESPONSE FORMATTER - WITH MODELS
     # ==========================================================
     
@@ -2003,7 +1907,7 @@ class DNAnalysisService:
         lines.append("Pending: {}".format(pending_flag_text))
         
         # ==========================================================
-        # PRODUCT MODELS (NEW)
+        # PRODUCT MODELS
         # ==========================================================
         
         if models:
@@ -2022,7 +1926,7 @@ class DNAnalysisService:
                 lines.append("  • ... and {} more models".format(len(models) - 10))
         
         # ==========================================================
-        # MODULE-WISE QUANTITY (NEW)
+        # MODULE-WISE QUANTITY
         # ==========================================================
         
         if module_quantities:
@@ -2033,7 +1937,7 @@ class DNAnalysisService:
                 lines.append("  • {}: {} units".format(module_name, qty))
         
         return "\n".join(lines)
-        
+    
     # ==========================================================
     # BLOCK 14: REGRESSION TESTS
     # ==========================================================
