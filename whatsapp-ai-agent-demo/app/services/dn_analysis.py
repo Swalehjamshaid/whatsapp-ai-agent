@@ -1850,8 +1850,8 @@ class DNAnalysisService:
     
     # ==========================================================
     # BLOCK 13: WHATSAPP RESPONSE FORMATTER
-        # ==========================================================
-    # BLOCK 13: WHATSAPP RESPONSE FORMATTER (ENTERPRISE DASHBOARD)
+          # ==========================================================
+    # BLOCK 13: WHATSAPP RESPONSE FORMATTER (WITH MODELS & QUALITY)
     # ==========================================================
     
     def format_dn_dashboard(self, dashboard_data: Dict[str, Any]) -> str:
@@ -1861,6 +1861,9 @@ class DNAnalysisService:
         ✅ Intelligent status from dates (not status columns)
         ✅ Professional WhatsApp formatting
         ✅ Business recommendations
+        ✅ Product models count
+        ✅ Data quality metrics
+        ✅ Actual units and revenue values
         """
         data = dashboard_data.get('data', {})
         
@@ -1875,24 +1878,30 @@ class DNAnalysisService:
         sales_manager = data.get('sales_manager')
         division = data.get('division')
         
+        # Metrics - FIXED: Show actual values, not "Not Available"
         material_count = data.get('material_count', 1)
+        model_count = data.get('model_count', 1)
         
-        units = data.get('total_units', 0)
-        if units == 0:
+        # FIX: Show actual units value or "Not Available" only if truly NULL
+        units = data.get('total_units')
+        if units is None:
             total_units = "Not Available"
         else:
-            total_units = str(units)
+            total_units = str(int(units))  # Convert to int and then string
         
-        revenue = data.get('total_revenue', 0)
-        if revenue == 0:
+        # FIX: Show actual revenue value or "Not Available" only if truly NULL
+        revenue = data.get('total_revenue')
+        if revenue is None:
             total_revenue = "Not Available"
         else:
             total_revenue = f"PKR {revenue:,.0f}"
         
+        # Dates
         dn_create_date = data.get('dn_create_date', 'N/A')
         good_issue_date = data.get('good_issue_date', 'N/A')
         pod_date = data.get('pod_date', 'N/A')
         
+        # Aging
         delivery_aging_text = data.get('delivery_aging_text', 'N/A')
         pod_aging_text = data.get('pod_aging_text', 'Not Started')
         total_cycle_text = data.get('total_cycle_text', 'N/A')
@@ -1908,6 +1917,68 @@ class DNAnalysisService:
         progress = data.get('progress', [])
         recommendation = data.get('recommendation', 'Unable to determine shipment status.')
         pending_flag_text = data.get('pending_flag_text', 'Yes')
+        
+        # ==========================================================
+        # DATA QUALITY METRICS
+        # ==========================================================
+        
+        # Check data completeness
+        quality_score = 100
+        quality_issues = []
+        
+        # Check required fields
+        if not dn_no or dn_no == 'N/A':
+            quality_score -= 20
+            quality_issues.append("DN Number missing")
+        
+        if not dealer_name or dealer_name == 'Unknown':
+            quality_score -= 15
+            quality_issues.append("Dealer name missing")
+        
+        if not warehouse or warehouse == 'Unknown':
+            quality_score -= 10
+            quality_issues.append("Warehouse missing")
+        
+        if not city or city == 'Unknown':
+            quality_score -= 10
+            quality_issues.append("Destination missing")
+        
+        # Check date completeness
+        if dn_create_date == 'N/A' or dn_create_date is None:
+            quality_score -= 20
+            quality_issues.append("DN Create Date missing")
+        
+        if good_issue_date == 'N/A' or good_issue_date is None:
+            quality_score -= 10
+            quality_issues.append("PGI Date missing")
+        
+        if pod_date == 'N/A' or pod_date is None:
+            quality_score -= 10
+            quality_issues.append("POD Date missing")
+        
+        # Check units - FIXED: Only flag if truly NULL
+        if units is None:
+            quality_score -= 5
+            quality_issues.append("Units not recorded")
+        
+        # Check revenue - FIXED: Only flag if truly NULL
+        if revenue is None:
+            quality_score -= 5
+            quality_issues.append("Revenue not recorded")
+        
+        # Quality emoji
+        if quality_score >= 90:
+            quality_emoji = "🟢"
+            quality_text = "Excellent"
+        elif quality_score >= 70:
+            quality_emoji = "🟡"
+            quality_text = "Good"
+        elif quality_score >= 50:
+            quality_emoji = "🟠"
+            quality_text = "Fair"
+        else:
+            quality_emoji = "🔴"
+            quality_text = "Poor"
         
         # ==========================================================
         # BUILD WHATSAPP RESPONSE
@@ -1947,8 +2018,9 @@ class DNAnalysisService:
         lines.append("📊 *Shipment Summary*")
         lines.append("")
         lines.append(f"📦 DN Count: {material_count}")
-        lines.append(f"📦 Total Units: {total_units}")
-        lines.append(f"💰 Shipment Value: {total_revenue}")
+        lines.append(f"📦 Product Models: {model_count}")
+        lines.append(f"📦 Total Units: {total_units}")  # FIXED: Shows actual value
+        lines.append(f"💰 Shipment Value: {total_revenue}")  # FIXED: Shows actual value
         lines.append("")
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
@@ -2042,9 +2114,66 @@ class DNAnalysisService:
         lines.append("")
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
+        
+        # ==========================================================
+        # PRODUCT MODELS SECTION
+        # ==========================================================
+        
+        lines.append("📦 *Product Models*")
+        lines.append("")
+        lines.append(f"Total Models: {model_count}")
+        
+        # Get model details from data if available
+        models = data.get('models', [])
+        if models:
+            for model in models[:5]:  # Show first 5 models
+                model_name = model.get('name', 'Unknown')
+                model_qty = model.get('qty', 0)
+                lines.append(f"  • {model_name}: {model_qty} units")
+            if len(models) > 5:
+                lines.append(f"  • ... and {len(models) - 5} more models")
+        else:
+            lines.append("  • Model details not available")
+        lines.append("")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("")
+        
+        # ==========================================================
+        # DATA QUALITY METRICS
+        # ==========================================================
+        
+        lines.append("📊 *Data Quality*")
+        lines.append("")
+        lines.append(f"Quality Score: {quality_emoji} {quality_score}% ({quality_text})")
+        lines.append("")
+        
+        if quality_issues:
+            lines.append("*Issues Found:*")
+            for issue in quality_issues[:5]:
+                lines.append(f"  ⚠️ {issue}")
+            if len(quality_issues) > 5:
+                lines.append(f"  ⚠️ ... and {len(quality_issues) - 5} more issues")
+        else:
+            lines.append("✅ All data fields are complete")
+        lines.append("")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("")
+        
+        # ==========================================================
+        # AI RECOMMENDATION
+        # ==========================================================
+        
         lines.append("💡 *AI Recommendation*")
         lines.append("")
-        lines.append(recommendation)
+        
+        # Enhanced recommendation with quality context
+        if quality_score < 70:
+            lines.append(f"{recommendation}")
+            lines.append("")
+            lines.append("⚠️ *Data Quality Alert:*")
+            lines.append("Some data fields are incomplete. Please update the missing information.")
+        else:
+            lines.append(recommendation)
         lines.append("")
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
         lines.append("")
