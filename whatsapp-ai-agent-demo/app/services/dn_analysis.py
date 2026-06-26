@@ -59,7 +59,7 @@ except ImportError:
 OPENROUTE_API_KEY = os.environ.get("OPENROUTE_API_KEY", "")
 
 # ==========================================================
-# BLOCK 2: DNAnalysisService CLASS (UNCHANGED - LOCKED)
+# BLOCK 2: DNAnalysisService CLASS
 # ==========================================================
 
 class DNAnalysisService:
@@ -115,7 +115,7 @@ class DNAnalysisService:
             logger.error("❌ DNAnalysisService initialization FAILED")
     
     # ==========================================================
-    # BLOCK 3: DATABASE CONNECTION METHODS (UNCHANGED - LOCKED)
+    # BLOCK 3: DATABASE CONNECTION METHODS
     # ==========================================================
     
     def _test_connection(self) -> bool:
@@ -185,7 +185,7 @@ class DNAnalysisService:
                 session.close()
     
     # ==========================================================
-    # BLOCK 4: DN SEARCH NORMALIZATION (UNCHANGED - LOCKED)
+    # BLOCK 4: DN SEARCH NORMALIZATION
     # ==========================================================
     
     def _normalize_dn(self, dn_no: str) -> str:
@@ -296,7 +296,7 @@ class DNAnalysisService:
         """
     
     # ==========================================================
-    # BLOCK 5: HEALTH & VALIDATION METHODS (UNCHANGED)
+    # BLOCK 5: HEALTH & VALIDATION METHODS
     # ==========================================================
     
     def health_check(self) -> Dict[str, Any]:
@@ -471,7 +471,7 @@ class DNAnalysisService:
         }
     
     # ==========================================================
-    # BLOCK 6: DATE VALIDATOR (UNCHANGED)
+    # BLOCK 6: DATE VALIDATOR
     # ==========================================================
     
     def _validate_postgresql_date(self, date_value, field_name: str = "date") -> Dict[str, Any]:
@@ -588,7 +588,7 @@ class DNAnalysisService:
             return result
     
     # ==========================================================
-    # BLOCK 6.1: DATE FORMATTER (UNCHANGED)
+    # BLOCK 6.1: DATE FORMATTER
     # ==========================================================
     
     def _format_display_date(self, date_value) -> str:
@@ -686,7 +686,7 @@ class DNAnalysisService:
             return f"{days} Days ({years} Year{'s' if years > 1 else ''})"
     
     # ==========================================================
-    # BLOCK 6.2: DATE INTEGRITY CHECK (UNCHANGED)
+    # BLOCK 6.2: DATE INTEGRITY CHECK
     # ==========================================================
     
     def _check_date_integrity(self, dn_no: str, dn_create_date, good_issue_date, pod_date) -> Dict[str, Any]:
@@ -741,7 +741,7 @@ class DNAnalysisService:
         return result
     
     # ==========================================================
-    # BLOCK 6.3: RAW POSTGRESQL VERIFICATION (UNCHANGED)
+    # BLOCK 6.3: RAW POSTGRESQL VERIFICATION
     # ==========================================================
     
     def _log_raw_postgresql_values(self, data: Dict[str, Any], dn_no: str) -> None:
@@ -779,7 +779,7 @@ class DNAnalysisService:
                     logger.warning(f"⚠️ {field}: Expected date object, got {type(value).__name__}: {value!r}")
     
     # ==========================================================
-    # BLOCK 6.4: AGING CALCULATOR (UNCHANGED - LOCKED)
+    # BLOCK 6.4: AGING CALCULATOR
     # ==========================================================
     
     def _safe_date_diff(self, date1, date2) -> int:
@@ -1085,7 +1085,7 @@ class DNAnalysisService:
             return 0
     
     # ==========================================================
-    # BLOCK 7: DN SEARCH (UNCHANGED - LOCKED)
+    # BLOCK 7: DN SEARCH
     # ==========================================================
     
     def search_dn(self, dn_no: str) -> Dict[str, Any]:
@@ -1213,7 +1213,7 @@ class DNAnalysisService:
         return data
     
     # ==========================================================
-    # BLOCK 8: VERIFY DN (UNCHANGED)
+    # BLOCK 8: VERIFY DN
     # ==========================================================
     
     def verify_dn(self, dn_no: str) -> Dict[str, Any]:
@@ -1241,7 +1241,7 @@ class DNAnalysisService:
         return {"success": True, "exists": exists}
     
     # ==========================================================
-    # BLOCK 9: TEST DN LOOKUP (UNCHANGED)
+    # BLOCK 9: TEST DN LOOKUP
     # ==========================================================
     
     def test_dn_lookup(self, dn_no: str) -> Dict[str, Any]:
@@ -1292,7 +1292,7 @@ class DNAnalysisService:
         return {"success": True, "data": results}
     
     # ==========================================================
-    # BLOCK 10: DN DASHBOARD (ENHANCED - SAFE ADDITIONS)
+    # BLOCK 10: DN DASHBOARD - WITH ENHANCED DATA
     # ==========================================================
     
     def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
@@ -1547,7 +1547,7 @@ class DNAnalysisService:
         return {"success": True, "data": dashboard}
     
     # ==========================================================
-    # BLOCK 11: DIAGNOSTIC METHODS (UNCHANGED)
+    # BLOCK 11: DIAGNOSTIC METHODS
     # ==========================================================
     
     def diagnose_dn(self, dn_no: str) -> Dict[str, Any]:
@@ -1680,7 +1680,7 @@ class DNAnalysisService:
         return result
     
     # ==========================================================
-    # BLOCK 12: PENDING METHODS (UNCHANGED)
+    # BLOCK 12: PENDING METHODS
     # ==========================================================
     
     def get_pending_dns(self, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
@@ -2023,10 +2023,7 @@ class DNAnalysisService:
             return {"success": False, "error": str(e)}
     
     # ==========================================================
-    # BLOCK 13: WHATSAPP RESPONSE FORMATTER (ENHANCED - PRESERVE ALL)
-    # ==========================================================
-        # ==========================================================
-    # BLOCK 13: WHATSAPP RESPONSE FORMATTER (FIXED)
+    # BLOCK 13: WHATSAPP RESPONSE FORMATTER (FIXED - INTELLIGENT STATUS)
     # ==========================================================
     
     def format_dn_dashboard(self, dashboard_data: Dict[str, Any]) -> str:
@@ -2034,8 +2031,10 @@ class DNAnalysisService:
         Format DN dashboard for WhatsApp response.
         
         ✅ Intelligent status from dates (NOT status columns)
-        ✅ Professional formatting
+        ✅ Correct metrics (Units, Revenue, Materials)
         ✅ Product details
+        ✅ Distance information
+        ✅ System information
         """
         data = dashboard_data.get('data', {})
         
@@ -2086,7 +2085,7 @@ class DNAnalysisService:
             lines.append("")
         
         # ==========================================================
-        # SECTION 3: ADDITIONAL INFO (NEW FIELDS)
+        # SECTION 3: ADDITIONAL INFO (NEW)
         # ==========================================================
         
         dealer_code = data.get('dealer_code')
@@ -2114,16 +2113,16 @@ class DNAnalysisService:
             lines.append("")
         
         # ==========================================================
-        # SECTION 4: METRICS
+        # SECTION 4: METRICS (FIXED)
         # ==========================================================
         
         lines.append("*📊 Metrics:*")
         
-        # Units
+        # Units - show actual value
         units = data.get('total_units', 0)
         lines.append("Units: {}".format(units))
         
-        # Revenue
+        # Revenue - show actual value
         revenue = data.get('total_revenue', 0)
         if revenue:
             lines.append("Revenue: PKR {:,}".format(revenue))
@@ -2131,9 +2130,14 @@ class DNAnalysisService:
             lines.append("Revenue: PKR 0")
         lines.append("")
         
-        # Materials
+        # Materials - show distinct count
         material_count = data.get('material_count', 1)
         lines.append("Materials: {}".format(material_count))
+        
+        # Models - show distinct count (NEW)
+        model_count = data.get('model_count', 0)
+        if model_count > 0:
+            lines.append("Models: {}".format(model_count))
         lines.append("")
         
         # ==========================================================
@@ -2161,7 +2165,6 @@ class DNAnalysisService:
         # ==========================================================
         
         # Get raw dates for intelligent status
-        raw_dn_create = data.get('_dn_create_date')
         raw_good_issue = data.get('_good_issue_date')
         raw_pod = data.get('_pod_date')
         
@@ -2264,8 +2267,9 @@ class DNAnalysisService:
         
         return "\n".join(lines)
 
+
 # ==========================================================
-# BLOCK 14: REGRESSION TESTS (UNCHANGED)
+# BLOCK 14: REGRESSION TESTS
 # ==========================================================
 
 def test_date_calculation(self) -> Dict[str, Any]:
@@ -2474,7 +2478,7 @@ def test_date_calculation(self) -> Dict[str, Any]:
 
 
 # ==========================================================
-# BLOCK 15: THREAD-SAFE SINGLETON (UNCHANGED)
+# BLOCK 15: THREAD-SAFE SINGLETON
 # ==========================================================
 
 _dn_analytics_service = None
@@ -2500,7 +2504,7 @@ def get_dn_analytics_service() -> DNAnalysisService:
 
 
 # ==========================================================
-# BLOCK 16: EXPORTS (UNCHANGED)
+# BLOCK 16: EXPORTS
 # ==========================================================
 
 __all__ = [
@@ -2510,7 +2514,7 @@ __all__ = [
 
 
 # ==========================================================
-# BLOCK 17: MODULE INITIALIZATION (UNCHANGED)
+# BLOCK 17: MODULE INITIALIZATION
 # ==========================================================
 
 logger.info("=" * 70)
