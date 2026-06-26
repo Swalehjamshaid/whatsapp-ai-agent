@@ -1029,11 +1029,15 @@ class DNAnalysisService:
     # BLOCK 10: DN SEARCH - COMPLETE FIX
     # ==========================================================
     
+        # ==========================================================
+    # BLOCK 10: DN SEARCH - COMPLETE FIX (COPY THIS EXACTLY)
+    # ==========================================================
+    
     def search_dn(self, dn_no: str) -> Dict[str, Any]:
         """
         Search for a specific DN with multiple matching strategies.
         
-        FIXED: Uses fallback DN values directly from PostgreSQL instead of retrying cleaned input.
+        FIXED: Directly queries PostgreSQL with multiple patterns.
         """
         logger.info(f"🔍 Searching for DN: '{dn_no}'")
         
@@ -1041,45 +1045,135 @@ class DNAnalysisService:
             return {"success": False, "error": "DN number required"}
         
         # Clean the DN - remove all non-numeric characters
-        cleaned_dn = self._clean_dn(dn_no)
+        cleaned_dn = re.sub(r'[^0-9]', '', dn_no.strip())
         logger.info(f"   ├── Cleaned DN: '{cleaned_dn}'")
         
         if len(cleaned_dn) < 8:
             return {"success": False, "error": f"Invalid DN format: {cleaned_dn} (must be 8-12 digits)"}
         
-        query = self._build_complete_dn_query()
+        # ==========================================================
+        # SINGLE QUERY with multiple matching patterns
+        # ==========================================================
         
-        # ==========================================================
-        # STRATEGY 1: Try with cleaned DN
-        # ==========================================================
-        results = self._execute_query(query, {"dn_no": cleaned_dn})
+        query = """
+            SELECT 
+                dn_no,
+                MAX(customer_name) AS dealer_name,
+                MAX(dealer_code) AS dealer_code,
+                MAX(customer_code) AS customer_code,
+                MAX(customer_model) AS customer_model,
+                MAX(material_no) AS material_no,
+                MAX(warehouse) AS warehouse,
+                MAX(warehouse_code) AS warehouse_code,
+                MAX(ship_to_city) AS city,
+                MAX(delivery_location) AS delivery_location,
+                MAX(sales_manager) AS sales_manager,
+                MAX(division) AS division,
+                SUM(dn_qty) AS total_units,
+                SUM(dn_amount) AS total_revenue,
+                COUNT(DISTINCT customer_model) AS model_count,
+                COUNT(DISTINCT material_no) AS material_count,
+                MIN(dn_create_date) AS dn_create_date,
+                MAX(good_issue_date) AS good_issue_date,
+                MAX(pod_date) AS pod_date,
+                MAX(remarks) AS remarks,
+                MAX(delivery_status) AS delivery_status,
+                MAX(pgi_status) AS pgi_status,
+                MAX(pod_status) AS pod_status,
+                MAX(pending_flag) AS pending_flag,
+                MAX(source_file) AS source_file,
+                MAX(upload_batch_id) AS upload_batch_id,
+                MIN(created_at) AS created_at,
+                MAX(updated_at) AS updated_at,
+                MAX(imported_at) AS imported_at,
+                COUNT(*) AS material_count_total
+            FROM delivery_reports
+            WHERE 
+                dn_no = :dn_no
+                OR dn_no = :dn_no_original
+                OR dn_no LIKE '%' || :dn_no || '%'
+                OR REPLACE(dn_no, '-', '') = :dn_no
+                OR REPLACE(dn_no, ' ', '') = :dn_no
+                OR REGEXP_REPLACE(dn_no, '[^0-9]', '', 'g') = :dn_no
+            GROUP BY dn_no
+            LIMIT 1
+        """
+        
+        # Try with cleaned DN
+        results = self._execute_query(query, {"dn_no": cleaned_dn, "dn_no_original": dn_no})
         if results:
             logger.info(f"✅ DN {dn_no} found with cleaned match")
             return {"success": True, "data": results[0]}
         
-        # ==========================================================
-        # STRATEGY 2: Try with original DN
-        # ==========================================================
-        results = self._execute_query(query, {"dn_no": dn_no})
+        # Try with original DN
+        results = self._execute_query(query, {"dn_no": dn_no, "dn_no_original": dn_no})
         if results:
             logger.info(f"✅ DN {dn_no} found with original match")
             return {"success": True, "data": results[0]}
         
         # ==========================================================
-        # STRATEGY 3: Fallback - get similar DNs from PostgreSQL
+        # FALLBACK: Find similar DNs and try each one
         # ==========================================================
+        
         logger.warning(f"⚠️ Primary match not found for {dn_no}. Running fallback...")
-        fallback_results = self._execute_query(self._build_fallback_dn_query(), {"dn_no": cleaned_dn})
+        
+        fallback_query = """
+            SELECT DISTINCT dn_no
+            FROM delivery_reports
+            WHERE dn_no LIKE '%' || :dn_no || '%'
+               OR REPLACE(dn_no, '-', '') LIKE '%' || :dn_no || '%'
+               OR REPLACE(dn_no, ' ', '') LIKE '%' || :dn_no || '%'
+               OR REGEXP_REPLACE(dn_no, '[^0-9]', '', 'g') LIKE '%' || :dn_no || '%'
+            LIMIT 10
+        """
+        
+        fallback_results = self._execute_query(fallback_query, {"dn_no": cleaned_dn})
         similar_dns = [str(r.get('dn_no', '')) for r in fallback_results if r.get('dn_no')]
         
         if similar_dns:
             logger.info(f"   ├── Found {len(similar_dns)} similar DNs: {similar_dns[:5]}")
             
             # ==========================================================
-            # STRATEGY 4: Try each similar DN directly from PostgreSQL
-            # This is the FIX - use the actual DN from the database
+            # Try EACH similar DN with exact match
             # ==========================================================
-            exact_query = self._build_exact_dn_query()
+            
+            exact_query = """
+                SELECT 
+                    dn_no,
+                    MAX(customer_name) AS dealer_name,
+                    MAX(dealer_code) AS dealer_code,
+                    MAX(customer_code) AS customer_code,
+                    MAX(customer_model) AS customer_model,
+                    MAX(material_no) AS material_no,
+                    MAX(warehouse) AS warehouse,
+                    MAX(warehouse_code) AS warehouse_code,
+                    MAX(ship_to_city) AS city,
+                    MAX(delivery_location) AS delivery_location,
+                    MAX(sales_manager) AS sales_manager,
+                    MAX(division) AS division,
+                    SUM(dn_qty) AS total_units,
+                    SUM(dn_amount) AS total_revenue,
+                    COUNT(DISTINCT customer_model) AS model_count,
+                    COUNT(DISTINCT material_no) AS material_count,
+                    MIN(dn_create_date) AS dn_create_date,
+                    MAX(good_issue_date) AS good_issue_date,
+                    MAX(pod_date) AS pod_date,
+                    MAX(remarks) AS remarks,
+                    MAX(delivery_status) AS delivery_status,
+                    MAX(pgi_status) AS pgi_status,
+                    MAX(pod_status) AS pod_status,
+                    MAX(pending_flag) AS pending_flag,
+                    MAX(source_file) AS source_file,
+                    MAX(upload_batch_id) AS upload_batch_id,
+                    MIN(created_at) AS created_at,
+                    MAX(updated_at) AS updated_at,
+                    MAX(imported_at) AS imported_at,
+                    COUNT(*) AS material_count_total
+                FROM delivery_reports
+                WHERE dn_no = :dn_no
+                GROUP BY dn_no
+                LIMIT 1
+            """
             
             for similar_dn in similar_dns[:5]:
                 logger.info(f"   ├── Trying exact match for: '{similar_dn}'")
@@ -1087,18 +1181,9 @@ class DNAnalysisService:
                 if results:
                     logger.info(f"✅ DN found via similar match: {similar_dn}")
                     return {"success": True, "data": results[0]}
-            
-            # If none of the similar DNs worked, return the list
-            return {
-                "success": False,
-                "error": f"DN {dn_no} not found",
-                "similar_dns": similar_dns[:5],
-                "message": f"DN not found. Did you mean: {', '.join(similar_dns[:3])}?"
-            }
         
         logger.warning(f"❌ DN {dn_no} not found - no similar matches")
         return {"success": False, "error": f"DN {dn_no} not found"}
-    
     # ==========================================================
     # BLOCK 11: VERIFY DN
     # ==========================================================
