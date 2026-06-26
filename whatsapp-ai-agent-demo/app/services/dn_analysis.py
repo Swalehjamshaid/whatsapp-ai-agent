@@ -1293,185 +1293,206 @@ class DNAnalysisService:
     
     # ==========================================================
     # BLOCK 10: DN DASHBOARD BUILDER (ENHANCED)
+# ==========================================================
+# BLOCK 10: DN DASHBOARD BUILDER (FIXED)
+# ==========================================================
+
+def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
+    """
+    Get complete DN dashboard with enterprise analytics.
+    """
+    logger.info(f"📊 Building dashboard for DN: '{dn_no}'")
+    
+    if not dn_no:
+        return {"success": False, "error": "DN number required"}
+    
+    # ==========================================================
+    # STEP 1: QUERY POSTGRESQL
     # ==========================================================
     
-    def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
-        """
-        Get complete DN dashboard with enterprise analytics.
-        """
-        logger.info(f"📊 Building dashboard for DN: '{dn_no}'")
-        
-        if not dn_no:
-            return {"success": False, "error": "DN number required"}
-        
-        # ==========================================================
-        # STEP 1: QUERY POSTGRESQL (UNCHANGED)
-        # ==========================================================
-        
-        search_result = self.search_dn(dn_no)
-        
-        if not search_result.get("success"):
-            similar_dns = search_result.get("similar_dns", [])
-            if similar_dns:
-                return {
-                    "success": False,
-                    "error": f"DN {dn_no} not found. Similar: {', '.join(similar_dns[:3])}"
-                }
-            return {"success": False, "error": f"DN {dn_no} not found"}
-        
-        data = search_result.get("data", {})
-        
-        # ==========================================================
-        # STEP 2: GET RAW DATA (UNCHANGED)
-        # ==========================================================
-        
-        raw_dn_create_date = data.get('dn_create_date')
-        raw_good_issue_date = data.get('good_issue_date')
-        raw_pod_date = data.get('pod_date')
-        
-        # ==========================================================
-        # STEP 3: CALCULATE AGING (UNCHANGED)
-        # ==========================================================
-        
-        delivery_aging = self.calculate_delivery_aging(
-            raw_dn_create_date,
-            raw_good_issue_date
-        )
-        pod_aging = self.calculate_pod_aging(
-            raw_good_issue_date,
-            raw_pod_date
-        )
-        total_cycle = self.calculate_total_cycle(
-            raw_dn_create_date,
-            raw_pod_date
-        )
-        
-        # ==========================================================
-        # STEP 4: FORMAT DATES (UNCHANGED)
-        # ==========================================================
-        
-        formatted_dn_create = self._format_display_date(raw_dn_create_date)
-        formatted_good_issue = self._format_display_date(raw_good_issue_date)
-        formatted_pod = self._format_display_date(raw_pod_date)
-        
-        # ==========================================================
-        # STEP 5: GET PRODUCT DETAILS (NEW - CRITICAL)
-        # ==========================================================
-        
-        normalized_dn = self._normalize_dn(dn_no)
-        product_query = self._build_product_details_query()
-        product_results = self._execute_query(product_query, {"dn_no": normalized_dn})
-        
-        products = []
-        total_units = 0
-        total_revenue = 0
-        
-        for row in product_results:
-            model_name = row.get('model_name')
-            if model_name:
-                qty = int(row.get('quantity', 0) or 0)
-                revenue = float(row.get('revenue', 0) or 0)
-                division = row.get('division', 'Unknown')
-                material_no = row.get('material_number', 'N/A')
-                
-                products.append({
-                    'name': str(model_name),
-                    'material_no': str(material_no),
-                    'division': str(division),
-                    'qty': qty,
-                    'revenue': revenue
-                })
-                total_units += qty
-                total_revenue += revenue
-        
-        # ==========================================================
-        # STEP 6: DETERMINE SHIPMENT STAGE FROM DATES (NEW)
-        # ==========================================================
-        
-        pgi_exists = raw_good_issue_date is not None
-        pod_exists = raw_pod_date is not None
-        
-        if pod_exists and pgi_exists:
-            calculated_stage = "Delivered"
-            calculated_emoji = "✅"
-        elif pgi_exists and not pod_exists:
-            calculated_stage = "In Transit"
-            calculated_emoji = "🚚"
-        else:
-            calculated_stage = "Pending Dispatch"
-            calculated_emoji = "⏳"
-        
-        # ==========================================================
-        # STEP 7: BUILD DASHBOARD (ENHANCED)
-        # ==========================================================
-        
-        # Get material count - use from data or calculate
-        material_count = data.get('material_count', 1)
-        model_count = len(products)
-        
-        dashboard = {
-            # ==========================================================
-            # EXISTING FIELDS (PRESERVED)
-            # ==========================================================
-            "dn_no": data.get('dn_no'),
-            "dealer_name": data.get('dealer_name', 'Unknown'),
-            "warehouse": data.get('warehouse', 'Unknown'),
-            "city": data.get('city', 'Unknown'),
-            "delivery_location": data.get('delivery_location'),
-            "sales_manager": data.get('sales_manager'),
-            "division": data.get('division'),
+    search_result = self.search_dn(dn_no)
+    
+    if not search_result.get("success"):
+        similar_dns = search_result.get("similar_dns", [])
+        if similar_dns:
+            return {
+                "success": False,
+                "error": f"DN {dn_no} not found. Similar: {', '.join(similar_dns[:3])}"
+            }
+        return {"success": False, "error": f"DN {dn_no} not found"}
+    
+    data = search_result.get("data", {})
+    
+    # ==========================================================
+    # STEP 2: GET RAW DATA
+    # ==========================================================
+    
+    raw_dn_create_date = data.get('dn_create_date')
+    raw_good_issue_date = data.get('good_issue_date')
+    raw_pod_date = data.get('pod_date')
+    
+    # ==========================================================
+    # STEP 3: CALCULATE AGING
+    # ==========================================================
+    
+    delivery_aging = self.calculate_delivery_aging(
+        raw_dn_create_date,
+        raw_good_issue_date
+    )
+    pod_aging = self.calculate_pod_aging(
+        raw_good_issue_date,
+        raw_pod_date
+    )
+    total_cycle = self.calculate_total_cycle(
+        raw_dn_create_date,
+        raw_pod_date
+    )
+    
+    # ==========================================================
+    # STEP 4: FORMAT DATES
+    # ==========================================================
+    
+    formatted_dn_create = self._format_display_date(raw_dn_create_date)
+    formatted_good_issue = self._format_display_date(raw_good_issue_date)
+    formatted_pod = self._format_display_date(raw_pod_date)
+    
+    # ==========================================================
+    # STEP 5: GET PRODUCT DETAILS
+    # ==========================================================
+    
+    normalized_dn = self._normalize_dn(dn_no)
+    product_query = self._build_product_details_query()
+    product_results = self._execute_query(product_query, {"dn_no": normalized_dn})
+    
+    products = []
+    total_units = 0
+    total_revenue = 0
+    
+    for row in product_results:
+        model_name = row.get('model_name')
+        if model_name:
+            qty = int(row.get('quantity', 0) or 0)
+            revenue = float(row.get('revenue', 0) or 0)
+            division = row.get('division', 'Unknown')
+            material_no = row.get('material_number', 'N/A')
             
-            "dn_create_date": formatted_dn_create,
-            "good_issue_date": formatted_good_issue,
-            "pod_date": formatted_pod,
-            
-            "delivery_aging_days": delivery_aging,
-            "pod_aging_days": pod_aging,
-            "total_cycle_days": total_cycle,
-            "delivery_aging_text": self._format_aging_text(delivery_aging),
-            "pod_aging_text": self._format_aging_text(pod_aging),
-            "total_cycle_text": self._format_aging_text(total_cycle),
-            
-            # ==========================================================
-            # ENHANCED METRICS (FIXED)
-            # ==========================================================
-            "total_units": total_units if total_units > 0 else data.get('total_units', 0),
-            "total_revenue": total_revenue if total_revenue > 0 else data.get('total_revenue', 0),
-            "material_count": material_count,
-            "model_count": model_count,
-            
-            # ==========================================================
-            # NEW FIELDS
-            # ==========================================================
-            "products": products,
-            "calculated_stage": calculated_stage,
-            "calculated_emoji": calculated_emoji,
-            
-            # Raw dates for status determination
-            "_dn_create_date": raw_dn_create_date,
-            "_good_issue_date": raw_good_issue_date,
-            "_pod_date": raw_pod_date,
-            
-            # Additional info
-            "dealer_code": data.get('dealer_code'),
-            "customer_code": data.get('customer_code'),
-            "warehouse_code": data.get('warehouse_code'),
-            "sales_office": data.get('sales_office'),
-            "source_file": data.get('source_file'),
-            "upload_batch_id": data.get('upload_batch_id'),
-            "imported_at": data.get('imported_at'),
-            "created_at": data.get('created_at'),
-            "updated_at": data.get('updated_at'),
-            
-            # Status fields (for backward compatibility)
-            "delivery_status": data.get('delivery_status', 'Unknown'),
-            "pgi_status": data.get('pgi_status', 'Unknown'),
-            "pod_status": data.get('pod_status', 'Unknown'),
-            "pending_flag": data.get('pending_flag', False),
-        }
+            products.append({
+                'name': str(model_name),
+                'material_no': str(material_no),
+                'division': str(division),
+                'qty': qty,
+                'revenue': revenue
+            })
+            total_units += qty
+            total_revenue += revenue
+    
+    # ==========================================================
+    # STEP 6: DETERMINE SHIPMENT STAGE FROM DATES (FIXED)
+    # ==========================================================
+    
+    pgi_exists = raw_good_issue_date is not None
+    pod_exists = raw_pod_date is not None
+    
+    # Calculate status from business rules
+    if pod_exists and pgi_exists:
+        calculated_stage = "Delivered"
+        calculated_emoji = "✅"
+        pgi_status_display = "Completed"
+        pod_status_display = "Completed"
+        pending_flag = False
+        pending_flag_text = "🟢 No"
+    elif pgi_exists and not pod_exists:
+        calculated_stage = "Dispatched"
+        calculated_emoji = "🚚"
+        pgi_status_display = "Completed"
+        pod_status_display = "Pending"
+        pending_flag = True
+        pending_flag_text = "⚠️ Yes"
+    else:
+        calculated_stage = "Pending Dispatch"
+        calculated_emoji = "⏳"
+        pgi_status_display = "Pending"
+        pod_status_display = "Pending"
+        pending_flag = True
+        pending_flag_text = "⚠️ Yes"
+    
+    # ==========================================================
+    # STEP 7: BUILD DASHBOARD (FIXED)
+    # ==========================================================
+    
+    material_count = data.get('material_count', 1)
+    model_count = len(products)
+    
+    dashboard = {
+        # ==========================================================
+        # EXISTING FIELDS (PRESERVED)
+        # ==========================================================
+        "dn_no": data.get('dn_no'),
+        "dealer_name": data.get('dealer_name', 'Unknown'),
+        "warehouse": data.get('warehouse', 'Unknown'),
+        "city": data.get('city', 'Unknown'),
+        "delivery_location": data.get('delivery_location'),
+        "sales_manager": data.get('sales_manager'),
+        "division": data.get('division'),
         
-        logger.info(f"✅ Dashboard built for DN {dn_no}")
-        return {"success": True, "data": dashboard}
+        "dn_create_date": formatted_dn_create,
+        "good_issue_date": formatted_good_issue,
+        "pod_date": formatted_pod,
+        
+        "delivery_aging_days": delivery_aging,
+        "pod_aging_days": pod_aging,
+        "total_cycle_days": total_cycle,
+        "delivery_aging_text": self._format_aging_text(delivery_aging),
+        "pod_aging_text": self._format_aging_text(pod_aging),
+        "total_cycle_text": self._format_aging_text(total_cycle),
+        
+        # ==========================================================
+        # METRICS (FIXED)
+        # ==========================================================
+        "total_units": total_units if total_units > 0 else data.get('total_units', 0),
+        "total_revenue": total_revenue if total_revenue > 0 else data.get('total_revenue', 0),
+        "material_count": material_count,
+        "model_count": model_count,
+        
+        # ==========================================================
+        # PRODUCTS
+        # ==========================================================
+        "products": products,
+        
+        # ==========================================================
+        # STATUS FIELDS - CRITICAL FIX (MUST BE ADDED)
+        # ==========================================================
+        "calculated_stage": calculated_stage,
+        "calculated_emoji": calculated_emoji,
+        
+        # Status display fields for WhatsApp
+        "delivery_status": calculated_stage,
+        "pgi_status": pgi_status_display,
+        "pod_status": pod_status_display,
+        "pending_flag": pending_flag,
+        "pending_flag_text": pending_flag_text,
+        
+        # Raw dates for status determination
+        "_dn_create_date": raw_dn_create_date,
+        "_good_issue_date": raw_good_issue_date,
+        "_pod_date": raw_pod_date,
+        
+        # ==========================================================
+        # ADDITIONAL INFO
+        # ==========================================================
+        "dealer_code": data.get('dealer_code'),
+        "customer_code": data.get('customer_code'),
+        "warehouse_code": data.get('warehouse_code'),
+        "sales_office": data.get('sales_office'),
+        "source_file": data.get('source_file'),
+        "upload_batch_id": data.get('upload_batch_id'),
+        "imported_at": data.get('imported_at'),
+        "created_at": data.get('created_at'),
+        "updated_at": data.get('updated_at'),
+    }
+    
+    logger.info(f"✅ Dashboard built for DN {dn_no}")
+    return {"success": True, "data": dashboard}
     
     # ==========================================================
     # BLOCK 11: DIAGNOSTIC METHODS
