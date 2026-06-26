@@ -2264,44 +2264,96 @@ class DNAnalysisService:
     # ==========================================================
     # BLOCK 14: WHATSAPP RESPONSE FORMATTER (PROFESSIONAL DASHBOARD)
     # ==========================================================
+    # ==========================================================
+    # BLOCK 14: WHATSAPP RESPONSE FORMATTER (PROFESSIONAL DASHBOARD)
+    # ==========================================================
     
     def format_dn_dashboard(self, dashboard_data: Dict[str, Any]) -> str:
         """
-        Format DN dashboard for WhatsApp response.
+        Format DN dashboard for WhatsApp response with intelligent status.
         
-        Professional dashboard with:
-        - Intelligent shipment stage (from dates, not status columns)
-        - Logistics and distance information
-        - Business recommendations
-        - Proper date formatting (DD-MMM-YYYY)
+        ✅ Status from dates (not status columns)
+        ✅ Professional dashboard format
+        ✅ Business recommendations
+        ✅ No status contradictions
         """
         data = dashboard_data.get('data', {})
         
+        # ==========================================================
+        # INTELLIGENT STATUS FROM DATES (NOT STATUS COLUMNS)
+        # ==========================================================
+        
+        # Get date values
+        dn_create_date = data.get('dn_create_date')
+        good_issue_date = data.get('good_issue_date')
+        pod_date = data.get('pod_date')
+        
+        # Helper to check if date exists
+        def date_exists(date_val):
+            if date_val is None:
+                return False
+            if isinstance(date_val, str):
+                return date_val not in ['N/A', 'Unknown', 'None', '']
+            return True
+        
+        pgi_exists = date_exists(good_issue_date)
+        pod_exists = date_exists(pod_date)
+        
+        # Determine intelligent status from dates
+        if pod_exists and pgi_exists:
+            # CASE 1: Delivered
+            status_stage = "✅ Delivered"
+            status_health = "🟢 Completed Successfully"
+            pgi_display = f"✅ PGI Completed ({good_issue_date})"
+            pod_display = f"✅ POD Received ({pod_date})"
+            pending_display = "🟢 No"
+            recommendation = "Shipment successfully completed. No further action required."
+            
+        elif pgi_exists and not pod_exists:
+            # CASE 2: In Transit
+            status_stage = "🚚 In Transit"
+            status_health = "🟡 On Route"
+            pgi_display = f"✅ PGI Completed ({good_issue_date})"
+            pod_display = "⏳ POD Pending"
+            pending_display = "⚠️ Yes"
+            recommendation = "Shipment has left the warehouse. Please obtain POD confirmation from transporter."
+            
+        else:
+            # CASE 3: Pending Dispatch
+            status_stage = "⏳ Pending Dispatch"
+            status_health = "🟡 Awaiting Dispatch"
+            pgi_display = "⏳ PGI Pending"
+            pod_display = "⏳ POD Not Started"
+            pending_display = "⚠️ Yes"
+            recommendation = "Shipment has not yet been dispatched. Warehouse should complete PGI immediately."
+        
+        # ==========================================================
+        # BUILD WHATSAPP RESPONSE
+        # ==========================================================
+        
         lines = []
-        lines.append(f"📦 *DN Dashboard*")
-        lines.append("")
-        lines.append(f"*DN:* {data.get('dn_no', 'N/A')}")
+        lines.append(f"📦 *DN: {data.get('dn_no', 'N/A')}*")
         lines.append("")
         lines.append("*Dealer:*")
-        lines.append("{}".format(data.get('dealer_name', 'Unknown')))
+        lines.append(data.get('dealer_name', 'Unknown'))
         lines.append("")
         lines.append("*Warehouse:*")
-        lines.append("{}".format(data.get('warehouse', 'Unknown')))
+        lines.append(data.get('warehouse', 'Unknown'))
         lines.append("")
-        lines.append("*Destination:*")
-        lines.append("{}".format(data.get('city', 'Unknown')))
+        lines.append("*City:*")
+        lines.append(data.get('city', 'Unknown'))
         lines.append("")
         
         sales_manager = data.get('sales_manager')
         if sales_manager:
             lines.append("*Sales Manager:*")
-            lines.append("{}".format(sales_manager))
+            lines.append(sales_manager)
             lines.append("")
         
         division = data.get('division')
         if division:
             lines.append("*Division:*")
-            lines.append("{}".format(division))
+            lines.append(division)
             lines.append("")
         
         lines.append("━━━━━━━━━━━━━━━━")
@@ -2314,17 +2366,17 @@ class DNAnalysisService:
         lines.append("*📊 Shipment Summary*")
         lines.append(f"DN Count: {data.get('material_count', 1)}")
         
-        units = data.get('total_units_display', 'Not Available')
-        if units != 'Not Available':
-            lines.append(f"Units: {units}")
-        else:
+        units = data.get('total_units')
+        if units is None or units == 0:
             lines.append("Units: Not Available")
-        
-        revenue = data.get('total_revenue_display', 'Not Available')
-        if revenue != 'Not Available':
-            lines.append(f"Shipment Value: {revenue}")
         else:
+            lines.append(f"Units: {units}")
+        
+        revenue = data.get('total_revenue')
+        if revenue is None or revenue == 0:
             lines.append("Shipment Value: Not Available")
+        else:
+            lines.append(f"Shipment Value: PKR {revenue:,.2f}")
         lines.append("")
         
         lines.append("━━━━━━━━━━━━━━━━")
@@ -2335,22 +2387,9 @@ class DNAnalysisService:
         # ==========================================================
         
         lines.append("*📅 Timeline*")
-        
-        # Progress with dates
-        progress_items = data.get('progress', [])
-        if progress_items:
-            for item in progress_items:
-                status = item.get('status', '⏳')
-                step = item.get('step', '')
-                date_val = item.get('date', '')
-                if date_val and date_val != 'Pending' and date_val != 'Not Started':
-                    lines.append(f"{status} {step} ({date_val})")
-                else:
-                    lines.append(f"{status} {step}")
-        else:
-            lines.append(f"✅ DN Created ({data.get('dn_create_date', 'N/A')})")
-            lines.append("⏳ PGI Pending")
-            lines.append("⏳ POD Pending")
+        lines.append(f"✅ DN Created ({data.get('dn_create_date', 'N/A')})")
+        lines.append(pgi_display)
+        lines.append(pod_display)
         lines.append("")
         
         lines.append("━━━━━━━━━━━━━━━━")
@@ -2364,41 +2403,11 @@ class DNAnalysisService:
         lines.append(f"Dispatch Time: {data.get('delivery_aging_text', 'N/A')}")
         
         pod_aging = data.get('pod_aging_text', 'Not Started')
+        if pod_aging == 'Same Day' and not pod_exists:
+            pod_aging = 'Not Started'
         lines.append(f"Transit Time: {pod_aging}")
         
         lines.append(f"Overall Cycle: {data.get('total_cycle_text', 'N/A')}")
-        lines.append("")
-        
-        lines.append("━━━━━━━━━━━━━━━━")
-        lines.append("")
-        
-        # ==========================================================
-        # LOGISTICS
-        # ==========================================================
-        
-        lines.append("*🚛 Logistics*")
-        
-        distance_text = data.get('distance_text', 'Not Available')
-        distance_emoji = data.get('distance_emoji', '📍')
-        distance_category = data.get('distance_category', 'Unknown')
-        
-        if distance_text != 'Not Available':
-            lines.append(f"Road Distance: {distance_text}")
-            lines.append(f"Distance Category: {distance_emoji} {distance_category}")
-        else:
-            lines.append("Road Distance: Not Available")
-        
-        duration_text = data.get('duration_text', 'Not Available')
-        if duration_text != 'Not Available':
-            lines.append(f"Driving Time: {duration_text}")
-        else:
-            lines.append("Driving Time: Not Available")
-        
-        expected_delivery = data.get('expected_delivery_text', 'Not Available')
-        if expected_delivery != 'Not Available':
-            lines.append(f"Expected Delivery: {expected_delivery}")
-        else:
-            lines.append("Expected Delivery: Not Available")
         lines.append("")
         
         lines.append("━━━━━━━━━━━━━━━━")
@@ -2410,40 +2419,21 @@ class DNAnalysisService:
         
         lines.append("*📋 Shipment Status*")
         lines.append("")
-        
-        # Current Stage
-        stage_emoji = data.get('stage_emoji', '❓')
-        stage_text = data.get('stage_text', 'Unknown')
         lines.append("*Current Stage:*")
-        lines.append(f"{stage_emoji} {stage_text}")
+        lines.append(status_stage)
         lines.append("")
         
-        # Shipment Health
-        health_emoji = data.get('health_emoji', '❓')
-        health_text = data.get('health_text', 'Unknown')
         lines.append("*Shipment Health:*")
-        lines.append(f"{health_emoji} {health_text}")
+        lines.append(status_health)
         lines.append("")
         
-        # Progress (short version)
         lines.append("*Progress:*")
-        if progress_items:
-            for item in progress_items:
-                status = item.get('status', '⏳')
-                step = item.get('step', '')
-                date_val = item.get('date', '')
-                if date_val and date_val != 'Pending' and date_val != 'Not Started':
-                    lines.append(f"{status} {step} ({date_val})")
-                else:
-                    lines.append(f"{status} {step}")
+        lines.append(f"✅ DN Created ({data.get('dn_create_date', 'N/A')})")
+        lines.append(pgi_display)
+        lines.append(pod_display)
         lines.append("")
         
-        # Pending Flag (intelligent from dates)
-        pending_flag_text = data.get('pending_flag_text', 'Yes')
-        if pending_flag_text == 'Yes':
-            lines.append("⚠️ *Pending:* Yes")
-        else:
-            lines.append("🟢 *Pending:* No")
+        lines.append(f"🔄 *Pending:* {pending_display}")
         lines.append("")
         
         lines.append("━━━━━━━━━━━━━━━━")
@@ -2452,9 +2442,6 @@ class DNAnalysisService:
         # ==========================================================
         # RECOMMENDATION
         # ==========================================================
-        
-        recommendation = data.get('recommendation', 
-            "Unable to determine shipment status. Please verify records.")
         
         lines.append("*💡 Recommendation*")
         lines.append(recommendation)
