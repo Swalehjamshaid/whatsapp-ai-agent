@@ -2025,74 +2025,60 @@ class DNAnalysisService:
     # ==========================================================
     # BLOCK 13: WHATSAPP RESPONSE FORMATTER (ENHANCED - PRESERVE ALL)
     # ==========================================================
+        # ==========================================================
+    # BLOCK 13: WHATSAPP RESPONSE FORMATTER (FIXED)
+    # ==========================================================
     
     def format_dn_dashboard(self, dashboard_data: Dict[str, Any]) -> str:
         """
         Format DN dashboard for WhatsApp response.
         
-        ✅ PRESERVES all existing fields
-        ✅ ADD new fields below existing ones
-        ✅ No existing output removed
+        ✅ Intelligent status from dates (NOT status columns)
+        ✅ Professional formatting
+        ✅ Product details
         """
         data = dashboard_data.get('data', {})
         
         lines = []
         
         # ==========================================================
-        # SECTION 1: DN HEADER (UNCHANGED)
+        # SECTION 1: DN HEADER
         # ==========================================================
         
         lines.append("📦 *DN: {}*".format(data.get('dn_no', 'N/A')))
         lines.append("")
         
         # ==========================================================
-        # SECTION 2: DEALER (UNCHANGED)
+        # SECTION 2: DEALER & WAREHOUSE
         # ==========================================================
         
         lines.append("*Dealer:*")
         lines.append("{}".format(data.get('dealer_name', 'Unknown')))
         lines.append("")
         
-        # ==========================================================
-        # SECTION 3: WAREHOUSE (UNCHANGED)
-        # ==========================================================
-        
         lines.append("*Warehouse:*")
         lines.append("{}".format(data.get('warehouse', 'Unknown')))
         lines.append("")
-        
-        # ==========================================================
-        # SECTION 4: CITY (UNCHANGED)
-        # ==========================================================
         
         lines.append("*City:*")
         lines.append("{}".format(data.get('city', 'Unknown')))
         lines.append("")
         
-        # ==========================================================
-        # SECTION 5: DELIVERY LOCATION (UNCHANGED)
-        # ==========================================================
-        
+        # Delivery Location
         delivery_location = data.get('delivery_location')
         if delivery_location:
             lines.append("*Delivery Location:*")
             lines.append("{}".format(delivery_location))
             lines.append("")
         
-        # ==========================================================
-        # SECTION 6: SALES MANAGER (UNCHANGED)
-        # ==========================================================
-        
+        # Sales Manager
         sales_manager = data.get('sales_manager')
         if sales_manager:
             lines.append("*Sales Manager:*")
             lines.append("{}".format(sales_manager))
             lines.append("")
         
-        # ==========================================================
-        # SECTION 7: DIVISION (UNCHANGED)
-        # ==========================================================
-        
+        # Division
         division = data.get('division')
         if division:
             lines.append("*Division:*")
@@ -2100,31 +2086,27 @@ class DNAnalysisService:
             lines.append("")
         
         # ==========================================================
-        # SECTION 8: ADDITIONAL INFO (NEW - APPEND)
+        # SECTION 3: ADDITIONAL INFO (NEW FIELDS)
         # ==========================================================
         
-        # Dealer Code (NEW)
         dealer_code = data.get('dealer_code')
         if dealer_code:
             lines.append("*Dealer Code:*")
             lines.append("{}".format(dealer_code))
             lines.append("")
         
-        # Customer Code (NEW)
         customer_code = data.get('customer_code')
         if customer_code:
             lines.append("*Customer Code:*")
             lines.append("{}".format(customer_code))
             lines.append("")
         
-        # Warehouse Code (NEW)
         warehouse_code = data.get('warehouse_code')
         if warehouse_code:
             lines.append("*Warehouse Code:*")
             lines.append("{}".format(warehouse_code))
             lines.append("")
         
-        # Sales Office (NEW)
         sales_office = data.get('sales_office')
         if sales_office:
             lines.append("*Sales Office:*")
@@ -2132,16 +2114,16 @@ class DNAnalysisService:
             lines.append("")
         
         # ==========================================================
-        # SECTION 9: METRICS (UNCHANGED - BUT SHOW CORRECT VALUES)
+        # SECTION 4: METRICS
         # ==========================================================
         
         lines.append("*📊 Metrics:*")
         
-        # Units - show calculated value
+        # Units
         units = data.get('total_units', 0)
         lines.append("Units: {}".format(units))
         
-        # Revenue - show calculated value
+        # Revenue
         revenue = data.get('total_revenue', 0)
         if revenue:
             lines.append("Revenue: PKR {:,}".format(revenue))
@@ -2149,13 +2131,13 @@ class DNAnalysisService:
             lines.append("Revenue: PKR 0")
         lines.append("")
         
-        # Materials - show distinct count
+        # Materials
         material_count = data.get('material_count', 1)
         lines.append("Materials: {}".format(material_count))
         lines.append("")
         
         # ==========================================================
-        # SECTION 10: DATES (UNCHANGED)
+        # SECTION 5: DATES
         # ==========================================================
         
         lines.append("*📅 Dates:*")
@@ -2165,7 +2147,7 @@ class DNAnalysisService:
         lines.append("")
         
         # ==========================================================
-        # SECTION 11: AGING (UNCHANGED)
+        # SECTION 6: AGING
         # ==========================================================
         
         lines.append("*⏳ Aging:*")
@@ -2175,28 +2157,50 @@ class DNAnalysisService:
         lines.append("")
         
         # ==========================================================
-        # SECTION 12: STATUS (UNCHANGED)
+        # SECTION 7: STATUS - INTELLIGENT FROM DATES (FIXED)
         # ==========================================================
         
-        lines.append("*📋 Status:*")
-        lines.append("Delivery: {} {}".format(
-            data.get('status_emoji', '❓'),
-            data.get('status_text', data.get('delivery_status', 'Unknown'))
-        ))
-        lines.append("PGI: {}".format(data.get('pgi_status_text', 'Unknown')))
+        # Get raw dates for intelligent status
+        raw_dn_create = data.get('_dn_create_date')
+        raw_good_issue = data.get('_good_issue_date')
+        raw_pod = data.get('_pod_date')
         
-        pod_status = data.get('pod_status', '')
-        pod_status_text = data.get('pod_status_text', 'Unknown')
-        if pod_status in ['Completed', 'Received', 'Done'] or pod_status_text == 'Done':
-            lines.append("POD: Done")
+        # Determine if dates exist
+        pgi_exists = raw_good_issue is not None
+        pod_exists = raw_pod is not None
+        
+        # Intelligent status logic
+        if pod_exists and pgi_exists:
+            # CASE 1: Delivered
+            status_emoji = "✅"
+            status_text = "Delivered"
+            pgi_status = "✅ Completed"
+            pod_status = "Done"
+            pending_status = "🟢 No"
+        elif pgi_exists and not pod_exists:
+            # CASE 2: In Transit
+            status_emoji = "🚚"
+            status_text = "In Transit"
+            pgi_status = "✅ Completed"
+            pod_status = "⏳ Pending"
+            pending_status = "⚠️ Yes"
         else:
-            lines.append("POD: {}".format(pod_status_text))
+            # CASE 3: Pending Dispatch
+            status_emoji = "⏳"
+            status_text = "Pending Dispatch"
+            pgi_status = "⏳ Pending"
+            pod_status = "⏳ Pending"
+            pending_status = "⚠️ Yes"
         
-        lines.append("Pending: {}".format(data.get('pending_flag_text', 'Unknown')))
+        lines.append("*📋 Status:*")
+        lines.append("Delivery: {} {}".format(status_emoji, status_text))
+        lines.append("PGI: {}".format(pgi_status))
+        lines.append("POD: {}".format(pod_status))
+        lines.append("Pending: {}".format(pending_status))
         lines.append("")
         
         # ==========================================================
-        # SECTION 13: PRODUCT DETAILS (NEW - APPEND)
+        # SECTION 8: PRODUCT DETAILS (NEW)
         # ==========================================================
         
         products = data.get('products', [])
@@ -2218,19 +2222,23 @@ class DNAnalysisService:
             lines.append("")
         
         # ==========================================================
-        # SECTION 14: DISTANCE (NEW - APPEND)
+        # SECTION 9: DISTANCE (NEW)
         # ==========================================================
         
         distance_text = data.get('distance_text', 'Not Available')
         if distance_text != 'Not Available' and distance_text != '0.0 km':
             lines.append("*🚛 Route Information:*")
             lines.append("Distance: {}".format(distance_text))
-            lines.append("Estimated Drive: {}".format(data.get('duration_text', 'Unknown')))
-            lines.append("Route Source: {}".format(data.get('route_source', 'unknown')))
+            duration_text = data.get('duration_text', 'Unknown')
+            if duration_text != 'Unknown':
+                lines.append("Estimated Drive: {}".format(duration_text))
+            route_source = data.get('route_source', 'unknown')
+            if route_source != 'unknown':
+                lines.append("Route Source: {}".format(route_source))
             lines.append("")
         
         # ==========================================================
-        # SECTION 15: SYSTEM INFORMATION (NEW - APPEND)
+        # SECTION 10: SYSTEM INFORMATION (NEW)
         # ==========================================================
         
         source_file = data.get('source_file')
@@ -2238,7 +2246,7 @@ class DNAnalysisService:
         imported_at = data.get('imported_at')
         updated_at = data.get('updated_at')
         
-        if source_file or upload_batch or imported_at:
+        if source_file or upload_batch or imported_at or updated_at:
             lines.append("*📁 System Information:*")
             if source_file:
                 lines.append("Source: {}".format(source_file))
@@ -2255,7 +2263,6 @@ class DNAnalysisService:
             lines.append("")
         
         return "\n".join(lines)
-
 
 # ==========================================================
 # BLOCK 14: REGRESSION TESTS (UNCHANGED)
