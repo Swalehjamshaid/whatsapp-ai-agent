@@ -1028,21 +1028,8 @@ class DNAnalysisService:
     # ==========================================================
     # BLOCK 10: DN SEARCH - COMPLETE FIX
     # ==========================================================
-    
-        # ==========================================================
-    # BLOCK 10: DN SEARCH - COMPLETE FIX (COPY THIS EXACTLY)
-    # ==========================================================
-        # ==========================================================
-    # BLOCK 10: DN SEARCH - COMPLETE FIX (COPY THIS EXACTLY)
-    # ==========================================================
-    
-    def search_dn(self, dn_no: str) -> Dict[str, Any]:
-        """
-        Search for a specific DN with multiple matching strategies.
-        
-        FIXED: Directly queries PostgreSQL with multiple patterns.
-        Uses the actual DN from database in fallback.
-        """
+        def search_dn(self, dn_no: str) -> Dict[str, Any]:
+        """Search for a specific DN with multiple matching strategies."""
         logger.info(f"🔍 Searching for DN: '{dn_no}'")
         
         if not dn_no:
@@ -1195,6 +1182,14 @@ class DNAnalysisService:
         
         logger.warning(f"❌ DN {dn_no} not found - no similar matches")
         return {"success": False, "error": f"DN {dn_no} not found"}
+        # ==========================================================
+    # BLOCK 10: DN SEARCH - COMPLETE FIX (COPY THIS EXACTLY)
+    # ==========================================================
+        # ==========================================================
+    # BLOCK 10: DN SEARCH - COMPLETE FIX (COPY THIS EXACTLY)
+    # ==========================================================
+    
+
     # ==========================================================
     # BLOCK 11: VERIFY DN
     # ==========================================================
