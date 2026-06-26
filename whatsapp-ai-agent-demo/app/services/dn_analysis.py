@@ -1,14 +1,14 @@
 # ==========================================================
-# FILE: app/services/dn_analysis.py (v11.0 - PRODUCTION READY)
+# FILE: app/services/dn_analysis.py (v12.0 - ENTERPRISE PRODUCTION)
 # ==========================================================
 # PURPOSE: DN Analytics Service - Direct PostgreSQL Integration
 # SOURCE: delivery_reports table ONLY
-# VERSION: 11.0 - PRODUCTION READY WITH FULL VALIDATION
+# VERSION: 12.0 - ENTERPRISE PRODUCTION WITH INTELLIGENT BUSINESS LOGIC
 #
 # COMPATIBLE WITH: ai_provider_service.py v5.0
 # INTEGRATION: Railway PostgreSQL
 #
-# DATE POLICY (v11.0):
+# DATE POLICY (v12.0):
 # - ✅ PostgreSQL DATE values are used AS-IS (YYYY-MM-DD)
 # - ✅ No YYYY-DD-MM conversion
 # - ✅ No month/day swapping
@@ -18,12 +18,13 @@
 # - ✅ Clear error logging for data issues
 # - ✅ Modular validation, formatting, aging, dashboard
 #
-# ARCHITECTURE:
-# - DateValidator: Central date validation
-# - DateFormatter: Central date formatting
-# - AgingCalculator: Pure date arithmetic
-# - DashboardBuilder: Assemble dashboard with validation
-# - DebugMode: Optional full-path logging
+# BUSINESS LOGIC (v12.0):
+# - ✅ Intelligent shipment stage from dates (not status columns)
+# - ✅ No status contradictions
+# - ✅ Pending flag based on actual dates
+# - ✅ Business recommendations
+# - ✅ Professional WhatsApp dashboard
+# - ✅ Smart aging calculations
 # ==========================================================
 
 import logging
@@ -67,21 +68,17 @@ class DNAnalysisService:
     This service connects directly to PostgreSQL without any repository layer.
     All data comes from delivery_reports table.
     
-    DATE POLICY (v11.0):
-    - PostgreSQL DATE values are used AS-IS
-    - No YYYY-DD-MM conversion
-    - Native datetime arithmetic for aging calculations
-    - Full raw PostgreSQL verification
-    - Database consistency checks
-    - Modular validation, formatting, aging, dashboard
-    
-    COMPATIBLE WITH: ai_provider_service.py v5.0
+    BUSINESS LOGIC (v12.0):
+    - Shipment stage determined from dates (not status columns)
+    - Intelligent pending flag from dates
+    - Business recommendations
+    - Professional WhatsApp dashboard
     """
     
     def __init__(self):
         """Initialize DN Analytics Service."""
         self._service_name = "dn_analysis"
-        self._version = "11.0"
+        self._version = "12.0"
         self._status = "INITIALIZING"
         self._query_count = 0
         self._total_execution_time_ms = 0
@@ -91,8 +88,7 @@ class DNAnalysisService:
         logger.info(f"🔧 DNAnalysisService v{self._version} initializing...")
         logger.info(f"📋 Debug Mode: {'ENABLED' if self._debug_mode else 'DISABLED'}")
         logger.info("📋 Date Policy: Native PostgreSQL DATE values (YYYY-MM-DD)")
-        logger.info("📋 No month/day swapping")
-        logger.info("📋 Native datetime arithmetic")
+        logger.info("📋 Business Logic: Intelligent shipment stage from dates")
         
         # Test connection
         test_result = self._test_connection()
@@ -406,8 +402,9 @@ class DNAnalysisService:
             "version": self._version,
             "status": self._status,
             "module": "DN Analytics",
-            "description": "DN Analytics Service - Native PostgreSQL Date Handling",
+            "description": "DN Analytics Service - Intelligent Business Logic",
             "date_policy": "Native PostgreSQL DATE values (YYYY-MM-DD)",
+            "business_logic": "Shipment stage from dates (not status columns)",
             "debug_mode": self._debug_mode,
             "methods": [
                 "health_check",
@@ -586,7 +583,7 @@ class DNAnalysisService:
         try:
             parsed = self._parse_date(date_value)
             if parsed:
-                return parsed.strftime('%-d %B %Y')
+                return parsed.strftime('%d-%b-%Y')
             return str(date_value)
         except Exception as e:
             logger.warning(f"⚠️ Date formatting error: {e}")
@@ -600,7 +597,7 @@ class DNAnalysisService:
         try:
             parsed = self._parse_date(date_value)
             if parsed:
-                return parsed.strftime('%-d-%b-%y')
+                return parsed.strftime('%d-%b-%y')
             return str(date_value)
         except Exception as e:
             logger.warning(f"⚠️ Date formatting error: {e}")
@@ -629,21 +626,21 @@ class DNAnalysisService:
         elif days < 7:
             return f"{days} Days"
         elif days < 14:
-            return f"{days} Days (1-2 Weeks)"
+            return f"{days} Days"
         elif days < 30:
-            return f"{days} Days ({days // 7} Weeks)"
+            return f"{days} Days"
         elif days < 60:
-            return f"{days} Days (1-2 Months)"
+            return f"{days} Days"
         elif days < 90:
-            return f"{days} Days (3 Months)"
+            return f"{days} Days"
         elif days < 365:
-            return f"{days} Days ({days // 30} Months)"
+            return f"{days} Days"
         else:
             years = days // 365
             months = (days % 365) // 30
             if months > 0:
-                return f"{days} Days ({years} Year{'s' if years > 1 else ''}, {months} Month{'s' if months > 1 else ''})"
-            return f"{days} Days ({years} Year{'s' if years > 1 else ''})"
+                return f"{days} Days ({years}Y {months}M)"
+            return f"{days} Days ({years}Y)"
     
     # ==========================================================
     # BLOCK 6.2: DATE INTEGRITY CHECK
@@ -690,9 +687,17 @@ class DNAnalysisService:
                 result["errors"].append(msg)
                 logger.error(f"❌ DN {dn_no}: {msg}")
         
+        # Check for POD exists but PGI missing (data inconsistency)
+        if pod_date and not good_issue_date:
+            result["valid"] = False
+            msg = f"POD exists ({self._format_display_date(pod_date)}) but PGI is missing"
+            result["errors"].append(msg)
+            logger.warning(f"⚠️ DN {dn_no}: {msg}")
+        
         if result["valid"]:
             logger.info(f"✅ DN {dn_no}: Date integrity check PASSED")
-            logger.info(f"   DN Create: {result['dn_create']} <= PGI: {result['pgi']} <= POD: {result['pod']}")
+            if good_issue_date and pod_date:
+                logger.info(f"   DN Create: {result['dn_create']} <= PGI: {result['pgi']} <= POD: {result['pod']}")
         else:
             logger.error(f"❌ DN {dn_no}: Date integrity check FAILED")
             for error in result["errors"]:
@@ -769,7 +774,13 @@ class DNAnalysisService:
             return 0
     
     def calculate_delivery_aging(self, dn_create_date, good_issue_date) -> int:
-        """Calculate delivery aging using native PostgreSQL dates."""
+        """
+        Calculate delivery aging using native PostgreSQL dates.
+        
+        BUSINESS RULE:
+        - If PGI exists: PGI - DN Create
+        - If PGI missing: Today - DN Create
+        """
         try:
             if dn_create_date is None:
                 logger.warning("⚠️ DN Create Date Missing - Returning 0")
@@ -781,6 +792,7 @@ class DNAnalysisService:
                 return 0
             
             if good_issue_date is None:
+                # PGI missing - use current date
                 logger.info("📊 Delivery Aging: PGI missing - Using Current Date")
                 current_date = datetime.now().date()
                 days = self._safe_date_diff(dn_date, current_date)
@@ -807,10 +819,17 @@ class DNAnalysisService:
             return 0
     
     def calculate_pod_aging(self, good_issue_date, pod_date) -> int:
-        """Calculate POD aging using native PostgreSQL dates."""
+        """
+        Calculate POD aging using native PostgreSQL dates.
+        
+        BUSINESS RULE:
+        - If POD exists: POD - PGI
+        - If POD missing but PGI exists: Today - PGI
+        - If PGI missing: Not Started (0)
+        """
         try:
             if good_issue_date is None:
-                logger.info("📊 POD Aging: PGI missing - Cannot calculate")
+                logger.info("📊 POD Aging: PGI missing - Not Started")
                 return 0
             
             gi_date = self._parse_date(good_issue_date)
@@ -819,7 +838,8 @@ class DNAnalysisService:
                 return 0
             
             if pod_date is None:
-                logger.info("📊 POD Aging: POD missing - Using Current Date")
+                # POD missing but PGI exists - use current date
+                logger.info("📊 POD Aging: POD missing, PGI exists - Using Current Date")
                 current_date = datetime.now().date()
                 days = self._safe_date_diff(gi_date, current_date)
                 logger.info(f"✅ POD Aging (Current Date): {days} days")
@@ -845,7 +865,13 @@ class DNAnalysisService:
             return 0
     
     def calculate_total_cycle(self, dn_create_date, pod_date) -> int:
-        """Calculate total cycle using native PostgreSQL dates."""
+        """
+        Calculate total cycle using native PostgreSQL dates.
+        
+        BUSINESS RULE:
+        - If POD exists: POD - DN Create
+        - If POD missing: Today - DN Create
+        """
         try:
             if dn_create_date is None:
                 logger.warning("⚠️ DN Create Date Missing - Returning 0")
@@ -857,6 +883,7 @@ class DNAnalysisService:
                 return 0
             
             if pod_date is None:
+                # POD missing - use current date
                 logger.info("📊 Total Cycle: POD missing - Using Current Date")
                 current_date = datetime.now().date()
                 days = self._safe_date_diff(dn_date, current_date)
@@ -881,6 +908,115 @@ class DNAnalysisService:
             logger.error(f"❌ Failed to calculate total cycle: {e}")
             logger.error(f"   Traceback: {traceback.format_exc()}")
             return 0
+    
+    # ==========================================================
+    # BLOCK 6.5: SHIPMENT STAGE DETERMINATION (INTELLIGENT BUSINESS LOGIC)
+    # ==========================================================
+    
+    def _determine_shipment_stage(self, dn_create_date, good_issue_date, pod_date) -> Dict[str, Any]:
+        """
+        Determine shipment stage from dates - NOT from status columns.
+        
+        BUSINESS RULES:
+        - POD exists → Delivered
+        - PGI exists, POD missing → In Transit
+        - PGI missing → Pending Dispatch
+        
+        Returns:
+            Dict with stage, emoji, progress, health, recommendation
+        """
+        result = {
+            "stage": "Unknown",
+            "stage_emoji": "❓",
+            "stage_text": "Unknown",
+            "progress": [],
+            "health": "Unknown",
+            "health_emoji": "❓",
+            "health_text": "Unknown",
+            "recommendation": "Unable to determine shipment status.",
+            "pending": True
+        }
+        
+        # Parse dates
+        dn_valid = self._validate_postgresql_date(dn_create_date, "stage_dn")
+        pgi_valid = self._validate_postgresql_date(good_issue_date, "stage_pgi")
+        pod_valid = self._validate_postgresql_date(pod_date, "stage_pod")
+        
+        dn_exists = dn_valid["valid"] and dn_valid["value"] is not None
+        pgi_exists = pgi_valid["valid"] and pgi_valid["value"] is not None
+        pod_exists = pod_valid["valid"] and pod_valid["value"] is not None
+        
+        # Check for data inconsistency
+        if pod_exists and not pgi_exists:
+            logger.warning("⚠️ Data inconsistency: POD exists but PGI missing")
+            result["stage"] = "Data Inconsistency"
+            result["stage_emoji"] = "⚠️"
+            result["stage_text"] = "Data Inconsistency"
+            result["health"] = "Warning"
+            result["health_emoji"] = "⚠️"
+            result["health_text"] = "Data Inconsistency Detected"
+            result["recommendation"] = "Data inconsistency detected. Please verify records."
+            result["pending"] = True
+            return result
+        
+        # CASE 3: POD exists → Delivered
+        if pod_exists and pgi_exists:
+            result["stage"] = "Delivered"
+            result["stage_emoji"] = "✅"
+            result["stage_text"] = "Delivered"
+            result["progress"] = [
+                {"step": "DN Created", "status": "✅", "date": self._format_date_dmy_long(dn_create_date)},
+                {"step": "PGI Completed", "status": "✅", "date": self._format_date_dmy_long(good_issue_date)},
+                {"step": "POD Received", "status": "✅", "date": self._format_date_dmy_long(pod_date)}
+            ]
+            result["health"] = "Completed Successfully"
+            result["health_emoji"] = "🟢"
+            result["health_text"] = "Completed Successfully"
+            result["recommendation"] = "Shipment successfully completed. No further action required."
+            result["pending"] = False
+            return result
+        
+        # CASE 2: PGI exists, POD missing → In Transit
+        if pgi_exists and not pod_exists:
+            result["stage"] = "In Transit"
+            result["stage_emoji"] = "🚚"
+            result["stage_text"] = "In Transit"
+            result["progress"] = [
+                {"step": "DN Created", "status": "✅", "date": self._format_date_dmy_long(dn_create_date)},
+                {"step": "PGI Completed", "status": "✅", "date": self._format_date_dmy_long(good_issue_date)},
+                {"step": "POD Pending", "status": "⏳", "date": "Pending"}
+            ]
+            result["health"] = "In Transit"
+            result["health_emoji"] = "🟡"
+            result["health_text"] = "In Transit"
+            result["recommendation"] = "Shipment is currently in transit. Follow up with transporter for POD confirmation."
+            result["pending"] = True
+            return result
+        
+        # CASE 1: PGI missing → Pending Dispatch
+        if dn_exists and not pgi_exists:
+            result["stage"] = "Pending Dispatch"
+            result["stage_emoji"] = "⏳"
+            result["stage_text"] = "Pending Dispatch"
+            result["progress"] = [
+                {"step": "DN Created", "status": "✅", "date": self._format_date_dmy_long(dn_create_date)},
+                {"step": "PGI Pending", "status": "⏳", "date": "Pending"},
+                {"step": "POD Not Started", "status": "⏳", "date": "Not Started"}
+            ]
+            result["health"] = "Dispatch Pending"
+            result["health_emoji"] = "🔴"
+            result["health_text"] = "Dispatch Pending"
+            result["recommendation"] = "Shipment has not yet been dispatched. Please arrange PGI immediately."
+            result["pending"] = True
+            return result
+        
+        # Fallback
+        result["stage"] = "Unknown"
+        result["stage_emoji"] = "❓"
+        result["stage_text"] = "Unknown"
+        result["recommendation"] = "Unable to determine shipment status. Please verify records."
+        result["pending"] = True
+        return result
     
     # ==========================================================
     # BLOCK 7: DN SEARCH
@@ -1082,22 +1218,23 @@ class DNAnalysisService:
         return {"success": True, "data": results}
     
     # ==========================================================
-    # BLOCK 10: DN DASHBOARD - WITH FULL VERIFICATION
+    # BLOCK 10: DN DASHBOARD - WITH INTELLIGENT BUSINESS LOGIC
     # ==========================================================
     
     def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
         """
-        Get complete DN dashboard with full PostgreSQL verification.
+        Get complete DN dashboard with intelligent business logic.
         
         Steps:
         1. Query PostgreSQL
         2. Log RAW PostgreSQL values (HIGHEST PRIORITY)
         3. Validate each date
         4. Check date integrity (DN <= PGI <= POD)
-        5. Calculate aging
-        6. Build dashboard
-        7. Verify dashboard matches database
-        8. Return dashboard
+        5. Calculate aging with business rules
+        6. Determine shipment stage from dates (NOT status columns)
+        7. Build dashboard
+        8. Verify dashboard matches database
+        9. Return dashboard
         """
         logger.info(f"📊 Getting dashboard for DN: '{dn_no}'")
         
@@ -1151,7 +1288,7 @@ class DNAnalysisService:
         )
         
         # ==========================================================
-        # STEP 5: CALCULATE AGING
+        # STEP 5: CALCULATE AGING WITH BUSINESS RULES
         # ==========================================================
         
         delivery_aging = self.calculate_delivery_aging(
@@ -1168,7 +1305,17 @@ class DNAnalysisService:
         )
         
         # ==========================================================
-        # STEP 6: FORMAT DATES
+        # STEP 6: DETERMINE SHIPMENT STAGE FROM DATES
+        # ==========================================================
+        
+        stage_info = self._determine_shipment_stage(
+            raw_dn_create_date,
+            raw_good_issue_date,
+            raw_pod_date
+        )
+        
+        # ==========================================================
+        # STEP 7: FORMAT DATES
         # ==========================================================
         
         formatted_dn_create = self._format_display_date(raw_dn_create_date)
@@ -1176,8 +1323,25 @@ class DNAnalysisService:
         formatted_pod = self._format_display_date(raw_pod_date)
         
         # ==========================================================
-        # STEP 7: BUILD DASHBOARD
+        # STEP 8: BUILD DASHBOARD WITH INTELLIGENT LOGIC
         # ==========================================================
+        
+        # Handle NULL values for units and revenue
+        total_units = data.get('total_units')
+        if total_units is None:
+            total_units_display = "Not Available"
+            total_units_value = None
+        else:
+            total_units_value = int(total_units)
+            total_units_display = str(total_units_value)
+        
+        total_revenue = data.get('total_revenue')
+        if total_revenue is None:
+            total_revenue_display = "Not Available"
+            total_revenue_value = None
+        else:
+            total_revenue_value = float(total_revenue)
+            total_revenue_display = f"PKR {total_revenue_value:,.2f}"
         
         dashboard = {
             "dn_no": data.get('dn_no'),
@@ -1187,8 +1351,12 @@ class DNAnalysisService:
             "delivery_location": data.get('delivery_location'),
             "sales_manager": data.get('sales_manager'),
             "division": data.get('division'),
-            "total_units": int(data.get('total_units', 0)),
-            "total_revenue": float(data.get('total_revenue', 0)),
+            
+            # Metrics with intelligent NULL handling
+            "total_units": total_units_value,
+            "total_units_display": total_units_display,
+            "total_revenue": total_revenue_value,
+            "total_revenue_display": total_revenue_display,
             "material_count": data.get('material_count', 1),
             
             # Display Dates
@@ -1196,23 +1364,41 @@ class DNAnalysisService:
             "good_issue_date": formatted_good_issue,
             "pod_date": formatted_pod,
             
-            # Status fields
+            # Date objects for calculations
+            "_dn_create_date": raw_dn_create_date,
+            "_good_issue_date": raw_good_issue_date,
+            "_pod_date": raw_pod_date,
+            
+            # Status fields (secondary - not primary source)
             "delivery_status": data.get('delivery_status', 'Unknown'),
             "pgi_status": data.get('pgi_status', 'Unknown'),
             "pod_status": data.get('pod_status', 'Unknown'),
-            "pending_flag": data.get('pending_flag', False),
+            
+            # Intelligent Shipment Stage (primary)
+            "stage": stage_info["stage"],
+            "stage_emoji": stage_info["stage_emoji"],
+            "stage_text": stage_info["stage_text"],
+            "progress": stage_info["progress"],
+            "health": stage_info["health"],
+            "health_emoji": stage_info["health_emoji"],
+            "health_text": stage_info["health_text"],
+            "recommendation": stage_info["recommendation"],
+            
+            # Intelligent Pending Flag
+            "pending_flag": stage_info["pending"],
+            "pending_flag_text": "Yes" if stage_info["pending"] else "No",
             
             # Aging
             "delivery_aging_days": delivery_aging,
             "pod_aging_days": pod_aging,
             "total_cycle_days": total_cycle,
             "delivery_aging_text": self._format_aging_text(delivery_aging),
-            "pod_aging_text": self._format_aging_text(pod_aging),
+            "pod_aging_text": self._format_aging_text(pod_aging) if pod_aging > 0 else "Not Started",
             "total_cycle_text": self._format_aging_text(total_cycle)
         }
         
         # ==========================================================
-        # STEP 8: VERIFY DASHBOARD MATCHES DATABASE
+        # STEP 9: VERIFY DASHBOARD MATCHES DATABASE
         # ==========================================================
         
         dashboard_dn_create = dashboard.get('dn_create_date')
@@ -1240,33 +1426,6 @@ class DNAnalysisService:
             logger.error(f"   Dashboard: {dashboard_pod}")
         
         # ==========================================================
-        # STEP 9: ADD STATUS EMOJIS
-        # ==========================================================
-        
-        status = dashboard.get('delivery_status', '')
-        if status in ['Completed', 'Delivered', 'Closed']:
-            dashboard['status_emoji'] = '✅'
-            dashboard['status_text'] = 'Delivered'
-        elif status in ['In Transit', 'Transit']:
-            dashboard['status_emoji'] = '🚚'
-            dashboard['status_text'] = 'In Transit'
-        elif status in ['Pending', 'Open']:
-            dashboard['status_emoji'] = '⏳'
-            dashboard['status_text'] = 'Pending'
-        else:
-            dashboard['status_emoji'] = '❓'
-            dashboard['status_text'] = status or 'Unknown'
-        
-        pgi_status = dashboard.get('pgi_status', '')
-        dashboard['pgi_status_text'] = '✅ Completed' if pgi_status == 'Completed' else '⏳ Pending'
-        
-        pod_status = dashboard.get('pod_status', '')
-        dashboard['pod_status_text'] = 'Done' if pod_status in ['Completed', 'Received', 'Done'] else '⏳ Pending'
-        
-        pending = dashboard.get('pending_flag', False)
-        dashboard['pending_flag_text'] = '⚠️ Yes' if pending else '🟢 No'
-        
-        # ==========================================================
         # STEP 10: LOG DASHBOARD SUMMARY
         # ==========================================================
         
@@ -1275,6 +1434,8 @@ class DNAnalysisService:
         logger.info(f"   PGI:       {dashboard['good_issue_date']} (DB: {raw_good_issue_str}) {'✅' if dashboard['good_issue_date'] == raw_good_issue_str else '❌'}")
         logger.info(f"   POD:       {dashboard['pod_date']} (DB: {raw_pod_str}) {'✅' if dashboard['pod_date'] == raw_pod_str else '❌'}")
         logger.info(f"   Integrity: {'✅ PASSED' if integrity['valid'] else '⚠️ ISSUES'}")
+        logger.info(f"   Stage:     {dashboard['stage_emoji']} {dashboard['stage_text']}")
+        logger.info(f"   Pending:   {dashboard['pending_flag_text']}")
         logger.info(f"   Delivery Aging: {delivery_aging} days")
         logger.info(f"   POD Aging: {pod_aging} days")
         logger.info(f"   Total Cycle: {total_cycle} days")
@@ -1396,7 +1557,7 @@ class DNAnalysisService:
             },
             "formatted": {
                 "delivery_aging_text": self._format_aging_text(delivery_aging),
-                "pod_aging_text": self._format_aging_text(pod_aging),
+                "pod_aging_text": self._format_aging_text(pod_aging) if pod_aging > 0 else "Not Started",
                 "total_cycle_text": self._format_aging_text(total_cycle)
             },
             "timestamp": datetime.now().isoformat()
@@ -1435,8 +1596,7 @@ class DNAnalysisService:
                 SELECT COUNT(DISTINCT dn_no) AS total_pending
                 FROM delivery_reports
                 WHERE good_issue_date IS NULL
-                   OR delivery_status = 'Pending'
-                   OR pending_flag = TRUE
+                   OR (good_issue_date IS NOT NULL AND pod_date IS NULL)
             """
             count_result = self._execute_query(count_query)
             total_pending = count_result[0].get('total_pending', 0) if count_result else 0
@@ -1473,8 +1633,7 @@ class DNAnalysisService:
                     COUNT(*) AS material_count
                 FROM delivery_reports
                 WHERE good_issue_date IS NULL
-                   OR delivery_status = 'Pending'
-                   OR pending_flag = TRUE
+                   OR (good_issue_date IS NOT NULL AND pod_date IS NULL)
                 GROUP BY dn_no
                 ORDER BY MIN(dn_create_date) ASC
                 LIMIT :limit OFFSET :offset
@@ -1487,6 +1646,13 @@ class DNAnalysisService:
             
             formatted_results = []
             for row in results:
+                # Determine stage
+                stage_info = self._determine_shipment_stage(
+                    row.get('dn_create_date'),
+                    row.get('good_issue_date'),
+                    row.get('pod_date')
+                )
+                
                 delivery_aging = self.calculate_delivery_aging(
                     row.get('dn_create_date'),
                     row.get('good_issue_date')
@@ -1496,12 +1662,6 @@ class DNAnalysisService:
                     if row.get(date_field):
                         if isinstance(row[date_field], (datetime, date)):
                             row[date_field] = row[date_field].strftime("%Y-%m-%d")
-                
-                pending_flag = row.get('pending_flag')
-                if pending_flag is True or pending_flag == 'true' or pending_flag == 'True' or pending_flag == 1:
-                    pending_flag_text = '⚠️ Yes'
-                else:
-                    pending_flag_text = '🟢 No'
                 
                 formatted_row = {
                     "dn_no": row.get('dn_no'),
@@ -1513,11 +1673,13 @@ class DNAnalysisService:
                     "dn_create_date": row.get('dn_create_date'),
                     "good_issue_date": row.get('good_issue_date'),
                     "pod_date": row.get('pod_date'),
-                    "delivery_status": row.get('delivery_status') or "Pending",
-                    "pgi_status": row.get('pgi_status') or "Pending",
-                    "pod_status": row.get('pod_status') or "Unknown",
-                    "pending_flag": pending_flag,
-                    "pending_flag_text": pending_flag_text,
+                    "stage": stage_info["stage"],
+                    "stage_emoji": stage_info["stage_emoji"],
+                    "stage_text": stage_info["stage_text"],
+                    "health_emoji": stage_info["health_emoji"],
+                    "health_text": stage_info["health_text"],
+                    "pending_flag": stage_info["pending"],
+                    "pending_flag_text": "Yes" if stage_info["pending"] else "No",
                     "delivery_aging_days": delivery_aging,
                     "delivery_aging_text": self._format_aging_text(delivery_aging),
                     "sales_manager": row.get('sales_manager'),
@@ -1598,6 +1760,13 @@ class DNAnalysisService:
             
             formatted_results = []
             for row in results:
+                # Determine stage
+                stage_info = self._determine_shipment_stage(
+                    row.get('dn_create_date'),
+                    row.get('good_issue_date'),
+                    row.get('pod_date')
+                )
+                
                 delivery_aging = self.calculate_delivery_aging(
                     row.get('dn_create_date'),
                     row.get('good_issue_date')
@@ -1607,12 +1776,6 @@ class DNAnalysisService:
                     if row.get(date_field):
                         if isinstance(row[date_field], (datetime, date)):
                             row[date_field] = row[date_field].strftime("%Y-%m-%d")
-                
-                pending_flag = row.get('pending_flag')
-                if pending_flag is True or pending_flag == 'true' or pending_flag == 'True' or pending_flag == 1:
-                    pending_flag_text = '⚠️ Yes'
-                else:
-                    pending_flag_text = '🟢 No'
                 
                 formatted_row = {
                     "dn_no": row.get('dn_no'),
@@ -1624,11 +1787,13 @@ class DNAnalysisService:
                     "dn_create_date": row.get('dn_create_date'),
                     "good_issue_date": row.get('good_issue_date'),
                     "pod_date": row.get('pod_date'),
-                    "delivery_status": row.get('delivery_status') or "Pending",
-                    "pgi_status": row.get('pgi_status') or "Pending",
-                    "pod_status": row.get('pod_status') or "Unknown",
-                    "pending_flag": pending_flag,
-                    "pending_flag_text": pending_flag_text,
+                    "stage": stage_info["stage"],
+                    "stage_emoji": stage_info["stage_emoji"],
+                    "stage_text": stage_info["stage_text"],
+                    "health_emoji": stage_info["health_emoji"],
+                    "health_text": stage_info["health_text"],
+                    "pending_flag": stage_info["pending"],
+                    "pending_flag_text": "Yes" if stage_info["pending"] else "No",
                     "delivery_aging_days": delivery_aging,
                     "delivery_aging_text": self._format_aging_text(delivery_aging),
                     "sales_manager": row.get('sales_manager'),
@@ -1711,6 +1876,13 @@ class DNAnalysisService:
             
             formatted_results = []
             for row in results:
+                # Determine stage
+                stage_info = self._determine_shipment_stage(
+                    row.get('dn_create_date'),
+                    row.get('good_issue_date'),
+                    row.get('pod_date')
+                )
+                
                 pod_aging = self.calculate_pod_aging(
                     row.get('good_issue_date'),
                     row.get('pod_date')
@@ -1720,12 +1892,6 @@ class DNAnalysisService:
                     if row.get(date_field):
                         if isinstance(row[date_field], (datetime, date)):
                             row[date_field] = row[date_field].strftime("%Y-%m-%d")
-                
-                pending_flag = row.get('pending_flag')
-                if pending_flag is True or pending_flag == 'true' or pending_flag == 'True' or pending_flag == 1:
-                    pending_flag_text = '⚠️ Yes'
-                else:
-                    pending_flag_text = '🟢 No'
                 
                 formatted_row = {
                     "dn_no": row.get('dn_no'),
@@ -1737,13 +1903,15 @@ class DNAnalysisService:
                     "dn_create_date": row.get('dn_create_date'),
                     "good_issue_date": row.get('good_issue_date'),
                     "pod_date": row.get('pod_date'),
-                    "delivery_status": row.get('delivery_status') or "In Transit",
-                    "pgi_status": row.get('pgi_status') or "Completed",
-                    "pod_status": row.get('pod_status') or "Pending",
-                    "pending_flag": pending_flag,
-                    "pending_flag_text": pending_flag_text,
+                    "stage": stage_info["stage"],
+                    "stage_emoji": stage_info["stage_emoji"],
+                    "stage_text": stage_info["stage_text"],
+                    "health_emoji": stage_info["health_emoji"],
+                    "health_text": stage_info["health_text"],
+                    "pending_flag": stage_info["pending"],
+                    "pending_flag_text": "Yes" if stage_info["pending"] else "No",
                     "pod_aging_days": pod_aging,
-                    "pod_aging_text": self._format_aging_text(pod_aging),
+                    "pod_aging_text": self._format_aging_text(pod_aging) if pod_aging > 0 else "Not Started",
                     "sales_manager": row.get('sales_manager'),
                     "division": row.get('division'),
                     "material_count": row.get('material_count', 1)
@@ -1764,21 +1932,23 @@ class DNAnalysisService:
             return {"success": False, "error": str(e)}
     
     # ==========================================================
-    # BLOCK 13: WHATSAPP RESPONSE FORMATTER
+    # BLOCK 13: WHATSAPP RESPONSE FORMATTER (PROFESSIONAL DASHBOARD)
     # ==========================================================
     
     def format_dn_dashboard(self, dashboard_data: Dict[str, Any]) -> str:
         """
         Format DN dashboard for WhatsApp response.
         
-        ✅ Dates are in YYYY-MM-DD format (Native PostgreSQL)
-        ✅ Aging is calculated correctly
-        ✅ POD shows "Done" when completed
+        Professional dashboard with:
+        - Intelligent shipment stage (from dates, not status columns)
+        - No status contradictions
+        - Business recommendation
+        - Proper date formatting
         """
         data = dashboard_data.get('data', {})
         
         lines = []
-        lines.append("📦 *DN: {}*".format(data.get('dn_no', 'N/A')))
+        lines.append("📦 *DN Dashboard*")
         lines.append("")
         lines.append("*Dealer:*")
         lines.append("{}".format(data.get('dealer_name', 'Unknown')))
@@ -1790,60 +1960,125 @@ class DNAnalysisService:
         lines.append("{}".format(data.get('city', 'Unknown')))
         lines.append("")
         
-        delivery_location = data.get('delivery_location')
-        if delivery_location:
-            lines.append("*Delivery Location:*")
-            lines.append("{}".format(delivery_location))
-            lines.append("")
-        
-        sales_manager = data.get('sales_manager')
-        if sales_manager:
-            lines.append("*Sales Manager:*")
-            lines.append("{}".format(sales_manager))
-            lines.append("")
-        
         division = data.get('division')
         if division:
             lines.append("*Division:*")
             lines.append("{}".format(division))
             lines.append("")
         
-        lines.append("*📊 Metrics:*")
-        lines.append("Units: {}".format(data.get('total_units', 0)))
-        revenue = data.get('total_revenue', 0)
-        if revenue:
-            lines.append("Revenue: PKR {:,}".format(revenue))
-        else:
-            lines.append("Revenue: PKR 0")
-        lines.append("")
-        lines.append("Materials: {}".format(data.get('material_count', 1)))
+        lines.append("━━━━━━━━━━━━━━")
         lines.append("")
         
-        lines.append("*📅 Dates:*")
-        lines.append("DN Create: {}".format(data.get('dn_create_date', 'N/A')))
+        # ==========================================================
+        # SHIPMENT SUMMARY
+        # ==========================================================
+        
+        lines.append("*📊 Shipment Summary*")
+        lines.append("DN Count: {}".format(data.get('material_count', 1)))
+        
+        units = data.get('total_units_display', 'Not Available')
+        if units != 'Not Available':
+            lines.append("Units: {}".format(units))
+        else:
+            lines.append("Units: Not Available")
+        
+        revenue = data.get('total_revenue_display', 'Not Available')
+        if revenue != 'Not Available':
+            lines.append("Revenue: {}".format(revenue))
+        else:
+            lines.append("Revenue: Not Available")
+        lines.append("")
+        
+        lines.append("━━━━━━━━━━━━━━")
+        lines.append("")
+        
+        # ==========================================================
+        # TIMELINE
+        # ==========================================================
+        
+        lines.append("*📅 Timeline*")
+        lines.append("DN Created: {}".format(data.get('dn_create_date', 'N/A')))
         lines.append("PGI: {}".format(data.get('good_issue_date', 'N/A')))
         lines.append("POD: {}".format(data.get('pod_date', 'N/A')))
         lines.append("")
         
-        lines.append("*⏳ Aging:*")
-        lines.append("Delivery: {}".format(data.get('delivery_aging_text', 'N/A')))
-        lines.append("POD: {}".format(data.get('pod_aging_text', 'N/A')))
+        lines.append("━━━━━━━━━━━━━━")
+        lines.append("")
+        
+        # ==========================================================
+        # AGING
+        # ==========================================================
+        
+        lines.append("*⏳ Aging*")
+        lines.append("Dispatch: {}".format(data.get('delivery_aging_text', 'N/A')))
+        
+        pod_aging = data.get('pod_aging_text', 'Not Started')
+        lines.append("Transit: {}".format(pod_aging))
+        
         lines.append("Total Cycle: {}".format(data.get('total_cycle_text', 'N/A')))
         lines.append("")
         
-        lines.append("*📋 Status:*")
-        lines.append("Delivery: {} {}".format(data.get('status_emoji', '❓'), data.get('status_text', 'Unknown')))
-        lines.append("PGI: {}".format(data.get('pgi_status_text', 'Unknown')))
+        lines.append("━━━━━━━━━━━━━━")
+        lines.append("")
         
-        pod_status = data.get('pod_status', '')
-        pod_status_text = data.get('pod_status_text', 'Unknown')
+        # ==========================================================
+        # SHIPMENT STATUS (INTELLIGENT FROM DATES)
+        # ==========================================================
         
-        if pod_status in ['Completed', 'Received', 'Done'] or pod_status_text == 'Done':
-            lines.append("POD: Done")
+        lines.append("*📋 Shipment Status*")
+        lines.append("")
+        
+        # Current Stage
+        stage_emoji = data.get('stage_emoji', '❓')
+        stage_text = data.get('stage_text', 'Unknown')
+        lines.append("*Current Stage:*")
+        lines.append("{} {}".format(stage_emoji, stage_text))
+        lines.append("")
+        
+        # Progress
+        lines.append("*Progress:*")
+        progress_items = data.get('progress', [])
+        if progress_items:
+            for item in progress_items:
+                status = item.get('status', '⏳')
+                step = item.get('step', '')
+                date_val = item.get('date', '')
+                if date_val and date_val != 'Pending' and date_val != 'Not Started':
+                    lines.append("{} {} ({})".format(status, step, date_val))
+                else:
+                    lines.append("{} {}".format(status, step))
         else:
-            lines.append("POD: {}".format(pod_status_text))
+            lines.append("⏳ Information not available")
+        lines.append("")
         
-        lines.append("Pending: {}".format(data.get('pending_flag_text', 'Unknown')))
+        # Shipment Health
+        health_emoji = data.get('health_emoji', '❓')
+        health_text = data.get('health_text', 'Unknown')
+        lines.append("*Shipment Health:*")
+        lines.append("{} {}".format(health_emoji, health_text))
+        lines.append("")
+        
+        # Pending Flag (intelligent from dates)
+        pending_flag_text = data.get('pending_flag_text', 'Yes')
+        if pending_flag_text == 'Yes':
+            lines.append("⚠️ *Pending:* Yes")
+        else:
+            lines.append("🟢 *Pending:* No")
+        lines.append("")
+        
+        lines.append("━━━━━━━━━━━━━━")
+        lines.append("")
+        
+        # ==========================================================
+        # RECOMMENDATION
+        # ==========================================================
+        
+        recommendation = data.get('recommendation', 
+            "Unable to determine shipment status. Please verify records.")
+        
+        lines.append("*💡 Recommendation*")
+        lines.append(recommendation)
+        lines.append("")
         
         return "\n".join(lines)
     
@@ -2097,12 +2332,12 @@ __all__ = [
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("DNAnalysisService v11.0 - PRODUCTION READY")
+logger.info("DNAnalysisService v12.0 - ENTERPRISE PRODUCTION")
 logger.info("=" * 70)
 logger.info("")
 logger.info("   SERVICE DETAILS:")
 logger.info("   ✅ Service Name: dn_analysis")
-logger.info("   ✅ Version: 11.0")
+logger.info("   ✅ Version: 12.0")
 logger.info("   ✅ Status: READY")
 logger.info("   ✅ Source: PostgreSQL (delivery_reports)")
 logger.info("   ✅ Compatible: ai_provider_service.py v5.0")
@@ -2114,15 +2349,20 @@ logger.info("   ✅ Native datetime arithmetic")
 logger.info("   ✅ Full raw PostgreSQL verification")
 logger.info("   ✅ Database consistency checks")
 logger.info("")
-logger.info("   KEY IMPROVEMENTS:")
-logger.info("   ✅ Raw PostgreSQL verification (HIGHEST PRIORITY)")
-logger.info("   ✅ String date warnings (identify data issues)")
-logger.info("   ✅ Date integrity checks (DN <= PGI <= POD)")
-logger.info("   ✅ Centralized validation, formatting, aging")
-logger.info("   ✅ Optional debug mode")
-logger.info("   ✅ Dashboard verification against database")
+logger.info("   INTELLIGENT BUSINESS LOGIC:")
+logger.info("   ✅ Shipment stage determined from dates (NOT status columns)")
+logger.info("   ✅ No status contradictions")
+logger.info("   ✅ Intelligent pending flag")
+logger.info("   ✅ Professional WhatsApp dashboard")
+logger.info("   ✅ Business recommendations")
+logger.info("   ✅ Smart aging calculations")
 logger.info("")
-logger.info("   STATUS: ✅ PRODUCTION READY")
+logger.info("   SHIPMENT STAGES:")
+logger.info("   ✅ Pending Dispatch (PGI NULL)")
+logger.info("   ✅ In Transit (PGI exists, POD NULL)")
+logger.info("   ✅ Delivered (POD exists)")
+logger.info("")
+logger.info("   STATUS: ✅ ENTERPRISE PRODUCTION READY")
 logger.info("=" * 70)
 
 # ✅ Run regression tests on startup
