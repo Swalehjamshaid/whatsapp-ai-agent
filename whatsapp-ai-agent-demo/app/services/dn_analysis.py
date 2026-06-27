@@ -1198,7 +1198,8 @@ class DNAnalysisService:
     # ==================================================================================================
     # BLOCK 12: WHATSAPP FORMATTER
    # =====================================================================================================
-# BLOCK 12: WHATSAPP FORMATTER - COMPLETE FIX
+# =====================================================================================================
+# BLOCK 12: WHATSAPP FORMATTER - IMPROVED VERSION
 # =====================================================================================================
 
 def format_dn_dashboard(self, dashboard_data: Any) -> str:
@@ -1217,48 +1218,14 @@ def format_dn_dashboard(self, dashboard_data: Any) -> str:
     
     # If it's a DNDashboard object
     if hasattr(dashboard_data, '__dataclass_fields__'):
-        d = {
-            'dn_no': dashboard_data.dn_no,
-            'dealer_name': dashboard_data.dealer_name,
-            'dealer_code': dashboard_data.dealer_code,
-            'customer_name': dashboard_data.customer_name,
-            'customer_code': dashboard_data.customer_code,
-            'warehouse': dashboard_data.warehouse,
-            'warehouse_code': dashboard_data.warehouse_code,
-            'city': dashboard_data.city,
-            'delivery_location': dashboard_data.delivery_location,
-            'sales_manager': dashboard_data.sales_manager,
-            'sales_office': dashboard_data.sales_office,
-            'division': dashboard_data.division,
-            'order_type': dashboard_data.order_type,
-            'dn_work': dashboard_data.dn_work,
-            'total_units': dashboard_data.total_units,
-            'total_revenue': dashboard_data.total_revenue,
-            'material_count': dashboard_data.material_count,
-            'model_count': dashboard_data.model_count,
-            'row_count': dashboard_data.row_count,
-            'average_revenue': dashboard_data.average_revenue,
-            'average_unit_price': dashboard_data.average_unit_price,
-            'dn_create_date': dashboard_data.dn_create_date,
-            'good_issue_date': dashboard_data.good_issue_date,
-            'pod_date': dashboard_data.pod_date,
-            'delivery_aging_text': dashboard_data.delivery_aging_text,
-            'pod_aging_text': dashboard_data.pod_aging_text,
-            'total_cycle_text': dashboard_data.total_cycle_text,
-            'calculated_stage': dashboard_data.calculated_stage,
-            'calculated_emoji': dashboard_data.calculated_emoji,
-            'delivery_status': dashboard_data.delivery_status,
-            'pgi_status': dashboard_data.pgi_status,
-            'pod_status': dashboard_data.pod_status,
-            'pending_flag_text': dashboard_data.pending_flag_text,
-            'pending_flag': dashboard_data.pending_flag,
-            'products': dashboard_data.products,
-            'source_file': dashboard_data.source_file,
-            'upload_batch_id': dashboard_data.upload_batch_id,
-            'imported_at': dashboard_data.imported_at,
-            'created_at': dashboard_data.created_at,
-            'updated_at': dashboard_data.updated_at
-        }
+        # Convert dataclass to dict
+        d = {}
+        for field_name in dashboard_data.__dataclass_fields__:
+            value = getattr(dashboard_data, field_name)
+            # Convert Decimal to float for display
+            if isinstance(value, Decimal):
+                value = float(value)
+            d[field_name] = value
     elif isinstance(dashboard_data, dict):
         # If it's a dict with 'data' key
         if 'data' in dashboard_data:
@@ -1363,11 +1330,8 @@ def format_dn_dashboard(self, dashboard_data: Any) -> str:
     
     # Format revenue
     if total_revenue:
-        if isinstance(total_revenue, Decimal):
-            revenue_str = f"{total_revenue:,.2f}"
-        else:
-            revenue_str = f"{float(total_revenue):,.2f}"
-        lines.append(f"  💰 Revenue: *PKR {revenue_str}*")
+        revenue_val = float(total_revenue)
+        lines.append(f"  💰 Revenue: *PKR {revenue_val:,.2f}*")
     else:
         lines.append(f"  💰 Revenue: PKR 0")
     
@@ -1378,11 +1342,8 @@ def format_dn_dashboard(self, dashboard_data: Any) -> str:
     # Average metrics
     avg_price = d.get('average_unit_price', 0)
     if avg_price:
-        if isinstance(avg_price, Decimal):
-            avg_price_str = f"{avg_price:,.2f}"
-        else:
-            avg_price_str = f"{float(avg_price):,.2f}"
-        lines.append(f"  📈 Avg Price: PKR {avg_price_str}")
+        avg_price_val = float(avg_price)
+        lines.append(f"  📈 Avg Price: PKR {avg_price_val:,.2f}")
     
     lines.append("")
     
@@ -1470,9 +1431,6 @@ def format_dn_dashboard(self, dashboard_data: Any) -> str:
     lines.append(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     return "\n".join(lines)
-    
-    
-    
     
     # ==================================================================================================
     # ==================================================================================================
