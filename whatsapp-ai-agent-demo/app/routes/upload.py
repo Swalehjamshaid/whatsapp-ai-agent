@@ -1,9 +1,9 @@
 # ==========================================================
-# FILE: app/routes/upload.py (v4.1 - ENTERPRISE PRODUCTION WITH FIXES)
+# FILE: app/routes/upload.py (v4.2 - COMPLETE & ALIGNED)
 # ==========================================================
 # PURPOSE: Excel Upload Router - Enterprise Production with Replace Mode
 # SOURCE: Excel files (.xlsx, .xls)
-# VERSION: 4.1 - FIXED: Dataclass handling, error propagation, cleanup
+# VERSION: 4.2 - ALIGNED WITH excel_import_service.py v8.1
 # ==========================================================
 
 import os
@@ -47,7 +47,7 @@ IMPORT_TIMEOUT_SECONDS = 300  # 5 minutes
 LOCK_TIMEOUT_SECONDS = 30  # 30 seconds
 REPLACE_MODE = True  # ALWAYS delete existing data before import
 
-# ✅ Safety flag - set to False in production, True in test environment
+# Safety flag - set to False in production, True in test environment
 # This prevents accidental data loss in production
 REPLACE_MODE_SAFETY = os.getenv("REPLACE_MODE_SAFETY", "false").lower() == "true"
 if REPLACE_MODE_SAFETY:
@@ -666,8 +666,8 @@ async def upload_excel(
                     file_path=temp_file_path,
                     source_filename=file.filename,
                     batch_id=None,
-                    skip_duplicates=True,
-                    update_existing=False
+                    skip_dups=True,  # ✅ Aligned with v8.1 parameter name
+                    update_existing_rows=False  # ✅ Aligned with v8.1 parameter name
                 ),
                 timeout=IMPORT_TIMEOUT_SECONDS
             )
@@ -1040,7 +1040,7 @@ async def health_check(
         supported_file_types=list(ALLOWED_EXTENSIONS),
         max_upload_size=MAX_FILE_SIZE,
         max_upload_size_mb=get_file_size_mb(MAX_FILE_SIZE),
-        application_version="4.1.0",
+        application_version="4.2.0",
         timestamp=datetime.now().isoformat()
     )
     
@@ -1054,7 +1054,7 @@ async def health_check(
 
 # Log router initialization
 logger.info("=" * 60)
-logger.info("📤 Upload Router v4.1 - ENTERPRISE PRODUCTION WITH FIXES")
+logger.info("📤 Upload Router v4.2 - COMPLETE & ALIGNED")
 logger.info("=" * 60)
 logger.info("")
 logger.info("   ROUTER CONFIGURATION:")
@@ -1079,6 +1079,7 @@ logger.info("   ✅ Excel import precheck")
 logger.info("   ✅ Import watchdog with timeout")
 logger.info("   ✅ Pydantic v2 dataclass compatibility")
 logger.info("   ✅ Proper verification error propagation")
+logger.info("   ✅ ALIGNED WITH excel_import_service.py v8.1")
 logger.info("")
 logger.info("   TIMEOUTS:")
 logger.info(f"   ✅ Import timeout: {IMPORT_TIMEOUT_SECONDS}s")
@@ -1097,3 +1098,7 @@ __all__ = [
     'get_upload_status',
     'health_check'
 ]
+
+# ==========================================================
+# END OF FILE
+# ==========================================================
