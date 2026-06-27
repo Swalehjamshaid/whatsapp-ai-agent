@@ -1,9 +1,9 @@
 # ==========================================================
-# FILE: app/routes/upload.py (v4.0 - ENTERPRISE PRODUCTION WITH REPLACE MODE)
+# FILE: app/routes/upload.py (v4.1 - ENTERPRISE PRODUCTION WITH FIXES)
 # ==========================================================
 # PURPOSE: Excel Upload Router - Enterprise Production with Replace Mode
 # SOURCE: Excel files (.xlsx, .xls)
-# VERSION: 4.0 - ENTERPRISE PRODUCTION READY
+# VERSION: 4.1 - FIXED: Dataclass handling, error propagation, cleanup
 # ==========================================================
 
 import os
@@ -23,17 +23,16 @@ from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import text, inspect
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from app.database import get_db
 from app.models import DeliveryReport
-from app.services.excel_import_service import ExcelImportService
+from app.services.excel_import_service import ExcelImportService, VerificationError
 
 # ==========================================================
 # BLOCK 1: LOGGING & CONFIGURATION
 # ==========================================================
 
-# ✅ FIXED: Changed 'name' to '__name__'
 logger = logging.getLogger(__name__)
 
 # Configuration constants
@@ -48,12 +47,23 @@ IMPORT_TIMEOUT_SECONDS = 300  # 5 minutes
 LOCK_TIMEOUT_SECONDS = 30  # 30 seconds
 REPLACE_MODE = True  # ALWAYS delete existing data before import
 
+# ✅ Safety flag - set to False in production, True in test environment
+# This prevents accidental data loss in production
+REPLACE_MODE_SAFETY = os.getenv("REPLACE_MODE_SAFETY", "false").lower() == "true"
+if REPLACE_MODE_SAFETY:
+    logger.warning("⚠️ REPLACE_MODE_SAFETY is ENABLED - Replace mode is DISABLED")
+    REPLACE_MODE = False
+else:
+    logger.info("✅ REPLACE_MODE_SAFETY is DISABLED - Replace mode is ACTIVE")
+
 # ==========================================================
 # BLOCK 2: PYDANTIC MODELS FOR RESPONSES
 # ==========================================================
 
 class UploadResponse(BaseModel):
     """Response model for upload endpoint"""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
     success: bool
     message: str
     request_id: str
@@ -82,8 +92,10 @@ class UploadResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     """Response model for health endpoint"""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
     status: str
-    router: str
+    router: Dict[str, Any]
     database: Dict[str, Any]
     upload_service: Dict[str, Any]
     excel_import_service: Dict[str, Any]
@@ -96,6 +108,8 @@ class HealthResponse(BaseModel):
 
 class StatusResponse(BaseModel):
     """Response model for status endpoint"""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
     success: bool
     message: str
     request_id: str
@@ -428,7 +442,7 @@ async def upload_excel(
     
     logger.info("=" * 60)
     logger.info(f"📤 [REQUEST_ID: {request_id}] UPLOAD STARTED: {file.filename}")
-    logger.info(f"   REPLACE MODE: ALL existing data will be deleted")
+    logger.info(f"   REPLACE MODE: {'ACTIVE' if REPLACE_MODE else 'DISABLED'}")
     logger.info("=" * 60)
     
     try:
@@ -602,35 +616,38 @@ async def upload_excel(
         # =============================================
         # STEP 8: DELETE ALL EXISTING RECORDS (REPLACE MODE)
         # =============================================
-        with StepTimer("Delete all records", request_id):
-            delete_start = time.time()
-            logger.info(f"[REQUEST_ID: {request_id}] REPLACE MODE: Deleting ALL {previous_count} existing records...")
-            
-            try:
-                # Check locks before delete
-                if previous_count > 0:
-                    lock_check = check_database_locks(db, request_id)
-                    if lock_check.get('lock_count', 0) > 0:
-                        logger.warning(f"[REQUEST_ID: {request_id}] Locks detected before delete, may cause delay")
+        if REPLACE_MODE:
+            with StepTimer("Delete all records", request_id):
+                delete_start = time.time()
+                logger.info(f"[REQUEST_ID: {request_id}] REPLACE MODE: Deleting ALL {previous_count} existing records...")
                 
-                # Delete ALL records
-                deleted_count = delete_all_records(db, request_id)
-                metrics['delete_time'] = (time.time() - delete_start) * 1000
-                
-                # Flush to verify deletion
-                db.flush()
-                remaining = count_table_records(db, request_id)
-                logger.info(f"[REQUEST_ID: {request_id}] Remaining records after flush: {remaining}")
-                
-                if remaining == 0:
-                    logger.info(f"[REQUEST_ID: {request_id}] ✅ All {deleted_count} records deleted successfully")
-                else:
-                    logger.warning(f"[REQUEST_ID: {request_id}] ⚠️ {remaining} records remain after deletion")
+                try:
+                    # Check locks before delete
+                    if previous_count > 0:
+                        lock_check = check_database_locks(db, request_id)
+                        if lock_check.get('lock_count', 0) > 0:
+                            logger.warning(f"[REQUEST_ID: {request_id}] Locks detected before delete, may cause delay")
                     
-            except Exception as e:
-                logger.error(f"[REQUEST_ID: {request_id}] Failed to delete records: {e}")
-                db.rollback()
-                raise
+                    # Delete ALL records
+                    deleted_count = delete_all_records(db, request_id)
+                    metrics['delete_time'] = (time.time() - delete_start) * 1000
+                    
+                    # Flush to verify deletion
+                    db.flush()
+                    remaining = count_table_records(db, request_id)
+                    logger.info(f"[REQUEST_ID: {request_id}] Remaining records after flush: {remaining}")
+                    
+                    if remaining == 0:
+                        logger.info(f"[REQUEST_ID: {request_id}] ✅ All {deleted_count} records deleted successfully")
+                    else:
+                        logger.warning(f"[REQUEST_ID: {request_id}] ⚠️ {remaining} records remain after deletion")
+                        
+                except Exception as e:
+                    logger.error(f"[REQUEST_ID: {request_id}] Failed to delete records: {e}")
+                    db.rollback()
+                    raise
+        else:
+            logger.info(f"[REQUEST_ID: {request_id}] REPLACE MODE DISABLED - Preserving existing data")
         
         # =============================================
         # STEP 9: Import Excel data (with timeout)
@@ -638,8 +655,10 @@ async def upload_excel(
         import_start = time.time()
         logger.info(f"[REQUEST_ID: {request_id}] Starting Excel import...")
         
+        import_result = None
         try:
-            # Run import with timeout
+            # ✅ Run import with timeout
+            # Use asyncio.to_thread for proper async handling
             import_result = await asyncio.wait_for(
                 asyncio.to_thread(
                     ExcelImportService.import_delivery_report_excel,
@@ -653,7 +672,7 @@ async def upload_excel(
                 timeout=IMPORT_TIMEOUT_SECONDS
             )
             
-            metrics['insert_time'] = (time.time() - import_start) * 1000 - metrics['delete_time']
+            metrics['insert_time'] = (time.time() - import_start) * 1000
             
         except asyncio.TimeoutError:
             error_msg = f"Import exceeded timeout ({IMPORT_TIMEOUT_SECONDS}s)"
@@ -668,7 +687,7 @@ async def upload_excel(
             db.rollback()
             raise Exception(error_msg)
         
-        # Check import result
+        # ✅ Check import result - handles VerificationError properly
         if not import_result.get("success", False):
             error_msg = import_result.get("error", "Import failed")
             logger.error(f"[REQUEST_ID: {request_id}] Import failed: {error_msg}")
@@ -695,6 +714,9 @@ async def upload_excel(
         # STEP 11: Prepare response
         # =============================================
         processing_time = time.time() - start_time
+        
+        # ✅ Convert Decimal to float for JSON serialization
+        revenue = float(import_result.get("total_revenue_imported", 0))
         
         response = UploadResponse(
             success=True,
@@ -726,11 +748,8 @@ async def upload_excel(
         if import_result.get("validation_errors"):
             response.warnings = import_result["validation_errors"][:10]
         
-        if import_result.get("date_validation_errors"):
-            if response.warnings:
-                response.warnings.extend(import_result["date_validation_errors"][:5])
-            else:
-                response.warnings = import_result["date_validation_errors"][:5]
+        if import_result.get("verification_failures"):
+            response.warnings.extend(import_result["verification_failures"][:5])
         
         logger.info(f"✅ [REQUEST_ID: {request_id}] UPLOAD COMPLETED SUCCESSFULLY")
         logger.info(f"   Duration: {processing_time:.2f}s")
@@ -743,6 +762,29 @@ async def upload_excel(
         logger.info("=" * 60)
         
         return response
+        
+    except VerificationError as e:
+        # ✅ FIXED: Handle VerificationError specifically
+        try:
+            db.rollback()
+            logger.warning(f"[REQUEST_ID: {request_id}] Verification error, rolled back")
+            logger.info(f"[REQUEST_ID: {request_id}] Previous data preserved ({previous_count} records)")
+        except Exception as rollback_error:
+            logger.error(f"[REQUEST_ID: {request_id}] Rollback failed: {rollback_error}")
+        
+        processing_time = time.time() - start_time
+        logger.error(f"❌ [REQUEST_ID: {request_id}] VERIFICATION FAILED: {str(e)}")
+        logger.error(f"   Duration: {processing_time:.2f}s")
+        
+        return UploadResponse(
+            success=False,
+            message="Verification failed - data rolled back",
+            request_id=request_id,
+            batch_id=batch_id,
+            errors=[str(e)],
+            processing_time=round(processing_time, 2),
+            timestamp=datetime.now().isoformat()
+        )
         
     except HTTPException as e:
         # Rollback on HTTP exception
@@ -998,7 +1040,7 @@ async def health_check(
         supported_file_types=list(ALLOWED_EXTENSIONS),
         max_upload_size=MAX_FILE_SIZE,
         max_upload_size_mb=get_file_size_mb(MAX_FILE_SIZE),
-        application_version="4.0.0",
+        application_version="4.1.0",
         timestamp=datetime.now().isoformat()
     )
     
@@ -1012,7 +1054,7 @@ async def health_check(
 
 # Log router initialization
 logger.info("=" * 60)
-logger.info("📤 Upload Router v4.0 - ENTERPRISE PRODUCTION WITH REPLACE MODE")
+logger.info("📤 Upload Router v4.1 - ENTERPRISE PRODUCTION WITH FIXES")
 logger.info("=" * 60)
 logger.info("")
 logger.info("   ROUTER CONFIGURATION:")
@@ -1027,15 +1069,16 @@ for route in router.routes:
         logger.info(f"   ✅ {methods:10} {router.prefix}{route.path}")
 logger.info("")
 logger.info("   FEATURES:")
-logger.info("   ✅ REPLACE MODE: ALL existing data deleted before import")
+logger.info("   ✅ REPLACE MODE: " + ("ACTIVE" if REPLACE_MODE else "DISABLED"))
 logger.info("   ✅ Atomic transaction (all or nothing)")
 logger.info("   ✅ Detailed step-by-step logging with timing")
-logger.info("   ✅ Database lock diagnostics (30s timeout)")
+logger.info("   ✅ Database lock diagnostics")
 logger.info("   ✅ Comprehensive import time metrics")
 logger.info("   ✅ PostgreSQL schema validation")
 logger.info("   ✅ Excel import precheck")
 logger.info("   ✅ Import watchdog with timeout")
-logger.info("   ✅ 100% backward compatible")
+logger.info("   ✅ Pydantic v2 dataclass compatibility")
+logger.info("   ✅ Proper verification error propagation")
 logger.info("")
 logger.info("   TIMEOUTS:")
 logger.info(f"   ✅ Import timeout: {IMPORT_TIMEOUT_SECONDS}s")
@@ -1048,7 +1091,6 @@ logger.info("=" * 60)
 # BLOCK 9: EXPORTS
 # ==========================================================
 
-# ✅ FIXED: Changed 'all' to '__all__'
 __all__ = [
     'router',
     'upload_excel',
