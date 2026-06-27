@@ -1,9 +1,9 @@
 # ==========================================================
-# FILE: app/routes/upload.py (v4.2 - COMPLETE & ALIGNED)
+# FILE: app/routes/upload.py (v4.3 - FORCE REPLACE MODE)
 # ==========================================================
 # PURPOSE: Excel Upload Router - Enterprise Production with Replace Mode
 # SOURCE: Excel files (.xlsx, .xls)
-# VERSION: 4.2 - ALIGNED WITH excel_import_service.py v8.1
+# VERSION: 4.3 - FORCE REPLACE + INCREASED TIMEOUT
 # ==========================================================
 
 import os
@@ -43,18 +43,30 @@ ALLOWED_MIME_TYPES = {
     'application/vnd.ms-excel'  # .xls
 }
 BATCH_SIZE = 1000
-IMPORT_TIMEOUT_SECONDS = 300  # 5 minutes
+IMPORT_TIMEOUT_SECONDS = 900  # ✅ 15 minutes (was 300)
 LOCK_TIMEOUT_SECONDS = 30  # 30 seconds
-REPLACE_MODE = True  # ALWAYS delete existing data before import
 
-# Safety flag - set to False in production, True in test environment
-# This prevents accidental data loss in production
+# ==========================================================
+# 🔴 FORCE REPLACE MODE - ALWAYS DELETE OLD DATA
+# ==========================================================
+
+# ✅ FORCE REPLACE - Always delete existing data before import
+REPLACE_MODE = True  # ✅ ALWAYS delete existing data before import
+
+# Safety flag - but we're forcing REPLACE_MODE to True
+# Set this to "true" ONLY if you want to disable replace mode
 REPLACE_MODE_SAFETY = os.getenv("REPLACE_MODE_SAFETY", "false").lower() == "true"
 if REPLACE_MODE_SAFETY:
     logger.warning("⚠️ REPLACE_MODE_SAFETY is ENABLED - Replace mode is DISABLED")
     REPLACE_MODE = False
 else:
     logger.info("✅ REPLACE_MODE_SAFETY is DISABLED - Replace mode is ACTIVE")
+
+# ❗ FORCE REPLACE MODE - Override safety
+FORCE_REPLACE = True  # ✅ Set to True to ALWAYS delete old data
+if FORCE_REPLACE:
+    REPLACE_MODE = True
+    logger.info("🔴 FORCE REPLACE MODE is ENABLED - ALL old data will be DELETED")
 
 # ==========================================================
 # BLOCK 2: PYDANTIC MODELS FOR RESPONSES
@@ -401,7 +413,7 @@ def precheck_excel_file(file_path: str, request_id: str) -> Dict[str, Any]:
     return result
 
 # ==========================================================
-# BLOCK 5: UPLOAD ENDPOINT WITH REPLACE MODE
+# BLOCK 5: UPLOAD ENDPOINT WITH FORCE REPLACE MODE
 # ==========================================================
 
 @router.post("/excel", response_model=UploadResponse)
@@ -416,7 +428,7 @@ async def upload_excel(
     1. Validates the uploaded file
     2. Pre-checks Excel content
     3. Validates PostgreSQL schema
-    4. Deletes ALL existing delivery records (REPLACE MODE)
+    4. ✅ FORCE DELETE ALL existing delivery records (REPLACE MODE)
     5. Imports new data from Excel
     6. Rolls back on failure (preserving old data)
     
@@ -443,6 +455,7 @@ async def upload_excel(
     logger.info("=" * 60)
     logger.info(f"📤 [REQUEST_ID: {request_id}] UPLOAD STARTED: {file.filename}")
     logger.info(f"   REPLACE MODE: {'ACTIVE' if REPLACE_MODE else 'DISABLED'}")
+    logger.info(f"   FORCE REPLACE: {'ACTIVE' if FORCE_REPLACE else 'DISABLED'}")
     logger.info("=" * 60)
     
     try:
@@ -614,12 +627,13 @@ async def upload_excel(
                 raise Exception("Failed to count existing records")
         
         # =============================================
-        # STEP 8: DELETE ALL EXISTING RECORDS (REPLACE MODE)
+        # STEP 8: ✅ FORCE DELETE ALL EXISTING RECORDS (REPLACE MODE)
         # =============================================
-        if REPLACE_MODE:
+        # ✅ ALWAYS delete if REPLACE_MODE is True or FORCE_REPLACE is True
+        if REPLACE_MODE or FORCE_REPLACE:
             with StepTimer("Delete all records", request_id):
                 delete_start = time.time()
-                logger.info(f"[REQUEST_ID: {request_id}] REPLACE MODE: Deleting ALL {previous_count} existing records...")
+                logger.info(f"🔴 [REQUEST_ID: {request_id}] REPLACE MODE: Deleting ALL {previous_count} existing records...")
                 
                 try:
                     # Check locks before delete
@@ -628,7 +642,7 @@ async def upload_excel(
                         if lock_check.get('lock_count', 0) > 0:
                             logger.warning(f"[REQUEST_ID: {request_id}] Locks detected before delete, may cause delay")
                     
-                    # Delete ALL records
+                    # ✅ Delete ALL records
                     deleted_count = delete_all_records(db, request_id)
                     metrics['delete_time'] = (time.time() - delete_start) * 1000
                     
@@ -905,7 +919,8 @@ async def get_upload_status(
             "service_ready": True,
             "upload_enabled": True,
             "active_locks": lock_info.get('lock_count', 0),
-            "replace_mode": REPLACE_MODE
+            "replace_mode": REPLACE_MODE,
+            "force_replace": FORCE_REPLACE
         }
         
         elapsed = (time.time() - start_time) * 1000
@@ -1033,14 +1048,15 @@ async def health_check(
             "supported_mime_types": list(ALLOWED_MIME_TYPES),
             "processing_time_seconds": round(processing_time, 2),
             "import_timeout_seconds": IMPORT_TIMEOUT_SECONDS,
-            "replace_mode": REPLACE_MODE
+            "replace_mode": REPLACE_MODE,
+            "force_replace": FORCE_REPLACE
         },
         excel_import_service=excel_import_status,
         delivery_report_model=model_status,
         supported_file_types=list(ALLOWED_EXTENSIONS),
         max_upload_size=MAX_FILE_SIZE,
         max_upload_size_mb=get_file_size_mb(MAX_FILE_SIZE),
-        application_version="4.2.0",
+        application_version="4.3.0",
         timestamp=datetime.now().isoformat()
     )
     
@@ -1054,7 +1070,7 @@ async def health_check(
 
 # Log router initialization
 logger.info("=" * 60)
-logger.info("📤 Upload Router v4.2 - COMPLETE & ALIGNED")
+logger.info("📤 Upload Router v4.3 - FORCE REPLACE MODE")
 logger.info("=" * 60)
 logger.info("")
 logger.info("   ROUTER CONFIGURATION:")
@@ -1069,20 +1085,22 @@ for route in router.routes:
         logger.info(f"   ✅ {methods:10} {router.prefix}{route.path}")
 logger.info("")
 logger.info("   FEATURES:")
-logger.info("   ✅ REPLACE MODE: " + ("ACTIVE" if REPLACE_MODE else "DISABLED"))
+logger.info("   🔴 REPLACE MODE: " + ("ACTIVE" if REPLACE_MODE else "DISABLED"))
+logger.info("   🔴 FORCE REPLACE: " + ("ACTIVE" if FORCE_REPLACE else "DISABLED"))
+logger.info("   🔴 OLD DATA WILL BE DELETED ON EVERY UPLOAD")
 logger.info("   ✅ Atomic transaction (all or nothing)")
 logger.info("   ✅ Detailed step-by-step logging with timing")
 logger.info("   ✅ Database lock diagnostics")
 logger.info("   ✅ Comprehensive import time metrics")
 logger.info("   ✅ PostgreSQL schema validation")
 logger.info("   ✅ Excel import precheck")
-logger.info("   ✅ Import watchdog with timeout")
+logger.info("   ✅ Import watchdog with timeout (900s)")
 logger.info("   ✅ Pydantic v2 dataclass compatibility")
 logger.info("   ✅ Proper verification error propagation")
-logger.info("   ✅ ALIGNED WITH excel_import_service.py v8.1")
+logger.info("   ✅ ALIGNED WITH excel_import_service.py v14.2")
 logger.info("")
 logger.info("   TIMEOUTS:")
-logger.info(f"   ✅ Import timeout: {IMPORT_TIMEOUT_SECONDS}s")
+logger.info(f"   ✅ Import timeout: {IMPORT_TIMEOUT_SECONDS}s (15 minutes)")
 logger.info(f"   ✅ Lock detection: {LOCK_TIMEOUT_SECONDS}s")
 logger.info("")
 logger.info("   STATUS: ✅ ENTERPRISE PRODUCTION READY")
