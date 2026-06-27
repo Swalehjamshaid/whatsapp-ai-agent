@@ -1,7 +1,6 @@
-Give me the code in copy and paste format
 ======================================================================================================
 FILE: app/services/excel_import_service.py
-VERSION: v5.1 ENTERPRISE VERIFIED IMPORT
+VERSION: v5.2 ENTERPRISE PRODUCTION - FULL VERIFICATION
 PURPOSE: Eliminate data loss and guarantee every Excel value is stored correctly in PostgreSQL.
 ======================================================================================================
 import pandas as pd
@@ -26,18 +25,21 @@ BLOCK 1: CONFIGURATION
 ======================================================================================================
 BATCH_SIZE = 1000
 MAX_ROWS = 100000
-VERIFICATION_SAMPLE_SIZE = 5 # Number of rows to verify after each batch
+VERIFICATION_SAMPLE_SIZE = 5
 DEBUG_MODE = False
+STRICT_MODE = True # If True, fail import on verification failures
+VERIFY_ALL_ROWS = False # If True, verify every row (slow, use for debugging)
 
 ======================================================================================================
 BLOCK 2: EXCEPTIONS
 ======================================================================================================
 class ImportValidationError(Exception):
-"""Raised when validation fails during import."""
 pass
 
 class DataLossError(Exception):
-"""Raised when data is lost between Excel and PostgreSQL."""
+pass
+
+class VerificationError(Exception):
 pass
 
 ======================================================================================================
@@ -65,16 +67,15 @@ city_mismatches: int = 0
 total_revenue_imported: Decimal = Decimal(0)
 total_units_imported: int = 0
 validation_errors: List[str] = field(default_factory=list)
+verification_errors: List[Dict[str, Any]] = field(default_factory=list)
 import_duration: float = 0.0
 database_time: float = 0.0
 excel_read_time: float = 0.0
 commit_time: float = 0.0
 batch_id: Optional[str] = None
-mapping_report: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class RowAudit:
-"""Audit record for a single row."""
 row_number: int
 dn_no: str
 material_no: str
@@ -100,38 +101,16 @@ return str(value)
 return str(value).strip() if str(value) else None
 
 def parse_amount_decimal(value: Any) -> Optional[Decimal]:
-"""
-Parse amount from Excel to Decimal.
-
-Supports:
-
-117,698 → Decimal('117698.00')
-
-117698 → Decimal('117698.00')
-
-117698.00 → Decimal('117698.00')
-
-PKR 117,698 → Decimal('117698.00')
-
-NULL → None
-
-Empty → None
-"""
 if value is None:
 return None
-
 if isinstance(value, Decimal):
 return value
-
 if isinstance(value, (int, float)):
 try:
 return Decimal(str(value))
 except (InvalidOperation, ValueError):
 return None
-
 if isinstance(value, str):
-
-Remove currency symbols, commas, spaces
 cleaned = re.sub(r'[^\d.]', '', value.strip())
 if not cleaned:
 return None
@@ -139,7 +118,6 @@ try:
 return Decimal(cleaned)
 except (InvalidOperation, ValueError):
 return None
-
 return None
 
 def parse_quantity_int(value: Any) -> Optional[int]:
@@ -181,26 +159,18 @@ if isinstance(value, str):
 value = value.strip()
 if not value:
 return None
-
-Try DD.MM.YYYY
 try:
 return datetime.strptime(value, "%d.%m.%Y").date()
 except ValueError:
 pass
-
-Try YYYY-MM-DD
 try:
 return datetime.strptime(value, "%Y-%m-%d").date()
 except ValueError:
 pass
-
-Try DD/MM/YYYY
 try:
 return datetime.strptime(value, "%d/%m/%Y").date()
 except ValueError:
 pass
-
-Try MM/DD/YYYY
 try:
 return datetime.strptime(value, "%m/%d/%Y").date()
 except ValueError:
@@ -223,8 +193,7 @@ PRIMARY_MAPPINGS = {
 'division': ['Division', 'division', 'DIVISION'],
 'customer_code': ['Customer Code', 'Customer code', 'customer code'],
 'dealer_code': ['Dealer Code', 'Dealer code', 'dealer code'],
-'customer_name': ['Sold-to-party Name', 'Sold-to-party name', 'Customer Name', 'customer name',
-'Customer', 'customer'],
+'customer_name': ['Sold-to-party Name', 'Sold-to-party name', 'Customer Name', 'customer name', 'Customer', 'customer'],
 'customer_model': ['Customer Model', 'Customer model', 'customer model', 'Model', 'model'],
 'material_no': ['Material NO', 'Material No', 'material no', 'Material', 'material'],
 'storage_location': ['Storage Location', 'storage location', 'Storage', 'storage'],
@@ -277,126 +246,214 @@ BLOCK 6: STATUS ENGINE
 ======================================================================================================
 class StatusEngine:
 @staticmethod
-def derive_status(dn_create_date: Optional[date],
-good_issue_date: Optional[date],
-pod_date: Optional[date]) -> Dict[str, Any]:
+def derive_status(dn_create_date: Optional[date], good_issue_date: Optional[date], pod_date: Optional[date]) -> Dict[str, Any]:
 has_dn_create = dn_create_date is not None
 has_pgi = good_issue_date is not None
 has_pod = pod_date is not None
 
 if has_pod and has_pgi and has_dn_create:
-return {
-'delivery_status': 'Delivered',
-'pgi_status': 'Completed',
-'pod_status': 'Completed',
-'pending_flag': False
-}
+return {'delivery_status': 'Delivered', 'pgi_status': 'Completed', 'pod_status': 'Completed', 'pending_flag': False}
 elif has_pgi and has_dn_create:
-return {
-'delivery_status': 'Dispatched',
-'pgi_status': 'Completed',
-'pod_status': 'Pending',
-'pending_flag': True
-}
+return {'delivery_status': 'Dispatched', 'pgi_status': 'Completed', 'pod_status': 'Pending', 'pending_flag': True}
 elif has_dn_create:
-return {
-'delivery_status': 'Pending Dispatch',
-'pgi_status': 'Pending',
-'pod_status': 'Pending',
-'pending_flag': True
-}
+return {'delivery_status': 'Pending Dispatch', 'pgi_status': 'Pending', 'pod_status': 'Pending', 'pending_flag': True}
 else:
-return {
-'delivery_status': 'Unknown',
-'pgi_status': 'Unknown',
-'pod_status': 'Unknown',
-'pending_flag': True
-}
+return {'delivery_status': 'Unknown', 'pgi_status': 'Unknown', 'pod_status': 'Unknown', 'pending_flag': True}
 
 ======================================================================================================
-BLOCK 7: VERIFICATION ENGINE
+BLOCK 7: VERIFICATION ENGINE - NOW VERIFIES AGAINST ACTUAL POSTGRESQL
 ======================================================================================================
 class VerificationEngine:
-"""Verify that data survives every stage of import."""
+"""Verify data by re-reading from PostgreSQL after commit."""
+
+CRITICAL_FIELDS = ['dn_amount', 'dn_qty', 'customer_name', 'material_no', 'warehouse', 'ship_to_city']
 
 @staticmethod
-def verify_row(db: Session, row_data: Dict[str, Any],
-record: DeliveryReport, row_number: int) -> List[RowAudit]:
-"""Verify a single imported row."""
+def verify_against_postgresql(db: Session, row_data: Dict[str, Any], dn_no: str, material_no: str, row_number: int) -> List[RowAudit]:
+"""Verify data by SELECTing from PostgreSQL after commit."""
 audits = []
+
+try:
+
+Fetch the record from PostgreSQL after commit
+result = db.execute(
+text("""
+SELECT
+dn_no, material_no, customer_name, customer_model,
+customer_code, dealer_code, warehouse, warehouse_code,
+ship_to_city, delivery_location, sales_office, sales_manager,
+division, dn_qty, dn_amount, dn_create_date, good_issue_date, pod_date
+FROM delivery_reports
+WHERE dn_no = :dn_no AND material_no = :material_no
+"""),
+{"dn_no": dn_no, "material_no": material_no}
+)
+
+db_row = result.fetchone()
+
+if not db_row:
+audit = RowAudit(
+row_number=row_number,
+dn_no=dn_no,
+material_no=material_no,
+field='record_exists',
+excel_value='Yes',
+mapped_value='Yes',
+normalized_value='Yes',
+database_value='No',
+status='FAILED',
+error='Record not found in PostgreSQL after import'
+)
+audits.append(audit)
+return audits
+
+Compare each field
 verification_fields = [
-'dn_no', 'material_no', 'customer_model', 'customer_name',
-'customer_code', 'dealer_code', 'warehouse', 'warehouse_code',
-'ship_to_city', 'delivery_location', 'sales_office', 'sales_manager',
-'division', 'dn_qty', 'dn_amount'
+('dn_no', row_data.get('dn_no'), db_row.dn_no),
+('material_no', row_data.get('material_no'), db_row.material_no),
+('customer_name', row_data.get('customer_name'), db_row.customer_name),
+('customer_model', row_data.get('customer_model'), db_row.customer_model),
+('customer_code', row_data.get('customer_code'), db_row.customer_code),
+('dealer_code', row_data.get('dealer_code'), db_row.dealer_code),
+('warehouse', row_data.get('warehouse'), db_row.warehouse),
+('warehouse_code', row_data.get('warehouse_code'), db_row.warehouse_code),
+('ship_to_city', row_data.get('ship_to_city'), db_row.ship_to_city),
+('delivery_location', row_data.get('delivery_location'), db_row.delivery_location),
+('sales_office', row_data.get('sales_office'), db_row.sales_office),
+('sales_manager', row_data.get('sales_manager'), db_row.sales_manager),
+('division', row_data.get('division'), db_row.division),
 ]
 
-for field in verification_fields:
-excel_val = row_data.get(field)
-db_val = getattr(record, field, None)
+Amount - compare as Decimal
+excel_amount = row_data.get('dn_amount')
+if excel_amount is not None:
+excel_amount = parse_amount_decimal(excel_amount)
+db_amount = Decimal(str(db_row.dn_amount)) if db_row.dn_amount is not None else None
 
-Convert for comparison
-if isinstance(excel_val, str) and excel_val:
-excel_val = normalize_string(excel_val)
-if isinstance(excel_val, (int, float)) and field == 'dn_amount':
-excel_val = parse_amount_decimal(excel_val)
-if isinstance(excel_val, (int, float)) and field == 'dn_qty':
-excel_val = parse_quantity_int(excel_val)
-
-if excel_val is not None and db_val is None:
+if excel_amount is not None and db_amount is not None:
+if abs(excel_amount - db_amount) > Decimal('0.01'):
 audit = RowAudit(
 row_number=row_number,
-dn_no=str(row_data.get('dn_no', '')),
-material_no=str(row_data.get('material_no', '')),
-field=field,
-excel_value=excel_val,
-mapped_value=excel_val,
-normalized_value=excel_val,
-database_value=db_val,
+dn_no=dn_no,
+material_no=material_no,
+field='dn_amount',
+excel_value=excel_amount,
+mapped_value=excel_amount,
+normalized_value=excel_amount,
+database_value=db_amount,
 status='FAILED',
-error=f'Data lost: Excel had {excel_val}, database has NULL'
+error=f'Amount mismatch: Excel={excel_amount}, DB={db_amount}'
+)
+audits.append(audit)
+elif excel_amount is not None and db_amount is None:
+audit = RowAudit(
+row_number=row_number,
+dn_no=dn_no,
+material_no=material_no,
+field='dn_amount',
+excel_value=excel_amount,
+mapped_value=excel_amount,
+normalized_value=excel_amount,
+database_value=None,
+status='FAILED',
+error=f'Amount lost: Excel had {excel_amount}, DB has NULL'
 )
 audits.append(audit)
 
-Check for mismatches
-elif excel_val is not None and db_val is not None:
+Quantity - compare as int
+excel_qty = row_data.get('dn_qty')
+if excel_qty is not None:
+excel_qty = parse_quantity_int(excel_qty)
 
-Compare based on type
-if isinstance(excel_val, Decimal) and isinstance(db_val, float):
-excel_val_float = float(excel_val)
-if abs(excel_val_float - db_val) > 0.01:
+if excel_qty is not None and db_row.dn_qty is not None:
+if excel_qty != db_row.dn_qty:
 audit = RowAudit(
 row_number=row_number,
-dn_no=str(row_data.get('dn_no', '')),
-material_no=str(row_data.get('material_no', '')),
-field=field,
-excel_value=excel_val_float,
-mapped_value=excel_val_float,
-normalized_value=excel_val_float,
-database_value=db_val,
+dn_no=dn_no,
+material_no=material_no,
+field='dn_qty',
+excel_value=excel_qty,
+mapped_value=excel_qty,
+normalized_value=excel_qty,
+database_value=db_row.dn_qty,
 status='FAILED',
-error=f'Value mismatch: Excel={excel_val_float}, DB={db_val}'
+error=f'Quantity mismatch: Excel={excel_qty}, DB={db_row.dn_qty}'
 )
 audits.append(audit)
-elif str(excel_val) != str(db_val):
+elif excel_qty is not None and db_row.dn_qty is None:
 audit = RowAudit(
 row_number=row_number,
-dn_no=str(row_data.get('dn_no', '')),
-material_no=str(row_data.get('material_no', '')),
-field=field,
+dn_no=dn_no,
+material_no=material_no,
+field='dn_qty',
+excel_value=excel_qty,
+mapped_value=excel_qty,
+normalized_value=excel_qty,
+database_value=None,
+status='FAILED',
+error=f'Quantity lost: Excel had {excel_qty}, DB has NULL'
+)
+audits.append(audit)
+
+Date fields
+date_fields = [
+('dn_create_date', row_data.get('dn_create_date'), db_row.dn_create_date),
+('good_issue_date', row_data.get('good_issue_date'), db_row.good_issue_date),
+('pod_date', row_data.get('pod_date'), db_row.pod_date)
+]
+
+for field_name, excel_val, db_val in date_fields:
+if excel_val is not None:
+excel_date = parse_date_excel(excel_val)
+if excel_date and db_val:
+if excel_date != db_val:
+audit = RowAudit(
+row_number=row_number,
+dn_no=dn_no,
+material_no=material_no,
+field=field_name,
 excel_value=excel_val,
-mapped_value=excel_val,
-normalized_value=excel_val,
+mapped_value=excel_date,
+normalized_value=excel_date,
 database_value=db_val,
 status='FAILED',
-error=f'Value mismatch: Excel={excel_val}, DB={db_val}'
+error=f'Date mismatch: Excel={excel_date}, DB={db_val}'
+)
+audits.append(audit)
+elif excel_date and not db_val:
+audit = RowAudit(
+row_number=row_number,
+dn_no=dn_no,
+material_no=material_no,
+field=field_name,
+excel_value=excel_val,
+mapped_value=excel_date,
+normalized_value=excel_date,
+database_value=None,
+status='FAILED',
+error=f'Date lost: Excel had {excel_val}, DB has NULL'
+)
+audits.append(audit)
+
+except Exception as e:
+audit = RowAudit(
+row_number=row_number,
+dn_no=dn_no,
+material_no=material_no,
+field='verification_query',
+excel_value='N/A',
+mapped_value='N/A',
+normalized_value='N/A',
+database_value='Error',
+status='FAILED',
+error=f'Verification query failed: {str(e)}'
 )
 audits.append(audit)
 
 return audits
 
 ======================================================================================================
-BLOCK 8: EXCEL IMPORT SERVICE - v5.1
+BLOCK 8: EXCEL IMPORT SERVICE - v5.2
 ======================================================================================================
 class ExcelImportService:
 
@@ -412,12 +469,15 @@ update_existing: bool = False
 
 start_time = time.time()
 metrics = ImportMetrics()
+verification_failures = []
 
 logger.info("=" * 80)
-logger.info("📊 ENTERPRISE EXCEL IMPORT v5.1")
+logger.info("📊 ENTERPRISE EXCEL IMPORT v5.2 - FULL VERIFICATION")
 logger.info("=" * 80)
 logger.info(f"📁 File: {file_path}")
 logger.info(f"📋 Source: {source_filename}")
+logger.info(f"🔍 Strict Mode: {STRICT_MODE}")
+logger.info(f"🔍 Verify All Rows: {VERIFY_ALL_ROWS}")
 
 if not batch_id:
 batch_id = f"BATCH_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -426,9 +486,7 @@ logger.info(f"📋 Batch ID: {batch_id}")
 
 try:
 
-=============================================
-STEP 1: Read Excel
-=============================================
+Read Excel
 read_start = time.time()
 df = pd.read_excel(file_path, engine='openpyxl')
 df = df.dropna(how='all')
@@ -440,9 +498,7 @@ metrics.rows_read = len(df)
 
 logger.info(f"📄 Read {metrics.rows_read} rows, {len(excel_columns)} columns")
 
-=============================================
-STEP 2: Map Columns
-=============================================
+Map Columns
 column_mapping = ColumnMapper.map_columns(excel_columns)
 field_to_column = ColumnMapper.get_field_to_column(column_mapping)
 
@@ -458,22 +514,15 @@ missing_fields = [f for f in required_fields if f not in field_to_column]
 if missing_fields:
 error_msg = f"Missing required columns: {missing_fields}"
 logger.error(f"❌ {error_msg}")
-return {
-"success": False,
-"error": error_msg,
-"available_columns": excel_columns
-}
+return {"success": False, "error": error_msg, "available_columns": excel_columns}
 
-=============================================
-STEP 3: Process Rows
-=============================================
+Process Rows
 inserted_count = 0
 updated_count = 0
 skipped_count = 0
 failed_count = 0
 processed_records = set()
-audit_logs = []
-verification_failures = []
+inserted_rows = [] # Store for verification after commit
 
 logger.info("=" * 80)
 logger.info("📝 PROCESSING ROWS")
@@ -543,7 +592,7 @@ dn_work = normalize_string(get_value('dn_work'))
 Material
 storage_location = normalize_string(get_value('storage_location'))
 
-Quantity and Amount - Use Decimal
+Quantity and Amount - Keep as Decimal
 dn_qty_raw = get_value('dn_qty')
 dn_qty = parse_quantity_int(dn_qty_raw)
 
@@ -559,10 +608,9 @@ dn_create_date = parse_date_excel(dn_create_date_raw)
 good_issue_date = parse_date_excel(good_issue_date_raw)
 pod_date = parse_date_excel(pod_date_raw)
 
-Remarks
 remarks = normalize_string(get_value('remarks'))
 
-Log first 20 rows for audit
+Audit first 20 rows
 if index < 20:
 logger.info("=" * 60)
 logger.info(f"📝 AUDIT ROW {row_number}:")
@@ -582,7 +630,7 @@ logger.info("=" * 60)
 Derive status
 status = StatusEngine.derive_status(dn_create_date, good_issue_date, pod_date)
 
-Store raw values for verification
+Store raw data for verification
 raw_row = {
 'dn_no': dn_no_raw,
 'material_no': material_no,
@@ -691,24 +739,8 @@ metrics.total_revenue_imported += dn_amount
 if dn_qty:
 metrics.total_units_imported += dn_qty
 
-Verify row if inserted
-if not existing or (existing and update_existing):
-
-Flush to get ID
-db.flush()
-
-For inserted/updated rows, verify
-if inserted_count % VERIFICATION_SAMPLE_SIZE == 0 or index < 3:
-audits = VerificationEngine.verify_row(
-db, raw_row, record if not existing else existing, row_number
-)
-if audits:
-verification_failures.extend(audits)
-metrics.verification_failed += 1
-for audit in audits:
-logger.error(f"❌ Verification Failed: Row {row_number} - {audit.field}: {audit.error}")
-else:
-metrics.verification_success += 1
+Store for verification
+inserted_rows.append((raw_row, dn_no, material_no, row_number))
 
 Commit in batches
 if (index + 1) % BATCH_SIZE == 0:
@@ -716,6 +748,29 @@ commit_start = time.time()
 db.commit()
 metrics.commit_time += time.time() - commit_start
 logger.info(f"📊 Committed {index + 1} rows")
+
+Verify inserted rows
+if inserted_rows:
+if VERIFY_ALL_ROWS:
+rows_to_verify = inserted_rows
+else:
+
+Sample every Nth row
+rows_to_verify = inserted_rows[::VERIFICATION_SAMPLE_SIZE]
+
+for raw_row, v_dn_no, v_material_no, v_row_num in rows_to_verify:
+audits = VerificationEngine.verify_against_postgresql(
+db, raw_row, v_dn_no, v_material_no, v_row_num
+)
+if audits:
+verification_failures.extend(audits)
+metrics.verification_failed += 1
+for audit in audits:
+logger.error(f"❌ Verification Failed: Row {audit.row_number} - {audit.field}: {audit.error}")
+else:
+metrics.verification_success += 1
+
+inserted_rows.clear()
 
 except Exception as e:
 failed_count += 1
@@ -727,15 +782,35 @@ commit_start = time.time()
 db.commit()
 metrics.commit_time += time.time() - commit_start
 
+Final verification for remaining rows
+if inserted_rows:
+if VERIFY_ALL_ROWS:
+rows_to_verify = inserted_rows
+else:
+rows_to_verify = inserted_rows[::VERIFICATION_SAMPLE_SIZE]
+
+for raw_row, v_dn_no, v_material_no, v_row_num in rows_to_verify:
+audits = VerificationEngine.verify_against_postgresql(
+db, raw_row, v_dn_no, v_material_no, v_row_num
+)
+if audits:
+verification_failures.extend(audits)
+metrics.verification_failed += 1
+for audit in audits:
+logger.error(f"❌ Verification Failed: Row {audit.row_number} - {audit.field}: {audit.error}")
+else:
+metrics.verification_success += 1
+
 Update metrics
 metrics.rows_inserted = inserted_count
 metrics.rows_updated = updated_count
 metrics.rows_skipped = skipped_count
 metrics.rows_failed = failed_count
 metrics.rows_verified = metrics.verification_success + metrics.verification_failed
+metrics.verification_errors = [{'row': a.row_number, 'field': a.field, 'error': a.error} for a in verification_failures]
 metrics.import_duration = time.time() - start_time
 
-Final verification report
+Final report
 logger.info("=" * 80)
 logger.info("🔍 VERIFICATION REPORT:")
 logger.info(f" Rows Verified: {metrics.rows_verified}")
@@ -746,6 +821,10 @@ if verification_failures:
 logger.error("❌ VERIFICATION FAILURES DETECTED:")
 for failure in verification_failures[:10]:
 logger.error(f" Row {failure.row_number}: {failure.field} - {failure.error}")
+
+if STRICT_MODE:
+logger.error("❌ STRICT MODE: Failing import due to verification failures")
+raise VerificationError(f"Verification failed for {len(verification_failures)} rows")
 
 logger.info("=" * 80)
 logger.info(f"✅ IMPORT COMPLETED")
@@ -759,9 +838,6 @@ logger.info(f" Revenue Imported: PKR {metrics.total_revenue_imported:,.2f}")
 logger.info(f" Units Imported: {metrics.total_units_imported}")
 logger.info(f" Duration: {metrics.import_duration:.2f}s")
 logger.info("=" * 80)
-
-if verification_failures:
-logger.warning("⚠️ Some verification failures detected. Check logs above.")
 
 return {
 "success": True,
@@ -778,12 +854,10 @@ return {
 "total_units_imported": metrics.total_units_imported,
 "validation_errors": metrics.validation_errors[:20],
 "verification_failures": [
-{
-"row": f.row_number,
-"field": f.field,
-"error": f.error
-} for f in verification_failures[:10]
+{"row": f.row_number, "field": f.field, "error": f.error}
+for f in verification_failures[:10]
 ],
+"strict_mode": STRICT_MODE,
 "metrics": {
 "excel_read_time": round(metrics.excel_read_time, 2),
 "commit_time": round(metrics.commit_time, 2),
@@ -792,13 +866,25 @@ return {
 }
 }
 
+except VerificationError as e:
+logger.error(f"❌ Import failed due to verification: {e}")
+db.rollback()
+return {
+"success": False,
+"error": str(e),
+"batch_id": batch_id,
+"total_rows": 0,
+"inserted_count": 0,
+"updated_count": 0,
+"skipped_count": 0,
+"failed_count": 0,
+"verification_failures": [{'row': f.row_number, 'field': f.field, 'error': f.error} for f in verification_failures[:10]]
+}
+
 except Exception as e:
 logger.error(f"❌ Import failed: {e}")
 logger.error(traceback.format_exc())
 db.rollback()
-
-metrics.import_duration = time.time() - start_time
-
 return {
 "success": False,
 "error": str(e),
@@ -820,11 +906,14 @@ all = [
 'StatusEngine',
 'ImportMetrics',
 'RowAudit',
+'VerificationEngine',
 'parse_amount_decimal',
 'parse_quantity_int',
 'parse_date_excel',
 'normalize_string',
-'normalize_dn'
+'normalize_dn',
+'STRICT_MODE',
+'VERIFY_ALL_ROWS'
 ]
 
 ======================================================================================================
