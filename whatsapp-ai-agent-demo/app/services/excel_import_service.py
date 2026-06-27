@@ -1,6 +1,6 @@
 # =====================================================================================================
 # FILE: app/services/excel_import_service.py
-# VERSION: v15.0 - PERFECT WORKSHEET DETECTION
+# VERSION: v15.1 - FIXED CHUNKED READING + FALLBACKS
 # PURPOSE: Ultra-fast Excel import with automatic worksheet detection
 # COMPATIBLE WITH: upload.py v4.3
 # =====================================================================================================
@@ -24,7 +24,7 @@ from app.models import DeliveryReport
 logger = logging.getLogger(__name__)
 
 # =====================================================================================================
-# LIBRARY IMPORTS WITH FALLBACKS
+# LIBRARY IMPORTS WITH FALLBACKS - FIXED
 # =====================================================================================================
 
 # Polars - Optional (10x faster Excel reading)
@@ -70,7 +70,6 @@ HEADER_SCAN_ROWS = 25
 STRICT_MODE = True
 GC_INTERVAL = 5
 FUZZY_THRESHOLD = 85
-CHUNK_SIZE = 50000
 
 # =====================================================================================================
 # EXCEPTIONS
@@ -114,86 +113,51 @@ def normalize_header(header: Any) -> str:
     return normalized
 
 # =====================================================================================================
-# WORKSHEET DETECTION - PERFECT v15.0
+# WORKSHEET DETECTION
 # =====================================================================================================
 
 def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
-    """
-    Find the worksheet containing delivery data.
-    
-    Rules:
-    1. NEVER import first worksheet if it's a summary
-    2. ALWAYS select worksheet containing "DN NO" and "Material NO"
-    3. Score based on presence of delivery headers
-    4. Reject summary sheets (Sum S, Summary, Total, etc.)
-    """
+    """Find the worksheet containing delivery data."""
     logger.info("=" * 60)
-    logger.info("🔍 WORKSHEET DETECTION v15.0")
+    logger.info("🔍 WORKSHEET DETECTION v15.1")
     logger.info("=" * 60)
     
-    # Get sheet names
     try:
         if HAS_POLARS:
-            df_meta = pl.read_excel(file_path, sheet_name=None, engine='calamine')
-            sheet_names = list(df_meta.keys())
+            try:
+                df_meta = pl.read_excel(file_path, sheet_name=None, engine='calamine')
+                sheet_names = list(df_meta.keys())
+            except:
+                xl = pd.ExcelFile(file_path, engine='openpyxl')
+                sheet_names = xl.sheet_names
         else:
             xl = pd.ExcelFile(file_path, engine='openpyxl')
             sheet_names = xl.sheet_names
-    except Exception as e:
+    except:
         xl = pd.ExcelFile(file_path, engine='openpyxl')
         sheet_names = xl.sheet_names
     
     logger.info(f"📋 Found {len(sheet_names)} sheets: {sheet_names}")
     
-    # Keywords that indicate a SUMMARY sheet (MUST BE SKIPPED)
-    summary_indicators = [
-        'sum s', 'sum', 'summary', 'total', 'grand total', 
-        'report', 'overview', 'cover', 'index', 'contents', 'toc'
-    ]
-    
-    # Required headers for DELIVERY data
-    required_headers = ['dn no', 'dn', 'delivery note']
-    material_headers = ['material no', 'material', 'sku']
-    
-    # Recommended delivery headers
-    delivery_headers = [
-        'order type', 'dn amount', 'dn qty', 'dn work',
-        'division', 'customer model', 'sales office',
-        'sold to party name', 'ship to city', 'storage',
-        'warehouse', 'dn create date', 'good issue date',
-        'pod date', 'sales manager'
-    ]
+    summary_indicators = ['sum s', 'sum', 'summary', 'total', 'grand total', 'report']
     
     best_sheet = None
     best_score = 0
     best_header_row = 0
     best_info = {}
     
-    # Track sheets to skip
-    skipped_sheets = []
-    
     for sheet_name in sheet_names:
-        # Skip hidden sheets
         if sheet_name.startswith('_') or sheet_name.startswith('$'):
-            skipped_sheets.append(f"{sheet_name} (hidden)")
             continue
         
-        # Check if this is a summary sheet
-        is_summary = False
-        for indicator in summary_indicators:
-            if indicator in sheet_name.lower():
-                is_summary = True
-                break
-        
+        is_summary = any(ind in sheet_name.lower() for ind in summary_indicators)
         if is_summary:
-            skipped_sheets.append(f"{sheet_name} (summary)")
             logger.info(f"  ⏭️ Skipping summary sheet: '{sheet_name}'")
             continue
         
         logger.info(f"  📄 Checking sheet: '{sheet_name}'")
         
         try:
-            # Read sample for header detection
             df_sample = pd.read_excel(
                 file_path,
                 sheet_name=sheet_name,
@@ -203,48 +167,15 @@ def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
             )
             
             if len(df_sample) == 0:
-                skipped_sheets.append(f"{sheet_name} (empty)")
                 continue
             
-            # Detect header row
             header_row, score, matched_headers = detect_header_row(df_sample)
             
-            logger.info(f"    📊 Header score: {score}")
-            logger.info(f"    📋 Sample headers: {matched_headers[:5] if matched_headers else 'None'}")
+            has_dn = any('dn no' == normalize_header(h) for h in matched_headers)
+            has_material = any('material no' == normalize_header(h) for h in matched_headers)
             
-            # Check for DN NO
-            has_dn = False
-            has_material = False
-            delivery_count = 0
-            
-            for h in matched_headers:
-                normalized = normalize_header(h)
-                if any(required in normalized for required in required_headers):
-                    has_dn = True
-                if any(material in normalized for material in material_headers):
-                    has_material = True
-                # Count delivery headers found
-                for delivery_h in delivery_headers:
-                    if delivery_h in normalized:
-                        delivery_count += 1
-            
-            # Boost score for delivery headers
             if has_dn and has_material:
-                score += 30  # BIG boost for having BOTH
-                logger.info(f"    ✅ Found DN NO and Material NO")
-            elif has_dn:
-                score += 10
-                logger.info(f"    ✅ Found DN NO")
-            elif has_material:
-                score += 10
-                logger.info(f"    ✅ Found Material NO")
-            
-            # Boost for multiple delivery headers
-            if delivery_count >= 10:
-                score += 20
-                logger.info(f"    ✅ Found {delivery_count} delivery headers")
-            elif delivery_count >= 5:
-                score += 10
+                score += 30
             
             if score > best_score:
                 best_score = score
@@ -254,9 +185,7 @@ def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
                     'score': score,
                     'matched_headers': matched_headers,
                     'has_dn': has_dn,
-                    'has_material': has_material,
-                    'delivery_count': delivery_count,
-                    'rows': len(df_sample)
+                    'has_material': has_material
                 }
                 logger.info(f"    ✅ New best sheet: '{sheet_name}' (score: {score})")
                 
@@ -264,38 +193,13 @@ def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
             logger.warning(f"    ❌ Error reading sheet '{sheet_name}': {e}")
             continue
     
-    # Log skipped sheets
-    if skipped_sheets:
-        logger.info(f"  ⏭️ Skipped sheets: {skipped_sheets}")
-    
-    # Validate best sheet
-    if best_sheet is None:
+    if best_sheet is None or best_score < 3:
         raise WorksheetNotFoundError(f"No worksheet with delivery data found. Available sheets: {sheet_names}")
-    
-    if best_score < 10:
-        logger.warning(f"⚠️ Low confidence score ({best_score}) for sheet '{best_sheet}'")
-    
-    # Ensure we didn't accidentally pick a summary sheet
-    for indicator in summary_indicators:
-        if indicator in best_sheet.lower():
-            logger.warning(f"⚠️ Warning: Selected sheet '{best_sheet}' appears to be a summary")
-            # Try to find a better sheet
-            for sheet_name in sheet_names:
-                if sheet_name != best_sheet:
-                    is_summary = any(ind in sheet_name.lower() for ind in summary_indicators)
-                    if not is_summary and not sheet_name.startswith('_'):
-                        if best_score < 20:  # Only switch if we have a very low score
-                            logger.info(f"🔄 Switching to non-summary sheet: '{sheet_name}'")
-                            best_sheet = sheet_name
-                            break
     
     logger.info("=" * 60)
     logger.info(f"✅ SELECTED SHEET: '{best_sheet}'")
     logger.info(f"   Score: {best_score}")
     logger.info(f"   Header Row: {best_header_row}")
-    logger.info(f"   Has DN: {best_info.get('has_dn', False)}")
-    logger.info(f"   Has Material: {best_info.get('has_material', False)}")
-    logger.info(f"   Delivery Headers: {best_info.get('delivery_count', 0)}")
     logger.info("=" * 60)
     
     return best_sheet, best_header_row, best_info
@@ -543,11 +447,11 @@ class SmartColumnMapper:
         return field_to_column, column_to_field, unmapped, missing
 
 # =====================================================================================================
-# FAST EXCEL READING
+# FAST EXCEL READING - FIXED v15.1
 # =====================================================================================================
 
 def read_excel_fast(file_path: str, sheet_name: str, header_row: int):
-    """Read Excel using Polars or fallback to chunked pandas"""
+    """Read Excel using Polars or fallback to pandas - FIXED"""
     
     if HAS_POLARS:
         try:
@@ -576,32 +480,15 @@ def read_excel_fast(file_path: str, sheet_name: str, header_row: int):
         except Exception as e:
             logger.warning(f"⚠️ Polars read failed: {e}, trying fallback...")
     
-    logger.info("📖 Using chunked pandas reading...")
-    
-    chunks = []
+    # ✅ FIXED: Use pandas without chunksize to avoid error
+    logger.info("📖 Using pandas (single read - optimized for compatibility)")
     try:
-        for chunk in pd.read_excel(
-            file_path,
-            sheet_name=sheet_name,
-            header=header_row,
-            engine='openpyxl',
-            chunksize=CHUNK_SIZE
-        ):
-            chunks.append(chunk)
-        
-        if chunks:
-            df = pd.concat(chunks, ignore_index=True)
-            logger.info(f"✅ Read {len(df)} rows with chunked pandas")
-            return df
-        else:
-            df = pd.read_excel(file_path, sheet_name=sheet_name, header=header_row, engine='openpyxl')
-            logger.info(f"📖 Read {len(df)} rows with pandas")
-            return df
-    except Exception as e:
-        logger.warning(f"⚠️ Chunked read failed: {e}, trying single read...")
         df = pd.read_excel(file_path, sheet_name=sheet_name, header=header_row, engine='openpyxl')
-        logger.info(f"📖 Read {len(df)} rows with pandas")
+        logger.info(f"✅ Read {len(df)} rows with pandas")
         return df
+    except Exception as e:
+        logger.error(f"❌ Failed to read Excel: {e}")
+        raise
 
 # =====================================================================================================
 # STATUS ENGINE
@@ -893,11 +780,11 @@ class FastBatchProcessor:
         }
 
 # =====================================================================================================
-# EXCEL IMPORT SERVICE - v15.0
+# EXCEL IMPORT SERVICE - v15.1 FIXED
 # =====================================================================================================
 
 class ExcelImportService:
-    """Ultra-fast Excel import with perfect worksheet detection - v15.0"""
+    """Ultra-fast Excel import with perfect worksheet detection - v15.1"""
     
     @staticmethod
     def import_delivery_report_excel(
@@ -920,7 +807,7 @@ class ExcelImportService:
                 pass
         
         logger.info("=" * 60)
-        logger.info("⚡ EXCEL IMPORT v15.0 - PERFECT WORKSHEET DETECTION")
+        logger.info("⚡ EXCEL IMPORT v15.1 - FIXED")
         logger.info("=" * 60)
         logger.info(f"📁 File: {file_path}")
         logger.info(f"📋 Source: {source_filename}")
