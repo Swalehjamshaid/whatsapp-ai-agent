@@ -1,7 +1,7 @@
+
 # =====================================================================================================
 # FILE: app/services/excel_import_service.py
-# VERSION: v5.4 ENTERPRISE PRODUCTION - FULL VERIFICATION
-# PURPOSE: Eliminate data loss and guarantee every Excel value is stored correctly in PostgreSQL.
+# VERSION: v5.5 - FIXED COLUMN MAPPING
 # =====================================================================================================
 
 import pandas as pd
@@ -16,7 +16,6 @@ from sqlalchemy import text
 import time
 import traceback
 
-# ✅ Pydantic v1/v2 compatible
 try:
     from pydantic import BaseModel, ConfigDict
     PYDANTIC_V2 = True
@@ -29,7 +28,7 @@ from app.models import DeliveryReport
 logger = logging.getLogger(__name__)
 
 # =====================================================================================================
-# BLOCK 1: CONFIGURATION
+# CONFIGURATION
 # =====================================================================================================
 
 BATCH_SIZE = 1000
@@ -40,7 +39,7 @@ STRICT_MODE = True
 VERIFY_ALL_ROWS = False
 
 # =====================================================================================================
-# BLOCK 2: EXCEPTIONS
+# EXCEPTIONS
 # =====================================================================================================
 
 class ImportValidationError(Exception):
@@ -50,15 +49,13 @@ class DataLossError(Exception):
     pass
 
 class VerificationError(Exception):
-    """Raised when verification fails - should bubble up to caller"""
     pass
 
 # =====================================================================================================
-# BLOCK 3: DATA CLASSES - PYDANTIC COMPATIBLE
+# DATA CLASSES
 # =====================================================================================================
 
 class ImportMetrics(BaseModel):
-    """Import metrics - works with Pydantic v1 and v2"""
     rows_read: int = 0
     rows_inserted: int = 0
     rows_updated: int = 0
@@ -93,13 +90,11 @@ class ImportMetrics(BaseModel):
             arbitrary_types_allowed = True
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dict for JSON serialization"""
         result = self.model_dump() if PYDANTIC_V2 else self.dict()
         result['total_revenue_imported'] = float(result['total_revenue_imported'])
         return result
 
 class RowAudit(BaseModel):
-    """Row audit - works with Pydantic v1 and v2"""
     row_number: int
     dn_no: str
     material_no: str
@@ -118,7 +113,7 @@ class RowAudit(BaseModel):
             arbitrary_types_allowed = True
 
 # =====================================================================================================
-# BLOCK 4: DATA NORMALIZATION FUNCTIONS
+# NORMALIZATION FUNCTIONS
 # =====================================================================================================
 
 def normalize_string(value: Any) -> Optional[str]:
@@ -215,22 +210,24 @@ def normalize_dn(dn_no: str) -> str:
     return re.sub(r'[^0-9]', '', dn_no.strip())
 
 # =====================================================================================================
-# BLOCK 5: COLUMN MAPPER
+# COLUMN MAPPER - FIXED FOR YOUR EXCEL
 # =====================================================================================================
 
 class ColumnMapper:
     PRIMARY_MAPPINGS = {
+        # EXACT matches for your Excel columns
         'dn_no': ['DN NO', 'DN No', 'Dn No', 'dn no', 'DN', 'Dn', 'dn', 'DN_NO'],
         'dn_work': ['DN Work', 'DN work', 'dn work', 'Work', 'DN_Work'],
         'order_type': ['Order type', 'Order Type', 'order type', 'Order', 'order'],
         'division': ['Division', 'division', 'DIVISION'],
         'customer_code': ['Customer Code', 'Customer code', 'customer code'],
         'dealer_code': ['Dealer Code', 'Dealer code', 'dealer code'],
-        'customer_name': ['Sold-to-party Name', 'Sold-to-party name', 'Customer Name', 'customer name', 'Customer', 'customer'],
+        'customer_name': ['Sold-to-party Name', 'Sold-to-party name', 'Sold-to party Name', 
+                         'Customer Name', 'customer name', 'Customer', 'customer'],
         'customer_model': ['Customer Model', 'Customer model', 'customer model', 'Model', 'model'],
         'material_no': ['Material NO', 'Material No', 'material no', 'Material', 'material'],
-        'storage_location': ['Storage Location', 'storage location', 'Storage', 'storage'],
-        'sales_office': ['Sales Office', 'Sales office', 'sales office', 'Office', 'office'],
+        'storage_location': ['storage', 'Storage Location', 'storage location', 'Storage', 'storage'],
+        'sales_office': ['sales office', 'Sales Office', 'Sales office', 'sales office', 'Office', 'office'],
         'sales_manager': ['Sales Manager', 'Sales manager', 'sales manager', 'Manager', 'manager'],
         'ship_to_city': ['Ship-to City', 'Ship-to city', 'Ship to City', 'City', 'city'],
         'warehouse': ['Warehouse', 'warehouse', 'WAREHOUSE'],
@@ -249,6 +246,8 @@ class ColumnMapper:
         mapping = {}
         remaining_columns = list(excel_columns)
 
+        logger.info(f"📋 Mapping {len(excel_columns)} columns: {excel_columns}")
+
         for field, patterns in cls.PRIMARY_MAPPINGS.items():
             for col in remaining_columns:
                 col_str = str(col).strip()
@@ -257,13 +256,14 @@ class ColumnMapper:
                     pattern_upper = pattern.upper()
                     if col_upper == pattern_upper or pattern_upper in col_upper:
                         mapping[col] = field
+                        logger.info(f"  ✅ {field} ← '{col}'")
                         remaining_columns.remove(col)
                         break
                 if col in mapping:
                     break
 
         if remaining_columns:
-            logger.debug(f"Unmapped columns: {remaining_columns}")
+            logger.warning(f"⚠️ Unmapped columns: {remaining_columns}")
 
         return mapping
 
@@ -275,7 +275,7 @@ class ColumnMapper:
         return field_to_col
 
 # =====================================================================================================
-# BLOCK 6: STATUS ENGINE
+# STATUS ENGINE
 # =====================================================================================================
 
 class StatusEngine:
@@ -295,12 +295,10 @@ class StatusEngine:
             return {'delivery_status': 'Unknown', 'pgi_status': 'Unknown', 'pod_status': 'Unknown', 'pending_flag': True}
 
 # =====================================================================================================
-# BLOCK 7: VERIFICATION ENGINE
+# VERIFICATION ENGINE
 # =====================================================================================================
 
 class VerificationEngine:
-    """Verify data by re-reading from PostgreSQL after commit."""
-
     CRITICAL_FIELDS = ['dn_amount', 'dn_qty', 'customer_name', 'material_no', 'warehouse', 'ship_to_city']
 
     @staticmethod
@@ -311,7 +309,6 @@ class VerificationEngine:
         material_no: str, 
         row_number: int
     ) -> List[RowAudit]:
-        """Verify data by SELECTing from PostgreSQL after commit."""
         audits = []
 
         try:
@@ -501,7 +498,7 @@ class VerificationEngine:
         return audits
 
 # =====================================================================================================
-# BLOCK 8: EXCEL IMPORT SERVICE
+# EXCEL IMPORT SERVICE
 # =====================================================================================================
 
 class ExcelImportService:
@@ -522,12 +519,10 @@ class ExcelImportService:
         verification_errors_list = []
 
         logger.info("=" * 80)
-        logger.info("📊 ENTERPRISE EXCEL IMPORT v5.4 - COMPLETE FIX")
+        logger.info("📊 ENTERPRISE EXCEL IMPORT v5.5 - FIXED COLUMN MAPPING")
         logger.info("=" * 80)
         logger.info(f"📁 File: {file_path}")
         logger.info(f"📋 Source: {source_filename}")
-        logger.info(f"🔍 Strict Mode: {STRICT_MODE}")
-        logger.info(f"🔍 Verify All Rows: {VERIFY_ALL_ROWS}")
 
         if not batch_id:
             batch_id = f"BATCH_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -545,21 +540,26 @@ class ExcelImportService:
             metrics.rows_read = len(df)
 
             logger.info(f"📄 Read {metrics.rows_read} rows, {len(excel_columns)} columns")
+            logger.info(f"📋 Excel columns: {excel_columns}")
 
+            # Map Columns with detailed logging
             column_mapping = ColumnMapper.map_columns(excel_columns)
             field_to_column = ColumnMapper.get_field_to_column(column_mapping)
 
             logger.info("=" * 80)
-            logger.info("📋 COLUMN MAPPING:")
+            logger.info("📋 COLUMN MAPPING RESULTS:")
             for field, col in field_to_column.items():
-                logger.info(f"  {field} ← '{col}'")
+                logger.info(f"  ✅ {field} ← '{col}'")
             logger.info("=" * 80)
 
+            # Check required fields
             required_fields = ['dn_no', 'material_no']
             missing_fields = [f for f in required_fields if f not in field_to_column]
             if missing_fields:
                 error_msg = f"Missing required columns: {missing_fields}"
                 logger.error(f"❌ {error_msg}")
+                logger.error(f"   Available columns: {excel_columns}")
+                logger.error(f"   Mapped columns: {list(field_to_column.keys())}")
                 return {"success": False, "error": error_msg, "available_columns": excel_columns}
 
             inserted_count = 0
@@ -901,7 +901,7 @@ class ExcelImportService:
             }
 
 # =====================================================================================================
-# BLOCK 9: EXPORTS
+# EXPORTS
 # =====================================================================================================
 
 __all__ = [
@@ -920,7 +920,3 @@ __all__ = [
     'VERIFY_ALL_ROWS',
     'VerificationError'
 ]
-
-# =====================================================================================================
-# END OF FILE
-# =====================================================================================================
