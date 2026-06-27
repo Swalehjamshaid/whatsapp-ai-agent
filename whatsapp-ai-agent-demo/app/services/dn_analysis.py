@@ -1198,209 +1198,279 @@ class DNAnalysisService:
     # ==================================================================================================
     # BLOCK 12: WHATSAPP FORMATTER
     # ==================================================================================================
+    # ==================================================================================================
+    # BLOCK 12: WHATSAPP FORMATTER - COMPLETE FIX
+    # ==================================================================================================
 
-    def format_dn_dashboard(self, dashboard_data: Dict[str, Any]) -> str:
+    def format_dn_dashboard(self, dashboard_data: Any) -> str:
         """
-        Format DN dashboard for WhatsApp.
-
-        Returns formatted string with emojis and clean layout.
+        Format DN dashboard for WhatsApp with beautiful styling.
+        
+        Args:
+            dashboard_data: DNDashboard object or dict with dashboard data
+            
+        Returns:
+            Beautifully formatted WhatsApp message
         """
-        data = dashboard_data.get('data', {})
-
-        # Handle dictionary or dataclass
-        if hasattr(data, '__dataclass_fields__'):
-            # It's a dataclass
+        # ============================================================
+        # STEP 1: Extract data from DNDashboard object or dict
+        # ============================================================
+        
+        # If it's a DNDashboard object
+        if hasattr(dashboard_data, '__dataclass_fields__'):
             d = {
-                'dn_no': data.dn_no,
-                'dealer_name': data.dealer_name,
-                'dealer_code': data.dealer_code,
-                'customer_name': data.customer_name,
-                'customer_code': data.customer_code,
-                'warehouse': data.warehouse,
-                'warehouse_code': data.warehouse_code,
-                'city': data.city,
-                'delivery_location': data.delivery_location,
-                'sales_manager': data.sales_manager,
-                'sales_office': data.sales_office,
-                'division': data.division,
-                'order_type': data.order_type,
-                'dn_work': data.dn_work,
-                'total_units': data.total_units,
-                'total_revenue': data.total_revenue,
-                'material_count': data.material_count,
-                'model_count': data.model_count,
-                'row_count': data.row_count,
-                'average_revenue': data.average_revenue,
-                'average_unit_price': data.average_unit_price,
-                'dn_create_date': data.dn_create_date,
-                'good_issue_date': data.good_issue_date,
-                'pod_date': data.pod_date,
-                'delivery_aging_text': data.delivery_aging_text,
-                'pod_aging_text': data.pod_aging_text,
-                'total_cycle_text': data.total_cycle_text,
-                'calculated_stage': data.calculated_stage,
-                'calculated_emoji': data.calculated_emoji,
-                'pgi_status': data.pgi_status,
-                'pod_status': data.pod_status,
-                'pending_flag_text': data.pending_flag_text,
-                'products': data.products,
-                'source_file': data.source_file,
-                'upload_batch_id': data.upload_batch_id,
-                'created_at': data.created_at,
-                'updated_at': data.updated_at
+                'dn_no': dashboard_data.dn_no,
+                'dealer_name': dashboard_data.dealer_name,
+                'dealer_code': dashboard_data.dealer_code,
+                'customer_name': dashboard_data.customer_name,
+                'customer_code': dashboard_data.customer_code,
+                'warehouse': dashboard_data.warehouse,
+                'warehouse_code': dashboard_data.warehouse_code,
+                'city': dashboard_data.city,
+                'delivery_location': dashboard_data.delivery_location,
+                'sales_manager': dashboard_data.sales_manager,
+                'sales_office': dashboard_data.sales_office,
+                'division': dashboard_data.division,
+                'order_type': dashboard_data.order_type,
+                'dn_work': dashboard_data.dn_work,
+                'total_units': dashboard_data.total_units,
+                'total_revenue': dashboard_data.total_revenue,
+                'material_count': dashboard_data.material_count,
+                'model_count': dashboard_data.model_count,
+                'row_count': dashboard_data.row_count,
+                'average_revenue': dashboard_data.average_revenue,
+                'average_unit_price': dashboard_data.average_unit_price,
+                'dn_create_date': dashboard_data.dn_create_date,
+                'good_issue_date': dashboard_data.good_issue_date,
+                'pod_date': dashboard_data.pod_date,
+                'delivery_aging_text': dashboard_data.delivery_aging_text,
+                'pod_aging_text': dashboard_data.pod_aging_text,
+                'total_cycle_text': dashboard_data.total_cycle_text,
+                'calculated_stage': dashboard_data.calculated_stage,
+                'calculated_emoji': dashboard_data.calculated_emoji,
+                'delivery_status': dashboard_data.delivery_status,
+                'pgi_status': dashboard_data.pgi_status,
+                'pod_status': dashboard_data.pod_status,
+                'pending_flag_text': dashboard_data.pending_flag_text,
+                'pending_flag': dashboard_data.pending_flag,
+                'products': dashboard_data.products,
+                'source_file': dashboard_data.source_file,
+                'upload_batch_id': dashboard_data.upload_batch_id,
+                'imported_at': dashboard_data.imported_at,
+                'created_at': dashboard_data.created_at,
+                'updated_at': dashboard_data.updated_at
             }
+        elif isinstance(dashboard_data, dict):
+            # If it's a dict with 'data' key
+            if 'data' in dashboard_data:
+                data = dashboard_data['data']
+                if hasattr(data, '__dataclass_fields__'):
+                    return self.format_dn_dashboard(data)
+                d = data
+            else:
+                d = dashboard_data
         else:
-            d = data
+            return "❌ Error: Invalid dashboard data format"
 
+        # ============================================================
+        # STEP 2: Build the formatted message
+        # ============================================================
+        
         lines = []
-
-        # Header
-        lines.append("📦 DN: {}".format(d.get('dn_no', 'N/A')))
+        
+        # ----- Header -----
+        lines.append("📦 *DN REPORT*")
+        lines.append("=" * 30)
         lines.append("")
-
-        # Dealer
+        
+        # ----- DN Number -----
+        dn_no = d.get('dn_no', 'N/A')
+        lines.append(f"🔹 *DN No:* `{dn_no}`")
+        lines.append("")
+        
+        # ----- Dealer Information -----
+        lines.append("👤 *DEALER INFORMATION*")
+        lines.append("-" * 25)
+        
         dealer_name = d.get('dealer_name', 'Unknown')
-        if dealer_name and dealer_name != 'Unknown':
-            lines.append("Dealer:")
-            lines.append("{}".format(dealer_name))
-            lines.append("")
-
-        # Warehouse
-        warehouse = d.get('warehouse', 'Unknown')
-        if warehouse and warehouse != 'Unknown':
-            lines.append("Warehouse:")
-            lines.append("{}".format(warehouse))
-            lines.append("")
-
-        # City
-        city = d.get('city', 'Unknown')
-        if city and city != 'Unknown':
-            lines.append("City:")
-            lines.append("{}".format(city))
-            lines.append("")
-
-        # Sales Manager
-        sales_manager = d.get('sales_manager')
-        if sales_manager:
-            lines.append("Sales Manager:")
-            lines.append("{}".format(sales_manager))
-            lines.append("")
-
-        # Division
-        division = d.get('division')
-        if division:
-            lines.append("Division:")
-            lines.append("{}".format(division))
-            lines.append("")
-
-        # Dealer Code
+        lines.append(f"  📛 Name: *{dealer_name}*")
+        
         dealer_code = d.get('dealer_code')
         if dealer_code:
-            lines.append("Dealer Code:")
-            lines.append("{}".format(dealer_code))
-            lines.append("")
-
-        # Warehouse Code
+            lines.append(f"  🆔 Code: `{dealer_code}`")
+        
+        customer_code = d.get('customer_code')
+        if customer_code:
+            lines.append(f"  🆔 Customer Code: `{customer_code}`")
+        
+        lines.append("")
+        
+        # ----- Location -----
+        lines.append("📍 *LOCATION*")
+        lines.append("-" * 25)
+        
+        warehouse = d.get('warehouse', 'Unknown')
+        lines.append(f"  🏭 Warehouse: *{warehouse}*")
+        
         warehouse_code = d.get('warehouse_code')
         if warehouse_code:
-            lines.append("Warehouse Code:")
-            lines.append("{}".format(warehouse_code))
-            lines.append("")
-
-        # Metrics
-        lines.append("📊 Metrics:")
-        lines.append("Units: {}".format(d.get('total_units', 0)))
-
-        revenue = d.get('total_revenue', 0)
-        if revenue:
-            if isinstance(revenue, Decimal):
-                lines.append("Revenue: PKR {:,}".format(revenue.quantize(Decimal('0.01'))))
-            else:
-                lines.append("Revenue: PKR {:,}".format(revenue))
-        else:
-            lines.append("Revenue: PKR 0")
-
+            lines.append(f"  🏷️ WH Code: `{warehouse_code}`")
+        
+        city = d.get('city', 'Unknown')
+        lines.append(f"  🌆 City: *{city}*")
+        
+        delivery_location = d.get('delivery_location')
+        if delivery_location:
+            lines.append(f"  📍 Delivery: {delivery_location}")
+        
         lines.append("")
-        lines.append("Materials: {}".format(d.get('material_count', 1)))
+        
+        # ----- Business Information -----
+        lines.append("📋 *BUSINESS INFO*")
+        lines.append("-" * 25)
+        
+        sales_office = d.get('sales_office')
+        if sales_office:
+            lines.append(f"  🏢 Office: {sales_office}")
+        
+        sales_manager = d.get('sales_manager')
+        if sales_manager:
+            lines.append(f"  👔 Manager: {sales_manager}")
+        
+        division = d.get('division')
+        if division:
+            lines.append(f"  📂 Division: {division}")
+        
+        order_type = d.get('order_type')
+        if order_type:
+            lines.append(f"  📋 Order Type: {order_type}")
+        
+        dn_work = d.get('dn_work')
+        if dn_work:
+            lines.append(f"  📝 DN Work: {dn_work}")
+        
+        lines.append("")
+        
+        # ----- Metrics -----
+        lines.append("📊 *METRICS*")
+        lines.append("-" * 25)
+        
+        total_units = d.get('total_units', 0)
+        total_revenue = d.get('total_revenue', 0)
+        material_count = d.get('material_count', 0)
         model_count = d.get('model_count', 0)
-        if model_count > 0:
-            lines.append("Models: {}".format(model_count))
-        lines.append("")
-
+        
+        lines.append(f"  📦 Units: *{total_units:,}*")
+        
+        # Format revenue
+        if total_revenue:
+            if isinstance(total_revenue, Decimal):
+                revenue_str = f"{total_revenue:,.2f}"
+            else:
+                revenue_str = f"{float(total_revenue):,.2f}"
+            lines.append(f"  💰 Revenue: *PKR {revenue_str}*")
+        else:
+            lines.append(f"  💰 Revenue: PKR 0")
+        
+        lines.append(f"  🔧 Materials: {material_count}")
+        lines.append(f"  🏷️ Models: {model_count}")
+        lines.append(f"  📄 Rows: {d.get('row_count', 0)}")
+        
         # Average metrics
         avg_price = d.get('average_unit_price', 0)
         if avg_price:
             if isinstance(avg_price, Decimal):
-                lines.append("Avg Price: PKR {:,}".format(avg_price.quantize(Decimal('0.01'))))
+                avg_price_str = f"{avg_price:,.2f}"
             else:
-                lines.append("Avg Price: PKR {:,}".format(avg_price))
+                avg_price_str = f"{float(avg_price):,.2f}"
+            lines.append(f"  📈 Avg Price: PKR {avg_price_str}")
+        
         lines.append("")
-
-        # Dates
-        lines.append("📅 Dates:")
-        lines.append("DN Create: {}".format(d.get('dn_create_date', 'N/A')))
-        lines.append("PGI: {}".format(d.get('good_issue_date', 'N/A')))
-        lines.append("POD: {}".format(d.get('pod_date', 'N/A')))
+        
+        # ----- Dates -----
+        lines.append("📅 *DATES*")
+        lines.append("-" * 25)
+        
+        lines.append(f"  📝 DN Create: {d.get('dn_create_date', 'N/A')}")
+        lines.append(f"  🚚 PGI: {d.get('good_issue_date', 'N/A')}")
+        lines.append(f"  📬 POD: {d.get('pod_date', 'N/A')}")
+        
         lines.append("")
-
-        # Aging
-        lines.append("⏳ Aging:")
-        lines.append("Delivery: {}".format(d.get('delivery_aging_text', 'N/A')))
-        lines.append("POD: {}".format(d.get('pod_aging_text', 'N/A')))
-        lines.append("Total Cycle: {}".format(d.get('total_cycle_text', 'N/A')))
+        
+        # ----- Aging -----
+        lines.append("⏳ *AGING*")
+        lines.append("-" * 25)
+        
+        lines.append(f"  📦 Delivery: {d.get('delivery_aging_text', 'N/A')}")
+        lines.append(f"  📬 POD: {d.get('pod_aging_text', 'N/A')}")
+        lines.append(f"  🔄 Total Cycle: {d.get('total_cycle_text', 'N/A')}")
+        
         lines.append("")
-
-        # Status
+        
+        # ----- Status -----
+        lines.append("📋 *STATUS*")
+        lines.append("-" * 25)
+        
         stage = d.get('calculated_stage', 'Unknown')
         emoji = d.get('calculated_emoji', '❓')
-        pgi_status = d.get('pgi_status', 'Unknown')
-        pod_status = d.get('pod_status', 'Unknown')
         pending_text = d.get('pending_flag_text', 'Unknown')
-
-        lines.append("📋 Status:")
-        lines.append("Delivery: {} {}".format(emoji, stage))
-        lines.append("PGI: {}".format(pgi_status))
-        lines.append("POD: {}".format(pod_status))
-        lines.append("Pending: {}".format(pending_text))
+        
+        lines.append(f"  {emoji} Delivery: *{stage}*")
+        lines.append(f"  ⚡ PGI: {d.get('pgi_status', 'Unknown')}")
+        lines.append(f"  📬 POD: {d.get('pod_status', 'Unknown')}")
+        lines.append(f"  ⏰ Pending: {pending_text}")
+        
         lines.append("")
-
-        # Products
+        
+        # ----- Products -----
         products = d.get('products', [])
         if products:
-            lines.append("📦 Product Details:")
+            lines.append("📦 *PRODUCT DETAILS*")
+            lines.append("-" * 25)
+            
             for idx, product in enumerate(products[:10], 1):
-                model_name = product.get('model', 'Unknown')
+                model = product.get('model', 'Unknown')
                 material_no = product.get('material_no', 'N/A')
                 qty = product.get('quantity', 0)
                 revenue_val = product.get('revenue', 0)
                 avg_price_val = product.get('average_price', 0)
-
-                lines.append("{}. {}: {} units".format(idx, model_name, qty))
+                
+                lines.append(f"  {idx}. *{model}*")
                 if material_no != 'N/A':
-                    lines.append(" Material: {}".format(material_no))
+                    lines.append(f"     🏷️ Material: `{material_no}`")
+                lines.append(f"     📦 Qty: {qty}")
                 if revenue_val > 0:
-                    lines.append(" Revenue: PKR {:,}".format(revenue_val))
+                    lines.append(f"     💰 Revenue: PKR {revenue_val:,.2f}")
                 if avg_price_val > 0:
-                    lines.append(" Avg Price: PKR {:,}".format(avg_price_val))
-
+                    lines.append(f"     📈 Avg Price: PKR {avg_price_val:,.2f}")
+            
             if len(products) > 10:
                 remaining = len(products) - 10
-                lines.append("... and {} more products".format(remaining))
+                lines.append(f"  ... and {remaining} more product(s)")
+            
             lines.append("")
-
-        # Source info
+        
+        # ----- Source -----
         source_file = d.get('source_file')
         batch_id = d.get('upload_batch_id')
         if source_file or batch_id:
-            lines.append("📁 Source:")
+            lines.append("📁 *SOURCE*")
+            lines.append("-" * 25)
             if source_file:
-                lines.append("File: {}".format(source_file))
+                lines.append(f"  📄 File: {source_file}")
             if batch_id:
-                lines.append("Batch: {}".format(batch_id))
+                lines.append(f"  📋 Batch: `{batch_id}`")
             lines.append("")
-
+        
+        # ----- Footer -----
+        lines.append("=" * 30)
+        lines.append("🤖 *AI Logistics Assistant*")
+        
+        # Add timestamp
+        from datetime import datetime
+        lines.append(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        
         return "\n".join(lines)
-
 # =====================================================================================================
 # BLOCK 13: THREAD-SAFE SINGLETON
 # =====================================================================================================
