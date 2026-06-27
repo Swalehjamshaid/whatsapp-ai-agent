@@ -2,6 +2,8 @@
 # FILE: app/services/excel_import_service.py
 # VERSION: v7.0 - SIMPLE PRODUCTION IMPORTER
 # PURPOSE: Clean, fast Excel import with smart header detection
+# INTEGRATED WITH: upload.py, models.py, main.py
+# COMPATIBILITY: PostgreSQL, SQLAlchemy, FastAPI
 # =====================================================================================================
 
 import pandas as pd
@@ -55,7 +57,13 @@ def normalize_header(header: Any) -> str:
         "DN NO" -> "dn no"
         "DN_NO" -> "dn no"  
         "DN-NO" -> "dn no"
+        "DN.NO" -> "dn no"
+        "DN#" -> "dn no"
         " Material NO " -> "material no"
+        "Sold-to-party Name" -> "sold to party name"
+        "Ship-to City" -> "ship to city"
+        "DN Create date" -> "dn create date"
+        "Good issue date" -> "good issue date"
     """
     if header is None:
         return ""
@@ -64,8 +72,14 @@ def normalize_header(header: Any) -> str:
     normalized = str(header).strip()
     
     # Replace separators with spaces
-    for sep in ['_', '-', '.', '/', '\\', '#']:
+    for sep in ['_', '-', '.', '/', '\\', '#', '·']:
         normalized = normalized.replace(sep, ' ')
+    
+    # Replace non-breaking spaces and other whitespace
+    normalized = normalized.replace('\u00a0', ' ')
+    normalized = normalized.replace('\t', ' ')
+    normalized = normalized.replace('\r', ' ')
+    normalized = normalized.replace('\n', ' ')
     
     # Remove extra spaces and lowercase
     normalized = ' '.join(normalized.split()).lower()
@@ -160,66 +174,166 @@ class ColumnMapper:
     
     # Normalized header -> database field
     HEADER_MAP = {
+        # DN - Primary Key
         'dn no': 'dn_no',
         'dn': 'dn_no',
         'delivery note': 'dn_no',
+        'delivery note no': 'dn_no',
+        'delivery note number': 'dn_no',
         'delivery number': 'dn_no',
+        'd n no': 'dn_no',
+        'd n': 'dn_no',
+        
+        # Material
         'material no': 'material_no',
         'material': 'material_no',
         'material number': 'material_no',
+        'material#': 'material_no',
         'sku': 'material_no',
+        'product no': 'material_no',
+        'product number': 'material_no',
+        'item no': 'material_no',
+        
+        # Order Type
         'order type': 'order_type',
         'order': 'order_type',
+        'ordertype': 'order_type',
+        'type': 'order_type',
+        
+        # DN Work
         'dn work': 'dn_work',
         'work': 'dn_work',
+        'work order': 'dn_work',
+        'work no': 'dn_work',
+        
+        # Division
         'division': 'division',
         'div': 'division',
+        
+        # Customer Model
         'customer model': 'customer_model',
         'model': 'customer_model',
         'model name': 'customer_model',
+        'product model': 'customer_model',
+        'model no': 'customer_model',
+        
+        # Customer Name (Sold-to-party)
         'sold to party name': 'customer_name',
         'sold-to-party name': 'customer_name',
+        'sold to party': 'customer_name',
+        'sold-to-party': 'customer_name',
         'customer name': 'customer_name',
         'customer': 'customer_name',
         'dealer name': 'customer_name',
+        'party name': 'customer_name',
+        
+        # Sales Office
         'sales office': 'sales_office',
+        'salesoffice': 'sales_office',
         'office': 'sales_office',
         'sales': 'sales_office',
+        'sales region': 'sales_office',
+        
+        # Sales Manager
         'sales manager': 'sales_manager',
+        'salesmanager': 'sales_manager',
         'manager': 'sales_manager',
+        'sales rep': 'sales_manager',
+        
+        # Ship-to City
         'ship to city': 'ship_to_city',
         'ship-to city': 'ship_to_city',
+        'ship-to-city': 'ship_to_city',
+        'shipcity': 'ship_to_city',
         'city': 'ship_to_city',
+        'destination city': 'ship_to_city',
+        'ship to': 'ship_to_city',
+        
+        # Storage Location
         'storage': 'storage_location',
         'storage location': 'storage_location',
+        'storagelocation': 'storage_location',
+        'bin': 'storage_location',
+        
+        # Warehouse
         'warehouse': 'warehouse',
         'wh': 'warehouse',
+        'ware house': 'warehouse',
+        'plant': 'warehouse',
+        
+        # Warehouse Code
         'warehouse code': 'warehouse_code',
+        'warehousecode': 'warehouse_code',
+        'wh code': 'warehouse_code',
+        'plant code': 'warehouse_code',
+        
+        # Delivery Location
+        'delivery location': 'delivery_location',
+        'deliverylocation': 'delivery_location',
+        'location': 'delivery_location',
+        'delivery address': 'delivery_location',
+        
+        # DN Quantity
         'dn qty': 'dn_qty',
+        'dn quantity': 'dn_qty',
         'qty': 'dn_qty',
         'quantity': 'dn_qty',
+        'dnqty': 'dn_qty',
+        'units': 'dn_qty',
+        
+        # DN Amount
         'dn amount': 'dn_amount',
+        'dn amount ': 'dn_amount',
         'amount': 'dn_amount',
         'value': 'dn_amount',
+        'dnamount': 'dn_amount',
+        'net amount': 'dn_amount',
+        'total': 'dn_amount',
+        
+        # DN Create Date
         'dn create date': 'dn_create_date',
+        'dn created date': 'dn_create_date',
         'create date': 'dn_create_date',
         'created date': 'dn_create_date',
+        'dn created': 'dn_create_date',
+        'date created': 'dn_create_date',
+        'creation date': 'dn_create_date',
+        'order date': 'dn_create_date',
+        
+        # Good Issue Date
         'good issue date': 'good_issue_date',
+        'good issue': 'good_issue_date',
         'pgi date': 'good_issue_date',
+        'pgi': 'good_issue_date',
+        'goods issue': 'good_issue_date',
         'dispatch date': 'good_issue_date',
+        'shipped date': 'good_issue_date',
+        
+        # POD Date
         'pod date': 'pod_date',
         'pod': 'pod_date',
         'proof of delivery': 'pod_date',
         'delivery date': 'pod_date',
+        'received date': 'pod_date',
+        'confirmation date': 'pod_date',
+        
+        # Customer/Dealer Codes
         'customer code': 'customer_code',
+        'customer code no': 'customer_code',
+        'cust code': 'customer_code',
+        'account code': 'customer_code',
         'dealer code': 'dealer_code',
+        'dealer code no': 'dealer_code',
+        'dealer no': 'dealer_code',
+        'distributor code': 'dealer_code',
+        
+        # Remarks
         'remarks': 'remarks',
         'remark': 'remarks',
+        'note': 'remarks',
         'notes': 'remarks',
         'comments': 'remarks',
-        'storage location': 'storage_location',
-        'delivery location': 'delivery_location',
-        'location': 'delivery_location'
+        'comment': 'remarks',
     }
     
     REQUIRED_FIELDS = ['dn_no', 'material_no']
@@ -235,6 +349,10 @@ class ColumnMapper:
         field_to_column = {}
         column_to_field = {}
         unmapped = []
+        
+        logger.info("=" * 60)
+        logger.info("📋 COLUMN MAPPING")
+        logger.info("=" * 60)
         
         for header in headers:
             if header is None:
@@ -252,6 +370,13 @@ class ColumnMapper:
         
         # Check required fields
         missing = [f for f in cls.REQUIRED_FIELDS if f not in field_to_column]
+        
+        if unmapped:
+            logger.warning(f"  Unmapped columns: {unmapped[:10]}")
+        if missing:
+            logger.error(f"  Missing required fields: {missing}")
+        
+        logger.info("=" * 60)
         
         return field_to_column, column_to_field, unmapped, missing
 
@@ -469,8 +594,6 @@ class ExcelImportService:
             # ============================================================
             # STEP 3: Map Columns
             # ============================================================
-            logger.info("📋 Mapping columns...")
-            
             headers = [str(col).strip() for col in df.columns]
             field_to_column, column_to_field, unmapped, missing = ColumnMapper.map_headers(headers)
             
@@ -490,14 +613,6 @@ class ExcelImportService:
                     "total_units_imported": 0,
                     "validation_errors": [f"Missing required fields: {missing}"]
                 }
-            
-            logger.info("=" * 60)
-            logger.info("📋 MAPPED COLUMNS:")
-            for field, col in field_to_column.items():
-                logger.info(f"  {field} <- '{col}'")
-            if unmapped:
-                logger.warning(f"⚠️ Unmapped columns: {unmapped[:10]}")
-            logger.info("=" * 60)
             
             # ============================================================
             # STEP 4: Process Rows
