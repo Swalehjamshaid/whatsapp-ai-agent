@@ -171,6 +171,3 @@ accelerate>=0.27.0
 # Safetensors (Safe model loading)
 safetensors>=0.4.0
 
-pyarrow>=15.0.0
-xlsx2csv>=0.8.0
-calamine>=0.2.0
