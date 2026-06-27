@@ -1,7 +1,8 @@
 # =====================================================================================================
 # FILE: app/services/excel_import_service.py
-# VERSION: v8.0 - 1 MILLION ROW OPTIMIZED
+# VERSION: v8.1 - 1 MILLION ROW OPTIMIZED + FIXED
 # PURPOSE: High-performance Excel import for 1M+ rows with memory optimization
+# FIXES: Added VerificationError, fixed imports, cleaned syntax
 # =====================================================================================================
 
 import pandas as pd
@@ -27,13 +28,13 @@ logger = logging.getLogger(__name__)
 # CONFIGURATION
 # =====================================================================================================
 
-BATCH_SIZE = 5000  # Increased for 1M rows
-COMMIT_BATCH_SIZE = 10000  # Commit every 10K rows
+BATCH_SIZE = 5000
+COMMIT_BATCH_SIZE = 10000
 HEADER_SCAN_ROWS = 20
 STRICT_MODE = True
-CHUNK_SIZE = 50000  # Process 50K rows at a time
-MAX_WORKERS = 4  # Parallel processing threads
-MEMORY_THRESHOLD = 0.8  # 80% memory usage threshold
+CHUNK_SIZE = 50000
+MAX_WORKERS = 4
+MEMORY_THRESHOLD = 0.8
 
 # =====================================================================================================
 # EXCEPTIONS
@@ -53,6 +54,14 @@ class ValidationError(ImportError):
 
 class MemoryError(ImportError):
     """Memory limit exceeded"""
+    pass
+
+# =====================================================================================================
+# ADDED: VerificationError for upload.py compatibility
+# =====================================================================================================
+
+class VerificationError(Exception):
+    """Raised when verification fails - kept for upload.py compatibility"""
     pass
 
 # =====================================================================================================
@@ -600,7 +609,7 @@ class BatchProcessor:
         self.batch_size = 0
         self.commit_counter = 0
         
-    def process_row(self, row: pd.Series, row_number: int) -> bool:
+    def process_row(self, row: pd.Series, row_number: int, skip_dups: bool = False, update_existing_rows: bool = False) -> bool:
         """Process a single row and add to batch"""
         try:
             # Get DN
@@ -665,13 +674,13 @@ class BatchProcessor:
             
             # Check existing record
             existing = None
-            if skip_duplicates or update_existing:
+            if skip_dups or update_existing_rows:
                 existing = self.db.query(DeliveryReport).filter_by(
                     dn_no=dn_no,
                     material_no=material_no
                 ).first()
             
-            if existing and update_existing:
+            if existing and update_existing_rows:
                 # Update
                 existing.dn_work = dn_work
                 existing.order_type = order_type
@@ -702,7 +711,7 @@ class BatchProcessor:
                 existing.updated_at = datetime.utcnow()
                 self.updated_count += 1
                 
-            elif existing and skip_duplicates:
+            elif existing and skip_dups:
                 self.skipped_count += 1
                 
             else:
@@ -797,10 +806,6 @@ class BatchProcessor:
 # EXCEL IMPORT SERVICE
 # =====================================================================================================
 
-# Global flags for skip/update
-skip_duplicates = False
-update_existing = False
-
 class ExcelImportService:
     """High-performance Excel import service for 1M+ rows"""
     
@@ -814,15 +819,11 @@ class ExcelImportService:
         update_existing_rows: bool = False
     ) -> Dict[str, Any]:
         
-        global skip_duplicates, update_existing
-        skip_duplicates = skip_dups
-        update_existing = update_existing_rows
-        
         start_time = time.time()
         memory_monitor = MemoryMonitor()
         
         logger.info("=" * 60)
-        logger.info("📊 EXCEL IMPORT v8.0 - 1 MILLION ROW OPTIMIZED")
+        logger.info("📊 EXCEL IMPORT v8.1 - 1 MILLION ROW OPTIMIZED")
         logger.info("=" * 60)
         logger.info(f"📁 File: {file_path}")
         logger.info(f"📋 Source: {source_filename}")
@@ -922,7 +923,7 @@ class ExcelImportService:
                 # Process each row in chunk
                 for idx, row in chunk.iterrows():
                     row_number = idx + 2 + header_row
-                    processor.process_row(row, row_number)
+                    processor.process_row(row, row_number, skip_dups, update_existing_rows)
                 
                 # Check memory
                 if memory_monitor.check():
@@ -1002,6 +1003,7 @@ class ExcelImportService:
 
 __all__ = [
     'ExcelImportService',
+    'VerificationError',  # ✅ ADDED for upload.py compatibility
     'normalize_header',
     'parse_amount',
     'parse_quantity',
