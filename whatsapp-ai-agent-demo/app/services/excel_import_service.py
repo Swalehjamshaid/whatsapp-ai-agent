@@ -1,5 +1,5 @@
 # ==========================================================
-# FILE: app/services/excel_import_service.py (DEBUG VERSION)
+# FILE: app/services/excel_import_service.py (FIXED - FINAL VERSION)
 # ==========================================================
 
 import pandas as pd
@@ -61,6 +61,7 @@ def parse_date(value: Any) -> Optional[datetime]:
         value = value.strip()
         if not value:
             return None
+        # Try DD.MM.YYYY format (your Excel format)
         try:
             return datetime.strptime(value, "%d.%m.%Y")
         except ValueError:
@@ -87,7 +88,7 @@ def parse_string(value: Any) -> Optional[str]:
     return str(value)
 
 # ==========================================================
-# EXCEL IMPORT SERVICE
+# EXCEL IMPORT SERVICE - FINAL FIXED VERSION
 # ==========================================================
 
 class ExcelImportService:
@@ -123,52 +124,39 @@ class ExcelImportService:
             # =============================================
             actual_columns = list(df.columns)
             logger.info("=" * 80)
-            logger.info("📋 ACTUAL EXCEL COLUMN NAMES (RAW):")
+            logger.info("📋 ACTUAL EXCEL COLUMN NAMES:")
             for i, col in enumerate(actual_columns, 1):
-                logger.info(f"   {i}. '{col}' (type: {type(col).__name__})")
+                logger.info(f"   {i}. '{col}'")
             logger.info("=" * 80)
             
             # =============================================
-            # STEP 2: SHOW COLUMN NAMES WITH THEIR INDEXES
-            # =============================================
-            logger.info("📋 COLUMN INDEX MAPPING:")
-            for i, col in enumerate(actual_columns):
-                logger.info(f"   Index {i}: '{col}'")
-            logger.info("=" * 80)
-            
-            # =============================================
-            # STEP 3: SHOW FIRST ROW DATA
-            # =============================================
-            if total_rows > 0:
-                first_row = df.iloc[0]
-                logger.info("📋 FIRST ROW DATA:")
-                for col in actual_columns:
-                    value = first_row.get(col)
-                    logger.info(f"   '{col}' = '{value}' (type: {type(value).__name__})")
-                logger.info("=" * 80)
-            
-            # =============================================
-            # STEP 4: FIND DN COLUMN
+            # STEP 2: FIND DN COLUMN - ANY COLUMN WITH 'DN' IN NAME
             # =============================================
             logger.info("🔍 Searching for DN column...")
             
-            # Try exact match
             dn_column = None
+            
+            # First try exact matches
             for col in actual_columns:
                 col_str = str(col).strip()
-                if col_str in ['DN NO', 'DN No', 'Dn No', 'dn no', 'DN', 'Dn', 'dn']:
+                if col_str in ['DN NO', 'DN No', 'Dn No', 'dn no', 'DN', 'Dn', 'dn', 'DN_NO']:
                     dn_column = col
-                    logger.info(f"   ✅ Found DN column: '{dn_column}'")
+                    logger.info(f"   ✅ Found DN column (exact match): '{dn_column}'")
                     break
             
-            # Try case insensitive
+            # If not found, find ANY column with 'DN' in it
             if not dn_column:
                 for col in actual_columns:
-                    col_str = str(col).strip().upper()
+                    col_str = str(col).upper().strip()
                     if 'DN' in col_str:
                         dn_column = col
                         logger.info(f"   ✅ Found DN column (contains 'DN'): '{dn_column}'")
                         break
+            
+            # If still not found, use the first column (assuming it's DN)
+            if not dn_column and len(actual_columns) > 0:
+                dn_column = actual_columns[0]
+                logger.info(f"   ⚠️ Using first column as DN: '{dn_column}'")
             
             if not dn_column:
                 logger.error("❌ No DN column found in Excel!")
@@ -180,7 +168,7 @@ class ExcelImportService:
                 }
             
             # =============================================
-            # STEP 5: CHECK DN VALUES
+            # STEP 3: CHECK DN VALUES
             # =============================================
             logger.info(f"🔍 Checking DN values in column: '{dn_column}'")
             dn_values = df[dn_column].head(10).tolist()
@@ -199,7 +187,59 @@ class ExcelImportService:
                 }
             
             # =============================================
-            # STEP 6: PROCESS ROWS
+            # STEP 4: FIND OTHER COLUMNS (ANY MATCH)
+            # =============================================
+            def find_column(patterns):
+                for col in actual_columns:
+                    col_str = str(col).strip()
+                    col_upper = col_str.upper()
+                    for pattern in patterns:
+                        pattern_upper = pattern.upper()
+                        if col_upper == pattern_upper:
+                            return col
+                        if pattern_upper in col_upper:
+                            return col
+                return None
+            
+            amount_col = find_column(['DN amount', 'DN Amount', 'dn amount', 'Amount', 'amount'])
+            qty_col = find_column(['DN Qty', 'DN QTY', 'dn qty', 'Qty', 'qty', 'Quantity', 'quantity'])
+            order_type_col = find_column(['Order type', 'Order Type', 'order type', 'Order', 'order'])
+            division_col = find_column(['Division', 'division'])
+            material_no_col = find_column(['Material NO', 'Material No', 'material no', 'Material', 'material'])
+            customer_model_col = find_column(['Customer Model', 'Customer model', 'customer model', 'Model', 'model'])
+            sales_office_col = find_column(['sales office', 'Sales Office', 'sales_office', 'Office', 'office'])
+            customer_name_col = find_column(['Sold-to-party Name', 'Sold-to-party name', 'Customer Name', 'customer name', 'Customer', 'customer'])
+            ship_to_city_col = find_column(['Ship-to City', 'Ship-to city', 'City', 'city'])
+            storage_col = find_column(['storage', 'Storage', 'Storage Location', 'storage_location'])
+            warehouse_col = find_column(['Warehouse', 'warehouse'])
+            sales_manager_col = find_column(['Sales Manager', 'Sales manager', 'sales manager', 'Manager', 'manager'])
+            dn_work_col = find_column(['DN Work', 'DN work', 'dn work', 'Work', 'work'])
+            dn_create_date_col = find_column(['DN Create date', 'DN Create Date', 'dn create date', 'Create Date', 'create date'])
+            good_issue_date_col = find_column(['Good issue date', 'Good Issue Date', 'good issue date', 'PGI Date', 'pgi date'])
+            pod_date_col = find_column(['POD Date', 'POD date', 'pod date', 'POD', 'pod'])
+            
+            logger.info("=" * 80)
+            logger.info("📋 COLUMN MAPPING FOUND:")
+            logger.info(f"   DN: '{dn_column}'")
+            logger.info(f"   Amount: '{amount_col}'" if amount_col else "   Amount: NOT FOUND")
+            logger.info(f"   Qty: '{qty_col}'" if qty_col else "   Qty: NOT FOUND")
+            logger.info(f"   Order Type: '{order_type_col}'" if order_type_col else "   Order Type: NOT FOUND")
+            logger.info(f"   Division: '{division_col}'" if division_col else "   Division: NOT FOUND")
+            logger.info(f"   Material: '{material_no_col}'" if material_no_col else "   Material: NOT FOUND")
+            logger.info(f"   Model: '{customer_model_col}'" if customer_model_col else "   Model: NOT FOUND")
+            logger.info(f"   Sales Office: '{sales_office_col}'" if sales_office_col else "   Sales Office: NOT FOUND")
+            logger.info(f"   Customer: '{customer_name_col}'" if customer_name_col else "   Customer: NOT FOUND")
+            logger.info(f"   City: '{ship_to_city_col}'" if ship_to_city_col else "   City: NOT FOUND")
+            logger.info(f"   Storage: '{storage_col}'" if storage_col else "   Storage: NOT FOUND")
+            logger.info(f"   Warehouse: '{warehouse_col}'" if warehouse_col else "   Warehouse: NOT FOUND")
+            logger.info(f"   Sales Manager: '{sales_manager_col}'" if sales_manager_col else "   Sales Manager: NOT FOUND")
+            logger.info(f"   DN Create Date: '{dn_create_date_col}'" if dn_create_date_col else "   DN Create Date: NOT FOUND")
+            logger.info(f"   Good Issue Date: '{good_issue_date_col}'" if good_issue_date_col else "   Good Issue Date: NOT FOUND")
+            logger.info(f"   POD Date: '{pod_date_col}'" if pod_date_col else "   POD Date: NOT FOUND")
+            logger.info("=" * 80)
+            
+            # =============================================
+            # STEP 5: PROCESS ROWS
             # =============================================
             inserted_count = 0
             updated_count = 0
@@ -215,35 +255,34 @@ class ExcelImportService:
                 try:
                     # Get DN value
                     dn_no = parse_string(row.get(dn_column))
-                    logger.info(f"   Row {index + 1}: DN = '{dn_no}'")
                     
                     if not dn_no:
-                        logger.warning(f"   ⚠️ Row {index + 1}: Missing DN NO")
+                        logger.warning(f"⚠️ Row {index + 1}: Missing DN NO")
                         failed_count += 1
                         validation_errors.append(f"Row {index + 1}: Missing DN NO")
                         continue
                     
-                    # Get other columns by exact match
-                    # Since we know the column names from your Excel, use exact names
-                    dn_amount = parse_amount(row.get('DN amount'))
-                    dn_qty = parse_qty(row.get('DN Qty'))
-                    dn_work = parse_string(row.get('DN Work'))
-                    order_type = parse_string(row.get('Order type'))
-                    division = parse_string(row.get('Division'))
-                    material_no = parse_string(row.get('Material NO'))
-                    customer_model = parse_string(row.get('Customer Model'))
-                    sales_office = parse_string(row.get('sales office'))
-                    customer_name = parse_string(row.get('Sold-to-party Name'))
-                    ship_to_city = parse_string(row.get('Ship-to City'))
-                    storage_location = parse_string(row.get('storage'))
-                    warehouse = parse_string(row.get('Warehouse'))
-                    sales_manager = parse_string(row.get('Sales Manager'))
+                    # Get other values
+                    dn_amount = parse_amount(row.get(amount_col)) if amount_col else 0
+                    dn_qty = parse_qty(row.get(qty_col)) if qty_col else 0
+                    order_type = parse_string(row.get(order_type_col)) if order_type_col else None
+                    division = parse_string(row.get(division_col)) if division_col else None
+                    material_no = parse_string(row.get(material_no_col)) if material_no_col else None
+                    customer_model = parse_string(row.get(customer_model_col)) if customer_model_col else None
+                    sales_office = parse_string(row.get(sales_office_col)) if sales_office_col else None
+                    customer_name = parse_string(row.get(customer_name_col)) if customer_name_col else None
+                    ship_to_city = parse_string(row.get(ship_to_city_col)) if ship_to_city_col else None
+                    storage_location = parse_string(row.get(storage_col)) if storage_col else None
+                    warehouse = parse_string(row.get(warehouse_col)) if warehouse_col else None
+                    sales_manager = parse_string(row.get(sales_manager_col)) if sales_manager_col else None
+                    dn_work = parse_string(row.get(dn_work_col)) if dn_work_col else None
                     
-                    dn_create_date = parse_date(row.get('DN Create date'))
-                    good_issue_date = parse_date(row.get('Good issue date'))
-                    pod_date = parse_date(row.get('POD Date'))
+                    dn_create_date = parse_date(row.get(dn_create_date_col)) if dn_create_date_col else None
+                    good_issue_date = parse_date(row.get(good_issue_date_col)) if good_issue_date_col else None
+                    pod_date = parse_date(row.get(pod_date_col)) if pod_date_col else None
                     
-                    logger.info(f"   ✅ Row {index + 1}: DN={dn_no}, Amount={dn_amount}, Qty={dn_qty}, Model={customer_model}")
+                    if index < 3:
+                        logger.info(f"📝 Row {index + 1}: DN={dn_no}, Model={customer_model}, Amount={dn_amount}, Qty={dn_qty}")
                     
                     # INSERT new record
                     record = DeliveryReport(
@@ -275,7 +314,7 @@ class ExcelImportService:
                     
                     db.add(record)
                     inserted_count += 1
-                    logger.info(f"   ✅ Inserted row {index + 1}: DN={dn_no}")
+                    logger.info(f"✅ Inserted row {index + 1}: DN={dn_no}")
                     
                     if (index + 1) % 100 == 0:
                         db.commit()
