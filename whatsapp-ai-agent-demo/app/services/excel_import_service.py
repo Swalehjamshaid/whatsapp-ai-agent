@@ -1,7 +1,7 @@
 # =====================================================================================================
 # FILE: app/services/excel_import_service.py
-# VERSION: v7.0 - SIMPLE PRODUCTION IMPORTER
-# PURPOSE: Clean, simple Excel import with smart header detection
+# VERSION: v7.1 - IMPROVED WITH WORKSHEET DETECTION
+# PURPOSE: Enterprise Excel import with automatic worksheet and header detection
 # COMPATIBLE WITH: upload.py v4.2
 # =====================================================================================================
 
@@ -11,7 +11,7 @@ import uuid
 import re
 from datetime import datetime, date
 from decimal import Decimal
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from sqlalchemy.orm import Session
 import time
 import traceback
@@ -38,6 +38,10 @@ class ImportError(Exception):
 
 class HeaderNotFoundError(ImportError):
     """Header row could not be detected"""
+    pass
+
+class WorksheetNotFoundError(ImportError):
+    """No valid worksheet found"""
     pass
 
 class ValidationError(ImportError):
@@ -73,7 +77,7 @@ def normalize_header(header: Any) -> str:
     normalized = str(header).strip()
     
     # Replace separators with spaces
-    for sep in ['_', '-', '.', '/', '\\', '#']:
+    for sep in ['_', '-', '.', '/', '\\', '#', '·', '•']:
         normalized = normalized.replace(sep, ' ')
     
     # Remove extra spaces and lowercase
@@ -82,18 +86,118 @@ def normalize_header(header: Any) -> str:
     return normalized
 
 # =====================================================================================================
-# HEADER DETECTION
+# WORKSHEET DETECTION
 # =====================================================================================================
 
-def detect_header_row(df: pd.DataFrame, max_rows: int = HEADER_SCAN_ROWS) -> int:
+def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
     """
-    Detect which row contains column headers.
-    Returns row index (0-based).
+    Find the worksheet containing delivery data.
+    
+    Returns:
+        (sheet_name, header_row, sheet_info)
+    """
+    logger.info("=" * 60)
+    logger.info("🔍 WORKSHEET DETECTION")
+    logger.info("=" * 60)
+    
+    # Read all sheet names
+    xl = pd.ExcelFile(file_path)
+    sheet_names = xl.sheet_names
+    logger.info(f"📋 Found {len(sheet_names)} sheets: {sheet_names}")
+    
+    # Keywords that indicate a delivery data sheet
+    delivery_keywords = [
+        'dn no', 'dn', 'delivery note', 'delivery number',
+        'material no', 'material', 'sku',
+        'order type', 'order',
+        'customer model', 'model',
+        'sold to party', 'customer name',
+        'warehouse', 'wh',
+        'ship to city', 'city',
+        'amount', 'qty', 'quantity',
+        'pgi', 'pod', 'delivery'
+    ]
+    
+    best_sheet = None
+    best_score = 0
+    best_header_row = 0
+    best_info = {}
+    
+    for sheet_name in sheet_names:
+        logger.info(f"  📄 Checking sheet: '{sheet_name}'")
+        
+        try:
+            # Read first few rows to detect headers
+            df_sample = pd.read_excel(file_path, sheet_name=sheet_name, header=None, nrows=HEADER_SCAN_ROWS + 5)
+            
+            if len(df_sample) == 0:
+                logger.info(f"    ⚠️ Sheet is empty, skipping")
+                continue
+            
+            # Detect header row in this sheet
+            header_row, score, matched_headers = detect_header_row_with_details(df_sample)
+            
+            logger.info(f"    📊 Header score: {score}")
+            logger.info(f"    📋 Matched headers: {matched_headers[:5] if matched_headers else 'None'}")
+            
+            # Check if this sheet has delivery data
+            has_dn = any('dn' in h.lower() for h in matched_headers)
+            has_material = any('material' in h.lower() or 'sku' in h.lower() for h in matched_headers)
+            
+            if has_dn and has_material:
+                logger.info(f"    ✅ Found delivery data with DN and Material")
+                # Boost score for sheets with both DN and Material
+                score += 10
+            
+            # Check for summary indicators (reduce score)
+            summary_indicators = ['summary', 'sum s', 'total', 'grand total', 'report']
+            if any(ind in sheet_name.lower() for ind in summary_indicators):
+                logger.info(f"    ⚠️ Sheet appears to be a summary, reducing score")
+                score -= 5
+            
+            if score > best_score:
+                best_score = score
+                best_sheet = sheet_name
+                best_header_row = header_row
+                best_info = {
+                    'score': score,
+                    'matched_headers': matched_headers,
+                    'rows': len(df_sample)
+                }
+                logger.info(f"    ✅ New best sheet: '{sheet_name}' (score: {score})")
+                
+        except Exception as e:
+            logger.warning(f"    ❌ Error reading sheet '{sheet_name}': {e}")
+            continue
+    
+    if best_sheet is None or best_score < 3:
+        logger.error("❌ No valid worksheet found")
+        raise WorksheetNotFoundError(f"No worksheet with delivery data found. Available sheets: {sheet_names}")
+    
+    logger.info("=" * 60)
+    logger.info(f"✅ SELECTED SHEET: '{best_sheet}'")
+    logger.info(f"   Score: {best_score}")
+    logger.info(f"   Header Row: {best_header_row}")
+    logger.info(f"   Matched Headers: {best_info.get('matched_headers', [])}")
+    logger.info("=" * 60)
+    
+    return best_sheet, best_header_row, best_info
+
+# =====================================================================================================
+# HEADER DETECTION WITH DETAILS
+# =====================================================================================================
+
+def detect_header_row_with_details(df: pd.DataFrame, max_rows: int = HEADER_SCAN_ROWS) -> Tuple[int, int, List[str]]:
+    """
+    Detect which row contains column headers and return details.
+    
+    Returns:
+        (header_row_index, score, matched_headers)
     """
     if len(df) == 0:
-        raise HeaderNotFoundError("Excel file is empty")
+        return 0, 0, []
     
-    # Keywords that indicate a header row
+    # Keywords that indicate a header row with weights
     header_keywords = {
         'dn no': 3,
         'material no': 3,
@@ -104,11 +208,24 @@ def detect_header_row(df: pd.DataFrame, max_rows: int = HEADER_SCAN_ROWS) -> int
         'warehouse': 2,
         'city': 2,
         'amount': 2,
-        'qty': 2
+        'qty': 2,
+        'model': 1,
+        'storage': 1,
+        'date': 1,
+        'sales': 1,
+        'manager': 1,
+        'work': 1,
+        'division': 1,
+        'remarks': 1,
+        'remark': 1,
+        'pgi': 1,
+        'pod': 1,
+        'delivery': 1
     }
     
     best_score = 0
     best_row = 0
+    best_matched = []
     
     rows_to_check = min(max_rows, len(df))
     
@@ -116,6 +233,7 @@ def detect_header_row(df: pd.DataFrame, max_rows: int = HEADER_SCAN_ROWS) -> int
         score = 0
         row_data = df.iloc[row_idx]
         matched_keywords = set()
+        matched_headers = []
         
         for value in row_data:
             if value is None or not isinstance(value, str):
@@ -128,13 +246,15 @@ def detect_header_row(df: pd.DataFrame, max_rows: int = HEADER_SCAN_ROWS) -> int
             for keyword, weight in header_keywords.items():
                 if keyword in normalized and keyword not in matched_keywords:
                     matched_keywords.add(keyword)
+                    matched_headers.append(value)
                     score += weight
         
         if score > best_score:
             best_score = score
             best_row = row_idx
+            best_matched = matched_headers
     
-    # If score is too low, check for clear header indicators
+    # If score is too low, check for explicit matches
     if best_score < 3:
         for row_idx in range(rows_to_check):
             row_data = df.iloc[row_idx]
@@ -142,126 +262,196 @@ def detect_header_row(df: pd.DataFrame, max_rows: int = HEADER_SCAN_ROWS) -> int
                 if value and isinstance(value, str):
                     normalized = normalize_header(value)
                     if normalized in ['dn no', 'material no', 'dn', 'material']:
-                        return row_idx
+                        return row_idx, 5, [str(value)]
     
-    logger.info(f"Detected header at row {best_row} (score: {best_score})")
-    return best_row
+    return best_row, best_score, best_matched
 
 # =====================================================================================================
-# COLUMN MAPPER
+# COLUMN MAPPER - EXTENDED
 # =====================================================================================================
 
 class ColumnMapper:
     """Map normalized Excel headers to database fields"""
     
     HEADER_MAP = {
-        # DN
+        # DN - Extended
         'dn no': 'dn_no',
         'dn': 'dn_no',
         'delivery note': 'dn_no',
+        'delivery note no': 'dn_no',
+        'delivery note number': 'dn_no',
         'delivery number': 'dn_no',
+        'dn number': 'dn_no',
+        'd n no': 'dn_no',
+        'd n': 'dn_no',
+        'delivery note #': 'dn_no',
         
-        # Material
+        # Material - Extended
         'material no': 'material_no',
         'material': 'material_no',
         'material number': 'material_no',
+        'material code': 'material_no',
+        'material#': 'material_no',
         'sku': 'material_no',
+        'product no': 'material_no',
+        'product number': 'material_no',
+        'item no': 'material_no',
         
         # Order Type
         'order type': 'order_type',
         'order': 'order_type',
+        'ordertype': 'order_type',
+        'type': 'order_type',
+        'order no': 'order_type',
         
         # DN Work
         'dn work': 'dn_work',
         'work': 'dn_work',
+        'work order': 'dn_work',
+        'work no': 'dn_work',
         
         # Division
         'division': 'division',
         'div': 'division',
         
-        # Customer Model
+        # Customer Model - Extended
         'customer model': 'customer_model',
         'model': 'customer_model',
+        'model name': 'customer_model',
+        'product model': 'customer_model',
+        'model no': 'customer_model',
         
-        # Customer Name
+        # Customer Name - Extended
         'sold to party name': 'customer_name',
         'sold-to-party name': 'customer_name',
+        'sold to party': 'customer_name',
+        'sold-to-party': 'customer_name',
         'customer name': 'customer_name',
         'customer': 'customer_name',
+        'dealer name': 'customer_name',
+        'party name': 'customer_name',
         
-        # Sales Office
+        # Sales Office - Extended
         'sales office': 'sales_office',
+        'salesoffice': 'sales_office',
         'office': 'sales_office',
         'sales': 'sales_office',
+        'sales region': 'sales_office',
         
         # Sales Manager
         'sales manager': 'sales_manager',
+        'salesmanager': 'sales_manager',
         'manager': 'sales_manager',
         
-        # Ship-to City
+        # Ship-to City - Extended
         'ship to city': 'ship_to_city',
         'ship-to city': 'ship_to_city',
+        'ship-to-city': 'ship_to_city',
+        'shipcity': 'ship_to_city',
         'city': 'ship_to_city',
+        'destination city': 'ship_to_city',
+        'ship to': 'ship_to_city',
         
-        # Storage
+        # Storage - Extended
         'storage': 'storage_location',
         'storage location': 'storage_location',
+        'storagelocation': 'storage_location',
+        'bin': 'storage_location',
         
-        # Warehouse
+        # Warehouse - Extended
         'warehouse': 'warehouse',
         'wh': 'warehouse',
+        'ware house': 'warehouse',
+        'plant': 'warehouse',
+        'warehouse name': 'warehouse',
         
         # Warehouse Code
         'warehouse code': 'warehouse_code',
+        'warehousecode': 'warehouse_code',
+        'wh code': 'warehouse_code',
+        'plant code': 'warehouse_code',
         
         # Delivery Location
         'delivery location': 'delivery_location',
+        'deliverylocation': 'delivery_location',
         'location': 'delivery_location',
+        'delivery address': 'delivery_location',
         
-        # DN Quantity
+        # DN Quantity - Extended
         'dn qty': 'dn_qty',
+        'dn quantity': 'dn_qty',
         'qty': 'dn_qty',
         'quantity': 'dn_qty',
+        'dnqty': 'dn_qty',
+        'units': 'dn_qty',
         
-        # DN Amount
+        # DN Amount - Extended
         'dn amount': 'dn_amount',
+        'dn amount ': 'dn_amount',
         'amount': 'dn_amount',
         'value': 'dn_amount',
+        'dnamount': 'dn_amount',
+        'net amount': 'dn_amount',
+        'total': 'dn_amount',
         
-        # DN Create Date
+        # DN Create Date - Extended
         'dn create date': 'dn_create_date',
+        'dn created date': 'dn_create_date',
         'create date': 'dn_create_date',
         'created date': 'dn_create_date',
+        'dn created': 'dn_create_date',
+        'date created': 'dn_create_date',
+        'creation date': 'dn_create_date',
+        'order date': 'dn_create_date',
         
-        # Good Issue Date
+        # Good Issue Date - Extended
         'good issue date': 'good_issue_date',
+        'good issue': 'good_issue_date',
         'pgi date': 'good_issue_date',
+        'pgi': 'good_issue_date',
+        'goods issue': 'good_issue_date',
         'dispatch date': 'good_issue_date',
+        'shipped date': 'good_issue_date',
         
-        # POD Date
+        # POD Date - Extended
         'pod date': 'pod_date',
         'pod': 'pod_date',
         'proof of delivery': 'pod_date',
+        'delivery date': 'pod_date',
+        'received date': 'pod_date',
+        'confirmation date': 'pod_date',
         
-        # Codes
+        # Codes - Extended
         'customer code': 'customer_code',
+        'customer code no': 'customer_code',
+        'cust code': 'customer_code',
+        'account code': 'customer_code',
         'dealer code': 'dealer_code',
+        'dealer code no': 'dealer_code',
+        'dealer no': 'dealer_code',
+        'distributor code': 'dealer_code',
         
-        # Remarks
+        # Remarks - Extended
         'remarks': 'remarks',
         'remark': 'remarks',
+        'note': 'remarks',
         'notes': 'remarks',
-        'comments': 'remarks'
+        'comments': 'remarks',
+        'comment': 'remarks'
     }
     
     REQUIRED_FIELDS = ['dn_no', 'material_no']
     
     @classmethod
-    def map_headers(cls, headers: List[str]) -> tuple:
+    def map_headers(cls, headers: List[str]) -> Tuple[Dict[str, str], Dict[str, str], List[str], List[str]]:
         """Map Excel headers to database fields"""
         field_to_column = {}
         column_to_field = {}
         unmapped = []
+        
+        logger.info("=" * 60)
+        logger.info("📋 COLUMN MAPPING")
+        logger.info("=" * 60)
         
         for header in headers:
             if header is None:
@@ -282,6 +472,10 @@ class ColumnMapper:
         
         if unmapped:
             logger.warning(f"  Unmapped columns: {unmapped[:10]}")
+        if missing:
+            logger.error(f"  Missing required fields: {missing}")
+        
+        logger.info("=" * 60)
         
         return field_to_column, column_to_field, unmapped, missing
 
@@ -405,7 +599,7 @@ def parse_date(value: Any) -> Optional[date]:
         if not value:
             return None
         
-        formats = ["%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y"]
+        formats = ["%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%m-%d-%Y"]
         
         for fmt in formats:
             try:
@@ -430,11 +624,11 @@ def normalize_dn(dn_no: str) -> str:
     return re.sub(r'[^0-9]', '', dn_no.strip())
 
 # =====================================================================================================
-# EXCEL IMPORT SERVICE
+# EXCEL IMPORT SERVICE - IMPROVED
 # =====================================================================================================
 
 class ExcelImportService:
-    """Simple, fast Excel import service"""
+    """Enhanced Excel import with automatic worksheet detection"""
     
     @staticmethod
     def import_delivery_report_excel(
@@ -450,7 +644,7 @@ class ExcelImportService:
         validation_errors = []
         
         logger.info("=" * 60)
-        logger.info("📊 EXCEL IMPORT v7.0 - SIMPLE PRODUCTION")
+        logger.info("📊 EXCEL IMPORT v7.1 - WITH WORKSHEET DETECTION")
         logger.info("=" * 60)
         logger.info(f"📁 File: {file_path}")
         logger.info(f"📋 Source: {source_filename}")
@@ -462,22 +656,21 @@ class ExcelImportService:
         
         try:
             # ============================================================
-            # STEP 1: Detect Header Row
+            # STEP 1: Detect Worksheet
             # ============================================================
-            logger.info("🔍 Detecting header row...")
-            
-            df_raw = pd.read_excel(file_path, engine='openpyxl', header=None, nrows=HEADER_SCAN_ROWS + 5)
-            
-            if len(df_raw) == 0:
-                raise ImportError("Excel file is empty")
-            
-            header_row = detect_header_row(df_raw)
-            logger.info(f"✅ Using header row: {header_row}")
+            sheet_name, header_row, sheet_info = detect_worksheet(file_path)
             
             # ============================================================
-            # STEP 2: Read Excel with detected header
+            # STEP 2: Read Excel with detected sheet and header
             # ============================================================
-            df = pd.read_excel(file_path, engine='openpyxl', header=header_row)
+            logger.info(f"📖 Reading sheet '{sheet_name}' with header at row {header_row}")
+            
+            df = pd.read_excel(
+                file_path,
+                sheet_name=sheet_name,
+                header=header_row,
+                engine='openpyxl'
+            )
             
             df = df.dropna(how='all')
             df = df.dropna(axis=1, how='all')
@@ -489,10 +682,20 @@ class ExcelImportService:
             # STEP 3: Map Columns
             # ============================================================
             headers = [str(col).strip() for col in df.columns]
+            
+            logger.info("=" * 60)
+            logger.info("📋 HEADER DIAGNOSTICS")
+            logger.info("=" * 60)
+            logger.info(f"  Sheet: '{sheet_name}'")
+            logger.info(f"  Header Row: {header_row}")
+            logger.info(f"  Total Columns: {len(headers)}")
+            logger.info(f"  First 10 Headers: {headers[:10]}")
+            
             field_to_column, column_to_field, unmapped, missing = ColumnMapper.map_headers(headers)
             
             if missing:
                 logger.error(f"❌ Missing required fields: {missing}")
+                logger.error(f"   Available headers: {headers}")
                 return {
                     "success": False,
                     "error": f"Missing required columns: {missing}",
@@ -504,7 +707,10 @@ class ExcelImportService:
                     "failed_count": 0,
                     "total_revenue_imported": 0,
                     "total_units_imported": 0,
-                    "validation_errors": [f"Missing required fields: {missing}"]
+                    "validation_errors": [f"Missing required fields: {missing}"],
+                    "sheet_name": sheet_name,
+                    "header_row": header_row,
+                    "available_headers": headers[:20]
                 }
             
             # ============================================================
@@ -691,6 +897,7 @@ class ExcelImportService:
             logger.info("=" * 60)
             logger.info("✅ IMPORT COMPLETED")
             logger.info(f"  Duration: {duration:.2f}s")
+            logger.info(f"  Sheet: '{sheet_name}'")
             logger.info(f"  Header Row: {header_row}")
             logger.info(f"  Rows Read: {total_rows}")
             logger.info(f"  Inserted: {inserted_count}")
@@ -711,7 +918,27 @@ class ExcelImportService:
                 "failed_count": failed_count,
                 "total_revenue_imported": float(total_revenue),
                 "total_units_imported": total_units,
-                "validation_errors": validation_errors[:20]
+                "validation_errors": validation_errors[:20],
+                "sheet_name": sheet_name,
+                "header_row": header_row
+            }
+            
+        except WorksheetNotFoundError as e:
+            logger.error(f"❌ Worksheet detection failed: {e}")
+            db.rollback()
+            
+            return {
+                "success": False,
+                "error": str(e),
+                "batch_id": batch_id,
+                "total_rows": 0,
+                "inserted_count": 0,
+                "updated_count": 0,
+                "skipped_count": 0,
+                "failed_count": 0,
+                "total_revenue_imported": 0,
+                "total_units_imported": 0,
+                "validation_errors": [str(e)]
             }
             
         except Exception as e:
