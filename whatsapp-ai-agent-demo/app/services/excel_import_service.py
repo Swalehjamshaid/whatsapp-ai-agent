@@ -1,13 +1,11 @@
 # =====================================================================================================
 # FILE: app/services/excel_import_service.py
-# VERSION: v14.0 - ULTIMATE SPEED + SMART COLUMN MAPPING
-# PURPOSE: 1 MILLION ROWS IN < 5 SECONDS with intelligent column detection
+# VERSION: v14.1 - FULLY FIXED WITH FALLBACKS
+# PURPOSE: Ultra-fast Excel import with smart column mapping
 # COMPATIBLE WITH: upload.py v4.2
 # =====================================================================================================
 
 import pandas as pd
-import polars as pl
-import duckdb
 import logging
 import uuid
 import re
@@ -19,28 +17,59 @@ from sqlalchemy import text
 import time
 import traceback
 import gc
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Lock
-import psutil
 import os
-from rapidfuzz import fuzz, process  # ⚡ For fuzzy column matching
-import numpy as np
 
 from app.models import DeliveryReport
 
 logger = logging.getLogger(__name__)
 
 # =====================================================================================================
-# ULTIMATE SPEED CONFIGURATION
+# LIBRARY IMPORTS WITH FALLBACKS - FIXED
 # =====================================================================================================
 
-BULK_SIZE = 200000
+# Polars - Optional (10x faster Excel reading)
+try:
+    import polars as pl
+    HAS_POLARS = True
+    logger.info("✅ Polars available - Fast Excel reading enabled")
+except ImportError:
+    HAS_POLARS = False
+    logger.warning("⚠️ Polars not available - Using pandas for Excel reading")
+
+# RapidFuzz - Optional (smart column mapping)
+try:
+    from rapidfuzz import fuzz
+    HAS_RAPIDFUZZ = True
+    logger.info("✅ RapidFuzz available - Smart column mapping enabled")
+except ImportError:
+    HAS_RAPIDFUZZ = False
+    logger.warning("⚠️ RapidFuzz not available - Using exact column mapping")
+
+# Psutil - Optional (memory monitoring)
+try:
+    import psutil
+    HAS_PSUTIL = True
+    logger.info("✅ Psutil available - Memory monitoring enabled")
+except ImportError:
+    HAS_PSUTIL = False
+    logger.warning("⚠️ Psutil not available - Memory monitoring disabled")
+
+# NumPy - Optional (faster processing)
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    HAS_NUMPY = False
+
+# =====================================================================================================
+# CONFIGURATION
+# =====================================================================================================
+
+BULK_SIZE = 100000  # 100,000 rows per bulk insert
 HEADER_SCAN_ROWS = 25
 STRICT_MODE = True
-MAX_WORKERS = 8
-GC_INTERVAL = 3
-MEMORY_THRESHOLD = 0.85
-FUZZY_THRESHOLD = 85  # ⚡ Minimum similarity for fuzzy matching
+GC_INTERVAL = 5
+FUZZY_THRESHOLD = 85
 
 # =====================================================================================================
 # EXCEPTIONS
@@ -62,14 +91,14 @@ class VerificationError(Exception):
     pass
 
 # =====================================================================================================
-# HEADER NORMALIZATION - ULTRA FAST
+# HEADER NORMALIZATION - FAST
 # =====================================================================================================
 
 _separator_re = re.compile(r'[_\-./\\#·•:;|]')
 _whitespace_re = re.compile(r'\s+')
 
 def normalize_header(header: Any) -> str:
-    """Normalize Excel header - ULTRA FAST with smart cleaning"""
+    """Normalize Excel header for consistent matching"""
     if header is None:
         return ""
     
@@ -84,13 +113,12 @@ def normalize_header(header: Any) -> str:
     return normalized
 
 # =====================================================================================================
-# SMART COLUMN MAPPER WITH FUZZY MATCHING
+# SMART COLUMN MAPPER - FIXED
 # =====================================================================================================
 
 class SmartColumnMapper:
-    """Intelligent column mapping with fuzzy matching using rapidfuzz"""
+    """Intelligent column mapping with fuzzy matching"""
     
-    # Master dictionary of all possible column variations
     HEADER_MAP = {
         # Order Type
         'order type': 'order_type', 'order': 'order_type', 'ordertype': 'order_type',
@@ -222,20 +250,13 @@ class SmartColumnMapper:
         'rep': 'sales_manager', 'sales manager name': 'sales_manager',
     }
     
-    # Build a list of all normalized headers for fuzzy matching
     _normalized_keys = list(HEADER_MAP.keys())
     _field_names = list(set(HEADER_MAP.values()))
-    
     REQUIRED_FIELDS = ['dn_no', 'material_no']
     
     @classmethod
     def map_headers(cls, headers: List[str]) -> Tuple[Dict[str, str], Dict[str, str], List[str], List[str]]:
-        """
-        Smart column mapping with:
-        1. Exact match first (fastest)
-        2. Fuzzy match second (handles variations)
-        3. Report unmapped columns
-        """
+        """Map Excel headers with exact + fuzzy matching"""
         field_to_column = {}
         column_to_field = {}
         unmapped = []
@@ -244,7 +265,6 @@ class SmartColumnMapper:
         logger.info("=" * 60)
         logger.info("📋 SMART COLUMN MAPPING")
         logger.info("=" * 60)
-        logger.info("🔍 Using exact + fuzzy matching with rapidfuzz")
         
         # First pass: Exact matches
         for header in headers:
@@ -262,46 +282,33 @@ class SmartColumnMapper:
             else:
                 unmapped.append(header)
         
-        # Second pass: Fuzzy matches for unmapped headers
-        if unmapped:
+        # Second pass: Fuzzy matches (if available)
+        if unmapped and HAS_RAPIDFUZZ:
             logger.info("")
-            logger.info("🔍 Trying fuzzy matching for unmapped headers...")
+            logger.info("🔍 Trying fuzzy matching...")
             
             for header in unmapped[:]:
                 normalized = normalize_header(header)
-                
-                # Find best match among known headers
                 best_match = None
                 best_score = 0
                 
                 for known in cls._normalized_keys:
-                    score = fuzz.ratio(normalized, known)
-                    if score > best_score and score >= FUZZY_THRESHOLD:
-                        best_score = score
-                        best_match = known
+                    try:
+                        score = fuzz.ratio(normalized, known)
+                        if score > best_score and score >= FUZZY_THRESHOLD:
+                            best_score = score
+                            best_match = known
+                    except:
+                        continue
                 
                 if best_match:
                     field = cls.HEADER_MAP.get(best_match)
                     if field and field not in field_to_column:
                         field_to_column[field] = header
                         column_to_field[header] = field
-                        fuzzy_matches.append(f"{header} -> {field} (score: {best_score}%)")
+                        fuzzy_matches.append(f"{header} -> {field} ({best_score}%)")
                         unmapped.remove(header)
-                        logger.info(f"  ✅ FUZZY: '{header}' -> {field} (score: {best_score}%)")
-                else:
-                    # Try matching to field names directly
-                    for field in cls._field_names:
-                        score = fuzz.ratio(normalized, field.replace('_', ' '))
-                        if score > best_score and score >= FUZZY_THRESHOLD:
-                            best_score = score
-                            best_match = field
-                    
-                    if best_match and best_match not in field_to_column:
-                        field_to_column[best_match] = header
-                        column_to_field[header] = best_match
-                        fuzzy_matches.append(f"{header} -> {best_match} (score: {best_score}%)")
-                        unmapped.remove(header)
-                        logger.info(f"  ✅ FUZZY: '{header}' -> {best_match} (score: {best_score}%)")
+                        logger.info(f"  ✅ FUZZY: '{header}' -> {field} ({best_score}%)")
         
         # Check required fields
         missing = [f for f in cls.REQUIRED_FIELDS if f not in field_to_column]
@@ -317,37 +324,32 @@ class SmartColumnMapper:
         return field_to_column, column_to_field, unmapped, missing
 
 # =====================================================================================================
-# FAST EXCEL READING WITH POLARS
+# FAST EXCEL READING - FIXED WITH FALLBACKS
 # =====================================================================================================
 
-def read_excel_fast(file_path: str, sheet_name: str, header_row: int) -> pl.DataFrame:
-    """Read Excel using Polars for ULTRA FAST reading"""
-    try:
-        # Try polars with calamine engine (Rust-based, very fast)
-        df = pl.read_excel(
-            file_path,
-            sheet_name=sheet_name,
-            header_row=header_row,
-            engine='calamine'
-        )
-        logger.info("⚡ Using Polars with calamine engine")
-        return df
-    except Exception as e:
-        logger.info(f"⚡ Using Polars native reading")
+def read_excel_fast(file_path: str, sheet_name: str, header_row: int):
+    """Read Excel using Polars or fallback to pandas"""
+    
+    if HAS_POLARS:
         try:
+            # Try polars with calamine engine
             df = pl.read_excel(
                 file_path,
                 sheet_name=sheet_name,
-                header_row=header_row
+                header_row=header_row,
+                engine='calamine'
             )
-            return df
-        except:
-            logger.warning("⚠️ Falling back to pandas openpyxl")
-            df_pandas = pd.read_excel(file_path, sheet_name=sheet_name, header=header_row, engine='openpyxl')
-            return pl.from_pandas(df_pandas)
+            logger.info("⚡ Using Polars with calamine engine")
+            return df.to_pandas()
+        except Exception as e:
+            logger.warning(f"⚠️ Polars read failed: {e}, trying fallback...")
+    
+    # Fallback to pandas
+    logger.info("📖 Using pandas openpyxl")
+    return pd.read_excel(file_path, sheet_name=sheet_name, header=header_row, engine='openpyxl')
 
 # =====================================================================================================
-# WORKSHEET DETECTION
+# WORKSHEET DETECTION - FIXED
 # =====================================================================================================
 
 def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
@@ -356,10 +358,14 @@ def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
     logger.info("🔍 WORKSHEET DETECTION")
     logger.info("=" * 60)
     
-    # Use polars for fast sheet detection
+    # Get sheet names
     try:
-        df_meta = pl.read_excel(file_path, engine='calamine', sheet_name=None)
-        sheet_names = list(df_meta.keys())
+        if HAS_POLARS:
+            df_meta = pl.read_excel(file_path, sheet_name=None)
+            sheet_names = list(df_meta.keys())
+        else:
+            xl = pd.ExcelFile(file_path, engine='openpyxl')
+            sheet_names = xl.sheet_names
     except:
         xl = pd.ExcelFile(file_path, engine='openpyxl')
         sheet_names = xl.sheet_names
@@ -385,19 +391,19 @@ def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
         logger.info(f"  📄 Checking sheet: '{sheet_name}'")
         
         try:
-            df_sample = pl.read_excel(
+            # Read sample for header detection
+            df_sample = pd.read_excel(
                 file_path,
                 sheet_name=sheet_name,
-                header_row=None,
-                n_rows=HEADER_SCAN_ROWS + 5,
-                engine='calamine'
+                header=None,
+                nrows=HEADER_SCAN_ROWS + 5,
+                engine='openpyxl'
             )
             
             if len(df_sample) == 0:
                 continue
             
-            df_sample_pd = df_sample.to_pandas()
-            header_row, score, matched_headers = detect_header_row_with_details_pd(df_sample_pd)
+            header_row, score, matched_headers = detect_header_row(df_sample)
             
             has_dn = any('dn no' == normalize_header(h) for h in matched_headers)
             has_material = any('material no' == normalize_header(h) for h in matched_headers)
@@ -442,7 +448,7 @@ def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
 # HEADER DETECTION
 # =====================================================================================================
 
-def detect_header_row_with_details_pd(df: pd.DataFrame, max_rows: int = HEADER_SCAN_ROWS) -> Tuple[int, int, List[str]]:
+def detect_header_row(df: pd.DataFrame, max_rows: int = HEADER_SCAN_ROWS) -> Tuple[int, int, List[str]]:
     """Detect header row using pandas"""
     if len(df) == 0:
         return 0, 0, []
@@ -616,18 +622,17 @@ def normalize_dn(dn_no: str) -> str:
     return re.sub(r'[^0-9]', '', dn_no.strip())
 
 # =====================================================================================================
-# ULTRA FAST BATCH PROCESSOR
+# FAST BATCH PROCESSOR
 # =====================================================================================================
 
-class UltraFastBatchProcessor:
-    """ULTRA FAST batch processor with 200,000 row batches"""
+class FastBatchProcessor:
+    """Fast batch processor with bulk insert"""
     
     def __init__(self, db: Session, field_to_column: Dict, batch_id: str, source_filename: str):
         self.db = db
         self.field_to_column = field_to_column
         self.batch_id = batch_id
         self.source_filename = source_filename
-        self.lock = Lock()
         
         # Statistics
         self.inserted_count = 0
@@ -639,25 +644,23 @@ class UltraFastBatchProcessor:
         self.validation_errors = []
         self.processed_keys = set()
         
-        # Bulk insert buffer
+        # Bulk buffer
         self.bulk_buffer = []
         self.commit_counter = 0
         
         # Options
         self.skip_dups = False
         self.update_existing = False
-        
-        self._batch_lock = Lock()
     
     def process_row(self, row_data: Dict[str, Any], row_number: int) -> bool:
-        """Process a single row and add to bulk buffer"""
+        """Process a single row"""
         try:
             dn_no = row_data['dn_no']
             material_no = row_data['material_no']
             
             key = f"{dn_no}_{material_no}"
             if key in self.processed_keys:
-                self.validation_errors.append(f"Row {row_number}: Duplicate within file")
+                self.validation_errors.append(f"Row {row_number}: Duplicate")
                 self.failed_count += 1
                 return False
             self.processed_keys.add(key)
@@ -766,22 +769,21 @@ class UltraFastBatchProcessor:
         if not self.bulk_buffer:
             return
         
-        with self._batch_lock:
-            try:
-                self.db.bulk_insert_mappings(DeliveryReport, self.bulk_buffer)
-                self.db.commit()
+        try:
+            self.db.bulk_insert_mappings(DeliveryReport, self.bulk_buffer)
+            self.db.commit()
+            
+            self.commit_counter += 1
+            logger.info(f"⚡ Bulk committed batch {self.commit_counter} ({len(self.bulk_buffer):,} rows)")
+            self.bulk_buffer.clear()
+            
+            if self.commit_counter % GC_INTERVAL == 0:
+                gc.collect()
                 
-                self.commit_counter += 1
-                logger.info(f"⚡ Bulk committed batch {self.commit_counter} ({len(self.bulk_buffer):,} rows)")
-                self.bulk_buffer.clear()
-                
-                if self.commit_counter % GC_INTERVAL == 0:
-                    gc.collect()
-                    
-            except Exception as e:
-                logger.error(f"❌ Bulk commit failed: {e}")
-                self.db.rollback()
-                raise
+        except Exception as e:
+            logger.error(f"❌ Bulk commit failed: {e}")
+            self.db.rollback()
+            raise
     
     def finalize(self):
         self.flush_bulk()
@@ -796,11 +798,11 @@ class UltraFastBatchProcessor:
         }
 
 # =====================================================================================================
-# EXCEL IMPORT SERVICE - v14.0 ULTIMATE
+# EXCEL IMPORT SERVICE - v14.1 FIXED
 # =====================================================================================================
 
 class ExcelImportService:
-    """Ultimate Excel import with smart mapping + ultra-fast Polars engine"""
+    """Fast Excel import with smart mapping - FULLY FIXED"""
     
     @staticmethod
     def import_delivery_report_excel(
@@ -815,19 +817,20 @@ class ExcelImportService:
         start_time = time.time()
         validation_errors = []
         
-        try:
-            mem = psutil.virtual_memory()
-            logger.info(f"💾 Available Memory: {mem.available / (1024**3):.1f} GB")
-        except:
-            pass
+        # Memory monitoring if available
+        if HAS_PSUTIL:
+            try:
+                mem = psutil.virtual_memory()
+                logger.info(f"💾 Available Memory: {mem.available / (1024**3):.1f} GB")
+            except:
+                pass
         
         logger.info("=" * 60)
-        logger.info("⚡ EXCEL IMPORT v14.0 - ULTIMATE SPEED + SMART MAPPING")
+        logger.info("⚡ EXCEL IMPORT v14.1 - FULLY FIXED")
         logger.info("=" * 60)
         logger.info(f"📁 File: {file_path}")
         logger.info(f"📋 Source: {source_filename}")
         logger.info(f"⚡ Bulk Size: {BULK_SIZE:,} rows")
-        logger.info(f"⚡ Fuzzy Threshold: {FUZZY_THRESHOLD}%")
         
         if not batch_id:
             batch_id = f"BATCH_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -837,17 +840,18 @@ class ExcelImportService:
             # STEP 1: Detect Worksheet
             sheet_name, header_row, sheet_info = detect_worksheet(file_path)
             
-            # STEP 2: Read Excel with ULTRA FAST method
+            # STEP 2: Read Excel
             logger.info(f"📖 Reading sheet '{sheet_name}' with header at row {header_row}")
-            logger.info("⚡ Using Polars for 10x faster reading")
+            df = read_excel_fast(file_path, sheet_name, header_row)
             
-            df_pl = read_excel_fast(file_path, sheet_name, header_row)
-            df = df_pl.to_pandas()
+            # Clean data
+            df = df.dropna(how='all')
+            df = df.dropna(axis=1, how='all')
             
             total_rows = len(df)
             logger.info(f"📄 Read {total_rows:,} rows, {len(df.columns)} columns")
             
-            # STEP 3: Smart Column Mapping
+            # STEP 3: Map Columns
             headers = [str(col).strip() for col in df.columns]
             
             logger.info("=" * 60)
@@ -883,7 +887,7 @@ class ExcelImportService:
             logger.info("📝 PROCESSING ROWS (BULK INSERT)")
             logger.info("=" * 60)
             
-            processor = UltraFastBatchProcessor(db, field_to_column, batch_id, source_filename)
+            processor = FastBatchProcessor(db, field_to_column, batch_id, source_filename)
             processor.skip_dups = skip_dups
             processor.update_existing = update_existing_rows
             
@@ -940,7 +944,7 @@ class ExcelImportService:
                     processor.process_row(row_data, row_number)
                     processed_count += 1
                     
-                    if processed_count % 50000 == 0:
+                    if processed_count % 25000 == 0:
                         logger.info(f"📊 Processed {processed_count:,} rows...")
                     
                 except Exception as e:
@@ -955,7 +959,7 @@ class ExcelImportService:
             rows_per_second = total_rows / duration if duration > 0 else 0
             
             logger.info("=" * 60)
-            logger.info("✅ IMPORT COMPLETED (ULTIMATE)")
+            logger.info("✅ IMPORT COMPLETED")
             logger.info("=" * 60)
             logger.info(f"  Duration: {duration:.2f}s")
             logger.info(f"  Speed: {rows_per_second:,.0f} rows/sec")
@@ -990,8 +994,7 @@ class ExcelImportService:
                 "performance": {
                     "duration_seconds": round(duration, 2),
                     "rows_per_second": round(rows_per_second, 0),
-                    "bulk_size": BULK_SIZE,
-                    "engine": "Polars + RapidFuzz"
+                    "bulk_size": BULK_SIZE
                 }
             }
             
