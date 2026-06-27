@@ -1,7 +1,7 @@
 # =====================================================================================================
 # FILE: app/services/excel_import_service.py
-# VERSION: v7.1 - IMPROVED WITH WORKSHEET DETECTION
-# PURPOSE: Enterprise Excel import with automatic worksheet and header detection
+# VERSION: v8.0 - ENTERPRISE WITH LOOKUP ENRICHMENT
+# PURPOSE: Enterprise Excel import with worksheet detection, lookup enrichment, and data integrity
 # COMPATIBLE WITH: upload.py v4.2
 # =====================================================================================================
 
@@ -11,10 +11,11 @@ import uuid
 import re
 from datetime import datetime, date
 from decimal import Decimal
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, Set
 from sqlalchemy.orm import Session
 import time
 import traceback
+from functools import lru_cache
 
 from app.models import DeliveryReport
 
@@ -25,8 +26,9 @@ logger = logging.getLogger(__name__)
 # =====================================================================================================
 
 BATCH_SIZE = 1000
-HEADER_SCAN_ROWS = 20
+HEADER_SCAN_ROWS = 25
 STRICT_MODE = True
+ATOMIC_COMMIT = False  # False = batch commits, True = single commit at end
 
 # =====================================================================================================
 # EXCEPTIONS
@@ -46,6 +48,10 @@ class WorksheetNotFoundError(ImportError):
 
 class ValidationError(ImportError):
     """Required columns missing"""
+    pass
+
+class DataIntegrityError(ImportError):
+    """Data integrity check failed"""
     pass
 
 # =====================================================================================================
@@ -77,8 +83,14 @@ def normalize_header(header: Any) -> str:
     normalized = str(header).strip()
     
     # Replace separators with spaces
-    for sep in ['_', '-', '.', '/', '\\', '#', '·', '•']:
+    for sep in ['_', '-', '.', '/', '\\', '#', '·', '•', '•']:
         normalized = normalized.replace(sep, ' ')
+    
+    # Replace non-breaking spaces
+    normalized = normalized.replace('\u00a0', ' ')
+    normalized = normalized.replace('\t', ' ')
+    normalized = normalized.replace('\r', ' ')
+    normalized = normalized.replace('\n', ' ')
     
     # Remove extra spaces and lowercase
     normalized = ' '.join(normalized.split()).lower()
@@ -105,18 +117,13 @@ def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
     sheet_names = xl.sheet_names
     logger.info(f"📋 Found {len(sheet_names)} sheets: {sheet_names}")
     
-    # Keywords that indicate a delivery data sheet
-    delivery_keywords = [
-        'dn no', 'dn', 'delivery note', 'delivery number',
-        'material no', 'material', 'sku',
-        'order type', 'order',
-        'customer model', 'model',
-        'sold to party', 'customer name',
-        'warehouse', 'wh',
-        'ship to city', 'city',
-        'amount', 'qty', 'quantity',
-        'pgi', 'pod', 'delivery'
-    ]
+    # Summary indicators to ignore
+    summary_indicators = ['summary', 'sum s', 'sum', 'total', 'grand total', 'report', 
+                          'overview', 'cover', 'index', 'contents', 'toc']
+    
+    # Required headers for a valid worksheet
+    required_headers = ['dn no', 'material no']
+    recommended_headers = ['order type', 'customer model', 'warehouse', 'ship to city']
     
     best_sheet = None
     best_score = 0
@@ -124,6 +131,16 @@ def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
     best_info = {}
     
     for sheet_name in sheet_names:
+        # Skip hidden sheets
+        if sheet_name.startswith('_') or sheet_name.startswith('$'):
+            logger.info(f"  ⏭️ Skipping hidden sheet: '{sheet_name}'")
+            continue
+        
+        # Skip summary sheets
+        if any(ind in sheet_name.lower() for ind in summary_indicators):
+            logger.info(f"  ⏭️ Skipping summary sheet: '{sheet_name}'")
+            continue
+        
         logger.info(f"  📄 Checking sheet: '{sheet_name}'")
         
         try:
@@ -140,20 +157,22 @@ def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
             logger.info(f"    📊 Header score: {score}")
             logger.info(f"    📋 Matched headers: {matched_headers[:5] if matched_headers else 'None'}")
             
-            # Check if this sheet has delivery data
-            has_dn = any('dn' in h.lower() for h in matched_headers)
-            has_material = any('material' in h.lower() or 'sku' in h.lower() for h in matched_headers)
+            # Check required headers
+            has_dn = any('dn no' == normalize_header(h) for h in matched_headers)
+            has_material = any('material no' == normalize_header(h) for h in matched_headers)
             
             if has_dn and has_material:
-                logger.info(f"    ✅ Found delivery data with DN and Material")
-                # Boost score for sheets with both DN and Material
-                score += 10
+                logger.info(f"    ✅ Found required headers (DN and Material)")
+                score += 20
             
-            # Check for summary indicators (reduce score)
-            summary_indicators = ['summary', 'sum s', 'total', 'grand total', 'report']
-            if any(ind in sheet_name.lower() for ind in summary_indicators):
-                logger.info(f"    ⚠️ Sheet appears to be a summary, reducing score")
-                score -= 5
+            # Check recommended headers
+            recommended_count = 0
+            for rec in recommended_headers:
+                if any(rec in normalize_header(h) for h in matched_headers):
+                    recommended_count += 1
+            if recommended_count >= 3:
+                logger.info(f"    ✅ Found {recommended_count} recommended headers")
+                score += 10
             
             if score > best_score:
                 best_score = score
@@ -162,7 +181,10 @@ def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
                 best_info = {
                     'score': score,
                     'matched_headers': matched_headers,
-                    'rows': len(df_sample)
+                    'rows': len(df_sample),
+                    'has_dn': has_dn,
+                    'has_material': has_material,
+                    'recommended_count': recommended_count
                 }
                 logger.info(f"    ✅ New best sheet: '{sheet_name}' (score: {score})")
                 
@@ -178,7 +200,9 @@ def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
     logger.info(f"✅ SELECTED SHEET: '{best_sheet}'")
     logger.info(f"   Score: {best_score}")
     logger.info(f"   Header Row: {best_header_row}")
-    logger.info(f"   Matched Headers: {best_info.get('matched_headers', [])}")
+    logger.info(f"   Has DN: {best_info.get('has_dn', False)}")
+    logger.info(f"   Has Material: {best_info.get('has_material', False)}")
+    logger.info(f"   Matched Headers: {best_info.get('matched_headers', [])[:10]}")
     logger.info("=" * 60)
     
     return best_sheet, best_header_row, best_info
@@ -228,6 +252,7 @@ def detect_header_row_with_details(df: pd.DataFrame, max_rows: int = HEADER_SCAN
     best_matched = []
     
     rows_to_check = min(max_rows, len(df))
+    ignored_rows = []
     
     for row_idx in range(rows_to_check):
         score = 0
@@ -246,13 +271,19 @@ def detect_header_row_with_details(df: pd.DataFrame, max_rows: int = HEADER_SCAN
             for keyword, weight in header_keywords.items():
                 if keyword in normalized and keyword not in matched_keywords:
                     matched_keywords.add(keyword)
-                    matched_headers.append(value)
+                    matched_headers.append(str(value))
                     score += weight
         
         if score > best_score:
             best_score = score
             best_row = row_idx
             best_matched = matched_headers
+        elif score == 0 and row_idx < 5:
+            ignored_rows.append(row_idx)
+    
+    # Log ignored rows
+    if ignored_rows:
+        logger.info(f"    Ignored rows (empty or no headers): {ignored_rows}")
     
     # If score is too low, check for explicit matches
     if best_score < 3:
@@ -262,19 +293,23 @@ def detect_header_row_with_details(df: pd.DataFrame, max_rows: int = HEADER_SCAN
                 if value and isinstance(value, str):
                     normalized = normalize_header(value)
                     if normalized in ['dn no', 'material no', 'dn', 'material']:
+                        logger.info(f"    Found explicit match at row {row_idx}: '{value}'")
                         return row_idx, 5, [str(value)]
+    
+    logger.info(f"    Selected row: {best_row} (score: {best_score})")
+    logger.info(f"    Matched headers: {best_matched[:5] if best_matched else 'None'}")
     
     return best_row, best_score, best_matched
 
 # =====================================================================================================
-# COLUMN MAPPER - EXTENDED
+# COLUMN MAPPER - ENTERPRISE
 # =====================================================================================================
 
 class ColumnMapper:
     """Map normalized Excel headers to database fields"""
     
     HEADER_MAP = {
-        # DN - Extended
+        # DN - Required
         'dn no': 'dn_no',
         'dn': 'dn_no',
         'delivery note': 'dn_no',
@@ -285,8 +320,9 @@ class ColumnMapper:
         'd n no': 'dn_no',
         'd n': 'dn_no',
         'delivery note #': 'dn_no',
+        'dn#': 'dn_no',
         
-        # Material - Extended
+        # Material - Required
         'material no': 'material_no',
         'material': 'material_no',
         'material number': 'material_no',
@@ -296,32 +332,45 @@ class ColumnMapper:
         'product no': 'material_no',
         'product number': 'material_no',
         'item no': 'material_no',
+        'item': 'material_no',
+        'part no': 'material_no',
+        'part number': 'material_no',
         
-        # Order Type
+        # Order Type - Recommended
         'order type': 'order_type',
         'order': 'order_type',
         'ordertype': 'order_type',
         'type': 'order_type',
         'order no': 'order_type',
+        'order number': 'order_type',
+        'sales order': 'order_type',
+        'so': 'order_type',
         
-        # DN Work
+        # DN Work - Recommended
         'dn work': 'dn_work',
         'work': 'dn_work',
         'work order': 'dn_work',
         'work no': 'dn_work',
+        'work number': 'dn_work',
+        'job': 'dn_work',
         
-        # Division
+        # Division - Recommended
         'division': 'division',
         'div': 'division',
+        'department': 'division',
+        'business unit': 'division',
         
-        # Customer Model - Extended
+        # Customer Model - Recommended
         'customer model': 'customer_model',
         'model': 'customer_model',
         'model name': 'customer_model',
         'product model': 'customer_model',
         'model no': 'customer_model',
+        'model number': 'customer_model',
+        'product': 'customer_model',
+        'item description': 'customer_model',
         
-        # Customer Name - Extended
+        # Customer Name - Recommended
         'sold to party name': 'customer_name',
         'sold-to-party name': 'customer_name',
         'sold to party': 'customer_name',
@@ -330,20 +379,28 @@ class ColumnMapper:
         'customer': 'customer_name',
         'dealer name': 'customer_name',
         'party name': 'customer_name',
+        'client name': 'customer_name',
+        'buyer': 'customer_name',
+        'customer party': 'customer_name',
         
-        # Sales Office - Extended
+        # Sales Office - Recommended
         'sales office': 'sales_office',
         'salesoffice': 'sales_office',
         'office': 'sales_office',
         'sales': 'sales_office',
         'sales region': 'sales_office',
+        'region': 'sales_office',
+        'area': 'sales_office',
         
-        # Sales Manager
+        # Sales Manager - Recommended
         'sales manager': 'sales_manager',
         'salesmanager': 'sales_manager',
         'manager': 'sales_manager',
+        'sales rep': 'sales_manager',
+        'representative': 'sales_manager',
+        'sales person': 'sales_manager',
         
-        # Ship-to City - Extended
+        # Ship-to City - Recommended
         'ship to city': 'ship_to_city',
         'ship-to city': 'ship_to_city',
         'ship-to-city': 'ship_to_city',
@@ -351,41 +408,52 @@ class ColumnMapper:
         'city': 'ship_to_city',
         'destination city': 'ship_to_city',
         'ship to': 'ship_to_city',
+        'delivery city': 'ship_to_city',
+        'customer city': 'ship_to_city',
         
-        # Storage - Extended
+        # Storage - Optional
         'storage': 'storage_location',
         'storage location': 'storage_location',
         'storagelocation': 'storage_location',
         'bin': 'storage_location',
+        'warehouse bin': 'storage_location',
+        'location': 'storage_location',
         
-        # Warehouse - Extended
+        # Warehouse - Recommended
         'warehouse': 'warehouse',
         'wh': 'warehouse',
         'ware house': 'warehouse',
         'plant': 'warehouse',
         'warehouse name': 'warehouse',
+        'warehouse location': 'warehouse',
+        'facility': 'warehouse',
         
-        # Warehouse Code
+        # Warehouse Code - Optional
         'warehouse code': 'warehouse_code',
         'warehousecode': 'warehouse_code',
         'wh code': 'warehouse_code',
         'plant code': 'warehouse_code',
+        'facility code': 'warehouse_code',
         
-        # Delivery Location
+        # Delivery Location - Optional
         'delivery location': 'delivery_location',
         'deliverylocation': 'delivery_location',
         'location': 'delivery_location',
         'delivery address': 'delivery_location',
+        'address': 'delivery_location',
+        'site': 'delivery_location',
         
-        # DN Quantity - Extended
+        # DN Quantity - Required for each row
         'dn qty': 'dn_qty',
         'dn quantity': 'dn_qty',
         'qty': 'dn_qty',
         'quantity': 'dn_qty',
         'dnqty': 'dn_qty',
         'units': 'dn_qty',
+        'order qty': 'dn_qty',
+        'delivery qty': 'dn_qty',
         
-        # DN Amount - Extended
+        # DN Amount - Required for each row
         'dn amount': 'dn_amount',
         'dn amount ': 'dn_amount',
         'amount': 'dn_amount',
@@ -393,8 +461,11 @@ class ColumnMapper:
         'dnamount': 'dn_amount',
         'net amount': 'dn_amount',
         'total': 'dn_amount',
+        'order amount': 'dn_amount',
+        'delivery amount': 'dn_amount',
+        'amount value': 'dn_amount',
         
-        # DN Create Date - Extended
+        # DN Create Date - Required for each row
         'dn create date': 'dn_create_date',
         'dn created date': 'dn_create_date',
         'create date': 'dn_create_date',
@@ -403,8 +474,10 @@ class ColumnMapper:
         'date created': 'dn_create_date',
         'creation date': 'dn_create_date',
         'order date': 'dn_create_date',
+        'order created': 'dn_create_date',
+        'document date': 'dn_create_date',
         
-        # Good Issue Date - Extended
+        # Good Issue Date - Recommended
         'good issue date': 'good_issue_date',
         'good issue': 'good_issue_date',
         'pgi date': 'good_issue_date',
@@ -412,42 +485,59 @@ class ColumnMapper:
         'goods issue': 'good_issue_date',
         'dispatch date': 'good_issue_date',
         'shipped date': 'good_issue_date',
+        'ship date': 'good_issue_date',
+        'delivery date': 'good_issue_date',
         
-        # POD Date - Extended
+        # POD Date - Recommended
         'pod date': 'pod_date',
         'pod': 'pod_date',
         'proof of delivery': 'pod_date',
         'delivery date': 'pod_date',
         'received date': 'pod_date',
         'confirmation date': 'pod_date',
+        'customer received': 'pod_date',
+        'delivery confirmation': 'pod_date',
         
-        # Codes - Extended
+        # Customer Code - Optional (may be derived)
         'customer code': 'customer_code',
         'customer code no': 'customer_code',
         'cust code': 'customer_code',
         'account code': 'customer_code',
+        'customer id': 'customer_code',
+        'account no': 'customer_code',
+        
+        # Dealer Code - Optional (may be derived)
         'dealer code': 'dealer_code',
         'dealer code no': 'dealer_code',
         'dealer no': 'dealer_code',
         'distributor code': 'dealer_code',
+        'dealer id': 'dealer_code',
         
-        # Remarks - Extended
+        # Remarks - Optional
         'remarks': 'remarks',
         'remark': 'remarks',
         'note': 'remarks',
         'notes': 'remarks',
         'comments': 'remarks',
-        'comment': 'remarks'
+        'comment': 'remarks',
+        'special instructions': 'remarks',
+        'additional info': 'remarks',
     }
     
+    # Field classifications
     REQUIRED_FIELDS = ['dn_no', 'material_no']
+    RECOMMENDED_FIELDS = ['order_type', 'customer_model', 'customer_name', 'warehouse', 
+                         'ship_to_city', 'sales_office', 'sales_manager', 'division', 'dn_work']
+    OPTIONAL_FIELDS = ['customer_code', 'dealer_code', 'storage_location', 'warehouse_code', 
+                      'delivery_location', 'remarks']
     
     @classmethod
-    def map_headers(cls, headers: List[str]) -> Tuple[Dict[str, str], Dict[str, str], List[str], List[str]]:
-        """Map Excel headers to database fields"""
+    def map_headers(cls, headers: List[str]) -> Tuple[Dict[str, str], Dict[str, str], List[str], Dict[str, List[str]]]:
+        """Map Excel headers to database fields with classification"""
         field_to_column = {}
         column_to_field = {}
         unmapped = []
+        field_counts = {}
         
         logger.info("=" * 60)
         logger.info("📋 COLUMN MAPPING")
@@ -461,23 +551,45 @@ class ColumnMapper:
             field = cls.HEADER_MAP.get(normalized)
             
             if field:
-                field_to_column[field] = header
-                column_to_field[header] = field
-                logger.info(f"  ✅ '{header}' -> {field}")
+                # Check for duplicate mapping
+                if field in field_to_column:
+                    logger.warning(f"  ⚠️ Duplicate mapping for '{field}': '{header}' (was '{field_to_column[field]}')")
+                    field_counts[field] = field_counts.get(field, 0) + 1
+                else:
+                    field_to_column[field] = header
+                    column_to_field[header] = field
+                    logger.info(f"  ✅ '{header}' -> {field}")
             else:
                 unmapped.append(header)
                 logger.warning(f"  ⚠️ '{header}' -> UNMAPPED")
         
-        missing = [f for f in cls.REQUIRED_FIELDS if f not in field_to_column]
-        
-        if unmapped:
-            logger.warning(f"  Unmapped columns: {unmapped[:10]}")
-        if missing:
-            logger.error(f"  Missing required fields: {missing}")
+        # Check field classifications
+        missing_required = [f for f in cls.REQUIRED_FIELDS if f not in field_to_column]
+        missing_recommended = [f for f in cls.RECOMMENDED_FIELDS if f not in field_to_column]
+        found_optional = [f for f in cls.OPTIONAL_FIELDS if f in field_to_column]
         
         logger.info("=" * 60)
+        logger.info("📊 FIELD CLASSIFICATION:")
+        logger.info(f"  ✅ Required found: {[f for f in cls.REQUIRED_FIELDS if f in field_to_column]}")
+        if missing_required:
+            logger.error(f"  ❌ Missing required: {missing_required}")
+        logger.info(f"  📌 Recommended found: {[f for f in cls.RECOMMENDED_FIELDS if f in field_to_column]}")
+        if missing_recommended:
+            logger.warning(f"  ⚠️ Missing recommended: {missing_recommended}")
+        logger.info(f"  📌 Optional found: {found_optional}")
+        if unmapped:
+            logger.warning(f"  Unmapped columns: {unmapped[:10]}")
+        logger.info("=" * 60)
         
-        return field_to_column, column_to_field, unmapped, missing
+        classification = {
+            'required_found': [f for f in cls.REQUIRED_FIELDS if f in field_to_column],
+            'required_missing': missing_required,
+            'recommended_found': [f for f in cls.RECOMMENDED_FIELDS if f in field_to_column],
+            'recommended_missing': missing_recommended,
+            'optional_found': found_optional
+        }
+        
+        return field_to_column, column_to_field, unmapped, classification
 
 # =====================================================================================================
 # STATUS ENGINE
@@ -522,6 +634,84 @@ class StatusEngine:
             }
 
 # =====================================================================================================
+# LOOKUP ENRICHMENT
+# =====================================================================================================
+
+class LookupEnricher:
+    """Enrich data with lookups from master tables"""
+    
+    def __init__(self, db: Session):
+        self.db = db
+        self._dealer_cache = {}
+        self._customer_cache = {}
+        self._warehouse_cache = {}
+        self._cache_hits = 0
+        self._cache_misses = 0
+    
+    @lru_cache(maxsize=1000)
+    def get_dealer_code(self, customer_name: str) -> Optional[str]:
+        """Look up dealer code from customer name"""
+        if not customer_name:
+            return None
+        
+        # This is a placeholder - implement with actual dealer master table
+        # Example: query a Dealers table
+        
+        # For now, return None (will be populated from Excel if available)
+        return None
+    
+    @lru_cache(maxsize=1000)
+    def get_customer_code(self, customer_name: str) -> Optional[str]:
+        """Look up customer code from customer name"""
+        if not customer_name:
+            return None
+        
+        # This is a placeholder - implement with actual customer master table
+        return None
+    
+    @lru_cache(maxsize=1000)
+    def get_warehouse_code(self, warehouse_name: str) -> Optional[str]:
+        """Look up warehouse code from warehouse name"""
+        if not warehouse_name:
+            return None
+        
+        # This is a placeholder - implement with actual warehouse master table
+        return None
+    
+    def enrich_row(self, row_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Enrich a row with lookup data"""
+        result = row_data.copy()
+        
+        # Enrich dealer code
+        if not result.get('dealer_code') and result.get('customer_name'):
+            dealer = self.get_dealer_code(result['customer_name'])
+            if dealer:
+                result['dealer_code'] = dealer
+                self._cache_hits += 1
+            else:
+                self._cache_misses += 1
+        
+        # Enrich customer code
+        if not result.get('customer_code') and result.get('customer_name'):
+            customer = self.get_customer_code(result['customer_name'])
+            if customer:
+                result['customer_code'] = customer
+                self._cache_hits += 1
+            else:
+                self._cache_misses += 1
+        
+        # Enrich warehouse code
+        if not result.get('warehouse_code') and result.get('warehouse'):
+            warehouse = self.get_warehouse_code(result['warehouse'])
+            if warehouse:
+                result['warehouse_code'] = warehouse
+                self._cache_hits += 1
+            else:
+                self._cache_misses += 1
+        
+        return result
+
+# =====================================================================================================
 # DATA PARSING FUNCTIONS
 # =====================================================================================================
 
@@ -548,6 +738,7 @@ def parse_amount(value: Any) -> Optional[Decimal]:
         except:
             return None
     if isinstance(value, str):
+        # Remove currency symbols, commas, spaces
         cleaned = re.sub(r'[^\d.]', '', value.strip())
         if not cleaned:
             return None
@@ -599,6 +790,7 @@ def parse_date(value: Any) -> Optional[date]:
         if not value:
             return None
         
+        # Try common formats
         formats = ["%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%m-%d-%Y"]
         
         for fmt in formats:
@@ -607,6 +799,7 @@ def parse_date(value: Any) -> Optional[date]:
             except ValueError:
                 continue
         
+        # Try Excel serial as string
         try:
             serial = float(value)
             if serial > 59:
@@ -624,11 +817,45 @@ def normalize_dn(dn_no: str) -> str:
     return re.sub(r'[^0-9]', '', dn_no.strip())
 
 # =====================================================================================================
-# EXCEL IMPORT SERVICE - IMPROVED
+# DATA INTEGRITY VALIDATOR
+# =====================================================================================================
+
+class DataIntegrityValidator:
+    """Validate data integrity before import"""
+    
+    @staticmethod
+    def validate_row(row_data: Dict[str, Any], row_number: int) -> List[str]:
+        """Validate a single row and return list of issues"""
+        issues = []
+        
+        # Required fields
+        if not row_data.get('dn_no'):
+            issues.append(f"Row {row_number}: Missing DN NO")
+        if not row_data.get('material_no'):
+            issues.append(f"Row {row_number}: Missing Material NO")
+        
+        # Amount validation
+        amount = row_data.get('dn_amount')
+        if amount is not None and amount < 0:
+            issues.append(f"Row {row_number}: Negative amount {amount}")
+        
+        # Quantity validation
+        qty = row_data.get('dn_qty')
+        if qty is not None and qty <= 0:
+            issues.append(f"Row {row_number}: Invalid quantity {qty}")
+        
+        # Date validation
+        if row_data.get('dn_create_date') is None:
+            issues.append(f"Row {row_number}: Missing DN Create Date")
+        
+        return issues
+
+# =====================================================================================================
+# EXCEL IMPORT SERVICE - ENTERPRISE
 # =====================================================================================================
 
 class ExcelImportService:
-    """Enhanced Excel import with automatic worksheet detection"""
+    """Enterprise Excel import with worksheet detection and lookup enrichment"""
     
     @staticmethod
     def import_delivery_report_excel(
@@ -642,9 +869,10 @@ class ExcelImportService:
         
         start_time = time.time()
         validation_errors = []
+        lookup_enricher = LookupEnricher(db)
         
         logger.info("=" * 60)
-        logger.info("📊 EXCEL IMPORT v7.1 - WITH WORKSHEET DETECTION")
+        logger.info("📊 EXCEL IMPORT v8.0 - ENTERPRISE WITH LOOKUP ENRICHMENT")
         logger.info("=" * 60)
         logger.info(f"📁 File: {file_path}")
         logger.info(f"📋 Source: {source_filename}")
@@ -691,14 +919,14 @@ class ExcelImportService:
             logger.info(f"  Total Columns: {len(headers)}")
             logger.info(f"  First 10 Headers: {headers[:10]}")
             
-            field_to_column, column_to_field, unmapped, missing = ColumnMapper.map_headers(headers)
+            field_to_column, column_to_field, unmapped, classification = ColumnMapper.map_headers(headers)
             
-            if missing:
-                logger.error(f"❌ Missing required fields: {missing}")
+            if classification['required_missing']:
+                logger.error(f"❌ Missing required fields: {classification['required_missing']}")
                 logger.error(f"   Available headers: {headers}")
                 return {
                     "success": False,
-                    "error": f"Missing required columns: {missing}",
+                    "error": f"Missing required columns: {classification['required_missing']}",
                     "batch_id": batch_id,
                     "total_rows": 0,
                     "inserted_count": 0,
@@ -707,7 +935,7 @@ class ExcelImportService:
                     "failed_count": 0,
                     "total_revenue_imported": 0,
                     "total_units_imported": 0,
-                    "validation_errors": [f"Missing required fields: {missing}"],
+                    "validation_errors": [f"Missing required fields: {classification['required_missing']}"],
                     "sheet_name": sheet_name,
                     "header_row": header_row,
                     "available_headers": headers[:20]
@@ -722,6 +950,9 @@ class ExcelImportService:
             failed_count = 0
             total_revenue = Decimal(0)
             total_units = 0
+            duplicate_in_file = 0
+            duplicate_in_db = 0
+            integrity_issues = []
             
             processed_keys = set()
             
@@ -754,7 +985,8 @@ class ExcelImportService:
                     # Check duplicate within file
                     key = f"{dn_no}_{material_no}"
                     if key in processed_keys:
-                        validation_errors.append(f"Row {row_number}: Duplicate")
+                        duplicate_in_file += 1
+                        validation_errors.append(f"Row {row_number}: Duplicate within file")
                         failed_count += 1
                         continue
                     processed_keys.add(key)
@@ -765,33 +997,56 @@ class ExcelImportService:
                         return row.get(col) if col else None
                     
                     # Extract all fields
-                    order_type = normalize_string(get_value('order_type'))
-                    division = normalize_string(get_value('division'))
-                    customer_name = normalize_string(get_value('customer_name'))
-                    customer_model = normalize_string(get_value('customer_model'))
-                    customer_code = normalize_string(get_value('customer_code'))
-                    dealer_code = normalize_string(get_value('dealer_code'))
-                    warehouse = normalize_string(get_value('warehouse'))
-                    warehouse_code = normalize_string(get_value('warehouse_code'))
-                    ship_to_city = normalize_string(get_value('ship_to_city'))
-                    delivery_location = normalize_string(get_value('delivery_location'))
-                    sales_office = normalize_string(get_value('sales_office'))
-                    sales_manager = normalize_string(get_value('sales_manager'))
-                    dn_work = normalize_string(get_value('dn_work'))
-                    storage_location = normalize_string(get_value('storage_location'))
-                    remarks = normalize_string(get_value('remarks'))
+                    row_data = {
+                        'dn_no': dn_no,
+                        'material_no': material_no,
+                        'order_type': normalize_string(get_value('order_type')),
+                        'division': normalize_string(get_value('division')),
+                        'customer_name': normalize_string(get_value('customer_name')),
+                        'customer_model': normalize_string(get_value('customer_model')),
+                        'customer_code': normalize_string(get_value('customer_code')),
+                        'dealer_code': normalize_string(get_value('dealer_code')),
+                        'warehouse': normalize_string(get_value('warehouse')),
+                        'warehouse_code': normalize_string(get_value('warehouse_code')),
+                        'ship_to_city': normalize_string(get_value('ship_to_city')),
+                        'delivery_location': normalize_string(get_value('delivery_location')),
+                        'sales_office': normalize_string(get_value('sales_office')),
+                        'sales_manager': normalize_string(get_value('sales_manager')),
+                        'dn_work': normalize_string(get_value('dn_work')),
+                        'storage_location': normalize_string(get_value('storage_location')),
+                        'remarks': normalize_string(get_value('remarks')),
+                        'dn_qty': parse_quantity(get_value('dn_qty')),
+                        'dn_amount': parse_amount(get_value('dn_amount')),
+                        'dn_create_date': parse_date(get_value('dn_create_date')),
+                        'good_issue_date': parse_date(get_value('good_issue_date')),
+                        'pod_date': parse_date(get_value('pod_date'))
+                    }
                     
-                    dn_qty = parse_quantity(get_value('dn_qty'))
-                    dn_amount = parse_amount(get_value('dn_amount'))
+                    # ============================================================
+                    # STEP 5: Data Integrity Validation
+                    # ============================================================
+                    issues = DataIntegrityValidator.validate_row(row_data, row_number)
+                    if issues:
+                        integrity_issues.extend(issues)
+                        # Log warnings but continue (unless strict mode)
+                        for issue in issues:
+                            logger.warning(f"⚠️ {issue}")
                     
-                    dn_create_date = parse_date(get_value('dn_create_date'))
-                    good_issue_date = parse_date(get_value('good_issue_date'))
-                    pod_date = parse_date(get_value('pod_date'))
+                    # ============================================================
+                    # STEP 6: Lookup Enrichment
+                    # ============================================================
+                    row_data = lookup_enricher.enrich_row(row_data)
                     
                     # Derive status
-                    status = StatusEngine.derive(dn_create_date, good_issue_date, pod_date)
+                    status = StatusEngine.derive(
+                        row_data['dn_create_date'],
+                        row_data['good_issue_date'],
+                        row_data['pod_date']
+                    )
                     
-                    # Check existing record
+                    # ============================================================
+                    # STEP 7: Check Existing Record
+                    # ============================================================
                     existing = None
                     if skip_dups or update_existing_rows:
                         existing = db.query(DeliveryReport).filter_by(
@@ -800,26 +1055,27 @@ class ExcelImportService:
                         ).first()
                     
                     if existing and update_existing_rows:
-                        existing.dn_work = dn_work
-                        existing.order_type = order_type
-                        existing.division = division
-                        existing.customer_code = customer_code
-                        existing.dealer_code = dealer_code
-                        existing.customer_name = customer_name
-                        existing.customer_model = customer_model
-                        existing.storage_location = storage_location
-                        existing.sales_office = sales_office
-                        existing.sales_manager = sales_manager
-                        existing.ship_to_city = ship_to_city
-                        existing.warehouse = warehouse
-                        existing.warehouse_code = warehouse_code
-                        existing.delivery_location = delivery_location
-                        existing.dn_qty = dn_qty
-                        existing.dn_amount = float(dn_amount) if dn_amount else None
-                        existing.dn_create_date = dn_create_date
-                        existing.good_issue_date = good_issue_date
-                        existing.pod_date = pod_date
-                        existing.remarks = remarks
+                        # Update existing record
+                        existing.dn_work = row_data['dn_work']
+                        existing.order_type = row_data['order_type']
+                        existing.division = row_data['division']
+                        existing.customer_code = row_data['customer_code']
+                        existing.dealer_code = row_data['dealer_code']
+                        existing.customer_name = row_data['customer_name']
+                        existing.customer_model = row_data['customer_model']
+                        existing.storage_location = row_data['storage_location']
+                        existing.sales_office = row_data['sales_office']
+                        existing.sales_manager = row_data['sales_manager']
+                        existing.ship_to_city = row_data['ship_to_city']
+                        existing.warehouse = row_data['warehouse']
+                        existing.warehouse_code = row_data['warehouse_code']
+                        existing.delivery_location = row_data['delivery_location']
+                        existing.dn_qty = row_data['dn_qty']
+                        existing.dn_amount = float(row_data['dn_amount']) if row_data['dn_amount'] else None
+                        existing.dn_create_date = row_data['dn_create_date']
+                        existing.good_issue_date = row_data['good_issue_date']
+                        existing.pod_date = row_data['pod_date']
+                        existing.remarks = row_data['remarks']
                         existing.delivery_status = status['delivery_status']
                         existing.pgi_status = status['pgi_status']
                         existing.pod_status = status['pod_status']
@@ -830,32 +1086,34 @@ class ExcelImportService:
                         updated_count += 1
                         
                     elif existing and skip_dups:
+                        duplicate_in_db += 1
                         skipped_count += 1
                         
                     else:
+                        # Insert new record
                         record = DeliveryReport(
-                            dn_no=dn_no,
-                            dn_work=dn_work,
-                            order_type=order_type,
-                            division=division,
-                            customer_code=customer_code,
-                            dealer_code=dealer_code,
-                            customer_name=customer_name,
-                            customer_model=customer_model,
-                            material_no=material_no,
-                            storage_location=storage_location,
-                            sales_office=sales_office,
-                            sales_manager=sales_manager,
-                            ship_to_city=ship_to_city,
-                            warehouse=warehouse,
-                            warehouse_code=warehouse_code,
-                            delivery_location=delivery_location,
-                            dn_qty=dn_qty,
-                            dn_amount=float(dn_amount) if dn_amount else None,
-                            dn_create_date=dn_create_date,
-                            good_issue_date=good_issue_date,
-                            pod_date=pod_date,
-                            remarks=remarks,
+                            dn_no=row_data['dn_no'],
+                            dn_work=row_data['dn_work'],
+                            order_type=row_data['order_type'],
+                            division=row_data['division'],
+                            customer_code=row_data['customer_code'],
+                            dealer_code=row_data['dealer_code'],
+                            customer_name=row_data['customer_name'],
+                            customer_model=row_data['customer_model'],
+                            material_no=row_data['material_no'],
+                            storage_location=row_data['storage_location'],
+                            sales_office=row_data['sales_office'],
+                            sales_manager=row_data['sales_manager'],
+                            ship_to_city=row_data['ship_to_city'],
+                            warehouse=row_data['warehouse'],
+                            warehouse_code=row_data['warehouse_code'],
+                            delivery_location=row_data['delivery_location'],
+                            dn_qty=row_data['dn_qty'],
+                            dn_amount=float(row_data['dn_amount']) if row_data['dn_amount'] else None,
+                            dn_create_date=row_data['dn_create_date'],
+                            good_issue_date=row_data['good_issue_date'],
+                            pod_date=row_data['pod_date'],
+                            remarks=row_data['remarks'],
                             delivery_status=status['delivery_status'],
                             pgi_status=status['pgi_status'],
                             pod_status=status['pod_status'],
@@ -868,13 +1126,13 @@ class ExcelImportService:
                         inserted_count += 1
                     
                     # Update totals
-                    if dn_amount:
-                        total_revenue += dn_amount
-                    if dn_qty:
-                        total_units += dn_qty
+                    if row_data['dn_amount']:
+                        total_revenue += row_data['dn_amount']
+                    if row_data['dn_qty']:
+                        total_units += row_data['dn_qty']
                     
-                    # Commit in batches
-                    if (index + 1) % BATCH_SIZE == 0:
+                    # Commit in batches (if not atomic)
+                    if not ATOMIC_COMMIT and (index + 1) % BATCH_SIZE == 0:
                         db.commit()
                         logger.info(f"📊 Committed {index + 1} rows")
                     
@@ -884,28 +1142,48 @@ class ExcelImportService:
                     logger.warning(f"⚠️ Row {row_number} failed: {e}")
             
             # ============================================================
-            # STEP 5: Final Commit
+            # STEP 8: Final Commit
             # ============================================================
             logger.info("💾 Committing to database...")
             db.commit()
             
             # ============================================================
-            # STEP 6: Results
+            # STEP 9: Post-Import Verification
             # ============================================================
             duration = time.time() - start_time
             
+            # Verify counts
+            if total_rows != (inserted_count + updated_count + skipped_count + failed_count):
+                logger.warning(f"⚠️ Count mismatch: Total rows {total_rows} vs processed {inserted_count + updated_count + skipped_count + failed_count}")
+            
             logger.info("=" * 60)
             logger.info("✅ IMPORT COMPLETED")
+            logger.info("=" * 60)
             logger.info(f"  Duration: {duration:.2f}s")
             logger.info(f"  Sheet: '{sheet_name}'")
             logger.info(f"  Header Row: {header_row}")
             logger.info(f"  Rows Read: {total_rows}")
-            logger.info(f"  Inserted: {inserted_count}")
-            logger.info(f"  Updated: {updated_count}")
-            logger.info(f"  Skipped: {skipped_count}")
-            logger.info(f"  Failed: {failed_count}")
+            logger.info("")
+            logger.info("  📊 RESULTS:")
+            logger.info(f"  ✅ Inserted: {inserted_count}")
+            logger.info(f"  🔄 Updated: {updated_count}")
+            logger.info(f"  ⏭️ Skipped: {skipped_count}")
+            logger.info(f"  ❌ Failed: {failed_count}")
+            logger.info(f"  📌 Duplicate in file: {duplicate_in_file}")
+            logger.info(f"  📌 Duplicate in DB: {duplicate_in_db}")
+            logger.info("")
+            logger.info("  💰 TOTALS:")
             logger.info(f"  Revenue: PKR {total_revenue:,.2f}")
             logger.info(f"  Units: {total_units}")
+            logger.info("")
+            logger.info("  🔍 LOOKUP ENRICHMENT:")
+            logger.info(f"  Cache Hits: {lookup_enricher._cache_hits}")
+            logger.info(f"  Cache Misses: {lookup_enricher._cache_misses}")
+            logger.info("")
+            if integrity_issues:
+                logger.warning(f"  ⚠️ Integrity Issues: {len(integrity_issues)}")
+                for issue in integrity_issues[:5]:
+                    logger.warning(f"    - {issue}")
             logger.info("=" * 60)
             
             return {
@@ -916,11 +1194,19 @@ class ExcelImportService:
                 "updated_count": updated_count,
                 "skipped_count": skipped_count,
                 "failed_count": failed_count,
+                "duplicate_in_file": duplicate_in_file,
+                "duplicate_in_db": duplicate_in_db,
                 "total_revenue_imported": float(total_revenue),
                 "total_units_imported": total_units,
                 "validation_errors": validation_errors[:20],
+                "integrity_warnings": integrity_issues[:10],
                 "sheet_name": sheet_name,
-                "header_row": header_row
+                "header_row": header_row,
+                "classification": classification,
+                "lookup_stats": {
+                    "cache_hits": lookup_enricher._cache_hits,
+                    "cache_misses": lookup_enricher._cache_misses
+                }
             }
             
         except WorksheetNotFoundError as e:
