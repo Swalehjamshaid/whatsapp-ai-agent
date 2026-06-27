@@ -1,6 +1,6 @@
 # =====================================================================================================
 # FILE: app/services/excel_import_service.py
-# VERSION: v15.3 - ALL COLUMNS FIXED
+# VERSION: v15.4 - COMPLETE COLUMN MAPPING FIXED
 # PURPOSE: Ultra-fast Excel import with complete column mapping
 # COMPATIBLE WITH: upload.py v4.3
 # =====================================================================================================
@@ -127,7 +127,7 @@ def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
     4. Header is always at row 0 for data sheet
     """
     logger.info("=" * 60)
-    logger.info("🔍 WORKSHEET DETECTION v15.3")
+    logger.info("🔍 WORKSHEET DETECTION v15.4")
     logger.info("=" * 60)
     
     # Get sheet names
@@ -149,7 +149,7 @@ def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
     # Delivery indicators - sheets to SELECT
     delivery_indicators = [
         'pgi', 'june pgi', 'july pgi', 'august pgi',
-        'delivery', 'dn', 'delivery report'
+        'delivery', 'dn', 'delivery report', 'data'
     ]
     
     best_sheet = None
@@ -294,10 +294,10 @@ def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
                             best_header_row = 0
                             break
     
-    # Special case: If "Sum S" was selected, force switch to "June PGI"
+    # Special case: If "Sum S" was selected, force switch to data sheet
     if best_sheet == "Sum S":
         for sheet_name in sheet_names:
-            if "June PGI" in sheet_name or "PGI" in sheet_name:
+            if "PGI" in sheet_name or "Data" in sheet_name:
                 logger.info(f"🔄 Forcing switch from 'Sum S' to '{sheet_name}'")
                 best_sheet = sheet_name
                 best_header_row = 0
@@ -381,7 +381,7 @@ def detect_header_row(df: pd.DataFrame, max_rows: int = HEADER_SCAN_ROWS) -> Tup
     return best_row, best_score, best_matched
 
 # =====================================================================================================
-# SMART COLUMN MAPPER - COMPLETE FIX v15.3
+# SMART COLUMN MAPPER - COMPLETE FIX v15.4
 # =====================================================================================================
 
 class SmartColumnMapper:
@@ -431,9 +431,10 @@ class SmartColumnMapper:
         'DN-NO': 'dn_no',
         'DN.NO': 'dn_no',
         'DN#': 'dn_no',
+        'DN': 'dn_no',
         
         # ============================================================
-        # COLUMN 3: DN amount - COMPLETE FIX (ALL VARIATIONS)
+        # COLUMN 3: DN amount - COMPLETE FIX
         # ============================================================
         'dn amount': 'dn_amount',
         'dn amount ': 'dn_amount',
@@ -490,7 +491,7 @@ class SmartColumnMapper:
         'PKR': 'dn_amount',
         
         # ============================================================
-        # COLUMN 4: DN Qty - COMPLETE FIX (ALL VARIATIONS)
+        # COLUMN 4: DN Qty - COMPLETE FIX
         # ============================================================
         'dn qty': 'dn_qty',
         'dn quantity': 'dn_qty',
@@ -519,9 +520,10 @@ class SmartColumnMapper:
         'UNITS': 'dn_qty',
         'ORDER QTY': 'dn_qty',
         'DELIVERY QTY': 'dn_qty',
+        'DN QUANTITY': 'dn_qty',
         
         # ============================================================
-        # COLUMN 5: DN Work - COMPLETE FIX (ALL VARIATIONS)
+        # COLUMN 5: DN Work - COMPLETE FIX
         # ============================================================
         'dn work': 'dn_work',
         'work': 'dn_work',
@@ -590,6 +592,7 @@ class SmartColumnMapper:
         'MATERIAL#': 'material_no',
         'SKU': 'material_no',
         'PRODUCT NO': 'material_no',
+        'Material NO ': 'material_no',
         
         # ============================================================
         # COLUMN 8: Customer Model
@@ -612,6 +615,7 @@ class SmartColumnMapper:
         'MODEL NAME': 'customer_model',
         'PRODUCT MODEL': 'customer_model',
         'PRODUCT': 'customer_model',
+        'Customer Model ': 'customer_model',
         
         # ============================================================
         # COLUMN 9: sales office
@@ -637,6 +641,7 @@ class SmartColumnMapper:
         'REGION': 'sales_office',
         'AREA': 'sales_office',
         'BRANCH': 'sales_office',
+        'sales office ': 'sales_office',
         
         # ============================================================
         # COLUMN 10: Sold-to-party Name (customer_name)
@@ -667,6 +672,7 @@ class SmartColumnMapper:
         'PARTY NAME': 'customer_name',
         'CLIENT NAME': 'customer_name',
         'DEALER': 'customer_name',
+        'Sold-to-party Name ': 'customer_name',
         
         # ============================================================
         # COLUMN 11: Ship-to City
@@ -693,9 +699,10 @@ class SmartColumnMapper:
         'DESTINATION CITY': 'ship_to_city',
         'DELIVERY CITY': 'ship_to_city',
         'CUSTOMER CITY': 'ship_to_city',
+        'Ship-to City ': 'ship_to_city',
         
         # ============================================================
-        # COLUMN 12: storage - COMPLETE FIX (ALL VARIATIONS)
+        # COLUMN 12: storage - COMPLETE FIX
         # ============================================================
         'storage': 'storage_location',
         'storage location': 'storage_location',
@@ -717,9 +724,10 @@ class SmartColumnMapper:
         'LOCATION': 'storage_location',
         'STORE': 'storage_location',
         'STORAGE CODE': 'storage_location',
+        'storage ': 'storage_location',
         
         # ============================================================
-        # COLUMN 13: Warehouse - COMPLETE FIX (ALL VARIATIONS)
+        # COLUMN 13: Warehouse - COMPLETE FIX
         # ============================================================
         'warehouse': 'warehouse',
         'ware house': 'warehouse',
@@ -776,6 +784,7 @@ class SmartColumnMapper:
         'CREATED DATE': 'dn_create_date',
         'ORDER DATE': 'dn_create_date',
         'DOCUMENT DATE': 'dn_create_date',
+        'DN Create date ': 'dn_create_date',
         
         # ============================================================
         # COLUMN 15: Good issue date
@@ -803,6 +812,7 @@ class SmartColumnMapper:
         'SHIPPED DATE': 'good_issue_date',
         'SHIP DATE': 'good_issue_date',
         'DELIVERY DATE': 'good_issue_date',
+        'Good issue date ': 'good_issue_date',
         
         # ============================================================
         # COLUMN 16: POD Date
@@ -828,9 +838,10 @@ class SmartColumnMapper:
         'CUSTOMER RECEIVED': 'pod_date',
         'DELIVERY CONFIRMATION': 'pod_date',
         'RECEIPT DATE': 'pod_date',
+        'POD Date ': 'pod_date',
         
         # ============================================================
-        # COLUMN 17: Sales Manager - COMPLETE FIX (ALL VARIATIONS)
+        # COLUMN 17: Sales Manager - COMPLETE FIX
         # ============================================================
         'sales manager': 'sales_manager',
         'salesmanager': 'sales_manager',
@@ -859,6 +870,38 @@ class SmartColumnMapper:
         'SALESPERSON': 'sales_manager',
         'REP': 'sales_manager',
         'SALES MANAGER NAME': 'sales_manager',
+        'sales manager ': 'sales_manager',
+        
+        # ============================================================
+        # EXTRA: Customer Code, Dealer Code
+        # ============================================================
+        'customer code': 'customer_code',
+        'customer_code': 'customer_code',
+        'dealer code': 'dealer_code',
+        'dealer_code': 'dealer_code',
+        
+        # ============================================================
+        # EXTRA: Warehouse Code
+        # ============================================================
+        'warehouse code': 'warehouse_code',
+        'warehouse_code': 'warehouse_code',
+        'wh code': 'warehouse_code',
+        
+        # ============================================================
+        # EXTRA: Delivery Location
+        # ============================================================
+        'delivery location': 'delivery_location',
+        'delivery_location': 'delivery_location',
+        'delivery loc': 'delivery_location',
+        
+        # ============================================================
+        # EXTRA: Remarks
+        # ============================================================
+        'remarks': 'remarks',
+        'remark': 'remarks',
+        'note': 'remarks',
+        'notes': 'remarks',
+        'comments': 'remarks',
     }
     
     _normalized_keys = list(HEADER_MAP.keys())
@@ -873,9 +916,10 @@ class SmartColumnMapper:
         unmapped = []
         
         logger.info("=" * 60)
-        logger.info("📋 SMART COLUMN MAPPING")
+        logger.info("📋 SMART COLUMN MAPPING v15.4")
         logger.info("=" * 60)
         
+        # First pass: Exact matching
         for header in headers:
             if header is None:
                 continue
@@ -890,7 +934,35 @@ class SmartColumnMapper:
                     logger.info(f"  ✅ EXACT: '{header}' -> {field}")
             else:
                 unmapped.append(header)
-                logger.warning(f"  ⚠️ '{header}' -> UNMAPPED")
+                logger.warning(f"  ⚠️ UNMAPPED: '{header}'")
+        
+        # Second pass: Fuzzy matching for unmapped headers
+        if HAS_RAPIDFUZZ and unmapped:
+            logger.info("  🔍 Trying fuzzy matching for unmapped headers...")
+            for header in unmapped[:]:
+                normalized = normalize_header(header)
+                if not normalized:
+                    continue
+                
+                best_match = None
+                best_score = 0
+                
+                for key, field in cls.HEADER_MAP.items():
+                    # Skip if field already mapped
+                    if field in field_to_column:
+                        continue
+                    
+                    score = fuzz.ratio(normalized, key)
+                    if score > FUZZY_THRESHOLD and score > best_score:
+                        best_score = score
+                        best_match = (key, field)
+                
+                if best_match:
+                    key, field = best_match
+                    field_to_column[field] = header
+                    column_to_field[header] = field
+                    unmapped.remove(header)
+                    logger.info(f"  ✅ FUZZY: '{header}' -> {field} (score: {best_score}%, matched: '{key}')")
         
         missing = [f for f in cls.REQUIRED_FIELDS if f not in field_to_column]
         
@@ -961,7 +1033,7 @@ class StatusEngine:
         if has_pod and has_pgi and has_dn:
             return {'delivery_status': 'Delivered', 'pgi_status': 'Completed', 'pod_status': 'Completed', 'pending_flag': False}
         elif has_pgi and has_dn:
-            return {'delivery_status': 'Dispatched', 'pgi_status': 'Completed', 'pod_status': 'Pending', 'pending_flag': True}
+            return {'delivery_status': 'In Transit', 'pgi_status': 'Completed', 'pod_status': 'Pending', 'pending_flag': True}
         elif has_dn:
             return {'delivery_status': 'Pending Dispatch', 'pgi_status': 'Pending', 'pod_status': 'Pending', 'pending_flag': True}
         else:
@@ -1237,11 +1309,11 @@ class FastBatchProcessor:
         }
 
 # =====================================================================================================
-# EXCEL IMPORT SERVICE - v15.3 FINAL
+# EXCEL IMPORT SERVICE - v15.4 FINAL
 # =====================================================================================================
 
 class ExcelImportService:
-    """Ultra-fast Excel import with complete column mapping - v15.3"""
+    """Ultra-fast Excel import with complete column mapping - v15.4"""
     
     @staticmethod
     def import_delivery_report_excel(
@@ -1264,7 +1336,7 @@ class ExcelImportService:
                 pass
         
         logger.info("=" * 60)
-        logger.info("⚡ EXCEL IMPORT v15.3 - COMPLETE FIX")
+        logger.info("⚡ EXCEL IMPORT v15.4 - COMPLETE FIX")
         logger.info("=" * 60)
         logger.info(f"📁 File: {file_path}")
         logger.info(f"📋 Source: {source_filename}")
@@ -1339,6 +1411,7 @@ class ExcelImportService:
                 row_number = idx + 2 + header_row
                 
                 try:
+                    # Get DN NO
                     dn_col = field_to_column.get('dn_no')
                     dn_raw = row.get(dn_col) if dn_col else None
                     dn_no = normalize_dn(str(dn_raw)) if dn_raw else None
@@ -1348,6 +1421,7 @@ class ExcelImportService:
                         processor.failed_count += 1
                         continue
                     
+                    # Get Material NO
                     mat_col = field_to_column.get('material_no')
                     mat_raw = row.get(mat_col) if mat_col else None
                     material_no = normalize_string(mat_raw)
@@ -1357,6 +1431,7 @@ class ExcelImportService:
                         processor.failed_count += 1
                         continue
                     
+                    # Build row data
                     row_data = {
                         'dn_no': dn_no,
                         'material_no': material_no,
