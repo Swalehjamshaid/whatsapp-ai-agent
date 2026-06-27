@@ -1,8 +1,8 @@
 # =====================================================================================================
 # FILE: app/services/excel_import_service.py
-# VERSION: v14.2 - FIXED POLARS + ULTRA FAST
-# PURPOSE: Ultra-fast Excel import with smart column mapping
-# COMPATIBLE WITH: upload.py v4.2
+# VERSION: v15.0 - PERFECT WORKSHEET DETECTION
+# PURPOSE: Ultra-fast Excel import with automatic worksheet detection
+# COMPATIBLE WITH: upload.py v4.3
 # =====================================================================================================
 
 import pandas as pd
@@ -24,7 +24,7 @@ from app.models import DeliveryReport
 logger = logging.getLogger(__name__)
 
 # =====================================================================================================
-# LIBRARY IMPORTS WITH FALLBACKS - FIXED
+# LIBRARY IMPORTS WITH FALLBACKS
 # =====================================================================================================
 
 # Polars - Optional (10x faster Excel reading)
@@ -65,12 +65,12 @@ except ImportError:
 # CONFIGURATION
 # =====================================================================================================
 
-BULK_SIZE = 100000  # 100,000 rows per bulk insert
+BULK_SIZE = 100000
 HEADER_SCAN_ROWS = 25
 STRICT_MODE = True
 GC_INTERVAL = 5
 FUZZY_THRESHOLD = 85
-CHUNK_SIZE = 50000  # 50,000 rows per chunk for pandas
+CHUNK_SIZE = 50000
 
 # =====================================================================================================
 # EXCEPTIONS
@@ -92,7 +92,7 @@ class VerificationError(Exception):
     pass
 
 # =====================================================================================================
-# HEADER NORMALIZATION - FAST
+# HEADER NORMALIZATION
 # =====================================================================================================
 
 _separator_re = re.compile(r'[_\-./\\#·•:;|]')
@@ -114,7 +114,256 @@ def normalize_header(header: Any) -> str:
     return normalized
 
 # =====================================================================================================
-# SMART COLUMN MAPPER - FIXED
+# WORKSHEET DETECTION - PERFECT v15.0
+# =====================================================================================================
+
+def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
+    """
+    Find the worksheet containing delivery data.
+    
+    Rules:
+    1. NEVER import first worksheet if it's a summary
+    2. ALWAYS select worksheet containing "DN NO" and "Material NO"
+    3. Score based on presence of delivery headers
+    4. Reject summary sheets (Sum S, Summary, Total, etc.)
+    """
+    logger.info("=" * 60)
+    logger.info("🔍 WORKSHEET DETECTION v15.0")
+    logger.info("=" * 60)
+    
+    # Get sheet names
+    try:
+        if HAS_POLARS:
+            df_meta = pl.read_excel(file_path, sheet_name=None, engine='calamine')
+            sheet_names = list(df_meta.keys())
+        else:
+            xl = pd.ExcelFile(file_path, engine='openpyxl')
+            sheet_names = xl.sheet_names
+    except Exception as e:
+        xl = pd.ExcelFile(file_path, engine='openpyxl')
+        sheet_names = xl.sheet_names
+    
+    logger.info(f"📋 Found {len(sheet_names)} sheets: {sheet_names}")
+    
+    # Keywords that indicate a SUMMARY sheet (MUST BE SKIPPED)
+    summary_indicators = [
+        'sum s', 'sum', 'summary', 'total', 'grand total', 
+        'report', 'overview', 'cover', 'index', 'contents', 'toc'
+    ]
+    
+    # Required headers for DELIVERY data
+    required_headers = ['dn no', 'dn', 'delivery note']
+    material_headers = ['material no', 'material', 'sku']
+    
+    # Recommended delivery headers
+    delivery_headers = [
+        'order type', 'dn amount', 'dn qty', 'dn work',
+        'division', 'customer model', 'sales office',
+        'sold to party name', 'ship to city', 'storage',
+        'warehouse', 'dn create date', 'good issue date',
+        'pod date', 'sales manager'
+    ]
+    
+    best_sheet = None
+    best_score = 0
+    best_header_row = 0
+    best_info = {}
+    
+    # Track sheets to skip
+    skipped_sheets = []
+    
+    for sheet_name in sheet_names:
+        # Skip hidden sheets
+        if sheet_name.startswith('_') or sheet_name.startswith('$'):
+            skipped_sheets.append(f"{sheet_name} (hidden)")
+            continue
+        
+        # Check if this is a summary sheet
+        is_summary = False
+        for indicator in summary_indicators:
+            if indicator in sheet_name.lower():
+                is_summary = True
+                break
+        
+        if is_summary:
+            skipped_sheets.append(f"{sheet_name} (summary)")
+            logger.info(f"  ⏭️ Skipping summary sheet: '{sheet_name}'")
+            continue
+        
+        logger.info(f"  📄 Checking sheet: '{sheet_name}'")
+        
+        try:
+            # Read sample for header detection
+            df_sample = pd.read_excel(
+                file_path,
+                sheet_name=sheet_name,
+                header=None,
+                nrows=HEADER_SCAN_ROWS + 5,
+                engine='openpyxl'
+            )
+            
+            if len(df_sample) == 0:
+                skipped_sheets.append(f"{sheet_name} (empty)")
+                continue
+            
+            # Detect header row
+            header_row, score, matched_headers = detect_header_row(df_sample)
+            
+            logger.info(f"    📊 Header score: {score}")
+            logger.info(f"    📋 Sample headers: {matched_headers[:5] if matched_headers else 'None'}")
+            
+            # Check for DN NO
+            has_dn = False
+            has_material = False
+            delivery_count = 0
+            
+            for h in matched_headers:
+                normalized = normalize_header(h)
+                if any(required in normalized for required in required_headers):
+                    has_dn = True
+                if any(material in normalized for material in material_headers):
+                    has_material = True
+                # Count delivery headers found
+                for delivery_h in delivery_headers:
+                    if delivery_h in normalized:
+                        delivery_count += 1
+            
+            # Boost score for delivery headers
+            if has_dn and has_material:
+                score += 30  # BIG boost for having BOTH
+                logger.info(f"    ✅ Found DN NO and Material NO")
+            elif has_dn:
+                score += 10
+                logger.info(f"    ✅ Found DN NO")
+            elif has_material:
+                score += 10
+                logger.info(f"    ✅ Found Material NO")
+            
+            # Boost for multiple delivery headers
+            if delivery_count >= 10:
+                score += 20
+                logger.info(f"    ✅ Found {delivery_count} delivery headers")
+            elif delivery_count >= 5:
+                score += 10
+            
+            if score > best_score:
+                best_score = score
+                best_sheet = sheet_name
+                best_header_row = header_row
+                best_info = {
+                    'score': score,
+                    'matched_headers': matched_headers,
+                    'has_dn': has_dn,
+                    'has_material': has_material,
+                    'delivery_count': delivery_count,
+                    'rows': len(df_sample)
+                }
+                logger.info(f"    ✅ New best sheet: '{sheet_name}' (score: {score})")
+                
+        except Exception as e:
+            logger.warning(f"    ❌ Error reading sheet '{sheet_name}': {e}")
+            continue
+    
+    # Log skipped sheets
+    if skipped_sheets:
+        logger.info(f"  ⏭️ Skipped sheets: {skipped_sheets}")
+    
+    # Validate best sheet
+    if best_sheet is None:
+        raise WorksheetNotFoundError(f"No worksheet with delivery data found. Available sheets: {sheet_names}")
+    
+    if best_score < 10:
+        logger.warning(f"⚠️ Low confidence score ({best_score}) for sheet '{best_sheet}'")
+    
+    # Ensure we didn't accidentally pick a summary sheet
+    for indicator in summary_indicators:
+        if indicator in best_sheet.lower():
+            logger.warning(f"⚠️ Warning: Selected sheet '{best_sheet}' appears to be a summary")
+            # Try to find a better sheet
+            for sheet_name in sheet_names:
+                if sheet_name != best_sheet:
+                    is_summary = any(ind in sheet_name.lower() for ind in summary_indicators)
+                    if not is_summary and not sheet_name.startswith('_'):
+                        if best_score < 20:  # Only switch if we have a very low score
+                            logger.info(f"🔄 Switching to non-summary sheet: '{sheet_name}'")
+                            best_sheet = sheet_name
+                            break
+    
+    logger.info("=" * 60)
+    logger.info(f"✅ SELECTED SHEET: '{best_sheet}'")
+    logger.info(f"   Score: {best_score}")
+    logger.info(f"   Header Row: {best_header_row}")
+    logger.info(f"   Has DN: {best_info.get('has_dn', False)}")
+    logger.info(f"   Has Material: {best_info.get('has_material', False)}")
+    logger.info(f"   Delivery Headers: {best_info.get('delivery_count', 0)}")
+    logger.info("=" * 60)
+    
+    return best_sheet, best_header_row, best_info
+
+# =====================================================================================================
+# HEADER DETECTION
+# =====================================================================================================
+
+def detect_header_row(df: pd.DataFrame, max_rows: int = HEADER_SCAN_ROWS) -> Tuple[int, int, List[str]]:
+    """Detect header row using pandas"""
+    if len(df) == 0:
+        return 0, 0, []
+    
+    header_keywords = {
+        'dn no': 3, 'dn': 2, 'material no': 3, 'material': 2,
+        'order type': 2, 'customer model': 2, 'warehouse': 2,
+        'ship to city': 2, 'dn amount': 2, 'dn qty': 2,
+        'division': 1, 'sales office': 1, 'sales manager': 1,
+        'storage': 1, 'dn create date': 1, 'good issue date': 1,
+        'pod date': 1, 'work': 1, 'remarks': 1,
+        'model': 1, 'city': 1, 'amount': 1, 'qty': 1,
+        'pgi': 1, 'pod': 1, 'delivery': 1
+    }
+    
+    best_score = 0
+    best_row = 0
+    best_matched = []
+    
+    rows_to_check = min(max_rows, len(df))
+    
+    for row_idx in range(rows_to_check):
+        score = 0
+        row_data = df.iloc[row_idx]
+        matched_keywords = set()
+        matched_headers = []
+        
+        for value in row_data:
+            if value is None or not isinstance(value, str):
+                continue
+            
+            normalized = normalize_header(value)
+            if not normalized:
+                continue
+            
+            for keyword, weight in header_keywords.items():
+                if keyword in normalized and keyword not in matched_keywords:
+                    matched_keywords.add(keyword)
+                    matched_headers.append(str(value))
+                    score += weight
+        
+        if score > best_score:
+            best_score = score
+            best_row = row_idx
+            best_matched = matched_headers
+    
+    if best_score < 3:
+        for row_idx in range(rows_to_check):
+            row_data = df.iloc[row_idx]
+            for value in row_data:
+                if value and isinstance(value, str):
+                    normalized = normalize_header(value)
+                    if normalized in ['dn no', 'dn', 'material no', 'material']:
+                        return row_idx, 5, [str(value)]
+    
+    return best_row, best_score, best_matched
+
+# =====================================================================================================
+# SMART COLUMN MAPPER
 # =====================================================================================================
 
 class SmartColumnMapper:
@@ -261,13 +510,11 @@ class SmartColumnMapper:
         field_to_column = {}
         column_to_field = {}
         unmapped = []
-        fuzzy_matches = []
         
         logger.info("=" * 60)
         logger.info("📋 SMART COLUMN MAPPING")
         logger.info("=" * 60)
         
-        # First pass: Exact matches
         for header in headers:
             if header is None:
                 continue
@@ -282,42 +529,13 @@ class SmartColumnMapper:
                     logger.info(f"  ✅ EXACT: '{header}' -> {field}")
             else:
                 unmapped.append(header)
+                logger.warning(f"  ⚠️ '{header}' -> UNMAPPED")
         
-        # Second pass: Fuzzy matches (if available)
-        if unmapped and HAS_RAPIDFUZZ:
-            logger.info("")
-            logger.info("🔍 Trying fuzzy matching...")
-            
-            for header in unmapped[:]:
-                normalized = normalize_header(header)
-                best_match = None
-                best_score = 0
-                
-                for known in cls._normalized_keys:
-                    try:
-                        score = fuzz.ratio(normalized, known)
-                        if score > best_score and score >= FUZZY_THRESHOLD:
-                            best_score = score
-                            best_match = known
-                    except:
-                        continue
-                
-                if best_match:
-                    field = cls.HEADER_MAP.get(best_match)
-                    if field and field not in field_to_column:
-                        field_to_column[field] = header
-                        column_to_field[header] = field
-                        fuzzy_matches.append(f"{header} -> {field} ({best_score}%)")
-                        unmapped.remove(header)
-                        logger.info(f"  ✅ FUZZY: '{header}' -> {field} ({best_score}%)")
-        
-        # Check required fields
         missing = [f for f in cls.REQUIRED_FIELDS if f not in field_to_column]
         
         logger.info("=" * 60)
-        logger.info(f"  ✅ Exact matches: {len(headers) - len(unmapped) - len(fuzzy_matches)}")
-        logger.info(f"  ✅ Fuzzy matches: {len(fuzzy_matches)}")
-        logger.info(f"  ⚠️ Unmapped: {len(unmapped)}")
+        logger.info(f"  ✅ Mapped: {len(field_to_column)} columns")
+        logger.info(f"  ⚠️ Unmapped: {len(unmapped)} columns")
         if missing:
             logger.error(f"  ❌ Missing required: {missing}")
         logger.info("=" * 60)
@@ -325,7 +543,7 @@ class SmartColumnMapper:
         return field_to_column, column_to_field, unmapped, missing
 
 # =====================================================================================================
-# FAST EXCEL READING - FIXED WITH FALLBACKS + CHUNKING
+# FAST EXCEL READING
 # =====================================================================================================
 
 def read_excel_fast(file_path: str, sheet_name: str, header_row: int):
@@ -333,9 +551,7 @@ def read_excel_fast(file_path: str, sheet_name: str, header_row: int):
     
     if HAS_POLARS:
         try:
-            # Try different polars read_excel signatures
             try:
-                # Try with header_row parameter
                 df = pl.read_excel(
                     file_path,
                     sheet_name=sheet_name,
@@ -345,17 +561,13 @@ def read_excel_fast(file_path: str, sheet_name: str, header_row: int):
                 logger.info("⚡ Using Polars with calamine engine (header_row)")
                 return df.to_pandas()
             except TypeError:
-                # Try without header_row - read entire sheet
                 df = pl.read_excel(
                     file_path,
                     sheet_name=sheet_name,
                     engine='calamine'
                 )
-                # If header is at row 0, it's already correct
                 if header_row > 0:
-                    # Skip rows before header
                     df = df.slice(header_row)
-                    # Use the first row as column names
                     new_columns = df.row(0)
                     df.columns = new_columns
                     df = df.slice(1)
@@ -364,7 +576,6 @@ def read_excel_fast(file_path: str, sheet_name: str, header_row: int):
         except Exception as e:
             logger.warning(f"⚠️ Polars read failed: {e}, trying fallback...")
     
-    # Fallback: Chunked pandas reading (memory efficient and faster)
     logger.info("📖 Using chunked pandas reading...")
     
     chunks = []
@@ -383,7 +594,6 @@ def read_excel_fast(file_path: str, sheet_name: str, header_row: int):
             logger.info(f"✅ Read {len(df)} rows with chunked pandas")
             return df
         else:
-            # Single read if chunksize not supported
             df = pd.read_excel(file_path, sheet_name=sheet_name, header=header_row, engine='openpyxl')
             logger.info(f"📖 Read {len(df)} rows with pandas")
             return df
@@ -392,162 +602,6 @@ def read_excel_fast(file_path: str, sheet_name: str, header_row: int):
         df = pd.read_excel(file_path, sheet_name=sheet_name, header=header_row, engine='openpyxl')
         logger.info(f"📖 Read {len(df)} rows with pandas")
         return df
-
-# =====================================================================================================
-# WORKSHEET DETECTION - FIXED
-# =====================================================================================================
-
-def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
-    """Find the worksheet containing delivery data"""
-    logger.info("=" * 60)
-    logger.info("🔍 WORKSHEET DETECTION")
-    logger.info("=" * 60)
-    
-    # Get sheet names
-    try:
-        if HAS_POLARS:
-            df_meta = pl.read_excel(file_path, sheet_name=None)
-            sheet_names = list(df_meta.keys())
-        else:
-            xl = pd.ExcelFile(file_path, engine='openpyxl')
-            sheet_names = xl.sheet_names
-    except:
-        xl = pd.ExcelFile(file_path, engine='openpyxl')
-        sheet_names = xl.sheet_names
-    
-    logger.info(f"📋 Found {len(sheet_names)} sheets: {sheet_names}")
-    
-    summary_indicators = ['summary', 'sum s', 'sum', 'total', 'grand total', 'report', 
-                          'overview', 'cover', 'index', 'contents', 'toc']
-    
-    best_sheet = None
-    best_score = 0
-    best_header_row = 0
-    best_info = {}
-    
-    for sheet_name in sheet_names:
-        if sheet_name.startswith('_') or sheet_name.startswith('$'):
-            continue
-        
-        if any(ind in sheet_name.lower() for ind in summary_indicators):
-            logger.info(f"  ⏭️ Skipping summary sheet: '{sheet_name}'")
-            continue
-        
-        logger.info(f"  📄 Checking sheet: '{sheet_name}'")
-        
-        try:
-            # Read sample for header detection
-            df_sample = pd.read_excel(
-                file_path,
-                sheet_name=sheet_name,
-                header=None,
-                nrows=HEADER_SCAN_ROWS + 5,
-                engine='openpyxl'
-            )
-            
-            if len(df_sample) == 0:
-                continue
-            
-            header_row, score, matched_headers = detect_header_row(df_sample)
-            
-            has_dn = any('dn no' == normalize_header(h) for h in matched_headers)
-            has_material = any('material no' == normalize_header(h) for h in matched_headers)
-            has_amount = any('dn amount' in normalize_header(h) for h in matched_headers)
-            has_qty = any('dn qty' in normalize_header(h) for h in matched_headers)
-            
-            if has_dn and has_material:
-                score += 20
-            if has_amount:
-                score += 5
-            if has_qty:
-                score += 5
-            
-            if score > best_score:
-                best_score = score
-                best_sheet = sheet_name
-                best_header_row = header_row
-                best_info = {
-                    'score': score,
-                    'matched_headers': matched_headers,
-                    'has_dn': has_dn,
-                    'has_material': has_material,
-                    'has_amount': has_amount,
-                    'has_qty': has_qty
-                }
-                logger.info(f"    ✅ New best sheet: '{sheet_name}' (score: {score})")
-                
-        except Exception as e:
-            logger.warning(f"    ❌ Error reading sheet '{sheet_name}': {e}")
-            continue
-    
-    if best_sheet is None or best_score < 3:
-        raise WorksheetNotFoundError(f"No worksheet with delivery data found. Available sheets: {sheet_names}")
-    
-    logger.info("=" * 60)
-    logger.info(f"✅ SELECTED SHEET: '{best_sheet}' (Score: {best_score})")
-    logger.info("=" * 60)
-    
-    return best_sheet, best_header_row, best_info
-
-# =====================================================================================================
-# HEADER DETECTION
-# =====================================================================================================
-
-def detect_header_row(df: pd.DataFrame, max_rows: int = HEADER_SCAN_ROWS) -> Tuple[int, int, List[str]]:
-    """Detect header row using pandas"""
-    if len(df) == 0:
-        return 0, 0, []
-    
-    header_keywords = {
-        'dn no': 3, 'material no': 3, 'dn': 2, 'material': 2,
-        'order type': 2, 'customer model': 2, 'warehouse': 2,
-        'city': 2, 'amount': 2, 'qty': 2, 'model': 1,
-        'storage': 1, 'date': 1, 'sales': 1, 'manager': 1,
-        'work': 1, 'division': 1, 'remarks': 1,
-        'pgi': 1, 'pod': 1, 'delivery': 1
-    }
-    
-    best_score = 0
-    best_row = 0
-    best_matched = []
-    
-    rows_to_check = min(max_rows, len(df))
-    
-    for row_idx in range(rows_to_check):
-        score = 0
-        row_data = df.iloc[row_idx]
-        matched_keywords = set()
-        matched_headers = []
-        
-        for value in row_data:
-            if value is None or not isinstance(value, str):
-                continue
-            
-            normalized = normalize_header(value)
-            if not normalized:
-                continue
-            
-            for keyword, weight in header_keywords.items():
-                if keyword in normalized and keyword not in matched_keywords:
-                    matched_keywords.add(keyword)
-                    matched_headers.append(str(value))
-                    score += weight
-        
-        if score > best_score:
-            best_score = score
-            best_row = row_idx
-            best_matched = matched_headers
-    
-    if best_score < 3:
-        for row_idx in range(rows_to_check):
-            row_data = df.iloc[row_idx]
-            for value in row_data:
-                if value and isinstance(value, str):
-                    normalized = normalize_header(value)
-                    if normalized in ['dn no', 'material no', 'dn', 'material']:
-                        return row_idx, 5, [str(value)]
-    
-    return best_row, best_score, best_matched
 
 # =====================================================================================================
 # STATUS ENGINE
@@ -679,7 +733,6 @@ class FastBatchProcessor:
         self.batch_id = batch_id
         self.source_filename = source_filename
         
-        # Statistics
         self.inserted_count = 0
         self.updated_count = 0
         self.skipped_count = 0
@@ -689,16 +742,13 @@ class FastBatchProcessor:
         self.validation_errors = []
         self.processed_keys = set()
         
-        # Bulk buffer
         self.bulk_buffer = []
         self.commit_counter = 0
         
-        # Options
         self.skip_dups = False
         self.update_existing = False
     
     def process_row(self, row_data: Dict[str, Any], row_number: int) -> bool:
-        """Process a single row"""
         try:
             dn_no = row_data['dn_no']
             material_no = row_data['material_no']
@@ -843,11 +893,11 @@ class FastBatchProcessor:
         }
 
 # =====================================================================================================
-# EXCEL IMPORT SERVICE - v14.2 FIXED
+# EXCEL IMPORT SERVICE - v15.0
 # =====================================================================================================
 
 class ExcelImportService:
-    """Fast Excel import with smart mapping - v14.2"""
+    """Ultra-fast Excel import with perfect worksheet detection - v15.0"""
     
     @staticmethod
     def import_delivery_report_excel(
@@ -862,7 +912,6 @@ class ExcelImportService:
         start_time = time.time()
         validation_errors = []
         
-        # Memory monitoring if available
         if HAS_PSUTIL:
             try:
                 mem = psutil.virtual_memory()
@@ -871,12 +920,11 @@ class ExcelImportService:
                 pass
         
         logger.info("=" * 60)
-        logger.info("⚡ EXCEL IMPORT v14.2 - ULTRA FAST")
+        logger.info("⚡ EXCEL IMPORT v15.0 - PERFECT WORKSHEET DETECTION")
         logger.info("=" * 60)
         logger.info(f"📁 File: {file_path}")
         logger.info(f"📋 Source: {source_filename}")
         logger.info(f"⚡ Bulk Size: {BULK_SIZE:,} rows")
-        logger.info(f"⚡ Chunk Size: {CHUNK_SIZE:,} rows")
         
         if not batch_id:
             batch_id = f"BATCH_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
