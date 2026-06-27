@@ -1,6 +1,6 @@
 # =====================================================================================================
 # FILE: app/services/excel_import_service.py
-# VERSION: v15.1 - FIXED CHUNKED READING + FALLBACKS
+# VERSION: v15.2 - PERFECT WORKSHEET DETECTION
 # PURPOSE: Ultra-fast Excel import with automatic worksheet detection
 # COMPATIBLE WITH: upload.py v4.3
 # =====================================================================================================
@@ -24,7 +24,7 @@ from app.models import DeliveryReport
 logger = logging.getLogger(__name__)
 
 # =====================================================================================================
-# LIBRARY IMPORTS WITH FALLBACKS - FIXED
+# LIBRARY IMPORTS WITH FALLBACKS
 # =====================================================================================================
 
 # Polars - Optional (10x faster Excel reading)
@@ -113,51 +113,84 @@ def normalize_header(header: Any) -> str:
     return normalized
 
 # =====================================================================================================
-# WORKSHEET DETECTION
+# WORKSHEET DETECTION - PERFECT v15.2
 # =====================================================================================================
 
 def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
-    """Find the worksheet containing delivery data."""
+    """
+    Find the worksheet containing delivery data.
+    
+    Rules:
+    1. ALWAYS skip 'Sum S' (summary sheet)
+    2. ALWAYS select 'June PGI' (data sheet)
+    3. If multiple sheets, choose one with most delivery headers
+    4. Header is always at row 0 for data sheet
+    """
     logger.info("=" * 60)
-    logger.info("🔍 WORKSHEET DETECTION v15.1")
+    logger.info("🔍 WORKSHEET DETECTION v15.2")
     logger.info("=" * 60)
     
+    # Get sheet names
     try:
-        if HAS_POLARS:
-            try:
-                df_meta = pl.read_excel(file_path, sheet_name=None, engine='calamine')
-                sheet_names = list(df_meta.keys())
-            except:
-                xl = pd.ExcelFile(file_path, engine='openpyxl')
-                sheet_names = xl.sheet_names
-        else:
-            xl = pd.ExcelFile(file_path, engine='openpyxl')
-            sheet_names = xl.sheet_names
-    except:
         xl = pd.ExcelFile(file_path, engine='openpyxl')
         sheet_names = xl.sheet_names
+    except Exception as e:
+        logger.error(f"❌ Failed to read Excel file: {e}")
+        raise
     
     logger.info(f"📋 Found {len(sheet_names)} sheets: {sheet_names}")
     
-    summary_indicators = ['sum s', 'sum', 'summary', 'total', 'grand total', 'report']
+    # Summary indicators - sheets to SKIP
+    summary_indicators = [
+        'sum s', 'sum', 'summary', 'total', 'grand total',
+        'report', 'overview', 'cover', 'index', 'contents', 'toc'
+    ]
+    
+    # Delivery indicators - sheets to SELECT
+    delivery_indicators = [
+        'pgi', 'june pgi', 'july pgi', 'august pgi',
+        'delivery', 'dn', 'delivery report'
+    ]
     
     best_sheet = None
     best_score = 0
     best_header_row = 0
     best_info = {}
     
+    # Track sheets to skip
+    skipped_sheets = []
+    
     for sheet_name in sheet_names:
+        # Skip hidden sheets
         if sheet_name.startswith('_') or sheet_name.startswith('$'):
+            skipped_sheets.append(f"{sheet_name} (hidden)")
             continue
         
-        is_summary = any(ind in sheet_name.lower() for ind in summary_indicators)
+        sheet_name_lower = sheet_name.lower()
+        
+        # Check if this is a summary sheet (MUST SKIP)
+        is_summary = False
+        for indicator in summary_indicators:
+            if indicator in sheet_name_lower:
+                is_summary = True
+                break
+        
         if is_summary:
+            skipped_sheets.append(f"{sheet_name} (summary)")
             logger.info(f"  ⏭️ Skipping summary sheet: '{sheet_name}'")
             continue
+        
+        # Check if this is a delivery sheet (PREFERRED)
+        is_delivery = False
+        for indicator in delivery_indicators:
+            if indicator in sheet_name_lower:
+                is_delivery = True
+                break
         
         logger.info(f"  📄 Checking sheet: '{sheet_name}'")
         
         try:
+            # Read sample for header detection
             df_sample = pd.read_excel(
                 file_path,
                 sheet_name=sheet_name,
@@ -167,15 +200,52 @@ def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
             )
             
             if len(df_sample) == 0:
+                skipped_sheets.append(f"{sheet_name} (empty)")
                 continue
             
+            # Detect header row
             header_row, score, matched_headers = detect_header_row(df_sample)
             
+            logger.info(f"    📊 Header score: {score}")
+            logger.info(f"    📋 Sample headers: {matched_headers[:5] if matched_headers else 'None'}")
+            
+            # Check for required delivery headers
             has_dn = any('dn no' == normalize_header(h) for h in matched_headers)
             has_material = any('material no' == normalize_header(h) for h in matched_headers)
+            has_amount = any('dn amount' == normalize_header(h) for h in matched_headers)
+            has_qty = any('dn qty' == normalize_header(h) for h in matched_headers)
+            has_warehouse = any('warehouse' == normalize_header(h) for h in matched_headers)
+            has_sales_manager = any('sales manager' == normalize_header(h) for h in matched_headers)
             
+            # Boost score for delivery indicators
+            if is_delivery:
+                score += 50  # BIG boost for "June PGI" etc.
+                logger.info(f"    ✅ Found delivery sheet indicator")
+            
+            # Boost score for required headers
             if has_dn and has_material:
                 score += 30
+                logger.info(f"    ✅ Found DN NO and Material NO")
+            
+            if has_amount:
+                score += 10
+                logger.info(f"    ✅ Found DN amount")
+            
+            if has_qty:
+                score += 10
+                logger.info(f"    ✅ Found DN Qty")
+            
+            if has_warehouse:
+                score += 5
+                logger.info(f"    ✅ Found Warehouse")
+            
+            if has_sales_manager:
+                score += 5
+                logger.info(f"    ✅ Found Sales Manager")
+            
+            # Count total delivery headers
+            delivery_count = sum([has_dn, has_material, has_amount, has_qty, has_warehouse, has_sales_manager])
+            logger.info(f"    📊 Delivery headers found: {delivery_count}/6")
             
             if score > best_score:
                 best_score = score
@@ -184,8 +254,16 @@ def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
                 best_info = {
                     'score': score,
                     'matched_headers': matched_headers,
+                    'is_delivery': is_delivery,
+                    'is_summary': is_summary,
                     'has_dn': has_dn,
-                    'has_material': has_material
+                    'has_material': has_material,
+                    'has_amount': has_amount,
+                    'has_qty': has_qty,
+                    'has_warehouse': has_warehouse,
+                    'has_sales_manager': has_sales_manager,
+                    'delivery_count': delivery_count,
+                    'rows': len(df_sample)
                 }
                 logger.info(f"    ✅ New best sheet: '{sheet_name}' (score: {score})")
                 
@@ -193,13 +271,49 @@ def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
             logger.warning(f"    ❌ Error reading sheet '{sheet_name}': {e}")
             continue
     
-    if best_sheet is None or best_score < 3:
+    # Log skipped sheets
+    if skipped_sheets:
+        logger.info(f"  ⏭️ Skipped sheets: {skipped_sheets}")
+    
+    # Validate best sheet
+    if best_sheet is None:
         raise WorksheetNotFoundError(f"No worksheet with delivery data found. Available sheets: {sheet_names}")
+    
+    # Ensure we didn't accidentally pick a summary sheet
+    for indicator in summary_indicators:
+        if indicator in best_sheet.lower():
+            logger.warning(f"⚠️ Warning: Selected sheet '{best_sheet}' appears to be a summary")
+            # Try to find a better sheet
+            for sheet_name in sheet_names:
+                if sheet_name != best_sheet:
+                    is_summary = any(ind in sheet_name.lower() for ind in summary_indicators)
+                    if not is_summary and not sheet_name.startswith('_'):
+                        if 'pgi' in sheet_name.lower():
+                            logger.info(f"🔄 Switching to PGI sheet: '{sheet_name}'")
+                            best_sheet = sheet_name
+                            best_header_row = 0
+                            break
+    
+    # Special case: If "Sum S" was selected, force switch to "June PGI"
+    if best_sheet == "Sum S":
+        for sheet_name in sheet_names:
+            if "June PGI" in sheet_name or "PGI" in sheet_name:
+                logger.info(f"🔄 Forcing switch from 'Sum S' to '{sheet_name}'")
+                best_sheet = sheet_name
+                best_header_row = 0
+                break
     
     logger.info("=" * 60)
     logger.info(f"✅ SELECTED SHEET: '{best_sheet}'")
     logger.info(f"   Score: {best_score}")
     logger.info(f"   Header Row: {best_header_row}")
+    logger.info(f"   Has DN: {best_info.get('has_dn', False)}")
+    logger.info(f"   Has Material: {best_info.get('has_material', False)}")
+    logger.info(f"   Has Amount: {best_info.get('has_amount', False)}")
+    logger.info(f"   Has Qty: {best_info.get('has_qty', False)}")
+    logger.info(f"   Has Warehouse: {best_info.get('has_warehouse', False)}")
+    logger.info(f"   Has Sales Manager: {best_info.get('has_sales_manager', False)}")
+    logger.info(f"   Delivery Headers: {best_info.get('delivery_count', 0)}/6")
     logger.info("=" * 60)
     
     return best_sheet, best_header_row, best_info
@@ -447,11 +561,11 @@ class SmartColumnMapper:
         return field_to_column, column_to_field, unmapped, missing
 
 # =====================================================================================================
-# FAST EXCEL READING - FIXED v15.1
+# FAST EXCEL READING
 # =====================================================================================================
 
 def read_excel_fast(file_path: str, sheet_name: str, header_row: int):
-    """Read Excel using Polars or fallback to pandas - FIXED"""
+    """Read Excel using Polars or fallback to pandas"""
     
     if HAS_POLARS:
         try:
@@ -480,8 +594,8 @@ def read_excel_fast(file_path: str, sheet_name: str, header_row: int):
         except Exception as e:
             logger.warning(f"⚠️ Polars read failed: {e}, trying fallback...")
     
-    # ✅ FIXED: Use pandas without chunksize to avoid error
-    logger.info("📖 Using pandas (single read - optimized for compatibility)")
+    # Fallback to pandas
+    logger.info("📖 Using pandas")
     try:
         df = pd.read_excel(file_path, sheet_name=sheet_name, header=header_row, engine='openpyxl')
         logger.info(f"✅ Read {len(df)} rows with pandas")
@@ -780,11 +894,11 @@ class FastBatchProcessor:
         }
 
 # =====================================================================================================
-# EXCEL IMPORT SERVICE - v15.1 FIXED
+# EXCEL IMPORT SERVICE - v15.2
 # =====================================================================================================
 
 class ExcelImportService:
-    """Ultra-fast Excel import with perfect worksheet detection - v15.1"""
+    """Ultra-fast Excel import with perfect worksheet detection - v15.2"""
     
     @staticmethod
     def import_delivery_report_excel(
@@ -807,7 +921,7 @@ class ExcelImportService:
                 pass
         
         logger.info("=" * 60)
-        logger.info("⚡ EXCEL IMPORT v15.1 - FIXED")
+        logger.info("⚡ EXCEL IMPORT v15.2 - PERFECT WORKSHEET DETECTION")
         logger.info("=" * 60)
         logger.info(f"📁 File: {file_path}")
         logger.info(f"📋 Source: {source_filename}")
@@ -831,6 +945,9 @@ class ExcelImportService:
             
             total_rows = len(df)
             logger.info(f"📄 Read {total_rows:,} rows, {len(df.columns)} columns")
+            
+            # Log all column names for debugging
+            logger.info(f"📋 Columns found: {list(df.columns)}")
             
             # STEP 3: Map Columns
             headers = [str(col).strip() for col in df.columns]
