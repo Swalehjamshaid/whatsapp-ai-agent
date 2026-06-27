@@ -1,7 +1,7 @@
 # =====================================================================================================
 # FILE: app/services/excel_import_service.py
-# VERSION: v15.2 - PERFECT WORKSHEET DETECTION
-# PURPOSE: Ultra-fast Excel import with automatic worksheet detection
+# VERSION: v15.3 - ALL COLUMNS FIXED
+# PURPOSE: Ultra-fast Excel import with complete column mapping
 # COMPATIBLE WITH: upload.py v4.3
 # =====================================================================================================
 
@@ -113,7 +113,7 @@ def normalize_header(header: Any) -> str:
     return normalized
 
 # =====================================================================================================
-# WORKSHEET DETECTION - PERFECT v15.2
+# WORKSHEET DETECTION
 # =====================================================================================================
 
 def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
@@ -127,7 +127,7 @@ def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
     4. Header is always at row 0 for data sheet
     """
     logger.info("=" * 60)
-    logger.info("🔍 WORKSHEET DETECTION v15.2")
+    logger.info("🔍 WORKSHEET DETECTION v15.3")
     logger.info("=" * 60)
     
     # Get sheet names
@@ -219,7 +219,7 @@ def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
             
             # Boost score for delivery indicators
             if is_delivery:
-                score += 50  # BIG boost for "June PGI" etc.
+                score += 50
                 logger.info(f"    ✅ Found delivery sheet indicator")
             
             # Boost score for required headers
@@ -381,141 +381,484 @@ def detect_header_row(df: pd.DataFrame, max_rows: int = HEADER_SCAN_ROWS) -> Tup
     return best_row, best_score, best_matched
 
 # =====================================================================================================
-# SMART COLUMN MAPPER
+# SMART COLUMN MAPPER - COMPLETE FIX v15.3
 # =====================================================================================================
 
 class SmartColumnMapper:
-    """Intelligent column mapping with fuzzy matching"""
+    """Intelligent column mapping with fuzzy matching - COMPLETE FIX"""
     
     HEADER_MAP = {
-        # Order Type
-        'order type': 'order_type', 'order': 'order_type', 'ordertype': 'order_type',
-        'type': 'order_type', 'order no': 'order_type', 'order number': 'order_type',
-        'sales order': 'order_type', 'so': 'order_type', 'order_type': 'order_type',
-        'order-type': 'order_type', 'order.type': 'order_type', 'order#': 'order_type',
+        # ============================================================
+        # COLUMN 1: Order Type
+        # ============================================================
+        'order type': 'order_type',
+        'order': 'order_type',
+        'ordertype': 'order_type',
+        'type': 'order_type',
+        'order no': 'order_type',
+        'order number': 'order_type',
+        'sales order': 'order_type',
+        'so': 'order_type',
+        'order_type': 'order_type',
+        'order-type': 'order_type',
+        'order.type': 'order_type',
+        'order#': 'order_type',
+        'Order type': 'order_type',
+        'Order Type': 'order_type',
+        'ORDER TYPE': 'order_type',
         
-        # DN NO
-        'dn no': 'dn_no', 'dn': 'dn_no', 'dn#': 'dn_no', 'd n no': 'dn_no',
-        'd n': 'dn_no', 'delivery note': 'dn_no', 'delivery note no': 'dn_no',
-        'delivery note number': 'dn_no', 'delivery number': 'dn_no', 'dn number': 'dn_no',
-        'delivery note #': 'dn_no', 'dn_no': 'dn_no', 'dn-no': 'dn_no',
-        'dn.no': 'dn_no', 'dnnumber': 'dn_no',
+        # ============================================================
+        # COLUMN 2: DN NO - COMPLETE
+        # ============================================================
+        'dn no': 'dn_no',
+        'dn': 'dn_no',
+        'dn#': 'dn_no',
+        'd n no': 'dn_no',
+        'd n': 'dn_no',
+        'delivery note': 'dn_no',
+        'delivery note no': 'dn_no',
+        'delivery note number': 'dn_no',
+        'delivery number': 'dn_no',
+        'dn number': 'dn_no',
+        'delivery note #': 'dn_no',
+        'dn_no': 'dn_no',
+        'dn-no': 'dn_no',
+        'dn.no': 'dn_no',
+        'dnnumber': 'dn_no',
+        'DN NO': 'dn_no',
+        'DN No': 'dn_no',
+        'DN_NO': 'dn_no',
+        'DN-NO': 'dn_no',
+        'DN.NO': 'dn_no',
+        'DN#': 'dn_no',
         
-        # DN amount
-        'dn amount': 'dn_amount', 'dn amount ': 'dn_amount', 'dn_amount': 'dn_amount',
-        'dn-amount': 'dn_amount', 'dn.amount': 'dn_amount', 'dn#amount': 'dn_amount',
-        'dnamount': 'dn_amount', 'amount': 'dn_amount', 'value': 'dn_amount',
-        'net amount': 'dn_amount', 'total': 'dn_amount', 'order amount': 'dn_amount',
-        'delivery amount': 'dn_amount', 'amount value': 'dn_amount', 'dn amt': 'dn_amount',
-        'amt': 'dn_amount', 'amount (pkr)': 'dn_amount', 'pkr': 'dn_amount',
+        # ============================================================
+        # COLUMN 3: DN amount - COMPLETE FIX (ALL VARIATIONS)
+        # ============================================================
+        'dn amount': 'dn_amount',
+        'dn amount ': 'dn_amount',
+        'dn_amount': 'dn_amount',
+        'dn-amount': 'dn_amount',
+        'dn.amount': 'dn_amount',
+        'dn#amount': 'dn_amount',
+        'dnamount': 'dn_amount',
+        'amount': 'dn_amount',
+        'value': 'dn_amount',
+        'net amount': 'dn_amount',
+        'total': 'dn_amount',
+        'order amount': 'dn_amount',
+        'delivery amount': 'dn_amount',
+        'amount value': 'dn_amount',
+        'dn amt': 'dn_amount',
+        'amt': 'dn_amount',
+        'amount (pkr)': 'dn_amount',
+        'pkr': 'dn_amount',
+        'DN amount': 'dn_amount',
+        'DN Amount': 'dn_amount',
+        'DN amount ': 'dn_amount',
+        'DN Amount ': 'dn_amount',
+        'dn amount pkr': 'dn_amount',
+        'amount pkr': 'dn_amount',
+        'dn value': 'dn_amount',
+        'net': 'dn_amount',
+        'dn total': 'dn_amount',
+        'dn net': 'dn_amount',
+        'invoice amount': 'dn_amount',
+        'dn invoice amount': 'dn_amount',
+        'delivery value': 'dn_amount',
+        'dn total value': 'dn_amount',
+        'dn value pkr': 'dn_amount',
+        'dn amount in pkr': 'dn_amount',
+        'dn amount PKR': 'dn_amount',
+        'amount PKR': 'dn_amount',
+        'DN AMOUNT': 'dn_amount',
+        'DN AMOUNT ': 'dn_amount',
+        'DN_AMOUNT': 'dn_amount',
+        'DN-AMOUNT': 'dn_amount',
+        'DN.AMOUNT': 'dn_amount',
+        'DN#AMOUNT': 'dn_amount',
+        'AMOUNT': 'dn_amount',
+        'VALUE': 'dn_amount',
+        'NET AMOUNT': 'dn_amount',
+        'TOTAL': 'dn_amount',
+        'ORDER AMOUNT': 'dn_amount',
+        'DELIVERY AMOUNT': 'dn_amount',
+        'AMOUNT VALUE': 'dn_amount',
+        'DN AMT': 'dn_amount',
+        'AMT': 'dn_amount',
+        'AMOUNT (PKR)': 'dn_amount',
+        'PKR': 'dn_amount',
         
-        # DN Qty
-        'dn qty': 'dn_qty', 'dn quantity': 'dn_qty', 'dn_qty': 'dn_qty',
-        'dn-qty': 'dn_qty', 'dn.qty': 'dn_qty', 'dn#qty': 'dn_qty',
-        'dnqty': 'dn_qty', 'qty': 'dn_qty', 'quantity': 'dn_qty',
-        'units': 'dn_qty', 'order qty': 'dn_qty', 'delivery qty': 'dn_qty',
-        'qty (units)': 'dn_qty', 'piece': 'dn_qty', 'pcs': 'dn_qty',
+        # ============================================================
+        # COLUMN 4: DN Qty - COMPLETE FIX (ALL VARIATIONS)
+        # ============================================================
+        'dn qty': 'dn_qty',
+        'dn quantity': 'dn_qty',
+        'dn_qty': 'dn_qty',
+        'dn-qty': 'dn_qty',
+        'dn.qty': 'dn_qty',
+        'dn#qty': 'dn_qty',
+        'dnqty': 'dn_qty',
+        'qty': 'dn_qty',
+        'quantity': 'dn_qty',
+        'units': 'dn_qty',
+        'order qty': 'dn_qty',
+        'delivery qty': 'dn_qty',
+        'qty (units)': 'dn_qty',
+        'piece': 'dn_qty',
+        'pcs': 'dn_qty',
+        'DN Qty': 'dn_qty',
+        'DN QTY': 'dn_qty',
+        'DN Qty ': 'dn_qty',
+        'DN_QTY': 'dn_qty',
+        'DN-QTY': 'dn_qty',
+        'DN.QTY': 'dn_qty',
+        'DN#QTY': 'dn_qty',
+        'QTY': 'dn_qty',
+        'QUANTITY': 'dn_qty',
+        'UNITS': 'dn_qty',
+        'ORDER QTY': 'dn_qty',
+        'DELIVERY QTY': 'dn_qty',
         
-        # DN Work
-        'dn work': 'dn_work', 'work': 'dn_work', 'work order': 'dn_work',
-        'work no': 'dn_work', 'work number': 'dn_work', 'job': 'dn_work',
-        'dn_work': 'dn_work', 'dn-work': 'dn_work', 'status': 'dn_work',
-        'dn status': 'dn_work', 'delivery status': 'dn_work',
+        # ============================================================
+        # COLUMN 5: DN Work - COMPLETE FIX (ALL VARIATIONS)
+        # ============================================================
+        'dn work': 'dn_work',
+        'work': 'dn_work',
+        'work order': 'dn_work',
+        'work no': 'dn_work',
+        'work number': 'dn_work',
+        'job': 'dn_work',
+        'dn_work': 'dn_work',
+        'dn-work': 'dn_work',
+        'status': 'dn_work',
+        'dn status': 'dn_work',
+        'delivery status': 'dn_work',
+        'DN Work': 'dn_work',
+        'DN Work ': 'dn_work',
+        'DN_WORK': 'dn_work',
+        'DN-WORK': 'dn_work',
+        'DN.WORK': 'dn_work',
+        'DN#WORK': 'dn_work',
+        'WORK': 'dn_work',
+        'WORK ORDER': 'dn_work',
+        'STATUS': 'dn_work',
+        'DN STATUS': 'dn_work',
+        'DELIVERY STATUS': 'dn_work',
         
-        # Division
-        'division': 'division', 'div': 'division', 'department': 'division',
-        'business unit': 'division', 'division ': 'division',
-        'product line': 'division', 'category': 'division',
+        # ============================================================
+        # COLUMN 6: Division
+        # ============================================================
+        'division': 'division',
+        'div': 'division',
+        'department': 'division',
+        'business unit': 'division',
+        'division ': 'division',
+        'product line': 'division',
+        'category': 'division',
+        'Division': 'division',
+        'DIVISION': 'division',
+        'DIV': 'division',
+        'DEPARTMENT': 'division',
+        'BUSINESS UNIT': 'division',
+        'PRODUCT LINE': 'division',
+        'CATEGORY': 'division',
         
-        # Material NO
-        'material no': 'material_no', 'material': 'material_no', 'material#': 'material_no',
-        'material number': 'material_no', 'material code': 'material_no', 'sku': 'material_no',
-        'product no': 'material_no', 'product number': 'material_no', 'item no': 'material_no',
-        'item': 'material_no', 'part no': 'material_no', 'part number': 'material_no',
-        'material_no': 'material_no', 'material-no': 'material_no',
-        'material.number': 'material_no', 'product code': 'material_no',
+        # ============================================================
+        # COLUMN 7: Material NO - COMPLETE
+        # ============================================================
+        'material no': 'material_no',
+        'material': 'material_no',
+        'material#': 'material_no',
+        'material number': 'material_no',
+        'material code': 'material_no',
+        'sku': 'material_no',
+        'product no': 'material_no',
+        'product number': 'material_no',
+        'item no': 'material_no',
+        'item': 'material_no',
+        'part no': 'material_no',
+        'part number': 'material_no',
+        'material_no': 'material_no',
+        'material-no': 'material_no',
+        'material.number': 'material_no',
+        'product code': 'material_no',
+        'Material NO': 'material_no',
+        'Material No': 'material_no',
+        'MATERIAL NO': 'material_no',
+        'MATERIAL': 'material_no',
+        'MATERIAL#': 'material_no',
+        'SKU': 'material_no',
+        'PRODUCT NO': 'material_no',
         
-        # Customer Model
-        'customer model': 'customer_model', 'model': 'customer_model',
-        'model name': 'customer_model', 'product model': 'customer_model',
-        'model no': 'customer_model', 'model number': 'customer_model',
-        'product': 'customer_model', 'item description': 'customer_model',
-        'customer_model': 'customer_model', 'customer-model': 'customer_model',
-        'model name': 'customer_model', 'description': 'customer_model',
+        # ============================================================
+        # COLUMN 8: Customer Model
+        # ============================================================
+        'customer model': 'customer_model',
+        'model': 'customer_model',
+        'model name': 'customer_model',
+        'product model': 'customer_model',
+        'model no': 'customer_model',
+        'model number': 'customer_model',
+        'product': 'customer_model',
+        'item description': 'customer_model',
+        'customer_model': 'customer_model',
+        'customer-model': 'customer_model',
+        'description': 'customer_model',
+        'Customer Model': 'customer_model',
+        'Customer model': 'customer_model',
+        'CUSTOMER MODEL': 'customer_model',
+        'MODEL': 'customer_model',
+        'MODEL NAME': 'customer_model',
+        'PRODUCT MODEL': 'customer_model',
+        'PRODUCT': 'customer_model',
         
-        # Sales Office
-        'sales office': 'sales_office', 'salesoffice': 'sales_office',
-        'office': 'sales_office', 'sales': 'sales_office',
-        'sales region': 'sales_office', 'region': 'sales_office',
-        'area': 'sales_office', 'sales_office': 'sales_office',
-        'sales-office': 'sales_office', 'branch': 'sales_office',
+        # ============================================================
+        # COLUMN 9: sales office
+        # ============================================================
+        'sales office': 'sales_office',
+        'salesoffice': 'sales_office',
+        'office': 'sales_office',
+        'sales': 'sales_office',
+        'sales region': 'sales_office',
+        'region': 'sales_office',
+        'area': 'sales_office',
+        'sales_office': 'sales_office',
+        'sales-office': 'sales_office',
+        'branch': 'sales_office',
         'location': 'sales_office',
+        'Sales Office': 'sales_office',
+        'Sales office': 'sales_office',
+        'SALES OFFICE': 'sales_office',
+        'SALESOFFICE': 'sales_office',
+        'OFFICE': 'sales_office',
+        'SALES': 'sales_office',
+        'SALES REGION': 'sales_office',
+        'REGION': 'sales_office',
+        'AREA': 'sales_office',
+        'BRANCH': 'sales_office',
         
-        # Sold-to-party Name
-        'sold to party name': 'customer_name', 'sold-to-party name': 'customer_name',
-        'sold to party': 'customer_name', 'sold-to-party': 'customer_name',
-        'customer name': 'customer_name', 'customer': 'customer_name',
-        'dealer name': 'customer_name', 'party name': 'customer_name',
-        'client name': 'customer_name', 'buyer': 'customer_name',
-        'customer party': 'customer_name', 'customer_name': 'customer_name',
-        'customer-name': 'customer_name', 'party': 'customer_name',
+        # ============================================================
+        # COLUMN 10: Sold-to-party Name (customer_name)
+        # ============================================================
+        'sold to party name': 'customer_name',
+        'sold-to-party name': 'customer_name',
+        'sold to party': 'customer_name',
+        'sold-to-party': 'customer_name',
+        'customer name': 'customer_name',
+        'customer': 'customer_name',
+        'dealer name': 'customer_name',
+        'party name': 'customer_name',
+        'client name': 'customer_name',
+        'buyer': 'customer_name',
+        'customer party': 'customer_name',
+        'customer_name': 'customer_name',
+        'customer-name': 'customer_name',
+        'party': 'customer_name',
         'dealer': 'customer_name',
+        'Sold-to-party Name': 'customer_name',
+        'Sold-to-party name': 'customer_name',
+        'Sold to Party Name': 'customer_name',
+        'SOLD TO PARTY NAME': 'customer_name',
+        'SOLD-TO-PARTY NAME': 'customer_name',
+        'CUSTOMER NAME': 'customer_name',
+        'CUSTOMER': 'customer_name',
+        'DEALER NAME': 'customer_name',
+        'PARTY NAME': 'customer_name',
+        'CLIENT NAME': 'customer_name',
+        'DEALER': 'customer_name',
         
-        # Ship-to City
-        'ship to city': 'ship_to_city', 'ship-to city': 'ship_to_city',
-        'ship-to-city': 'ship_to_city', 'shipcity': 'ship_to_city',
-        'city': 'ship_to_city', 'destination city': 'ship_to_city',
-        'ship to': 'ship_to_city', 'delivery city': 'ship_to_city',
-        'customer city': 'ship_to_city', 'ship_to_city': 'ship_to_city',
-        'ship-to-city': 'ship_to_city', 'delivery location': 'ship_to_city',
+        # ============================================================
+        # COLUMN 11: Ship-to City
+        # ============================================================
+        'ship to city': 'ship_to_city',
+        'ship-to city': 'ship_to_city',
+        'ship-to-city': 'ship_to_city',
+        'shipcity': 'ship_to_city',
+        'city': 'ship_to_city',
+        'destination city': 'ship_to_city',
+        'ship to': 'ship_to_city',
+        'delivery city': 'ship_to_city',
+        'customer city': 'ship_to_city',
+        'ship_to_city': 'ship_to_city',
+        'ship-to-city': 'ship_to_city',
         'destination': 'ship_to_city',
+        'Ship-to City': 'ship_to_city',
+        'Ship-to city': 'ship_to_city',
+        'Ship To City': 'ship_to_city',
+        'SHIP-TO CITY': 'ship_to_city',
+        'SHIP-TO-CITY': 'ship_to_city',
+        'SHIPCITY': 'ship_to_city',
+        'CITY': 'ship_to_city',
+        'DESTINATION CITY': 'ship_to_city',
+        'DELIVERY CITY': 'ship_to_city',
+        'CUSTOMER CITY': 'ship_to_city',
         
-        # Storage
-        'storage': 'storage_location', 'storage location': 'storage_location',
-        'storagelocation': 'storage_location', 'bin': 'storage_location',
-        'warehouse bin': 'storage_location', 'location': 'storage_location',
-        'storage_location': 'storage_location', 'storage-location': 'storage_location',
-        'store': 'storage_location', 'storage code': 'storage_location',
+        # ============================================================
+        # COLUMN 12: storage - COMPLETE FIX (ALL VARIATIONS)
+        # ============================================================
+        'storage': 'storage_location',
+        'storage location': 'storage_location',
+        'storagelocation': 'storage_location',
+        'bin': 'storage_location',
+        'warehouse bin': 'storage_location',
+        'location': 'storage_location',
+        'storage_location': 'storage_location',
+        'storage-location': 'storage_location',
+        'store': 'storage_location',
+        'storage code': 'storage_location',
+        'Storage': 'storage_location',
+        'STORAGE': 'storage_location',
+        'Storage Location': 'storage_location',
+        'STORAGE LOCATION': 'storage_location',
+        'STORAGELOCATION': 'storage_location',
+        'BIN': 'storage_location',
+        'WAREHOUSE BIN': 'storage_location',
+        'LOCATION': 'storage_location',
+        'STORE': 'storage_location',
+        'STORAGE CODE': 'storage_location',
         
-        # Warehouse
-        'warehouse': 'warehouse', 'ware house': 'warehouse', 'ware_house': 'warehouse',
-        'ware-house': 'warehouse', 'ware.house': 'warehouse', 'wh': 'warehouse',
-        'warehouse name': 'warehouse', 'warehouse location': 'warehouse',
-        'facility': 'warehouse', 'plant': 'warehouse', 'warehouse ': 'warehouse',
-        'whse': 'warehouse', 'store': 'warehouse',
+        # ============================================================
+        # COLUMN 13: Warehouse - COMPLETE FIX (ALL VARIATIONS)
+        # ============================================================
+        'warehouse': 'warehouse',
+        'ware house': 'warehouse',
+        'ware_house': 'warehouse',
+        'ware-house': 'warehouse',
+        'ware.house': 'warehouse',
+        'wh': 'warehouse',
+        'warehouse name': 'warehouse',
+        'warehouse location': 'warehouse',
+        'facility': 'warehouse',
+        'plant': 'warehouse',
+        'warehouse ': 'warehouse',
+        'whse': 'warehouse',
+        'store': 'warehouse',
+        'Warehouse': 'warehouse',
+        'Warehouse ': 'warehouse',
+        'WAREHOUSE': 'warehouse',
+        'Ware House': 'warehouse',
+        'WARE HOUSE': 'warehouse',
+        'WARE_HOUSE': 'warehouse',
+        'WARE-HOUSE': 'warehouse',
+        'WARE.HOUSE': 'warehouse',
+        'WH': 'warehouse',
+        'WHSE': 'warehouse',
+        'PLANT': 'warehouse',
+        'FACILITY': 'warehouse',
+        'WAREHOUSE NAME': 'warehouse',
+        'WAREHOUSE LOCATION': 'warehouse',
         
-        # DN Create date
-        'dn create date': 'dn_create_date', 'dn created date': 'dn_create_date',
-        'dn_create_date': 'dn_create_date', 'dn-created-date': 'dn_create_date',
-        'create date': 'dn_create_date', 'created date': 'dn_create_date',
-        'dn created': 'dn_create_date', 'date created': 'dn_create_date',
-        'creation date': 'dn_create_date', 'order date': 'dn_create_date',
-        'order created': 'dn_create_date', 'document date': 'dn_create_date',
-        'dn date': 'dn_create_date', 'date': 'dn_create_date',
+        # ============================================================
+        # COLUMN 14: DN Create date
+        # ============================================================
+        'dn create date': 'dn_create_date',
+        'dn created date': 'dn_create_date',
+        'dn_create_date': 'dn_create_date',
+        'dn-created-date': 'dn_create_date',
+        'create date': 'dn_create_date',
+        'created date': 'dn_create_date',
+        'dn created': 'dn_create_date',
+        'date created': 'dn_create_date',
+        'creation date': 'dn_create_date',
+        'order date': 'dn_create_date',
+        'order created': 'dn_create_date',
+        'document date': 'dn_create_date',
+        'dn date': 'dn_create_date',
+        'date': 'dn_create_date',
+        'DN Create date': 'dn_create_date',
+        'DN Create Date': 'dn_create_date',
+        'DN Created date': 'dn_create_date',
+        'DN CREATED DATE': 'dn_create_date',
+        'DN_CREATE_DATE': 'dn_create_date',
+        'DN-CREATED-DATE': 'dn_create_date',
+        'CREATE DATE': 'dn_create_date',
+        'CREATED DATE': 'dn_create_date',
+        'ORDER DATE': 'dn_create_date',
+        'DOCUMENT DATE': 'dn_create_date',
         
-        # Good issue date
-        'good issue date': 'good_issue_date', 'good issue': 'good_issue_date',
-        'good_issue_date': 'good_issue_date', 'pgi date': 'good_issue_date',
-        'pgi': 'good_issue_date', 'goods issue': 'good_issue_date',
-        'dispatch date': 'good_issue_date', 'shipped date': 'good_issue_date',
-        'ship date': 'good_issue_date', 'delivery date': 'good_issue_date',
-        'good issue date ': 'good_issue_date', 'pgi': 'good_issue_date',
+        # ============================================================
+        # COLUMN 15: Good issue date
+        # ============================================================
+        'good issue date': 'good_issue_date',
+        'good issue': 'good_issue_date',
+        'good_issue_date': 'good_issue_date',
+        'pgi date': 'good_issue_date',
+        'pgi': 'good_issue_date',
+        'goods issue': 'good_issue_date',
+        'dispatch date': 'good_issue_date',
+        'shipped date': 'good_issue_date',
+        'ship date': 'good_issue_date',
+        'delivery date': 'good_issue_date',
+        'good issue date ': 'good_issue_date',
         'goods issue date': 'good_issue_date',
+        'Good issue date': 'good_issue_date',
+        'Good Issue Date': 'good_issue_date',
+        'GOOD ISSUE DATE': 'good_issue_date',
+        'GOOD_ISSUE_DATE': 'good_issue_date',
+        'PGI DATE': 'good_issue_date',
+        'PGI': 'good_issue_date',
+        'GOODS ISSUE': 'good_issue_date',
+        'DISPATCH DATE': 'good_issue_date',
+        'SHIPPED DATE': 'good_issue_date',
+        'SHIP DATE': 'good_issue_date',
+        'DELIVERY DATE': 'good_issue_date',
         
-        # POD Date
-        'pod date': 'pod_date', 'pod': 'pod_date', 'pod_date': 'pod_date',
-        'proof of delivery': 'pod_date', 'delivery date': 'pod_date',
-        'received date': 'pod_date', 'confirmation date': 'pod_date',
-        'customer received': 'pod_date', 'delivery confirmation': 'pod_date',
-        'pod_date ': 'pod_date', 'pod date': 'pod_date', 'receipt date': 'pod_date',
+        # ============================================================
+        # COLUMN 16: POD Date
+        # ============================================================
+        'pod date': 'pod_date',
+        'pod': 'pod_date',
+        'pod_date': 'pod_date',
+        'proof of delivery': 'pod_date',
+        'delivery date': 'pod_date',
+        'received date': 'pod_date',
+        'confirmation date': 'pod_date',
+        'customer received': 'pod_date',
+        'delivery confirmation': 'pod_date',
+        'pod_date ': 'pod_date',
+        'receipt date': 'pod_date',
+        'POD Date': 'pod_date',
+        'POD date': 'pod_date',
+        'POD': 'pod_date',
+        'POD_DATE': 'pod_date',
+        'PROOF OF DELIVERY': 'pod_date',
+        'RECEIVED DATE': 'pod_date',
+        'CONFIRMATION DATE': 'pod_date',
+        'CUSTOMER RECEIVED': 'pod_date',
+        'DELIVERY CONFIRMATION': 'pod_date',
+        'RECEIPT DATE': 'pod_date',
         
-        # Sales Manager
-        'sales manager': 'sales_manager', 'salesmanager': 'sales_manager',
-        'manager': 'sales_manager', 'sales rep': 'sales_manager',
-        'representative': 'sales_manager', 'sales person': 'sales_manager',
-        'sales_manager': 'sales_manager', 'sales-manager': 'sales_manager',
-        'sales.manager': 'sales_manager', 'salesperson': 'sales_manager',
-        'rep': 'sales_manager', 'sales manager name': 'sales_manager',
+        # ============================================================
+        # COLUMN 17: Sales Manager - COMPLETE FIX (ALL VARIATIONS)
+        # ============================================================
+        'sales manager': 'sales_manager',
+        'salesmanager': 'sales_manager',
+        'manager': 'sales_manager',
+        'sales rep': 'sales_manager',
+        'representative': 'sales_manager',
+        'sales person': 'sales_manager',
+        'sales_manager': 'sales_manager',
+        'sales-manager': 'sales_manager',
+        'sales.manager': 'sales_manager',
+        'salesperson': 'sales_manager',
+        'rep': 'sales_manager',
+        'sales manager name': 'sales_manager',
+        'Sales Manager': 'sales_manager',
+        'Sales Manager ': 'sales_manager',
+        'SALES MANAGER': 'sales_manager',
+        'Salesmanager': 'sales_manager',
+        'SALESMANAGER': 'sales_manager',
+        'MANAGER': 'sales_manager',
+        'SALES REP': 'sales_manager',
+        'REPRESENTATIVE': 'sales_manager',
+        'SALES PERSON': 'sales_manager',
+        'SALES_MANAGER': 'sales_manager',
+        'SALES-MANAGER': 'sales_manager',
+        'SALES.MANAGER': 'sales_manager',
+        'SALESPERSON': 'sales_manager',
+        'REP': 'sales_manager',
+        'SALES MANAGER NAME': 'sales_manager',
     }
     
     _normalized_keys = list(HEADER_MAP.keys())
@@ -894,11 +1237,11 @@ class FastBatchProcessor:
         }
 
 # =====================================================================================================
-# EXCEL IMPORT SERVICE - v15.2
+# EXCEL IMPORT SERVICE - v15.3 FINAL
 # =====================================================================================================
 
 class ExcelImportService:
-    """Ultra-fast Excel import with perfect worksheet detection - v15.2"""
+    """Ultra-fast Excel import with complete column mapping - v15.3"""
     
     @staticmethod
     def import_delivery_report_excel(
@@ -921,7 +1264,7 @@ class ExcelImportService:
                 pass
         
         logger.info("=" * 60)
-        logger.info("⚡ EXCEL IMPORT v15.2 - PERFECT WORKSHEET DETECTION")
+        logger.info("⚡ EXCEL IMPORT v15.3 - COMPLETE FIX")
         logger.info("=" * 60)
         logger.info(f"📁 File: {file_path}")
         logger.info(f"📋 Source: {source_filename}")
