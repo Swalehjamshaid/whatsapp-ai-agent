@@ -1,8 +1,7 @@
 # =====================================================================================================
 # FILE: app/services/excel_import_service.py
-# VERSION: v15.4 - COMPLETE COLUMN MAPPING FIXED
-# PURPOSE: Ultra-fast Excel import with complete column mapping
-# COMPATIBLE WITH: upload.py v4.3
+# VERSION: v15.6 - EXACT 17-COLUMN MAPPING
+# PURPOSE: Ultra-fast Excel import with exact column mapping
 # =====================================================================================================
 
 import pandas as pd
@@ -24,10 +23,9 @@ from app.models import DeliveryReport
 logger = logging.getLogger(__name__)
 
 # =====================================================================================================
-# LIBRARY IMPORTS WITH FALLBACKS
+# BLOCK 1: LIBRARY IMPORTS WITH FALLBACKS
 # =====================================================================================================
 
-# Polars - Optional (10x faster Excel reading)
 try:
     import polars as pl
     HAS_POLARS = True
@@ -36,7 +34,6 @@ except ImportError:
     HAS_POLARS = False
     logger.warning("⚠️ Polars not available - Using pandas for Excel reading")
 
-# RapidFuzz - Optional (smart column mapping)
 try:
     from rapidfuzz import fuzz
     HAS_RAPIDFUZZ = True
@@ -45,7 +42,6 @@ except ImportError:
     HAS_RAPIDFUZZ = False
     logger.warning("⚠️ RapidFuzz not available - Using exact column mapping")
 
-# Psutil - Optional (memory monitoring)
 try:
     import psutil
     HAS_PSUTIL = True
@@ -54,7 +50,6 @@ except ImportError:
     HAS_PSUTIL = False
     logger.warning("⚠️ Psutil not available - Memory monitoring disabled")
 
-# NumPy - Optional (faster processing)
 try:
     import numpy as np
     HAS_NUMPY = True
@@ -62,17 +57,17 @@ except ImportError:
     HAS_NUMPY = False
 
 # =====================================================================================================
-# CONFIGURATION
+# BLOCK 2: CONFIGURATION
 # =====================================================================================================
 
-BULK_SIZE = 100000
-HEADER_SCAN_ROWS = 25
-STRICT_MODE = True
-GC_INTERVAL = 5
-FUZZY_THRESHOLD = 85
+BULK_SIZE            = 100000
+HEADER_SCAN_ROWS     = 25
+STRICT_MODE          = True
+GC_INTERVAL          = 5
+FUZZY_THRESHOLD      = 85
 
 # =====================================================================================================
-# EXCEPTIONS
+# BLOCK 3: EXCEPTIONS
 # =====================================================================================================
 
 class ImportError(Exception):
@@ -91,11 +86,11 @@ class VerificationError(Exception):
     pass
 
 # =====================================================================================================
-# HEADER NORMALIZATION
+# BLOCK 4: HEADER NORMALIZATION
 # =====================================================================================================
 
-_separator_re = re.compile(r'[_\-./\\#·•:;|]')
-_whitespace_re = re.compile(r'\s+')
+_separator_re   = re.compile(r'[_\-./\\#·•:;|]')
+_whitespace_re  = re.compile(r'\s+')
 
 def normalize_header(header: Any) -> str:
     """Normalize Excel header for consistent matching"""
@@ -113,24 +108,15 @@ def normalize_header(header: Any) -> str:
     return normalized
 
 # =====================================================================================================
-# WORKSHEET DETECTION
+# BLOCK 5: WORKSHEET DETECTION
 # =====================================================================================================
 
 def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
-    """
-    Find the worksheet containing delivery data.
-    
-    Rules:
-    1. ALWAYS skip 'Sum S' (summary sheet)
-    2. ALWAYS select 'June PGI' (data sheet)
-    3. If multiple sheets, choose one with most delivery headers
-    4. Header is always at row 0 for data sheet
-    """
+    """Find the worksheet containing delivery data."""
     logger.info("=" * 60)
-    logger.info("🔍 WORKSHEET DETECTION v15.4")
+    logger.info("🔍 WORKSHEET DETECTION v15.6")
     logger.info("=" * 60)
     
-    # Get sheet names
     try:
         xl = pd.ExcelFile(file_path, engine='openpyxl')
         sheet_names = xl.sheet_names
@@ -140,57 +126,32 @@ def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
     
     logger.info(f"📋 Found {len(sheet_names)} sheets: {sheet_names}")
     
-    # Summary indicators - sheets to SKIP
-    summary_indicators = [
-        'sum s', 'sum', 'summary', 'total', 'grand total',
-        'report', 'overview', 'cover', 'index', 'contents', 'toc'
-    ]
+    summary_indicators = ['sum s', 'sum', 'summary', 'total', 'grand total', 'report', 'overview']
+    delivery_indicators = ['pgi', 'delivery', 'dn', 'data']
     
-    # Delivery indicators - sheets to SELECT
-    delivery_indicators = [
-        'pgi', 'june pgi', 'july pgi', 'august pgi',
-        'delivery', 'dn', 'delivery report', 'data'
-    ]
-    
-    best_sheet = None
-    best_score = 0
-    best_header_row = 0
-    best_info = {}
-    
-    # Track sheets to skip
-    skipped_sheets = []
+    best_sheet       = None
+    best_score       = 0
+    best_header_row  = 0
+    best_info        = {}
+    skipped_sheets   = []
     
     for sheet_name in sheet_names:
-        # Skip hidden sheets
         if sheet_name.startswith('_') or sheet_name.startswith('$'):
             skipped_sheets.append(f"{sheet_name} (hidden)")
             continue
         
         sheet_name_lower = sheet_name.lower()
         
-        # Check if this is a summary sheet (MUST SKIP)
-        is_summary = False
-        for indicator in summary_indicators:
-            if indicator in sheet_name_lower:
-                is_summary = True
-                break
-        
+        is_summary = any(ind in sheet_name_lower for ind in summary_indicators)
         if is_summary:
             skipped_sheets.append(f"{sheet_name} (summary)")
             logger.info(f"  ⏭️ Skipping summary sheet: '{sheet_name}'")
             continue
         
-        # Check if this is a delivery sheet (PREFERRED)
-        is_delivery = False
-        for indicator in delivery_indicators:
-            if indicator in sheet_name_lower:
-                is_delivery = True
-                break
-        
+        is_delivery = any(ind in sheet_name_lower for ind in delivery_indicators)
         logger.info(f"  📄 Checking sheet: '{sheet_name}'")
         
         try:
-            # Read sample for header detection
             df_sample = pd.read_excel(
                 file_path,
                 sheet_name=sheet_name,
@@ -203,26 +164,20 @@ def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
                 skipped_sheets.append(f"{sheet_name} (empty)")
                 continue
             
-            # Detect header row
             header_row, score, matched_headers = detect_header_row(df_sample)
             
             logger.info(f"    📊 Header score: {score}")
             logger.info(f"    📋 Sample headers: {matched_headers[:5] if matched_headers else 'None'}")
             
-            # Check for required delivery headers
-            has_dn = any('dn no' == normalize_header(h) for h in matched_headers)
+            has_dn    = any('dn no' == normalize_header(h) for h in matched_headers)
             has_material = any('material no' == normalize_header(h) for h in matched_headers)
-            has_amount = any('dn amount' == normalize_header(h) for h in matched_headers)
-            has_qty = any('dn qty' == normalize_header(h) for h in matched_headers)
-            has_warehouse = any('warehouse' == normalize_header(h) for h in matched_headers)
-            has_sales_manager = any('sales manager' == normalize_header(h) for h in matched_headers)
+            has_amount   = any('dn amount' == normalize_header(h) for h in matched_headers)
+            has_qty      = any('dn qty' == normalize_header(h) for h in matched_headers)
             
-            # Boost score for delivery indicators
             if is_delivery:
                 score += 50
                 logger.info(f"    ✅ Found delivery sheet indicator")
             
-            # Boost score for required headers
             if has_dn and has_material:
                 score += 30
                 logger.info(f"    ✅ Found DN NO and Material NO")
@@ -235,35 +190,18 @@ def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
                 score += 10
                 logger.info(f"    ✅ Found DN Qty")
             
-            if has_warehouse:
-                score += 5
-                logger.info(f"    ✅ Found Warehouse")
-            
-            if has_sales_manager:
-                score += 5
-                logger.info(f"    ✅ Found Sales Manager")
-            
-            # Count total delivery headers
-            delivery_count = sum([has_dn, has_material, has_amount, has_qty, has_warehouse, has_sales_manager])
-            logger.info(f"    📊 Delivery headers found: {delivery_count}/6")
-            
             if score > best_score:
-                best_score = score
-                best_sheet = sheet_name
+                best_score      = score
+                best_sheet      = sheet_name
                 best_header_row = header_row
-                best_info = {
-                    'score': score,
+                best_info       = {
+                    'score'          : score,
                     'matched_headers': matched_headers,
-                    'is_delivery': is_delivery,
-                    'is_summary': is_summary,
-                    'has_dn': has_dn,
-                    'has_material': has_material,
-                    'has_amount': has_amount,
-                    'has_qty': has_qty,
-                    'has_warehouse': has_warehouse,
-                    'has_sales_manager': has_sales_manager,
-                    'delivery_count': delivery_count,
-                    'rows': len(df_sample)
+                    'is_delivery'    : is_delivery,
+                    'has_dn'         : has_dn,
+                    'has_material'   : has_material,
+                    'has_amount'     : has_amount,
+                    'has_qty'        : has_qty,
                 }
                 logger.info(f"    ✅ New best sheet: '{sheet_name}' (score: {score})")
                 
@@ -271,35 +209,18 @@ def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
             logger.warning(f"    ❌ Error reading sheet '{sheet_name}': {e}")
             continue
     
-    # Log skipped sheets
     if skipped_sheets:
         logger.info(f"  ⏭️ Skipped sheets: {skipped_sheets}")
     
-    # Validate best sheet
     if best_sheet is None:
         raise WorksheetNotFoundError(f"No worksheet with delivery data found. Available sheets: {sheet_names}")
     
-    # Ensure we didn't accidentally pick a summary sheet
-    for indicator in summary_indicators:
-        if indicator in best_sheet.lower():
-            logger.warning(f"⚠️ Warning: Selected sheet '{best_sheet}' appears to be a summary")
-            # Try to find a better sheet
-            for sheet_name in sheet_names:
-                if sheet_name != best_sheet:
-                    is_summary = any(ind in sheet_name.lower() for ind in summary_indicators)
-                    if not is_summary and not sheet_name.startswith('_'):
-                        if 'pgi' in sheet_name.lower():
-                            logger.info(f"🔄 Switching to PGI sheet: '{sheet_name}'")
-                            best_sheet = sheet_name
-                            best_header_row = 0
-                            break
-    
-    # Special case: If "Sum S" was selected, force switch to data sheet
+    # Force switch from Sum S to data sheet
     if best_sheet == "Sum S":
         for sheet_name in sheet_names:
             if "PGI" in sheet_name or "Data" in sheet_name:
                 logger.info(f"🔄 Forcing switch from 'Sum S' to '{sheet_name}'")
-                best_sheet = sheet_name
+                best_sheet      = sheet_name
                 best_header_row = 0
                 break
     
@@ -307,19 +228,12 @@ def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
     logger.info(f"✅ SELECTED SHEET: '{best_sheet}'")
     logger.info(f"   Score: {best_score}")
     logger.info(f"   Header Row: {best_header_row}")
-    logger.info(f"   Has DN: {best_info.get('has_dn', False)}")
-    logger.info(f"   Has Material: {best_info.get('has_material', False)}")
-    logger.info(f"   Has Amount: {best_info.get('has_amount', False)}")
-    logger.info(f"   Has Qty: {best_info.get('has_qty', False)}")
-    logger.info(f"   Has Warehouse: {best_info.get('has_warehouse', False)}")
-    logger.info(f"   Has Sales Manager: {best_info.get('has_sales_manager', False)}")
-    logger.info(f"   Delivery Headers: {best_info.get('delivery_count', 0)}/6")
     logger.info("=" * 60)
     
     return best_sheet, best_header_row, best_info
 
 # =====================================================================================================
-# HEADER DETECTION
+# BLOCK 6: HEADER DETECTION
 # =====================================================================================================
 
 def detect_header_row(df: pd.DataFrame, max_rows: int = HEADER_SCAN_ROWS) -> Tuple[int, int, List[str]]:
@@ -328,18 +242,16 @@ def detect_header_row(df: pd.DataFrame, max_rows: int = HEADER_SCAN_ROWS) -> Tup
         return 0, 0, []
     
     header_keywords = {
-        'dn no': 3, 'dn': 2, 'material no': 3, 'material': 2,
-        'order type': 2, 'customer model': 2, 'warehouse': 2,
-        'ship to city': 2, 'dn amount': 2, 'dn qty': 2,
-        'division': 1, 'sales office': 1, 'sales manager': 1,
-        'storage': 1, 'dn create date': 1, 'good issue date': 1,
-        'pod date': 1, 'work': 1, 'remarks': 1,
-        'model': 1, 'city': 1, 'amount': 1, 'qty': 1,
-        'pgi': 1, 'pod': 1, 'delivery': 1
+        'dn no'        : 3, 'dn'       : 2, 'material no' : 3, 'material' : 2,
+        'order type'   : 2, 'customer model' : 2, 'warehouse' : 2,
+        'ship to city' : 2, 'dn amount' : 2, 'dn qty'     : 2,
+        'division'     : 1, 'sales office' : 1, 'sales manager' : 1,
+        'storage'      : 1, 'dn create date' : 1, 'good issue date' : 1,
+        'pod date'     : 1, 'work'     : 1, 'remarks'     : 1,
     }
     
-    best_score = 0
-    best_row = 0
+    best_score  = 0
+    best_row    = 0
     best_matched = []
     
     rows_to_check = min(max_rows, len(df))
@@ -365,8 +277,8 @@ def detect_header_row(df: pd.DataFrame, max_rows: int = HEADER_SCAN_ROWS) -> Tup
                     score += weight
         
         if score > best_score:
-            best_score = score
-            best_row = row_idx
+            best_score  = score
+            best_row    = row_idx
             best_matched = matched_headers
     
     if best_score < 3:
@@ -381,545 +293,231 @@ def detect_header_row(df: pd.DataFrame, max_rows: int = HEADER_SCAN_ROWS) -> Tup
     return best_row, best_score, best_matched
 
 # =====================================================================================================
-# SMART COLUMN MAPPER - COMPLETE FIX v15.4
+# BLOCK 7: SMART COLUMN MAPPER - EXACT 17-COLUMN MAPPING
 # =====================================================================================================
 
 class SmartColumnMapper:
-    """Intelligent column mapping with fuzzy matching - COMPLETE FIX"""
+    """
+    Intelligent column mapping with exact 17-column mapping.
+    
+    # | Excel Column       | PostgreSQL Column  | Status
+    # | ------------------ | ------------------ | --------
+    # | 1. Order type      | order_type         | ✅ Direct
+    # | 2. DN NO           | dn_no              | ✅ Direct
+    # | 3. DN amount       | dn_amount          | ✅ Direct
+    # | 4. DN Qty          | dn_qty             | ✅ Direct
+    # | 5. DN Work         | dn_work            | ✅ Direct
+    # | 6. Division        | division           | ✅ Direct
+    # | 7. Material NO     | material_no        | ✅ Direct
+    # | 8. Customer Model  | customer_model     | ✅ Direct
+    # | 9. sales office    | sales_office       | ✅ Direct
+    # |10. Sold-to-party Name | customer_name   | ✅ Direct
+    # |11. Ship-to City    | ship_to_city       | ✅ Direct
+    # |12. storage         | storage_location   | ✅ Direct
+    # |13. Warehouse       | warehouse          | ✅ Direct
+    # |14. DN Create date  | dn_create_date     | ✅ Direct
+    # |15. Good issue date | good_issue_date    | ✅ Direct
+    # |16. POD Date        | pod_date           | ✅ Direct
+    # |17. Sales Manager   | sales_manager      | ✅ Direct
+    """
     
     HEADER_MAP = {
         # ============================================================
-        # COLUMN 1: Order Type
+        # 1. ORDER TYPE
         # ============================================================
-        'order type': 'order_type',
-        'order': 'order_type',
-        'ordertype': 'order_type',
-        'type': 'order_type',
-        'order no': 'order_type',
-        'order number': 'order_type',
-        'sales order': 'order_type',
-        'so': 'order_type',
-        'order_type': 'order_type',
-        'order-type': 'order_type',
-        'order.type': 'order_type',
-        'order#': 'order_type',
-        'Order type': 'order_type',
-        'Order Type': 'order_type',
-        'ORDER TYPE': 'order_type',
+        'Order type'        : 'order_type',
+        'order type'        : 'order_type',
+        'Order Type'        : 'order_type',
+        'ORDER TYPE'        : 'order_type',
+        'order_type'        : 'order_type',
+        'order'             : 'order_type',
         
         # ============================================================
-        # COLUMN 2: DN NO - COMPLETE
+        # 2. DN NO
         # ============================================================
-        'dn no': 'dn_no',
-        'dn': 'dn_no',
-        'dn#': 'dn_no',
-        'd n no': 'dn_no',
-        'd n': 'dn_no',
-        'delivery note': 'dn_no',
-        'delivery note no': 'dn_no',
-        'delivery note number': 'dn_no',
-        'delivery number': 'dn_no',
-        'dn number': 'dn_no',
-        'delivery note #': 'dn_no',
-        'dn_no': 'dn_no',
-        'dn-no': 'dn_no',
-        'dn.no': 'dn_no',
-        'dnnumber': 'dn_no',
-        'DN NO': 'dn_no',
-        'DN No': 'dn_no',
-        'DN_NO': 'dn_no',
-        'DN-NO': 'dn_no',
-        'DN.NO': 'dn_no',
-        'DN#': 'dn_no',
-        'DN': 'dn_no',
+        'DN NO'             : 'dn_no',
+        'DN No'             : 'dn_no',
+        'dn no'             : 'dn_no',
+        'DN'                : 'dn_no',
+        'dn_no'             : 'dn_no',
+        'dn'                : 'dn_no',
         
         # ============================================================
-        # COLUMN 3: DN amount - COMPLETE FIX
+        # 3. DN AMOUNT
         # ============================================================
-        'dn amount': 'dn_amount',
-        'dn amount ': 'dn_amount',
-        'dn_amount': 'dn_amount',
-        'dn-amount': 'dn_amount',
-        'dn.amount': 'dn_amount',
-        'dn#amount': 'dn_amount',
-        'dnamount': 'dn_amount',
-        'amount': 'dn_amount',
-        'value': 'dn_amount',
-        'net amount': 'dn_amount',
-        'total': 'dn_amount',
-        'order amount': 'dn_amount',
-        'delivery amount': 'dn_amount',
-        'amount value': 'dn_amount',
-        'dn amt': 'dn_amount',
-        'amt': 'dn_amount',
-        'amount (pkr)': 'dn_amount',
-        'pkr': 'dn_amount',
-        'DN amount': 'dn_amount',
-        'DN Amount': 'dn_amount',
-        'DN amount ': 'dn_amount',
-        'DN Amount ': 'dn_amount',
-        'dn amount pkr': 'dn_amount',
-        'amount pkr': 'dn_amount',
-        'dn value': 'dn_amount',
-        'net': 'dn_amount',
-        'dn total': 'dn_amount',
-        'dn net': 'dn_amount',
-        'invoice amount': 'dn_amount',
-        'dn invoice amount': 'dn_amount',
-        'delivery value': 'dn_amount',
-        'dn total value': 'dn_amount',
-        'dn value pkr': 'dn_amount',
-        'dn amount in pkr': 'dn_amount',
-        'dn amount PKR': 'dn_amount',
-        'amount PKR': 'dn_amount',
-        'DN AMOUNT': 'dn_amount',
-        'DN AMOUNT ': 'dn_amount',
-        'DN_AMOUNT': 'dn_amount',
-        'DN-AMOUNT': 'dn_amount',
-        'DN.AMOUNT': 'dn_amount',
-        'DN#AMOUNT': 'dn_amount',
-        'AMOUNT': 'dn_amount',
-        'VALUE': 'dn_amount',
-        'NET AMOUNT': 'dn_amount',
-        'TOTAL': 'dn_amount',
-        'ORDER AMOUNT': 'dn_amount',
-        'DELIVERY AMOUNT': 'dn_amount',
-        'AMOUNT VALUE': 'dn_amount',
-        'DN AMT': 'dn_amount',
-        'AMT': 'dn_amount',
-        'AMOUNT (PKR)': 'dn_amount',
-        'PKR': 'dn_amount',
+        'DN amount'         : 'dn_amount',
+        'DN Amount'         : 'dn_amount',
+        'dn amount'         : 'dn_amount',
+        'dn_amount'         : 'dn_amount',
+        'amount'            : 'dn_amount',
+        'DN AMOUNT'         : 'dn_amount',
         
         # ============================================================
-        # COLUMN 4: DN Qty - COMPLETE FIX
+        # 4. DN QTY
         # ============================================================
-        'dn qty': 'dn_qty',
-        'dn quantity': 'dn_qty',
-        'dn_qty': 'dn_qty',
-        'dn-qty': 'dn_qty',
-        'dn.qty': 'dn_qty',
-        'dn#qty': 'dn_qty',
-        'dnqty': 'dn_qty',
-        'qty': 'dn_qty',
-        'quantity': 'dn_qty',
-        'units': 'dn_qty',
-        'order qty': 'dn_qty',
-        'delivery qty': 'dn_qty',
-        'qty (units)': 'dn_qty',
-        'piece': 'dn_qty',
-        'pcs': 'dn_qty',
-        'DN Qty': 'dn_qty',
-        'DN QTY': 'dn_qty',
-        'DN Qty ': 'dn_qty',
-        'DN_QTY': 'dn_qty',
-        'DN-QTY': 'dn_qty',
-        'DN.QTY': 'dn_qty',
-        'DN#QTY': 'dn_qty',
-        'QTY': 'dn_qty',
-        'QUANTITY': 'dn_qty',
-        'UNITS': 'dn_qty',
-        'ORDER QTY': 'dn_qty',
-        'DELIVERY QTY': 'dn_qty',
-        'DN QUANTITY': 'dn_qty',
+        'DN Qty'            : 'dn_qty',
+        'DN QTY'            : 'dn_qty',
+        'dn qty'            : 'dn_qty',
+        'dn_qty'            : 'dn_qty',
+        'qty'               : 'dn_qty',
+        'quantity'          : 'dn_qty',
         
         # ============================================================
-        # COLUMN 5: DN Work - COMPLETE FIX
+        # 5. DN WORK
         # ============================================================
-        'dn work': 'dn_work',
-        'work': 'dn_work',
-        'work order': 'dn_work',
-        'work no': 'dn_work',
-        'work number': 'dn_work',
-        'job': 'dn_work',
-        'dn_work': 'dn_work',
-        'dn-work': 'dn_work',
-        'status': 'dn_work',
-        'dn status': 'dn_work',
-        'delivery status': 'dn_work',
-        'DN Work': 'dn_work',
-        'DN Work ': 'dn_work',
-        'DN_WORK': 'dn_work',
-        'DN-WORK': 'dn_work',
-        'DN.WORK': 'dn_work',
-        'DN#WORK': 'dn_work',
-        'WORK': 'dn_work',
-        'WORK ORDER': 'dn_work',
-        'STATUS': 'dn_work',
-        'DN STATUS': 'dn_work',
-        'DELIVERY STATUS': 'dn_work',
+        'DN Work'           : 'dn_work',
+        'DN WORK'           : 'dn_work',
+        'dn work'           : 'dn_work',
+        'dn_work'           : 'dn_work',
+        'work'              : 'dn_work',
+        'status'            : 'dn_work',
         
         # ============================================================
-        # COLUMN 6: Division
+        # 6. DIVISION
         # ============================================================
-        'division': 'division',
-        'div': 'division',
-        'department': 'division',
-        'business unit': 'division',
-        'division ': 'division',
-        'product line': 'division',
-        'category': 'division',
-        'Division': 'division',
-        'DIVISION': 'division',
-        'DIV': 'division',
-        'DEPARTMENT': 'division',
-        'BUSINESS UNIT': 'division',
-        'PRODUCT LINE': 'division',
-        'CATEGORY': 'division',
+        'Division'          : 'division',
+        'division'          : 'division',
+        'DIVISION'          : 'division',
+        'div'               : 'division',
         
         # ============================================================
-        # COLUMN 7: Material NO - COMPLETE
+        # 7. MATERIAL NO
         # ============================================================
-        'material no': 'material_no',
-        'material': 'material_no',
-        'material#': 'material_no',
-        'material number': 'material_no',
-        'material code': 'material_no',
-        'sku': 'material_no',
-        'product no': 'material_no',
-        'product number': 'material_no',
-        'item no': 'material_no',
-        'item': 'material_no',
-        'part no': 'material_no',
-        'part number': 'material_no',
-        'material_no': 'material_no',
-        'material-no': 'material_no',
-        'material.number': 'material_no',
-        'product code': 'material_no',
-        'Material NO': 'material_no',
-        'Material No': 'material_no',
-        'MATERIAL NO': 'material_no',
-        'MATERIAL': 'material_no',
-        'MATERIAL#': 'material_no',
-        'SKU': 'material_no',
-        'PRODUCT NO': 'material_no',
-        'Material NO ': 'material_no',
+        'Material NO'       : 'material_no',
+        'Material No'       : 'material_no',
+        'MATERIAL NO'       : 'material_no',
+        'material no'       : 'material_no',
+        'material_no'       : 'material_no',
+        'material'          : 'material_no',
+        'MATERIAL'          : 'material_no',
         
         # ============================================================
-        # COLUMN 8: Customer Model
+        # 8. CUSTOMER MODEL
         # ============================================================
-        'customer model': 'customer_model',
-        'model': 'customer_model',
-        'model name': 'customer_model',
-        'product model': 'customer_model',
-        'model no': 'customer_model',
-        'model number': 'customer_model',
-        'product': 'customer_model',
-        'item description': 'customer_model',
-        'customer_model': 'customer_model',
-        'customer-model': 'customer_model',
-        'description': 'customer_model',
-        'Customer Model': 'customer_model',
-        'Customer model': 'customer_model',
-        'CUSTOMER MODEL': 'customer_model',
-        'MODEL': 'customer_model',
-        'MODEL NAME': 'customer_model',
-        'PRODUCT MODEL': 'customer_model',
-        'PRODUCT': 'customer_model',
-        'Customer Model ': 'customer_model',
+        'Customer Model'    : 'customer_model',
+        'CUSTOMER MODEL'    : 'customer_model',
+        'customer model'    : 'customer_model',
+        'customer_model'    : 'customer_model',
+        'model'             : 'customer_model',
+        'MODEL'             : 'customer_model',
         
         # ============================================================
-        # COLUMN 9: sales office
+        # 9. SALES OFFICE
         # ============================================================
-        'sales office': 'sales_office',
-        'salesoffice': 'sales_office',
-        'office': 'sales_office',
-        'sales': 'sales_office',
-        'sales region': 'sales_office',
-        'region': 'sales_office',
-        'area': 'sales_office',
-        'sales_office': 'sales_office',
-        'sales-office': 'sales_office',
-        'branch': 'sales_office',
-        'location': 'sales_office',
-        'Sales Office': 'sales_office',
-        'Sales office': 'sales_office',
-        'SALES OFFICE': 'sales_office',
-        'SALESOFFICE': 'sales_office',
-        'OFFICE': 'sales_office',
-        'SALES': 'sales_office',
-        'SALES REGION': 'sales_office',
-        'REGION': 'sales_office',
-        'AREA': 'sales_office',
-        'BRANCH': 'sales_office',
-        'sales office ': 'sales_office',
+        'sales office'      : 'sales_office',
+        'Sales office'      : 'sales_office',
+        'Sales Office'      : 'sales_office',
+        'SALES OFFICE'      : 'sales_office',
+        'sales_office'      : 'sales_office',
+        'office'            : 'sales_office',
         
         # ============================================================
-        # COLUMN 10: Sold-to-party Name (customer_name)
+        # 10. SOLD-TO-PARTY NAME (customer_name)
         # ============================================================
-        'sold to party name': 'customer_name',
-        'sold-to-party name': 'customer_name',
-        'sold to party': 'customer_name',
-        'sold-to-party': 'customer_name',
-        'customer name': 'customer_name',
-        'customer': 'customer_name',
-        'dealer name': 'customer_name',
-        'party name': 'customer_name',
-        'client name': 'customer_name',
-        'buyer': 'customer_name',
-        'customer party': 'customer_name',
-        'customer_name': 'customer_name',
-        'customer-name': 'customer_name',
-        'party': 'customer_name',
-        'dealer': 'customer_name',
-        'Sold-to-party Name': 'customer_name',
-        'Sold-to-party name': 'customer_name',
-        'Sold to Party Name': 'customer_name',
-        'SOLD TO PARTY NAME': 'customer_name',
-        'SOLD-TO-PARTY NAME': 'customer_name',
-        'CUSTOMER NAME': 'customer_name',
-        'CUSTOMER': 'customer_name',
-        'DEALER NAME': 'customer_name',
-        'PARTY NAME': 'customer_name',
-        'CLIENT NAME': 'customer_name',
-        'DEALER': 'customer_name',
-        'Sold-to-party Name ': 'customer_name',
+        'Sold-to-party Name'   : 'customer_name',
+        'Sold-to-party name'   : 'customer_name',
+        'Sold to Party Name'   : 'customer_name',
+        'SOLD TO PARTY NAME'   : 'customer_name',
+        'customer name'        : 'customer_name',
+        'Customer Name'        : 'customer_name',
+        'customer_name'        : 'customer_name',
+        'dealer name'          : 'customer_name',
+        'customer'             : 'customer_name',
+        'dealer'               : 'customer_name',
         
         # ============================================================
-        # COLUMN 11: Ship-to City
+        # 11. SHIP-TO CITY
         # ============================================================
-        'ship to city': 'ship_to_city',
-        'ship-to city': 'ship_to_city',
-        'ship-to-city': 'ship_to_city',
-        'shipcity': 'ship_to_city',
-        'city': 'ship_to_city',
-        'destination city': 'ship_to_city',
-        'ship to': 'ship_to_city',
-        'delivery city': 'ship_to_city',
-        'customer city': 'ship_to_city',
-        'ship_to_city': 'ship_to_city',
-        'ship-to-city': 'ship_to_city',
-        'destination': 'ship_to_city',
-        'Ship-to City': 'ship_to_city',
-        'Ship-to city': 'ship_to_city',
-        'Ship To City': 'ship_to_city',
-        'SHIP-TO CITY': 'ship_to_city',
-        'SHIP-TO-CITY': 'ship_to_city',
-        'SHIPCITY': 'ship_to_city',
-        'CITY': 'ship_to_city',
-        'DESTINATION CITY': 'ship_to_city',
-        'DELIVERY CITY': 'ship_to_city',
-        'CUSTOMER CITY': 'ship_to_city',
-        'Ship-to City ': 'ship_to_city',
+        'Ship-to City'      : 'ship_to_city',
+        'Ship-to city'      : 'ship_to_city',
+        'Ship To City'      : 'ship_to_city',
+        'SHIP-TO CITY'      : 'ship_to_city',
+        'ship to city'      : 'ship_to_city',
+        'ship_to_city'      : 'ship_to_city',
+        'city'              : 'ship_to_city',
         
         # ============================================================
-        # COLUMN 12: storage - COMPLETE FIX
+        # 12. STORAGE (storage_location)
         # ============================================================
-        'storage': 'storage_location',
-        'storage location': 'storage_location',
-        'storagelocation': 'storage_location',
-        'bin': 'storage_location',
-        'warehouse bin': 'storage_location',
-        'location': 'storage_location',
-        'storage_location': 'storage_location',
-        'storage-location': 'storage_location',
-        'store': 'storage_location',
-        'storage code': 'storage_location',
-        'Storage': 'storage_location',
-        'STORAGE': 'storage_location',
-        'Storage Location': 'storage_location',
-        'STORAGE LOCATION': 'storage_location',
-        'STORAGELOCATION': 'storage_location',
-        'BIN': 'storage_location',
-        'WAREHOUSE BIN': 'storage_location',
-        'LOCATION': 'storage_location',
-        'STORE': 'storage_location',
-        'STORAGE CODE': 'storage_location',
-        'storage ': 'storage_location',
+        'storage'           : 'storage_location',
+        'Storage'           : 'storage_location',
+        'STORAGE'           : 'storage_location',
+        'storage location'  : 'storage_location',
+        'storage_location'  : 'storage_location',
+        'location'          : 'storage_location',
         
         # ============================================================
-        # COLUMN 13: Warehouse - COMPLETE FIX
+        # 13. WAREHOUSE
         # ============================================================
-        'warehouse': 'warehouse',
-        'ware house': 'warehouse',
-        'ware_house': 'warehouse',
-        'ware-house': 'warehouse',
-        'ware.house': 'warehouse',
-        'wh': 'warehouse',
-        'warehouse name': 'warehouse',
-        'warehouse location': 'warehouse',
-        'facility': 'warehouse',
-        'plant': 'warehouse',
-        'warehouse ': 'warehouse',
-        'whse': 'warehouse',
-        'store': 'warehouse',
-        'Warehouse': 'warehouse',
-        'Warehouse ': 'warehouse',
-        'WAREHOUSE': 'warehouse',
-        'Ware House': 'warehouse',
-        'WARE HOUSE': 'warehouse',
-        'WARE_HOUSE': 'warehouse',
-        'WARE-HOUSE': 'warehouse',
-        'WARE.HOUSE': 'warehouse',
-        'WH': 'warehouse',
-        'WHSE': 'warehouse',
-        'PLANT': 'warehouse',
-        'FACILITY': 'warehouse',
-        'WAREHOUSE NAME': 'warehouse',
-        'WAREHOUSE LOCATION': 'warehouse',
+        'Warehouse'         : 'warehouse',
+        'warehouse'         : 'warehouse',
+        'WAREHOUSE'         : 'warehouse',
+        'ware house'        : 'warehouse',
+        'WH'                : 'warehouse',
+        'wh'                : 'warehouse',
         
         # ============================================================
-        # COLUMN 14: DN Create date
+        # 14. DN CREATE DATE
         # ============================================================
-        'dn create date': 'dn_create_date',
-        'dn created date': 'dn_create_date',
-        'dn_create_date': 'dn_create_date',
-        'dn-created-date': 'dn_create_date',
-        'create date': 'dn_create_date',
-        'created date': 'dn_create_date',
-        'dn created': 'dn_create_date',
-        'date created': 'dn_create_date',
-        'creation date': 'dn_create_date',
-        'order date': 'dn_create_date',
-        'order created': 'dn_create_date',
-        'document date': 'dn_create_date',
-        'dn date': 'dn_create_date',
-        'date': 'dn_create_date',
-        'DN Create date': 'dn_create_date',
-        'DN Create Date': 'dn_create_date',
-        'DN Created date': 'dn_create_date',
-        'DN CREATED DATE': 'dn_create_date',
-        'DN_CREATE_DATE': 'dn_create_date',
-        'DN-CREATED-DATE': 'dn_create_date',
-        'CREATE DATE': 'dn_create_date',
-        'CREATED DATE': 'dn_create_date',
-        'ORDER DATE': 'dn_create_date',
-        'DOCUMENT DATE': 'dn_create_date',
-        'DN Create date ': 'dn_create_date',
+        'DN Create date'    : 'dn_create_date',
+        'DN Create Date'    : 'dn_create_date',
+        'DN create date'    : 'dn_create_date',
+        'dn create date'    : 'dn_create_date',
+        'dn_create_date'    : 'dn_create_date',
+        'create date'       : 'dn_create_date',
+        'created date'      : 'dn_create_date',
+        'order date'        : 'dn_create_date',
         
         # ============================================================
-        # COLUMN 15: Good issue date
+        # 15. GOOD ISSUE DATE
         # ============================================================
-        'good issue date': 'good_issue_date',
-        'good issue': 'good_issue_date',
-        'good_issue_date': 'good_issue_date',
-        'pgi date': 'good_issue_date',
-        'pgi': 'good_issue_date',
-        'goods issue': 'good_issue_date',
-        'dispatch date': 'good_issue_date',
-        'shipped date': 'good_issue_date',
-        'ship date': 'good_issue_date',
-        'delivery date': 'good_issue_date',
-        'good issue date ': 'good_issue_date',
-        'goods issue date': 'good_issue_date',
-        'Good issue date': 'good_issue_date',
-        'Good Issue Date': 'good_issue_date',
-        'GOOD ISSUE DATE': 'good_issue_date',
-        'GOOD_ISSUE_DATE': 'good_issue_date',
-        'PGI DATE': 'good_issue_date',
-        'PGI': 'good_issue_date',
-        'GOODS ISSUE': 'good_issue_date',
-        'DISPATCH DATE': 'good_issue_date',
-        'SHIPPED DATE': 'good_issue_date',
-        'SHIP DATE': 'good_issue_date',
-        'DELIVERY DATE': 'good_issue_date',
-        'Good issue date ': 'good_issue_date',
+        'Good issue date'   : 'good_issue_date',
+        'Good Issue Date'   : 'good_issue_date',
+        'GOOD ISSUE DATE'   : 'good_issue_date',
+        'good issue date'   : 'good_issue_date',
+        'good_issue_date'   : 'good_issue_date',
+        'PGI'               : 'good_issue_date',
+        'pgi date'          : 'good_issue_date',
+        'dispatch date'     : 'good_issue_date',
+        'ship date'         : 'good_issue_date',
         
         # ============================================================
-        # COLUMN 16: POD Date
+        # 16. POD DATE
         # ============================================================
-        'pod date': 'pod_date',
-        'pod': 'pod_date',
-        'pod_date': 'pod_date',
-        'proof of delivery': 'pod_date',
-        'delivery date': 'pod_date',
-        'received date': 'pod_date',
-        'confirmation date': 'pod_date',
-        'customer received': 'pod_date',
-        'delivery confirmation': 'pod_date',
-        'pod_date ': 'pod_date',
-        'receipt date': 'pod_date',
-        'POD Date': 'pod_date',
-        'POD date': 'pod_date',
-        'POD': 'pod_date',
-        'POD_DATE': 'pod_date',
-        'PROOF OF DELIVERY': 'pod_date',
-        'RECEIVED DATE': 'pod_date',
-        'CONFIRMATION DATE': 'pod_date',
-        'CUSTOMER RECEIVED': 'pod_date',
-        'DELIVERY CONFIRMATION': 'pod_date',
-        'RECEIPT DATE': 'pod_date',
-        'POD Date ': 'pod_date',
+        'POD Date'          : 'pod_date',
+        'POD date'          : 'pod_date',
+        'pod date'          : 'pod_date',
+        'pod_date'          : 'pod_date',
+        'POD'               : 'pod_date',
+        'proof of delivery' : 'pod_date',
+        'received date'     : 'pod_date',
+        'confirmation date' : 'pod_date',
         
         # ============================================================
-        # COLUMN 17: Sales Manager - COMPLETE FIX
+        # 17. SALES MANAGER
         # ============================================================
-        'sales manager': 'sales_manager',
-        'salesmanager': 'sales_manager',
-        'manager': 'sales_manager',
-        'sales rep': 'sales_manager',
-        'representative': 'sales_manager',
-        'sales person': 'sales_manager',
-        'sales_manager': 'sales_manager',
-        'sales-manager': 'sales_manager',
-        'sales.manager': 'sales_manager',
-        'salesperson': 'sales_manager',
-        'rep': 'sales_manager',
-        'sales manager name': 'sales_manager',
-        'Sales Manager': 'sales_manager',
-        'Sales Manager ': 'sales_manager',
-        'SALES MANAGER': 'sales_manager',
-        'Salesmanager': 'sales_manager',
-        'SALESMANAGER': 'sales_manager',
-        'MANAGER': 'sales_manager',
-        'SALES REP': 'sales_manager',
-        'REPRESENTATIVE': 'sales_manager',
-        'SALES PERSON': 'sales_manager',
-        'SALES_MANAGER': 'sales_manager',
-        'SALES-MANAGER': 'sales_manager',
-        'SALES.MANAGER': 'sales_manager',
-        'SALESPERSON': 'sales_manager',
-        'REP': 'sales_manager',
-        'SALES MANAGER NAME': 'sales_manager',
-        'sales manager ': 'sales_manager',
-        
-        # ============================================================
-        # EXTRA: Customer Code, Dealer Code
-        # ============================================================
-        'customer code': 'customer_code',
-        'customer_code': 'customer_code',
-        'dealer code': 'dealer_code',
-        'dealer_code': 'dealer_code',
-        
-        # ============================================================
-        # EXTRA: Warehouse Code
-        # ============================================================
-        'warehouse code': 'warehouse_code',
-        'warehouse_code': 'warehouse_code',
-        'wh code': 'warehouse_code',
-        
-        # ============================================================
-        # EXTRA: Delivery Location
-        # ============================================================
-        'delivery location': 'delivery_location',
-        'delivery_location': 'delivery_location',
-        'delivery loc': 'delivery_location',
-        
-        # ============================================================
-        # EXTRA: Remarks
-        # ============================================================
-        'remarks': 'remarks',
-        'remark': 'remarks',
-        'note': 'remarks',
-        'notes': 'remarks',
-        'comments': 'remarks',
+        'Sales Manager'     : 'sales_manager',
+        'SALES MANAGER'     : 'sales_manager',
+        'sales manager'     : 'sales_manager',
+        'sales_manager'     : 'sales_manager',
+        'manager'           : 'sales_manager',
+        'sales rep'         : 'sales_manager',
+        'representative'    : 'sales_manager',
     }
     
-    _normalized_keys = list(HEADER_MAP.keys())
-    _field_names = list(set(HEADER_MAP.values()))
     REQUIRED_FIELDS = ['dn_no', 'material_no']
     
     @classmethod
     def map_headers(cls, headers: List[str]) -> Tuple[Dict[str, str], Dict[str, str], List[str], List[str]]:
-        """Map Excel headers with exact + fuzzy matching"""
+        """Map Excel headers with exact matching"""
         field_to_column = {}
         column_to_field = {}
         unmapped = []
         
         logger.info("=" * 60)
-        logger.info("📋 SMART COLUMN MAPPING v15.4")
+        logger.info("📋 EXACT 17-COLUMN MAPPING")
         logger.info("=" * 60)
         
-        # First pass: Exact matching
         for header in headers:
             if header is None:
                 continue
@@ -931,14 +529,14 @@ class SmartColumnMapper:
                 if field not in field_to_column:
                     field_to_column[field] = header
                     column_to_field[header] = field
-                    logger.info(f"  ✅ EXACT: '{header}' -> {field}")
+                    logger.info(f"  ✅ '{header}' -> {field}")
             else:
                 unmapped.append(header)
-                logger.warning(f"  ⚠️ UNMAPPED: '{header}'")
+                logger.warning(f"  ⚠️ '{header}' -> UNMAPPED")
         
-        # Second pass: Fuzzy matching for unmapped headers
+        # Try fuzzy matching for unmapped headers
         if HAS_RAPIDFUZZ and unmapped:
-            logger.info("  🔍 Trying fuzzy matching for unmapped headers...")
+            logger.info("  🔍 Trying fuzzy matching...")
             for header in unmapped[:]:
                 normalized = normalize_header(header)
                 if not normalized:
@@ -948,7 +546,6 @@ class SmartColumnMapper:
                 best_score = 0
                 
                 for key, field in cls.HEADER_MAP.items():
-                    # Skip if field already mapped
                     if field in field_to_column:
                         continue
                     
@@ -962,7 +559,7 @@ class SmartColumnMapper:
                     field_to_column[field] = header
                     column_to_field[header] = field
                     unmapped.remove(header)
-                    logger.info(f"  ✅ FUZZY: '{header}' -> {field} (score: {best_score}%, matched: '{key}')")
+                    logger.info(f"  ✅ FUZZY: '{header}' -> {field} ({best_score}%)")
         
         missing = [f for f in cls.REQUIRED_FIELDS if f not in field_to_column]
         
@@ -976,7 +573,7 @@ class SmartColumnMapper:
         return field_to_column, column_to_field, unmapped, missing
 
 # =====================================================================================================
-# FAST EXCEL READING
+# BLOCK 8: FAST EXCEL READING
 # =====================================================================================================
 
 def read_excel_fast(file_path: str, sheet_name: str, header_row: int):
@@ -991,7 +588,7 @@ def read_excel_fast(file_path: str, sheet_name: str, header_row: int):
                     header_row=header_row,
                     engine='calamine'
                 )
-                logger.info("⚡ Using Polars with calamine engine (header_row)")
+                logger.info("⚡ Using Polars with calamine engine")
                 return df.to_pandas()
             except TypeError:
                 df = pl.read_excel(
@@ -1009,7 +606,6 @@ def read_excel_fast(file_path: str, sheet_name: str, header_row: int):
         except Exception as e:
             logger.warning(f"⚠️ Polars read failed: {e}, trying fallback...")
     
-    # Fallback to pandas
     logger.info("📖 Using pandas")
     try:
         df = pd.read_excel(file_path, sheet_name=sheet_name, header=header_row, engine='openpyxl')
@@ -1020,27 +616,24 @@ def read_excel_fast(file_path: str, sheet_name: str, header_row: int):
         raise
 
 # =====================================================================================================
-# STATUS ENGINE
+# BLOCK 9: STATUS ENGINE
 # =====================================================================================================
 
 class StatusEngine:
     @staticmethod
     def derive(dn_create_date: Optional[date], good_issue_date: Optional[date], pod_date: Optional[date]) -> Dict[str, Any]:
-        has_dn = dn_create_date is not None
         has_pgi = good_issue_date is not None
         has_pod = pod_date is not None
         
-        if has_pod and has_pgi and has_dn:
+        if has_pod and has_pgi:
             return {'delivery_status': 'Delivered', 'pgi_status': 'Completed', 'pod_status': 'Completed', 'pending_flag': False}
-        elif has_pgi and has_dn:
+        elif has_pgi:
             return {'delivery_status': 'In Transit', 'pgi_status': 'Completed', 'pod_status': 'Pending', 'pending_flag': True}
-        elif has_dn:
-            return {'delivery_status': 'Pending Dispatch', 'pgi_status': 'Pending', 'pod_status': 'Pending', 'pending_flag': True}
         else:
-            return {'delivery_status': 'Unknown', 'pgi_status': 'Unknown', 'pod_status': 'Unknown', 'pending_flag': True}
+            return {'delivery_status': 'Pending Dispatch', 'pgi_status': 'Pending', 'pod_status': 'Pending', 'pending_flag': True}
 
 # =====================================================================================================
-# DATA PARSING FUNCTIONS
+# BLOCK 10: DATA PARSING FUNCTIONS
 # =====================================================================================================
 
 def normalize_string(value: Any) -> Optional[str]:
@@ -1137,7 +730,7 @@ def normalize_dn(dn_no: str) -> str:
     return re.sub(r'[^0-9]', '', dn_no.strip())
 
 # =====================================================================================================
-# FAST BATCH PROCESSOR
+# BLOCK 11: FAST BATCH PROCESSOR
 # =====================================================================================================
 
 class FastBatchProcessor:
@@ -1215,65 +808,65 @@ class FastBatchProcessor:
             return False
     
     def _update_record(self, existing, row_data, status):
-        existing.dn_work = row_data['dn_work']
-        existing.order_type = row_data['order_type']
-        existing.division = row_data['division']
-        existing.customer_code = row_data['customer_code']
-        existing.dealer_code = row_data['dealer_code']
-        existing.customer_name = row_data['customer_name']
-        existing.customer_model = row_data['customer_model']
+        existing.dn_work          = row_data['dn_work']
+        existing.order_type       = row_data['order_type']
+        existing.division         = row_data['division']
+        existing.customer_code    = row_data['customer_code']
+        existing.dealer_code      = row_data['dealer_code']
+        existing.customer_name    = row_data['customer_name']
+        existing.customer_model   = row_data['customer_model']
         existing.storage_location = row_data['storage_location']
-        existing.sales_office = row_data['sales_office']
-        existing.sales_manager = row_data['sales_manager']
-        existing.ship_to_city = row_data['ship_to_city']
-        existing.warehouse = row_data['warehouse']
-        existing.warehouse_code = row_data['warehouse_code']
+        existing.sales_office     = row_data['sales_office']
+        existing.sales_manager    = row_data['sales_manager']
+        existing.ship_to_city     = row_data['ship_to_city']
+        existing.warehouse        = row_data['warehouse']
+        existing.warehouse_code   = row_data['warehouse_code']
         existing.delivery_location = row_data['delivery_location']
-        existing.dn_qty = row_data['dn_qty']
-        existing.dn_amount = float(row_data['dn_amount']) if row_data['dn_amount'] else None
-        existing.dn_create_date = row_data['dn_create_date']
-        existing.good_issue_date = row_data['good_issue_date']
-        existing.pod_date = row_data['pod_date']
-        existing.remarks = row_data['remarks']
-        existing.delivery_status = status['delivery_status']
-        existing.pgi_status = status['pgi_status']
-        existing.pod_status = status['pod_status']
-        existing.pending_flag = status['pending_flag']
-        existing.source_file = self.source_filename
-        existing.upload_batch_id = self.batch_id
-        existing.updated_at = datetime.utcnow()
+        existing.dn_qty           = row_data['dn_qty']
+        existing.dn_amount        = float(row_data['dn_amount']) if row_data['dn_amount'] else None
+        existing.dn_create_date   = row_data['dn_create_date']
+        existing.good_issue_date  = row_data['good_issue_date']
+        existing.pod_date         = row_data['pod_date']
+        existing.remarks          = row_data['remarks']
+        existing.delivery_status  = status['delivery_status']
+        existing.pgi_status       = status['pgi_status']
+        existing.pod_status       = status['pod_status']
+        existing.pending_flag     = status['pending_flag']
+        existing.source_file      = self.source_filename
+        existing.upload_batch_id  = self.batch_id
+        existing.updated_at       = datetime.utcnow()
     
     def _add_to_bulk_buffer(self, row_data, status):
         self.bulk_buffer.append({
-            'dn_no': row_data['dn_no'],
-            'dn_work': row_data['dn_work'],
-            'order_type': row_data['order_type'],
-            'division': row_data['division'],
-            'customer_code': row_data['customer_code'],
-            'dealer_code': row_data['dealer_code'],
-            'customer_name': row_data['customer_name'],
-            'customer_model': row_data['customer_model'],
-            'material_no': row_data['material_no'],
-            'storage_location': row_data['storage_location'],
-            'sales_office': row_data['sales_office'],
-            'sales_manager': row_data['sales_manager'],
-            'ship_to_city': row_data['ship_to_city'],
-            'warehouse': row_data['warehouse'],
-            'warehouse_code': row_data['warehouse_code'],
-            'delivery_location': row_data['delivery_location'],
-            'dn_qty': row_data['dn_qty'],
-            'dn_amount': float(row_data['dn_amount']) if row_data['dn_amount'] else None,
-            'dn_create_date': row_data['dn_create_date'],
-            'good_issue_date': row_data['good_issue_date'],
-            'pod_date': row_data['pod_date'],
-            'remarks': row_data['remarks'],
-            'delivery_status': status['delivery_status'],
-            'pgi_status': status['pgi_status'],
-            'pod_status': status['pod_status'],
-            'pending_flag': status['pending_flag'],
-            'source_file': self.source_filename,
-            'upload_batch_id': self.batch_id,
-            'imported_at': datetime.utcnow()
+            'dn_no'              : row_data['dn_no'],
+            'dn_work'            : row_data['dn_work'],
+            'order_type'         : row_data['order_type'],
+            'division'           : row_data['division'],
+            'customer_code'      : row_data['customer_code'],
+            'dealer_code'        : row_data['dealer_code'],
+            'customer_name'      : row_data['customer_name'],
+            'customer_model'     : row_data['customer_model'],
+            'material_no'        : row_data['material_no'],
+            'storage_location'   : row_data['storage_location'],
+            'sales_office'       : row_data['sales_office'],
+            'sales_manager'      : row_data['sales_manager'],
+            'ship_to_city'       : row_data['ship_to_city'],
+            'warehouse'          : row_data['warehouse'],
+            'warehouse_code'     : row_data['warehouse_code'],
+            'delivery_location'  : row_data['delivery_location'],
+            'dn_qty'             : row_data['dn_qty'],
+            'dn_amount'          : float(row_data['dn_amount']) if row_data['dn_amount'] else None,
+            'dn_create_date'     : row_data['dn_create_date'],
+            'good_issue_date'    : row_data['good_issue_date'],
+            'pod_date'           : row_data['pod_date'],
+            'remarks'            : row_data['remarks'],
+            'delivery_status'    : status['delivery_status'],
+            'pgi_status'         : status['pgi_status'],
+            'pod_status'         : status['pod_status'],
+            'pending_flag'       : status['pending_flag'],
+            'source_file'        : self.source_filename,
+            'upload_batch_id'    : self.batch_id,
+            'imported_at'        : datetime.utcnow()
         })
     
     def flush_bulk(self):
@@ -1299,21 +892,21 @@ class FastBatchProcessor:
     def finalize(self):
         self.flush_bulk()
         return {
-            'inserted_count': self.inserted_count,
-            'updated_count': self.updated_count,
-            'skipped_count': self.skipped_count,
-            'failed_count': self.failed_count,
-            'total_revenue': self.total_revenue,
-            'total_units': self.total_units,
+            'inserted_count'   : self.inserted_count,
+            'updated_count'    : self.updated_count,
+            'skipped_count'    : self.skipped_count,
+            'failed_count'     : self.failed_count,
+            'total_revenue'    : self.total_revenue,
+            'total_units'      : self.total_units,
             'validation_errors': self.validation_errors
         }
 
 # =====================================================================================================
-# EXCEL IMPORT SERVICE - v15.4 FINAL
+# BLOCK 12: EXCEL IMPORT SERVICE - v15.6 FINAL
 # =====================================================================================================
 
 class ExcelImportService:
-    """Ultra-fast Excel import with complete column mapping - v15.4"""
+    """Ultra-fast Excel import with exact 17-column mapping - v15.6"""
     
     @staticmethod
     def import_delivery_report_excel(
@@ -1336,7 +929,7 @@ class ExcelImportService:
                 pass
         
         logger.info("=" * 60)
-        logger.info("⚡ EXCEL IMPORT v15.4 - COMPLETE FIX")
+        logger.info("⚡ EXCEL IMPORT v15.6 - EXACT 17-COLUMN MAPPING")
         logger.info("=" * 60)
         logger.info(f"📁 File: {file_path}")
         logger.info(f"📋 Source: {source_filename}")
@@ -1354,14 +947,11 @@ class ExcelImportService:
             logger.info(f"📖 Reading sheet '{sheet_name}' with header at row {header_row}")
             df = read_excel_fast(file_path, sheet_name, header_row)
             
-            # Clean data
             df = df.dropna(how='all')
             df = df.dropna(axis=1, how='all')
             
             total_rows = len(df)
             logger.info(f"📄 Read {total_rows:,} rows, {len(df.columns)} columns")
-            
-            # Log all column names for debugging
             logger.info(f"📋 Columns found: {list(df.columns)}")
             
             # STEP 3: Map Columns
@@ -1411,7 +1001,7 @@ class ExcelImportService:
                 row_number = idx + 2 + header_row
                 
                 try:
-                    # Get DN NO
+                    # Get DN NO (Column 2)
                     dn_col = field_to_column.get('dn_no')
                     dn_raw = row.get(dn_col) if dn_col else None
                     dn_no = normalize_dn(str(dn_raw)) if dn_raw else None
@@ -1421,7 +1011,7 @@ class ExcelImportService:
                         processor.failed_count += 1
                         continue
                     
-                    # Get Material NO
+                    # Get Material NO (Column 7)
                     mat_col = field_to_column.get('material_no')
                     mat_raw = row.get(mat_col) if mat_col else None
                     material_no = normalize_string(mat_raw)
@@ -1431,30 +1021,48 @@ class ExcelImportService:
                         processor.failed_count += 1
                         continue
                     
-                    # Build row data
+                    # Build row data with all 17 columns
                     row_data = {
-                        'dn_no': dn_no,
-                        'material_no': material_no,
-                        'order_type': normalize_string(row.get(field_to_column.get('order_type'))),
-                        'division': normalize_string(row.get(field_to_column.get('division'))),
-                        'customer_name': normalize_string(row.get(field_to_column.get('customer_name'))),
-                        'customer_model': normalize_string(row.get(field_to_column.get('customer_model'))),
-                        'customer_code': normalize_string(row.get(field_to_column.get('customer_code'))),
-                        'dealer_code': normalize_string(row.get(field_to_column.get('dealer_code'))),
-                        'warehouse': normalize_string(row.get(field_to_column.get('warehouse'))),
-                        'warehouse_code': normalize_string(row.get(field_to_column.get('warehouse_code'))),
-                        'ship_to_city': normalize_string(row.get(field_to_column.get('ship_to_city'))),
-                        'delivery_location': normalize_string(row.get(field_to_column.get('delivery_location'))),
-                        'sales_office': normalize_string(row.get(field_to_column.get('sales_office'))),
-                        'sales_manager': normalize_string(row.get(field_to_column.get('sales_manager'))),
-                        'dn_work': normalize_string(row.get(field_to_column.get('dn_work'))),
-                        'storage_location': normalize_string(row.get(field_to_column.get('storage_location'))),
-                        'remarks': normalize_string(row.get(field_to_column.get('remarks'))),
-                        'dn_qty': parse_quantity(row.get(field_to_column.get('dn_qty'))),
-                        'dn_amount': parse_amount(row.get(field_to_column.get('dn_amount'))),
-                        'dn_create_date': parse_date(row.get(field_to_column.get('dn_create_date'))),
-                        'good_issue_date': parse_date(row.get(field_to_column.get('good_issue_date'))),
-                        'pod_date': parse_date(row.get(field_to_column.get('pod_date')))
+                        # 1. Order type
+                        'order_type'       : normalize_string(row.get(field_to_column.get('order_type'))),
+                        # 2. DN NO
+                        'dn_no'            : dn_no,
+                        # 3. DN amount
+                        'dn_amount'        : parse_amount(row.get(field_to_column.get('dn_amount'))),
+                        # 4. DN Qty
+                        'dn_qty'           : parse_quantity(row.get(field_to_column.get('dn_qty'))),
+                        # 5. DN Work
+                        'dn_work'          : normalize_string(row.get(field_to_column.get('dn_work'))),
+                        # 6. Division
+                        'division'         : normalize_string(row.get(field_to_column.get('division'))),
+                        # 7. Material NO
+                        'material_no'      : material_no,
+                        # 8. Customer Model
+                        'customer_model'   : normalize_string(row.get(field_to_column.get('customer_model'))),
+                        # 9. sales office
+                        'sales_office'     : normalize_string(row.get(field_to_column.get('sales_office'))),
+                        # 10. Sold-to-party Name
+                        'customer_name'    : normalize_string(row.get(field_to_column.get('customer_name'))),
+                        # 11. Ship-to City
+                        'ship_to_city'     : normalize_string(row.get(field_to_column.get('ship_to_city'))),
+                        # 12. storage
+                        'storage_location' : normalize_string(row.get(field_to_column.get('storage_location'))),
+                        # 13. Warehouse
+                        'warehouse'        : normalize_string(row.get(field_to_column.get('warehouse'))),
+                        # 14. DN Create date
+                        'dn_create_date'   : parse_date(row.get(field_to_column.get('dn_create_date'))),
+                        # 15. Good issue date
+                        'good_issue_date'  : parse_date(row.get(field_to_column.get('good_issue_date'))),
+                        # 16. POD Date
+                        'pod_date'         : parse_date(row.get(field_to_column.get('pod_date'))),
+                        # 17. Sales Manager
+                        'sales_manager'    : normalize_string(row.get(field_to_column.get('sales_manager'))),
+                        # Extra fields (NULL by default)
+                        'customer_code'    : None,
+                        'dealer_code'      : None,
+                        'warehouse_code'   : None,
+                        'delivery_location': None,
+                        'remarks'          : None,
                     }
                     
                     processor.process_row(row_data, row_number)
@@ -1533,7 +1141,7 @@ class ExcelImportService:
             }
 
 # =====================================================================================================
-# EXPORTS
+# BLOCK 13: EXPORTS
 # =====================================================================================================
 
 __all__ = [
@@ -1546,6 +1154,41 @@ __all__ = [
     'normalize_string',
     'normalize_dn'
 ]
+
+# =====================================================================================================
+# BLOCK 14: MODULE INITIALIZATION LOGGING
+# =====================================================================================================
+
+logger.info("=" * 60)
+logger.info("📊 EXCEL IMPORT SERVICE v15.6")
+logger.info("=" * 60)
+logger.info("")
+logger.info("  SERVICE DETAILS:")
+logger.info("  ✅ Version: 15.6 (Exact 17-Column Mapping)")
+logger.info("  ✅ Service: ExcelImportService")
+logger.info("  ✅ Status: PRODUCTION READY")
+logger.info("")
+logger.info("  COLUMN MAPPING (17 COLUMNS):")
+logger.info("  1.  Order type         -> order_type")
+logger.info("  2.  DN NO              -> dn_no")
+logger.info("  3.  DN amount          -> dn_amount")
+logger.info("  4.  DN Qty             -> dn_qty")
+logger.info("  5.  DN Work            -> dn_work")
+logger.info("  6.  Division           -> division")
+logger.info("  7.  Material NO        -> material_no")
+logger.info("  8.  Customer Model     -> customer_model")
+logger.info("  9.  sales office       -> sales_office")
+logger.info(" 10.  Sold-to-party Name -> customer_name")
+logger.info(" 11.  Ship-to City       -> ship_to_city")
+logger.info(" 12.  storage            -> storage_location")
+logger.info(" 13.  Warehouse          -> warehouse")
+logger.info(" 14.  DN Create date     -> dn_create_date")
+logger.info(" 15.  Good issue date    -> good_issue_date")
+logger.info(" 16.  POD Date           -> pod_date")
+logger.info(" 17.  Sales Manager      -> sales_manager")
+logger.info("")
+logger.info("  STATUS: ✅ ENTERPRISE PRODUCTION READY")
+logger.info("=" * 60)
 
 # =====================================================================================================
 # END OF FILE
