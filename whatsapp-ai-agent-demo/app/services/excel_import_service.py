@@ -1,13 +1,9 @@
-======================================================================================================
-FILE: app/services/excel_import_service.py
-VERSION: v5.4 ENTERPRISE PRODUCTION - COMPLETE FIX
-PURPOSE: Eliminate data loss and guarantee every Excel value is stored correctly in PostgreSQL.
-FIXES: 
-- Column mapping for exact Excel column names
-- upload_batch_id handling
-- Decimal/JSON serialization
-- Verification with normalized data
-======================================================================================================
+# =====================================================================================================
+# FILE: app/services/excel_import_service.py
+# VERSION: v5.4 ENTERPRISE PRODUCTION - FULL VERIFICATION
+# PURPOSE: Eliminate data loss and guarantee every Excel value is stored correctly in PostgreSQL.
+# =====================================================================================================
+
 import pandas as pd
 import logging
 import uuid
@@ -32,9 +28,10 @@ from app.models import DeliveryReport
 
 logger = logging.getLogger(__name__)
 
-======================================================================================================
-BLOCK 1: CONFIGURATION
-======================================================================================================
+# =====================================================================================================
+# BLOCK 1: CONFIGURATION
+# =====================================================================================================
+
 BATCH_SIZE = 1000
 MAX_ROWS = 100000
 VERIFICATION_SAMPLE_SIZE = 5
@@ -42,9 +39,10 @@ DEBUG_MODE = False
 STRICT_MODE = True
 VERIFY_ALL_ROWS = False
 
-======================================================================================================
-BLOCK 2: EXCEPTIONS
-======================================================================================================
+# =====================================================================================================
+# BLOCK 2: EXCEPTIONS
+# =====================================================================================================
+
 class ImportValidationError(Exception):
     pass
 
@@ -55,9 +53,10 @@ class VerificationError(Exception):
     """Raised when verification fails - should bubble up to caller"""
     pass
 
-======================================================================================================
-BLOCK 3: DATA CLASSES - PYDANTIC COMPATIBLE
-======================================================================================================
+# =====================================================================================================
+# BLOCK 3: DATA CLASSES - PYDANTIC COMPATIBLE
+# =====================================================================================================
+
 class ImportMetrics(BaseModel):
     """Import metrics - works with Pydantic v1 and v2"""
     rows_read: int = 0
@@ -118,9 +117,10 @@ class RowAudit(BaseModel):
         class Config:
             arbitrary_types_allowed = True
 
-======================================================================================================
-BLOCK 4: DATA NORMALIZATION FUNCTIONS
-======================================================================================================
+# =====================================================================================================
+# BLOCK 4: DATA NORMALIZATION FUNCTIONS
+# =====================================================================================================
+
 def normalize_string(value: Any) -> Optional[str]:
     if value is None:
         return None
@@ -142,7 +142,6 @@ def parse_amount_decimal(value: Any) -> Optional[Decimal]:
         except (InvalidOperation, ValueError):
             return None
     if isinstance(value, str):
-        # Remove currency symbols, commas, spaces
         cleaned = re.sub(r'[^\d.]', '', value.strip())
         if not cleaned:
             return None
@@ -191,22 +190,18 @@ def parse_date_excel(value: Any) -> Optional[date]:
         value = value.strip()
         if not value:
             return None
-        # Try DD.MM.YYYY
         try:
             return datetime.strptime(value, "%d.%m.%Y").date()
         except ValueError:
             pass
-        # Try YYYY-MM-DD
         try:
             return datetime.strptime(value, "%Y-%m-%d").date()
         except ValueError:
             pass
-        # Try DD/MM/YYYY
         try:
             return datetime.strptime(value, "%d/%m/%Y").date()
         except ValueError:
             pass
-        # Try MM/DD/YYYY
         try:
             return datetime.strptime(value, "%m/%d/%Y").date()
         except ValueError:
@@ -219,41 +214,33 @@ def normalize_dn(dn_no: str) -> str:
         return ""
     return re.sub(r'[^0-9]', '', dn_no.strip())
 
-======================================================================================================
-BLOCK 5: COLUMN MAPPER - UPDATED FOR EXACT EXCEL COLUMNS
-======================================================================================================
+# =====================================================================================================
+# BLOCK 5: COLUMN MAPPER
+# =====================================================================================================
+
 class ColumnMapper:
     PRIMARY_MAPPINGS = {
-        # EXACT matches from your Excel sample
         'dn_no': ['DN NO', 'DN No', 'Dn No', 'dn no', 'DN', 'Dn', 'dn', 'DN_NO'],
         'dn_work': ['DN Work', 'DN work', 'dn work', 'Work', 'DN_Work'],
         'order_type': ['Order type', 'Order Type', 'order type', 'Order', 'order'],
         'division': ['Division', 'division', 'DIVISION'],
-        'customer_code': ['Customer Code', 'Customer code', 'customer code', 'Customer Code'],
-        'dealer_code': ['Dealer Code', 'Dealer code', 'dealer code', 'Dealer Code'],
-        'customer_name': ['Sold-to-party Name', 'Sold-to-party name', 'Sold-to party Name', 
-                         'Customer Name', 'customer name', 'Customer', 'customer'],
+        'customer_code': ['Customer Code', 'Customer code', 'customer code'],
+        'dealer_code': ['Dealer Code', 'Dealer code', 'dealer code'],
+        'customer_name': ['Sold-to-party Name', 'Sold-to-party name', 'Customer Name', 'customer name', 'Customer', 'customer'],
         'customer_model': ['Customer Model', 'Customer model', 'customer model', 'Model', 'model'],
-        'material_no': ['Material NO', 'Material No', 'material no', 'Material', 'material', 
-                       'Material NO', 'Material Number'],
-        'storage_location': ['Storage Location', 'storage location', 'Storage', 'storage', 
-                           'storage', 'Storage Location'],
-        'sales_office': ['Sales Office', 'Sales office', 'sales office', 'Office', 'office',
-                        'sales office'],
-        'sales_manager': ['Sales Manager', 'Sales manager', 'sales manager', 'Manager', 'manager',
-                         'Sales Manager'],
-        'ship_to_city': ['Ship-to City', 'Ship-to city', 'Ship to City', 'Ship-to City', 
-                        'City', 'city', 'Ship-to City'],
+        'material_no': ['Material NO', 'Material No', 'material no', 'Material', 'material'],
+        'storage_location': ['Storage Location', 'storage location', 'Storage', 'storage'],
+        'sales_office': ['Sales Office', 'Sales office', 'sales office', 'Office', 'office'],
+        'sales_manager': ['Sales Manager', 'Sales manager', 'sales manager', 'Manager', 'manager'],
+        'ship_to_city': ['Ship-to City', 'Ship-to city', 'Ship to City', 'City', 'city'],
         'warehouse': ['Warehouse', 'warehouse', 'WAREHOUSE'],
         'warehouse_code': ['Warehouse Code', 'Warehouse code', 'warehouse code'],
         'delivery_location': ['Delivery Location', 'Delivery location', 'delivery location'],
         'dn_qty': ['DN Qty', 'DN QTY', 'dn qty', 'Qty', 'qty', 'Quantity', 'quantity'],
-        'dn_amount': ['DN amount', 'DN Amount', 'dn amount', 'Amount', 'amount', 'DN amount'],
-        'dn_create_date': ['DN Create date', 'DN Create Date', 'dn create date', 'Create Date', 
-                          'create date', 'DN Create date'],
-        'good_issue_date': ['Good issue date', 'Good Issue Date', 'good issue date', 'PGI Date', 
-                           'pgi date', 'Good issue date'],
-        'pod_date': ['POD Date', 'POD date', 'pod date', 'POD', 'pod', 'POD Date'],
+        'dn_amount': ['DN amount', 'DN Amount', 'dn amount', 'Amount', 'amount'],
+        'dn_create_date': ['DN Create date', 'DN Create Date', 'dn create date', 'Create Date', 'create date'],
+        'good_issue_date': ['Good issue date', 'Good Issue Date', 'good issue date', 'PGI Date', 'pgi date'],
+        'pod_date': ['POD Date', 'POD date', 'pod date', 'POD', 'pod'],
         'remarks': ['Remarks', 'remarks', 'REMARKS', 'Note', 'Notes']
     }
 
@@ -287,9 +274,10 @@ class ColumnMapper:
             field_to_col[field] = col
         return field_to_col
 
-======================================================================================================
-BLOCK 6: STATUS ENGINE
-======================================================================================================
+# =====================================================================================================
+# BLOCK 6: STATUS ENGINE
+# =====================================================================================================
+
 class StatusEngine:
     @staticmethod
     def derive_status(dn_create_date: Optional[date], good_issue_date: Optional[date], pod_date: Optional[date]) -> Dict[str, Any]:
@@ -306,9 +294,10 @@ class StatusEngine:
         else:
             return {'delivery_status': 'Unknown', 'pgi_status': 'Unknown', 'pod_status': 'Unknown', 'pending_flag': True}
 
-======================================================================================================
-BLOCK 7: VERIFICATION ENGINE
-======================================================================================================
+# =====================================================================================================
+# BLOCK 7: VERIFICATION ENGINE
+# =====================================================================================================
+
 class VerificationEngine:
     """Verify data by re-reading from PostgreSQL after commit."""
 
@@ -357,7 +346,6 @@ class VerificationEngine:
                 audits.append(audit)
                 return audits
 
-            # Compare string fields
             string_fields = [
                 ('dn_no', normalized_data.get('dn_no'), db_row.dn_no),
                 ('material_no', normalized_data.get('material_no'), db_row.material_no),
@@ -393,7 +381,6 @@ class VerificationEngine:
                     )
                     audits.append(audit)
 
-            # Amount comparison
             excel_amount = normalized_data.get('dn_amount')
             db_amount = Decimal(str(db_row.dn_amount)) if db_row.dn_amount is not None else None
 
@@ -427,7 +414,6 @@ class VerificationEngine:
                 )
                 audits.append(audit)
 
-            # Quantity comparison
             excel_qty = normalized_data.get('dn_qty')
             
             if excel_qty is not None and db_row.dn_qty is not None:
@@ -460,7 +446,6 @@ class VerificationEngine:
                 )
                 audits.append(audit)
 
-            # Date fields
             date_fields = [
                 ('dn_create_date', normalized_data.get('dn_create_date'), db_row.dn_create_date),
                 ('good_issue_date', normalized_data.get('good_issue_date'), db_row.good_issue_date),
@@ -515,9 +500,10 @@ class VerificationEngine:
 
         return audits
 
-======================================================================================================
-BLOCK 8: EXCEL IMPORT SERVICE - v5.4 COMPLETE FIX
-======================================================================================================
+# =====================================================================================================
+# BLOCK 8: EXCEL IMPORT SERVICE
+# =====================================================================================================
+
 class ExcelImportService:
 
     @staticmethod
@@ -549,7 +535,6 @@ class ExcelImportService:
         logger.info(f"📋 Batch ID: {batch_id}")
 
         try:
-            # Read Excel
             read_start = time.time()
             df = pd.read_excel(file_path, engine='openpyxl')
             df = df.dropna(how='all')
@@ -560,9 +545,7 @@ class ExcelImportService:
             metrics.rows_read = len(df)
 
             logger.info(f"📄 Read {metrics.rows_read} rows, {len(excel_columns)} columns")
-            logger.info(f"📋 Excel columns: {excel_columns}")
 
-            # Map Columns
             column_mapping = ColumnMapper.map_columns(excel_columns)
             field_to_column = ColumnMapper.get_field_to_column(column_mapping)
 
@@ -572,7 +555,6 @@ class ExcelImportService:
                 logger.info(f"  {field} ← '{col}'")
             logger.info("=" * 80)
 
-            # Check required fields
             required_fields = ['dn_no', 'material_no']
             missing_fields = [f for f in required_fields if f not in field_to_column]
             if missing_fields:
@@ -580,7 +562,6 @@ class ExcelImportService:
                 logger.error(f"❌ {error_msg}")
                 return {"success": False, "error": error_msg, "available_columns": excel_columns}
 
-            # Process Rows
             inserted_count = 0
             updated_count = 0
             skipped_count = 0
@@ -595,7 +576,6 @@ class ExcelImportService:
             for index, row in df.iterrows():
                 row_number = index + 2
                 try:
-                    # Get DN
                     dn_column = field_to_column.get('dn_no')
                     dn_no_raw = row.get(dn_column) if dn_column else None
                     dn_no = normalize_dn(str(dn_no_raw)) if dn_no_raw else None
@@ -607,7 +587,6 @@ class ExcelImportService:
                         metrics.validation_errors.append(f"Row {row_number}: Missing DN NO")
                         continue
 
-                    # Get Material
                     material_column = field_to_column.get('material_no')
                     material_no = normalize_string(row.get(material_column)) if material_column else None
 
@@ -617,7 +596,6 @@ class ExcelImportService:
                         metrics.validation_errors.append(f"Row {row_number}: Missing Material NO")
                         continue
 
-                    # Check duplicates
                     record_key = f"{dn_no}_{material_no}"
                     if record_key in processed_records:
                         metrics.duplicate_count += 1
@@ -626,41 +604,33 @@ class ExcelImportService:
                         continue
                     processed_records.add(record_key)
 
-                    # Get all values
                     def get_value(field_name: str):
                         col = field_to_column.get(field_name)
                         if col:
                             return row.get(col)
                         return None
 
-                    # Core fields
                     order_type = normalize_string(get_value('order_type'))
                     division = normalize_string(get_value('division'))
                     customer_name = normalize_string(get_value('customer_name'))
                     customer_model = normalize_string(get_value('customer_model'))
                     customer_code = normalize_string(get_value('customer_code'))
                     dealer_code = normalize_string(get_value('dealer_code'))
-
-                    # Location
                     warehouse = normalize_string(get_value('warehouse'))
                     warehouse_code = normalize_string(get_value('warehouse_code'))
                     ship_to_city = normalize_string(get_value('ship_to_city'))
                     delivery_location = normalize_string(get_value('delivery_location'))
-
-                    # Sales
                     sales_office = normalize_string(get_value('sales_office'))
                     sales_manager = normalize_string(get_value('sales_manager'))
                     dn_work = normalize_string(get_value('dn_work'))
                     storage_location = normalize_string(get_value('storage_location'))
 
-                    # Quantity and Amount
                     dn_qty_raw = get_value('dn_qty')
                     dn_qty = parse_quantity_int(dn_qty_raw)
 
                     dn_amount_raw = get_value('dn_amount')
                     dn_amount = parse_amount_decimal(dn_amount_raw)
 
-                    # Dates
                     dn_create_date_raw = get_value('dn_create_date')
                     good_issue_date_raw = get_value('good_issue_date')
                     pod_date_raw = get_value('pod_date')
@@ -671,7 +641,6 @@ class ExcelImportService:
 
                     remarks = normalize_string(get_value('remarks'))
 
-                    # Audit first 20 rows
                     if index < 20:
                         logger.info("=" * 60)
                         logger.info(f"📝 AUDIT ROW {row_number}:")
@@ -688,10 +657,8 @@ class ExcelImportService:
                         logger.info(f"  POD: {pod_date}")
                         logger.info("=" * 60)
 
-                    # Derive status
                     status = StatusEngine.derive_status(dn_create_date, good_issue_date, pod_date)
 
-                    # Store NORMALIZED data for verification
                     normalized_row = {
                         'dn_no': dn_no,
                         'material_no': material_no,
@@ -713,7 +680,6 @@ class ExcelImportService:
                         'pod_date': pod_date,
                     }
 
-                    # Check for existing record
                     existing = None
                     if skip_duplicates or update_existing:
                         existing = db.query(DeliveryReport).filter_by(
@@ -749,7 +715,6 @@ class ExcelImportService:
                         existing.source_file = source_filename
                         existing.upload_batch_id = batch_id
                         existing.updated_at = datetime.utcnow()
-
                         updated_count += 1
                         logger.debug(f"✅ Updated row {row_number}: DN={dn_no}")
 
@@ -789,28 +754,23 @@ class ExcelImportService:
                             upload_batch_id=batch_id,
                             imported_at=datetime.utcnow()
                         )
-
                         db.add(record)
                         inserted_count += 1
                         logger.debug(f"✅ Inserted row {row_number}: DN={dn_no}")
 
-                    # Update metrics
                     if dn_amount:
                         metrics.total_revenue_imported += dn_amount
                     if dn_qty:
                         metrics.total_units_imported += dn_qty
 
-                    # Store for verification
                     inserted_rows.append((normalized_row, dn_no, material_no, row_number))
 
-                    # Commit in batches
                     if (index + 1) % BATCH_SIZE == 0:
                         commit_start = time.time()
                         db.commit()
                         metrics.commit_time += time.time() - commit_start
                         logger.info(f"📊 Committed {index + 1} rows")
 
-                        # Verify after commit
                         if inserted_rows:
                             if VERIFY_ALL_ROWS:
                                 rows_to_verify = inserted_rows
@@ -829,7 +789,6 @@ class ExcelImportService:
                                         logger.error(f"❌ Verification Failed: Row {audit.row_number} - {audit.field}: {audit.error}")
                                 else:
                                     metrics.verification_success += 1
-
                             inserted_rows.clear()
 
                 except Exception as e:
@@ -837,12 +796,10 @@ class ExcelImportService:
                     logger.error(f"❌ Failed to import row {row_number}: {e}")
                     metrics.validation_errors.append(f"Row {row_number}: {str(e)}")
 
-            # Final commit
             commit_start = time.time()
             db.commit()
             metrics.commit_time += time.time() - commit_start
 
-            # Final verification
             if inserted_rows:
                 if VERIFY_ALL_ROWS:
                     rows_to_verify = inserted_rows
@@ -862,7 +819,6 @@ class ExcelImportService:
                     else:
                         metrics.verification_success += 1
 
-            # Update metrics
             metrics.rows_inserted = inserted_count
             metrics.rows_updated = updated_count
             metrics.rows_skipped = skipped_count
@@ -874,7 +830,6 @@ class ExcelImportService:
             ]
             metrics.import_duration = time.time() - start_time
 
-            # Final report
             logger.info("=" * 80)
             logger.info("🔍 VERIFICATION REPORT:")
             logger.info(f"  Rows Verified: {metrics.rows_verified}")
@@ -945,9 +900,10 @@ class ExcelImportService:
                 "validation_errors": [str(e)]
             }
 
-======================================================================================================
-BLOCK 9: EXPORTS
-======================================================================================================
+# =====================================================================================================
+# BLOCK 9: EXPORTS
+# =====================================================================================================
+
 __all__ = [
     'ExcelImportService',
     'ColumnMapper',
@@ -965,6 +921,6 @@ __all__ = [
     'VerificationError'
 ]
 
-======================================================================================================
-END OF FILE
-======================================================================================================
+# =====================================================================================================
+# END OF FILE
+# =====================================================================================================
