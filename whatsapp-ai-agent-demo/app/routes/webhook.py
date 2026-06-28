@@ -1,8 +1,8 @@
 # ==========================================================
-# FILE: app/routes/webhook.py (v27.0 - COMPLETE PRODUCTION)
+# FILE: app/routes/webhook.py (v28.0 - FORMATTED DN RESPONSES)
 # ==========================================================
 # PURPOSE: WhatsApp Webhook Handler - ALWAYS Calls AI
-# VERSION: 27.0 - FIXED RESPONSE FORMATTING
+# VERSION: 28.0 - FIXED DN FORMATTING WITH NEW FORMatter
 # ==========================================================
 
 import json
@@ -55,17 +55,14 @@ except ImportError as e:
 
 _ai_provider_service = None
 _whatsapp_service = None
+_dn_analytics_service = None
 
 # ==========================================================
 # ✅ FIXED: AI PROVIDER SERVICE
 # ==========================================================
 
 def _get_ai_provider_service() -> Optional[Any]:
-    """
-    Get the AI Provider Service.
-    
-    Uses get_whatsapp_provider_service() from ai_provider_service.py
-    """
+    """Get the AI Provider Service."""
     global _ai_provider_service
     
     if _ai_provider_service is not None:
@@ -127,6 +124,22 @@ def _get_whatsapp_service():
         return _whatsapp_service
     except Exception as e:
         logger.error(f"❌ Failed to load WhatsApp Service: {e}")
+        return None
+
+def _get_dn_service():
+    """Get DN Analytics Service directly."""
+    global _dn_analytics_service
+    
+    if _dn_analytics_service is not None:
+        return _dn_analytics_service
+    
+    try:
+        from app.services.dn_analysis import get_dn_analytics_service
+        _dn_analytics_service = get_dn_analytics_service()
+        logger.info("✅ DN Analytics Service loaded")
+        return _dn_analytics_service
+    except Exception as e:
+        logger.error(f"❌ Failed to load DN Analytics Service: {e}")
         return None
 
 # ==========================================================
@@ -201,120 +214,217 @@ def is_duplicate_message(message_id: str, phone_number: str) -> bool:
     return False
 
 # ==========================================================
-# ✅ FIXED: RESPONSE FORMATTING FUNCTIONS
+# ✅ FIXED: PROFESSIONAL WHATSAPP FORMATTER
 # ==========================================================
 
-def _format_dashboard_response(data: Dict[str, Any]) -> str:
+def format_dn_response(data: Any) -> str:
     """
-    Format DN dashboard data into WhatsApp message.
+    Format DN dashboard data into professional WhatsApp message.
     
-    ✅ FIXED: Properly formats all DN fields
+    ✅ FIXED: Uses the new professional formatter
+    ✅ PRESERVES: All DNDashboard attributes
+    ✅ DISPLAYS: Only business-relevant information
     """
+    # If data is None or empty
     if not data:
         return "No data available"
     
+    # If data is already a formatted string
+    if isinstance(data, str):
+        return data
+    
+    # Extract data from dict or object
+    try:
+        if hasattr(data, '__dataclass_fields__'):
+            d = {}
+            for field_name in data.__dataclass_fields__:
+                value = getattr(data, field_name)
+                if isinstance(value, Decimal):
+                    value = float(value)
+                if isinstance(value, (date, datetime)):
+                    value = value.strftime('%Y-%m-%d')
+                d[field_name] = value
+        elif isinstance(data, dict):
+            # If it has 'data' key, extract it
+            if 'data' in data:
+                return format_dn_response(data['data'])
+            d = data
+        else:
+            return str(data)
+    except Exception as e:
+        logger.error(f"Error extracting data: {e}")
+        return str(data)
+    
+    # Build professional WhatsApp message
     lines = []
     
-    # DN Number
-    dn_no = data.get('dn_no', 'N/A')
-    lines.append(f"📦 *DN: {dn_no}*")
+    # ----- SECTION 1: Header -----
+    lines.append("📦 Delivery Note")
     lines.append("")
     
-    # Dealer
-    dealer = data.get('dealer_name') or data.get('customer_name') or 'Unknown'
-    lines.append("*Dealer:*")
-    lines.append(f"{dealer}")
+    # ----- SECTION 2: Dealer -----
+    dn_no = d.get('dn_no', 'N/A')
+    lines.append(f"🆔 DN: {dn_no}")
     lines.append("")
     
-    # Warehouse
-    warehouse = data.get('warehouse', 'Unknown')
-    lines.append("*Warehouse:*")
-    lines.append(f"{warehouse}")
+    dealer_name = d.get('dealer_name') or d.get('customer_name', 'Unknown')
+    lines.append(f"👤 Dealer: {dealer_name}")
     lines.append("")
     
-    # City
-    city = data.get('city', 'Unknown')
-    lines.append("*City:*")
-    lines.append(f"{city}")
-    lines.append("")
-    
-    # Delivery Location
-    delivery_location = data.get('delivery_location')
-    if delivery_location:
-        lines.append("*Delivery Location:*")
-        lines.append(f"{delivery_location}")
+    city = d.get('city', 'Unknown')
+    if city and city != 'Unknown':
+        lines.append(f"📍 City: {city}")
         lines.append("")
     
-    # Sales Manager
-    sales_manager = data.get('sales_manager')
-    if sales_manager:
-        lines.append("*Sales Manager:*")
-        lines.append(f"{sales_manager}")
-        lines.append("")
-    
-    # Division
-    division = data.get('division')
-    if division:
-        lines.append("*Division:*")
-        lines.append(f"{division}")
-        lines.append("")
-    
-    # Metrics
-    lines.append("*📊 Metrics:*")
-    lines.append(f"Units: {data.get('total_units', 0)}")
-    revenue = data.get('total_revenue', 0)
-    if revenue:
-        lines.append(f"Revenue: PKR {revenue:,.2f}")
+    warehouse = d.get('warehouse', 'Unknown')
+    warehouse_code = d.get('warehouse_code')
+    if warehouse_code and warehouse_code != 'None':
+        lines.append(f"🏭 Warehouse: {warehouse} ({warehouse_code})")
     else:
-        lines.append("Revenue: PKR 0")
+        lines.append(f"🏭 Warehouse: {warehouse}")
     lines.append("")
     
-    # Material Count
-    material_count = data.get('material_count', 1)
-    lines.append(f"Materials: {material_count}")
+    # ----- SEPARATOR -----
+    lines.append("━━━━━━━━━━━━━━━━━━")
     lines.append("")
     
-    # Dates
-    lines.append("*📅 Dates:*")
-    lines.append(f"DN Create: {data.get('dn_create_date', 'N/A')}")
-    lines.append(f"PGI: {data.get('good_issue_date', 'N/A')}")
-    lines.append(f"POD: {data.get('pod_date', 'N/A')}")
+    # ----- SECTION 3: Summary -----
+    lines.append("📊 Summary")
     lines.append("")
     
-    # Aging
-    lines.append("*⏳ Aging:*")
-    lines.append(f"Delivery: {data.get('delivery_aging_text', 'N/A')}")
-    lines.append(f"POD: {data.get('pod_aging_text', 'N/A')}")
-    lines.append(f"Total Cycle: {data.get('total_cycle_text', 'N/A')}")
+    total_units = d.get('total_units', 0)
+    lines.append(f"Units: {total_units}")
+    
+    material_count = d.get('material_count', 0)
+    lines.append(f"Products: {material_count}")
+    
+    total_revenue = d.get('total_revenue', 0)
+    if total_revenue:
+        try:
+            revenue_val = float(total_revenue)
+            lines.append(f"Revenue: PKR {revenue_val:,.2f}")
+        except:
+            lines.append(f"Revenue: PKR {total_revenue}")
     lines.append("")
     
-    # Status
-    lines.append("*📋 Status:*")
-    lines.append(f"Delivery: {data.get('status_emoji', '❓')} {data.get('status_text', 'Unknown')}")
-    lines.append(f"PGI: {data.get('pgi_status_text', 'Unknown')}")
-    lines.append(f"POD: {data.get('pod_status_text', 'Unknown')}")
-    lines.append(f"Pending: {data.get('pending_flag_text', 'Unknown')}")
+    # ----- SEPARATOR -----
+    lines.append("━━━━━━━━━━━━━━━━━━")
+    lines.append("")
+    
+    # ----- SECTION 4: Timeline -----
+    lines.append("📅 Timeline")
+    lines.append("")
+    
+    dn_create_date = d.get('dn_create_date', 'N/A')
+    lines.append(f"DN Created: {dn_create_date}")
+    
+    good_issue_date = d.get('good_issue_date', 'N/A')
+    lines.append(f"PGI: {good_issue_date}")
+    
+    pod_date = d.get('pod_date', 'N/A')
+    lines.append(f"POD: {pod_date}")
+    lines.append("")
+    
+    # ----- SEPARATOR -----
+    lines.append("━━━━━━━━━━━━━━━━━━")
+    lines.append("")
+    
+    # ----- SECTION 5: Performance -----
+    lines.append("⏱ Performance")
+    lines.append("")
+    
+    delivery_aging = d.get('delivery_aging_text', 'N/A')
+    lines.append(f"Delivery Time: {delivery_aging}")
+    
+    pod_aging = d.get('pod_aging_text', 'N/A')
+    lines.append(f"POD Time: {pod_aging}")
+    
+    total_cycle = d.get('total_cycle_text', 'N/A')
+    lines.append(f"Total Cycle: {total_cycle}")
+    lines.append("")
+    
+    # ----- SEPARATOR -----
+    lines.append("━━━━━━━━━━━━━━━━━━")
+    lines.append("")
+    
+    # ----- SECTION 6: Status (Compact) -----
+    lines.append("🚚 Status")
+    lines.append("")
+    
+    stage = d.get('calculated_stage', 'Unknown')
+    emoji = d.get('calculated_emoji', '❓')
+    
+    # Show delivery status with emoji
+    lines.append(f"{emoji} {stage}")
+    
+    # Show pending flag only if pending
+    pending_flag = d.get('pending_flag', True)
+    if pending_flag:
+        lines.append("⏰ Pending Action Required")
+    else:
+        lines.append("🟢 No Pending Action")
+    lines.append("")
+    
+    # ----- SEPARATOR -----
+    lines.append("━━━━━━━━━━━━━━━━━━")
+    lines.append("")
+    
+    # ----- SECTION 7: Products (Already Aggregated) -----
+    products = d.get('products', [])
+    if products and len(products) > 0:
+        lines.append("📦 Products")
+        lines.append("")
+        
+        for idx, product in enumerate(products[:10], 1):
+            model = product.get('model', 'Unknown')
+            qty = product.get('quantity', 0)
+            revenue_val = product.get('revenue', 0)
+            
+            # Show model name
+            lines.append(f"{idx}. {model}")
+            
+            # Show quantity
+            lines.append(f"   Qty: {qty}")
+            
+            # Show revenue if available
+            if revenue_val > 0:
+                try:
+                    lines.append(f"   Revenue: PKR {float(revenue_val):,.2f}")
+                except:
+                    pass
+            
+            # Add empty line between products
+            lines.append("")
+        
+        if len(products) > 10:
+            remaining = len(products) - 10
+            lines.append(f"... and {remaining} more product(s)")
+            lines.append("")
+    
+    # ----- SEPARATOR -----
+    lines.append("━━━━━━━━━━━━━━━━━━")
+    lines.append("")
+    
+    # ----- SECTION 8: AI Insight -----
+    ai_insight = d.get('ai_insight')
+    if ai_insight:
+        lines.append("💡 AI Insight")
+        lines.append("")
+        # Split into max 2 lines if needed
+        insight_lines = ai_insight.split('. ')
+        if len(insight_lines) > 2:
+            lines.append(f"{insight_lines[0]}.")
+            lines.append(f"{insight_lines[1]}.")
+        else:
+            lines.append(ai_insight)
+        lines.append("")
+    
+    # ----- FOOTER -----
+    lines.append("━━━━━━━━━━━━━━━━━━")
+    lines.append(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    lines.append("🤖 AI Logistics Assistant")
     
     return "\n".join(lines)
-
-
-def _format_list_response(items: List[Any]) -> str:
-    """Format a list of items for WhatsApp."""
-    if not items:
-        return "No items found"
-    
-    result = []
-    for i, item in enumerate(items, 1):
-        if isinstance(item, dict):
-            # Check if it's a DN item
-            if "dn_no" in item:
-                result.append(_format_dashboard_response(item))
-            else:
-                result.append(f"{i}. {str(item)}")
-        else:
-            result.append(f"{i}. {str(item)}")
-    
-    return "\n\n".join(result)
 
 
 def _ensure_string_response(response_data: Any) -> str:
@@ -322,6 +432,7 @@ def _ensure_string_response(response_data: Any) -> str:
     Ensure response is always a string for WhatsApp.
     
     ✅ FIXED: Properly formats DN dashboard data
+    ✅ PRESERVES: All attributes
     """
     if response_data is None:
         return "No data available"
@@ -332,15 +443,7 @@ def _ensure_string_response(response_data: Any) -> str:
     if isinstance(response_data, dict):
         # Check if it's a dashboard response with 'data' field
         if "data" in response_data:
-            data = response_data["data"]
-            # If data is a dict with DN fields, format it
-            if isinstance(data, dict) and "dn_no" in data:
-                return _format_dashboard_response(data)
-            # If data is a list, format each item
-            if isinstance(data, list):
-                return _format_list_response(data)
-            # Otherwise convert to string
-            return str(data)
+            return format_dn_response(response_data["data"])
         
         # Check if it has 'response' field
         if "response" in response_data:
@@ -352,13 +455,19 @@ def _ensure_string_response(response_data: Any) -> str:
         
         # If it's a DN data dict directly
         if "dn_no" in response_data:
-            return _format_dashboard_response(response_data)
+            return format_dn_response(response_data)
         
         # Convert dict to string
         return str(response_data)
     
     if isinstance(response_data, list):
-        return _format_list_response(response_data)
+        # Format list of items
+        if response_data and isinstance(response_data[0], dict) and "dn_no" in response_data[0]:
+            results = []
+            for item in response_data[:5]:
+                results.append(format_dn_response(item))
+            return "\n\n".join(results)
+        return str(response_data)
     
     return str(response_data)
 
@@ -490,12 +599,22 @@ async def handle_webhook(
                     logger.info(f"[{request_id}] 📨 Message from {phone_number}: '{message_text[:50] if message_text else '[Media]'}'")
                     
                     if message_text and message_text.strip():
-                        background_tasks.add_task(
-                            process_message_with_ai,
-                            message_text.strip(),
-                            phone_number,
-                            request_id
-                        )
+                        # Check if it's a DN query - handle directly for faster response
+                        if message_text.strip().startswith('/dn ') or message_text.strip().startswith('dn '):
+                            dn_no = message_text.strip().split(' ')[1].strip()
+                            background_tasks.add_task(
+                                handle_dn_query_direct,
+                                dn_no,
+                                phone_number,
+                                request_id
+                            )
+                        else:
+                            background_tasks.add_task(
+                                process_message_with_ai,
+                                message_text.strip(),
+                                phone_number,
+                                request_id
+                            )
                     elif msg_type == 'audio':
                         background_tasks.add_task(
                             process_audio_message,
@@ -525,6 +644,56 @@ async def handle_webhook(
         return JSONResponse(
             status_code=200,
             content={"status": "ok", "message": "Webhook received"}
+        )
+
+# ==========================================================
+# ✅ NEW: DIRECT DN HANDLER (FASTEST PATH)
+# ==========================================================
+
+async def handle_dn_query_direct(
+    dn_no: str,
+    phone_number: str,
+    request_id: str
+) -> None:
+    """
+    Handle DN query directly - bypasses AI provider for speed.
+    
+    ✅ FIXED: Uses get_formatted_dn() for beautiful WhatsApp output
+    ✅ PRESERVES: All DNDashboard attributes
+    """
+    try:
+        logger.info(f"[{request_id}] 🔍 Direct DN query: {dn_no}")
+        
+        # Get DN analytics service
+        dn_service = _get_dn_service()
+        
+        if not dn_service:
+            logger.error(f"[{request_id}] ❌ DN Service not available")
+            await send_whatsapp_response(phone_number, "⚠️ DN service is currently unavailable.", request_id)
+            return
+        
+        # ✅ CRITICAL: Use get_formatted_dn() for formatted response
+        result = dn_service.get_formatted_dn(dn_no)
+        
+        if result.get('success'):
+            # ✅ Send the formatted message
+            formatted_message = result.get('formatted_message')
+            logger.info(f"[{request_id}] ✅ DN found, sending formatted response")
+            await send_whatsapp_response(phone_number, formatted_message, request_id)
+        else:
+            # ✅ Send the error message
+            error_message = result.get('formatted_message', f"❌ DN {dn_no} not found")
+            logger.info(f"[{request_id}] ❌ DN not found: {dn_no}")
+            await send_whatsapp_response(phone_number, error_message, request_id)
+            
+    except Exception as e:
+        logger.error(f"[{request_id}] ❌ Direct DN handler error: {e}")
+        import traceback
+        traceback.print_exc()
+        await send_whatsapp_response(
+            phone_number,
+            f"❌ Error processing DN {dn_no}. Please try again.",
+            request_id
         )
 
 # ==========================================================
@@ -685,7 +854,7 @@ async def webhook_ping() -> JSONResponse:
     ai = _get_ai_provider_service()
     return JSONResponse(content={
         "ping": "pong",
-        "webhook_version": "27.0",
+        "webhook_version": "28.0",
         "architecture": "v16.0 (Built-in Intent Detection)",
         "timestamp": datetime.now().isoformat(),
         "services": {
@@ -703,7 +872,7 @@ async def webhook_health() -> JSONResponse:
     ai = _get_ai_provider_service()
     return JSONResponse(content={
         "status": "healthy" if ai else "degraded",
-        "webhook_version": "27.0",
+        "webhook_version": "28.0",
         "architecture": "v16.0 (Built-in Intent Detection)",
         "timestamp": datetime.now().isoformat(),
         "services": {
@@ -753,7 +922,7 @@ async def test_dn_lookup(dn: str = Query(..., description="DN number to test")):
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("🌐 WEBHOOK ROUTER v27.0 - COMPLETE PRODUCTION")
+logger.info("🌐 WEBHOOK ROUTER v28.0 - FORMATTED DN RESPONSES")
 logger.info("=" * 70)
 
 logger.info("🚀 Pre-initializing AI Provider Service...")
@@ -764,6 +933,13 @@ if ai:
 else:
     logger.error("❌ AI Provider Service initialization FAILED")
     webhook_stats["ai_enabled"] = False
+
+logger.info("🚀 Pre-initializing DN Analytics Service...")
+dn = _get_dn_service()
+if dn:
+    logger.info("✅ DN Analytics Service loaded successfully")
+else:
+    logger.error("❌ DN Analytics Service initialization FAILED")
 
 try:
     if DATABASE_AVAILABLE:
@@ -788,7 +964,8 @@ logger.info("")
 logger.info("   📌 ARCHITECTURE: v16.0 (Built-in Intent Detection)")
 logger.info("   📌 AI Provider: v5.0 (NO ai_query_service.py)")
 logger.info("   📌 Routing: IntentDetectionEngine (built-in)")
-logger.info("   📌 Response Formatting: ✅ FIXED (always string)")
+logger.info("   📌 DN Formatting: ✅ NEW Professional Formatter")
+logger.info("   📌 Response Formatting: ✅ ALWAYS string")
 logger.info("")
 logger.info("=" * 70)
 
