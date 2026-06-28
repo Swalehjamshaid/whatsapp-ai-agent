@@ -1,7 +1,7 @@
 # =====================================================================================================
 # FILE: app/services/excel_import_service.py
-# VERSION: v18.3 - TRANSACTION-SAFE REPLACE MODE
-# PURPOSE: Enterprise Excel import with transaction safety and enhanced diagnostics
+# VERSION: v18.4 - ROOT CAUSE INVESTIGATION
+# PURPOSE: Enterprise Excel import with comprehensive stage tracking
 # =====================================================================================================
 
 import pandas as pd
@@ -19,6 +19,7 @@ import gc
 import os
 from functools import lru_cache
 from collections import OrderedDict
+import sys
 
 from app.models import DeliveryReport
 
@@ -637,7 +638,7 @@ class FrozenMapping:
 def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
     """Detect the best worksheet containing delivery data."""
     logger.info("=" * 60)
-    logger.info("🔍 WORKSHEET DETECTION v18.3")
+    logger.info("🔍 WORKSHEET DETECTION v18.4")
     logger.info("=" * 60)
     
     try:
@@ -885,12 +886,12 @@ def derive_dealer_code(customer_name: str) -> Optional[str]:
     return f"DEAL_{code}" if code else None
 
 # =====================================================================================================
-# BLOCK 7: BATCH PROCESSOR WITH TRANSACTION-SAFE OPERATIONS
+# BLOCK 7: BATCH PROCESSOR WITH STAGE TRACKING
 # =====================================================================================================
 
 class FastBatchProcessor:
     """
-    BLOCK 7: Complete batch processor with transaction-safe operations.
+    BLOCK 7: Complete batch processor with comprehensive stage tracking.
     """
     
     def __init__(self, db: Session, frozen_mapping: FrozenMapping, batch_id: str, source_filename: str):
@@ -899,20 +900,46 @@ class FastBatchProcessor:
         self.batch_id = batch_id
         self.source_filename = source_filename
         
-        # Counters
-        self.inserted_count = 0
-        self.updated_count = 0
-        self.skipped_count = 0
-        self.failed_count = 0
-        self.total_revenue = Decimal(0)
-        self.total_units = 0
+        # ============================================================
+        # STAGE COUNTERS - Track every stage independently
+        # ============================================================
+        self.rows_read = 0
+        self.rows_extracted = 0
+        self.rows_parsed = 0
+        self.rows_validated = 0
+        self.rows_buffered = 0
+        self.rows_insert_attempted = 0
+        self.rows_inserted = 0
+        self.rows_failed = 0
+        self.rows_updated = 0
+        self.rows_skipped = 0
         
-        # Tracking
+        # ============================================================
+        # FAILURE STAGE TRACKING
+        # ============================================================
+        self.failure_stages = {
+            'EXTRACTION': 0,
+            'PARSING': 0,
+            'VALIDATION': 0,
+            'DUPLICATE_CHECK': 0,
+            'BUFFER_CREATION': 0,
+            'DATABASE_INSERT': 0,
+            'COMMIT': 0,
+        }
+        
+        # ============================================================
+        # FIRST FAILED ROW
+        # ============================================================
+        self.first_failed_row = None
+        
+        # ============================================================
+        # TRACKING
+        # ============================================================
         self.processed_keys = set()
         self.bulk_buffer = []
         self.commit_counter = 0
         
-        # Error tracking - Detailed
+        # Error tracking
         self.extraction_errors = []
         self.parsing_errors = []
         self.validation_warnings = []
@@ -922,18 +949,12 @@ class FastBatchProcessor:
         self.unexpected_exceptions = []
         self.failed_rows = []
         
-        # Duplicate tracking with row numbers
+        # Duplicate tracking
         self.duplicate_tracker = {}  # key -> row_number
         
         # Configuration
         self.skip_dups = False
         self.update_existing = False
-        
-        # Reconciliation counters
-        self.rows_read = 0
-        self.rows_parsed = 0
-        self.rows_buffered = 0
-        self.rows_inserted_db = 0
         
         # Extraction statistics
         self.extraction_stats = {
@@ -943,14 +964,16 @@ class FastBatchProcessor:
             'storage_extracted': 0,
         }
         
-        # Sample data for verification - store Excel raw values for later comparison
-        self.excel_samples = []  # Store raw Excel values
-        self.parsed_samples = []  # Store parsed values
-        self.buffer_samples = []  # Store buffer values
-        self.first_failed_row = None  # Store first failed row details
+        # Samples for verification
+        self.excel_samples = []
+        self.parsed_samples = []
+        self.buffer_samples = []
         
-        # Comparison tracking - to detect value loss
+        # Comparison tracking
         self.comparison_log = []
+        
+        # Database insert tracking
+        self.db_insert_sample = None
     
     # =====================================================================================================
     # EXTRACTION LAYER
@@ -1037,6 +1060,8 @@ class FastBatchProcessor:
             'storage_location': None,
         }
         
+        row_number = raw_values.get('row_number', 0)
+        
         # DN Work
         raw_dn_work = raw_values.get('raw_dn_work')
         try:
@@ -1044,7 +1069,7 @@ class FastBatchProcessor:
             parsed_values['dn_work'] = parsed_dn_work
             if raw_dn_work is not None and parsed_dn_work is None:
                 self.parsing_errors.append({
-                    'row': raw_values.get('row_number'),
+                    'row': row_number,
                     'field': 'dn_work',
                     'raw': raw_dn_work,
                     'parsed': parsed_dn_work,
@@ -1053,7 +1078,7 @@ class FastBatchProcessor:
         except Exception as e:
             parsed_values['dn_work'] = None
             self.parsing_errors.append({
-                'row': raw_values.get('row_number'),
+                'row': row_number,
                 'field': 'dn_work',
                 'raw': raw_dn_work,
                 'parsed': None,
@@ -1067,7 +1092,7 @@ class FastBatchProcessor:
             parsed_values['dn_qty'] = parsed_dn_qty
             if raw_dn_qty is not None and parsed_dn_qty is None:
                 self.parsing_errors.append({
-                    'row': raw_values.get('row_number'),
+                    'row': row_number,
                     'field': 'dn_qty',
                     'raw': raw_dn_qty,
                     'parsed': parsed_dn_qty,
@@ -1076,7 +1101,7 @@ class FastBatchProcessor:
         except Exception as e:
             parsed_values['dn_qty'] = None
             self.parsing_errors.append({
-                'row': raw_values.get('row_number'),
+                'row': row_number,
                 'field': 'dn_qty',
                 'raw': raw_dn_qty,
                 'parsed': None,
@@ -1090,7 +1115,7 @@ class FastBatchProcessor:
             parsed_values['dn_amount'] = parsed_dn_amount
             if raw_dn_amount is not None and parsed_dn_amount is None:
                 self.parsing_errors.append({
-                    'row': raw_values.get('row_number'),
+                    'row': row_number,
                     'field': 'dn_amount',
                     'raw': raw_dn_amount,
                     'parsed': parsed_dn_amount,
@@ -1099,7 +1124,7 @@ class FastBatchProcessor:
         except Exception as e:
             parsed_values['dn_amount'] = None
             self.parsing_errors.append({
-                'row': raw_values.get('row_number'),
+                'row': row_number,
                 'field': 'dn_amount',
                 'raw': raw_dn_amount,
                 'parsed': None,
@@ -1113,7 +1138,7 @@ class FastBatchProcessor:
             parsed_values['storage_location'] = parsed_storage
             if raw_storage is not None and parsed_storage is None:
                 self.parsing_errors.append({
-                    'row': raw_values.get('row_number'),
+                    'row': row_number,
                     'field': 'storage_location',
                     'raw': raw_storage,
                     'parsed': parsed_storage,
@@ -1122,7 +1147,7 @@ class FastBatchProcessor:
         except Exception as e:
             parsed_values['storage_location'] = None
             self.parsing_errors.append({
-                'row': raw_values.get('row_number'),
+                'row': row_number,
                 'field': 'storage_location',
                 'raw': raw_storage,
                 'parsed': None,
@@ -1132,18 +1157,14 @@ class FastBatchProcessor:
         return parsed_values
     
     # =====================================================================================================
-    # COMPARE STAGES - Detect value loss
+    # COMPARE STAGES
     # =====================================================================================================
     
     def compare_stages(self, raw_values: Dict[str, Any], parsed_values: Dict[str, Any], 
                        row_number: int, dn_no: str, material_no: str):
-        """
-        Compare raw extracted values against parsed values.
-        Detect value loss between stages.
-        """
+        """Compare raw extracted values against parsed values."""
         comparisons = []
         
-        # Compare each field
         fields = [
             ('DN Work', 'raw_dn_work', 'dn_work'),
             ('DN Qty', 'raw_dn_qty', 'dn_qty'),
@@ -1155,7 +1176,6 @@ class FastBatchProcessor:
             raw_val = raw_values.get(raw_key)
             parsed_val = parsed_values.get(parsed_key)
             
-            # Check if value was lost
             if raw_val is not None and parsed_val is None:
                 comparisons.append({
                     'field': display_name,
@@ -1165,7 +1185,6 @@ class FastBatchProcessor:
                     'detail': f"Raw: '{raw_val}' → Parsed: None"
                 })
             elif raw_val is not None and parsed_val is not None:
-                # Check if values match (for strings, compare normalized)
                 if isinstance(raw_val, str) and isinstance(parsed_val, str):
                     if raw_val.strip().lower() != parsed_val.strip().lower():
                         comparisons.append({
@@ -1184,7 +1203,6 @@ class FastBatchProcessor:
                             'detail': f"Raw: '{raw_val}' → Parsed: '{parsed_val}'"
                         })
                 else:
-                    # Numeric or other types
                     if str(raw_val).strip() != str(parsed_val).strip():
                         comparisons.append({
                             'field': display_name,
@@ -1210,7 +1228,6 @@ class FastBatchProcessor:
                     'detail': f"Raw: None (optional field)"
                 })
         
-        # Log comparison for diagnostic mode
         if DIAGNOSTIC_MODE:
             logger.info("=" * 60)
             logger.info(f"🔍 COMPARISON: Row {row_number}, DN={dn_no}, Material={material_no}")
@@ -1218,24 +1235,12 @@ class FastBatchProcessor:
                 logger.info(f"  {comp['status']} {comp['field']}: {comp['detail']}")
             logger.info("=" * 60)
         
-        # Store comparison for later use
         self.comparison_log.append({
             'row': row_number,
             'dn_no': dn_no,
             'material_no': material_no,
             'comparisons': comparisons
         })
-        
-        # Check for value loss
-        value_loss = any(c['status'] == '⚠️ VALUE LOST' for c in comparisons)
-        if value_loss:
-            self.validation_warnings.append({
-                'row': row_number,
-                'dn': dn_no,
-                'material': material_no,
-                'warning': 'Value loss detected between extraction and parsing',
-                'comparisons': comparisons
-            })
         
         return comparisons
     
@@ -1247,12 +1252,10 @@ class FastBatchProcessor:
         """Validate ONLY mandatory fields."""
         errors = []
         
-        # DN NO - Mandatory
         dn_no = row_data.get('dn_no')
         if not dn_no or str(dn_no).strip() == '':
             errors.append("Missing DN NO")
         
-        # Material NO - Mandatory
         material_no = row_data.get('material_no')
         if not material_no or str(material_no).strip() == '':
             errors.append("Missing Material NO")
@@ -1269,30 +1272,31 @@ class FastBatchProcessor:
         return True, []
     
     # =====================================================================================================
-    # PROCESS ROW - WITH COMPARISON
+    # PROCESS ROW - WITH STAGE TRACKING
     # =====================================================================================================
     
     def process_row(self, row_data: Dict[str, Any], row_number: int, row: Dict[str, Any]) -> bool:
         """
-        Process a single row with comprehensive tracking.
+        Process a single row with comprehensive stage tracking.
         """
         try:
             self.rows_read += 1
-            self.rows_parsed += 1
             
             # ============================================================
-            # STEP 1: EXTRACT CRITICAL FIELDS
+            # STAGE 1: EXTRACTION
             # ============================================================
             raw_values = self.extract_critical_fields(row, row_number)
+            self.rows_extracted += 1
             
             # Store raw values for verification
             if len(self.excel_samples) < 100:
                 self.excel_samples.append(raw_values.copy())
             
             # ============================================================
-            # STEP 2: PARSE CRITICAL FIELDS
+            # STAGE 2: PARSING
             # ============================================================
             parsed_values = self.parse_critical_fields(raw_values)
+            self.rows_parsed += 1
             
             # Add parsed values to row_data
             row_data.update(parsed_values)
@@ -1308,9 +1312,8 @@ class FastBatchProcessor:
                 })
             
             # ============================================================
-            # STEP 3: EXTRACT MANDATORY FIELDS
+            # STAGE 3: EXTRACT MANDATORY FIELDS
             # ============================================================
-            # DN NO
             dn_no_col = self.frozen_mapping.get('dn_no')
             if dn_no_col:
                 raw_dn_no = row.get(dn_no_col)
@@ -1318,7 +1321,6 @@ class FastBatchProcessor:
             else:
                 row_data['dn_no'] = None
             
-            # Material NO
             material_no_col = self.frozen_mapping.get('material_no')
             if material_no_col:
                 raw_material_no = row.get(material_no_col)
@@ -1327,42 +1329,50 @@ class FastBatchProcessor:
                 row_data['material_no'] = None
             
             # ============================================================
-            # STEP 4: COMPARE STAGES - DETECT VALUE LOSS
+            # STAGE 4: COMPARE STAGES
             # ============================================================
             dn_no = row_data.get('dn_no')
             material_no = row_data.get('material_no')
-            
             comparisons = self.compare_stages(raw_values, parsed_values, row_number, dn_no, material_no)
             
             # ============================================================
-            # STEP 5: VALIDATE MANDATORY FIELDS
+            # STAGE 5: VALIDATION
             # ============================================================
             is_valid, mandatory_errors = self.validate_mandatory_fields(row_data, row_number)
             
             if not is_valid:
+                self.rows_failed += 1
+                self.failure_stages['VALIDATION'] += 1
+                
                 # Store first failed row
                 if self.first_failed_row is None:
                     self.first_failed_row = {
                         'row': row_number,
                         'dn': dn_no,
                         'material': material_no,
+                        'stage': 'VALIDATION',
                         'raw_values': raw_values.copy(),
                         'parsed_values': parsed_values.copy(),
                         'errors': mandatory_errors,
-                        'comparisons': comparisons
+                        'comparisons': comparisons,
+                        'exception_type': None,
+                        'exception_message': None,
+                        'stack_trace': None
                     }
                 
                 self.failed_rows.append({
                     'row': row_number,
                     'dn': dn_no,
                     'material': material_no,
+                    'stage': 'VALIDATION',
                     'error': f"Mandatory fields missing: {', '.join(mandatory_errors)}"
                 })
-                self.failed_count += 1
                 return False
             
+            self.rows_validated += 1
+            
             # ============================================================
-            # STEP 6: EXTRACT OTHER FIELDS
+            # STAGE 6: EXTRACT OTHER FIELDS
             # ============================================================
             row_data['order_type'] = normalize_string(row.get(self.frozen_mapping.get('order_type')))
             row_data['division'] = normalize_string(row.get(self.frozen_mapping.get('division')))
@@ -1378,34 +1388,41 @@ class FastBatchProcessor:
             row_data['remarks'] = normalize_string(row.get(self.frozen_mapping.get('remarks')))
             
             # ============================================================
-            # STEP 7: DUPLICATE CHECK - dn_no + material_no
+            # STAGE 7: DUPLICATE CHECK
             # ============================================================
             dn_no = row_data.get('dn_no')
             material_no = row_data.get('material_no')
             
             if not dn_no or not material_no:
+                self.rows_failed += 1
+                self.failure_stages['VALIDATION'] += 1
+                
                 if self.first_failed_row is None:
                     self.first_failed_row = {
                         'row': row_number,
                         'dn': dn_no,
                         'material': material_no,
+                        'stage': 'VALIDATION',
                         'raw_values': raw_values.copy(),
                         'parsed_values': parsed_values.copy(),
                         'errors': ['DN NO or Material NO missing after validation'],
-                        'comparisons': comparisons
+                        'comparisons': comparisons,
+                        'exception_type': None,
+                        'exception_message': None,
+                        'stack_trace': None
                     }
+                
                 self.failed_rows.append({
                     'row': row_number,
                     'dn': dn_no,
                     'material': material_no,
+                    'stage': 'VALIDATION',
                     'error': 'DN NO or Material NO is None after validation'
                 })
-                self.failed_count += 1
                 return False
             
             duplicate_key = f"{dn_no}_{material_no}"
             
-            # Check for duplicates in the current batch with row tracking
             if duplicate_key in self.processed_keys:
                 previous_row = self.duplicate_tracker.get(duplicate_key)
                 duplicate_info = {
@@ -1415,32 +1432,38 @@ class FastBatchProcessor:
                     'previous_row': previous_row
                 }
                 self.duplicate_errors.append(duplicate_info)
+                self.rows_failed += 1
+                self.failure_stages['DUPLICATE_CHECK'] += 1
                 
                 if self.first_failed_row is None:
                     self.first_failed_row = {
                         'row': row_number,
                         'dn': dn_no,
                         'material': material_no,
+                        'stage': 'DUPLICATE_CHECK',
                         'raw_values': raw_values.copy(),
                         'parsed_values': parsed_values.copy(),
                         'errors': [f'Duplicate key: {duplicate_key} (previous row: {previous_row})'],
-                        'comparisons': comparisons
+                        'comparisons': comparisons,
+                        'exception_type': None,
+                        'exception_message': None,
+                        'stack_trace': None
                     }
                 
                 self.failed_rows.append({
                     'row': row_number,
                     'dn': dn_no,
                     'material': material_no,
+                    'stage': 'DUPLICATE_CHECK',
                     'error': f'Duplicate in current batch (previous row: {previous_row})'
                 })
-                self.failed_count += 1
                 return False
             
             self.processed_keys.add(duplicate_key)
             self.duplicate_tracker[duplicate_key] = row_number
             
             # ============================================================
-            # STEP 8: DERIVE STATUS AND ENRICH
+            # STAGE 8: DERIVE STATUS AND ENRICH
             # ============================================================
             status = StatusEngine.derive(
                 row_data.get('dn_create_date'),
@@ -1448,7 +1471,6 @@ class FastBatchProcessor:
                 row_data.get('pod_date')
             )
             
-            # Enrich with derived fields
             row_data['warehouse_code'] = get_warehouse_code(row_data.get('warehouse'))
             row_data['delivery_location'] = get_delivery_location(row_data.get('ship_to_city'))
             
@@ -1461,49 +1483,79 @@ class FastBatchProcessor:
                 row_data['dealer_code'] = None
             
             # ============================================================
-            # STEP 9: ADD TO BUFFER
+            # STAGE 9: BUFFER CREATION
             # ============================================================
-            buffer_record = self._prepare_buffer_record(row_data, status)
-            
-            # Store buffer sample for verification
-            if len(self.buffer_samples) < 100:
-                self.buffer_samples.append({
+            try:
+                buffer_record = self._prepare_buffer_record(row_data, status)
+                self.bulk_buffer.append(buffer_record)
+                self.rows_buffered += 1
+                
+                # Store buffer sample for verification
+                if len(self.buffer_samples) < 100:
+                    self.buffer_samples.append({
+                        'row': row_number,
+                        'dn_no': buffer_record['dn_no'],
+                        'material_no': buffer_record['material_no'],
+                        'dn_work': buffer_record['dn_work'],
+                        'dn_qty': buffer_record['dn_qty'],
+                        'dn_amount': buffer_record['dn_amount'],
+                        'storage_location': buffer_record['storage_location'],
+                    })
+                
+                # Update totals
+                if row_data.get('dn_amount'):
+                    self.total_revenue += row_data['dn_amount']
+                if row_data.get('dn_qty'):
+                    self.total_units += row_data['dn_qty']
+                
+            except Exception as e:
+                self.rows_failed += 1
+                self.failure_stages['BUFFER_CREATION'] += 1
+                
+                if self.first_failed_row is None:
+                    self.first_failed_row = {
+                        'row': row_number,
+                        'dn': dn_no,
+                        'material': material_no,
+                        'stage': 'BUFFER_CREATION',
+                        'raw_values': raw_values.copy(),
+                        'parsed_values': parsed_values.copy(),
+                        'errors': [str(e)],
+                        'comparisons': comparisons,
+                        'exception_type': type(e).__name__,
+                        'exception_message': str(e),
+                        'stack_trace': traceback.format_exc()
+                    }
+                
+                self.failed_rows.append({
                     'row': row_number,
-                    'dn_no': buffer_record['dn_no'],
-                    'material_no': buffer_record['material_no'],
-                    'dn_work': buffer_record['dn_work'],
-                    'dn_qty': buffer_record['dn_qty'],
-                    'dn_amount': buffer_record['dn_amount'],
-                    'storage_location': buffer_record['storage_location'],
+                    'dn': dn_no,
+                    'material': material_no,
+                    'stage': 'BUFFER_CREATION',
+                    'error': str(e)
                 })
-            
-            self.bulk_buffer.append(buffer_record)
-            self.inserted_count += 1
-            self.rows_buffered += 1
-            
-            # Update totals
-            if row_data.get('dn_amount'):
-                self.total_revenue += row_data['dn_amount']
-            if row_data.get('dn_qty'):
-                self.total_units += row_data['dn_qty']
-            
-            # Don't flush here - we'll flush after all rows are processed
-            # This keeps the transaction intact
+                return False
             
             return True
             
         except Exception as e:
             # Catch unexpected exceptions
+            self.rows_failed += 1
+            self.failure_stages['EXTRACTION'] += 1  # Default stage
+            
             if self.first_failed_row is None:
                 self.first_failed_row = {
                     'row': row_number,
                     'dn': row_data.get('dn_no'),
                     'material': row_data.get('material_no'),
+                    'stage': 'UNKNOWN',
                     'raw_values': raw_values if 'raw_values' in locals() else {},
                     'parsed_values': parsed_values if 'parsed_values' in locals() else {},
                     'errors': [str(e)],
-                    'traceback': traceback.format_exc(),
-                    'comparisons': comparisons if 'comparisons' in locals() else []
+                    'comparisons': comparisons if 'comparisons' in locals() else [],
+                    'exception_type': type(e).__name__,
+                    'exception_message': str(e),
+                    'stack_trace': traceback.format_exc()
                 }
             
             self.unexpected_exceptions.append({
@@ -1513,13 +1565,15 @@ class FastBatchProcessor:
                 'error': str(e),
                 'traceback': traceback.format_exc()
             })
+            
             self.failed_rows.append({
                 'row': row_number,
                 'dn': row_data.get('dn_no'),
                 'material': row_data.get('material_no'),
+                'stage': 'EXTRACTION',
                 'error': f"Unexpected exception: {str(e)}"
             })
-            self.failed_count += 1
+            
             logger.error(f"❌ Row {row_number} unexpected error: {e}")
             logger.error(traceback.format_exc())
             return False
@@ -1559,42 +1613,64 @@ class FastBatchProcessor:
         }
     
     # =====================================================================================================
-    # FLUSH BULK WITH DETAILED ERROR REPORTING
+    # FLUSH BULK WITH DETAILED LOGGING
     # =====================================================================================================
     
     def flush_bulk(self, is_final: bool = False):
         """
-        Flush bulk buffer with detailed error reporting.
-        Identifies the exact record causing the failure.
+        Flush bulk buffer with detailed logging.
         """
         if not self.bulk_buffer:
+            logger.warning("⚠️ flush_bulk called with empty buffer")
             return
+        
+        self.rows_insert_attempted += len(self.bulk_buffer)
+        
+        # Log buffer details
+        logger.info("=" * 60)
+        logger.info(f"📊 FLUSH BULK - Batch {self.commit_counter + 1}")
+        logger.info(f"  Buffer Size: {len(self.bulk_buffer):,}")
+        
+        if self.bulk_buffer:
+            first_record = self.bulk_buffer[0]
+            last_record = self.bulk_buffer[-1]
+            logger.info(f"  First Record: DN={first_record.get('dn_no')}, Material={first_record.get('material_no')}")
+            logger.info(f"  Last Record: DN={last_record.get('dn_no')}, Material={last_record.get('material_no')}")
+            self.db_insert_sample = {
+                'first': first_record,
+                'last': last_record,
+                'sample': self.bulk_buffer[0] if self.bulk_buffer else None
+            }
+        logger.info("=" * 60)
         
         try:
             self.db.bulk_insert_mappings(DeliveryReport, self.bulk_buffer)
-            self.rows_inserted_db += len(self.bulk_buffer)
+            self.db.commit()
+            
+            batch_size = len(self.bulk_buffer)
+            self.rows_inserted += batch_size
+            self.rows_insert_attempted -= batch_size  # Remove successful ones from attempted
             
             self.commit_counter += 1
-            logger.info(f"⚡ Bulk committed batch {self.commit_counter} ({len(self.bulk_buffer):,} rows)")
+            logger.info(f"✅ Bulk committed batch {self.commit_counter} ({batch_size:,} rows)")
             self.bulk_buffer.clear()
             
             if self.commit_counter % GC_INTERVAL == 0:
                 gc.collect()
                 
         except Exception as e:
+            self.failure_stages['DATABASE_INSERT'] += 1
+            self.rows_failed += len(self.bulk_buffer)
+            
             # Identify the offending record
             offending_record = None
             if self.bulk_buffer:
-                # Try to find which record caused the error
                 for idx, record in enumerate(self.bulk_buffer):
                     try:
-                        # Attempt to validate this record individually
                         test_record = [record]
                         self.db.bulk_insert_mappings(DeliveryReport, test_record)
-                        # If successful, rollback and continue
                         self.db.rollback()
                     except Exception as record_error:
-                        # This record caused the error
                         offending_record = {
                             'index': idx,
                             'dn_no': record.get('dn_no'),
@@ -1603,14 +1679,13 @@ class FastBatchProcessor:
                             'dn_qty': record.get('dn_qty'),
                             'dn_amount': record.get('dn_amount'),
                             'storage_location': record.get('storage_location'),
-                            'error': str(record_error),
-                            'full_record': record
+                            'error': str(record_error)
                         }
                         break
             
-            error_msg = f"Bulk insert failed after {len(self.bulk_buffer)} records"
+            error_msg = f"Bulk insert failed"
             if offending_record:
-                error_msg += f". Offending record at index {offending_record['index']}: DN={offending_record['dn_no']}, Material={offending_record['material_no']}"
+                error_msg += f" - Offending record at index {offending_record['index']}: DN={offending_record['dn_no']}, Material={offending_record['material_no']}"
                 logger.error(f"❌ {error_msg}")
                 logger.error(f"   Record details:")
                 logger.error(f"   DN Work: {offending_record['dn_work']}")
@@ -1625,6 +1700,27 @@ class FastBatchProcessor:
                     'offending_record': offending_record,
                     'rows_in_batch': len(self.bulk_buffer)
                 })
+                
+                # Set first failed row if not already set
+                if self.first_failed_row is None:
+                    self.first_failed_row = {
+                        'row': offending_record.get('row', 0),
+                        'dn': offending_record.get('dn_no'),
+                        'material': offending_record.get('material_no'),
+                        'stage': 'DATABASE_INSERT',
+                        'raw_values': None,
+                        'parsed_values': {
+                            'dn_work': offending_record.get('dn_work'),
+                            'dn_qty': offending_record.get('dn_qty'),
+                            'dn_amount': offending_record.get('dn_amount'),
+                            'storage_location': offending_record.get('storage_location'),
+                        },
+                        'errors': [str(e)],
+                        'comparisons': [],
+                        'exception_type': type(e).__name__,
+                        'exception_message': str(e),
+                        'stack_trace': traceback.format_exc()
+                    }
             else:
                 logger.error(f"❌ {error_msg}: {e}")
                 self.database_errors.append({
@@ -1633,6 +1729,7 @@ class FastBatchProcessor:
                     'rows_in_batch': len(self.bulk_buffer)
                 })
             
+            self.bulk_buffer.clear()
             raise BulkInsertError(error_msg) from e
     
     # =====================================================================================================
@@ -1652,7 +1749,8 @@ class FastBatchProcessor:
             if self.bulk_buffer:
                 self.flush_bulk(is_final=True)
             
-            # Delete existing records if requested (within the transaction)
+            # Delete existing records if requested
+            deleted_count = 0
             if delete_existing:
                 logger.info(f"🗑️ Deleting existing records for batch {self.batch_id}...")
                 result = self.db.execute(
@@ -1662,704 +1760,37 @@ class FastBatchProcessor:
                 deleted_count = result.rowcount
                 logger.info(f"🗑️ Deleted {deleted_count} existing records")
             
-            # Commit the transaction
             self.db.commit()
             logger.info("✅ Transaction committed successfully")
             
-            return {'success': True, 'deleted_count': deleted_count if delete_existing else 0}
+            return {'success': True, 'deleted_count': deleted_count}
             
+        except BulkInsertError:
+            # Already logged, re-raise
+            raise
         except Exception as e:
-            # Rollback on any error
+            self.failure_stages['COMMIT'] += 1
+            
             logger.error(f"❌ Transaction failed: {e}")
             self.db.rollback()
             
-            # Log the first failed row if available
-            if self.first_failed_row:
-                logger.error("=" * 60)
-                logger.error("🔍 FIRST FAILED ROW DETAILS")
-                logger.error("=" * 60)
-                logger.error(f"  Row Number: {self.first_failed_row.get('row')}")
-                logger.error(f"  DN: {self.first_failed_row.get('dn')}")
-                logger.error(f"  Material: {self.first_failed_row.get('material')}")
-                logger.error(f"  Errors: {self.first_failed_row.get('errors', [])}")
-                logger.error("  Raw Excel Values:")
-                raw_vals = self.first_failed_row.get('raw_values', {})
-                logger.error(f"    DN Work: {raw_vals.get('raw_dn_work')}")
-                logger.error(f"    DN Qty: {raw_vals.get('raw_dn_qty')}")
-                logger.error(f"    DN Amount: {raw_vals.get('raw_dn_amount')}")
-                logger.error(f"    Storage: {raw_vals.get('raw_storage')}")
-                logger.error("  Parsed Values:")
-                parsed_vals = self.first_failed_row.get('parsed_values', {})
-                logger.error(f"    dn_work: {parsed_vals.get('dn_work')}")
-                logger.error(f"    dn_qty: {parsed_vals.get('dn_qty')}")
-                logger.error(f"    dn_amount: {parsed_vals.get('dn_amount')}")
-                logger.error(f"    storage_location: {parsed_vals.get('storage_location')}")
-                if self.first_failed_row.get('traceback'):
-                    logger.error("  Stack Trace:")
-                    logger.error(self.first_failed_row.get('traceback'))
-                logger.error("=" * 60)
+            if self.first_failed_row is None:
+                self.first_failed_row = {
+                    'row': 0,
+                    'dn': None,
+                    'material': None,
+                    'stage': 'COMMIT',
+                    'raw_values': None,
+                    'parsed_values': None,
+                    'errors': [str(e)],
+                    'comparisons': [],
+                    'exception_type': type(e).__name__,
+                    'exception_message': str(e),
+                    'stack_trace': traceback.format_exc()
+                }
             
             raise
     
     # =====================================================================================================
-    # FINALIZE WITH VERIFICATION
-    # =====================================================================================================
-    
-    def finalize(self, delete_existing: bool = False) -> Dict[str, Any]:
-        """
-        Finalize import with transaction-safe operations and verification.
-        """
-        # Execute the transaction
-        transaction_result = self.execute_transaction(delete_existing)
-        
-        # ============================================================
-        # END-TO-END VERIFICATION
-        # ============================================================
-        verification_results = self.verify_end_to_end()
-        
-        # ============================================================
-        # SUMMARY REPORT
-        # ============================================================
-        total_processed = self.inserted_count + self.updated_count + self.skipped_count + self.failed_count
-        
-        logger.info("=" * 60)
-        logger.info("📊 BLOCK 9: IMPORT SUMMARY")
-        logger.info("=" * 60)
-        logger.info("")
-        logger.info("  📥 INPUT STAGE:")
-        logger.info(f"  Excel Rows Read: {self.rows_read:,}")
-        logger.info("")
-        logger.info("  ⚙️ PROCESSING STAGE:")
-        logger.info(f"  Rows Parsed: {self.rows_parsed:,}")
-        logger.info(f"  Rows Buffered: {self.rows_buffered:,}")
-        logger.info("")
-        logger.info("  📤 OUTPUT STAGE:")
-        logger.info(f"  Rows Inserted: {self.inserted_count:,}")
-        logger.info(f"  Rows Updated: {self.updated_count:,}")
-        logger.info(f"  Rows Skipped: {self.skipped_count:,}")
-        logger.info(f"  Rows Failed: {self.failed_count:,}")
-        logger.info(f"  Total Processed: {total_processed:,}")
-        logger.info("")
-        logger.info("  📊 EXTRACTION STATISTICS:")
-        logger.info(f"  DN Work Extracted: {self.extraction_stats['dn_work_extracted']:,} / {self.rows_read:,}")
-        logger.info(f"  DN Qty Extracted: {self.extraction_stats['dn_qty_extracted']:,} / {self.rows_read:,}")
-        logger.info(f"  DN Amount Extracted: {self.extraction_stats['dn_amount_extracted']:,} / {self.rows_read:,}")
-        logger.info(f"  Storage Extracted: {self.extraction_stats['storage_extracted']:,} / {self.rows_read:,}")
-        
-        # Check extraction completeness
-        extraction_warnings = []
-        for field, count in self.extraction_stats.items():
-            if count < self.rows_read:
-                extraction_warnings.append(f"{field}: {count:,} / {self.rows_read:,}")
-        if extraction_warnings:
-            logger.warning("  ⚠️ EXTRACTION WARNINGS:")
-            for warning in extraction_warnings:
-                logger.warning(f"     {warning}")
-        
-        logger.info("")
-        logger.info("  🔍 ERROR DETAILS:")
-        logger.info(f"  Extraction Errors: {len(self.extraction_errors)}")
-        logger.info(f"  Parsing Errors: {len(self.parsing_errors)}")
-        logger.info(f"  Validation Errors: {len(self.validation_errors)}")
-        logger.info(f"  Validation Warnings: {len(self.validation_warnings)}")
-        logger.info(f"  Database Errors: {len(self.database_errors)}")
-        logger.info(f"  Duplicate Errors: {len(self.duplicate_errors)}")
-        logger.info(f"  Unexpected Exceptions: {len(self.unexpected_exceptions)}")
-        
-        # Show first failed row
-        if self.first_failed_row:
-            logger.info("")
-            logger.info("  🔴 FIRST FAILED ROW:")
-            logger.info(f"     Row: {self.first_failed_row.get('row')}")
-            logger.info(f"     DN: {self.first_failed_row.get('dn')}")
-            logger.info(f"     Material: {self.first_failed_row.get('material')}")
-            logger.info(f"     Reason: {self.first_failed_row.get('errors', [])}")
-        
-        # Show duplicates
-        if self.duplicate_errors:
-            logger.info("")
-            logger.info("  ⚠️ DUPLICATES:")
-            for dup in self.duplicate_errors[:5]:
-                logger.info(f"     Row {dup.get('row')}: DN={dup.get('dn')} Material={dup.get('material')} (previous row: {dup.get('previous_row')})")
-            if len(self.duplicate_errors) > 5:
-                logger.info(f"     ... and {len(self.duplicate_errors) - 5} more")
-        
-        # Show verification results
-        if verification_results:
-            logger.info("")
-            logger.info("  🔍 END-TO-END VERIFICATION:")
-            for key, value in verification_results.items():
-                if key == 'mismatches':
-                    if value:
-                        logger.error(f"     {key}: {len(value)}")
-                        for mismatch in value[:3]:
-                            logger.error(f"       {mismatch}")
-                    else:
-                        logger.info(f"     {key}: None ✅")
-                else:
-                    logger.info(f"     {key}: {value}")
-        
-        if verification_results and verification_results.get('mismatches'):
-            logger.error("  ❌ DATA INTEGRITY ERROR: Mismatches found!")
-        
-        logger.info("=" * 60)
-        
-        return {
-            'inserted_count': self.inserted_count,
-            'updated_count': self.updated_count,
-            'skipped_count': self.skipped_count,
-            'failed_count': self.failed_count,
-            'total_revenue': float(self.total_revenue),
-            'total_units': self.total_units,
-            'rows_read': self.rows_read,
-            'rows_parsed': self.rows_parsed,
-            'rows_buffered': self.rows_buffered,
-            'rows_inserted_db': self.rows_inserted_db,
-            'total_processed': total_processed,
-            'deleted_count': transaction_result.get('deleted_count', 0),
-            'extraction_stats': self.extraction_stats,
-            'extraction_errors': self.extraction_errors[:10],
-            'parsing_errors': self.parsing_errors[:10],
-            'validation_errors': self.validation_errors[:10],
-            'validation_warnings': self.validation_warnings[:20],
-            'database_errors': self.database_errors[:10],
-            'duplicate_errors': self.duplicate_errors[:20],
-            'unexpected_exceptions': self.unexpected_exceptions[:10],
-            'failed_rows': self.failed_rows[:10],
-            'first_failed_row': self.first_failed_row,
-            'verification': verification_results,
-        }
-    
-    # =====================================================================================================
-    # END-TO-END VERIFICATION
-    # =====================================================================================================
-    
-    def verify_end_to_end(self) -> Dict[str, Any]:
-        """
-        Verify that data was correctly inserted by comparing with samples.
-        """
-        if not self.inserted_count:
-            return {'verification_skipped': True, 'reason': 'No rows inserted'}
-        
-        verification_results = {
-            'rows_verified': 0,
-            'mismatches': [],
-            'dn_work_verified': 0,
-            'dn_qty_verified': 0,
-            'dn_amount_verified': 0,
-            'storage_verified': 0,
-        }
-        
-        try:
-            # Get sample rows from the buffer samples (which came from Excel)
-            sample_size = min(10, len(self.buffer_samples))
-            if sample_size == 0:
-                return {'verification_skipped': True, 'reason': 'No buffer samples available'}
-            
-            # Query the inserted rows from PostgreSQL
-            sample_buffer = self.buffer_samples[:sample_size]
-            dn_material_pairs = [(s['dn_no'], s['material_no']) for s in sample_buffer]
-            
-            for dn, material in dn_material_pairs:
-                try:
-                    # Query the record from PostgreSQL
-                    result = self.db.query(DeliveryReport).filter_by(
-                        dn_no=dn,
-                        material_no=material
-                    ).first()
-                    
-                    if not result:
-                        verification_results['mismatches'].append({
-                            'dn': dn,
-                            'material': material,
-                            'error': 'Record not found in PostgreSQL'
-                        })
-                        continue
-                    
-                    # Find the corresponding sample
-                    sample = next((s for s in sample_buffer if s['dn_no'] == dn and s['material_no'] == material), None)
-                    if not sample:
-                        continue
-                    
-                    verification_results['rows_verified'] += 1
-                    
-                    # Compare each field
-                    fields_to_compare = [
-                        ('dn_work', sample.get('dn_work'), result.dn_work),
-                        ('dn_qty', sample.get('dn_qty'), result.dn_qty),
-                        ('dn_amount', sample.get('dn_amount'), result.dn_amount),
-                        ('storage_location', sample.get('storage_location'), result.storage_location),
-                    ]
-                    
-                    for field, expected, actual in fields_to_compare:
-                        # Skip if expected is None (optional field)
-                        if expected is None:
-                            continue
-                        
-                        # Compare based on type
-                        if field == 'dn_qty':
-                            if expected != actual:
-                                verification_results['mismatches'].append({
-                                    'dn': dn,
-                                    'material': material,
-                                    'field': field,
-                                    'expected': expected,
-                                    'actual': actual
-                                })
-                            else:
-                                verification_results['dn_qty_verified'] += 1
-                        
-                        elif field == 'dn_amount':
-                            # Convert to Decimal for comparison
-                            expected_dec = Decimal(str(expected))
-                            actual_dec = Decimal(str(actual)) if actual is not None else None
-                            if actual_dec is None or expected_dec != actual_dec:
-                                verification_results['mismatches'].append({
-                                    'dn': dn,
-                                    'material': material,
-                                    'field': field,
-                                    'expected': expected,
-                                    'actual': actual
-                                })
-                            else:
-                                verification_results['dn_amount_verified'] += 1
-                        
-                        else:
-                            # String comparison
-                            if str(expected).strip().lower() != str(actual or '').strip().lower():
-                                verification_results['mismatches'].append({
-                                    'dn': dn,
-                                    'material': material,
-                                    'field': field,
-                                    'expected': expected,
-                                    'actual': actual
-                                })
-                            else:
-                                if field == 'dn_work':
-                                    verification_results['dn_work_verified'] += 1
-                                elif field == 'storage_location':
-                                    verification_results['storage_verified'] += 1
-                
-                except Exception as e:
-                    verification_results['mismatches'].append({
-                        'dn': dn,
-                        'material': material,
-                        'error': f'Verification query failed: {str(e)}'
-                    })
-            
-            # Log verification results
-            logger.info("=" * 60)
-            logger.info("🔍 END-TO-END VERIFICATION RESULTS")
-            logger.info("=" * 60)
-            logger.info(f"  Rows Verified: {verification_results['rows_verified']}")
-            logger.info(f"  DN Work Verified: {verification_results['dn_work_verified']}")
-            logger.info(f"  DN Qty Verified: {verification_results['dn_qty_verified']}")
-            logger.info(f"  DN Amount Verified: {verification_results['dn_amount_verified']}")
-            logger.info(f"  Storage Verified: {verification_results['storage_verified']}")
-            
-            if verification_results['mismatches']:
-                logger.error(f"  ❌ Mismatches: {len(verification_results['mismatches'])}")
-                for mismatch in verification_results['mismatches'][:5]:
-                    logger.error(f"     {mismatch}")
-            else:
-                logger.info("  ✅ All verified rows match exactly")
-            
-            logger.info("=" * 60)
-            
-        except Exception as e:
-            logger.error(f"❌ End-to-end verification failed: {e}")
-            logger.error(traceback.format_exc())
-            verification_results['error'] = str(e)
-        
-        return verification_results
-
-# =====================================================================================================
-# BLOCK 8: EXCEL IMPORT SERVICE - TRANSACTION-SAFE REPLACE MODE
-# =====================================================================================================
-
-class ExcelImportService:
-    """
-    BLOCK 8: Complete import service with transaction-safe replace mode.
-    """
-    
-    @staticmethod
-    def import_delivery_report_excel(
-        db: Session,
-        file_path: str,
-        source_filename: str,
-        batch_id: str = None,
-        skip_dups: bool = False,
-        update_existing_rows: bool = False,
-        delete_existing: bool = False
-    ) -> Dict[str, Any]:
-        """
-        Import Excel with transaction-safe replace mode.
-        
-        Workflow:
-        1. Read Excel
-        2. Validate Headers
-        3. Process ALL Rows
-        4. Buffer ALL Records
-        5. Validate Buffer
-        6. BEGIN TRANSACTION
-        7. Delete Existing Records (if delete_existing)
-        8. Insert New Records
-        9. Commit
-        
-        If any step fails: Rollback, don't delete existing data.
-        """
-        
-        start_time = time.time()
-        
-        logger.info("=" * 60)
-        logger.info("⚡ EXCEL IMPORT v18.3 - TRANSACTION-SAFE REPLACE MODE")
-        logger.info("=" * 60)
-        logger.info(f"📁 File: {file_path}")
-        logger.info(f"📋 Source: {source_filename}")
-        logger.info(f"🗑️ Delete Existing: {delete_existing}")
-        
-        if DIAGNOSTIC_MODE:
-            logger.info(f"🔍 DIAGNOSTIC MODE ENABLED")
-            logger.info(f"   Processing first {DIAGNOSTIC_ROWS} rows only")
-        
-        if not batch_id:
-            batch_id = f"BATCH_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-        logger.info(f"📋 Batch: {batch_id}")
-        
-        try:
-            # ============================================================
-            # STEP 1: DETECT WORKSHEET
-            # ============================================================
-            sheet_name, header_row, sheet_info = detect_worksheet(file_path)
-            
-            # ============================================================
-            # STEP 2: READ EXCEL
-            # ============================================================
-            logger.info(f"📖 Reading sheet '{sheet_name}'")
-            df = read_excel_fast(file_path, sheet_name, header_row)
-            
-            df = df.dropna(how='all')
-            df = df.dropna(axis=1, how='all')
-            
-            total_rows = len(df)
-            logger.info(f"📄 Read {total_rows:,} rows, {len(df.columns)} columns")
-            
-            # ============================================================
-            # STEP 3: BUILD COLUMN MAP
-            # ============================================================
-            headers = [str(col).strip() for col in df.columns]
-            field_to_column, column_to_field, unmapped = ColumnMap.build_mapping(headers)
-            
-            # Lock mapping
-            frozen_mapping = FrozenMapping(field_to_column)
-            logger.info("🔒 Mapping locked")
-            
-            # Verify mandatory columns are mapped
-            mandatory_cols = ['dn_no', 'material_no']
-            missing_mandatory = [col for col in mandatory_cols if col not in frozen_mapping]
-            if missing_mandatory:
-                raise ColumnMappingError(f"Mandatory columns not mapped: {missing_mandatory}")
-            
-            # ============================================================
-            # STEP 4: SAMPLE VALIDATION - Test before processing
-            # ============================================================
-            logger.info("🔍 Validating sample rows before import...")
-            rows = df.to_dict('records')
-            sample_size = min(10, len(rows))
-            
-            validation_errors = []
-            validation_warnings = []
-            
-            for idx in range(sample_size):
-                row = rows[idx]
-                row_number = idx + 2 + header_row
-                
-                dn_col = frozen_mapping.get('dn_no')
-                mat_col = frozen_mapping.get('material_no')
-                
-                if not dn_col or not mat_col:
-                    validation_errors.append(f"Row {row_number}: Missing column mapping for DN or Material")
-                    continue
-                
-                dn_val = row.get(dn_col)
-                mat_val = row.get(mat_col)
-                
-                if not dn_val or str(dn_val).strip() == '':
-                    validation_errors.append(f"Row {row_number}: DN is empty")
-                
-                if not mat_val or str(mat_val).strip() == '':
-                    validation_errors.append(f"Row {row_number}: Material is empty")
-            
-            if validation_errors:
-                error_msg = f"Sample validation failed with {len(validation_errors)} errors"
-                logger.error(f"❌ {error_msg}")
-                for error in validation_errors[:5]:
-                    logger.error(f"   {error}")
-                return {
-                    "success": False,
-                    "error": error_msg,
-                    "batch_id": batch_id,
-                    "validation_errors": validation_errors,
-                    "validation_warnings": validation_warnings,
-                    "total_rows": total_rows,
-                    "inserted_count": 0,
-                    "updated_count": 0,
-                    "skipped_count": 0,
-                    "failed_count": 0,
-                    "deleted_count": 0
-                }
-            
-            logger.info(f"✅ Sample validation passed")
-            
-            # ============================================================
-            # STEP 5: PROCESS ALL ROWS
-            # ============================================================
-            processor = FastBatchProcessor(db, frozen_mapping, batch_id, source_filename)
-            processor.skip_dups = skip_dups
-            processor.update_existing = update_existing_rows
-            
-            processed_count = 0
-            process_start = time.time()
-            
-            rows_to_process = DIAGNOSTIC_ROWS if DIAGNOSTIC_MODE else len(rows)
-            
-            for idx in range(rows_to_process):
-                row = rows[idx]
-                row_number = idx + 2 + header_row
-                
-                try:
-                    # Build Excel row dictionary
-                    excel_row = {}
-                    for field, col in frozen_mapping.items():
-                        excel_row[field] = row.get(col)
-                    
-                    # Get DN for diagnostic
-                    dn_no = normalize_dn(str(excel_row.get('dn_no')) if excel_row.get('dn_no') else None)
-                    
-                    # Prepare row_data with all fields
-                    parsed_row = {
-                        'order_type': normalize_string(excel_row.get('order_type')),
-                        'dn_no': normalize_dn(str(excel_row.get('dn_no')) if excel_row.get('dn_no') else None),
-                        'dn_work': None,
-                        'dn_amount': None,
-                        'dn_qty': None,
-                        'division': normalize_string(excel_row.get('division')),
-                        'material_no': normalize_string(excel_row.get('material_no')),
-                        'customer_model': normalize_string(excel_row.get('customer_model')),
-                        'sales_office': normalize_string(excel_row.get('sales_office')),
-                        'customer_name': normalize_string(excel_row.get('customer_name')),
-                        'ship_to_city': normalize_string(excel_row.get('ship_to_city')),
-                        'storage_location': None,
-                        'warehouse': normalize_string(excel_row.get('warehouse')),
-                        'dn_create_date': parse_date(excel_row.get('dn_create_date')),
-                        'good_issue_date': parse_date(excel_row.get('good_issue_date')),
-                        'pod_date': parse_date(excel_row.get('pod_date')),
-                        'sales_manager': normalize_string(excel_row.get('sales_manager')),
-                        'customer_code': None,
-                        'dealer_code': None,
-                        'warehouse_code': None,
-                        'delivery_location': None,
-                        'remarks': normalize_string(excel_row.get('remarks')),
-                    }
-                    
-                    # Process row with comprehensive tracking
-                    processor.process_row(parsed_row, row_number, excel_row)
-                    processed_count += 1
-                    
-                    if DIAGNOSTIC_MODE and processed_count == 1:
-                        # Log diagnostic info for first row
-                        logger.info("=" * 60)
-                        logger.info("🔍 DIAGNOSTIC: FIRST ROW DETAILS")
-                        logger.info("=" * 60)
-                        logger.info(f"  Row Number: {row_number}")
-                        logger.info(f"  DN: {parsed_row.get('dn_no')}")
-                        logger.info(f"  Material: {parsed_row.get('material_no')}")
-                        logger.info(f"  Raw DN Work: {excel_row.get('dn_work')}")
-                        logger.info(f"  Raw DN Qty: {excel_row.get('dn_qty')}")
-                        logger.info(f"  Raw DN Amount: {excel_row.get('dn_amount')}")
-                        logger.info(f"  Raw Storage: {excel_row.get('storage_location')}")
-                        logger.info(f"  Parsed DN Work: {parsed_row.get('dn_work')}")
-                        logger.info(f"  Parsed DN Qty: {parsed_row.get('dn_qty')}")
-                        logger.info(f"  Parsed DN Amount: {parsed_row.get('dn_amount')}")
-                        logger.info(f"  Parsed Storage: {parsed_row.get('storage_location')}")
-                        logger.info("=" * 60)
-                    
-                    if processed_count % 25000 == 0:
-                        logger.info(f"📊 Processed {processed_count:,} rows...")
-                    
-                except Exception as e:
-                    processor.failed_count += 1
-                    processor.failed_rows.append({
-                        'row': row_number,
-                        'dn': row.get(frozen_mapping.get('dn_no')) if frozen_mapping.get('dn_no') else None,
-                        'material': row.get(frozen_mapping.get('material_no')) if frozen_mapping.get('material_no') else None,
-                        'error': str(e)
-                    })
-                    logger.error(f"❌ Row {row_number} failed: {e}")
-                    logger.error(traceback.format_exc())
-                    
-                    if DIAGNOSTIC_MODE:
-                        logger.error("🔍 Diagnostic mode: Stopping on first failure")
-                        break
-            
-            process_duration = time.time() - process_start
-            
-            # ============================================================
-            # STEP 6: FINALIZE AND EXECUTE TRANSACTION
-            # ============================================================
-            logger.info("💾 Finalizing import and executing transaction...")
-            results = processor.finalize(delete_existing=delete_existing)
-            
-            duration = time.time() - start_time
-            
-            # ============================================================
-            # STEP 7: RETURN RESULTS
-            # ============================================================
-            logger.info("=" * 60)
-            logger.info("✅ IMPORT COMPLETED")
-            logger.info("=" * 60)
-            logger.info(f"  Duration: {duration:.2f}s")
-            logger.info(f"  Processing Speed: {processed_count / process_duration if process_duration > 0 else 0:,.0f} rows/sec")
-            logger.info(f"  Rows Inserted: {results['inserted_count']:,}")
-            logger.info(f"  Rows Updated: {results['updated_count']:,}")
-            logger.info(f"  Rows Skipped: {results['skipped_count']:,}")
-            logger.info(f"  Rows Failed: {results['failed_count']:,}")
-            logger.info(f"  Deleted: {results['deleted_count']:,}")
-            
-            if results['failed_count'] > 0:
-                logger.warning(f"  ⚠️ {results['failed_count']} rows failed")
-                if results['first_failed_row']:
-                    logger.info("  🔴 First failed row:")
-                    logger.info(f"     Row: {results['first_failed_row'].get('row')}")
-                    logger.info(f"     DN: {results['first_failed_row'].get('dn')}")
-                    logger.info(f"     Material: {results['first_failed_row'].get('material')}")
-                    logger.info(f"     Reason: {results['first_failed_row'].get('errors', [])}")
-            
-            return {
-                "success": True,
-                "batch_id": batch_id,
-                "total_rows": total_rows,
-                "processed_rows": processed_count,
-                "inserted_count": results['inserted_count'],
-                "updated_count": results['updated_count'],
-                "skipped_count": results['skipped_count'],
-                "failed_count": results['failed_count'],
-                "total_revenue_imported": results['total_revenue'],
-                "total_units_imported": results['total_units'],
-                "deleted_count": results['deleted_count'],
-                "sheet_name": sheet_name,
-                "header_row": header_row,
-                "performance": {
-                    "duration_seconds": round(duration, 2),
-                    "rows_per_second": round(processed_count / process_duration if process_duration > 0 else 0, 0),
-                    "bulk_size": BULK_SIZE
-                },
-                "extraction_stats": results['extraction_stats'],
-                "first_failed_row": results['first_failed_row'],
-                "failed_rows": results['failed_rows'][:10],
-                "duplicate_errors": results['duplicate_errors'][:20],
-                "errors": {
-                    "extraction_errors": results['extraction_errors'][:10],
-                    "parsing_errors": results['parsing_errors'][:10],
-                    "validation_errors": results['validation_errors'][:10],
-                    "validation_warnings": results['validation_warnings'][:20],
-                    "database_errors": results['database_errors'][:10],
-                    "duplicate_errors": results['duplicate_errors'][:10],
-                    "unexpected_exceptions": results['unexpected_exceptions'][:10],
-                },
-                "verification": results['verification'],
-            }
-            
-        except BulkInsertError as e:
-            # Bulk insert failed - transaction rolled back
-            logger.error(f"❌ Bulk insert failed: {e}")
-            logger.error(traceback.format_exc())
-            db.rollback()
-            
-            return {
-                "success": False,
-                "error": str(e),
-                "batch_id": batch_id,
-                "total_rows": 0,
-                "inserted_count": 0,
-                "updated_count": 0,
-                "skipped_count": 0,
-                "failed_count": 0,
-                "deleted_count": 0,
-                "rollback": True
-            }
-            
-        except Exception as e:
-            # Any other error - transaction rolled back
-            logger.error(f"❌ Import failed: {e}")
-            logger.error(traceback.format_exc())
-            db.rollback()
-            
-            return {
-                "success": False,
-                "error": str(e),
-                "traceback": traceback.format_exc(),
-                "batch_id": batch_id,
-                "total_rows": 0,
-                "inserted_count": 0,
-                "updated_count": 0,
-                "skipped_count": 0,
-                "failed_count": 0,
-                "deleted_count": 0,
-                "rollback": True
-            }
-
-# =====================================================================================================
-# BLOCK 9: EXPORTS
-# =====================================================================================================
-
-__all__ = [
-    'ExcelImportService',
-    'VerificationError',
-    'normalize_header',
-    'parse_amount',
-    'parse_quantity',
-    'parse_date',
-    'normalize_string',
-    'normalize_dn',
-    'normalize_city',
-    'get_warehouse_code',
-    'get_delivery_location',
-    'derive_customer_code',
-    'derive_dealer_code',
-]
-
-# =====================================================================================================
-# MODULE INITIALIZATION LOGGING
-# =====================================================================================================
-
-logger.info("=" * 60)
-logger.info("📊 EXCEL IMPORT SERVICE v18.3 - TRANSACTION-SAFE REPLACE MODE")
-logger.info("=" * 60)
-logger.info("")
-logger.info("  ✅ TRANSACTION-SAFE REPLACE:")
-logger.info("     - Processes ALL rows before deleting")
-logger.info("     - Deletes only inside transaction")
-logger.info("     - Rollback on any failure")
-logger.info("     - Zero data loss on failure")
-logger.info("")
-logger.info("  ✅ ENHANCED DIAGNOSTICS:")
-logger.info("     - First failed row with full details")
-logger.info("     - Stage comparison (Excel → Extract → Parse → Buffer)")
-logger.info("     - Duplicate tracking with row numbers")
-logger.info("     - Detailed extraction statistics")
-logger.info("")
-logger.info("  ✅ END-TO-END VERIFICATION:")
-logger.info("     - Compares Excel vs PostgreSQL")
-logger.info("     - Identifies mismatches")
-logger.info("     - Logs all verification results")
-logger.info("")
-logger.info("  ✅ PRESERVED BUSINESS LOGIC:")
-logger.info("     - dn_no + material_no composite key")
-logger.info("     - Multiple materials per DN supported")
-logger.info("     - All existing features unchanged")
-logger.info("=" * 60)
-
-# =====================================================================================================
-# END OF FILE
-# =====================================================================================================
+    # FINALIZE WITH COMPREHENSIVE REPORTING
+    # ================================================================
