@@ -821,227 +821,257 @@ class DNAnalysisService:
     # ==================================================================================================
     # BLOCK 11: ✅ PROFESSIONAL WHATSAPP FORMATTER (NEW)
     # ==================================================================================================
+# ==================================================================================================
+# BLOCK 11: ✅ OPTIMIZED WHATSAPP FORMATTER (UNDER 4096 CHARS)
+# ==================================================================================================
 
-    def format_dn_dashboard(self, dashboard_data: Any) -> str:
-        """
-        Format DN dashboard for WhatsApp - Professional executive-style output.
-        
-        This is a PURE PRESENTATION layer. It does NOT:
-        - Execute SQL
-        - Calculate business metrics
-        - Aggregate products
-        - Modify data
-        
-        It only DISPLAYS data already present in DNDashboard.
-        """
-        # Extract data from DNDashboard object or dict
-        try:
-            if hasattr(dashboard_data, '__dataclass_fields__'):
-                d = {}
-                for field_name in dashboard_data.__dataclass_fields__:
-                    value = getattr(dashboard_data, field_name)
-                    if isinstance(value, Decimal):
-                        value = float(value)
-                    if isinstance(value, (date, datetime)):
-                        value = value.strftime('%Y-%m-%d')
-                    d[field_name] = value
-            elif isinstance(dashboard_data, dict):
-                if 'data' in dashboard_data:
-                    return self.format_dn_dashboard(dashboard_data['data'])
-                d = dashboard_data
-            else:
-                return "❌ Invalid data format. Please contact support."
-        except Exception as e:
-            logger.error(f"Error extracting data: {e}")
-            return f"❌ Error formatting report. Please try again."
-
-        # Build professional WhatsApp message
-        lines = []
-
-        # ----- SECTION 1: Header -----
-        lines.append("📦 Delivery Note Details")
-        lines.append("")
-
-        # ----- SECTION 2: Dealer & Location -----
-        dn_no = d.get('dn_no', 'N/A')
-        lines.append(f"🆔 DN: {dn_no}")
-        lines.append("")
-
-        dealer_name = d.get('dealer_name') or d.get('customer_name', 'Unknown')
-        lines.append(f"👤 Dealer: {dealer_name}")
-        lines.append("")
-
-        city = d.get('city', 'Unknown')
-        if city and city != 'Unknown':
-            lines.append(f"📍 City: {city}")
-            lines.append("")
-
-        warehouse = d.get('warehouse', 'Unknown')
-        lines.append(f"🏭 Warehouse: {warehouse}")
-        lines.append("")
-
-        # ----- SEPARATOR -----
-        lines.append("━━━━━━━━━━━━━━━━━━")
-        lines.append("")
-
-        # ----- SECTION 3: Summary -----
-        lines.append("📊 Summary")
-        lines.append("")
-
-        total_units = d.get('total_units', 0)
-        lines.append(f"📦 Units: {total_units}")
-
-        # Show products count (material_count = unique products)
-        material_count = d.get('material_count', 0)
-        lines.append(f"🛒 Products: {material_count}")
-
-        total_revenue = d.get('total_revenue', 0)
-        if total_revenue:
-            try:
-                revenue_val = float(total_revenue)
-                lines.append(f"💰 Revenue: PKR {revenue_val:,.0f}")
-            except:
-                lines.append(f"💰 Revenue: PKR {total_revenue}")
-        lines.append("")
-
-        # ----- SEPARATOR -----
-        lines.append("━━━━━━━━━━━━━━━━━━")
-        lines.append("")
-
-        # ----- SECTION 4: Timeline -----
-        lines.append("📅 Timeline")
-        lines.append("")
-
-        dn_create_date = d.get('dn_create_date', 'N/A')
-        lines.append(f"📝 DN Created: {dn_create_date}")
-
-        good_issue_date = d.get('good_issue_date', 'N/A')
-        lines.append(f"🚚 PGI: {good_issue_date}")
-
-        pod_date = d.get('pod_date', 'N/A')
-        lines.append(f"📬 POD: {pod_date}")
-        lines.append("")
-
-        # ----- SEPARATOR -----
-        lines.append("━━━━━━━━━━━━━━━━━━")
-        lines.append("")
-
-        # ----- SECTION 5: Performance -----
-        lines.append("⏱ Performance")
-        lines.append("")
-
-        delivery_aging = d.get('delivery_aging_text', 'N/A')
-        lines.append(f"🚛 Delivery: {delivery_aging}")
-
-        pod_aging = d.get('pod_aging_text', 'N/A')
-        lines.append(f"📦 POD: {pod_aging}")
-
-        total_cycle = d.get('total_cycle_text', 'N/A')
-        lines.append(f"🔄 Total Cycle: {total_cycle}")
-        lines.append("")
-
-        # ----- SEPARATOR -----
-        lines.append("━━━━━━━━━━━━━━━━━━")
-        lines.append("")
-
-        # ----- SECTION 6: Status (Compact) -----
-        lines.append("🚚 Current Status")
-        lines.append("")
-
-        stage = d.get('calculated_stage', 'Unknown')
-        emoji = d.get('calculated_emoji', '❓')
-        lines.append(f"{emoji} Delivery: {stage}")
-
-        pgi_status = d.get('pgi_status', 'Unknown')
-        lines.append(f"✅ PGI: {pgi_status}")
-
-        pod_status = d.get('pod_status', 'Unknown')
-        lines.append(f"✅ POD: {pod_status}")
-
-        pending_flag = d.get('pending_flag', True)
-        pending_text = d.get('pending_flag_text', 'Unknown')
-        pending_emoji = "🔴" if pending_flag else "🟢"
-        lines.append(f"{pending_emoji} Pending: {pending_text}")
-        lines.append("")
-
-        # ----- SEPARATOR -----
-        lines.append("━━━━━━━━━━━━━━━━━━")
-        lines.append("")
-
-        # ----- SECTION 7: Products (Grouped - No Duplicates) -----
-        products = d.get('products', [])
-        if products and len(products) > 0:
-            lines.append("📦 Products")
-            lines.append("")
-
-            # Group products by model (already grouped by SQL)
-            grouped = {}
-            for p in products:
-                model = p.get('model', 'Unknown')
-                if model not in grouped:
-                    grouped[model] = {
-                        'quantity': 0,
-                        'revenue': 0
-                    }
-                grouped[model]['quantity'] += p.get('quantity', 0)
-                grouped[model]['revenue'] += p.get('revenue', 0)
-
-            # Display products (max 10)
-            for idx, (model, data) in enumerate(grouped.items()[:10], 1):
-                qty = data.get('quantity', 0)
-                revenue = data.get('revenue', 0)
-                lines.append(f"• {model}")
-                lines.append(f"  Qty: {qty}")
-                if revenue > 0:
-                    try:
-                        lines.append(f"  Revenue: PKR {float(revenue):,.0f}")
-                    except:
-                        pass
-                lines.append("")
-
-            if len(grouped) > 10:
-                remaining = len(grouped) - 10
-                lines.append(f"• {remaining} more product(s)")
-                lines.append("")
-
-        # ----- SEPARATOR -----
-        lines.append("━━━━━━━━━━━━━━━━━━")
-        lines.append("")
-
-        # ----- SECTION 8: AI Insight -----
-        lines.append("💡 AI Insight")
-        lines.append("")
-
-        # Generate AI Insight based on status
-        stage = d.get('calculated_stage', 'Unknown')
-        pending_flag = d.get('pending_flag', True)
-
-        if stage == "Delivered":
-            insight = "Shipment completed successfully within the expected delivery cycle. No further action is required."
-        elif stage == "In Transit":
-            insight = "Shipment is currently in transit. Awaiting Proof of Delivery."
-        elif stage == "Pending Dispatch":
-            insight = "Shipment has not yet been dispatched. Warehouse action is required."
+def format_dn_dashboard(self, dashboard_data: Any) -> str:
+    """
+    Format DN dashboard for WhatsApp - OPTIMIZED for 4096 char limit.
+    
+    This is a PURE PRESENTATION layer. It does NOT:
+    - Execute SQL
+    - Calculate business metrics
+    - Aggregate products
+    - Modify data
+    
+    It only DISPLAYS data already present in DNDashboard.
+    """
+    # Extract data from DNDashboard object or dict
+    try:
+        if hasattr(dashboard_data, '__dataclass_fields__'):
+            d = {}
+            for field_name in dashboard_data.__dataclass_fields__:
+                value = getattr(dashboard_data, field_name)
+                if isinstance(value, Decimal):
+                    value = float(value)
+                if isinstance(value, (date, datetime)):
+                    value = value.strftime('%Y-%m-%d')
+                d[field_name] = value
+        elif isinstance(dashboard_data, dict):
+            if 'data' in dashboard_data:
+                return self.format_dn_dashboard(dashboard_data['data'])
+            d = dashboard_data
         else:
-            insight = "Shipment status is being updated. Please check again later."
+            return "❌ Invalid data format. Please contact support."
+    except Exception as e:
+        logger.error(f"Error extracting data: {e}")
+        return f"❌ Error formatting report. Please try again."
 
-        # Add delay warning if applicable
-        delivery_aging_days = d.get('delivery_aging_days', 0)
-        if delivery_aging_days > 14 and stage != "Delivered":
-            insight += " Delivery exceeded the expected turnaround time. Operational follow-up is recommended."
-        elif delivery_aging_days > 30 and stage != "Delivered":
-            insight += " Immediate management attention is recommended."
+    # Build professional WhatsApp message
+    lines = []
 
-        lines.append(insight)
+    # ----- SECTION 1: Header (1 line) -----
+    lines.append("📦 Delivery Note Details")
+    lines.append("")
+
+    # ----- SECTION 2: Dealer & Location (4-5 lines) -----
+    dn_no = d.get('dn_no', 'N/A')
+    lines.append(f"🆔 DN: {dn_no}")
+    lines.append("")
+
+    dealer_name = d.get('dealer_name') or d.get('customer_name', 'Unknown')
+    # Shorten dealer name if too long
+    if len(dealer_name) > 30:
+        dealer_name = dealer_name[:27] + "..."
+    lines.append(f"👤 Dealer: {dealer_name}")
+    lines.append("")
+
+    city = d.get('city', 'Unknown')
+    if city and city != 'Unknown':
+        lines.append(f"📍 City: {city}")
         lines.append("")
 
-        # ----- FOOTER -----
-        lines.append("━━━━━━━━━━━━━━━━━━")
-        lines.append(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-        lines.append("🤖 AI Logistics Assistant")
+    warehouse = d.get('warehouse', 'Unknown')
+    lines.append(f"🏭 Warehouse: {warehouse}")
+    lines.append("")
 
-        return "\n".join(lines)
+    # ----- SEPARATOR (1 line) -----
+    lines.append("━━━━━━━━━━━━━━━━━━")
+    lines.append("")
 
+    # ----- SECTION 3: Summary (4-5 lines) -----
+    lines.append("📊 Summary")
+    lines.append("")
+
+    total_units = d.get('total_units', 0)
+    lines.append(f"📦 Units: {total_units}")
+
+    material_count = d.get('material_count', 0)
+    lines.append(f"🛒 Products: {material_count}")
+
+    total_revenue = d.get('total_revenue', 0)
+    if total_revenue:
+        try:
+            revenue_val = float(total_revenue)
+            lines.append(f"💰 Revenue: PKR {revenue_val:,.0f}")
+        except:
+            lines.append(f"💰 Revenue: PKR {total_revenue}")
+    lines.append("")
+
+    # ----- SEPARATOR (1 line) -----
+    lines.append("━━━━━━━━━━━━━━━━━━")
+    lines.append("")
+
+    # ----- SECTION 4: Timeline (4-5 lines) -----
+    lines.append("📅 Timeline")
+    lines.append("")
+
+    dn_create_date = d.get('dn_create_date', 'N/A')
+    lines.append(f"📝 Created: {dn_create_date}")
+
+    good_issue_date = d.get('good_issue_date', 'N/A')
+    lines.append(f"🚚 PGI: {good_issue_date}")
+
+    pod_date = d.get('pod_date', 'N/A')
+    lines.append(f"📬 POD: {pod_date}")
+    lines.append("")
+
+    # ----- SEPARATOR (1 line) -----
+    lines.append("━━━━━━━━━━━━━━━━━━")
+    lines.append("")
+
+    # ----- SECTION 5: Performance (4-5 lines) -----
+    lines.append("⏱ Performance")
+    lines.append("")
+
+    delivery_aging = d.get('delivery_aging_text', 'N/A')
+    # Shorten aging text (remove parentheses)
+    if " (" in delivery_aging:
+        delivery_aging = delivery_aging.split(" (")[0]
+    lines.append(f"🚛 Delivery: {delivery_aging}")
+
+    pod_aging = d.get('pod_aging_text', 'N/A')
+    if " (" in pod_aging:
+        pod_aging = pod_aging.split(" (")[0]
+    lines.append(f"📦 POD: {pod_aging}")
+
+    total_cycle = d.get('total_cycle_text', 'N/A')
+    if " (" in total_cycle:
+        total_cycle = total_cycle.split(" (")[0]
+    lines.append(f"🔄 Cycle: {total_cycle}")
+    lines.append("")
+
+    # ----- SEPARATOR (1 line) -----
+    lines.append("━━━━━━━━━━━━━━━━━━")
+    lines.append("")
+
+    # ----- SECTION 6: Status (4-5 lines) -----
+    lines.append("🚚 Status")
+    lines.append("")
+
+    stage = d.get('calculated_stage', 'Unknown')
+    emoji = d.get('calculated_emoji', '❓')
+    lines.append(f"{emoji} {stage}")
+
+    pgi_status = d.get('pgi_status', 'Unknown')
+    pgi_emoji = "✅" if pgi_status == "Completed" else "⏳"
+    lines.append(f"{pgi_emoji} PGI: {pgi_status}")
+
+    pod_status = d.get('pod_status', 'Unknown')
+    pod_emoji = "✅" if pod_status == "Completed" else "⏳"
+    lines.append(f"{pod_emoji} POD: {pod_status}")
+
+    pending_flag = d.get('pending_flag', True)
+    pending_emoji = "🔴" if pending_flag else "🟢"
+    pending_text = "Yes" if pending_flag else "No"
+    lines.append(f"{pending_emoji} Pending: {pending_text}")
+    lines.append("")
+
+    # ----- SEPARATOR (1 line) -----
+    lines.append("━━━━━━━━━━━━━━━━━━")
+    lines.append("")
+
+    # ----- SECTION 7: Products (Grouped - Max 5) -----
+    products = d.get('products', [])
+    if products and len(products) > 0:
+        lines.append("📦 Products")
+        lines.append("")
+
+        # Group products by model
+        grouped = {}
+        for p in products:
+            model = p.get('model', 'Unknown')
+            # Shorten long model names
+            if len(model) > 30:
+                model = model[:27] + "..."
+            if model not in grouped:
+                grouped[model] = {
+                    'quantity': 0,
+                    'revenue': 0
+                }
+            grouped[model]['quantity'] += p.get('quantity', 0)
+            grouped[model]['revenue'] += p.get('revenue', 0)
+
+        # Display products (MAX 5)
+        display_limit = 5
+        total_products = len(grouped)
+
+        for idx, (model, data) in enumerate(grouped.items()[:display_limit], 1):
+            qty = data.get('quantity', 0)
+            revenue = data.get('revenue', 0)
+            lines.append(f"• {model}")
+            lines.append(f"  Qty: {qty}")
+            if revenue > 0:
+                try:
+                    lines.append(f"  Rev: PKR {float(revenue):,.0f}")
+                except:
+                    pass
+            lines.append("")
+
+        if total_products > display_limit:
+            remaining = total_products - display_limit
+            lines.append(f"• {remaining} more products")
+            lines.append("")
+
+    # ----- SEPARATOR (1 line) -----
+    lines.append("━━━━━━━━━━━━━━━━━━")
+    lines.append("")
+
+    # ----- SECTION 8: AI Insight (Shortened - 1-2 lines) -----
+    lines.append("💡 Insight")
+    lines.append("")
+
+    stage = d.get('calculated_stage', 'Unknown')
+    delivery_aging_days = d.get('delivery_aging_days', 0)
+
+    # Shortened insights
+    if stage == "Delivered":
+        insight = "✅ Shipment completed. No action required."
+    elif stage == "In Transit":
+        insight = "🚚 In transit. Awaiting POD."
+    elif stage == "Pending Dispatch":
+        insight = "⏳ Pending dispatch. Warehouse action required."
+    else:
+        insight = "Status being updated."
+
+    # Add delay warning (only if critical)
+    if delivery_aging_days > 30 and stage != "Delivered":
+        insight = "🚨 Critical delay. Management attention required."
+    elif delivery_aging_days > 14 and stage != "Delivered":
+        insight = "⚠️ Delivery delayed. Follow-up recommended."
+
+    lines.append(insight)
+    lines.append("")
+
+    # ----- FOOTER (2 lines) -----
+    lines.append("━━━━━━━━━━━━━━━━━━")
+    lines.append(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    lines.append("🤖 AI Logistics")
+
+    # ============================================================
+    # ✅ FINAL CHECK: Ensure message is under 4096 characters
+    # ============================================================
+    final_message = "\n".join(lines)
+
+    # If still too long, truncate
+    if len(final_message) > 4000:
+        # Keep only essential sections (header, dealer, summary, timeline, status)
+        essential_lines = lines[:22]  # Keep first ~22 lines
+        final_message = "\n".join(essential_lines)
+        final_message += "\n... [Message truncated]"
+
+    return final_message
 
 # =====================================================================================================
 # BLOCK 12: THREAD-SAFE SINGLETON
