@@ -2,7 +2,7 @@
 # MASTER ROUTING AND ORCHESTRATION ENGINE
 # ==========================================================
 # File: app/services/ai_provider_service.py
-# Version: 5.0 - PRODUCTION GRADE
+# Version: 5.1 - WITH WHATSAPP FORMATTING FIX
 # Purpose: Single entry point for all WhatsApp requests.
 # NO DEPENDENCY ON ai_query_service.py
 # ALL intent detection is built-in.
@@ -593,7 +593,7 @@ class WhatsAppProviderService:
         
         try:
             logger.info("=" * 70)
-            logger.info("AI Provider Service v5.0 - NO ai_query_service.py")
+            logger.info("AI Provider Service v5.1 - WITH WHATSAPP FORMATTING")
             logger.info("=" * 70)
             
             self.intent_engine = IntentDetectionEngine()
@@ -785,10 +785,89 @@ class WhatsAppProviderService:
             return {"success": False, "error": str(e)}
     
     # ==========================================================
-    # RESPONSE FORMATTING
+    # ✅ FIXED: RESPONSE FORMATTING WITH WHATSAPP FORMATTER
     # ==========================================================
     
     def _format_response(self, original_message: str, data: Any, error: bool = False) -> Dict[str, Any]:
+        """
+        Format response for WhatsApp.
+        
+        ✅ FIXED: If data is a DNDashboard object, format it professionally
+        ✅ PRESERVES: All attributes and data
+        ✅ HANDLES: DNDashboard objects, dicts, strings, and other types
+        """
+        # If it's an error, return as-is
+        if error:
+            return {
+                "success": not error,
+                "message": original_message,
+                "response": data,
+                "error": error,
+                "timestamp": datetime.now().isoformat()
+            }
+        
+        # ============================================================
+        # ✅ FIX: Format DNDashboard objects for WhatsApp
+        # ============================================================
+        if hasattr(data, 'dn_no'):
+            try:
+                # Import the formatter from webhook
+                from app.routes.webhook import format_dn_response
+                formatted_data = format_dn_response(data)
+                logger.info("📱 Formatted DNDashboard for WhatsApp")
+                return {
+                    "success": not error,
+                    "message": original_message,
+                    "response": formatted_data,  # ← Now a beautiful string!
+                    "error": error,
+                    "timestamp": datetime.now().isoformat()
+                }
+            except ImportError as e:
+                logger.warning(f"⚠️ Could not import formatter: {e}")
+            except Exception as e:
+                logger.warning(f"⚠️ Formatting failed: {e}")
+        
+        # ============================================================
+        # ✅ Handle dictionaries with 'data' field
+        # ============================================================
+        if isinstance(data, dict) and 'data' in data:
+            inner_data = data['data']
+            if hasattr(inner_data, 'dn_no'):
+                try:
+                    from app.routes.webhook import format_dn_response
+                    formatted_data = format_dn_response(inner_data)
+                    return {
+                        "success": not error,
+                        "message": original_message,
+                        "response": formatted_data,
+                        "error": error,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                except:
+                    pass
+        
+        # ============================================================
+        # ✅ Handle dictionaries with 'response' field
+        # ============================================================
+        if isinstance(data, dict) and 'response' in data:
+            inner_data = data['response']
+            if hasattr(inner_data, 'dn_no'):
+                try:
+                    from app.routes.webhook import format_dn_response
+                    formatted_data = format_dn_response(inner_data)
+                    return {
+                        "success": not error,
+                        "message": original_message,
+                        "response": formatted_data,
+                        "error": error,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                except:
+                    pass
+        
+        # ============================================================
+        # ✅ Default: Return data as-is
+        # ============================================================
         return {
             "success": not error,
             "message": original_message,
@@ -837,7 +916,7 @@ Readiness:
             "services": service_health,
             "system_status": "healthy" if service_health.get("readiness_score", 0) > 50 else "degraded",
             "timestamp": datetime.now().isoformat(),
-            "version": "5.0"
+            "version": "5.1"
         }
     
     def get_service_info(self, service_key: str) -> Dict[str, Any]:
@@ -892,9 +971,10 @@ __all__ = [
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("AI Provider Service v5.0 - NO ai_query_service.py")
+logger.info("AI Provider Service v5.1 - WITH WHATSAPP FORMATTING")
 logger.info("=" * 70)
 logger.info("✅ Intent detection built-in")
 logger.info("✅ No external routing dependencies")
+logger.info("✅ WhatsApp formatting enabled")
 logger.info("✅ Ready for production")
 logger.info("=" * 70)
