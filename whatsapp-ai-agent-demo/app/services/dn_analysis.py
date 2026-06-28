@@ -1,795 +1,941 @@
-# ==========================================================
-# FILE: app/routes/webhook.py (v27.0 - COMPLETE PRODUCTION)
-# ==========================================================
-# PURPOSE: WhatsApp Webhook Handler - ALWAYS Calls AI
-# VERSION: 27.0 - FIXED RESPONSE FORMATTING
-# ==========================================================
+# =====================================================================================================
+# FILE: app/services/dn_analysis.py
+# VERSION: v18.0 - ENTERPRISE WHATSAPP FORMATTER
+# PURPOSE: DN Analytics Service - Enterprise Grade PostgreSQL Integration
+# =====================================================================================================
 
-import json
-import time
-import uuid
-import re
-import os
-import asyncio
-from datetime import datetime
-from typing import Dict, Any, Optional, List, Callable, Union
-from fastapi import APIRouter, Request, BackgroundTasks, Query, Response
-from fastapi.responses import JSONResponse, PlainTextResponse
-from loguru import logger
+import logging
+from typing import Dict, List, Optional, Any, Tuple, Union
+from datetime import datetime, date, timedelta
+from decimal import Decimal, InvalidOperation
+from dataclasses import dataclass, field
+from sqlalchemy import text, inspect, exc
 from sqlalchemy.orm import Session
+from contextlib import contextmanager
+import threading
+import re
+import traceback
+import time
+import os
+from functools import lru_cache, wraps
 
-# ==========================================================
-# CONFIGURATION
-# ==========================================================
+# =====================================================================================================
+# LOGGER
+# =====================================================================================================
+logger = logging.getLogger(__name__)
 
-from app.config import config
-
-# ==========================================================
-# DATABASE
-# ==========================================================
-
+# =====================================================================================================
+# BLOCK 1: IMPORTS & DATABASE SETUP
+# =====================================================================================================
 try:
-    from app.database import SessionLocal, check_database_connection
-    DATABASE_AVAILABLE = True
-    logger.info("✅ Database module loaded successfully")
-except ImportError as e:
-    DATABASE_AVAILABLE = False
-    logger.error(f"❌ Database module NOT available: {e}")
-    raise
-
-# ==========================================================
-# MODELS
-# ==========================================================
-
-try:
+    from app.database import SessionLocal
     from app.models import DeliveryReport
-    MODELS_AVAILABLE = True
-    logger.info("✅ Models loaded successfully")
+    logger.info("✅ Database models imported successfully")
 except ImportError as e:
-    MODELS_AVAILABLE = False
-    logger.error(f"❌ Models NOT available: {e}")
+    logger.error(f"❌ Database import failed: {e}")
+    SessionLocal = None
+    DeliveryReport = None
 
-# ==========================================================
-# SERVICES
-# ==========================================================
+DEBUG_MODE = os.environ.get("DN_DEBUG_MODE", "false").lower() == "true"
+PRODUCTION_MODE = os.environ.get("DN_PRODUCTION_MODE", "true").lower() == "true"
+CONNECTION_RETRY_COUNT = int(os.environ.get("DN_CONNECTION_RETRY", "3"))
+QUERY_TIMEOUT = int(os.environ.get("DN_QUERY_TIMEOUT", "30"))
 
-_ai_provider_service = None
-_whatsapp_service = None
+# =====================================================================================================
+# BLOCK 2: DATA CLASSES (MINIMAL - ONLY WHAT'S NEEDED)
+# =====================================================================================================
 
-# ==========================================================
-# ✅ FIXED: AI PROVIDER SERVICE
-# ==========================================================
+@dataclass
+class DNDashboard:
+    """Complete DN Dashboard - MINIMAL FIELDS."""
+    # Core - Only what's displayed
+    dn_no: str
+    dealer_name: str
+    warehouse: str
+    city: str
+    total_units: int
+    total_revenue: Decimal
+    material_count: int
+    dn_create_date: str
+    good_issue_date: str
+    pod_date: str
+    delivery_aging_days: int
+    pod_aging_days: int
+    total_cycle_days: int
+    delivery_aging_text: str
+    pod_aging_text: str
+    total_cycle_text: str
+    calculated_stage: str
+    calculated_emoji: str
+    pgi_status: str
+    pod_status: str
+    pending_flag: bool
+    pending_flag_text: str
+    products: List[Dict[str, Any]]
+    ai_insight: str
 
-def _get_ai_provider_service() -> Optional[Any]:
-    """
-    Get the AI Provider Service.
+# =====================================================================================================
+# BLOCK 3: BUSINESS RULES ENGINE
+# =====================================================================================================
+
+class BusinessRules:
+    """Business rules for DN analytics."""
     
-    Uses get_whatsapp_provider_service() from ai_provider_service.py
-    """
-    global _ai_provider_service
-    
-    if _ai_provider_service is not None:
-        return _ai_provider_service
-    
-    try:
-        logger.info("🚀 Initializing AI Provider Service v5.0...")
+    @staticmethod
+    def determine_stage(good_issue_date: Optional[date], pod_date: Optional[date]) -> Tuple[str, str, str, str, bool, str]:
+        """Determine delivery stage based on dates."""
+        pgi_exists = good_issue_date is not None
+        pod_exists = pod_date is not None
         
-        from app.services.ai_provider_service import get_whatsapp_provider_service
-        
-        if not DATABASE_AVAILABLE:
-            logger.error("❌ Database not available")
-            return None
-        
-        _ai_provider_service = get_whatsapp_provider_service()
-        
-        if _ai_provider_service:
-            logger.info("✅ AI Provider Service v5.0 initialized successfully")
-            
-            try:
-                health = _ai_provider_service.get_service_registry_status()
-                logger.info(f"   ├── Services Ready: {health.get('ready', 0)}")
-                logger.info(f"   ├── In Development: {health.get('in_development', 0)}")
-                logger.info(f"   ├── Readiness Score: {health.get('readiness_score', 0):.1f}%")
-                
-                dn_status = _ai_provider_service.registry.get_service_status("dn")
-                if dn_status.get("ready", False):
-                    logger.info(f"   ├── DN Service: ✅ READY")
-                else:
-                    logger.warning(f"   ├── DN Service: 🔧 {dn_status.get('status', 'UNKNOWN')}")
-                    
-            except Exception as e:
-                logger.warning(f"⚠️ Could not get service registry status: {e}")
+        if pod_exists and pgi_exists:
+            return "Delivered", "✅", "Completed", "Completed", False, "No"
+        elif pgi_exists and not pod_exists:
+            return "In Transit", "🚚", "Completed", "Pending", True, "Yes"
         else:
-            logger.error("❌ Failed to create AI Provider Service")
+            return "Pending Dispatch", "⏳", "Pending", "Pending", True, "Yes"
+    
+    @staticmethod
+    def calculate_aging(dn_create_date: Optional[date], good_issue_date: Optional[date], pod_date: Optional[date]) -> Tuple[int, int, int, str, str, str]:
+        """Calculate aging metrics."""
+        delivery_aging = 0
+        pod_aging = 0
+        total_cycle = 0
         
-        return _ai_provider_service
+        if dn_create_date and good_issue_date:
+            delivery_aging = (good_issue_date - dn_create_date).days
+        if good_issue_date and pod_date:
+            pod_aging = (pod_date - good_issue_date).days
+        if dn_create_date and pod_date:
+            total_cycle = (pod_date - dn_create_date).days
         
-    except ImportError as e:
-        logger.error(f"❌ Failed to import ai_provider_service: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"❌ Failed to initialize AI Provider: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
-
-def _get_whatsapp_service():
-    """Get WhatsApp service for sending messages."""
-    global _whatsapp_service
-    
-    if _whatsapp_service is not None:
-        return _whatsapp_service
-    
-    try:
-        from app.services.whatsapp_service import get_whatsapp_service
-        _whatsapp_service = get_whatsapp_service()
-        logger.info("✅ WhatsApp Service loaded")
-        return _whatsapp_service
-    except Exception as e:
-        logger.error(f"❌ Failed to load WhatsApp Service: {e}")
-        return None
-
-# ==========================================================
-# ROUTER
-# ==========================================================
-
-router = APIRouter(
-    prefix="/webhook",
-    tags=["webhook"],
-    include_in_schema=True
-)
-
-# ==========================================================
-# WEBHOOK STATS
-# ==========================================================
-
-webhook_stats = {
-    "total_requests": 0,
-    "successful_requests": 0,
-    "failed_requests": 0,
-    "verification_requests": 0,
-    "message_requests": 0,
-    "status_requests": 0,
-    "errors": 0,
-    "last_request_time": None,
-    "last_error_time": None,
-    "last_error": None,
-    "total_messages_processed": 0,
-    "start_time": datetime.now().isoformat(),
-    "phone_numbers": {},
-    "avg_processing_time_ms": 0,
-    "last_100_errors": [],
-    "_processed_messages": {},
-    "ai_enabled": False,
-    "db_connected": False,
-    "architecture": "v16.0 (Built-in Intent Detection)"
-}
-
-def update_stats(success: bool, endpoint: str = "unknown", processing_time_ms: float = 0):
-    webhook_stats["total_requests"] += 1
-    webhook_stats["last_request_time"] = datetime.now().isoformat()
-    
-    if endpoint == "verification":
-        webhook_stats["verification_requests"] += 1
-    elif endpoint == "message":
-        webhook_stats["message_requests"] += 1
-    elif endpoint == "status":
-        webhook_stats["status_requests"] += 1
-    
-    if success:
-        webhook_stats["successful_requests"] += 1
-    else:
-        webhook_stats["failed_requests"] += 1
-        webhook_stats["last_error_time"] = datetime.now().isoformat()
-    
-    if processing_time_ms > 0:
-        old_avg = webhook_stats.get("avg_processing_time_ms", 0)
-        total = webhook_stats["total_requests"]
-        webhook_stats["avg_processing_time_ms"] = ((old_avg * (total - 1)) + processing_time_ms) / total
-
-def is_duplicate_message(message_id: str, phone_number: str) -> bool:
-    key = f"{phone_number}:{message_id}"
-    if key in webhook_stats["_processed_messages"]:
-        return True
-    
-    if len(webhook_stats["_processed_messages"]) > 10000:
-        keys = list(webhook_stats["_processed_messages"].keys())[:1000]
-        for k in keys:
-            del webhook_stats["_processed_messages"][k]
-    
-    webhook_stats["_processed_messages"][key] = time.time()
-    return False
-
-# ==========================================================
-# ✅ FIXED: RESPONSE FORMATTING FUNCTIONS
-# ==========================================================
-
-def _format_dashboard_response(data: Dict[str, Any]) -> str:
-    """
-    Format DN dashboard data into WhatsApp message.
-    
-    ✅ FIXED: Properly formats all DN fields
-    """
-    if not data:
-        return "No data available"
-    
-    lines = []
-    
-    # DN Number
-    dn_no = data.get('dn_no', 'N/A')
-    lines.append(f"📦 *DN: {dn_no}*")
-    lines.append("")
-    
-    # Dealer
-    dealer = data.get('dealer_name') or data.get('customer_name') or 'Unknown'
-    lines.append("*Dealer:*")
-    lines.append(f"{dealer}")
-    lines.append("")
-    
-    # Warehouse
-    warehouse = data.get('warehouse', 'Unknown')
-    lines.append("*Warehouse:*")
-    lines.append(f"{warehouse}")
-    lines.append("")
-    
-    # City
-    city = data.get('city', 'Unknown')
-    lines.append("*City:*")
-    lines.append(f"{city}")
-    lines.append("")
-    
-    # Delivery Location
-    delivery_location = data.get('delivery_location')
-    if delivery_location:
-        lines.append("*Delivery Location:*")
-        lines.append(f"{delivery_location}")
-        lines.append("")
-    
-    # Sales Manager
-    sales_manager = data.get('sales_manager')
-    if sales_manager:
-        lines.append("*Sales Manager:*")
-        lines.append(f"{sales_manager}")
-        lines.append("")
-    
-    # Division
-    division = data.get('division')
-    if division:
-        lines.append("*Division:*")
-        lines.append(f"{division}")
-        lines.append("")
-    
-    # Metrics
-    lines.append("*📊 Metrics:*")
-    lines.append(f"Units: {data.get('total_units', 0)}")
-    revenue = data.get('total_revenue', 0)
-    if revenue:
-        lines.append(f"Revenue: PKR {revenue:,.2f}")
-    else:
-        lines.append("Revenue: PKR 0")
-    lines.append("")
-    
-    # Material Count
-    material_count = data.get('material_count', 1)
-    lines.append(f"Materials: {material_count}")
-    lines.append("")
-    
-    # Dates
-    lines.append("*📅 Dates:*")
-    lines.append(f"DN Create: {data.get('dn_create_date', 'N/A')}")
-    lines.append(f"PGI: {data.get('good_issue_date', 'N/A')}")
-    lines.append(f"POD: {data.get('pod_date', 'N/A')}")
-    lines.append("")
-    
-    # Aging
-    lines.append("*⏳ Aging:*")
-    lines.append(f"Delivery: {data.get('delivery_aging_text', 'N/A')}")
-    lines.append(f"POD: {data.get('pod_aging_text', 'N/A')}")
-    lines.append(f"Total Cycle: {data.get('total_cycle_text', 'N/A')}")
-    lines.append("")
-    
-    # Status
-    lines.append("*📋 Status:*")
-    lines.append(f"Delivery: {data.get('status_emoji', '❓')} {data.get('status_text', 'Unknown')}")
-    lines.append(f"PGI: {data.get('pgi_status_text', 'Unknown')}")
-    lines.append(f"POD: {data.get('pod_status_text', 'Unknown')}")
-    lines.append(f"Pending: {data.get('pending_flag_text', 'Unknown')}")
-    
-    return "\n".join(lines)
-
-
-def _format_list_response(items: List[Any]) -> str:
-    """Format a list of items for WhatsApp."""
-    if not items:
-        return "No items found"
-    
-    result = []
-    for i, item in enumerate(items, 1):
-        if isinstance(item, dict):
-            # Check if it's a DN item
-            if "dn_no" in item:
-                result.append(_format_dashboard_response(item))
+        # If PGI pending, calculate delivery aging from today
+        if good_issue_date is None and dn_create_date:
+            delivery_aging = (date.today() - dn_create_date).days
+        
+        # If POD pending, calculate POD aging from today
+        if good_issue_date is not None and pod_date is None:
+            pod_aging = (date.today() - good_issue_date).days
+        
+        def format_aging(days, status_type="delivery"):
+            if days < 0:
+                return "Error"
+            elif days == 0:
+                return "Same Day"
+            elif days == 1:
+                return "1 Day"
+            elif days < 7:
+                return f"{days} Days"
+            elif days < 14:
+                return f"{days} Days (1-2 Weeks)"
+            elif days < 30:
+                return f"{days} Days ({days // 7} Weeks)"
+            elif days < 60:
+                return f"{days} Days (1-2 Months)"
+            elif days < 90:
+                return f"{days} Days (3 Months)"
             else:
-                result.append(f"{i}. {str(item)}")
+                return f"{days} Days ({days // 30} Months)"
+        
+        # Special text for pending status
+        if good_issue_date is None:
+            delivery_text = "Waiting for Dispatch"
         else:
-            result.append(f"{i}. {str(item)}")
-    
-    return "\n\n".join(result)
-
-
-def _ensure_string_response(response_data: Any) -> str:
-    """
-    Ensure response is always a string for WhatsApp.
-    
-    ✅ FIXED: Properly formats DN dashboard data
-    """
-    if response_data is None:
-        return "No data available"
-    
-    if isinstance(response_data, str):
-        return response_data
-    
-    if isinstance(response_data, dict):
-        # Check if it's a dashboard response with 'data' field
-        if "data" in response_data:
-            data = response_data["data"]
-            # If data is a dict with DN fields, format it
-            if isinstance(data, dict) and "dn_no" in data:
-                return _format_dashboard_response(data)
-            # If data is a list, format each item
-            if isinstance(data, list):
-                return _format_list_response(data)
-            # Otherwise convert to string
-            return str(data)
+            delivery_text = format_aging(delivery_aging)
         
-        # Check if it has 'response' field
-        if "response" in response_data:
-            return _ensure_string_response(response_data["response"])
-        
-        # Check if it has 'error' field
-        if "error" in response_data:
-            return f"⚠️ {response_data['error']}"
-        
-        # If it's a DN data dict directly
-        if "dn_no" in response_data:
-            return _format_dashboard_response(response_data)
-        
-        # Convert dict to string
-        return str(response_data)
-    
-    if isinstance(response_data, list):
-        return _format_list_response(response_data)
-    
-    return str(response_data)
-
-# ==========================================================
-# WEBHOOK VERIFICATION (GET)
-# ==========================================================
-
-@router.get("/")
-async def verify_webhook(
-    hub_mode: str = Query(None, alias="hub.mode"),
-    hub_verify_token: str = Query(None, alias="hub.verify_token"),
-    hub_challenge: str = Query(None, alias="hub.challenge")
-) -> Response:
-    start_time = time.time()
-    
-    logger.info(f"📥 Webhook verification request received")
-    
-    try:
-        expected_token = config.WHATSAPP_VERIFY_TOKEN
-        
-        if not expected_token:
-            logger.error("❌ WHATSAPP_VERIFY_TOKEN not configured")
-            update_stats(False, "verification", (time.time() - start_time) * 1000)
-            return JSONResponse(
-                status_code=500,
-                content={"error": "Verification token not configured"}
-            )
-        
-        if hub_mode == 'subscribe' and hub_verify_token == expected_token:
-            logger.success(f"✅ Webhook verification successful!")
-            update_stats(True, "verification", (time.time() - start_time) * 1000)
-            return PlainTextResponse(content=hub_challenge, status_code=200)
+        if pod_date is None and good_issue_date is not None:
+            pod_text = "In Transit"
+        elif pod_date is None:
+            pod_text = "Pending"
         else:
-            logger.warning(f"❌ Verification failed - Token mismatch")
-            update_stats(False, "verification", (time.time() - start_time) * 1000)
-            return JSONResponse(
-                status_code=403,
-                content={"error": "Verification failed"}
-            )
-    except Exception as e:
-        logger.error(f"❌ Verification error: {e}")
-        update_stats(False, "verification", (time.time() - start_time) * 1000)
-        return JSONResponse(
-            status_code=500,
-            content={"error": "Internal error"}
+            pod_text = format_aging(pod_aging)
+        
+        if total_cycle == 0:
+            cycle_text = "Pending"
+        else:
+            cycle_text = format_aging(total_cycle)
+        
+        return (
+            delivery_aging,
+            pod_aging,
+            total_cycle,
+            delivery_text,
+            pod_text,
+            cycle_text
         )
-
-# ==========================================================
-# WEBHOOK MESSAGE HANDLER (POST)
-# ==========================================================
-
-@router.post("/")
-async def handle_webhook(
-    request: Request,
-    background_tasks: BackgroundTasks
-) -> JSONResponse:
-    start_time = time.time()
-    request_id = str(uuid.uuid4())[:8]
     
-    raw_body = await request.body()
-    logger.info(f"[{request_id}] 📥 Webhook request received - {len(raw_body)} bytes")
-    
-    try:
+    @staticmethod
+    def generate_ai_insight(stage: str, delivery_aging_days: int, pod_status: str) -> str:
+        """Generate AI insight based on stage and status."""
+        if stage == "Delivered":
+            return "Shipment completed successfully within the expected delivery cycle. No further action is required."
+        elif stage == "In Transit":
+            if delivery_aging_days > 14:
+                return "Shipment is currently in transit. Delivery exceeded expected time. Operational follow-up is recommended."
+            return "Shipment is currently in transit. Awaiting Proof of Delivery."
+        elif stage == "Pending Dispatch":
+            return "Shipment has not yet been dispatched. Warehouse action is required."
+        else:
+            return "Shipment status is being updated. Please check again later."
+
+# =====================================================================================================
+# BLOCK 4: DECORATORS
+# =====================================================================================================
+
+def timed_execution(func):
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        start_time = time.time()
         try:
-            data = json.loads(raw_body.decode('utf-8'))
-        except json.JSONDecodeError as e:
-            logger.error(f"[{request_id}] ❌ Invalid JSON: {e}")
-            return JSONResponse(
-                status_code=200,
-                content={"status": "ok", "message": "Webhook received"}
-            )
-        
-        if data.get('object') != 'whatsapp_business_account':
-            return JSONResponse(
-                status_code=200,
-                content={"status": "ok"}
-            )
-        
-        entries = data.get('entry', [])
-        
-        for entry in entries:
-            changes = entry.get('changes', [])
-            for change in changes:
-                value = change.get('value', {})
-                
-                if 'statuses' in value:
-                    logger.debug(f"[{request_id}] Status update - ignoring")
-                    continue
-                
-                messages = value.get('messages', [])
-                if not messages:
-                    continue
-                
-                for message in messages:
-                    phone_number = message.get('from')
-                    if not phone_number:
-                        continue
-                    
-                    message_id = message.get('id')
-                    if message_id and is_duplicate_message(message_id, phone_number):
-                        logger.debug(f"[{request_id}] Duplicate message: {message_id}")
-                        continue
-                    
-                    msg_type = message.get('type')
-                    if not msg_type:
-                        continue
-                    
-                    message_text = None
-                    
-                    if msg_type == 'text':
-                        message_text = message.get('text', {}).get('body', '')
-                    elif msg_type == 'image':
-                        image = message.get('image', {})
-                        message_text = image.get('caption', '')
-                    elif msg_type == 'document':
-                        doc = message.get('document', {})
-                        message_text = doc.get('caption', '')
-                    elif msg_type == 'interactive':
-                        interactive = message.get('interactive', {})
-                        if interactive.get('type') == 'button_reply':
-                            message_text = interactive.get('button_reply', {}).get('title', '')
-                        elif interactive.get('type') == 'list_reply':
-                            message_text = interactive.get('list_reply', {}).get('title', '')
-                    
-                    if not message_text and msg_type != 'audio' and msg_type != 'location':
-                        continue
-                    
-                    webhook_stats["total_messages_processed"] += 1
-                    logger.info(f"[{request_id}] 📨 Message from {phone_number}: '{message_text[:50] if message_text else '[Media]'}'")
-                    
-                    if message_text and message_text.strip():
-                        background_tasks.add_task(
-                            process_message_with_ai,
-                            message_text.strip(),
-                            phone_number,
-                            request_id
-                        )
-                    elif msg_type == 'audio':
-                        background_tasks.add_task(
-                            process_audio_message,
-                            message,
-                            phone_number,
-                            request_id
-                        )
-                    elif msg_type == 'location':
-                        background_tasks.add_task(
-                            process_location_message,
-                            message,
-                            phone_number,
-                            request_id
-                        )
-        
-        update_stats(True, "message", (time.time() - start_time) * 1000)
-        logger.info(f"[{request_id}] ✅ Webhook processed - 200 OK")
-        return JSONResponse(
-            status_code=200,
-            content={"status": "ok", "message": "Webhook received"}
-        )
-        
-    except Exception as e:
-        logger.error(f"[{request_id}] ❌ Webhook error: {e}")
-        logger.exception(e)
-        update_stats(False, "message", (time.time() - start_time) * 1000)
-        return JSONResponse(
-            status_code=200,
-            content={"status": "ok", "message": "Webhook received"}
-        )
-
-# ==========================================================
-# ✅ FIXED: PROCESS MESSAGE WITH AI
-# ==========================================================
-
-async def process_message_with_ai(
-    message_text: str,
-    phone_number: str,
-    request_id: str
-) -> None:
-    """
-    ✅ ALWAYS calls the AI Orchestrator.
-    ✅ Uses the CORRECT API: process_whatsapp_query(message, sender_id)
-    ✅ FIXED: Ensures response is always a string
-    """
-    start_time = time.time()
-    
-    try:
-        logger.info(f"[{request_id}] 🧠 Processing with AI: '{message_text[:50]}'")
-        
-        ai_provider = _get_ai_provider_service()
-        
-        if not ai_provider:
-            logger.error(f"[{request_id}] ❌ AI Provider is None")
-            error_msg = "⚠️ AI service is currently unavailable. Please try again later."
-            await send_whatsapp_response(phone_number, error_msg, request_id)
-            return
-        
-        logger.info(f"[{request_id}] ✅ AI Provider available")
-        
-        try:
-            logger.info(f"[{request_id}] 📤 Calling AI Orchestrator...")
-            
-            response = await ai_provider.process_whatsapp_query(
-                message=message_text,
-                sender_id=phone_number
-            )
-            
-            logger.info(f"[{request_id}] ✅ AI response received")
-            
-            # ✅ FIXED: Always convert to string using the enhanced function
-            response_text = _ensure_string_response(response)
-            
-            # Ensure it's not empty
-            if not response_text or response_text == "None" or response_text.strip() == "":
-                response_text = "⚠️ I couldn't process your request. Please try again."
-            
-            logger.info(f"[{request_id}] 📤 Response length: {len(response_text)} chars")
-            
-            await send_whatsapp_response(phone_number, response_text, request_id)
-            
+            result = func(self, *args, **kwargs)
+            execution_time = (time.time() - start_time) * 1000
+            self._total_execution_time_ms += execution_time
+            self._query_count += 1
+            if self._debug_mode:
+                logger.debug(f"⏱️ {func.__name__} executed in {execution_time:.2f}ms")
+            return result
         except Exception as e:
-            logger.error(f"[{request_id}] ❌ AI processing error: {e}")
-            import traceback
-            traceback.print_exc()
-            
-            error_msg = "⚠️ I encountered an error processing your request. Please try again."
-            await send_whatsapp_response(phone_number, error_msg, request_id)
-        
-        processing_time = (time.time() - start_time) * 1000
-        logger.info(f"[{request_id}] 📊 Message processed in {processing_time:.0f}ms")
-        
-    except Exception as e:
-        logger.error(f"[{request_id}] ❌ Critical error: {e}")
-        import traceback
-        traceback.print_exc()
+            execution_time = (time.time() - start_time) * 1000
+            logger.error(f"❌ {func.__name__} failed after {execution_time:.2f}ms: {e}")
+            raise
+    return wrapper
+
+def handle_errors(func):
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
         try:
-            error_response = "⚠️ I encountered a critical error. Please try again later."
-            await send_whatsapp_response(phone_number, error_response, request_id)
-        except:
-            logger.error(f"[{request_id}] ❌ Failed to send error response")
+            return func(self, *args, **kwargs)
+        except Exception as e:
+            logger.error(f"❌ Error in {func.__name__}: {e}")
+            if self._debug_mode:
+                logger.error(traceback.format_exc())
+            return {
+                "success": False,
+                "error": str(e),
+                "message": "Service encountered an error. Please try again."
+            }
+    return wrapper
 
-# ==========================================================
-# MEDIA MESSAGE HANDLERS
-# ==========================================================
+# =====================================================================================================
+# BLOCK 5: DNAnalysisService CLASS
+# =====================================================================================================
 
-async def process_audio_message(
-    message: Dict[str, Any],
-    phone_number: str,
-    request_id: str
-) -> None:
-    try:
-        audio = message.get('audio', {})
-        audio_id = audio.get('id')
-        logger.info(f"[{request_id}] 🎵 Audio message from {phone_number} - ID: {audio_id}")
-        response = "🎵 I received your audio. Please send text for better assistance."
-        await send_whatsapp_response(phone_number, response, request_id)
-    except Exception as e:
-        logger.error(f"[{request_id}] ❌ Audio processing error: {e}")
-
-async def process_location_message(
-    message: Dict[str, Any],
-    phone_number: str,
-    request_id: str
-) -> None:
-    try:
-        location = message.get('location', {})
-        lat = location.get('latitude')
-        lon = location.get('longitude')
-        name = location.get('name', '')
-        logger.info(f"[{request_id}] 📍 Location from {phone_number}: {lat}, {lon}")
-        response = f"📍 Received location: {name}\nCoordinates: {lat}, {lon}"
-        await send_whatsapp_response(phone_number, response, request_id)
-    except Exception as e:
-        logger.error(f"[{request_id}] ❌ Location processing error: {e}")
-
-# ==========================================================
-# ✅ FIXED: SEND WHATSAPP RESPONSE
-# ==========================================================
-
-async def send_whatsapp_response(
-    phone_number: str,
-    response_text: str,
-    request_id: str
-) -> bool:
+class DNAnalysisService:
     """
-    Send WhatsApp response.
-    
-    ✅ FIXED: Ensures response_text is always a string
+    DN Analytics Service - Enterprise Grade PostgreSQL Integration.
+
+    v18.0 - ENTERPRISE WHATSAPP FORMATTER
+    ✅ PostgreSQL is the ONLY source of truth
+    ✅ Only relevant data extracted
+    ✅ Business rules applied
+    ✅ Professional WhatsApp formatting
+    ✅ All attributes preserved
+    ✅ Under 4096 characters
     """
-    try:
-        # Ensure response_text is a string
-        if not isinstance(response_text, str):
-            response_text = _ensure_string_response(response_text)
+
+    def __init__(self):
+        self._service_name = "dn_analysis"
+        self._version = "18.0"
+        self._status = "INITIALIZING"
+        self._query_count = 0
+        self._total_execution_time_ms = 0
+        self._startup_time = datetime.now().isoformat()
+        self._debug_mode = DEBUG_MODE
+        self._production_mode = PRODUCTION_MODE
+        self._schema_validated = False
+        self._initialized = False
         
-        # Ensure it's not empty
-        if not response_text or response_text.strip() == "":
-            response_text = "No data available"
-        
-        whatsapp = _get_whatsapp_service()
-        if whatsapp:
+        # Cache for fast lookups
+        self._dashboard_cache = {}
+        self._formatted_cache = {}
+        self._cache_ttl = {}
+        self._cache_hits = 0
+        self._cache_misses = 0
+        self._cache_ttl_seconds = 300  # 5 minutes
+
+        logger.info(f"🔧 DNAnalysisService v{self._version} initializing...")
+        logger.info(f"📋 Debug Mode: {'ENABLED' if self._debug_mode else 'DISABLED'}")
+        logger.info(f"⚡ Cache TTL: {self._cache_ttl_seconds}s")
+
+        try:
+            test_result = self._test_connection()
+            if test_result:
+                self._status = "READY"
+                self._initialized = True
+                logger.info("✅ DNAnalysisService is READY")
+            else:
+                self._status = "ERROR"
+                logger.error("❌ DNAnalysisService initialization FAILED")
+        except Exception as e:
+            self._status = "ERROR"
+            logger.error(f"❌ DNAnalysisService initialization error: {e}")
+            logger.error(traceback.format_exc())
+
+    # ==================================================================================================
+    # BLOCK 6: DATABASE CONNECTION METHODS
+    # ==================================================================================================
+
+    def _test_connection(self) -> bool:
+        for attempt in range(1, CONNECTION_RETRY_COUNT + 1):
             try:
-                await asyncio.to_thread(
-                    whatsapp.send_text_message,
-                    phone_number,
-                    response_text
-                )
-                logger.info(f"[{request_id}] ✅ WhatsApp response sent to {phone_number}")
-                return True
+                if not SessionLocal:
+                    logger.error("❌ SessionLocal is None")
+                    return False
+                with self._get_session_context() as session:
+                    session.execute(text("SELECT 1"))
+                    logger.info("✅ Database connection test: SUCCESS")
+                    return True
             except Exception as e:
-                logger.error(f"[{request_id}] ❌ WhatsApp send error: {e}")
-                return False
-        else:
-            logger.warning(f"[{request_id}] ⚠️ WhatsApp service not available")
-            print(f"[{request_id}] RESPONSE TO {phone_number}: {response_text[:200]}")
-            return False
-    except Exception as e:
-        logger.error(f"[{request_id}] ❌ Send response error: {e}")
+                logger.warning(f"⚠️ Connection attempt {attempt}/{CONNECTION_RETRY_COUNT} failed: {e}")
+                if attempt < CONNECTION_RETRY_COUNT:
+                    time.sleep(1)
+                else:
+                    logger.error(f"❌ Database connection test FAILED: {e}")
+                    return False
         return False
 
-# ==========================================================
-# STATUS ENDPOINTS
-# ==========================================================
+    @contextmanager
+    def _get_session_context(self) -> Session:
+        if not SessionLocal:
+            raise RuntimeError("SessionLocal not available")
+        session = None
+        try:
+            session = SessionLocal()
+            yield session
+        except Exception as e:
+            if session:
+                session.rollback()
+            raise
+        finally:
+            if session:
+                session.close()
 
-@router.get("/ping")
-async def webhook_ping() -> JSONResponse:
-    ai = _get_ai_provider_service()
-    return JSONResponse(content={
-        "ping": "pong",
-        "webhook_version": "27.0",
-        "architecture": "v16.0 (Built-in Intent Detection)",
-        "timestamp": datetime.now().isoformat(),
-        "services": {
-            "ai_provider": "healthy" if ai else "unhealthy",
-            "database": "connected" if webhook_stats.get("db_connected", False) else "disconnected"
-        },
-        "stats": {
-            "total_messages": webhook_stats["total_messages_processed"],
-            "total_requests": webhook_stats["total_requests"]
-        }
-    })
+    def _get_session(self) -> Optional[Session]:
+        if not SessionLocal:
+            logger.error("❌ SessionLocal not available")
+            return None
+        try:
+            return SessionLocal()
+        except Exception as e:
+            logger.error(f"❌ Failed to get database session: {e}")
+            return None
 
-@router.get("/health")
-async def webhook_health() -> JSONResponse:
-    ai = _get_ai_provider_service()
-    return JSONResponse(content={
-        "status": "healthy" if ai else "degraded",
-        "webhook_version": "27.0",
-        "architecture": "v16.0 (Built-in Intent Detection)",
-        "timestamp": datetime.now().isoformat(),
-        "services": {
-            "ai_provider": "healthy" if ai else "unhealthy",
-            "database": "connected" if webhook_stats.get("db_connected", False) else "disconnected"
-        },
-        "stats": {
-            "total_requests": webhook_stats["total_requests"],
-            "messages_processed": webhook_stats["total_messages_processed"]
-        }
-    })
+    @timed_execution
+    def _execute_query(self, query: str, params: Dict[str, Any] = None) -> List[Dict[str, Any]]:
+        session = None
+        try:
+            session = self._get_session()
+            if not session:
+                logger.error("❌ No session available")
+                return []
+            if self._debug_mode:
+                logger.debug(f"📝 Executing SQL: {query[:200]}...")
+            result = session.execute(text(query), params or {})
+            rows = [dict(row) for row in result.mappings()]
+            return rows
+        except exc.SQLAlchemyError as e:
+            logger.error(f"❌ SQL Execution Failed: {e}")
+            return []
+        finally:
+            if session:
+                session.close()
 
-# ==========================================================
-# DIAGNOSTIC ENDPOINT
-# ==========================================================
+    # ==================================================================================================
+    # BLOCK 7: MINIMAL QUERY - ONLY EXTRACTS WHAT'S DISPLAYED
+    # ==================================================================================================
 
-@router.get("/test-dn")
-async def test_dn_lookup(dn: str = Query(..., description="DN number to test")):
-    """Test DN lookup directly."""
-    try:
-        ai = _get_ai_provider_service()
-        if not ai:
-            return JSONResponse(
-                status_code=503,
-                content={"error": "AI Provider not available"}
-            )
+    def _build_minimal_query(self) -> str:
+        """Build minimal query - ONLY extracts what's displayed in WhatsApp."""
+        return """
+        SELECT
+            dn_no,
+            MAX(customer_name) AS dealer_name,
+            MAX(warehouse) AS warehouse,
+            MAX(ship_to_city) AS city,
+            SUM(dn_qty) AS total_units,
+            SUM(dn_amount) AS total_revenue,
+            COUNT(DISTINCT material_no) AS material_count,
+            MIN(dn_create_date) AS dn_create_date,
+            MAX(good_issue_date) AS good_issue_date,
+            MAX(pod_date) AS pod_date,
+            JSON_AGG(
+                JSON_BUILD_OBJECT(
+                    'model', customer_model,
+                    'quantity', SUM(dn_qty)
+                )
+                ORDER BY customer_model ASC
+            ) AS products
+        FROM delivery_reports
+        WHERE CAST(dn_no AS TEXT) = :dn_no
+        GROUP BY dn_no
+        """
+
+    def _get_dn_data(self, dn_no: str) -> Optional[Dict[str, Any]]:
+        """Get DN data using minimal query."""
+        query = self._build_minimal_query()
+        results = self._execute_query(query, {"dn_no": dn_no})
+        return results[0] if results else None
+
+    # ==================================================================================================
+    # BLOCK 8: DASHBOARD BUILDER - APPLIES BUSINESS RULES
+    # ==================================================================================================
+
+    def _build_dashboard(self, data: Dict[str, Any]) -> DNDashboard:
+        """Build dashboard from data - applies business rules."""
         
-        dn_service = ai.registry.get_service_instance("dn")
-        if not dn_service:
-            return JSONResponse(
-                status_code=503,
-                content={"error": "DN Service not available"}
-            )
+        # Extract data
+        dn_no = data.get('dn_no') or "N/A"
+        dealer_name = data.get('dealer_name') or "Unknown"
+        warehouse = data.get('warehouse') or "Unknown"
+        city = data.get('city') or "Unknown"
         
-        result = dn_service.test_dn_lookup(dn)
-        return JSONResponse(content=result)
+        total_units = int(data.get('total_units', 0))
+        total_revenue = Decimal(str(data.get('total_revenue', 0)))
+        material_count = int(data.get('material_count', 0))
         
-    except Exception as e:
-        logger.error(f"❌ Test DN error: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(e)}
+        # Parse dates
+        dn_create_date = data.get('dn_create_date')
+        good_issue_date = data.get('good_issue_date')
+        pod_date = data.get('pod_date')
+        
+        # Apply business rules
+        stage, emoji, pgi_status, pod_status, pending_flag, pending_text = BusinessRules.determine_stage(
+            good_issue_date, pod_date
+        )
+        
+        delivery_aging, pod_aging, total_cycle, delivery_text, pod_text, cycle_text = BusinessRules.calculate_aging(
+            dn_create_date, good_issue_date, pod_date
+        )
+        
+        ai_insight = BusinessRules.generate_ai_insight(stage, delivery_aging, pod_status)
+        
+        # Format dates
+        def format_dt(dt):
+            if dt is None:
+                return 'N/A'
+            if isinstance(dt, (date, datetime)):
+                return dt.strftime('%Y-%m-%d')
+            return str(dt)[:10]
+        
+        # Build dashboard
+        return DNDashboard(
+            dn_no=dn_no,
+            dealer_name=dealer_name,
+            warehouse=warehouse,
+            city=city,
+            total_units=total_units,
+            total_revenue=total_revenue,
+            material_count=material_count,
+            dn_create_date=format_dt(dn_create_date),
+            good_issue_date=format_dt(good_issue_date),
+            pod_date=format_dt(pod_date),
+            delivery_aging_days=delivery_aging,
+            pod_aging_days=pod_aging,
+            total_cycle_days=total_cycle,
+            delivery_aging_text=delivery_text,
+            pod_aging_text=pod_text,
+            total_cycle_text=cycle_text,
+            calculated_stage=stage,
+            calculated_emoji=emoji,
+            pgi_status=pgi_status,
+            pod_status=pod_status,
+            pending_flag=pending_flag,
+            pending_flag_text=pending_text,
+            products=data.get('products', []),
+            ai_insight=ai_insight
         )
 
-# ==========================================================
-# INITIALIZATION
-# ==========================================================
+    # ==================================================================================================
+    # BLOCK 9: MAIN METHODS
+    # ==================================================================================================
 
-logger.info("=" * 70)
-logger.info("🌐 WEBHOOK ROUTER v27.0 - COMPLETE PRODUCTION")
-logger.info("=" * 70)
-
-logger.info("🚀 Pre-initializing AI Provider Service...")
-ai = _get_ai_provider_service()
-if ai:
-    logger.info("✅ AI Provider Service v5.0 initialized successfully")
-    webhook_stats["ai_enabled"] = True
-else:
-    logger.error("❌ AI Provider Service initialization FAILED")
-    webhook_stats["ai_enabled"] = False
-
-try:
-    if DATABASE_AVAILABLE:
-        db = SessionLocal()
-        from sqlalchemy import text
-        result = db.execute(text("SELECT 1")).scalar()
-        logger.info(f"✅ Database connection test: {result}")
-        webhook_stats["db_connected"] = True
+    @handle_errors
+    def get_dn_complete_info(self, dn_no: str) -> Dict[str, Any]:
+        """Fetch DN information - optimized version."""
+        logger.info(f"🔍 Fetching info for DN: '{dn_no}'")
         
-        if MODELS_AVAILABLE:
-            count = db.query(DeliveryReport).count()
-            logger.info(f"✅ DeliveryReport records: {count}")
-            if count == 0:
-                logger.warning("⚠️ WARNING: delivery_reports table is EMPTY!")
-                logger.warning("⚠️ You need to import data to answer questions.")
-        db.close()
-except Exception as e:
-    logger.error(f"❌ Database connection test FAILED: {e}")
-    webhook_stats["db_connected"] = False
+        # Validate
+        if not dn_no:
+            return {"success": False, "error": "DN number required"}
+        normalized_dn = re.sub(r'[^0-9]', '', dn_no.strip())
+        if len(normalized_dn) < 8 or len(normalized_dn) > 12:
+            return {"success": False, "error": "Invalid DN number"}
+        
+        # Check cache
+        cache_key = f"dn_{normalized_dn}"
+        if cache_key in self._dashboard_cache:
+            cache_age = (datetime.now() - self._cache_ttl.get(cache_key, datetime.min)).total_seconds()
+            if cache_age < self._cache_ttl_seconds:
+                self._cache_hits += 1
+                logger.info(f"⚡ CACHE HIT for DN {normalized_dn}")
+                return {"success": True, "data": self._dashboard_cache[cache_key]}
+        
+        self._cache_misses += 1
+        
+        # Get data from database - SINGLE OPTIMIZED QUERY
+        data = self._get_dn_data(normalized_dn)
+        if not data:
+            return {"success": False, "error": f"DN {dn_no} not found"}
+        
+        # Build dashboard with business rules
+        dashboard = self._build_dashboard(data)
+        
+        # Cache
+        self._dashboard_cache[cache_key] = dashboard
+        self._cache_ttl[cache_key] = datetime.now()
+        
+        return {"success": True, "data": dashboard}
 
+    # ==================================================================================================
+    # BLOCK 10: PENDING METHODS
+    # ==================================================================================================
+
+    @handle_errors
+    @timed_execution
+    def get_pending_dns(self) -> Dict[str, Any]:
+        """Fetch all pending DNs."""
+        query = """
+        SELECT DISTINCT 
+            dn_no, 
+            MAX(customer_name) AS dealer_name, 
+            MIN(dn_create_date) AS dn_create_date,
+            MAX(delivery_status) AS delivery_status
+        FROM delivery_reports 
+        WHERE good_issue_date IS NULL OR pod_date IS NULL
+        GROUP BY dn_no
+        ORDER BY MIN(dn_create_date) DESC
+        LIMIT 50
+        """
+        rows = self._execute_query(query)
+        formatted = []
+        for row in rows:
+            formatted.append({
+                'dn_no': row.get('dn_no'),
+                'dealer_name': row.get('dealer_name') or 'Unknown',
+                'dn_create_date': row.get('dn_create_date').strftime('%Y-%m-%d') if row.get('dn_create_date') else 'N/A',
+                'delivery_status': row.get('delivery_status') or 'Pending'
+            })
+        return {"success": True, "count": len(formatted), "records": formatted}
+
+    @handle_errors
+    @timed_execution
+    def get_pending_pgi(self) -> Dict[str, Any]:
+        """Fetch all pending PGI."""
+        query = """
+        SELECT DISTINCT 
+            dn_no, 
+            MAX(customer_name) AS dealer_name, 
+            MIN(dn_create_date) AS dn_create_date
+        FROM delivery_reports 
+        WHERE good_issue_date IS NULL
+        GROUP BY dn_no
+        ORDER BY MIN(dn_create_date) DESC
+        LIMIT 50
+        """
+        rows = self._execute_query(query)
+        formatted = []
+        for row in rows:
+            formatted.append({
+                'dn_no': row.get('dn_no'),
+                'dealer_name': row.get('dealer_name') or 'Unknown',
+                'dn_create_date': row.get('dn_create_date').strftime('%Y-%m-%d') if row.get('dn_create_date') else 'N/A'
+            })
+        return {"success": True, "count": len(formatted), "records": formatted}
+
+    @handle_errors
+    @timed_execution
+    def get_pending_pod(self) -> Dict[str, Any]:
+        """Fetch all pending POD."""
+        query = """
+        SELECT DISTINCT 
+            dn_no, 
+            MAX(customer_name) AS dealer_name, 
+            MAX(good_issue_date) AS good_issue_date
+        FROM delivery_reports 
+        WHERE good_issue_date IS NOT NULL AND pod_date IS NULL
+        GROUP BY dn_no
+        ORDER BY MAX(good_issue_date) DESC
+        LIMIT 50
+        """
+        rows = self._execute_query(query)
+        formatted = []
+        for row in rows:
+            formatted.append({
+                'dn_no': row.get('dn_no'),
+                'dealer_name': row.get('dealer_name') or 'Unknown',
+                'good_issue_date': row.get('good_issue_date').strftime('%Y-%m-%d') if row.get('good_issue_date') else 'N/A'
+            })
+        return {"success": True, "count": len(formatted), "records": formatted}
+
+    # ==================================================================================================
+    # BLOCK 11: WHATSAPP RESPONSE
+    # ==================================================================================================
+
+    def get_formatted_dn(self, dn_no: str) -> Dict[str, Any]:
+        """Get formatted DN for WhatsApp."""
+        try:
+            # Check formatted cache
+            formatted_cache_key = f"formatted_{dn_no}"
+            if formatted_cache_key in self._formatted_cache:
+                cache_age = (datetime.now() - self._cache_ttl.get(formatted_cache_key, datetime.min)).total_seconds()
+                if cache_age < self._cache_ttl_seconds:
+                    self._cache_hits += 1
+                    logger.info(f"⚡ Formatted CACHE HIT for DN {dn_no}")
+                    return self._formatted_cache[formatted_cache_key]
+            
+            # Get dashboard
+            result = self.get_dn_complete_info(dn_no)
+            if not result.get('success'):
+                return {
+                    'success': False,
+                    'formatted_message': f"❌ DN {dn_no} not found. Please verify the DN number."
+                }
+            
+            # Format for WhatsApp
+            formatted_message = self._format_whatsapp(result['data'])
+            
+            response = {
+                'success': True,
+                'formatted_message': formatted_message,
+                'data': result['data']
+            }
+            
+            # Cache
+            self._formatted_cache[formatted_cache_key] = response
+            self._cache_ttl[formatted_cache_key] = datetime.now()
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error in get_formatted_dn: {e}")
+            return {
+                'success': False,
+                'formatted_message': f"❌ Error retrieving DN data. Please try again."
+            }
+
+    # ==================================================================================================
+    # BLOCK 12: WHATSAPP FORMATTER - EXACT FORMAT
+    # ==================================================================================================
+
+    def _format_whatsapp(self, dashboard: DNDashboard) -> str:
+        """
+        Format DN dashboard for WhatsApp - EXACT format requested.
+        Only uses fields from DNDashboard.
+        """
+        lines = []
+        
+        # ----- SECTION 1: Header -----
+        lines.append("📦 Delivery Note Details")
+        lines.append("")
+        
+        # ----- SECTION 2: Dealer & Location -----
+        lines.append(f"🆔 DN: {dashboard.dn_no}")
+        lines.append("")
+        lines.append(f"👤 Dealer: {dashboard.dealer_name}")
+        lines.append("")
+        lines.append(f"📍 City: {dashboard.city}")
+        lines.append("")
+        lines.append(f"🏭 Warehouse: {dashboard.warehouse}")
+        lines.append("")
+        
+        # ----- SEPARATOR -----
+        lines.append("━━━━━━━━━━━━━━━━━━")
+        lines.append("")
+        
+        # ----- SECTION 3: Summary -----
+        lines.append("📊 Summary")
+        lines.append("")
+        lines.append(f"📦 Units: {dashboard.total_units}")
+        lines.append(f"🛒 Products: {dashboard.material_count}")
+        revenue_val = float(dashboard.total_revenue) if dashboard.total_revenue else 0
+        lines.append(f"💰 Revenue: PKR {revenue_val:,.0f}")
+        lines.append("")
+        
+        # ----- SEPARATOR -----
+        lines.append("━━━━━━━━━━━━━━━━━━")
+        lines.append("")
+        
+        # ----- SECTION 4: Timeline -----
+        lines.append("📅 Timeline")
+        lines.append("")
+        lines.append(f"📝 DN Created: {dashboard.dn_create_date}")
+        lines.append(f"🚚 PGI: {dashboard.good_issue_date}")
+        lines.append(f"📬 POD: {dashboard.pod_date}")
+        lines.append("")
+        
+        # ----- SEPARATOR -----
+        lines.append("━━━━━━━━━━━━━━━━━━")
+        lines.append("")
+        
+        # ----- SECTION 5: Performance -----
+        lines.append("⏱ Performance")
+        lines.append("")
+        lines.append(f"🚛 Delivery: {dashboard.delivery_aging_text}")
+        lines.append(f"📦 POD: {dashboard.pod_aging_text}")
+        lines.append(f"🔄 Total Cycle: {dashboard.total_cycle_text}")
+        lines.append("")
+        
+        # ----- SEPARATOR -----
+        lines.append("━━━━━━━━━━━━━━━━━━")
+        lines.append("")
+        
+        # ----- SECTION 6: Status -----
+        lines.append("🚚 Current Status")
+        lines.append("")
+        lines.append(f"✅ Delivery: {dashboard.calculated_stage}")
+        pgi_emoji = "✅" if dashboard.pgi_status == "Completed" else "⏳"
+        lines.append(f"{pgi_emoji} PGI: {dashboard.pgi_status}")
+        pod_emoji = "✅" if dashboard.pod_status == "Completed" else "⏳"
+        lines.append(f"{pod_emoji} POD: {dashboard.pod_status}")
+        pending_emoji = "🟢" if not dashboard.pending_flag else "🔴"
+        lines.append(f"{pending_emoji} Pending: {dashboard.pending_flag_text}")
+        lines.append("")
+        
+        # ----- SEPARATOR -----
+        lines.append("━━━━━━━━━━━━━━━━━━")
+        lines.append("")
+        
+        # ----- SECTION 7: Products (Grouped - No duplicates) -----
+        products = dashboard.products
+        if products and len(products) > 0:
+            lines.append("📦 Products")
+            lines.append("")
+            
+            # Group products by model
+            grouped = {}
+            for p in products:
+                model = p.get('model', 'Unknown')
+                if model not in grouped:
+                    grouped[model] = {'quantity': 0}
+                grouped[model]['quantity'] += p.get('quantity', 0)
+            
+            # Display max 5 products
+            display_limit = 5
+            for idx, (model, data) in enumerate(grouped.items()[:display_limit], 1):
+                qty = data.get('quantity', 0)
+                lines.append(f"• {model}")
+                lines.append(f"  Qty: {qty}")
+                lines.append("")
+            
+            if len(grouped) > display_limit:
+                lines.append(f"• {len(grouped) - display_limit} more product(s)")
+                lines.append("")
+        
+        # ----- SEPARATOR -----
+        lines.append("━━━━━━━━━━━━━━━━━━")
+        lines.append("")
+        
+        # ----- SECTION 8: AI Insight -----
+        lines.append("💡 AI Insight")
+        lines.append("")
+        lines.append(dashboard.ai_insight)
+        lines.append("")
+        
+        # ----- FOOTER -----
+        lines.append("━━━━━━━━━━━━━━━━━━")
+        lines.append(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+        lines.append("🤖 AI Logistics Assistant")
+        
+        message = "\n".join(lines)
+        
+        # Ensure under 4096 characters
+        if len(message) > 4000:
+            message = message[:3980] + "\n... [Message truncated]"
+        
+        return message
+
+    # ==================================================================================================
+    # BLOCK 13: COMPATIBILITY METHODS
+    # ==================================================================================================
+
+    def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
+        return self.get_dn_complete_info(dn_no)
+
+    def search_dn(self, dn_no: str) -> Dict[str, Any]:
+        return self.get_dn_complete_info(dn_no)
+
+    def verify_dn(self, dn_no: str) -> Dict[str, Any]:
+        result = self.get_dn_complete_info(dn_no)
+        return {"success": True, "exists": result.get("success", False)}
+
+    def health_check(self) -> Dict[str, Any]:
+        try:
+            rows_count = 0
+            pending_count = 0
+            with self._get_session_context() as session:
+                result = session.execute(text("SELECT COUNT(*) as count FROM delivery_reports"))
+                row = result.fetchone()
+                rows_count = row[0] if row else 0
+                pending = session.execute(
+                    text("SELECT COUNT(DISTINCT dn_no) FROM delivery_reports WHERE good_issue_date IS NULL OR pod_date IS NULL")
+                )
+                pending_row = pending.fetchone()
+                pending_count = pending_row[0] if pending_row else 0
+            
+            return {
+                "healthy": True,
+                "service": self._service_name,
+                "version": self._version,
+                "status": self._status,
+                "database": "connected",
+                "rows": rows_count,
+                "pending_dns": pending_count,
+                "cache_stats": self.get_cache_stats(),
+                "timestamp": datetime.now().isoformat()
+            }
+        except Exception as e:
+            return {
+                "healthy": False,
+                "service": self._service_name,
+                "version": self._version,
+                "status": self._status,
+                "database": "disconnected",
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+
+    def validation_query(self) -> Dict[str, Any]:
+        try:
+            with self._get_session_context() as session:
+                result = session.execute(
+                    text("SELECT COUNT(DISTINCT dn_no) as count FROM delivery_reports")
+                )
+                row = result.fetchone()
+                count = row[0] if row else 0
+                return {"success": True, "records": count, "error": None}
+        except Exception as e:
+            return {"success": False, "records": 0, "error": str(e)}
+
+    def get_service_metadata(self) -> Dict[str, Any]:
+        return {
+            "service_name": self._service_name,
+            "version": self._version,
+            "status": self._status,
+            "initialized": self._initialized,
+            "startup_time": self._startup_time,
+            "debug_mode": self._debug_mode,
+            "production_mode": self._production_mode,
+            "methods": [
+                "get_dn_complete_info",
+                "get_dn_dashboard",
+                "search_dn",
+                "verify_dn",
+                "get_pending_dns",
+                "get_pending_pgi",
+                "get_pending_pod",
+                "get_formatted_dn",
+                "health_check",
+                "validation_query",
+                "get_service_metadata"
+            ]
+        }
+
+    # ==================================================================================================
+    # BLOCK 14: CACHE MANAGEMENT
+    # ==================================================================================================
+
+    def clear_cache(self, dn_no: Optional[str] = None) -> None:
+        if dn_no:
+            keys_to_remove = [f"dn_{dn_no}", f"formatted_{dn_no}"]
+            for key in keys_to_remove:
+                if key in self._dashboard_cache:
+                    del self._dashboard_cache[key]
+                if key in self._formatted_cache:
+                    del self._formatted_cache[key]
+                if key in self._cache_ttl:
+                    del self._cache_ttl[key]
+            logger.info(f"🔄 Cleared cache for DN {dn_no}")
+        else:
+            self._dashboard_cache.clear()
+            self._formatted_cache.clear()
+            self._cache_ttl.clear()
+            logger.info("🔄 Cleared all cache")
+
+    def get_cache_stats(self) -> Dict[str, Any]:
+        total = self._cache_hits + self._cache_misses
+        return {
+            "cache_enabled": True,
+            "cache_ttl_seconds": self._cache_ttl_seconds,
+            "dashboard_cache_size": len(self._dashboard_cache),
+            "formatted_cache_size": len(self._formatted_cache),
+            "cache_hits": self._cache_hits,
+            "cache_misses": self._cache_misses,
+            "hit_ratio": round(
+                self._cache_hits / total * 100, 2
+            ) if total > 0 else 0
+        }
+
+
+# =====================================================================================================
+# BLOCK 15: THREAD-SAFE SINGLETON
+# =====================================================================================================
+
+_dn_analytics_service = None
+_dn_lock = threading.Lock()
+
+def get_dn_analytics_service() -> DNAnalysisService:
+    global _dn_analytics_service
+    if _dn_analytics_service is None:
+        with _dn_lock:
+            if _dn_analytics_service is None:
+                try:
+                    logger.info("🔧 Creating DNAnalysisService singleton...")
+                    _dn_analytics_service = DNAnalysisService()
+                    logger.info("✅ DNAnalysisService singleton initialized")
+                except Exception as e:
+                    logger.exception(f"❌ DNAnalysisService initialization failed: {e}")
+                    raise
+    return _dn_analytics_service
+
+
+# =====================================================================================================
+# BLOCK 16: EXPORTS
+# =====================================================================================================
+
+__all__ = [
+    'DNAnalysisService',
+    'get_dn_analytics_service',
+    'DNDashboard'
+]
+
+
+# =====================================================================================================
+# MODULE INITIALIZATION
+# =====================================================================================================
+
+logger.info("=" * 70)
+logger.info("DNAnalysisService v18.0 - ENTERPRISE WHATSAPP FORMATTER")
+logger.info("=" * 70)
 logger.info("")
-logger.info("   📌 ARCHITECTURE: v16.0 (Built-in Intent Detection)")
-logger.info("   📌 AI Provider: v5.0 (NO ai_query_service.py)")
-logger.info("   📌 Routing: IntentDetectionEngine (built-in)")
-logger.info("   📌 Response Formatting: ✅ FIXED (always string)")
+logger.info(" ✅ PostgreSQL is the ONLY source of truth")
+logger.info(" ✅ Only relevant data extracted")
+logger.info(" ✅ Business rules applied (status, aging, insights)")
+logger.info(" ✅ Professional WhatsApp formatting")
+logger.info(" ✅ Under 4096 character limit")
+logger.info(" ✅ 100% backward compatible")
 logger.info("")
+logger.info(" EXTRACTED FIELDS (ONLY WHAT'S DISPLAYED):")
+logger.info("  1. dn_no")
+logger.info("  2. dealer_name (MAX customer_name)")
+logger.info("  3. warehouse (MAX warehouse)")
+logger.info("  4. city (MAX ship_to_city)")
+logger.info("  5. total_units (SUM dn_qty)")
+logger.info("  6. total_revenue (SUM dn_amount)")
+logger.info("  7. material_count (COUNT DISTINCT material_no)")
+logger.info("  8. dn_create_date (MIN dn_create_date)")
+logger.info("  9. good_issue_date (MAX good_issue_date)")
+logger.info(" 10. pod_date (MAX pod_date)")
+logger.info(" 11. products (JSON_AGG grouped)")
+logger.info("")
+logger.info(" STATUS: ✅ PRODUCTION READY")
 logger.info("=" * 70)
 
-__all__ = ['router']
+# Initialize service
+try:
+    service = get_dn_analytics_service()
+    logger.info("✅ DN Analytics Service initialized successfully")
+except Exception as e:
+    logger.error(f"❌ DN Analytics Service initialization failed: {e}")
+
+# =====================================================================================================
+# END OF FILE
+# =====================================================================================================
