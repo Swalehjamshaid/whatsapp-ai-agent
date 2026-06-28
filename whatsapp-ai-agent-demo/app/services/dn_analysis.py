@@ -1,6 +1,6 @@
 # =====================================================================================================
 # FILE: app/services/dn_analysis.py
-# VERSION: v18.2 - ENTERPRISE GRADE WITH ALL ATTRIBUTES PRESERVED
+# VERSION: v18.3 - POSTGRESQL INTEGRATION INTACT
 # PURPOSE: DN Analytics Service - Enterprise Grade PostgreSQL Integration
 # =====================================================================================================
 
@@ -48,7 +48,6 @@ QUERY_TIMEOUT = int(os.environ.get("DN_QUERY_TIMEOUT", "30"))
 @dataclass
 class DNAggregate:
     """Aggregated DN data from PostgreSQL - ALL COLUMNS PRESERVED."""
-    # Core
     dn_no: str
     dealer_name: str = "Unknown"
     dealer_code: Optional[str] = None
@@ -212,11 +211,9 @@ class BusinessRules:
         if dn_create_date and pod_date:
             total_cycle = (pod_date - dn_create_date).days
         
-        # If PGI pending, calculate delivery aging from today
         if good_issue_date is None and dn_create_date:
             delivery_aging = (date.today() - dn_create_date).days
         
-        # If POD pending, calculate POD aging from today
         if good_issue_date is not None and pod_date is None:
             pod_aging = (date.today() - good_issue_date).days
         
@@ -240,7 +237,6 @@ class BusinessRules:
             else:
                 return f"{days} Days ({days // 30} Months)"
         
-        # Special text for pending status
         if good_issue_date is None:
             delivery_text = "Waiting for Dispatch"
         else:
@@ -282,7 +278,6 @@ class BusinessRules:
             else:
                 return "Critical", "🔴"
         else:
-            # For in-transit or pending, check delivery aging
             if total_cycle_days <= 7:
                 return "Normal", "🟢"
             elif total_cycle_days <= 14:
@@ -296,11 +291,11 @@ class BusinessRules:
     def generate_ai_insight(stage: str, delivery_aging_days: int, pod_status: str, health: str) -> str:
         """Generate AI insight based on stage and status."""
         if stage == "Delivered":
-            if health == "Delayed" or health == "Critical":
+            if health in ["Delayed", "Critical"]:
                 return "Shipment delivered but exceeded expected delivery time. Please review the delivery process."
             return "Shipment completed successfully within the expected delivery cycle. No further action is required."
         elif stage == "In Transit":
-            if health == "Delayed" or health == "Critical":
+            if health in ["Delayed", "Critical"]:
                 return "Shipment is currently in transit and has exceeded expected delivery time. Operational follow-up is recommended."
             return "Shipment has been dispatched and is awaiting proof of delivery."
         elif stage == "Pending Dispatch":
@@ -321,8 +316,6 @@ def timed_execution(func):
             execution_time = (time.time() - start_time) * 1000
             self._total_execution_time_ms += execution_time
             self._query_count += 1
-            if self._debug_mode:
-                logger.debug(f"⏱️ {func.__name__} executed in {execution_time:.2f}ms")
             return result
         except Exception as e:
             execution_time = (time.time() - start_time) * 1000
@@ -352,10 +345,11 @@ def handle_errors(func):
 
 class DNAnalysisService:
     """
-    DN Analytics Service - Enterprise Grade PostgreSQL Integration.
-
-    v18.2 - ALL ATTRIBUTES PRESERVED
+    DN Analytics Service - PostgreSQL Integration Intact.
+    
+    v18.3 - POSTGRESQL INTEGRATION INTACT
     ✅ All PostgreSQL columns preserved
+    ✅ All attributes in DNDashboard preserved
     ✅ Business rules applied
     ✅ Professional WhatsApp formatting
     ✅ 20x faster with caching
@@ -363,26 +357,23 @@ class DNAnalysisService:
 
     def __init__(self):
         self._service_name = "dn_analysis"
-        self._version = "18.2"
+        self._version = "18.3"
         self._status = "INITIALIZING"
         self._query_count = 0
         self._total_execution_time_ms = 0
         self._startup_time = datetime.now().isoformat()
         self._debug_mode = DEBUG_MODE
         self._production_mode = PRODUCTION_MODE
-        self._schema_validated = False
         self._initialized = False
         
-        # Cache for fast lookups
         self._dashboard_cache = {}
         self._formatted_cache = {}
         self._cache_ttl = {}
         self._cache_hits = 0
         self._cache_misses = 0
-        self._cache_ttl_seconds = 300  # 5 minutes
+        self._cache_ttl_seconds = 300
 
         logger.info(f"🔧 DNAnalysisService v{self._version} initializing...")
-        logger.info(f"📋 Debug Mode: {'ENABLED' if self._debug_mode else 'DISABLED'}")
         logger.info(f"⚡ Cache TTL: {self._cache_ttl_seconds}s")
 
         try:
@@ -456,8 +447,6 @@ class DNAnalysisService:
             if not session:
                 logger.error("❌ No session available")
                 return []
-            if self._debug_mode:
-                logger.debug(f"📝 Executing SQL: {query[:200]}...")
             result = session.execute(text(query), params or {})
             rows = [dict(row) for row in result.mappings()]
             return rows
@@ -477,7 +466,6 @@ class DNAnalysisService:
         return """
         WITH dn_aggregated AS (
             SELECT
-                -- Core identification
                 dn_no,
                 MAX(customer_name) AS dealer_name,
                 MAX(dealer_code) AS dealer_code,
@@ -491,33 +479,23 @@ class DNAnalysisService:
                 MAX(division) AS division,
                 MAX(order_type) AS order_type,
                 MAX(dn_work) AS dn_work,
-                
-                -- Metrics (calculated in SQL)
                 SUM(dn_qty) AS total_units,
                 SUM(dn_amount) AS total_revenue,
                 COUNT(DISTINCT material_no) AS material_count,
                 COUNT(DISTINCT customer_model) AS model_count,
                 COUNT(*) AS row_count,
-                
-                -- Dates
                 MIN(dn_create_date) AS dn_create_date,
                 MAX(good_issue_date) AS good_issue_date,
                 MAX(pod_date) AS pod_date,
-                
-                -- Status
                 MAX(pending_flag) AS pending_flag,
                 MAX(delivery_status) AS delivery_status,
                 MAX(pgi_status) AS pgi_status,
                 MAX(pod_status) AS pod_status,
-                
-                -- Source
                 MAX(source_file) AS source_file,
                 MAX(upload_batch_id) AS upload_batch_id,
                 MAX(imported_at) AS imported_at,
                 MAX(created_at) AS created_at,
                 MAX(updated_at) AS updated_at,
-                
-                -- Products (aggregated in SQL - no duplicates)
                 JSON_AGG(
                     JSON_BUILD_OBJECT(
                         'model', customer_model,
@@ -527,7 +505,6 @@ class DNAnalysisService:
                     )
                     ORDER BY customer_model ASC
                 ) AS products
-                
             FROM delivery_reports
             WHERE CAST(dn_no AS TEXT) = :dn_no
             GROUP BY dn_no
@@ -536,7 +513,6 @@ class DNAnalysisService:
         """
 
     def _get_dn_data(self, dn_no: str) -> Optional[Dict[str, Any]]:
-        """Get DN data using complete query."""
         query = self._build_complete_query()
         results = self._execute_query(query, {"dn_no": dn_no})
         return results[0] if results else None
@@ -571,12 +547,10 @@ class DNAnalysisService:
         average_revenue = Decimal(str(data.get('average_revenue', 0))) if data.get('average_revenue') else Decimal(0)
         average_unit_price = Decimal(str(data.get('average_unit_price', 0))) if data.get('average_unit_price') else Decimal(0)
         
-        # Parse dates
         dn_create_date = data.get('dn_create_date')
         good_issue_date = data.get('good_issue_date')
         pod_date = data.get('pod_date')
         
-        # Source
         source_file = data.get('source_file')
         upload_batch_id = data.get('upload_batch_id')
         imported_at = data.get('imported_at')
@@ -593,10 +567,8 @@ class DNAnalysisService:
         )
         
         health, health_emoji = BusinessRules.calculate_shipment_health(total_cycle, stage)
-        
         ai_insight = BusinessRules.generate_ai_insight(stage, delivery_aging, pod_status, health)
         
-        # Format dates
         def format_dt(dt):
             if dt is None:
                 return 'N/A'
@@ -604,32 +576,23 @@ class DNAnalysisService:
                 return dt.strftime('%Y-%m-%d')
             return str(dt)[:10]
         
-        # Format products (already aggregated in SQL)
         products = data.get('products', [])
         
-        # Build DNDashboard with ALL attributes preserved
         return DNDashboard(
-            # Core
             dn_no=dn_no,
             dealer_name=dealer_name,
             dealer_code=dealer_code,
             customer_name=dealer_name,
             customer_code=customer_code,
-            
-            # Location
             warehouse=warehouse,
             warehouse_code=warehouse_code,
             city=city,
             delivery_location=delivery_location,
-            
-            # Business
             sales_manager=sales_manager,
             sales_office=sales_office,
             division=division,
             order_type=order_type,
             dn_work=dn_work,
-            
-            # Metrics
             total_units=total_units,
             total_revenue=total_revenue,
             material_count=material_count,
@@ -637,21 +600,15 @@ class DNAnalysisService:
             row_count=row_count,
             average_revenue=average_revenue,
             average_unit_price=average_unit_price,
-            
-            # Dates
             dn_create_date=format_dt(dn_create_date),
             good_issue_date=format_dt(good_issue_date),
             pod_date=format_dt(pod_date),
-            
-            # Aging
             delivery_aging_days=delivery_aging,
             pod_aging_days=pod_aging,
             total_cycle_days=total_cycle,
             delivery_aging_text=delivery_text,
             pod_aging_text=pod_text,
             total_cycle_text=cycle_text,
-            
-            # Status
             calculated_stage=stage,
             calculated_emoji=emoji,
             delivery_status=stage,
@@ -659,22 +616,14 @@ class DNAnalysisService:
             pod_status=pod_status,
             pending_flag=pending_flag,
             pending_flag_text=pending_text,
-            
-            # Products
             products=products,
-            
-            # Source
             source_file=source_file,
             upload_batch_id=upload_batch_id,
             imported_at=format_dt(imported_at),
             created_at=format_dt(created_at),
             updated_at=format_dt(updated_at),
-            
-            # Shipment Health
             shipment_health=health,
             shipment_health_emoji=health_emoji,
-            
-            # AI Insight
             ai_insight=ai_insight
         )
 
@@ -684,17 +633,14 @@ class DNAnalysisService:
 
     @handle_errors
     def get_dn_complete_info(self, dn_no: str) -> Dict[str, Any]:
-        """Fetch DN information - all attributes preserved."""
         logger.info(f"🔍 Fetching info for DN: '{dn_no}'")
         
-        # Validate
         if not dn_no:
             return {"success": False, "error": "DN number required"}
         normalized_dn = re.sub(r'[^0-9]', '', dn_no.strip())
         if len(normalized_dn) < 8 or len(normalized_dn) > 12:
             return {"success": False, "error": "Invalid DN number"}
         
-        # Check cache
         cache_key = f"dn_{normalized_dn}"
         if cache_key in self._dashboard_cache:
             cache_age = (datetime.now() - self._cache_ttl.get(cache_key, datetime.min)).total_seconds()
@@ -705,28 +651,24 @@ class DNAnalysisService:
         
         self._cache_misses += 1
         
-        # Get data from database
         data = self._get_dn_data(normalized_dn)
         if not data:
             return {"success": False, "error": f"DN {dn_no} not found"}
         
-        # Build dashboard with business rules
         dashboard = self._build_dashboard(data)
         
-        # Cache
         self._dashboard_cache[cache_key] = dashboard
         self._cache_ttl[cache_key] = datetime.now()
         
         return {"success": True, "data": dashboard}
 
     # ==================================================================================================
-    # BLOCK 10: PENDING METHODS - ALL IMPLEMENTED
+    # BLOCK 10: PENDING METHODS
     # ==================================================================================================
 
     @handle_errors
     @timed_execution
     def get_pending_dns(self) -> Dict[str, Any]:
-        """Fetch all pending DNs."""
         query = """
         SELECT DISTINCT 
             dn_no, 
@@ -753,7 +695,6 @@ class DNAnalysisService:
     @handle_errors
     @timed_execution
     def get_pending_pgi(self) -> Dict[str, Any]:
-        """Fetch all pending PGI."""
         query = """
         SELECT DISTINCT 
             dn_no, 
@@ -778,7 +719,6 @@ class DNAnalysisService:
     @handle_errors
     @timed_execution
     def get_pending_pod(self) -> Dict[str, Any]:
-        """Fetch all pending POD."""
         query = """
         SELECT DISTINCT 
             dn_no, 
@@ -805,9 +745,7 @@ class DNAnalysisService:
     # ==================================================================================================
 
     def get_formatted_dn(self, dn_no: str) -> Dict[str, Any]:
-        """Get formatted DN for WhatsApp."""
         try:
-            # Check formatted cache
             formatted_cache_key = f"formatted_{dn_no}"
             if formatted_cache_key in self._formatted_cache:
                 cache_age = (datetime.now() - self._cache_ttl.get(formatted_cache_key, datetime.min)).total_seconds()
@@ -816,7 +754,6 @@ class DNAnalysisService:
                     logger.info(f"⚡ Formatted CACHE HIT for DN {dn_no}")
                     return self._formatted_cache[formatted_cache_key]
             
-            # Get dashboard
             result = self.get_dn_complete_info(dn_no)
             if not result.get('success'):
                 return {
@@ -824,7 +761,6 @@ class DNAnalysisService:
                     'formatted_message': f"❌ DN {dn_no} not found. Please verify the DN number."
                 }
             
-            # Format for WhatsApp
             formatted_message = self._format_whatsapp(result['data'])
             
             response = {
@@ -833,7 +769,6 @@ class DNAnalysisService:
                 'data': result['data']
             }
             
-            # Cache
             self._formatted_cache[formatted_cache_key] = response
             self._cache_ttl[formatted_cache_key] = datetime.now()
             
@@ -847,21 +782,16 @@ class DNAnalysisService:
             }
 
     # ==================================================================================================
-    # BLOCK 12: WHATSAPP FORMATTER - PROFESSIONAL OUTPUT
+    # BLOCK 12: WHATSAPP FORMATTER
     # ==================================================================================================
 
     def _format_whatsapp(self, dashboard: DNDashboard) -> str:
-        """
-        Format DN dashboard for WhatsApp - Professional enterprise output.
-        Only displays relevant business fields, hides technical fields.
-        """
+        """Format DN dashboard for WhatsApp - Professional enterprise output."""
         lines = []
         
-        # ----- SECTION 1: Header -----
+        # Header
         lines.append("📦 Delivery Note Details")
         lines.append("")
-        
-        # ----- SECTION 2: Dealer & Location -----
         lines.append(f"🆔 DN: {dashboard.dn_no}")
         lines.append("")
         lines.append(f"👤 Dealer: {dashboard.dealer_name}")
@@ -870,12 +800,10 @@ class DNAnalysisService:
         lines.append("")
         lines.append(f"🏭 Warehouse: {dashboard.warehouse}")
         lines.append("")
-        
-        # ----- SEPARATOR -----
         lines.append("━━━━━━━━━━━━━━━━━━")
         lines.append("")
         
-        # ----- SECTION 3: Summary -----
+        # Summary
         lines.append("📊 Summary")
         lines.append("")
         lines.append(f"📦 Units: {dashboard.total_units}")
@@ -883,24 +811,20 @@ class DNAnalysisService:
         revenue_val = float(dashboard.total_revenue) if dashboard.total_revenue else 0
         lines.append(f"💰 Revenue: PKR {revenue_val:,.0f}")
         lines.append("")
-        
-        # ----- SEPARATOR -----
         lines.append("━━━━━━━━━━━━━━━━━━")
         lines.append("")
         
-        # ----- SECTION 4: Timeline -----
+        # Timeline
         lines.append("📅 Timeline")
         lines.append("")
         lines.append(f"📝 DN Created: {dashboard.dn_create_date}")
         lines.append(f"🚚 PGI: {dashboard.good_issue_date}")
         lines.append(f"📬 POD: {dashboard.pod_date}")
         lines.append("")
-        
-        # ----- SEPARATOR -----
         lines.append("━━━━━━━━━━━━━━━━━━")
         lines.append("")
         
-        # ----- SECTION 5: Performance -----
+        # Performance
         lines.append("⏱ Performance")
         lines.append("")
         lines.append(f"🚛 Delivery: {dashboard.delivery_aging_text}")
@@ -908,12 +832,10 @@ class DNAnalysisService:
         lines.append(f"🔄 Total Cycle: {dashboard.total_cycle_text}")
         lines.append(f"{dashboard.shipment_health_emoji} Health: {dashboard.shipment_health}")
         lines.append("")
-        
-        # ----- SEPARATOR -----
         lines.append("━━━━━━━━━━━━━━━━━━")
         lines.append("")
         
-        # ----- SECTION 6: Status -----
+        # Status
         lines.append("🚚 Current Status")
         lines.append("")
         lines.append(f"✅ Delivery: {dashboard.calculated_stage}")
@@ -924,18 +846,15 @@ class DNAnalysisService:
         pending_emoji = "🟢" if not dashboard.pending_flag else "🔴"
         lines.append(f"{pending_emoji} Pending: {dashboard.pending_flag_text}")
         lines.append("")
-        
-        # ----- SEPARATOR -----
         lines.append("━━━━━━━━━━━━━━━━━━")
         lines.append("")
         
-        # ----- SECTION 7: Products (Grouped - No duplicates) -----
+        # Products
         products = dashboard.products
         if products and len(products) > 0:
             lines.append("📦 Products")
             lines.append("")
             
-            # Products are already aggregated in SQL
             display_limit = 5
             for idx, product in enumerate(products[:display_limit], 1):
                 model = product.get('model', 'Unknown')
@@ -949,24 +868,22 @@ class DNAnalysisService:
                 lines.append(f"• {remaining} more product(s)")
                 lines.append("")
         
-        # ----- SEPARATOR -----
         lines.append("━━━━━━━━━━━━━━━━━━")
         lines.append("")
         
-        # ----- SECTION 8: AI Insight -----
+        # AI Insight
         lines.append("💡 AI Insight")
         lines.append("")
         lines.append(dashboard.ai_insight)
         lines.append("")
         
-        # ----- FOOTER -----
+        # Footer
         lines.append("━━━━━━━━━━━━━━━━━━")
         lines.append(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}")
         lines.append("🤖 AI Logistics Assistant")
         
         message = "\n".join(lines)
         
-        # Ensure under 4096 characters
         if len(message) > 4000:
             message = message[:3980] + "\n... [Message truncated]"
         
@@ -1133,20 +1050,14 @@ __all__ = [
 # =====================================================================================================
 
 logger.info("=" * 70)
-logger.info("DNAnalysisService v18.2 - ALL ATTRIBUTES PRESERVED")
+logger.info("DNAnalysisService v18.3 - POSTGRESQL INTEGRATION INTACT")
 logger.info("=" * 70)
 logger.info("")
 logger.info(" ✅ ALL PostgreSQL columns preserved")
-logger.info(" ✅ Only relevant fields displayed in WhatsApp")
+logger.info(" ✅ All attributes in DNDashboard preserved")
 logger.info(" ✅ Business rules applied (status, aging, health, insights)")
 logger.info(" ✅ Products aggregated (no duplicates)")
-logger.info(" ✅ Shipment Health tracking")
 logger.info(" ✅ Professional WhatsApp formatting")
-logger.info(" ✅ Under 4096 character limit")
-logger.info("")
-logger.info(" DISPLAYED IN WHATSAPP:")
-logger.info("   DN, Dealer, City, Warehouse, Units, Products, Revenue,")
-logger.info("   Timeline, Performance, Status, Products, AI Insight")
 logger.info("")
 logger.info(" STATUS: ✅ PRODUCTION READY")
 logger.info("=" * 70)
