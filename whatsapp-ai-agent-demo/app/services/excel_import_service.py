@@ -1,6 +1,6 @@
 # =====================================================================================================
 # FILE: whatsapp-ai-agent-demo/app/services/excel_import_service.py
-# VERSION: v1.0 - CLEAN PRODUCTION IMPORTER
+# VERSION: v1.1 - CLEAN PRODUCTION IMPORTER + COMPATIBILITY FIXES
 # PURPOSE: Read delivery Excel files and upsert the data into PostgreSQL
 # =====================================================================================================
 
@@ -11,16 +11,17 @@
 import logging
 import os
 import re
+import uuid
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.models import DeliveryReport
-
 
 # =====================================================================================================
 # BLOCK 2: LOGGING AND CONSTANTS
@@ -32,7 +33,6 @@ HEADER_SCAN_ROWS = 25
 DEFAULT_BATCH_SIZE = 1000
 EXCEL_EPOCH = "1899-12-30"
 
-
 # =====================================================================================================
 # BLOCK 3: CUSTOM EXCEPTIONS
 # =====================================================================================================
@@ -40,14 +40,14 @@ EXCEL_EPOCH = "1899-12-30"
 class ExcelImportServiceError(Exception):
     """Base exception for Excel import failures."""
 
-
 class WorksheetNotFoundError(ExcelImportServiceError):
     """Raised when no usable worksheet is found."""
-
 
 class ColumnMappingError(ExcelImportServiceError):
     """Raised when mandatory columns are missing."""
 
+class VerificationError(ExcelImportServiceError):
+    """Backward-compatible verification exception used by upload router."""
 
 # =====================================================================================================
 # BLOCK 4: NORMALIZATION HELPERS
@@ -61,9 +61,11 @@ def normalize_header(value: Any) -> str:
     text = str(value).strip()
     text = re.sub(r"[_\-./\\#·•:;|]", " ", text)
     text = text.replace("\u00a0", " ")
+    text = text.replace("\t", " ")
+    text = text.replace("\r", " ")
+    text = text.replace("\n", " ")
     text = re.sub(r"\s+", " ", text).strip()
     return text.lower()
-
 
 def normalize_string(value: Any) -> Optional[str]:
     """Convert values to trimmed strings and return None for blanks."""
@@ -76,7 +78,6 @@ def normalize_string(value: Any) -> Optional[str]:
 
     return str(value).strip() or None
 
-
 def normalize_dn(value: Any) -> str:
     """Keep only digits from the DN number."""
     text = normalize_string(value)
@@ -84,6 +85,72 @@ def normalize_dn(value: Any) -> str:
         return ""
     return re.sub(r"[^0-9]", "", text)
 
+def normalize_city(value: Any) -> Optional[str]:
+    """Normalize common city abbreviations."""
+    city = normalize_string(value)
+    if not city:
+        return None
+
+    city_map = {
+        "lhr": "Lahore",
+        "isb": "Islamabad",
+        "rwp": "Rawalpindi",
+        "khi": "Karachi",
+        "fsd": "Faisalabad",
+        "mux": "Multan",
+        "pew": "Peshawar",
+        "qta": "Quetta",
+        "gjw": "Gujranwala",
+        "skt": "Sialkot",
+        "wah": "Wah Cantt",
+    }
+    return city_map.get(city.lower().strip(), city)
+
+def derive_customer_code(customer_name: Optional[str]) -> Optional[str]:
+    """Create a simple customer code from customer name."""
+    if not customer_name:
+        return None
+    code = re.sub(r"[^a-zA-Z0-9]", "_", customer_name[:15].upper()).strip("_")
+    return f"CUST_{code}" if code else None
+
+def derive_dealer_code(customer_name: Optional[str]) -> Optional[str]:
+    """Create a simple dealer code from customer name."""
+    if not customer_name:
+        return None
+    code = re.sub(r"[^a-zA-Z0-9]", "_", customer_name[:15].upper()).strip("_")
+    return f"DEAL_{code}" if code else None
+
+def get_warehouse_code(warehouse: Optional[str]) -> Optional[str]:
+    """Map warehouse/city name to a warehouse code."""
+    if not warehouse:
+        return None
+
+    warehouse_map = {
+        "rawalpindi": "RWP",
+        "islamabad": "ISB",
+        "lahore": "LHE",
+        "karachi": "KHI",
+        "faisalabad": "FSD",
+        "multan": "MUX",
+        "peshawar": "PEW",
+        "quetta": "QTA",
+        "gujranwala": "GJW",
+        "sialkot": "SKT",
+        "wah": "WAH",
+        "wah cantt": "WAH",
+        "rwp": "RWP",
+        "isb": "ISB",
+        "lhr": "LHE",
+    }
+    return warehouse_map.get(warehouse.lower().strip())
+
+def get_delivery_location(ship_to_city: Optional[str]) -> Optional[str]:
+    """Return normalized delivery location."""
+    return normalize_city(ship_to_city)
+
+def generate_batch_id() -> str:
+    """Generate a readable batch id for import tracking."""
+    return f"BATCH_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
 # =====================================================================================================
 # BLOCK 5: PARSING HELPERS
@@ -120,7 +187,6 @@ def parse_amount(value: Any) -> Optional[Decimal]:
 
     return None
 
-
 def parse_quantity(value: Any) -> Optional[int]:
     """Parse quantity values and reject non-integer values."""
     if value is None or pd.isna(value):
@@ -148,7 +214,6 @@ def parse_quantity(value: Any) -> Optional[int]:
             return None
 
     return None
-
 
 def parse_date(value: Any) -> Optional[date]:
     """Parse supported date formats and Excel serial dates."""
@@ -201,7 +266,6 @@ def parse_date(value: Any) -> Optional[date]:
 
     return None
 
-
 # =====================================================================================================
 # BLOCK 6: COLUMN MAP
 # =====================================================================================================
@@ -252,7 +316,6 @@ class ColumnMap:
 
         return mapping
 
-
 # =====================================================================================================
 # BLOCK 7: WORKSHEET DETECTION
 # =====================================================================================================
@@ -294,7 +357,6 @@ def detect_header_row(df: pd.DataFrame, max_rows: int = HEADER_SCAN_ROWS) -> Tup
 
     return best_row, best_score
 
-
 def detect_worksheet(file_path: str) -> Tuple[str, int]:
     """Detect the best worksheet and its header row."""
     excel_file = pd.ExcelFile(file_path, engine="openpyxl")
@@ -334,7 +396,6 @@ def detect_worksheet(file_path: str) -> Tuple[str, int]:
 
     return best_sheet, best_header_row
 
-
 # =====================================================================================================
 # BLOCK 8: DELIVERY STATUS DERIVATION
 # =====================================================================================================
@@ -367,7 +428,6 @@ def derive_status(good_issue_date: Optional[date], pod_date: Optional[date]) -> 
         "pending_flag": True,
     }
 
-
 # =====================================================================================================
 # BLOCK 9: MAIN SERVICE
 # =====================================================================================================
@@ -386,10 +446,13 @@ class ExcelImportService:
         file_path: str,
         source_filename: Optional[str] = None,
         sheet_name: Optional[str] = None,
+        upload_batch_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Import one Excel file into the DeliveryReport table."""
         if not os.path.exists(file_path):
             raise FileNotFoundError(file_path)
+
+        batch_id = upload_batch_id or generate_batch_id()
 
         if sheet_name is None:
             sheet_name, header_row = detect_worksheet(file_path)
@@ -415,6 +478,7 @@ class ExcelImportService:
         if df.empty:
             return {
                 "sheet_name": sheet_name,
+                "batch_id": batch_id,
                 "rows_read": 0,
                 "rows_valid": 0,
                 "rows_upserted": 0,
@@ -436,6 +500,7 @@ class ExcelImportService:
                     row=row,
                     mapping=mapping,
                     source_filename=source_filename or os.path.basename(file_path),
+                    upload_batch_id=batch_id,
                 )
 
                 row_key = (record["dn_no"], record["material_no"])
@@ -451,6 +516,7 @@ class ExcelImportService:
 
         return {
             "sheet_name": sheet_name,
+            "batch_id": batch_id,
             "rows_read": int(len(df)),
             "rows_valid": int(len(records)),
             "rows_upserted": int(rows_upserted),
@@ -463,6 +529,7 @@ class ExcelImportService:
         row: pd.Series,
         mapping: Dict[str, Any],
         source_filename: str,
+        upload_batch_id: Optional[str],
     ) -> Dict[str, Any]:
         """Build one database-ready record from one Excel row."""
         dn_no = normalize_dn(row.get(mapping["dn_no"]))
@@ -474,6 +541,11 @@ class ExcelImportService:
         if not material_no:
             raise ExcelImportServiceError("Material NO is required.")
 
+        customer_name = normalize_string(row.get(mapping.get("customer_name")))
+        ship_to_city = normalize_city(row.get(mapping.get("ship_to_city")))
+        warehouse = normalize_string(row.get(mapping.get("warehouse")))
+        amount_decimal = parse_amount(row.get(mapping.get("dn_amount")))
+
         dn_create_date = parse_date(row.get(mapping.get("dn_create_date")))
         good_issue_date = parse_date(row.get(mapping.get("good_issue_date")))
         pod_date = parse_date(row.get(mapping.get("pod_date")))
@@ -481,22 +553,28 @@ class ExcelImportService:
         record = {
             "order_type": normalize_string(row.get(mapping.get("order_type"))),
             "dn_no": dn_no,
-            "dn_amount": parse_amount(row.get(mapping.get("dn_amount"))),
+            "dn_amount": float(amount_decimal) if amount_decimal is not None else None,
             "dn_qty": parse_quantity(row.get(mapping.get("dn_qty"))),
             "dn_work": normalize_string(row.get(mapping.get("dn_work"))),
             "division": normalize_string(row.get(mapping.get("division"))),
             "material_no": material_no,
             "customer_model": normalize_string(row.get(mapping.get("customer_model"))),
             "sales_office": normalize_string(row.get(mapping.get("sales_office"))),
-            "customer_name": normalize_string(row.get(mapping.get("customer_name"))),
-            "ship_to_city": normalize_string(row.get(mapping.get("ship_to_city"))),
+            "customer_name": customer_name,
+            "customer_code": derive_customer_code(customer_name),
+            "dealer_code": derive_dealer_code(customer_name),
+            "ship_to_city": ship_to_city,
             "storage_location": normalize_string(row.get(mapping.get("storage_location"))),
-            "warehouse": normalize_string(row.get(mapping.get("warehouse"))),
+            "warehouse": warehouse,
+            "warehouse_code": get_warehouse_code(warehouse),
+            "delivery_location": get_delivery_location(ship_to_city),
             "dn_create_date": dn_create_date,
             "good_issue_date": good_issue_date,
             "pod_date": pod_date,
             "sales_manager": normalize_string(row.get(mapping.get("sales_manager"))),
-            "source_filename": source_filename,
+            "source_file": source_filename,
+            "upload_batch_id": upload_batch_id,
+            "imported_at": datetime.utcnow(),
             "updated_at": datetime.utcnow(),
         }
         record.update(derive_status(good_issue_date, pod_date))
@@ -514,27 +592,38 @@ class ExcelImportService:
         total = 0
         protected_fields = {"id", "created_at"}
 
-        for start in range(0, len(records), self.batch_size):
-            batch = records[start : start + self.batch_size]
+        try:
+            for start in range(0, len(records), self.batch_size):
+                batch = records[start:start + self.batch_size]
 
-            stmt = insert(self.table).values(batch)
-            update_fields = {
-                column.name: getattr(stmt.excluded, column.name)
-                for column in self.table.columns
-                if column.name not in ({"dn_no", "material_no"} | protected_fields)
-            }
+                stmt = insert(self.table).values(batch)
+                update_fields = {
+                    column.name: getattr(stmt.excluded, column.name)
+                    for column in self.table.columns
+                    if column.name not in ({"dn_no", "material_no"} | protected_fields)
+                }
 
-            stmt = stmt.on_conflict_do_update(
-                index_elements=["dn_no", "material_no"],
-                set_=update_fields,
-            )
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["dn_no", "material_no"],
+                    set_=update_fields,
+                )
 
-            result = self.db.execute(stmt)
-            total += result.rowcount or 0
+                result = self.db.execute(stmt)
+                total += result.rowcount or 0
 
-        self.db.commit()
-        return total
+            self.db.commit()
+            return total
 
+        except SQLAlchemyError as exc:
+            self.db.rollback()
+            message = str(exc)
+
+            if "no unique or exclusion constraint matching the ON CONFLICT specification" in message:
+                raise VerificationError(
+                    "PostgreSQL is missing a unique constraint or unique index on (dn_no, material_no)."
+                ) from exc
+
+            raise ExcelImportServiceError(f"Database upsert failed: {message}") from exc
 
 # =====================================================================================================
 # BLOCK 10: PUBLIC ENTRY POINT
@@ -546,6 +635,7 @@ def import_delivery_excel(
     source_filename: Optional[str] = None,
     sheet_name: Optional[str] = None,
     batch_size: int = DEFAULT_BATCH_SIZE,
+    upload_batch_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Read a delivery Excel file and upsert it into PostgreSQL through the DeliveryReport model.
@@ -559,8 +649,8 @@ def import_delivery_excel(
         file_path=file_path,
         source_filename=source_filename,
         sheet_name=sheet_name,
+        upload_batch_id=upload_batch_id,
     )
-
 
 # =====================================================================================================
 # BLOCK 11: EXPORTED SYMBOLS
@@ -571,5 +661,6 @@ __all__ = [
     "ExcelImportServiceError",
     "WorksheetNotFoundError",
     "ColumnMappingError",
+    "VerificationError",
     "import_delivery_excel",
 ]
