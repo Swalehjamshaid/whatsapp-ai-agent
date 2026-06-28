@@ -1,7 +1,7 @@
 # =====================================================================================================
 # FILE: app/services/excel_import_service.py
-# VERSION: v18.5 - RUNTIME ISSUE FIXES
-# PURPOSE: Enterprise Excel import with comprehensive runtime error handling
+# VERSION: v18.6 - ATTRIBUTE ALIGNMENT FIX
+# PURPOSE: Enterprise Excel import with all attributes properly aligned
 # =====================================================================================================
 
 import pandas as pd
@@ -638,7 +638,7 @@ class FrozenMapping:
 def detect_worksheet(file_path: str) -> Tuple[str, int, Dict[str, Any]]:
     """Detect the best worksheet containing delivery data."""
     logger.info("=" * 60)
-    logger.info("🔍 WORKSHEET DETECTION v18.5")
+    logger.info("🔍 WORKSHEET DETECTION v18.6")
     logger.info("=" * 60)
     
     try:
@@ -886,13 +886,12 @@ def derive_dealer_code(customer_name: str) -> Optional[str]:
     return f"DEAL_{code}" if code else None
 
 # =====================================================================================================
-# BLOCK 7: BATCH PROCESSOR WITH COMPREHENSIVE RUNTIME FIXES
+# BLOCK 7: BATCH PROCESSOR WITH ALL ATTRIBUTES ALIGNED
 # =====================================================================================================
 
 class FastBatchProcessor:
     """
-    BLOCK 7: Complete batch processor with comprehensive runtime fixes.
-    ALL attributes initialized in __init__.
+    BLOCK 7: Complete batch processor with all attributes properly aligned.
     """
     
     def __init__(self, db: Session, frozen_mapping: FrozenMapping, batch_id: str, source_filename: str):
@@ -902,7 +901,7 @@ class FastBatchProcessor:
         self.source_filename = source_filename
         
         # ============================================================
-        # STAGE COUNTERS - ALL INITIALIZED
+        # STAGE COUNTERS - Using consistent names
         # ============================================================
         self.rows_read = 0
         self.rows_extracted = 0
@@ -915,14 +914,20 @@ class FastBatchProcessor:
         self.rows_updated = 0
         self.rows_skipped = 0
         
+        # Legacy compatibility - these are used by some code
+        self.inserted_count = 0  # Alias for rows_inserted
+        self.updated_count = 0   # Alias for rows_updated
+        self.skipped_count = 0   # Alias for rows_skipped
+        self.failed_count = 0    # Alias for rows_failed
+        
         # ============================================================
-        # STATISTICS - ALL INITIALIZED
+        # STATISTICS
         # ============================================================
         self.total_revenue = Decimal(0)
         self.total_units = 0
         
         # ============================================================
-        # TRACKING - ALL INITIALIZED
+        # TRACKING
         # ============================================================
         self.processed_keys = set()
         self.duplicate_tracker = {}  # key -> row_number
@@ -930,7 +935,7 @@ class FastBatchProcessor:
         self.commit_counter = 0
         
         # ============================================================
-        # FAILURE STAGE TRACKING - ALL INITIALIZED
+        # FAILURE STAGE TRACKING
         # ============================================================
         self.failure_stages = {
             'EXTRACTION': 0,
@@ -944,12 +949,12 @@ class FastBatchProcessor:
         }
         
         # ============================================================
-        # FIRST FAILED ROW - INITIALIZED
+        # FIRST FAILED ROW
         # ============================================================
         self.first_failed_row = None
         
         # ============================================================
-        # ERROR TRACKING - ALL INITIALIZED
+        # ERROR TRACKING
         # ============================================================
         self.extraction_errors = []
         self.parsing_errors = []
@@ -962,7 +967,7 @@ class FastBatchProcessor:
         self.statistics_errors = []
         
         # ============================================================
-        # EXTRACTION STATISTICS - ALL INITIALIZED
+        # EXTRACTION STATISTICS
         # ============================================================
         self.extraction_stats = {
             'dn_work_extracted': 0,
@@ -972,7 +977,7 @@ class FastBatchProcessor:
         }
         
         # ============================================================
-        # SAMPLES - ALL INITIALIZED
+        # SAMPLES
         # ============================================================
         self.excel_samples = []
         self.parsed_samples = []
@@ -981,7 +986,7 @@ class FastBatchProcessor:
         self.db_insert_sample = None
         
         # ============================================================
-        # CONFIGURATION - ALL INITIALIZED
+        # CONFIGURATION
         # ============================================================
         self.skip_dups = False
         self.update_existing = False
@@ -1374,6 +1379,7 @@ class FastBatchProcessor:
             
             if not is_valid:
                 self.rows_failed += 1
+                self.failed_count += 1  # Alias
                 self.failure_stages['VALIDATION'] += 1
                 
                 # Store first failed row
@@ -1432,6 +1438,7 @@ class FastBatchProcessor:
             
             if not dn_no or not material_no:
                 self.rows_failed += 1
+                self.failed_count += 1  # Alias
                 self.failure_stages['VALIDATION'] += 1
                 
                 if self.first_failed_row is None:
@@ -1470,6 +1477,7 @@ class FastBatchProcessor:
                 }
                 self.duplicate_errors.append(duplicate_info)
                 self.rows_failed += 1
+                self.failed_count += 1  # Alias
                 self.failure_stages['DUPLICATE_CHECK'] += 1
                 
                 if self.first_failed_row is None:
@@ -1550,6 +1558,7 @@ class FastBatchProcessor:
                     })
             except Exception as e:
                 self.rows_failed += 1
+                self.failed_count += 1  # Alias
                 self.failure_stages['BUFFER_CREATION'] += 1
                 
                 if self.first_failed_row is None:
@@ -1581,11 +1590,13 @@ class FastBatchProcessor:
             # ============================================================
             self.update_statistics(row_data, row_number)
             
+            # Update inserted count alias - will be finalized later
             return True
             
         except Exception as e:
             # Catch unexpected exceptions
             self.rows_failed += 1
+            self.failed_count += 1  # Alias
             self.failure_stages['EXTRACTION'] += 1  # Default stage
             
             if self.first_failed_row is None:
@@ -1703,6 +1714,7 @@ class FastBatchProcessor:
             
             batch_size = len(self.bulk_buffer)
             self.rows_inserted += batch_size
+            self.inserted_count += batch_size  # Alias
             self.rows_insert_attempted -= batch_size  # Remove successful ones from attempted
             
             self.commit_counter += 1
@@ -1715,6 +1727,7 @@ class FastBatchProcessor:
         except Exception as e:
             self.failure_stages['DATABASE_INSERT'] += 1
             self.rows_failed += len(self.bulk_buffer)
+            self.failed_count += len(self.bulk_buffer)  # Alias
             
             # Identify the offending record
             offending_record = None
@@ -1976,7 +1989,6 @@ class FastBatchProcessor:
         
         # Calculate final statistics
         total_processed = self.rows_read
-        total_success = self.rows_inserted + self.rows_updated + self.rows_skipped
         
         # Log summary
         logger.info("=" * 60)
@@ -2042,6 +2054,10 @@ class FastBatchProcessor:
             'rows_updated': self.rows_updated,
             'rows_skipped': self.rows_skipped,
             'rows_failed': self.rows_failed,
+            'inserted_count': self.inserted_count,  # Legacy compatibility
+            'updated_count': self.updated_count,    # Legacy compatibility
+            'skipped_count': self.skipped_count,    # Legacy compatibility
+            'failed_count': self.failed_count,      # Legacy compatibility
             'total_revenue': float(self.total_revenue),
             'total_units': self.total_units,
             'deleted_count': transaction_result.get('deleted_count', 0),
@@ -2059,7 +2075,7 @@ class FastBatchProcessor:
         }
 
 # =====================================================================================================
-# BLOCK 8: EXCEL IMPORT SERVICE - SAFE REPLACE MODE
+# BLOCK 8: EXCEL IMPORT SERVICE
 # =====================================================================================================
 
 class ExcelImportService:
@@ -2097,7 +2113,7 @@ class ExcelImportService:
         start_time = time.time()
         
         logger.info("=" * 60)
-        logger.info("⚡ EXCEL IMPORT v18.5 - SAFE REPLACE MODE")
+        logger.info("⚡ EXCEL IMPORT v18.6 - ATTRIBUTE ALIGNMENT FIX")
         logger.info("=" * 60)
         logger.info(f"📁 File: {file_path}")
         logger.info(f"📋 Source: {source_filename}")
@@ -2262,6 +2278,7 @@ class ExcelImportService:
                     
                 except Exception as e:
                     processor.rows_failed += 1
+                    processor.failed_count += 1
                     processor.failed_rows.append({
                         'row': row_number,
                         'dn': row.get(frozen_mapping.get('dn_no')) if frozen_mapping.get('dn_no') else None,
@@ -2297,7 +2314,7 @@ class ExcelImportService:
             logger.info(f"  Rows Inserted: {results['rows_inserted']:,}")
             logger.info(f"  Rows Failed: {results['rows_failed']:,}")
             
-            # Build response
+            # Build response - use all available data
             response = {
                 "success": True,
                 "batch_id": batch_id,
@@ -2313,6 +2330,10 @@ class ExcelImportService:
                 "rows_updated": results['rows_updated'],
                 "rows_skipped": results['rows_skipped'],
                 "rows_failed": results['rows_failed'],
+                "inserted_count": results['inserted_count'],
+                "updated_count": results['updated_count'],
+                "skipped_count": results['skipped_count'],
+                "failed_count": results['failed_count'],
                 "total_revenue_imported": results['total_revenue'],
                 "total_units_imported": results['total_units'],
                 "deleted_count": results['deleted_count'],
@@ -2413,16 +2434,17 @@ __all__ = [
 # =====================================================================================================
 
 logger.info("=" * 60)
-logger.info("📊 EXCEL IMPORT SERVICE v18.5 - RUNTIME ISSUE FIXES")
+logger.info("📊 EXCEL IMPORT SERVICE v18.6 - ATTRIBUTE ALIGNMENT FIX")
 logger.info("=" * 60)
 logger.info("")
-logger.info("  ✅ ALL CLASS VARIABLES INITIALIZED IN __init__")
+logger.info("  ✅ ALL ATTRIBUTES ALIGNED:")
+logger.info("     - inserted_count (alias for rows_inserted)")
+logger.info("     - updated_count (alias for rows_updated)")
+logger.info("     - skipped_count (alias for rows_skipped)")
+logger.info("     - failed_count (alias for rows_failed)")
+logger.info("")
 logger.info("  ✅ STATISTICS ISOLATED - Never fails a row")
-logger.info("  ✅ EACH PIPELINE STAGE ISOLATED")
-logger.info("  ✅ BUFFER VERIFICATION BEFORE INSERT")
-logger.info("  ✅ DATABASE INSERT DIAGNOSTICS")
 logger.info("  ✅ SAFE REPLACE MODE - Transaction-safe")
-logger.info("  ✅ POST INSERT VERIFICATION")
 logger.info("  ✅ COMPREHENSIVE API RESPONSE")
 logger.info("=" * 60)
 
