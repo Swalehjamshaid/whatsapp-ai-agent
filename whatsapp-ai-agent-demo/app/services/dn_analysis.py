@@ -1,6 +1,6 @@
 # =====================================================================================================
 # FILE: app/services/dn_analysis.py
-# VERSION: v18.0 - ENTERPRISE GRADE UPGRADE
+# VERSION: v18.1 - ENHANCED POSTGRESQL INTEGRATION
 # PURPOSE: DN Analytics Service - Enterprise Grade PostgreSQL Integration
 # =====================================================================================================
 
@@ -9,8 +9,9 @@ from typing import Dict, List, Optional, Any, Tuple, Union
 from datetime import datetime, date, timedelta
 from decimal import Decimal, InvalidOperation
 from dataclasses import dataclass, field, asdict
-from sqlalchemy import text, inspect, exc
-from sqlalchemy.orm import Session
+from sqlalchemy import text, inspect, exc, create_engine
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 from contextlib import contextmanager
 import threading
 import re
@@ -28,13 +29,41 @@ logger = logging.getLogger(__name__)
 # =====================================================================================================
 # BLOCK 1: IMPORTS & DATABASE SETUP
 # =====================================================================================================
+
+# Database connection settings
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    "postgresql://postgres:postgres@localhost:5432/haier_db"
+)
+
+# Connection pool settings
+POOL_SIZE = int(os.environ.get("DN_POOL_SIZE", "10"))
+MAX_OVERFLOW = int(os.environ.get("DN_MAX_OVERFLOW", "20"))
+POOL_TIMEOUT = int(os.environ.get("DN_POOL_TIMEOUT", "30"))
+
+# Create engine with connection pooling
 try:
-    from app.database import SessionLocal
-    from app.models import DeliveryReport
-    logger.info("✅ Database models imported successfully")
-except ImportError as e:
-    logger.error(f"❌ Database import failed: {e}")
+    engine = create_engine(
+        DATABASE_URL,
+        pool_size=POOL_SIZE,
+        max_overflow=MAX_OVERFLOW,
+        pool_timeout=POOL_TIMEOUT,
+        pool_pre_ping=True,  # Check connection before using
+        pool_recycle=3600,   # Recycle connections after 1 hour
+        echo=False,
+    )
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    logger.info("✅ PostgreSQL engine created successfully")
+except Exception as e:
+    logger.error(f"❌ Failed to create PostgreSQL engine: {e}")
     SessionLocal = None
+
+# Try to import models
+try:
+    from app.models import DeliveryReport
+    logger.info("✅ DeliveryReport model imported successfully")
+except ImportError as e:
+    logger.error(f"❌ DeliveryReport import failed: {e}")
     DeliveryReport = None
 
 DEBUG_MODE = os.environ.get("DN_DEBUG_MODE", "false").lower() == "true"
@@ -351,15 +380,16 @@ def handle_errors(func):
     return wrapper
 
 # =====================================================================================================
-# BLOCK 5: DNAnalysisService CLASS - ENTERPRISE GRADE
+# BLOCK 5: DNAnalysisService CLASS - ENHANCED POSTGRESQL INTEGRATION
 # =====================================================================================================
 
 class DNAnalysisService:
     """
-    DN Analytics Service - Enterprise Grade PostgreSQL Integration.
+    DN Analytics Service - Enhanced PostgreSQL Integration.
 
-    v18.0 - ENTERPRISE GRADE UPGRADE
-    ✅ PostgreSQL is the ONLY source of truth
+    v18.1 - ENHANCED POSTGRESQL INTEGRATION
+    ✅ Direct PostgreSQL connection with connection pooling
+    ✅ Automatic connection retry with exponential backoff
     ✅ SQL aggregation (no Python processing)
     ✅ Single query for dashboard
     ✅ Dedicated products query with SQL aggregation
@@ -368,11 +398,12 @@ class DNAnalysisService:
     ✅ All attributes preserved
     ✅ AI Insights
     ✅ User-friendly errors
+    ✅ Health checks with database status
     """
 
     def __init__(self):
         self._service_name = "dn_analysis"
-        self._version = "18.0"
+        self._version = "18.1"
         self._status = "INITIALIZING"
         self._query_count = 0
         self._total_execution_time_ms = 0
@@ -381,6 +412,7 @@ class DNAnalysisService:
         self._production_mode = PRODUCTION_MODE
         self._schema_validated = False
         self._initialized = False
+        self._db_connected = False
         
         # ============================================================
         # 5X SPEED: Dual cache (dashboard + formatted)
@@ -392,106 +424,88 @@ class DNAnalysisService:
         self._cache_misses = 0
         self._cache_ttl_seconds = 300  # 5 minutes
 
-        # Ensure indexes exist
-        self._ensure_indexes()
-
         logger.info(f"🔧 DNAnalysisService v{self._version} initializing...")
         logger.info(f"📋 Debug Mode: {'ENABLED' if self._debug_mode else 'DISABLED'}")
         logger.info(f"⚡ Cache TTL: {self._cache_ttl_seconds}s")
+        logger.info(f"🔌 Database URL: {DATABASE_URL[:30]}...")
 
         try:
+            # Test connection
             test_result = self._test_connection()
             if test_result:
                 self._status = "READY"
                 self._initialized = True
+                self._db_connected = True
                 logger.info("✅ DNAnalysisService is READY")
+                # Ensure indexes exist
+                self._ensure_indexes()
             else:
                 self._status = "ERROR"
+                self._db_connected = False
                 logger.error("❌ DNAnalysisService initialization FAILED")
         except Exception as e:
             self._status = "ERROR"
+            self._db_connected = False
             logger.error(f"❌ DNAnalysisService initialization error: {e}")
             logger.error(traceback.format_exc())
 
     # ==================================================================================================
-    # BLOCK 6: DATABASE INDEX MANAGEMENT
-    # ==================================================================================================
-
-    def _ensure_indexes(self):
-        """Create indexes for fast lookups if they don't exist."""
-        try:
-            with self._get_session_context() as session:
-                indexes_to_create = [
-                    ("idx_delivery_reports_dn_no", "dn_no"),
-                    ("idx_delivery_reports_dn_material", "dn_no, material_no"),
-                    ("idx_delivery_reports_good_issue", "good_issue_date"),
-                    ("idx_delivery_reports_pod_date", "pod_date"),
-                    ("idx_delivery_reports_customer", "customer_name"),
-                    ("idx_delivery_reports_warehouse", "warehouse"),
-                    ("idx_delivery_reports_city", "ship_to_city"),
-                ]
-                
-                for idx_name, columns in indexes_to_create:
-                    try:
-                        result = session.execute(
-                            text("SELECT 1 FROM pg_indexes WHERE indexname = :idx_name"),
-                            {"idx_name": idx_name}
-                        )
-                        if not result.fetchone():
-                            session.execute(
-                                text(f"CREATE INDEX {idx_name} ON delivery_reports ({columns})")
-                            )
-                            logger.info(f"✅ Created index: {idx_name}")
-                    except Exception as e:
-                        logger.warning(f"⚠️ Could not create index {idx_name}: {e}")
-                
-                session.commit()
-        except Exception as e:
-            logger.warning(f"⚠️ Index creation failed: {e}")
-
-    # ==================================================================================================
-    # BLOCK 7: DATABASE CONNECTION METHODS
+    # BLOCK 6: DATABASE CONNECTION METHODS - ENHANCED
     # ==================================================================================================
 
     def _test_connection(self) -> bool:
+        """Test database connection with exponential backoff retry."""
         for attempt in range(1, CONNECTION_RETRY_COUNT + 1):
             try:
                 if not SessionLocal:
                     logger.error("❌ SessionLocal is None")
                     return False
+
                 with self._get_session_context() as session:
-                    session.execute(text("SELECT 1"))
-                    logger.info("✅ Database connection test: SUCCESS")
-                    return True
+                    # Test connection with simple query
+                    result = session.execute(text("SELECT 1"))
+                    if result:
+                        logger.info(f"✅ Database connection test: SUCCESS (attempt {attempt})")
+                        return True
+                    
             except Exception as e:
+                wait_time = 2 ** attempt  # Exponential backoff
                 logger.warning(f"⚠️ Connection attempt {attempt}/{CONNECTION_RETRY_COUNT} failed: {e}")
                 if attempt < CONNECTION_RETRY_COUNT:
-                    time.sleep(1)
+                    logger.info(f"⏳ Waiting {wait_time}s before retry...")
+                    time.sleep(wait_time)
                 else:
-                    logger.error(f"❌ Database connection test FAILED: {e}")
+                    logger.error(f"❌ Database connection test FAILED after {CONNECTION_RETRY_COUNT} attempts")
                     return False
         return False
 
     @contextmanager
     def _get_session_context(self) -> Session:
+        """Context manager for database session with auto-rollback."""
         if not SessionLocal:
             raise RuntimeError("SessionLocal not available")
+
         session = None
         try:
             session = SessionLocal()
+            # Set statement timeout for long-running queries
+            session.execute(text(f"SET statement_timeout = {QUERY_TIMEOUT * 1000}"))
             yield session
         except Exception as e:
             if session:
                 session.rollback()
+            logger.error(f"❌ Session error: {e}")
             raise
         finally:
             if session:
                 session.close()
 
     def _get_session(self) -> Optional[Session]:
+        """Get database session."""
         if not SessionLocal:
             logger.error("❌ SessionLocal not available")
             return None
+
         try:
             return SessionLocal()
         except Exception as e:
@@ -525,10 +539,58 @@ class DNAnalysisService:
 
         except exc.SQLAlchemyError as e:
             logger.error(f"❌ SQL Execution Failed: {e}")
+            if self._debug_mode:
+                logger.error(traceback.format_exc())
             return []
         finally:
             if session:
                 session.close()
+
+    # ==================================================================================================
+    # BLOCK 7: DATABASE INDEX MANAGEMENT - ENHANCED
+    # ==================================================================================================
+
+    def _ensure_indexes(self):
+        """Create indexes for fast lookups if they don't exist."""
+        try:
+            with self._get_session_context() as session:
+                # Check if table exists first
+                table_exists = session.execute(
+                    text("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'delivery_reports')")
+                ).scalar()
+                
+                if not table_exists:
+                    logger.warning("⚠️ delivery_reports table doesn't exist yet. Skipping index creation.")
+                    return
+                
+                indexes_to_create = [
+                    ("idx_delivery_reports_dn_no", "dn_no"),
+                    ("idx_delivery_reports_dn_material", "dn_no, material_no"),
+                    ("idx_delivery_reports_good_issue", "good_issue_date"),
+                    ("idx_delivery_reports_pod_date", "pod_date"),
+                    ("idx_delivery_reports_customer", "customer_name"),
+                    ("idx_delivery_reports_warehouse", "warehouse"),
+                    ("idx_delivery_reports_city", "ship_to_city"),
+                ]
+                
+                for idx_name, columns in indexes_to_create:
+                    try:
+                        # Check if index exists
+                        result = session.execute(
+                            text("SELECT 1 FROM pg_indexes WHERE indexname = :idx_name"),
+                            {"idx_name": idx_name}
+                        )
+                        if not result.fetchone():
+                            session.execute(
+                                text(f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {idx_name} ON delivery_reports ({columns})")
+                            )
+                            logger.info(f"✅ Created index: {idx_name}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Could not create index {idx_name}: {e}")
+                
+                session.commit()
+        except Exception as e:
+            logger.warning(f"⚠️ Index creation failed: {e}")
 
     # ==================================================================================================
     # BLOCK 8: OPTIMIZED SQL QUERIES
@@ -768,6 +830,13 @@ class DNAnalysisService:
             all_rows: List[Dict] (empty for compatibility)
             error: str (if failed)
         """
+        # Check database connection first
+        if not self._db_connected:
+            logger.warning("⚠️ Database not connected, attempting to reconnect...")
+            self._db_connected = self._test_connection()
+            if not self._db_connected:
+                return {"success": False, "error": "Database connection failed"}
+
         logger.info(f"🔍 Fetching complete info for DN: '{dn_no}'")
 
         is_valid, normalized_dn, error_msg = validate_dn(dn_no)
@@ -1156,16 +1225,39 @@ class DNAnalysisService:
         return {"success": True, "exists": result.get("success", False)}
 
     def health_check(self) -> Dict[str, Any]:
-        """Health check endpoint."""
+        """Health check endpoint with database status."""
         try:
             rows_count = 0
             latency_ms = 0
+            db_status = "disconnected"
+            last_batch = None
 
             with self._get_session_context() as session:
                 start_time = time.time()
-                result = session.execute(text("SELECT COUNT(*) as count FROM delivery_reports"))
-                row = result.fetchone()
-                rows_count = row[0] if row else 0
+                
+                # Check if table exists
+                table_exists = session.execute(
+                    text("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'delivery_reports')")
+                ).scalar()
+                
+                if table_exists:
+                    result = session.execute(text("SELECT COUNT(*) as count FROM delivery_reports"))
+                    row = result.fetchone()
+                    rows_count = row[0] if row else 0
+                    
+                    # Get latest batch
+                    batch_result = session.execute(
+                        text("SELECT upload_batch_id, MAX(imported_at) as last_import FROM delivery_reports GROUP BY upload_batch_id ORDER BY last_import DESC LIMIT 1")
+                    )
+                    batch_row = batch_result.fetchone()
+                    if batch_row:
+                        last_batch = {
+                            "batch_id": batch_row[0],
+                            "imported_at": str(batch_row[1]) if batch_row[1] else None
+                        }
+                    
+                    db_status = "connected"
+                
                 latency_ms = (time.time() - start_time) * 1000
 
             return {
@@ -1173,13 +1265,14 @@ class DNAnalysisService:
                 "service": self._service_name,
                 "version": self._version,
                 "status": self._status,
-                "database": "connected",
+                "database": db_status,
                 "rows": rows_count,
                 "latency_ms": round(latency_ms, 2),
                 "query_count": self._query_count,
                 "total_execution_time_ms": round(self._total_execution_time_ms, 2),
                 "initialized": self._initialized,
                 "cache_stats": self.get_cache_stats(),
+                "last_batch": last_batch,
                 "timestamp": datetime.now().isoformat()
             }
         except Exception as e:
@@ -1192,6 +1285,36 @@ class DNAnalysisService:
                 "error": str(e),
                 "timestamp": datetime.now().isoformat()
             }
+
+    def get_database_status(self) -> Dict[str, Any]:
+        """Get detailed database status."""
+        try:
+            with self._get_session_context() as session:
+                # Check PostgreSQL version
+                version_result = session.execute(text("SELECT version()"))
+                version = version_result.scalar()
+                
+                # Check connection count
+                conn_result = session.execute(text("SELECT count(*) FROM pg_stat_activity"))
+                conn_count = conn_result.scalar()
+                
+                # Check table size
+                size_result = session.execute(
+                    text("SELECT pg_size_pretty(pg_total_relation_size('delivery_reports'))")
+                )
+                table_size = size_result.scalar()
+                
+                return {
+                    "connected": True,
+                    "postgresql_version": version[:50] if version else "Unknown",
+                    "active_connections": conn_count,
+                    "table_size": table_size or "0 bytes",
+                    "pool_size": POOL_SIZE,
+                    "max_overflow": MAX_OVERFLOW,
+                    "pool_timeout": POOL_TIMEOUT,
+                }
+        except Exception as e:
+            return {"connected": False, "error": str(e)}
 
     def validation_query(self) -> Dict[str, Any]:
         """Validation query for ai_provider_service."""
@@ -1214,10 +1337,12 @@ class DNAnalysisService:
             "version": self._version,
             "status": self._status,
             "module": "DN Analytics",
-            "description": "Enterprise DN Analytics Service v18.0 - Enterprise Grade",
+            "description": "Enterprise DN Analytics Service v18.1 - Enhanced PostgreSQL Integration",
             "initialized": self._initialized,
+            "db_connected": self._db_connected,
             "methods": [
                 "health_check",
+                "get_database_status",
                 "validation_query",
                 "get_service_metadata",
                 "search_dn",
@@ -1499,7 +1624,9 @@ __all__ = [
     'DNAnalysisService',
     'get_dn_analytics_service',
     'DNAggregate',
-    'DNDashboard'
+    'DNDashboard',
+    'engine',
+    'SessionLocal'
 ]
 
 
@@ -1508,13 +1635,20 @@ __all__ = [
 # =====================================================================================================
 
 logger.info("=" * 70)
-logger.info("DNAnalysisService v18.0 - ENTERPRISE GRADE")
+logger.info("DNAnalysisService v18.1 - ENHANCED POSTGRESQL INTEGRATION")
 logger.info("=" * 70)
 logger.info("")
 logger.info(" SERVICE DETAILS:")
 logger.info(" ✅ Service Name: dn_analysis")
-logger.info(" ✅ Version: 18.0 (Enterprise Grade)")
+logger.info(" ✅ Version: 18.1 (Enhanced PostgreSQL)")
 logger.info(" ✅ Source: PostgreSQL (delivery_reports)")
+logger.info("")
+logger.info(" 🔌 POSTGRESQL FEATURES:")
+logger.info(" ✅ Connection pooling (pool_size=10, max_overflow=20)")
+logger.info(" ✅ Automatic connection retry with exponential backoff")
+logger.info(" ✅ Connection pre-ping for reliability")
+logger.info(" ✅ Statement timeout protection")
+logger.info(" ✅ Health checks with database status")
 logger.info("")
 logger.info(" 🚀 PERFORMANCE OPTIMIZATIONS:")
 logger.info(" ✅ PostgreSQL aggregation (no Python processing)")
