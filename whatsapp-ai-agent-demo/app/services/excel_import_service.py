@@ -1,3 +1,13 @@
+# =====================================================================================================
+# FILE: whatsapp-ai-agent-demo/app/services/excel_import_service.py
+# VERSION: v1.0 - CLEAN PRODUCTION IMPORTER
+# PURPOSE: Read delivery Excel files and upsert the data into PostgreSQL
+# =====================================================================================================
+
+# =====================================================================================================
+# BLOCK 1: IMPORTS
+# =====================================================================================================
+
 import logging
 import os
 import re
@@ -11,12 +21,21 @@ from sqlalchemy.orm import Session
 
 from app.models import DeliveryReport
 
-logger = logging.getLogger(__name__)
 
+# =====================================================================================================
+# BLOCK 2: LOGGING AND CONSTANTS
+# =====================================================================================================
+
+logger = logging.getLogger(__name__)
 
 HEADER_SCAN_ROWS = 25
 DEFAULT_BATCH_SIZE = 1000
+EXCEL_EPOCH = "1899-12-30"
 
+
+# =====================================================================================================
+# BLOCK 3: CUSTOM EXCEPTIONS
+# =====================================================================================================
 
 class ExcelImportServiceError(Exception):
     """Base exception for Excel import failures."""
@@ -30,9 +49,15 @@ class ColumnMappingError(ExcelImportServiceError):
     """Raised when mandatory columns are missing."""
 
 
+# =====================================================================================================
+# BLOCK 4: NORMALIZATION HELPERS
+# =====================================================================================================
+
 def normalize_header(value: Any) -> str:
+    """Normalize Excel header text for reliable matching."""
     if value is None:
         return ""
+
     text = str(value).strip()
     text = re.sub(r"[_\-./\\#·•:;|]", " ", text)
     text = text.replace("\u00a0", " ")
@@ -41,49 +66,78 @@ def normalize_header(value: Any) -> str:
 
 
 def normalize_string(value: Any) -> Optional[str]:
+    """Convert values to trimmed strings and return None for blanks."""
     if value is None or pd.isna(value):
         return None
+
     if isinstance(value, str):
         cleaned = " ".join(value.split())
         return cleaned or None
+
     return str(value).strip() or None
 
 
+def normalize_dn(value: Any) -> str:
+    """Keep only digits from the DN number."""
+    text = normalize_string(value)
+    if not text:
+        return ""
+    return re.sub(r"[^0-9]", "", text)
+
+
+# =====================================================================================================
+# BLOCK 5: PARSING HELPERS
+# =====================================================================================================
+
 def parse_amount(value: Any) -> Optional[Decimal]:
+    """Parse amount values like 117,698 or numeric Excel values."""
     if value is None or pd.isna(value):
         return None
+
     if isinstance(value, Decimal):
         return value
+
     if isinstance(value, (int, float)):
         try:
             return Decimal(str(value))
         except (InvalidOperation, ValueError, TypeError):
             return None
+
     if isinstance(value, str):
         cleaned = value.strip().replace(",", "")
         cleaned = re.sub(r"[^\d.\-()]", "", cleaned)
+
         if not cleaned:
             return None
+
         if cleaned.startswith("(") and cleaned.endswith(")"):
             cleaned = f"-{cleaned[1:-1]}"
+
         try:
             return Decimal(cleaned)
         except (InvalidOperation, ValueError):
             return None
+
     return None
 
 
 def parse_quantity(value: Any) -> Optional[int]:
+    """Parse quantity values and reject non-integer values."""
     if value is None or pd.isna(value):
         return None
+
     if isinstance(value, bool):
         return None
+
     if isinstance(value, int):
         return value
+
     if isinstance(value, float):
         return int(value) if value.is_integer() else None
+
     if isinstance(value, Decimal):
         return int(value) if value == value.to_integral_value() else None
+
     if isinstance(value, str):
         cleaned = value.strip().replace(",", "")
         if not re.fullmatch(r"-?\d+", cleaned):
@@ -92,29 +146,37 @@ def parse_quantity(value: Any) -> Optional[int]:
             return int(cleaned)
         except ValueError:
             return None
+
     return None
 
 
 def parse_date(value: Any) -> Optional[date]:
+    """Parse supported date formats and Excel serial dates."""
     if value is None or pd.isna(value):
         return None
+
     if isinstance(value, datetime):
         return value.date()
+
     if isinstance(value, pd.Timestamp):
         return value.date()
+
     if isinstance(value, date):
         return value
+
     if isinstance(value, (int, float)):
         try:
             if float(value) > 59:
-                return (pd.Timestamp("1899-12-30") + pd.Timedelta(days=float(value))).date()
+                return (pd.Timestamp(EXCEL_EPOCH) + pd.Timedelta(days=float(value))).date()
         except (ValueError, OverflowError):
             return None
         return None
+
     if isinstance(value, str):
         raw = value.strip()
         if not raw:
             return None
+
         formats = (
             "%d.%m.%Y",
             "%Y-%m-%d",
@@ -123,28 +185,30 @@ def parse_date(value: Any) -> Optional[date]:
             "%d-%m-%Y",
             "%m-%d-%Y",
         )
+
         for fmt in formats:
             try:
                 return datetime.strptime(raw, fmt).date()
             except ValueError:
                 continue
+
         try:
             serial = float(raw)
             if serial > 59:
-                return (pd.Timestamp("1899-12-30") + pd.Timedelta(days=serial)).date()
+                return (pd.Timestamp(EXCEL_EPOCH) + pd.Timedelta(days=serial)).date()
         except ValueError:
             return None
+
     return None
 
 
-def normalize_dn(value: Any) -> str:
-    text = normalize_string(value)
-    if not text:
-        return ""
-    return re.sub(r"[^0-9]", "", text)
-
+# =====================================================================================================
+# BLOCK 6: COLUMN MAP
+# =====================================================================================================
 
 class ColumnMap:
+    """Map Excel headers to application field names."""
+
     HEADER_ALIASES = {
         "order_type": {"order type"},
         "dn_no": {"dn no", "dn"},
@@ -169,11 +233,13 @@ class ColumnMap:
 
     @classmethod
     def build_mapping(cls, headers: List[Any]) -> Dict[str, Any]:
+        """Build a field-to-column mapping from Excel headers."""
         alias_to_field = {
             normalize_header(alias): field
             for field, aliases in cls.HEADER_ALIASES.items()
             for alias in aliases
         }
+
         mapping: Dict[str, Any] = {}
         for header in headers:
             field = alias_to_field.get(normalize_header(header))
@@ -183,10 +249,16 @@ class ColumnMap:
         missing = sorted(cls.MANDATORY_COLUMNS - set(mapping))
         if missing:
             raise ColumnMappingError(f"Mandatory columns not found: {missing}")
+
         return mapping
 
 
+# =====================================================================================================
+# BLOCK 7: WORKSHEET DETECTION
+# =====================================================================================================
+
 def detect_header_row(df: pd.DataFrame, max_rows: int = HEADER_SCAN_ROWS) -> Tuple[int, int]:
+    """Detect the most likely header row by scoring keywords."""
     header_keywords = {
         "dn": 10,
         "material": 10,
@@ -215,6 +287,7 @@ def detect_header_row(df: pd.DataFrame, max_rows: int = HEADER_SCAN_ROWS) -> Tup
                 if keyword in normalized:
                     score += weight
                     break
+
         if score > best_score:
             best_row = row_idx
             best_score = score
@@ -223,6 +296,7 @@ def detect_header_row(df: pd.DataFrame, max_rows: int = HEADER_SCAN_ROWS) -> Tup
 
 
 def detect_worksheet(file_path: str) -> Tuple[str, int]:
+    """Detect the best worksheet and its header row."""
     excel_file = pd.ExcelFile(file_path, engine="openpyxl")
 
     best_sheet: Optional[str] = None
@@ -231,8 +305,10 @@ def detect_worksheet(file_path: str) -> Tuple[str, int]:
 
     for sheet_name in excel_file.sheet_names:
         lowered = sheet_name.lower()
+
         if sheet_name.startswith(("_", "$")):
             continue
+
         if any(word in lowered for word in ("summary", "sum", "total", "grand total")):
             continue
 
@@ -243,6 +319,7 @@ def detect_worksheet(file_path: str) -> Tuple[str, int]:
             nrows=HEADER_SCAN_ROWS,
             engine="openpyxl",
         )
+
         if sample.empty:
             continue
 
@@ -258,7 +335,12 @@ def detect_worksheet(file_path: str) -> Tuple[str, int]:
     return best_sheet, best_header_row
 
 
+# =====================================================================================================
+# BLOCK 8: DELIVERY STATUS DERIVATION
+# =====================================================================================================
+
 def derive_status(good_issue_date: Optional[date], pod_date: Optional[date]) -> Dict[str, Any]:
+    """Derive delivery, PGI, POD, and pending flags from dates."""
     has_pgi = good_issue_date is not None
     has_pod = pod_date is not None
 
@@ -269,6 +351,7 @@ def derive_status(good_issue_date: Optional[date], pod_date: Optional[date]) -> 
             "pod_status": "Completed",
             "pending_flag": False,
         }
+
     if has_pgi:
         return {
             "delivery_status": "In Transit",
@@ -276,6 +359,7 @@ def derive_status(good_issue_date: Optional[date], pod_date: Optional[date]) -> 
             "pod_status": "Pending",
             "pending_flag": True,
         }
+
     return {
         "delivery_status": "Pending Dispatch",
         "pgi_status": "Pending",
@@ -284,7 +368,13 @@ def derive_status(good_issue_date: Optional[date], pod_date: Optional[date]) -> 
     }
 
 
+# =====================================================================================================
+# BLOCK 9: MAIN SERVICE
+# =====================================================================================================
+
 class ExcelImportService:
+    """Service that reads Excel delivery data and upserts it into PostgreSQL."""
+
     def __init__(self, db: Session, batch_size: int = DEFAULT_BATCH_SIZE):
         self.db = db
         self.batch_size = batch_size
@@ -297,18 +387,31 @@ class ExcelImportService:
         source_filename: Optional[str] = None,
         sheet_name: Optional[str] = None,
     ) -> Dict[str, Any]:
+        """Import one Excel file into the DeliveryReport table."""
         if not os.path.exists(file_path):
             raise FileNotFoundError(file_path)
 
         if sheet_name is None:
             sheet_name, header_row = detect_worksheet(file_path)
         else:
-            preview = pd.read_excel(file_path, sheet_name=sheet_name, header=None, nrows=HEADER_SCAN_ROWS, engine="openpyxl")
+            preview = pd.read_excel(
+                file_path,
+                sheet_name=sheet_name,
+                header=None,
+                nrows=HEADER_SCAN_ROWS,
+                engine="openpyxl",
+            )
             header_row, _ = detect_header_row(preview)
 
         logger.info("Importing Excel file %s from sheet %s", file_path, sheet_name)
 
-        df = pd.read_excel(file_path, sheet_name=sheet_name, header=header_row, engine="openpyxl")
+        df = pd.read_excel(
+            file_path,
+            sheet_name=sheet_name,
+            header=header_row,
+            engine="openpyxl",
+        )
+
         if df.empty:
             return {
                 "sheet_name": sheet_name,
@@ -327,11 +430,18 @@ class ExcelImportService:
 
         for index, row in df.iterrows():
             excel_row_number = header_row + index + 2
+
             try:
-                record = self._build_record(row, mapping, source_filename or os.path.basename(file_path))
+                record = self._build_record(
+                    row=row,
+                    mapping=mapping,
+                    source_filename=source_filename or os.path.basename(file_path),
+                )
+
                 row_key = (record["dn_no"], record["material_no"])
                 if row_key in seen_keys:
                     continue
+
                 seen_keys.add(row_key)
                 records.append(record)
             except ExcelImportServiceError as exc:
@@ -348,12 +458,19 @@ class ExcelImportService:
             "errors": errors[:50],
         }
 
-    def _build_record(self, row: pd.Series, mapping: Dict[str, Any], source_filename: str) -> Dict[str, Any]:
+    def _build_record(
+        self,
+        row: pd.Series,
+        mapping: Dict[str, Any],
+        source_filename: str,
+    ) -> Dict[str, Any]:
+        """Build one database-ready record from one Excel row."""
         dn_no = normalize_dn(row.get(mapping["dn_no"]))
         material_no = normalize_string(row.get(mapping["material_no"]))
 
         if not dn_no:
             raise ExcelImportServiceError("DN NO is required.")
+
         if not material_no:
             raise ExcelImportServiceError("Material NO is required.")
 
@@ -390,6 +507,7 @@ class ExcelImportService:
         return {key: value for key, value in record.items() if key in self.table_columns}
 
     def _upsert_records(self, records: List[Dict[str, Any]]) -> int:
+        """Bulk upsert records using PostgreSQL ON CONFLICT."""
         if not records:
             return 0
 
@@ -398,22 +516,29 @@ class ExcelImportService:
 
         for start in range(0, len(records), self.batch_size):
             batch = records[start : start + self.batch_size]
+
             stmt = insert(self.table).values(batch)
             update_fields = {
                 column.name: getattr(stmt.excluded, column.name)
                 for column in self.table.columns
-                if column.name not in {"dn_no", "material_no"} | protected_fields
+                if column.name not in ({"dn_no", "material_no"} | protected_fields)
             }
+
             stmt = stmt.on_conflict_do_update(
                 index_elements=["dn_no", "material_no"],
                 set_=update_fields,
             )
+
             result = self.db.execute(stmt)
             total += result.rowcount or 0
 
         self.db.commit()
         return total
 
+
+# =====================================================================================================
+# BLOCK 10: PUBLIC ENTRY POINT
+# =====================================================================================================
 
 def import_delivery_excel(
     db: Session,
@@ -435,3 +560,16 @@ def import_delivery_excel(
         source_filename=source_filename,
         sheet_name=sheet_name,
     )
+
+
+# =====================================================================================================
+# BLOCK 11: EXPORTED SYMBOLS
+# =====================================================================================================
+
+__all__ = [
+    "ExcelImportService",
+    "ExcelImportServiceError",
+    "WorksheetNotFoundError",
+    "ColumnMappingError",
+    "import_delivery_excel",
+]
