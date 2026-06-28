@@ -1,8 +1,8 @@
 # ==========================================================
-# FILE: app/routes/webhook.py (v28.1 - SAME FLOW, BETTER FORMATTING)
+# FILE: app/routes/webhook.py (v28.2 - COMPLETE FIX)
 # ==========================================================
 # PURPOSE: WhatsApp Webhook Handler - ALWAYS Calls AI
-# VERSION: 28.1 - SAME FLOW, PROFESSIONAL DN FORMATTING
+# VERSION: 28.2 - FULL DN FORMATTING FIX
 # ==========================================================
 
 import json
@@ -59,7 +59,7 @@ _whatsapp_service = None
 _dn_analytics_service = None
 
 # ==========================================================
-# ✅ FIXED: AI PROVIDER SERVICE
+# AI PROVIDER SERVICE
 # ==========================================================
 
 def _get_ai_provider_service() -> Optional[Any]:
@@ -215,7 +215,7 @@ def is_duplicate_message(message_id: str, phone_number: str) -> bool:
     return False
 
 # ==========================================================
-# ✅ NEW: PROFESSIONAL WHATSAPP FORMATTER (ONLY ADDITION)
+# ✅ PROFESSIONAL WHATSAPP FORMATTER
 # ==========================================================
 
 def format_dn_response(data: Any) -> str:
@@ -427,34 +427,85 @@ def format_dn_response(data: Any) -> str:
 
 
 # ==========================================================
-# ✅ CHANGED: _ensure_string_response() - ONLY THIS FUNCTION CHANGED
+# ✅ UPDATED: _ensure_string_response() - COMPLETE FIX
 # ==========================================================
 
 def _ensure_string_response(response_data: Any) -> str:
     """
     Ensure response is always a string for WhatsApp.
     
-    ✅ ONLY CHANGE: Checks for DN data before using str()
-    ✅ Everything else uses original str() behavior
+    Handles:
+    - DNDashboard objects
+    - Dict with 'response' field (AI Provider format)
+    - Dict with 'data' field
+    - Dict with 'error' field
+    - Direct DNDashboard objects
+    - Lists of items
+    - Strings
+    - Everything else → str()
     """
     if response_data is None:
         return "No data available"
     
+    # Already a string
     if isinstance(response_data, str):
         return response_data
     
-    # ✅ NEW: Check if it's DN data
-    if isinstance(response_data, dict) and "dn_no" in response_data:
-        return format_dn_response(response_data)
+    # ============================================================
+    # ✅ HANDLE AI PROVIDER RESPONSE FORMAT
+    # ============================================================
+    if isinstance(response_data, dict):
+        # Check for 'response' field (AI Provider format)
+        if 'response' in response_data:
+            inner_response = response_data['response']
+            
+            # If inner_response is a DNDashboard object
+            if hasattr(inner_response, 'dn_no'):
+                return format_dn_response(inner_response)
+            
+            # If inner_response is a dict with dn_no
+            if isinstance(inner_response, dict) and 'dn_no' in inner_response:
+                return format_dn_response(inner_response)
+            
+            # If inner_response is something else, convert to string
+            return str(inner_response)
+        
+        # Check for 'data' field
+        if 'data' in response_data:
+            return format_dn_response(response_data['data'])
+        
+        # Check for 'error' field
+        if 'error' in response_data and response_data['error']:
+            return f"⚠️ {response_data['error']}"
+        
+        # If it's a DN data dict directly
+        if 'dn_no' in response_data:
+            return format_dn_response(response_data)
     
+    # ============================================================
+    # ✅ HANDLE DNDASHBOARD OBJECT
+    # ============================================================
     if hasattr(response_data, 'dn_no'):
         return format_dn_response(response_data)
     
-    # ✅ ORIGINAL BEHAVIOR: Everything else uses str()
+    # ============================================================
+    # ✅ HANDLE LIST
+    # ============================================================
+    if isinstance(response_data, list):
+        if response_data and hasattr(response_data[0], 'dn_no'):
+            results = []
+            for item in response_data[:5]:
+                results.append(format_dn_response(item))
+            return "\n\n".join(results)
+        return str(response_data)
+    
+    # ============================================================
+    # ✅ FALLBACK: Everything else
+    # ============================================================
     return str(response_data)
 
 # ==========================================================
-# WEBHOOK VERIFICATION (GET) - UNCHANGED
+# WEBHOOK VERIFICATION (GET)
 # ==========================================================
 
 @router.get("/")
@@ -498,7 +549,7 @@ async def verify_webhook(
         )
 
 # ==========================================================
-# WEBHOOK MESSAGE HANDLER (POST) - UNCHANGED
+# WEBHOOK MESSAGE HANDLER (POST)
 # ==========================================================
 
 @router.post("/")
@@ -620,7 +671,7 @@ async def handle_webhook(
         )
 
 # ==========================================================
-# PROCESS MESSAGE WITH AI - UNCHANGED
+# PROCESS MESSAGE WITH AI
 # ==========================================================
 
 async def process_message_with_ai(
@@ -658,7 +709,7 @@ async def process_message_with_ai(
             
             logger.info(f"[{request_id}] ✅ AI response received")
             
-            # ✅ CHANGED: _ensure_string_response() now formats DN data
+            # ✅ CHANGED: _ensure_string_response() now handles all cases
             response_text = _ensure_string_response(response)
             
             # Ensure it's not empty
@@ -691,7 +742,7 @@ async def process_message_with_ai(
             logger.error(f"[{request_id}] ❌ Failed to send error response")
 
 # ==========================================================
-# MEDIA MESSAGE HANDLERS - UNCHANGED
+# MEDIA MESSAGE HANDLERS
 # ==========================================================
 
 async def process_audio_message(
@@ -725,7 +776,7 @@ async def process_location_message(
         logger.error(f"[{request_id}] ❌ Location processing error: {e}")
 
 # ==========================================================
-# SEND WHATSAPP RESPONSE - UNCHANGED
+# SEND WHATSAPP RESPONSE
 # ==========================================================
 
 async def send_whatsapp_response(
@@ -769,7 +820,7 @@ async def send_whatsapp_response(
         return False
 
 # ==========================================================
-# STATUS ENDPOINTS - UNCHANGED
+# STATUS ENDPOINTS
 # ==========================================================
 
 @router.get("/ping")
@@ -777,7 +828,7 @@ async def webhook_ping() -> JSONResponse:
     ai = _get_ai_provider_service()
     return JSONResponse(content={
         "ping": "pong",
-        "webhook_version": "28.1",
+        "webhook_version": "28.2",
         "architecture": "v16.0 (Built-in Intent Detection)",
         "timestamp": datetime.now().isoformat(),
         "services": {
@@ -795,7 +846,7 @@ async def webhook_health() -> JSONResponse:
     ai = _get_ai_provider_service()
     return JSONResponse(content={
         "status": "healthy" if ai else "degraded",
-        "webhook_version": "28.1",
+        "webhook_version": "28.2",
         "architecture": "v16.0 (Built-in Intent Detection)",
         "timestamp": datetime.now().isoformat(),
         "services": {
@@ -809,7 +860,7 @@ async def webhook_health() -> JSONResponse:
     })
 
 # ==========================================================
-# DIAGNOSTIC ENDPOINT - UNCHANGED
+# DIAGNOSTIC ENDPOINT
 # ==========================================================
 
 @router.get("/test-dn")
@@ -841,11 +892,11 @@ async def test_dn_lookup(dn: str = Query(..., description="DN number to test")):
         )
 
 # ==========================================================
-# INITIALIZATION - UNCHANGED
+# INITIALIZATION
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("🌐 WEBHOOK ROUTER v28.1 - SAME FLOW, BETTER FORMATTING")
+logger.info("🌐 WEBHOOK ROUTER v28.2 - COMPLETE FIX")
 logger.info("=" * 70)
 
 logger.info("🚀 Pre-initializing AI Provider Service...")
@@ -888,7 +939,7 @@ logger.info("   📌 ARCHITECTURE: v16.0 (Built-in Intent Detection)")
 logger.info("   📌 AI Provider: v5.0 (NO ai_query_service.py)")
 logger.info("   📌 Routing: IntentDetectionEngine (built-in)")
 logger.info("   📌 DN Formatting: ✅ Professional Formatter")
-logger.info("   📌 Response Formatting: ✅ ALWAYS string")
+logger.info("   📌 Response Formatting: ✅ COMPLETE FIX")
 logger.info("   📌 FLOW: ✅ EXACTLY SAME AS BEFORE")
 logger.info("")
 logger.info("=" * 70)
