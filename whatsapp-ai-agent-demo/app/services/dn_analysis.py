@@ -1,6 +1,6 @@
 # =====================================================================================================
 # FILE: app/services/dn_analysis.py
-# VERSION: v17.0 - OPTIMIZED FOR SPEED & BEAUTIFUL WHATSAPP
+# VERSION: v15.0 - FIXED WHATSAPP FORMATTER
 # PURPOSE: DN Analytics Service - Enterprise Grade PostgreSQL Integration
 # =====================================================================================================
 
@@ -8,8 +8,8 @@ import logging
 from typing import Dict, List, Optional, Any, Tuple, Union
 from datetime import datetime, date, timedelta
 from decimal import Decimal, InvalidOperation
-from dataclasses import dataclass, field, asdict
-from sqlalchemy import text, inspect, exc, Index
+from dataclasses import dataclass, field
+from sqlalchemy import text, inspect, exc
 from sqlalchemy.orm import Session
 from contextlib import contextmanager
 import threading
@@ -17,8 +17,6 @@ import re
 import traceback
 import time
 import os
-import json
-import hashlib
 from functools import lru_cache, wraps
 
 # =====================================================================================================
@@ -44,7 +42,7 @@ CONNECTION_RETRY_COUNT = int(os.environ.get("DN_CONNECTION_RETRY", "3"))
 QUERY_TIMEOUT = int(os.environ.get("DN_QUERY_TIMEOUT", "30"))
 
 # =====================================================================================================
-# BLOCK 2: DATA CLASSES (ALL ATTRIBUTES PRESERVED)
+# BLOCK 2: DATA CLASSES
 # =====================================================================================================
 
 @dataclass
@@ -80,7 +78,7 @@ class DNAggregate:
     good_issue_date: Optional[date] = None
     pod_date: Optional[date] = None
 
-    # Products (aggregated - no duplicates)
+    # Products
     products: List[Dict[str, Any]] = field(default_factory=list)
 
     # Source
@@ -100,13 +98,10 @@ class DNAggregate:
     pod_status: str = "Unknown"
     pending_flag: bool = True
     pending_flag_text: str = "⚠️ Yes"
-    
-    # AI Insight
-    ai_insight: str = ""
 
 @dataclass
 class DNDashboard:
-    """Complete DN Dashboard - ALL ATTRIBUTES PRESERVED."""
+    """Complete DN Dashboard."""
     # Core
     dn_no: str
     dealer_name: str
@@ -158,18 +153,15 @@ class DNDashboard:
     pending_flag: bool
     pending_flag_text: str
 
-    # Products (aggregated - no duplicates)
+    # Products
     products: List[Dict[str, Any]]
 
-    # Source (preserved for admin, hidden from WhatsApp)
+    # Source
     source_file: Optional[str]
     upload_batch_id: Optional[str]
     imported_at: Optional[str]
     created_at: Optional[str]
     updated_at: Optional[str]
-    
-    # AI Insight
-    ai_insight: str
 
 # =====================================================================================================
 # BLOCK 3: HELPER FUNCTIONS
@@ -359,6 +351,7 @@ def handle_errors(func):
             if self._debug_mode:
                 logger.error(traceback.format_exc())
 
+            # Return error response
             return {
                 "success": False,
                 "error": str(e),
@@ -367,26 +360,27 @@ def handle_errors(func):
     return wrapper
 
 # =====================================================================================================
-# BLOCK 5: DNAnalysisService CLASS - OPTIMIZED
+# BLOCK 5: DNAnalysisService CLASS
 # =====================================================================================================
 
 class DNAnalysisService:
     """
     DN Analytics Service - Enterprise Grade PostgreSQL Integration.
 
-    v17.0 - OPTIMIZED FOR SPEED & BEAUTIFUL WHATSAPP
-    ✅ PostgreSQL aggregation (no Python processing)
-    ✅ Single query for dashboard
-    ✅ Dedicated products query with aggregation
-    ✅ 5x speed with intelligent caching
-    ✅ Beautiful WhatsApp formatting
-    ✅ All attributes preserved
+    v15.0 - FIXED WHATSAPP FORMATTER
+    ✅ PostgreSQL is the ONLY source of truth
+    ✅ Decimal for revenue calculations
+    ✅ Safe type conversions
+    ✅ Comprehensive validation
+    ✅ Performance optimized
+    ✅ 100% backward compatible
+    ✅ WhatsApp formatter fixed
     """
 
     def __init__(self):
         """Initialize DN Analytics Service."""
         self._service_name = "dn_analysis"
-        self._version = "17.0"
+        self._version = "15.0"
         self._status = "INITIALIZING"
         self._query_count = 0
         self._total_execution_time_ms = 0
@@ -395,25 +389,12 @@ class DNAnalysisService:
         self._production_mode = PRODUCTION_MODE
         self._schema_validated = False
         self._initialized = False
-        
-        # ============================================================
-        # 5X SPEED: Dual cache (dashboard + formatted)
-        # ============================================================
-        self._dashboard_cache = {}
-        self._formatted_cache = {}
-        self._cache_ttl = {}
-        self._cache_hits = 0
-        self._cache_misses = 0
-        self._cache_ttl_seconds = 300  # 5 minutes
-
-        # Ensure indexes exist
-        self._ensure_indexes()
 
         logger.info(f"🔧 DNAnalysisService v{self._version} initializing...")
         logger.info(f"📋 Debug Mode: {'ENABLED' if self._debug_mode else 'DISABLED'}")
-        logger.info(f"⚡ Cache TTL: {self._cache_ttl_seconds}s")
 
         try:
+            # Test connection
             test_result = self._test_connection()
             if test_result:
                 self._status = "READY"
@@ -428,45 +409,7 @@ class DNAnalysisService:
             logger.error(traceback.format_exc())
 
     # ==================================================================================================
-    # BLOCK 6: DATABASE INDEX MANAGEMENT
-    # ==================================================================================================
-
-    def _ensure_indexes(self):
-        """Create indexes for fast lookups if they don't exist."""
-        try:
-            with self._get_session_context() as session:
-                # Check if indexes exist
-                indexes_to_create = [
-                    ("idx_delivery_reports_dn_no", "dn_no"),
-                    ("idx_delivery_reports_dn_material", "dn_no, material_no"),
-                    ("idx_delivery_reports_good_issue", "good_issue_date"),
-                    ("idx_delivery_reports_pod_date", "pod_date"),
-                    ("idx_delivery_reports_customer", "customer_name"),
-                    ("idx_delivery_reports_warehouse", "warehouse"),
-                    ("idx_delivery_reports_city", "ship_to_city"),
-                ]
-                
-                for idx_name, columns in indexes_to_create:
-                    try:
-                        # Check if index exists
-                        result = session.execute(
-                            text("SELECT 1 FROM pg_indexes WHERE indexname = :idx_name"),
-                            {"idx_name": idx_name}
-                        )
-                        if not result.fetchone():
-                            session.execute(
-                                text(f"CREATE INDEX {idx_name} ON delivery_reports ({columns})")
-                            )
-                            logger.info(f"✅ Created index: {idx_name}")
-                    except Exception as e:
-                        logger.warning(f"⚠️ Could not create index {idx_name}: {e}")
-                
-                session.commit()
-        except Exception as e:
-            logger.warning(f"⚠️ Index creation failed: {e}")
-
-    # ==================================================================================================
-    # BLOCK 7: DATABASE CONNECTION METHODS
+    # BLOCK 6: DATABASE CONNECTION METHODS
     # ==================================================================================================
 
     def _test_connection(self) -> bool:
@@ -532,6 +475,7 @@ class DNAnalysisService:
 
             if self._debug_mode:
                 logger.debug(f"📝 Executing SQL: {query[:200]}...")
+                logger.debug(f"📝 Parameters: {params}")
 
             result = session.execute(text(query), params or {})
             columns = result.keys()
@@ -553,122 +497,200 @@ class DNAnalysisService:
                 session.close()
 
     # ==================================================================================================
-    # BLOCK 8: OPTIMIZED QUERIES
+    # BLOCK 7: DN SEARCH ENGINE
     # ==================================================================================================
 
-    def _build_dashboard_query(self) -> str:
-        """Build optimized single-query dashboard retrieval."""
-        return """
-        WITH dn_aggregated AS (
-            SELECT
-                dn_no,
-                -- Core fields
-                MAX(customer_name) AS dealer_name,
-                MAX(dealer_code) AS dealer_code,
-                MAX(customer_code) AS customer_code,
-                MAX(warehouse) AS warehouse,
-                MAX(warehouse_code) AS warehouse_code,
-                MAX(ship_to_city) AS city,
-                MAX(delivery_location) AS delivery_location,
-                MAX(sales_office) AS sales_office,
-                MAX(sales_manager) AS sales_manager,
-                MAX(division) AS division,
-                MAX(order_type) AS order_type,
-                MAX(dn_work) AS dn_work,
-                
-                -- Metrics (calculated in SQL)
-                SUM(dn_qty) AS total_units,
-                SUM(dn_amount) AS total_revenue,
-                COUNT(DISTINCT material_no) AS material_count,
-                COUNT(DISTINCT customer_model) AS model_count,
-                COUNT(*) AS row_count,
-                
-                -- Dates
-                MIN(dn_create_date) AS dn_create_date,
-                MAX(good_issue_date) AS good_issue_date,
-                MAX(pod_date) AS pod_date,
-                
-                -- Status
-                MAX(pending_flag) AS pending_flag,
-                MAX(delivery_status) AS delivery_status,
-                MAX(pgi_status) AS pgi_status,
-                MAX(pod_status) AS pod_status,
-                
-                -- Source
-                MAX(source_file) AS source_file,
-                MAX(upload_batch_id) AS upload_batch_id,
-                MAX(imported_at) AS imported_at,
-                MAX(created_at) AS created_at,
-                MAX(updated_at) AS updated_at
-                
-            FROM delivery_reports
-            WHERE CAST(dn_no AS TEXT) = :dn_no
-            GROUP BY dn_no
-        )
-        SELECT * FROM dn_aggregated
-        """
-
-    def _build_products_query(self) -> str:
-        """Build optimized products query with aggregation."""
+    def _build_search_query(self) -> str:
+        """Build optimized search query."""
         return """
         SELECT
-            customer_model AS model,
-            material_no,
+            id,
+            dn_no,
+            dn_work,
+            order_type,
             division,
-            SUM(dn_qty) AS quantity,
-            SUM(dn_amount) AS revenue,
-            MAX(warehouse) AS warehouse,
-            MAX(ship_to_city) AS city,
-            MAX(storage_location) AS storage_location,
-            CASE 
-                WHEN SUM(dn_qty) > 0 THEN SUM(dn_amount) / SUM(dn_qty)
-                ELSE 0
-            END AS average_price
+            customer_code,
+            dealer_code,
+            customer_name,
+            customer_model,
+            material_no,
+            storage_location,
+            sales_office,
+            sales_manager,
+            ship_to_city,
+            warehouse,
+            warehouse_code,
+            delivery_location,
+            dn_qty,
+            dn_amount,
+            dn_create_date,
+            good_issue_date,
+            pod_date,
+            remarks,
+            delivery_status,
+            pgi_status,
+            pod_status,
+            pending_flag,
+            source_file,
+            upload_batch_id,
+            imported_at,
+            created_at,
+            updated_at
         FROM delivery_reports
         WHERE CAST(dn_no AS TEXT) = :dn_no
-        GROUP BY customer_model, material_no, division
-        ORDER BY customer_model ASC
+        ORDER BY customer_model ASC, id ASC
         """
 
-    def _get_aggregated_data(self, dn_no: str) -> Optional[Dict[str, Any]]:
-        """Get aggregated dashboard data in a single query."""
-        query = self._build_dashboard_query()
-        results = self._execute_query(query, {"dn_no": dn_no})
-        return results[0] if results else None
+    def _build_fallback_query(self) -> str:
+        """Build fallback query for similar DNs."""
+        return """
+        SELECT DISTINCT dn_no
+        FROM delivery_reports
+        WHERE CAST(dn_no AS TEXT) LIKE '%' || :dn_no || '%'
+        LIMIT 10
+        """
 
-    def _get_products(self, dn_no: str) -> List[Dict[str, Any]]:
-        """Get aggregated products in a single query."""
-        query = self._build_products_query()
-        return self._execute_query(query, {"dn_no": dn_no})
+    @handle_errors
+    def get_dn_complete_info(self, dn_no: str) -> Dict[str, Any]:
+        """
+        Fetch COMPLETE information for a DN.
+
+        Returns:
+            success: bool
+            data: DNDashboard
+            all_rows: List[Dict]
+            error: str (if failed)
+        """
+        logger.info(f"🔍 Fetching complete info for DN: '{dn_no}'")
+
+        # Validate DN
+        is_valid, normalized_dn, error_msg = validate_dn(dn_no)
+        if not is_valid:
+            logger.warning(f"❌ Invalid DN: {error_msg}")
+            return {"success": False, "error": error_msg}
+
+        logger.info(f" ├── Normalized: '{normalized_dn}'")
+
+        # Get ALL rows for this DN
+        query = self._build_search_query()
+        all_rows = self._execute_query(query, {"dn_no": normalized_dn})
+
+        if not all_rows:
+            # Try fallback
+            fallback_results = self._execute_query(
+                self._build_fallback_query(),
+                {"dn_no": normalized_dn}
+            )
+            similar_dns = [str(r.get('dn_no', '')) for r in fallback_results if r.get('dn_no')]
+
+            if similar_dns:
+                return {
+                    "success": False,
+                    "error": f"DN {dn_no} not found",
+                    "similar_dns": similar_dns[:5],
+                    "message": f"DN not found. Did you mean: {', '.join(similar_dns[:3])}?"
+                }
+
+            return {"success": False, "error": f"DN {dn_no} not found"}
+
+        logger.info(f" ├── Found {len(all_rows)} rows for DN")
+
+        # Aggregate ALL data
+        aggregated = self._aggregate_dn_data(all_rows)
+
+        # Build complete dashboard
+        dashboard = self._build_dashboard(aggregated)
+
+        logger.info(f" ├── Materials: {dashboard.material_count}")
+        logger.info(f" ├── Models: {dashboard.model_count}")
+        logger.info(f" ├── Units: {dashboard.total_units}")
+        logger.info(f" ├── Revenue: PKR {dashboard.total_revenue:,.2f}")
+        logger.info(f" ├── Status: {dashboard.calculated_stage}")
+        logger.info(f"✅ Complete info fetched successfully")
+
+        return {"success": True, "data": dashboard, "all_rows": all_rows}
 
     # ==================================================================================================
-    # BLOCK 9: DASHBOARD BUILDER - OPTIMIZED
+    # BLOCK 8: AGGREGATION ENGINE
     # ==================================================================================================
 
-    def _build_dashboard_from_aggregated(self, aggregated: Dict[str, Any], products: List[Dict[str, Any]]) -> DNDashboard:
-        """Build DNDashboard from aggregated data (single pass)."""
-        
-        # Calculate metrics
-        total_units = safe_int(aggregated.get('total_units', 0))
-        total_revenue = safe_decimal(aggregated.get('total_revenue', 0))
-        material_count = safe_int(aggregated.get('material_count', 0))
-        model_count = safe_int(aggregated.get('model_count', 0))
-        row_count = safe_int(aggregated.get('row_count', 0))
-        
-        # Dates
-        dn_create_date = safe_date(aggregated.get('dn_create_date'))
-        good_issue_date = safe_date(aggregated.get('good_issue_date'))
-        pod_date = safe_date(aggregated.get('pod_date'))
-        
-        # Calculate aging (once)
+    def _aggregate_dn_data(self, rows: List[Dict[str, Any]]) -> DNAggregate:
+        """Aggregate ALL rows for a DN."""
+        if not rows:
+            return DNAggregate(dn_no="")
+
+        first_row = rows[0]
+
+        # Collections
+        unique_models = set()
+        unique_materials = set()
+        products = []
+        total_units = 0
+        total_revenue = Decimal(0)
+        dn_create_dates = []
+        good_issue_dates = []
+        pod_dates = []
+
+        for row in rows:
+            # Models
+            model = safe_string(row.get('customer_model'))
+            if model:
+                unique_models.add(model)
+
+            # Materials
+            material = safe_string(row.get('material_no'))
+            if material:
+                unique_materials.add(material)
+
+            # Products
+            if model:
+                qty = safe_int(row.get('dn_qty'))
+                revenue = safe_decimal(row.get('dn_amount'))
+                total_units += qty
+                total_revenue += revenue
+
+                products.append({
+                    'model': model,
+                    'material_no': safe_string(row.get('material_no')) or 'N/A',
+                    'division': safe_string(row.get('division')) or 'Unknown',
+                    'quantity': qty,
+                    'revenue': float(revenue),
+                    'warehouse': safe_string(row.get('warehouse')) or 'Unknown',
+                    'city': safe_string(row.get('ship_to_city')) or 'Unknown',
+                    'storage_location': safe_string(row.get('storage_location')) or 'N/A',
+                    'average_price': float(revenue / qty) if qty > 0 else 0
+                })
+
+            # Dates
+            if row.get('dn_create_date'):
+                dn_create_dates.append(row.get('dn_create_date'))
+            if row.get('good_issue_date'):
+                good_issue_dates.append(row.get('good_issue_date'))
+            if row.get('pod_date'):
+                pod_dates.append(row.get('pod_date'))
+
+        # Sort products
+        products.sort(key=lambda x: x.get('model', ''))
+
+        # Calculate averages
+        material_count = len(unique_materials)
+        average_revenue = total_revenue / len(rows) if rows else Decimal(0)
+        average_unit_price = total_revenue / total_units if total_units > 0 else Decimal(0)
+
+        # Determine dates
+        dn_create_date = safe_date(min(dn_create_dates)) if dn_create_dates else None
+        good_issue_date = safe_date(max(good_issue_dates)) if good_issue_dates else None
+        pod_date = safe_date(max(pod_dates)) if pod_dates else None
+
+        # Calculate aging
         delivery_aging = calculate_days(dn_create_date, good_issue_date)
         pod_aging = calculate_days(good_issue_date, pod_date)
         total_cycle = calculate_days(dn_create_date, pod_date)
-        
+
         # Determine status
         pgi_exists = good_issue_date is not None
         pod_exists = pod_date is not None
-        
+
         if pod_exists and pgi_exists:
             stage = "Delivered"
             emoji = "✅"
@@ -676,7 +698,6 @@ class DNAnalysisService:
             pod_status = "Completed"
             pending = False
             pending_text = "No"
-            insight = "Shipment completed successfully within the expected delivery cycle."
         elif pgi_exists and not pod_exists:
             stage = "In Transit"
             emoji = "🚚"
@@ -684,7 +705,6 @@ class DNAnalysisService:
             pod_status = "Pending"
             pending = True
             pending_text = "Yes"
-            insight = "Shipment is in transit. POD has not yet been received."
         else:
             stage = "Pending Dispatch"
             emoji = "⏳"
@@ -692,429 +712,119 @@ class DNAnalysisService:
             pod_status = "Pending"
             pending = True
             pending_text = "Yes"
-            insight = "Shipment has not yet been PGI'd. Warehouse action is required."
-        
-        # Format products for DNDashboard
-        formatted_products = []
-        for p in products:
-            formatted_products.append({
-                'model': safe_string(p.get('model')) or 'Unknown',
-                'material_no': safe_string(p.get('material_no')) or 'N/A',
-                'division': safe_string(p.get('division')) or 'Unknown',
-                'quantity': safe_int(p.get('quantity', 0)),
-                'revenue': float(safe_decimal(p.get('revenue', 0))),
-                'warehouse': safe_string(p.get('warehouse')) or 'Unknown',
-                'city': safe_string(p.get('city')) or 'Unknown',
-                'storage_location': safe_string(p.get('storage_location')) or 'N/A',
-                'average_price': float(safe_decimal(p.get('average_price', 0)))
-            })
-        
-        # Build DNDashboard (ALL ATTRIBUTES PRESERVED)
-        return DNDashboard(
-            # Core
-            dn_no=safe_string(aggregated.get('dn_no')) or "",
-            dealer_name=safe_string(aggregated.get('dealer_name')) or "Unknown",
-            dealer_code=safe_string(aggregated.get('dealer_code')),
-            customer_name=safe_string(aggregated.get('dealer_name')) or "Unknown",
-            customer_code=safe_string(aggregated.get('customer_code')),
-            
-            # Location
-            warehouse=safe_string(aggregated.get('warehouse')) or "Unknown",
-            warehouse_code=safe_string(aggregated.get('warehouse_code')),
-            city=safe_string(aggregated.get('city')) or "Unknown",
-            delivery_location=safe_string(aggregated.get('delivery_location')),
-            
-            # Business
-            sales_manager=safe_string(aggregated.get('sales_manager')),
-            sales_office=safe_string(aggregated.get('sales_office')),
-            division=safe_string(aggregated.get('division')),
-            order_type=safe_string(aggregated.get('order_type')),
-            dn_work=safe_string(aggregated.get('dn_work')),
-            
-            # Metrics
+
+        return DNAggregate(
+            dn_no=safe_string(first_row.get('dn_no')) or "",
+            dealer_name=safe_string(first_row.get('customer_name')) or "Unknown",
+            dealer_code=safe_string(first_row.get('dealer_code')),
+            customer_code=safe_string(first_row.get('customer_code')),
+            warehouse=safe_string(first_row.get('warehouse')) or "Unknown",
+            warehouse_code=safe_string(first_row.get('warehouse_code')),
+            city=safe_string(first_row.get('ship_to_city')) or "Unknown",
+            delivery_location=safe_string(first_row.get('delivery_location')),
+            sales_office=safe_string(first_row.get('sales_office')),
+            sales_manager=safe_string(first_row.get('sales_manager')),
+            division=safe_string(first_row.get('division')),
+            order_type=safe_string(first_row.get('order_type')),
+            dn_work=safe_string(first_row.get('dn_work')),
             total_units=total_units,
             total_revenue=total_revenue,
             material_count=material_count,
-            model_count=model_count,
-            row_count=row_count,
-            average_revenue=total_revenue / row_count if row_count > 0 else Decimal(0),
-            average_unit_price=total_revenue / total_units if total_units > 0 else Decimal(0),
-            
-            # Dates (formatted once)
-            dn_create_date=format_date(dn_create_date),
-            good_issue_date=format_date(good_issue_date),
-            pod_date=format_date(pod_date),
-            
-            # Aging (formatted once)
+            model_count=len(unique_models),
+            row_count=len(rows),
+            average_revenue=average_revenue,
+            average_unit_price=average_unit_price,
+            dn_create_date=dn_create_date,
+            good_issue_date=good_issue_date,
+            pod_date=pod_date,
+            products=products,
+            source_file=safe_string(first_row.get('source_file')),
+            upload_batch_id=safe_string(first_row.get('upload_batch_id')),
+            imported_at=first_row.get('imported_at'),
+            created_at=first_row.get('created_at'),
+            updated_at=first_row.get('updated_at'),
             delivery_aging_days=delivery_aging,
             pod_aging_days=pod_aging,
             total_cycle_days=total_cycle,
-            delivery_aging_text=format_aging_text(delivery_aging),
-            pod_aging_text=format_aging_text(pod_aging),
-            total_cycle_text=format_aging_text(total_cycle),
-            
-            # Status
             calculated_stage=stage,
             calculated_emoji=emoji,
-            delivery_status=stage,
             pgi_status=pgi_status,
             pod_status=pod_status,
             pending_flag=pending,
-            pending_flag_text=pending_text,
-            
-            # Products (aggregated - no duplicates)
-            products=formatted_products,
-            
-            # Source (preserved for admin)
-            source_file=safe_string(aggregated.get('source_file')),
-            upload_batch_id=safe_string(aggregated.get('upload_batch_id')),
-            imported_at=format_date(aggregated.get('imported_at')),
-            created_at=format_date(aggregated.get('created_at')),
-            updated_at=format_date(aggregated.get('updated_at')),
-            
-            # AI Insight
-            ai_insight=insight
+            pending_flag_text=pending_text
         )
 
     # ==================================================================================================
-    # BLOCK 10: MAIN METHODS
+    # BLOCK 9: DASHBOARD BUILDER
     # ==================================================================================================
 
-    @handle_errors
-    def get_dn_complete_info(self, dn_no: str) -> Dict[str, Any]:
-        """
-        Fetch COMPLETE information for a DN.
-        Returns: success, data (DNDashboard), all_rows (for compatibility)
-        """
-        logger.info(f"🔍 Fetching complete info for DN: '{dn_no}'")
+    def _build_dashboard(self, aggregated: DNAggregate) -> DNDashboard:
+        """Build complete dashboard from aggregated data."""
+        return DNDashboard(
+            # Core
+            dn_no=aggregated.dn_no,
+            dealer_name=aggregated.dealer_name,
+            dealer_code=aggregated.dealer_code,
+            customer_name=aggregated.dealer_name,
+            customer_code=aggregated.customer_code,
 
-        is_valid, normalized_dn, error_msg = validate_dn(dn_no)
-        if not is_valid:
-            return {"success": False, "error": error_msg}
+            # Location
+            warehouse=aggregated.warehouse,
+            warehouse_code=aggregated.warehouse_code,
+            city=aggregated.city,
+            delivery_location=aggregated.delivery_location,
 
-        # Check cache for dashboard
-        cache_key = f"dashboard_{normalized_dn}"
-        if cache_key in self._dashboard_cache:
-            cache_age = (datetime.now() - self._cache_ttl.get(cache_key, datetime.min)).total_seconds()
-            if cache_age < self._cache_ttl_seconds:
-                self._cache_hits += 1
-                logger.info(f"⚡ Dashboard CACHE HIT for DN {normalized_dn}")
-                return {"success": True, "data": self._dashboard_cache[cache_key], "all_rows": []}
+            # Business
+            sales_manager=aggregated.sales_manager,
+            sales_office=aggregated.sales_office,
+            division=aggregated.division,
+            order_type=aggregated.order_type,
+            dn_work=aggregated.dn_work,
 
-        self._cache_misses += 1
-        
-        # Get aggregated data (single query)
-        aggregated = self._get_aggregated_data(normalized_dn)
-        if not aggregated:
-            return {"success": False, "error": f"DN {dn_no} not found"}
+            # Metrics
+            total_units=aggregated.total_units,
+            total_revenue=aggregated.total_revenue,
+            material_count=aggregated.material_count,
+            model_count=aggregated.model_count,
+            row_count=aggregated.row_count,
+            average_revenue=aggregated.average_revenue,
+            average_unit_price=aggregated.average_unit_price,
 
-        # Get products (single query, aggregated)
-        products = self._get_products(normalized_dn)
+            # Dates
+            dn_create_date=format_date(aggregated.dn_create_date),
+            good_issue_date=format_date(aggregated.good_issue_date),
+            pod_date=format_date(aggregated.pod_date),
 
-        # Build dashboard (single pass)
-        dashboard = self._build_dashboard_from_aggregated(aggregated, products)
+            # Aging
+            delivery_aging_days=aggregated.delivery_aging_days,
+            pod_aging_days=aggregated.pod_aging_days,
+            total_cycle_days=aggregated.total_cycle_days,
+            delivery_aging_text=format_aging_text(aggregated.delivery_aging_days),
+            pod_aging_text=format_aging_text(aggregated.pod_aging_days),
+            total_cycle_text=format_aging_text(aggregated.total_cycle_days),
 
-        # Cache dashboard
-        self._dashboard_cache[cache_key] = dashboard
-        self._cache_ttl[cache_key] = datetime.now()
+            # Status
+            calculated_stage=aggregated.calculated_stage,
+            calculated_emoji=aggregated.calculated_emoji,
+            delivery_status=aggregated.calculated_stage,
+            pgi_status=aggregated.pgi_status,
+            pod_status=aggregated.pod_status,
+            pending_flag=aggregated.pending_flag,
+            pending_flag_text=aggregated.pending_flag_text,
 
-        return {"success": True, "data": dashboard, "all_rows": []}
+            # Products
+            products=aggregated.products,
 
-    # ==================================================================================================
-    # BLOCK 11: BEAUTIFUL WHATSAPP FORMATTER
-    # ==================================================================================================
-
-    def format_dn_dashboard(self, dashboard_data: Any) -> str:
-        """
-        Format DN dashboard for WhatsApp with beautiful styling.
-        Matches the exact format you requested.
-        """
-        # Extract data
-        try:
-            if hasattr(dashboard_data, '__dataclass_fields__'):
-                d = {}
-                for field_name in dashboard_data.__dataclass_fields__:
-                    value = getattr(dashboard_data, field_name)
-                    if isinstance(value, Decimal):
-                        value = float(value)
-                    if isinstance(value, (date, datetime)):
-                        value = value.strftime('%Y-%m-%d')
-                    d[field_name] = value
-            elif isinstance(dashboard_data, dict):
-                if 'data' in dashboard_data:
-                    data = dashboard_data['data']
-                    if hasattr(data, '__dataclass_fields__'):
-                        return self.format_dn_dashboard(data)
-                    d = data
-                else:
-                    d = dashboard_data
-            else:
-                return "❌ *Invalid Data Format*"
-        except Exception as e:
-            logger.error(f"Error extracting data: {e}")
-            return f"❌ *Error Formatting Report*\n\n{str(e)}"
-
-        lines = []
-        
-        # ----- HEADER -----
-        lines.append("📦 *DELIVERY NOTE DETAILS*")
-        lines.append("━" * 30)
-        lines.append("")
-        
-        # ----- DEALER -----
-        dn_no = d.get('dn_no', 'N/A')
-        lines.append(f"🆔 *DN Number*")
-        lines.append(f"{dn_no}")
-        lines.append("")
-        
-        dealer_name = d.get('dealer_name') or d.get('customer_name', 'Unknown')
-        lines.append(f"👤 *Dealer*")
-        lines.append(f"{dealer_name}")
-        lines.append("")
-        
-        dealer_code = d.get('dealer_code')
-        if dealer_code and dealer_code != 'None':
-            lines.append(f"🏪 *Dealer Code*")
-            lines.append(f"{dealer_code}")
-            lines.append("")
-        
-        customer_code = d.get('customer_code')
-        if customer_code and customer_code != 'None':
-            lines.append(f"🏢 *Customer Code*")
-            lines.append(f"{customer_code}")
-            lines.append("")
-        
-        # ----- LOCATION -----
-        city = d.get('city', 'Unknown')
-        if city and city != 'Unknown':
-            lines.append(f"📍 *City*")
-            lines.append(f"{city}")
-            lines.append("")
-        
-        warehouse = d.get('warehouse', 'Unknown')
-        warehouse_code = d.get('warehouse_code')
-        if warehouse_code and warehouse_code != 'None':
-            lines.append(f"🏭 *Warehouse*")
-            lines.append(f"{warehouse} ({warehouse_code})")
-        else:
-            lines.append(f"🏭 *Warehouse*")
-            lines.append(f"{warehouse}")
-        lines.append("")
-        
-        # ----- SUMMARY -----
-        lines.append("📊 *Summary*")
-        lines.append("")
-        
-        total_units = d.get('total_units', 0)
-        lines.append(f"📦 Units : {total_units}")
-        
-        total_revenue = d.get('total_revenue', 0)
-        if total_revenue:
-            try:
-                revenue_val = float(total_revenue)
-                lines.append(f"💰 Revenue : PKR {revenue_val:,.2f}")
-            except:
-                pass
-        lines.append("")
-        
-        division = d.get('division')
-        if division and division != 'None':
-            lines.append(f"📂 Division : {division}")
-        
-        order_type = d.get('order_type')
-        if order_type and order_type != 'None':
-            lines.append(f"📋 Order Type : {order_type}")
-        lines.append("")
-        
-        # ----- TIMELINE -----
-        lines.append("📅 *Timeline*")
-        lines.append("")
-        
-        dn_create_date = d.get('dn_create_date', 'N/A')
-        lines.append(f"📝 Created : {dn_create_date}")
-        
-        good_issue_date = d.get('good_issue_date', 'N/A')
-        lines.append(f"🚚 PGI : {good_issue_date}")
-        
-        pod_date = d.get('pod_date', 'N/A')
-        lines.append(f"📬 POD : {pod_date}")
-        lines.append("")
-        
-        # ----- PERFORMANCE -----
-        lines.append("⏱ *Performance*")
-        lines.append("")
-        
-        delivery_aging = d.get('delivery_aging_text', 'N/A')
-        lines.append(f"📦 Delivery : {delivery_aging}")
-        
-        pod_aging = d.get('pod_aging_text', 'N/A')
-        lines.append(f"📬 POD : {pod_aging}")
-        
-        total_cycle = d.get('total_cycle_text', 'N/A')
-        lines.append(f"🔄 Total Cycle : {total_cycle}")
-        lines.append("")
-        
-        # ----- STATUS -----
-        lines.append("🚚 *Status*")
-        lines.append("")
-        
-        stage = d.get('calculated_stage', 'Unknown')
-        emoji = d.get('calculated_emoji', '❓')
-        lines.append(f"{emoji} Delivery : {stage}")
-        lines.append(f"⚡ PGI : {d.get('pgi_status', 'Unknown')}")
-        lines.append(f"📬 POD : {d.get('pod_status', 'Unknown')}")
-        lines.append(f"⏰ Pending : {d.get('pending_flag_text', 'Unknown')}")
-        lines.append("")
-        
-        # ----- PRODUCTS (Grouped - No Duplicates) -----
-        products = d.get('products', [])
-        if products and len(products) > 0:
-            lines.append("📦 *Products*")
-            lines.append("")
-            
-            # Products are already aggregated from SQL
-            for idx, product in enumerate(products[:10], 1):
-                model = product.get('model', 'Unknown')
-                qty = product.get('quantity', 0)
-                revenue_val = product.get('revenue', 0)
-                material_no = product.get('material_no', 'N/A')
-                
-                lines.append(f"{idx}. {model}")
-                if material_no and material_no != 'N/A':
-                    lines.append(f"   🏷️ Material: {material_no}")
-                lines.append(f"   📦 Qty: {qty}")
-                if revenue_val > 0:
-                    try:
-                        lines.append(f"   💰 Revenue: PKR {float(revenue_val):,.2f}")
-                    except:
-                        pass
-                lines.append("")
-            
-            if len(products) > 10:
-                remaining = len(products) - 10
-                lines.append(f"... and {remaining} more product(s)")
-                lines.append("")
-        
-        # ----- AI INSIGHT -----
-        ai_insight = d.get('ai_insight')
-        if ai_insight:
-            lines.append("💡 *AI Insight*")
-            lines.append(f"{ai_insight}")
-            lines.append("")
-        
-        # ----- FOOTER -----
-        lines.append("━" * 30)
-        lines.append(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-        lines.append("🤖 *AI Logistics Assistant*")
-        
-        return "\n".join(lines)
+            # Source
+            source_file=aggregated.source_file,
+            upload_batch_id=aggregated.upload_batch_id,
+            imported_at=format_date(aggregated.imported_at),
+            created_at=format_date(aggregated.created_at),
+            updated_at=format_date(aggregated.updated_at)
+        )
 
     # ==================================================================================================
-    # BLOCK 12: GET FORMATTED DN - 5X SPEED WITH DUAL CACHE
-    # ==================================================================================================
-
-    def get_formatted_dn(self, dn_no: str) -> Dict[str, Any]:
-        """
-        Get DN data formatted for WhatsApp with 5x speed caching.
-        
-        Uses dual caching:
-        1. Dashboard cache (raw data)
-        2. Formatted cache (final WhatsApp message)
-        """
-        try:
-            # ============================================================
-            # STEP 1: Check formatted cache (FASTEST)
-            # ============================================================
-            formatted_cache_key = f"formatted_{dn_no}"
-            if formatted_cache_key in self._formatted_cache:
-                cache_age = (datetime.now() - self._cache_ttl.get(formatted_cache_key, datetime.min)).total_seconds()
-                if cache_age < self._cache_ttl_seconds:
-                    self._cache_hits += 1
-                    logger.info(f"⚡ Formatted CACHE HIT for DN {dn_no}")
-                    return self._formatted_cache[formatted_cache_key]
-            
-            # ============================================================
-            # STEP 2: Get dashboard (from cache or DB)
-            # ============================================================
-            result = self.get_dn_complete_info(dn_no)
-            
-            if not result.get('success'):
-                return {
-                    'success': False,
-                    'error': result.get('error', 'DN not found'),
-                    'formatted_message': f"❌ *DN Not Found*\n\nDN {dn_no} could not be found."
-                }
-            
-            # ============================================================
-            # STEP 3: Format for WhatsApp
-            # ============================================================
-            formatted_message = self.format_dn_dashboard(result['data'])
-            
-            response = {
-                'success': True,
-                'formatted_message': formatted_message,
-                'data': result['data'],
-                'all_rows': result.get('all_rows', [])
-            }
-            
-            # ============================================================
-            # STEP 4: Cache the formatted response
-            # ============================================================
-            self._formatted_cache[formatted_cache_key] = response
-            self._cache_ttl[formatted_cache_key] = datetime.now()
-            
-            return response
-            
-        except Exception as e:
-            logger.error(f"Error in get_formatted_dn: {e}")
-            logger.error(traceback.format_exc())
-            return {
-                'success': False,
-                'error': str(e),
-                'formatted_message': f"❌ *Error*\n\n{str(e)}"
-            }
-
-    # ==================================================================================================
-    # BLOCK 13: CACHE MANAGEMENT
-    # ==================================================================================================
-
-    def clear_cache(self, dn_no: Optional[str] = None):
-        """Clear cache for a specific DN or all DNs."""
-        if dn_no:
-            keys_to_remove = [
-                f"dashboard_{dn_no}",
-                f"formatted_{dn_no}"
-            ]
-            for key in keys_to_remove:
-                if key in self._dashboard_cache:
-                    del self._dashboard_cache[key]
-                if key in self._formatted_cache:
-                    del self._formatted_cache[key]
-                if key in self._cache_ttl:
-                    del self._cache_ttl[key]
-            logger.info(f"🔄 Cleared cache for DN {dn_no}")
-        else:
-            self._dashboard_cache.clear()
-            self._formatted_cache.clear()
-            self._cache_ttl.clear()
-            logger.info("🔄 Cleared all cache")
-
-    def get_cache_stats(self) -> Dict[str, Any]:
-        """Get cache performance statistics."""
-        return {
-            "cache_enabled": True,
-            "cache_ttl_seconds": self._cache_ttl_seconds,
-            "dashboard_cache_size": len(self._dashboard_cache),
-            "formatted_cache_size": len(self._formatted_cache),
-            "cache_hits": self._cache_hits,
-            "cache_misses": self._cache_misses,
-            "hit_ratio": round(
-                self._cache_hits / (self._cache_hits + self._cache_misses) * 100, 2
-            ) if (self._cache_hits + self._cache_misses) > 0 else 0
-        }
-
-    # ==================================================================================================
-    # BLOCK 14: COMPATIBILITY METHODS
+    # BLOCK 10: PUBLIC METHODS (COMPATIBILITY)
     # ==================================================================================================
 
     def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
@@ -1128,7 +838,10 @@ class DNAnalysisService:
     def verify_dn(self, dn_no: str) -> Dict[str, Any]:
         """Verify if DN exists."""
         result = self.get_dn_complete_info(dn_no)
-        return {"success": True, "exists": result.get("success", False)}
+        return {
+            "success": True,
+            "exists": result.get("success", False)
+        }
 
     def health_check(self) -> Dict[str, Any]:
         """Health check endpoint."""
@@ -1136,6 +849,7 @@ class DNAnalysisService:
             rows_count = 0
             latency_ms = 0
 
+            # Get row count
             with self._get_session_context() as session:
                 start_time = time.time()
                 result = session.execute(text("SELECT COUNT(*) as count FROM delivery_reports"))
@@ -1154,7 +868,6 @@ class DNAnalysisService:
                 "query_count": self._query_count,
                 "total_execution_time_ms": round(self._total_execution_time_ms, 2),
                 "initialized": self._initialized,
-                "cache_stats": self.get_cache_stats(),
                 "timestamp": datetime.now().isoformat()
             }
         except Exception as e:
@@ -1178,18 +891,26 @@ class DNAnalysisService:
                 row = result.fetchone()
                 count = row[0] if row else 0
 
-                return {"success": True, "records": count, "error": None}
+                return {
+                    "success": True,
+                    "records": count,
+                    "error": None
+                }
         except Exception as e:
-            return {"success": False, "records": 0, "error": str(e)}
+            return {
+                "success": False,
+                "records": 0,
+                "error": str(e)
+            }
 
     def get_service_metadata(self) -> Dict[str, Any]:
-        """Get service metadata."""
+        """Get service metadata for ai_provider_service."""
         return {
             "service_name": self._service_name,
             "version": self._version,
             "status": self._status,
             "module": "DN Analytics",
-            "description": "Enterprise DN Analytics Service v17.0 - Optimized for Speed",
+            "description": "Enterprise DN Analytics Service",
             "initialized": self._initialized,
             "methods": [
                 "health_check",
@@ -1202,14 +923,12 @@ class DNAnalysisService:
                 "get_pending_pgi",
                 "get_pending_pod",
                 "format_dn_dashboard",
-                "get_formatted_dn",
-                "clear_cache",
-                "get_cache_stats"
+                "get_formatted_dn"
             ]
         }
 
     # ==================================================================================================
-    # BLOCK 15: PENDING REPORTS (COMPATIBILITY)
+    # BLOCK 11: PENDING REPORTS
     # ==================================================================================================
 
     def get_pending_dns(self, limit: int = 50, offset: int = 0) -> Dict[str, Any]:
@@ -1220,13 +939,21 @@ class DNAnalysisService:
             count_query = """
             SELECT COUNT(DISTINCT dn_no) AS total_pending
             FROM delivery_reports
-            WHERE pod_date IS NULL OR delivery_status = 'Pending'
+            WHERE pod_date IS NULL
+            OR delivery_status = 'Pending'
             """
             count_result = self._execute_query(count_query)
             total_pending = count_result[0].get('total_pending', 0) if count_result else 0
 
             if total_pending == 0:
-                return {"success": True, "data": [], "total": 0, "message": "No pending DNs found"}
+                return {
+                    "success": True,
+                    "data": [],
+                    "total": 0,
+                    "limit": limit,
+                    "offset": offset,
+                    "message": "No pending DNs found"
+                }
 
             pending_query = """
             SELECT
@@ -1247,13 +974,17 @@ class DNAnalysisService:
                 MAX(division) AS division,
                 COUNT(*) AS material_count
             FROM delivery_reports
-            WHERE pod_date IS NULL OR delivery_status = 'Pending'
+            WHERE pod_date IS NULL
+            OR delivery_status = 'Pending'
             GROUP BY dn_no
             ORDER BY MIN(dn_create_date) ASC
             LIMIT :limit OFFSET :offset
             """
 
-            results = self._execute_query(pending_query, {"limit": limit, "offset": offset})
+            results = self._execute_query(
+                pending_query,
+                {"limit": limit, "offset": offset}
+            )
 
             formatted_results = []
             for row in results:
@@ -1301,7 +1032,14 @@ class DNAnalysisService:
             total_pending = count_result[0].get('total_pending', 0) if count_result else 0
 
             if total_pending == 0:
-                return {"success": True, "data": [], "total": 0, "message": "No pending PGI found"}
+                return {
+                    "success": True,
+                    "data": [],
+                    "total": 0,
+                    "limit": limit,
+                    "offset": offset,
+                    "message": "No pending PGI found"
+                }
 
             pending_query = """
             SELECT
@@ -1328,7 +1066,10 @@ class DNAnalysisService:
             LIMIT :limit OFFSET :offset
             """
 
-            results = self._execute_query(pending_query, {"limit": limit, "offset": offset})
+            results = self._execute_query(
+                pending_query,
+                {"limit": limit, "offset": offset}
+            )
 
             formatted_results = []
             for row in results:
@@ -1370,13 +1111,21 @@ class DNAnalysisService:
             count_query = """
             SELECT COUNT(DISTINCT dn_no) AS total_pending
             FROM delivery_reports
-            WHERE good_issue_date IS NOT NULL AND pod_date IS NULL
+            WHERE good_issue_date IS NOT NULL
+            AND pod_date IS NULL
             """
             count_result = self._execute_query(count_query)
             total_pending = count_result[0].get('total_pending', 0) if count_result else 0
 
             if total_pending == 0:
-                return {"success": True, "data": [], "total": 0, "message": "No pending POD found"}
+                return {
+                    "success": True,
+                    "data": [],
+                    "total": 0,
+                    "limit": limit,
+                    "offset": offset,
+                    "message": "No pending POD found"
+                }
 
             pending_query = """
             SELECT
@@ -1397,17 +1146,25 @@ class DNAnalysisService:
                 MAX(division) AS division,
                 COUNT(*) AS material_count
             FROM delivery_reports
-            WHERE good_issue_date IS NOT NULL AND pod_date IS NULL
+            WHERE good_issue_date IS NOT NULL
+            AND pod_date IS NULL
             GROUP BY dn_no
             ORDER BY MIN(dn_create_date) ASC
             LIMIT :limit OFFSET :offset
             """
 
-            results = self._execute_query(pending_query, {"limit": limit, "offset": offset})
+            results = self._execute_query(
+                pending_query,
+                {"limit": limit, "offset": offset}
+            )
 
             formatted_results = []
             for row in results:
-                pod_aging = calculate_days(row.get('good_issue_date'), row.get('pod_date'))
+                pod_aging = calculate_days(
+                    row.get('good_issue_date'),
+                    row.get('pod_date')
+                )
+
                 formatted_results.append({
                     "dn_no": row.get('dn_no'),
                     "dealer_name": row.get('dealer_name') or "Unknown Dealer",
@@ -1440,9 +1197,293 @@ class DNAnalysisService:
             logger.error(f"❌ Failed to get pending POD: {e}")
             return {"success": False, "error": str(e)}
 
+    # ==================================================================================================
+    # BLOCK 12: WHATSAPP FORMATTER - FIXED
+    # ==================================================================================================
+
+    def format_dn_dashboard(self, dashboard_data: Any) -> str:
+        """
+        Format DN dashboard for WhatsApp with beautiful styling.
+        
+        Args:
+            dashboard_data: DNDashboard object or dict with dashboard data
+            
+        Returns:
+            Beautifully formatted WhatsApp message
+        """
+        # ============================================================
+        # STEP 1: Extract data from DNDashboard object or dict
+        # ============================================================
+        
+        try:
+            # If it's a DNDashboard object
+            if hasattr(dashboard_data, '__dataclass_fields__'):
+                d = {}
+                for field_name in dashboard_data.__dataclass_fields__:
+                    value = getattr(dashboard_data, field_name)
+                    # Convert Decimal to float for display
+                    if isinstance(value, Decimal):
+                        value = float(value)
+                    # Convert date/datetime to string
+                    if isinstance(value, (date, datetime)):
+                        value = value.strftime('%Y-%m-%d')
+                    d[field_name] = value
+            elif isinstance(dashboard_data, dict):
+                # If it's a dict with 'data' key
+                if 'data' in dashboard_data:
+                    data = dashboard_data['data']
+                    if hasattr(data, '__dataclass_fields__'):
+                        return self.format_dn_dashboard(data)
+                    d = data
+                else:
+                    d = dashboard_data
+            else:
+                return "❌ Error: Invalid dashboard data format"
+        except Exception as e:
+            logger.error(f"Error extracting dashboard data: {e}")
+            return f"❌ Error formatting dashboard: {str(e)}"
+
+        # ============================================================
+        # STEP 2: Build the formatted message
+        # ============================================================
+        
+        lines = []
+        
+        # ----- Header -----
+        lines.append("📦 *DN REPORT*")
+        lines.append("=" * 30)
+        lines.append("")
+        
+        # ----- DN Number -----
+        dn_no = d.get('dn_no', 'N/A')
+        lines.append(f"🔹 *DN No:* `{dn_no}`")
+        lines.append("")
+        
+        # ----- Dealer Information -----
+        lines.append("👤 *DEALER INFORMATION*")
+        lines.append("-" * 25)
+        
+        dealer_name = d.get('dealer_name', 'Unknown')
+        lines.append(f"  📛 Name: *{dealer_name}*")
+        
+        dealer_code = d.get('dealer_code')
+        if dealer_code and dealer_code != 'None':
+            lines.append(f"  🆔 Code: `{dealer_code}`")
+        
+        customer_code = d.get('customer_code')
+        if customer_code and customer_code != 'None':
+            lines.append(f"  🆔 Customer Code: `{customer_code}`")
+        
+        lines.append("")
+        
+        # ----- Location -----
+        lines.append("📍 *LOCATION*")
+        lines.append("-" * 25)
+        
+        warehouse = d.get('warehouse', 'Unknown')
+        lines.append(f"  🏭 Warehouse: *{warehouse}*")
+        
+        warehouse_code = d.get('warehouse_code')
+        if warehouse_code and warehouse_code != 'None':
+            lines.append(f"  🏷️ WH Code: `{warehouse_code}`")
+        
+        city = d.get('city', 'Unknown')
+        lines.append(f"  🌆 City: *{city}*")
+        
+        delivery_location = d.get('delivery_location')
+        if delivery_location and delivery_location != 'None':
+            lines.append(f"  📍 Delivery: {delivery_location}")
+        
+        lines.append("")
+        
+        # ----- Business Information -----
+        lines.append("📋 *BUSINESS INFO*")
+        lines.append("-" * 25)
+        
+        sales_office = d.get('sales_office')
+        if sales_office and sales_office != 'None':
+            lines.append(f"  🏢 Office: {sales_office}")
+        
+        sales_manager = d.get('sales_manager')
+        if sales_manager and sales_manager != 'None':
+            lines.append(f"  👔 Manager: {sales_manager}")
+        
+        division = d.get('division')
+        if division and division != 'None':
+            lines.append(f"  📂 Division: {division}")
+        
+        order_type = d.get('order_type')
+        if order_type and order_type != 'None':
+            lines.append(f"  📋 Order Type: {order_type}")
+        
+        dn_work = d.get('dn_work')
+        if dn_work and dn_work != 'None':
+            lines.append(f"  📝 DN Work: {dn_work}")
+        
+        lines.append("")
+        
+        # ----- Metrics -----
+        lines.append("📊 *METRICS*")
+        lines.append("-" * 25)
+        
+        total_units = d.get('total_units', 0)
+        total_revenue = d.get('total_revenue', 0)
+        material_count = d.get('material_count', 0)
+        model_count = d.get('model_count', 0)
+        
+        lines.append(f"  📦 Units: *{total_units:,}*")
+        
+        # Format revenue
+        if total_revenue:
+            revenue_val = float(total_revenue)
+            lines.append(f"  💰 Revenue: *PKR {revenue_val:,.2f}*")
+        else:
+            lines.append(f"  💰 Revenue: PKR 0")
+        
+        lines.append(f"  🔧 Materials: {material_count}")
+        lines.append(f"  🏷️ Models: {model_count}")
+        lines.append(f"  📄 Rows: {d.get('row_count', 0)}")
+        
+        # Average metrics
+        avg_price = d.get('average_unit_price', 0)
+        if avg_price:
+            avg_price_val = float(avg_price)
+            lines.append(f"  📈 Avg Price: PKR {avg_price_val:,.2f}")
+        
+        lines.append("")
+        
+        # ----- Dates -----
+        lines.append("📅 *DATES*")
+        lines.append("-" * 25)
+        
+        lines.append(f"  📝 DN Create: {d.get('dn_create_date', 'N/A')}")
+        lines.append(f"  🚚 PGI: {d.get('good_issue_date', 'N/A')}")
+        lines.append(f"  📬 POD: {d.get('pod_date', 'N/A')}")
+        
+        lines.append("")
+        
+        # ----- Aging -----
+        lines.append("⏳ *AGING*")
+        lines.append("-" * 25)
+        
+        lines.append(f"  📦 Delivery: {d.get('delivery_aging_text', 'N/A')}")
+        lines.append(f"  📬 POD: {d.get('pod_aging_text', 'N/A')}")
+        lines.append(f"  🔄 Total Cycle: {d.get('total_cycle_text', 'N/A')}")
+        
+        lines.append("")
+        
+        # ----- Status -----
+        lines.append("📋 *STATUS*")
+        lines.append("-" * 25)
+        
+        stage = d.get('calculated_stage', 'Unknown')
+        emoji = d.get('calculated_emoji', '❓')
+        pending_text = d.get('pending_flag_text', 'Unknown')
+        
+        lines.append(f"  {emoji} Delivery: *{stage}*")
+        lines.append(f"  ⚡ PGI: {d.get('pgi_status', 'Unknown')}")
+        lines.append(f"  📬 POD: {d.get('pod_status', 'Unknown')}")
+        lines.append(f"  ⏰ Pending: {pending_text}")
+        
+        lines.append("")
+        
+        # ----- Products -----
+        products = d.get('products', [])
+        if products:
+            lines.append("📦 *PRODUCT DETAILS*")
+            lines.append("-" * 25)
+            
+            for idx, product in enumerate(products[:10], 1):
+                model = product.get('model', 'Unknown')
+                material_no = product.get('material_no', 'N/A')
+                qty = product.get('quantity', 0)
+                revenue_val = product.get('revenue', 0)
+                avg_price_val = product.get('average_price', 0)
+                
+                lines.append(f"  {idx}. *{model}*")
+                if material_no != 'N/A':
+                    lines.append(f"     🏷️ Material: `{material_no}`")
+                lines.append(f"     📦 Qty: {qty}")
+                if revenue_val > 0:
+                    lines.append(f"     💰 Revenue: PKR {revenue_val:,.2f}")
+                if avg_price_val > 0:
+                    lines.append(f"     📈 Avg Price: PKR {avg_price_val:,.2f}")
+            
+            if len(products) > 10:
+                remaining = len(products) - 10
+                lines.append(f"  ... and {remaining} more product(s)")
+            
+            lines.append("")
+        
+        # ----- Source -----
+        source_file = d.get('source_file')
+        batch_id = d.get('upload_batch_id')
+        if source_file or batch_id:
+            lines.append("📁 *SOURCE*")
+            lines.append("-" * 25)
+            if source_file and source_file != 'None':
+                lines.append(f"  📄 File: {source_file}")
+            if batch_id and batch_id != 'None':
+                lines.append(f"  📋 Batch: `{batch_id}`")
+            lines.append("")
+        
+        # ----- Footer -----
+        lines.append("=" * 30)
+        lines.append("🤖 *AI Logistics Assistant*")
+        lines.append(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        return "\n".join(lines)
+
+    # ==================================================================================================
+    # BLOCK 12B: GET FORMATTED DN (Convenience Method)
+    # ==================================================================================================
+
+    def get_formatted_dn(self, dn_no: str) -> Dict[str, Any]:
+        """
+        Get DN data formatted for WhatsApp in one call.
+        
+        This is a convenience method that combines:
+        1. Fetching DN data
+        2. Formatting for WhatsApp
+        
+        Args:
+            dn_no: DN number to fetch
+            
+        Returns:
+            Dict with success, formatted_message, and raw_data
+        """
+        try:
+            # Get the DN data
+            result = self.get_dn_complete_info(dn_no)
+            
+            if not result.get('success'):
+                return {
+                    'success': False,
+                    'error': result.get('error', 'DN not found'),
+                    'formatted_message': f"❌ Error: {result.get('error', 'DN not found')}"
+                }
+            
+            # Format for WhatsApp
+            formatted_message = self.format_dn_dashboard(result['data'])
+            
+            return {
+                'success': True,
+                'formatted_message': formatted_message,
+                'data': result['data'],
+                'all_rows': result.get('all_rows', [])
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in get_formatted_dn: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'formatted_message': f"❌ Error: {str(e)}"
+            }
+
 
 # =====================================================================================================
-# BLOCK 16: THREAD-SAFE SINGLETON
+# BLOCK 13: THREAD-SAFE SINGLETON
 # =====================================================================================================
 
 _dn_analytics_service = None
@@ -1465,9 +1506,8 @@ def get_dn_analytics_service() -> DNAnalysisService:
 
     return _dn_analytics_service
 
-
 # =====================================================================================================
-# BLOCK 17: EXPORTS
+# BLOCK 14: EXPORTS
 # =====================================================================================================
 
 __all__ = [
@@ -1477,32 +1517,26 @@ __all__ = [
     'DNDashboard'
 ]
 
-
 # =====================================================================================================
-# BLOCK 18: MODULE INITIALIZATION
+# BLOCK 15: MODULE INITIALIZATION
 # =====================================================================================================
 
 logger.info("=" * 70)
-logger.info("DNAnalysisService v17.0 - OPTIMIZED FOR SPEED & BEAUTIFUL WHATSAPP")
+logger.info("DNAnalysisService v15.0 - FIXED WHATSAPP FORMATTER")
 logger.info("=" * 70)
 logger.info("")
 logger.info(" SERVICE DETAILS:")
 logger.info(" ✅ Service Name: dn_analysis")
-logger.info(" ✅ Version: 17.0")
+logger.info(" ✅ Version: 15.0 (WhatsApp Formatter Fixed)")
 logger.info(" ✅ Source: PostgreSQL (delivery_reports)")
 logger.info("")
-logger.info(" 🚀 PERFORMANCE OPTIMIZATIONS:")
-logger.info(" ✅ PostgreSQL aggregation (no Python processing)")
-logger.info(" ✅ Single query for dashboard")
-logger.info(" ✅ Dedicated products query with SQL aggregation")
-logger.info(" ✅ Dual caching (dashboard + formatted)")
-logger.info(" ✅ Database indexes for fast lookups")
-logger.info("")
-logger.info(" 📱 WHATSAPP FORMATTING:")
-logger.info(" ✅ Beautiful formatting matching your request")
-logger.info(" ✅ No duplicate product entries")
-logger.info(" ✅ AI Insight for each status")
-logger.info(" ✅ All attributes preserved")
+logger.info(" ENTERPRISE FEATURES:")
+logger.info(" ✅ PostgreSQL is the ONLY source of truth")
+logger.info(" ✅ Decimal for revenue calculations")
+logger.info(" ✅ Safe type conversions")
+logger.info(" ✅ Comprehensive validation")
+logger.info(" ✅ Performance optimized")
+logger.info(" ✅ Complete WhatsApp formatting - FIXED")
 logger.info("")
 logger.info(" STATUS: ✅ PRODUCTION READY")
 logger.info("=" * 70)
