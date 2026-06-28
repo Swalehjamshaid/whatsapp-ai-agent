@@ -1200,287 +1200,331 @@ class DNAnalysisService:
     # ==================================================================================================
     # BLOCK 12: WHATSAPP FORMATTER - FIXED
     # ==================================================================================================
+# =====================================================================================================
+# BLOCK 12: PROFESSIONAL WHATSAPP FORMATTER
+# PURPOSE: Presentation-only formatter with executive-style output
+# =====================================================================================================
 
-    def format_dn_dashboard(self, dashboard_data: Any) -> str:
-        """
-        Format DN dashboard for WhatsApp with beautiful styling.
+def format_dn_dashboard(self, dashboard_data: Any) -> str:
+    """
+    Format DN dashboard for WhatsApp with professional executive-style output.
+    
+    This is a PURE PRESENTATION layer. It does NOT:
+    - Execute SQL
+    - Calculate business metrics
+    - Aggregate products
+    - Modify data
+    
+    It only DISPLAYS data already present in DNDashboard.
+    
+    Args:
+        dashboard_data: DNDashboard object or dict with dashboard data
         
-        Args:
-            dashboard_data: DNDashboard object or dict with dashboard data
-            
-        Returns:
-            Beautifully formatted WhatsApp message
-        """
-        # ============================================================
-        # STEP 1: Extract data from DNDashboard object or dict
-        # ============================================================
-        
-        try:
-            # If it's a DNDashboard object
-            if hasattr(dashboard_data, '__dataclass_fields__'):
-                d = {}
-                for field_name in dashboard_data.__dataclass_fields__:
-                    value = getattr(dashboard_data, field_name)
-                    # Convert Decimal to float for display
-                    if isinstance(value, Decimal):
-                        value = float(value)
-                    # Convert date/datetime to string
-                    if isinstance(value, (date, datetime)):
-                        value = value.strftime('%Y-%m-%d')
-                    d[field_name] = value
-            elif isinstance(dashboard_data, dict):
-                # If it's a dict with 'data' key
-                if 'data' in dashboard_data:
-                    data = dashboard_data['data']
-                    if hasattr(data, '__dataclass_fields__'):
-                        return self.format_dn_dashboard(data)
-                    d = data
-                else:
-                    d = dashboard_data
+    Returns:
+        Professional WhatsApp formatted message
+    """
+    # ============================================================
+    # STEP 1: Extract data from DNDashboard object or dict
+    # ============================================================
+    
+    try:
+        if hasattr(dashboard_data, '__dataclass_fields__'):
+            d = {}
+            for field_name in dashboard_data.__dataclass_fields__:
+                value = getattr(dashboard_data, field_name)
+                # Convert Decimal to float for display
+                if isinstance(value, Decimal):
+                    value = float(value)
+                # Convert date/datetime to string
+                if isinstance(value, (date, datetime)):
+                    value = value.strftime('%Y-%m-%d')
+                d[field_name] = value
+        elif isinstance(dashboard_data, dict):
+            if 'data' in dashboard_data:
+                data = dashboard_data['data']
+                if hasattr(data, '__dataclass_fields__'):
+                    return self.format_dn_dashboard(data)
+                d = data
             else:
-                return "❌ Error: Invalid dashboard data format"
-        except Exception as e:
-            logger.error(f"Error extracting dashboard data: {e}")
-            return f"❌ Error formatting dashboard: {str(e)}"
-
-        # ============================================================
-        # STEP 2: Build the formatted message
-        # ============================================================
-        
-        lines = []
-        
-        # ----- Header -----
-        lines.append("📦 *DN REPORT*")
-        lines.append("=" * 30)
-        lines.append("")
-        
-        # ----- DN Number -----
-        dn_no = d.get('dn_no', 'N/A')
-        lines.append(f"🔹 *DN No:* `{dn_no}`")
-        lines.append("")
-        
-        # ----- Dealer Information -----
-        lines.append("👤 *DEALER INFORMATION*")
-        lines.append("-" * 25)
-        
-        dealer_name = d.get('dealer_name', 'Unknown')
-        lines.append(f"  📛 Name: *{dealer_name}*")
-        
-        dealer_code = d.get('dealer_code')
-        if dealer_code and dealer_code != 'None':
-            lines.append(f"  🆔 Code: `{dealer_code}`")
-        
-        customer_code = d.get('customer_code')
-        if customer_code and customer_code != 'None':
-            lines.append(f"  🆔 Customer Code: `{customer_code}`")
-        
-        lines.append("")
-        
-        # ----- Location -----
-        lines.append("📍 *LOCATION*")
-        lines.append("-" * 25)
-        
-        warehouse = d.get('warehouse', 'Unknown')
-        lines.append(f"  🏭 Warehouse: *{warehouse}*")
-        
-        warehouse_code = d.get('warehouse_code')
-        if warehouse_code and warehouse_code != 'None':
-            lines.append(f"  🏷️ WH Code: `{warehouse_code}`")
-        
-        city = d.get('city', 'Unknown')
-        lines.append(f"  🌆 City: *{city}*")
-        
-        delivery_location = d.get('delivery_location')
-        if delivery_location and delivery_location != 'None':
-            lines.append(f"  📍 Delivery: {delivery_location}")
-        
-        lines.append("")
-        
-        # ----- Business Information -----
-        lines.append("📋 *BUSINESS INFO*")
-        lines.append("-" * 25)
-        
-        sales_office = d.get('sales_office')
-        if sales_office and sales_office != 'None':
-            lines.append(f"  🏢 Office: {sales_office}")
-        
-        sales_manager = d.get('sales_manager')
-        if sales_manager and sales_manager != 'None':
-            lines.append(f"  👔 Manager: {sales_manager}")
-        
-        division = d.get('division')
-        if division and division != 'None':
-            lines.append(f"  📂 Division: {division}")
-        
-        order_type = d.get('order_type')
-        if order_type and order_type != 'None':
-            lines.append(f"  📋 Order Type: {order_type}")
-        
-        dn_work = d.get('dn_work')
-        if dn_work and dn_work != 'None':
-            lines.append(f"  📝 DN Work: {dn_work}")
-        
-        lines.append("")
-        
-        # ----- Metrics -----
-        lines.append("📊 *METRICS*")
-        lines.append("-" * 25)
-        
-        total_units = d.get('total_units', 0)
-        total_revenue = d.get('total_revenue', 0)
-        material_count = d.get('material_count', 0)
-        model_count = d.get('model_count', 0)
-        
-        lines.append(f"  📦 Units: *{total_units:,}*")
-        
-        # Format revenue
-        if total_revenue:
-            revenue_val = float(total_revenue)
-            lines.append(f"  💰 Revenue: *PKR {revenue_val:,.2f}*")
+                d = dashboard_data
         else:
-            lines.append(f"  💰 Revenue: PKR 0")
-        
-        lines.append(f"  🔧 Materials: {material_count}")
-        lines.append(f"  🏷️ Models: {model_count}")
-        lines.append(f"  📄 Rows: {d.get('row_count', 0)}")
-        
-        # Average metrics
-        avg_price = d.get('average_unit_price', 0)
-        if avg_price:
-            avg_price_val = float(avg_price)
-            lines.append(f"  📈 Avg Price: PKR {avg_price_val:,.2f}")
-        
-        lines.append("")
-        
-        # ----- Dates -----
-        lines.append("📅 *DATES*")
-        lines.append("-" * 25)
-        
-        lines.append(f"  📝 DN Create: {d.get('dn_create_date', 'N/A')}")
-        lines.append(f"  🚚 PGI: {d.get('good_issue_date', 'N/A')}")
-        lines.append(f"  📬 POD: {d.get('pod_date', 'N/A')}")
-        
-        lines.append("")
-        
-        # ----- Aging -----
-        lines.append("⏳ *AGING*")
-        lines.append("-" * 25)
-        
-        lines.append(f"  📦 Delivery: {d.get('delivery_aging_text', 'N/A')}")
-        lines.append(f"  📬 POD: {d.get('pod_aging_text', 'N/A')}")
-        lines.append(f"  🔄 Total Cycle: {d.get('total_cycle_text', 'N/A')}")
-        
-        lines.append("")
-        
-        # ----- Status -----
-        lines.append("📋 *STATUS*")
-        lines.append("-" * 25)
-        
-        stage = d.get('calculated_stage', 'Unknown')
-        emoji = d.get('calculated_emoji', '❓')
-        pending_text = d.get('pending_flag_text', 'Unknown')
-        
-        lines.append(f"  {emoji} Delivery: *{stage}*")
-        lines.append(f"  ⚡ PGI: {d.get('pgi_status', 'Unknown')}")
-        lines.append(f"  📬 POD: {d.get('pod_status', 'Unknown')}")
-        lines.append(f"  ⏰ Pending: {pending_text}")
-        
-        lines.append("")
-        
-        # ----- Products -----
-        products = d.get('products', [])
-        if products:
-            lines.append("📦 *PRODUCT DETAILS*")
-            lines.append("-" * 25)
-            
-            for idx, product in enumerate(products[:10], 1):
-                model = product.get('model', 'Unknown')
-                material_no = product.get('material_no', 'N/A')
-                qty = product.get('quantity', 0)
-                revenue_val = product.get('revenue', 0)
-                avg_price_val = product.get('average_price', 0)
-                
-                lines.append(f"  {idx}. *{model}*")
-                if material_no != 'N/A':
-                    lines.append(f"     🏷️ Material: `{material_no}`")
-                lines.append(f"     📦 Qty: {qty}")
-                if revenue_val > 0:
-                    lines.append(f"     💰 Revenue: PKR {revenue_val:,.2f}")
-                if avg_price_val > 0:
-                    lines.append(f"     📈 Avg Price: PKR {avg_price_val:,.2f}")
-            
-            if len(products) > 10:
-                remaining = len(products) - 10
-                lines.append(f"  ... and {remaining} more product(s)")
-            
-            lines.append("")
-        
-        # ----- Source -----
-        source_file = d.get('source_file')
-        batch_id = d.get('upload_batch_id')
-        if source_file or batch_id:
-            lines.append("📁 *SOURCE*")
-            lines.append("-" * 25)
-            if source_file and source_file != 'None':
-                lines.append(f"  📄 File: {source_file}")
-            if batch_id and batch_id != 'None':
-                lines.append(f"  📋 Batch: `{batch_id}`")
-            lines.append("")
-        
-        # ----- Footer -----
-        lines.append("=" * 30)
-        lines.append("🤖 *AI Logistics Assistant*")
-        lines.append(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        return "\n".join(lines)
+            return "❌ Invalid data format. Please contact support."
+    except Exception as e:
+        logger.error(f"Error extracting dashboard data: {e}")
+        return f"❌ Error formatting report. Please try again."
 
-    # ==================================================================================================
-    # BLOCK 12B: GET FORMATTED DN (Convenience Method)
-    # ==================================================================================================
-
-    def get_formatted_dn(self, dn_no: str) -> Dict[str, Any]:
-        """
-        Get DN data formatted for WhatsApp in one call.
-        
-        This is a convenience method that combines:
-        1. Fetching DN data
-        2. Formatting for WhatsApp
-        
-        Args:
-            dn_no: DN number to fetch
-            
-        Returns:
-            Dict with success, formatted_message, and raw_data
-        """
+    # ============================================================
+    # STEP 2: Build the professional WhatsApp message
+    # ============================================================
+    
+    lines = []
+    
+    # ----- SECTION 1: Header -----
+    lines.append("📦 Delivery Note")
+    lines.append("")
+    
+    # ----- SECTION 2: Dealer -----
+    dn_no = d.get('dn_no', 'N/A')
+    lines.append(f"🆔 DN: {dn_no}")
+    lines.append("")
+    
+    dealer_name = d.get('dealer_name') or d.get('customer_name', 'Unknown')
+    lines.append(f"👤 Dealer: {dealer_name}")
+    lines.append("")
+    
+    city = d.get('city', 'Unknown')
+    if city and city != 'Unknown':
+        lines.append(f"📍 City: {city}")
+        lines.append("")
+    
+    warehouse = d.get('warehouse', 'Unknown')
+    warehouse_code = d.get('warehouse_code')
+    if warehouse_code and warehouse_code != 'None':
+        lines.append(f"🏭 Warehouse: {warehouse} ({warehouse_code})")
+    else:
+        lines.append(f"🏭 Warehouse: {warehouse}")
+    lines.append("")
+    
+    # ----- SEPARATOR -----
+    lines.append("━━━━━━━━━━━━━━━━━━")
+    lines.append("")
+    
+    # ----- SECTION 3: Summary -----
+    lines.append("📊 Summary")
+    lines.append("")
+    
+    total_units = d.get('total_units', 0)
+    lines.append(f"Units: {total_units}")
+    
+    material_count = d.get('material_count', 0)
+    lines.append(f"Products: {material_count}")
+    
+    total_revenue = d.get('total_revenue', 0)
+    if total_revenue:
         try:
-            # Get the DN data
-            result = self.get_dn_complete_info(dn_no)
+            revenue_val = float(total_revenue)
+            lines.append(f"Revenue: PKR {revenue_val:,.2f}")
+        except:
+            lines.append(f"Revenue: PKR {total_revenue}")
+    lines.append("")
+    
+    # ----- SEPARATOR -----
+    lines.append("━━━━━━━━━━━━━━━━━━")
+    lines.append("")
+    
+    # ----- SECTION 4: Timeline -----
+    lines.append("📅 Timeline")
+    lines.append("")
+    
+    dn_create_date = d.get('dn_create_date', 'N/A')
+    lines.append(f"DN Created: {dn_create_date}")
+    
+    good_issue_date = d.get('good_issue_date', 'N/A')
+    lines.append(f"PGI: {good_issue_date}")
+    
+    pod_date = d.get('pod_date', 'N/A')
+    lines.append(f"POD: {pod_date}")
+    lines.append("")
+    
+    # ----- SEPARATOR -----
+    lines.append("━━━━━━━━━━━━━━━━━━")
+    lines.append("")
+    
+    # ----- SECTION 5: Performance -----
+    lines.append("⏱ Performance")
+    lines.append("")
+    
+    delivery_aging = d.get('delivery_aging_text', 'N/A')
+    lines.append(f"Delivery Time: {delivery_aging}")
+    
+    pod_aging = d.get('pod_aging_text', 'N/A')
+    lines.append(f"POD Time: {pod_aging}")
+    
+    total_cycle = d.get('total_cycle_text', 'N/A')
+    lines.append(f"Total Cycle: {total_cycle}")
+    lines.append("")
+    
+    # ----- SEPARATOR -----
+    lines.append("━━━━━━━━━━━━━━━━━━")
+    lines.append("")
+    
+    # ----- SECTION 6: Status (Compact) -----
+    lines.append("🚚 Status")
+    lines.append("")
+    
+    stage = d.get('calculated_stage', 'Unknown')
+    emoji = d.get('calculated_emoji', '❓')
+    
+    # Show delivery status with emoji
+    lines.append(f"{emoji} {stage}")
+    
+    # Show pending flag only if pending
+    pending_flag = d.get('pending_flag', True)
+    if pending_flag:
+        lines.append("⏰ Pending Action Required")
+    else:
+        lines.append("🟢 No Pending Action")
+    lines.append("")
+    
+    # ----- SEPARATOR -----
+    lines.append("━━━━━━━━━━━━━━━━━━")
+    lines.append("")
+    
+    # ----- SECTION 7: Products (Already Aggregated) -----
+    products = d.get('products', [])
+    if products and len(products) > 0:
+        lines.append("📦 Products")
+        lines.append("")
+        
+        for idx, product in enumerate(products[:10], 1):
+            model = product.get('model', 'Unknown')
+            qty = product.get('quantity', 0)
+            revenue_val = product.get('revenue', 0)
             
-            if not result.get('success'):
-                return {
-                    'success': False,
-                    'error': result.get('error', 'DN not found'),
-                    'formatted_message': f"❌ Error: {result.get('error', 'DN not found')}"
-                }
+            # Show model name
+            lines.append(f"{idx}. {model}")
             
-            # Format for WhatsApp
-            formatted_message = self.format_dn_dashboard(result['data'])
+            # Show quantity
+            lines.append(f"   Qty: {qty}")
             
-            return {
-                'success': True,
-                'formatted_message': formatted_message,
-                'data': result['data'],
-                'all_rows': result.get('all_rows', [])
-            }
+            # Show revenue if available
+            if revenue_val > 0:
+                try:
+                    lines.append(f"   Revenue: PKR {float(revenue_val):,.2f}")
+                except:
+                    pass
             
-        except Exception as e:
-            logger.error(f"Error in get_formatted_dn: {e}")
+            # Add empty line between products
+            lines.append("")
+        
+        if len(products) > 10:
+            remaining = len(products) - 10
+            lines.append(f"... and {remaining} more product(s)")
+            lines.append("")
+    
+    # ----- SEPARATOR -----
+    lines.append("━━━━━━━━━━━━━━━━━━")
+    lines.append("")
+    
+    # ----- SECTION 8: AI Insight -----
+    ai_insight = d.get('ai_insight')
+    if ai_insight:
+        lines.append("💡 AI Insight")
+        lines.append("")
+        # Split into max 2 lines if needed
+        insight_lines = ai_insight.split('. ')
+        if len(insight_lines) > 2:
+            lines.append(f"{insight_lines[0]}.")
+            lines.append(f"{insight_lines[1]}.")
+        else:
+            lines.append(ai_insight)
+        lines.append("")
+    
+    # ----- FOOTER -----
+    lines.append("━━━━━━━━━━━━━━━━━━")
+    lines.append(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    lines.append("🤖 AI Logistics Assistant")
+    
+    return "\n".join(lines)
+
+
+# =====================================================================================================
+# BLOCK 12B: AI INSIGHT GENERATOR (Helper)
+# =====================================================================================================
+
+def generate_ai_insight(stage: str, pending_flag: bool) -> str:
+    """
+    Generate a short operational summary (max 2 lines).
+    This is called during dashboard building, NOT during formatting.
+    
+    Args:
+        stage: Delivery stage (Delivered, In Transit, Pending Dispatch)
+        pending_flag: Boolean indicating if action is pending
+        
+    Returns:
+        Short business summary
+    """
+    if stage == "Delivered":
+        return "Shipment completed successfully. No action required."
+    elif stage == "In Transit":
+        if pending_flag:
+            return "Shipment is in transit. Awaiting Proof of Delivery."
+        else:
+            return "Shipment is in transit. Expected delivery soon."
+    elif stage == "Pending Dispatch":
+        return "Shipment has not yet been dispatched. Warehouse follow-up required."
+    else:
+        return "Shipment status is being updated. Check again later."
+
+
+# =====================================================================================================
+# BLOCK 12C: GET FORMATTED DN (With Dual Cache)
+# =====================================================================================================
+
+def get_formatted_dn(self, dn_no: str) -> Dict[str, Any]:
+    """
+    Get DN data formatted for WhatsApp with 5x speed caching.
+    
+    Uses dual caching:
+    1. Dashboard cache (raw data)
+    2. Formatted cache (final WhatsApp message)
+    
+    This method is presentation-only. It does NOT:
+    - Modify data
+    - Calculate business metrics
+    - Aggregate products
+    """
+    try:
+        # ============================================================
+        # STEP 1: Check formatted cache (FASTEST)
+        # ============================================================
+        formatted_cache_key = f"formatted_{dn_no}"
+        if formatted_cache_key in self._formatted_cache:
+            cache_age = (datetime.now() - self._cache_ttl.get(formatted_cache_key, datetime.min)).total_seconds()
+            if cache_age < self._cache_ttl_seconds:
+                self._cache_hits += 1
+                logger.info(f"⚡ Formatted CACHE HIT for DN {dn_no}")
+                return self._formatted_cache[formatted_cache_key]
+        
+        # ============================================================
+        # STEP 2: Get dashboard (from cache or DB)
+        # ============================================================
+        result = self.get_dn_complete_info(dn_no)
+        
+        if not result.get('success'):
             return {
                 'success': False,
-                'error': str(e),
-                'formatted_message': f"❌ Error: {str(e)}"
+                'error': result.get('error', 'DN not found'),
+                'formatted_message': f"❌ DN {dn_no} could not be found."
             }
-
+        
+        # ============================================================
+        # STEP 3: Format for WhatsApp (Presentation ONLY)
+        # ============================================================
+        formatted_message = self.format_dn_dashboard(result['data'])
+        
+        response = {
+            'success': True,
+            'formatted_message': formatted_message,
+            'data': result['data'],
+            'all_rows': result.get('all_rows', [])
+        }
+        
+        # ============================================================
+        # STEP 4: Cache the formatted response
+        # ============================================================
+        self._formatted_cache[formatted_cache_key] = response
+        self._cache_ttl[formatted_cache_key] = datetime.now()
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Error in get_formatted_dn: {e}")
+        return {
+            'success': False,
+            'error': str(e),
+            'formatted_message': f"❌ Error retrieving DN data. Please try again."
+        }
 
 # =====================================================================================================
 # BLOCK 13: THREAD-SAFE SINGLETON
