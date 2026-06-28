@@ -1,6 +1,6 @@
 # =====================================================================================================
 # FILE: app/services/dn_analysis.py
-# VERSION: v15.1 - PRODUCTION READY WITH PENDING WORKFLOWS
+# VERSION: v15.1 - MINIMAL EXTRACTION ONLY
 # PURPOSE: DN Analytics Service - Enterprise Grade PostgreSQL Integration
 # =====================================================================================================
 
@@ -489,48 +489,61 @@ class DNAnalysisService:
                 session.close()
 
     # ==================================================================================================
-    # BLOCK 7: DN SEARCH ENGINE
+    # BLOCK 7: DN SEARCH ENGINE - MINIMAL QUERY (ONLY SPECIFIED COLUMNS)
     # ==================================================================================================
 
     def _build_search_query(self) -> str:
-        """Build optimized search query."""
+        """
+        Build optimized search query - ONLY extracts specified columns.
+        
+        Extracted Columns:
+        - dn_no
+        - customer_name (as dealer_name)
+        - ship_to_city (as city)
+        - warehouse
+        - division
+        - sales_office
+        - sales_manager
+        - dn_qty (SUM)
+        - customer_model (COUNT DISTINCT)
+        - dn_amount (SUM)
+        - dn_create_date
+        - good_issue_date
+        - pod_date
+        - delivery_status
+        - pgi_status
+        - pod_status
+        - pending_flag
+        """
         return """
         SELECT
-            id,
             dn_no,
-            dn_work,
-            order_type,
-            division,
-            customer_code,
-            dealer_code,
-            customer_name,
-            customer_model,
-            material_no,
-            storage_location,
-            sales_office,
-            sales_manager,
-            ship_to_city,
-            warehouse,
-            warehouse_code,
-            delivery_location,
-            dn_qty,
-            dn_amount,
-            dn_create_date,
-            good_issue_date,
-            pod_date,
-            remarks,
-            delivery_status,
-            pgi_status,
-            pod_status,
-            pending_flag,
-            source_file,
-            upload_batch_id,
-            imported_at,
-            created_at,
-            updated_at
+            MAX(customer_name) AS dealer_name,
+            MAX(ship_to_city) AS city,
+            MAX(warehouse) AS warehouse,
+            MAX(division) AS division,
+            MAX(sales_office) AS sales_office,
+            MAX(sales_manager) AS sales_manager,
+            SUM(dn_qty) AS total_units,
+            COUNT(DISTINCT customer_model) AS material_count,
+            SUM(dn_amount) AS total_revenue,
+            MIN(dn_create_date) AS dn_create_date,
+            MAX(good_issue_date) AS good_issue_date,
+            MAX(pod_date) AS pod_date,
+            MAX(delivery_status) AS delivery_status,
+            MAX(pgi_status) AS pgi_status,
+            MAX(pod_status) AS pod_status,
+            MAX(pending_flag) AS pending_flag,
+            JSON_AGG(
+                JSON_BUILD_OBJECT(
+                    'model', customer_model,
+                    'quantity', SUM(dn_qty)
+                )
+                ORDER BY customer_model ASC
+            ) AS products
         FROM delivery_reports
         WHERE CAST(dn_no AS TEXT) = :dn_no
-        ORDER BY customer_model ASC, id ASC
+        GROUP BY dn_no
         """
 
     def _build_fallback_query(self) -> str:
