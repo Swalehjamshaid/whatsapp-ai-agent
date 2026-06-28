@@ -1,6 +1,6 @@
 # =====================================================================================================
 # FILE: app/services/dn_analysis.py
-# VERSION: v15.0 - FIXED WHATSAPP FORMATTER (UPDATED)
+# VERSION: v15.1 - PRODUCTION READY WITH PENDING WORKFLOWS
 # PURPOSE: DN Analytics Service - Enterprise Grade PostgreSQL Integration
 # =====================================================================================================
 
@@ -367,20 +367,19 @@ class DNAnalysisService:
     """
     DN Analytics Service - Enterprise Grade PostgreSQL Integration.
 
-    v15.0 - FIXED WHATSAPP FORMATTER
+    v15.1 - READY FOR PRODUCTION
     ✅ PostgreSQL is the ONLY source of truth
     ✅ Decimal for revenue calculations
     ✅ Safe type conversions
     ✅ Comprehensive validation
     ✅ Performance optimized
-    ✅ 100% backward compatible
-    ✅ WhatsApp formatter fixed
+    ✅ Workflow tracking methods added
     """
 
     def __init__(self):
         """Initialize DN Analytics Service."""
         self._service_name = "dn_analysis"
-        self._version = "15.0"
+        self._version = "15.1"
         self._status = "INITIALIZING"
         self._query_count = 0
         self._total_execution_time_ms = 0
@@ -466,7 +465,6 @@ class DNAnalysisService:
     @timed_execution
     def _execute_query(self, query: str, params: Dict[str, Any] = None) -> List[Dict[str, Any]]:
         """Execute raw SQL query and return results as dicts."""
-        start_time = time.time()
         session = None
         try:
             session = self._get_session()
@@ -479,16 +477,8 @@ class DNAnalysisService:
                 logger.debug(f"📝 Parameters: {params}")
 
             result = session.execute(text(query), params or {})
-            
-            # Using clean SQLAlchemy mapping compatibility
             rows = [dict(row) for row in result.mappings()]
 
-            execution_time_ms = (time.time() - start_time) * 1000
-            
-            # Note: self._query_count and total execution are also updated by the decorator safely
-
-            if self._debug_mode:
-                logger.debug(f"✅ Query returned {len(rows)} rows in {execution_time_ms:.2f}ms")
             return rows
 
         except exc.SQLAlchemyError as e:
@@ -826,8 +816,47 @@ class DNAnalysisService:
         )
 
     # ==================================================================================================
-    # BLOCK 10: PUBLIC METHODS (COMPATIBILITY)
+    # BLOCK 10: PUBLIC METHODS (COMPATIBILITY & WORKFLOW TRACKING)
     # ==================================================================================================
+
+    @handle_errors
+    @timed_execution
+    def get_pending_dns(self) -> Dict[str, Any]:
+        """Fetch all pending Delivery Notes where workflow lifecycle is uncompleted."""
+        query = """
+        SELECT DISTINCT dn_no, customer_name, dn_create_date, delivery_status 
+        FROM delivery_reports 
+        WHERE good_issue_date IS NULL OR pod_date IS NULL
+        ORDER BY dn_create_date DESC
+        """
+        rows = self._execute_query(query)
+        return {"success": True, "count": len(rows), "records": rows}
+
+    @handle_errors
+    @timed_execution
+    def get_pending_pgi(self) -> Dict[str, Any]:
+        """Fetch records pending Post Goods Issue (PGI missing)."""
+        query = """
+        SELECT DISTINCT dn_no, customer_name, dn_create_date 
+        FROM delivery_reports 
+        WHERE good_issue_date IS NULL
+        ORDER BY dn_create_date DESC
+        """
+        rows = self._execute_query(query)
+        return {"success": True, "count": len(rows), "records": rows}
+
+    @handle_errors
+    @timed_execution
+    def get_pending_pod(self) -> Dict[str, Any]:
+        """Fetch records pending Proof of Delivery confirmation (PGI complete but POD missing)."""
+        query = """
+        SELECT DISTINCT dn_no, customer_name, good_issue_date 
+        FROM delivery_reports 
+        WHERE good_issue_date IS NOT NULL AND pod_date IS NULL
+        ORDER BY good_issue_date DESC
+        """
+        rows = self._execute_query(query)
+        return {"success": True, "count": len(rows), "records": rows}
 
     def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
         """Get complete DN dashboard - main method."""
