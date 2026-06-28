@@ -1,8 +1,8 @@
 # ==========================================================
-# FILE: app/routes/webhook.py (v28.0 - FORMATTED DN RESPONSES)
+# FILE: app/routes/webhook.py (v28.1 - RAW NUMBER DETECTION)
 # ==========================================================
 # PURPOSE: WhatsApp Webhook Handler - ALWAYS Calls AI
-# VERSION: 28.0 - FIXED DN FORMATTING WITH NEW FORMatter
+# VERSION: 28.1 - AUTO-DETECT DN NUMBERS + FORMATTED RESPONSES
 # ==========================================================
 
 import json
@@ -17,6 +17,7 @@ from fastapi import APIRouter, Request, BackgroundTasks, Query, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
 from loguru import logger
 from sqlalchemy.orm import Session
+from decimal import Decimal
 
 # ==========================================================
 # CONFIGURATION
@@ -58,7 +59,7 @@ _whatsapp_service = None
 _dn_analytics_service = None
 
 # ==========================================================
-# ✅ FIXED: AI PROVIDER SERVICE
+# AI PROVIDER SERVICE
 # ==========================================================
 
 def _get_ai_provider_service() -> Optional[Any]:
@@ -214,22 +215,20 @@ def is_duplicate_message(message_id: str, phone_number: str) -> bool:
     return False
 
 # ==========================================================
-# ✅ FIXED: PROFESSIONAL WHATSAPP FORMATTER
+# ✅ PROFESSIONAL WHATSAPP FORMATTER (FIXED)
 # ==========================================================
 
 def format_dn_response(data: Any) -> str:
     """
     Format DN dashboard data into professional WhatsApp message.
     
-    ✅ FIXED: Uses the new professional formatter
     ✅ PRESERVES: All DNDashboard attributes
     ✅ DISPLAYS: Only business-relevant information
+    ✅ HANDLES: DNDashboard objects, dicts, lists
     """
-    # If data is None or empty
     if not data:
         return "No data available"
     
-    # If data is already a formatted string
     if isinstance(data, str):
         return data
     
@@ -245,7 +244,6 @@ def format_dn_response(data: Any) -> str:
                     value = value.strftime('%Y-%m-%d')
                 d[field_name] = value
         elif isinstance(data, dict):
-            # If it has 'data' key, extract it
             if 'data' in data:
                 return format_dn_response(data['data'])
             d = data
@@ -354,10 +352,8 @@ def format_dn_response(data: Any) -> str:
     stage = d.get('calculated_stage', 'Unknown')
     emoji = d.get('calculated_emoji', '❓')
     
-    # Show delivery status with emoji
     lines.append(f"{emoji} {stage}")
     
-    # Show pending flag only if pending
     pending_flag = d.get('pending_flag', True)
     if pending_flag:
         lines.append("⏰ Pending Action Required")
@@ -369,35 +365,40 @@ def format_dn_response(data: Any) -> str:
     lines.append("━━━━━━━━━━━━━━━━━━")
     lines.append("")
     
-    # ----- SECTION 7: Products (Already Aggregated) -----
+    # ----- SECTION 7: Products (Grouped to remove duplicates) -----
     products = d.get('products', [])
     if products and len(products) > 0:
+        # ✅ Group products by model to remove duplicates
+        grouped_products = {}
+        for p in products:
+            model = p.get('model', 'Unknown')
+            if model not in grouped_products:
+                grouped_products[model] = {
+                    'model': model,
+                    'quantity': 0,
+                    'revenue': 0
+                }
+            grouped_products[model]['quantity'] += p.get('quantity', 0)
+            grouped_products[model]['revenue'] += p.get('revenue', 0)
+        
         lines.append("📦 Products")
         lines.append("")
         
-        for idx, product in enumerate(products[:10], 1):
-            model = product.get('model', 'Unknown')
+        for idx, (model, product) in enumerate(grouped_products.items()[:10], 1):
             qty = product.get('quantity', 0)
             revenue_val = product.get('revenue', 0)
             
-            # Show model name
             lines.append(f"{idx}. {model}")
-            
-            # Show quantity
             lines.append(f"   Qty: {qty}")
-            
-            # Show revenue if available
             if revenue_val > 0:
                 try:
                     lines.append(f"   Revenue: PKR {float(revenue_val):,.2f}")
                 except:
                     pass
-            
-            # Add empty line between products
             lines.append("")
         
-        if len(products) > 10:
-            remaining = len(products) - 10
+        if len(grouped_products) > 10:
+            remaining = len(grouped_products) - 10
             lines.append(f"... and {remaining} more product(s)")
             lines.append("")
     
@@ -410,13 +411,7 @@ def format_dn_response(data: Any) -> str:
     if ai_insight:
         lines.append("💡 AI Insight")
         lines.append("")
-        # Split into max 2 lines if needed
-        insight_lines = ai_insight.split('. ')
-        if len(insight_lines) > 2:
-            lines.append(f"{insight_lines[0]}.")
-            lines.append(f"{insight_lines[1]}.")
-        else:
-            lines.append(ai_insight)
+        lines.append(ai_insight)
         lines.append("")
     
     # ----- FOOTER -----
@@ -431,8 +426,8 @@ def _ensure_string_response(response_data: Any) -> str:
     """
     Ensure response is always a string for WhatsApp.
     
-    ✅ FIXED: Properly formats DN dashboard data
     ✅ PRESERVES: All attributes
+    ✅ HANDLES: All data types
     """
     if response_data is None:
         return "No data available"
@@ -441,27 +436,17 @@ def _ensure_string_response(response_data: Any) -> str:
         return response_data
     
     if isinstance(response_data, dict):
-        # Check if it's a dashboard response with 'data' field
         if "data" in response_data:
             return format_dn_response(response_data["data"])
-        
-        # Check if it has 'response' field
         if "response" in response_data:
             return _ensure_string_response(response_data["response"])
-        
-        # Check if it has 'error' field
         if "error" in response_data:
             return f"⚠️ {response_data['error']}"
-        
-        # If it's a DN data dict directly
         if "dn_no" in response_data:
             return format_dn_response(response_data)
-        
-        # Convert dict to string
         return str(response_data)
     
     if isinstance(response_data, list):
-        # Format list of items
         if response_data and isinstance(response_data[0], dict) and "dn_no" in response_data[0]:
             results = []
             for item in response_data[:5]:
@@ -472,7 +457,7 @@ def _ensure_string_response(response_data: Any) -> str:
     return str(response_data)
 
 # ==========================================================
-# WEBHOOK VERIFICATION (GET)
+# WEBHOOK VERIFICATION (GET) - UNCHANGED
 # ==========================================================
 
 @router.get("/")
@@ -516,7 +501,7 @@ async def verify_webhook(
         )
 
 # ==========================================================
-# WEBHOOK MESSAGE HANDLER (POST)
+# ✅ UPDATED: WEBHOOK MESSAGE HANDLER (POST)
 # ==========================================================
 
 @router.post("/")
@@ -599,9 +584,31 @@ async def handle_webhook(
                     logger.info(f"[{request_id}] 📨 Message from {phone_number}: '{message_text[:50] if message_text else '[Media]'}'")
                     
                     if message_text and message_text.strip():
-                        # Check if it's a DN query - handle directly for faster response
-                        if message_text.strip().startswith('/dn ') or message_text.strip().startswith('dn '):
-                            dn_no = message_text.strip().split(' ')[1].strip()
+                        cleaned_text = message_text.strip()
+                        
+                        # ============================================================
+                        # ✅ FIXED: Auto-detect DN numbers (with or without /dn)
+                        # ============================================================
+                        is_dn_query = False
+                        dn_no = None
+                        
+                        # Check 1: /dn [number] or dn [number]
+                        if cleaned_text.startswith('/dn ') or cleaned_text.startswith('dn '):
+                            parts = cleaned_text.split(' ')
+                            if len(parts) >= 2:
+                                potential_dn = parts[1].strip()
+                                if potential_dn.isdigit() and len(potential_dn) >= 10:
+                                    is_dn_query = True
+                                    dn_no = potential_dn
+                                    logger.info(f"[{request_id}] ✅ Detected DN via /dn command: {dn_no}")
+                        
+                        # Check 2: Raw number (just digits, 10+ characters)
+                        elif cleaned_text.isdigit() and len(cleaned_text) >= 10:
+                            is_dn_query = True
+                            dn_no = cleaned_text
+                            logger.info(f"[{request_id}] ✅ Detected raw DN number: {dn_no}")
+                        
+                        if is_dn_query and dn_no:
                             background_tasks.add_task(
                                 handle_dn_query_direct,
                                 dn_no,
@@ -611,7 +618,7 @@ async def handle_webhook(
                         else:
                             background_tasks.add_task(
                                 process_message_with_ai,
-                                message_text.strip(),
+                                cleaned_text,
                                 phone_number,
                                 request_id
                             )
@@ -647,7 +654,7 @@ async def handle_webhook(
         )
 
 # ==========================================================
-# ✅ NEW: DIRECT DN HANDLER (FASTEST PATH)
+# ✅ DIRECT DN HANDLER (FASTEST PATH)
 # ==========================================================
 
 async def handle_dn_query_direct(
@@ -697,7 +704,7 @@ async def handle_dn_query_direct(
         )
 
 # ==========================================================
-# ✅ FIXED: PROCESS MESSAGE WITH AI
+# PROCESS MESSAGE WITH AI - UNCHANGED
 # ==========================================================
 
 async def process_message_with_ai(
@@ -768,7 +775,7 @@ async def process_message_with_ai(
             logger.error(f"[{request_id}] ❌ Failed to send error response")
 
 # ==========================================================
-# MEDIA MESSAGE HANDLERS
+# MEDIA MESSAGE HANDLERS - UNCHANGED
 # ==========================================================
 
 async def process_audio_message(
@@ -802,7 +809,7 @@ async def process_location_message(
         logger.error(f"[{request_id}] ❌ Location processing error: {e}")
 
 # ==========================================================
-# ✅ FIXED: SEND WHATSAPP RESPONSE
+# SEND WHATSAPP RESPONSE - UNCHANGED
 # ==========================================================
 
 async def send_whatsapp_response(
@@ -846,7 +853,7 @@ async def send_whatsapp_response(
         return False
 
 # ==========================================================
-# STATUS ENDPOINTS
+# STATUS ENDPOINTS - UNCHANGED
 # ==========================================================
 
 @router.get("/ping")
@@ -854,7 +861,7 @@ async def webhook_ping() -> JSONResponse:
     ai = _get_ai_provider_service()
     return JSONResponse(content={
         "ping": "pong",
-        "webhook_version": "28.0",
+        "webhook_version": "28.1",
         "architecture": "v16.0 (Built-in Intent Detection)",
         "timestamp": datetime.now().isoformat(),
         "services": {
@@ -872,7 +879,7 @@ async def webhook_health() -> JSONResponse:
     ai = _get_ai_provider_service()
     return JSONResponse(content={
         "status": "healthy" if ai else "degraded",
-        "webhook_version": "28.0",
+        "webhook_version": "28.1",
         "architecture": "v16.0 (Built-in Intent Detection)",
         "timestamp": datetime.now().isoformat(),
         "services": {
@@ -886,7 +893,7 @@ async def webhook_health() -> JSONResponse:
     })
 
 # ==========================================================
-# DIAGNOSTIC ENDPOINT
+# DIAGNOSTIC ENDPOINT - UNCHANGED
 # ==========================================================
 
 @router.get("/test-dn")
@@ -922,7 +929,7 @@ async def test_dn_lookup(dn: str = Query(..., description="DN number to test")):
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("🌐 WEBHOOK ROUTER v28.0 - FORMATTED DN RESPONSES")
+logger.info("🌐 WEBHOOK ROUTER v28.1 - RAW NUMBER DETECTION")
 logger.info("=" * 70)
 
 logger.info("🚀 Pre-initializing AI Provider Service...")
@@ -964,7 +971,8 @@ logger.info("")
 logger.info("   📌 ARCHITECTURE: v16.0 (Built-in Intent Detection)")
 logger.info("   📌 AI Provider: v5.0 (NO ai_query_service.py)")
 logger.info("   📌 Routing: IntentDetectionEngine (built-in)")
-logger.info("   📌 DN Formatting: ✅ NEW Professional Formatter")
+logger.info("   📌 DN Detection: ✅ /dn, dn, OR raw numbers")
+logger.info("   📌 DN Formatting: ✅ Professional Formatter")
 logger.info("   📌 Response Formatting: ✅ ALWAYS string")
 logger.info("")
 logger.info("=" * 70)
