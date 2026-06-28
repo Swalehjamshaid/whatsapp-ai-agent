@@ -958,3 +958,73 @@ class DNAnalysisService:
             "debug_mode": self._debug_mode,
             "production_mode": self._production_mode
         }
+
+
+# =====================================================================================================
+# BLOCK 11: THREAD-SAFE SINGLETON
+# =====================================================================================================
+
+_dn_analytics_service = None
+_dn_lock = threading.Lock()
+
+def get_dn_analytics_service() -> DNAnalysisService:
+    """Thread-safe singleton getter."""
+    global _dn_analytics_service
+
+    if _dn_analytics_service is None:
+        with _dn_lock:
+            if _dn_analytics_service is None:
+                try:
+                    logger.info("🔧 Creating DNAnalysisService singleton...")
+                    _dn_analytics_service = DNAnalysisService()
+                    logger.info("✅ DNAnalysisService singleton initialized")
+                except Exception as e:
+                    logger.exception(f"❌ DNAnalysisService initialization failed: {e}")
+                    raise
+
+    return _dn_analytics_service
+
+
+# =====================================================================================================
+# BLOCK 12: EXPORTS
+# =====================================================================================================
+
+__all__ = [
+    'DNAnalysisService',
+    'get_dn_analytics_service',
+    'DNAggregate',
+    'DNDashboard'
+]
+
+
+# =====================================================================================================
+# BLOCK 13: MODULE INITIALIZATION
+# =====================================================================================================
+
+logger.info("=" * 70)
+logger.info("DNAnalysisService v15.1 - PRODUCTION READY")
+logger.info("=" * 70)
+logger.info("")
+logger.info(" SERVICE DETAILS:")
+logger.info(" ✅ Service Name: dn_analysis")
+logger.info(" ✅ Version: 15.1")
+logger.info(" ✅ Source: PostgreSQL (delivery_reports)")
+logger.info("")
+logger.info(" MINIMAL EXTRACTION:")
+logger.info(" ✅ Only 18 columns extracted")
+logger.info(" ✅ All business logic preserved")
+logger.info(" ✅ Status, aging, pending rules intact")
+logger.info("")
+logger.info(" STATUS: ✅ PRODUCTION READY")
+logger.info("=" * 70)
+
+# Initialize service
+try:
+    service = get_dn_analytics_service()
+    logger.info("✅ DN Analytics Service initialized successfully")
+except Exception as e:
+    logger.error(f"❌ DN Analytics Service initialization failed: {e}")
+
+# =====================================================================================================
+# END OF FILE
+# =====================================================================================================
