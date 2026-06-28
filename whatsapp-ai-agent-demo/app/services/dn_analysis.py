@@ -1,6 +1,6 @@
 # =====================================================================================================
 # FILE: app/services/dn_analysis.py
-# VERSION: v15.1 - MINIMAL EXTRACTION ONLY
+# VERSION: v15.2 - REMOVED UNNECESSARY COLUMNS
 # PURPOSE: DN Analytics Service - Enterprise Grade PostgreSQL Integration
 # =====================================================================================================
 
@@ -367,19 +367,20 @@ class DNAnalysisService:
     """
     DN Analytics Service - Enterprise Grade PostgreSQL Integration.
 
-    v15.1 - READY FOR PRODUCTION
+    v15.2 - REMOVED UNNECESSARY COLUMNS
     ✅ PostgreSQL is the ONLY source of truth
     ✅ Decimal for revenue calculations
     ✅ Safe type conversions
     ✅ Comprehensive validation
     ✅ Performance optimized
     ✅ Workflow tracking methods added
+    ✅ Unnecessary columns removed from query
     """
 
     def __init__(self):
         """Initialize DN Analytics Service."""
         self._service_name = "dn_analysis"
-        self._version = "15.1"
+        self._version = "15.2"
         self._status = "INITIALIZING"
         self._query_count = 0
         self._total_execution_time_ms = 0
@@ -489,24 +490,41 @@ class DNAnalysisService:
                 session.close()
 
     # ==================================================================================================
-    # BLOCK 7: DN SEARCH ENGINE - MINIMAL QUERY (ONLY SPECIFIED COLUMNS)
+    # BLOCK 7: DN SEARCH ENGINE - REMOVED UNNECESSARY COLUMNS
     # ==================================================================================================
 
     def _build_search_query(self) -> str:
         """
-        Build optimized search query - ONLY extracts specified columns.
+        Build optimized search query.
         
-        Extracted Columns:
+        REMOVED Columns (Not needed for WhatsApp):
+        - id (Internal database primary key)
+        - customer_code (Internal ERP/SAP reference)
+        - dealer_code (Internal ERP/SAP reference)
+        - warehouse_code (Internal code, warehouse name is enough)
+        - delivery_location (Duplicates city information)
+        - storage_location (Warehouse operational detail)
+        - order_type (SAP internal value)
+        - dn_work (Internal SAP workflow state)
+        - remarks (Internal notes; often empty)
+        - source_file (Excel import tracking only)
+        - upload_batch_id (Import batch tracking only)
+        - imported_at (Import metadata)
+        - created_at (Database metadata)
+        - updated_at (Database metadata)
+        
+        KEPT Columns:
         - dn_no
-        - customer_name (as dealer_name)
-        - ship_to_city (as city)
+        - customer_name
+        - ship_to_city
         - warehouse
         - division
         - sales_office
         - sales_manager
-        - dn_qty (SUM)
-        - customer_model (COUNT DISTINCT)
-        - dn_amount (SUM)
+        - dn_qty
+        - customer_model
+        - material_no
+        - dn_amount
         - dn_create_date
         - good_issue_date
         - pod_date
@@ -518,32 +536,26 @@ class DNAnalysisService:
         return """
         SELECT
             dn_no,
-            MAX(customer_name) AS dealer_name,
-            MAX(ship_to_city) AS city,
-            MAX(warehouse) AS warehouse,
-            MAX(division) AS division,
-            MAX(sales_office) AS sales_office,
-            MAX(sales_manager) AS sales_manager,
-            SUM(dn_qty) AS total_units,
-            COUNT(DISTINCT customer_model) AS material_count,
-            SUM(dn_amount) AS total_revenue,
-            MIN(dn_create_date) AS dn_create_date,
-            MAX(good_issue_date) AS good_issue_date,
-            MAX(pod_date) AS pod_date,
-            MAX(delivery_status) AS delivery_status,
-            MAX(pgi_status) AS pgi_status,
-            MAX(pod_status) AS pod_status,
-            MAX(pending_flag) AS pending_flag,
-            JSON_AGG(
-                JSON_BUILD_OBJECT(
-                    'model', customer_model,
-                    'quantity', SUM(dn_qty)
-                )
-                ORDER BY customer_model ASC
-            ) AS products
+            customer_name,
+            ship_to_city,
+            warehouse,
+            division,
+            sales_office,
+            sales_manager,
+            dn_qty,
+            customer_model,
+            material_no,
+            dn_amount,
+            dn_create_date,
+            good_issue_date,
+            pod_date,
+            delivery_status,
+            pgi_status,
+            pod_status,
+            pending_flag
         FROM delivery_reports
         WHERE CAST(dn_no AS TEXT) = :dn_no
-        GROUP BY dn_no
+        ORDER BY customer_model ASC, dn_no ASC
         """
 
     def _build_fallback_query(self) -> str:
@@ -1002,18 +1014,49 @@ __all__ = [
 # =====================================================================================================
 
 logger.info("=" * 70)
-logger.info("DNAnalysisService v15.1 - PRODUCTION READY")
+logger.info("DNAnalysisService v15.2 - REMOVED UNNECESSARY COLUMNS")
 logger.info("=" * 70)
 logger.info("")
 logger.info(" SERVICE DETAILS:")
 logger.info(" ✅ Service Name: dn_analysis")
-logger.info(" ✅ Version: 15.1")
+logger.info(" ✅ Version: 15.2")
 logger.info(" ✅ Source: PostgreSQL (delivery_reports)")
 logger.info("")
-logger.info(" MINIMAL EXTRACTION:")
-logger.info(" ✅ Only 18 columns extracted")
-logger.info(" ✅ All business logic preserved")
-logger.info(" ✅ Status, aging, pending rules intact")
+logger.info(" REMOVED COLUMNS:")
+logger.info(" ❌ id (Internal database primary key)")
+logger.info(" ❌ customer_code (Internal ERP/SAP reference)")
+logger.info(" ❌ dealer_code (Internal ERP/SAP reference)")
+logger.info(" ❌ warehouse_code (Internal code)")
+logger.info(" ❌ delivery_location (Duplicates city)")
+logger.info(" ❌ storage_location (Warehouse operational detail)")
+logger.info(" ❌ order_type (SAP internal value)")
+logger.info(" ❌ dn_work (Internal SAP workflow state)")
+logger.info(" ❌ remarks (Internal notes)")
+logger.info(" ❌ source_file (Excel import tracking)")
+logger.info(" ❌ upload_batch_id (Import batch tracking)")
+logger.info(" ❌ imported_at (Import metadata)")
+logger.info(" ❌ created_at (Database metadata)")
+logger.info(" ❌ updated_at (Database metadata)")
+logger.info("")
+logger.info(" KEPT COLUMNS:")
+logger.info(" ✅ dn_no")
+logger.info(" ✅ customer_name")
+logger.info(" ✅ ship_to_city")
+logger.info(" ✅ warehouse")
+logger.info(" ✅ division")
+logger.info(" ✅ sales_office")
+logger.info(" ✅ sales_manager")
+logger.info(" ✅ dn_qty")
+logger.info(" ✅ customer_model")
+logger.info(" ✅ material_no")
+logger.info(" ✅ dn_amount")
+logger.info(" ✅ dn_create_date")
+logger.info(" ✅ good_issue_date")
+logger.info(" ✅ pod_date")
+logger.info(" ✅ delivery_status")
+logger.info(" ✅ pgi_status")
+logger.info(" ✅ pod_status")
+logger.info(" ✅ pending_flag")
 logger.info("")
 logger.info(" STATUS: ✅ PRODUCTION READY")
 logger.info("=" * 70)
