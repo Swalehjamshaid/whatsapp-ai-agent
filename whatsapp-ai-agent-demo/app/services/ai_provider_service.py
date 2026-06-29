@@ -2,7 +2,7 @@
 File: app/services/ai_provider_service.py
 Version: 8.0 - ULTRA-FAST ENTERPRISE AI ROUTING ENGINE
 Purpose: Single entry point for all WhatsApp requests - 10x Faster
-Optimizations: Caching, Lazy Loading, Parallel Processing, Async/Await
+Groq Integration: Ready for PostgreSQL connection
 """
 
 import logging
@@ -17,7 +17,6 @@ from datetime import datetime
 from dataclasses import dataclass, field
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
-from asyncio import gather, create_task, sleep
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +40,8 @@ def get_spacy():
             import spacy
             _nlp = spacy.load("en_core_web_sm")
             logger.info("✅ spaCy loaded (lazy)")
-        except:
+        except Exception as e:
+            logger.warning(f"⚠️ spaCy load failed: {e}")
             _nlp = None
     return _nlp
 
@@ -53,7 +53,8 @@ def get_encoder():
             from sentence_transformers import SentenceTransformer
             _encoder = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
             logger.info("✅ SentenceTransformer loaded (lazy)")
-        except:
+        except Exception as e:
+            logger.warning(f"⚠️ SentenceTransformer load failed: {e}")
             _encoder = None
     return _encoder
 
@@ -65,7 +66,8 @@ def get_ranker():
             from flashrank import Ranker
             _ranker = Ranker(model="ms-marco-TinyBERT-L-2-v2")
             logger.info("✅ FlashRank loaded (lazy)")
-        except:
+        except Exception as e:
+            logger.warning(f"⚠️ FlashRank load failed: {e}")
             _ranker = None
     return _ranker
 
@@ -76,12 +78,17 @@ def get_pydantic_agent():
         try:
             from pydantic_ai import Agent
             from pydantic_ai.models.groq import GroqModel
-            _agent = Agent(
-                GroqModel('llama-3.1-70b-versatile', api_key=os.getenv("GROQ_API_KEY")),
-                system_prompt="You are a Dealer Intelligence Routing Expert."
-            )
-            logger.info("✅ PydanticAI agent loaded (lazy)")
-        except:
+            groq_api_key = os.getenv("GROQ_API_KEY")
+            if groq_api_key:
+                _agent = Agent(
+                    GroqModel('llama-3.1-70b-versatile', api_key=groq_api_key),
+                    system_prompt="You are a Dealer Intelligence Routing Expert. Classify user questions."
+                )
+                logger.info("✅ PydanticAI agent loaded (lazy)")
+            else:
+                logger.warning("⚠️ GROQ_API_KEY not found")
+        except Exception as e:
+            logger.warning(f"⚠️ PydanticAI load failed: {e}")
             _agent = None
     return _agent
 
@@ -95,7 +102,8 @@ def get_core_imports():
             _SessionLocal = SessionLocal
             _DeliveryReport = DeliveryReport
             logger.info("✅ Core imports loaded (lazy)")
-        except:
+        except Exception as e:
+            logger.warning(f"⚠️ Core imports failed: {e}")
             _SessionLocal = None
             _DeliveryReport = None
     return _SessionLocal, _DeliveryReport
@@ -127,7 +135,6 @@ class UltraFastCache:
     def set(self, key: str, value: Any) -> None:
         with self._lock:
             if len(self._cache) >= self._maxsize:
-                # Remove oldest entry
                 oldest = min(self._timestamps.items(), key=lambda x: x[1])
                 del self._cache[oldest[0]]
                 del self._timestamps[oldest[0]]
@@ -138,12 +145,17 @@ class UltraFastCache:
         with self._lock:
             self._cache.clear()
             self._timestamps.clear()
+    
+    def size(self) -> int:
+        with self._lock:
+            return len(self._cache)
 
 # Global caches
 _response_cache = UltraFastCache(maxsize=2000, ttl=180)  # 3 min
 _routing_cache = UltraFastCache(maxsize=3000, ttl=300)   # 5 min
 _entity_cache = UltraFastCache(maxsize=2000, ttl=600)    # 10 min
 _dealer_cache = UltraFastCache(maxsize=1000, ttl=600)    # 10 min
+_groq_cache = UltraFastCache(maxsize=500, ttl=3600)      # 1 hour
 
 # ==========================================================
 # BLOCK 3: ROUTING DECISION
@@ -161,6 +173,7 @@ class RoutingDecision:
     needs_groq: bool = False
     reason: str = ""
     original_message: str = ""
+    groq_context: Optional[Dict[str, Any]] = None  # For Groq with PostgreSQL context
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -172,7 +185,8 @@ class RoutingDecision:
             "confidence": self.confidence,
             "needs_groq": self.needs_groq,
             "reason": self.reason,
-            "original_message": self.original_message
+            "original_message": self.original_message,
+            "groq_context": self.groq_context
         }
 
 # ==========================================================
@@ -186,11 +200,21 @@ class FastEntityExtractor:
     DEALER_PATTERNS = [
         re.compile(r'(?:dealer|about|for|company|customer)\s+([a-z0-9\s&\-\.]+)', re.IGNORECASE),
         re.compile(r'(?:dashboard|profile|summary|overview)\s+(?:of|for)?\s+([a-z0-9\s&\-\.]+)', re.IGNORECASE),
+        re.compile(r'(?:tell me about|show me|get|view|display|give me)\s+([a-z0-9\s&\-\.]+)', re.IGNORECASE),
     ]
     WAREHOUSE_PATTERN = re.compile(r'(?:warehouse|wh|depot)\s+([a-z0-9\s&\-\.]+)', re.IGNORECASE)
     CITY_PATTERN = re.compile(r'(?:city|in|at)\s+([a-z0-9\s&\-\.]+)', re.IGNORECASE)
+    PRODUCT_PATTERN = re.compile(r'(?:product|model|material)\s+([a-z0-9\s&\-\.]+)', re.IGNORECASE)
     DN_PATTERN = re.compile(r'\b(\d{8,12})\b')
     PENDING_PATTERN = re.compile(r'(?:pending|open)\s*(?:dn|pgi|pod)', re.IGNORECASE)
+    ANALYTICS_PATTERNS = [
+        re.compile(r'(highest|top|best|max).*?(revenue|sales|units|performance)', re.IGNORECASE),
+        re.compile(r'(lowest|bottom|worst|min).*?(revenue|sales|units|performance)', re.IGNORECASE),
+        re.compile(r'compare.*?(dealer|warehouse|city)', re.IGNORECASE),
+        re.compile(r'(national|overall|country).*?(kpi|dashboard|performance)', re.IGNORECASE),
+    ]
+    HELP_PATTERN = re.compile(r'(?:help|menu|what can you do|available commands|how to use)', re.IGNORECASE)
+    GREETING_PATTERN = re.compile(r'^(?:hello|hi|hey|good morning|good evening|howdy|greetings)', re.IGNORECASE)
     
     @classmethod
     def extract_entities(cls, text: str) -> Dict[str, Any]:
@@ -199,8 +223,12 @@ class FastEntityExtractor:
             "dealer": [],
             "warehouse": [],
             "city": [],
+            "product": [],
             "dn": [],
-            "pending_type": None
+            "pending_type": None,
+            "is_analytics": False,
+            "is_help": False,
+            "is_greeting": False
         }
         
         # Check cache first
@@ -209,22 +237,38 @@ class FastEntityExtractor:
         if cached:
             return cached
         
+        text_lower = text.lower()
+        
+        # Check Help
+        if cls.HELP_PATTERN.search(text_lower):
+            entities["is_help"] = True
+        
+        # Check Greeting
+        if cls.GREETING_PATTERN.search(text_lower):
+            entities["is_greeting"] = True
+        
+        # Check Analytics
+        for pattern in cls.ANALYTICS_PATTERNS:
+            if pattern.search(text_lower):
+                entities["is_analytics"] = True
+                break
+        
         # Extract DN
         dn_match = cls.DN_PATTERN.search(text)
         if dn_match:
             entities["dn"] = [dn_match.group(1)]
         
         # Extract Pending type
-        pending_match = cls.PENDING_PATTERN.search(text.lower())
+        pending_match = cls.PENDING_PATTERN.search(text_lower)
         if pending_match:
-            if "pgi" in text.lower():
+            if "pgi" in text_lower:
                 entities["pending_type"] = "pgi"
-            elif "pod" in text.lower():
+            elif "pod" in text_lower:
                 entities["pending_type"] = "pod"
             else:
                 entities["pending_type"] = "dn"
         
-        # Extract Dealer (fast path)
+        # Extract Dealer
         for pattern in cls.DEALER_PATTERNS:
             match = pattern.search(text)
             if match:
@@ -244,9 +288,14 @@ class FastEntityExtractor:
         if city_match:
             entities["city"] = [city_match.group(1).strip()]
         
+        # Extract Product
+        product_match = cls.PRODUCT_PATTERN.search(text)
+        if product_match:
+            entities["product"] = [product_match.group(1).strip()]
+        
         # If no dealer found and text is short, treat as dealer
         if not entities["dealer"] and len(text.split()) <= 3 and len(text) > 2:
-            if not re.match(r'^\d+$', text):
+            if not re.match(r'^\d+$', text) and not entities["is_help"] and not entities["is_greeting"]:
                 entities["dealer"] = [text.strip()]
         
         # Cache result
@@ -289,13 +338,13 @@ class FastDealerResolver:
                         DeliveryReport.customer_code
                     ).filter(
                         DeliveryReport.customer_name.isnot(None)
-                    ).distinct().all()
+                    ).distinct().limit(5000).all()
                     
                     cls._dealer_candidates = [
                         {
                             "name": d.customer_name,
-                            "code": d.dealer_code,
-                            "customer_code": d.customer_code,
+                            "code": d.dealer_code or "",
+                            "customer_code": d.customer_code or "",
                             "normalized": cls._normalize(d.customer_name)
                         }
                         for d in dealers if d.customer_name
@@ -325,8 +374,9 @@ class FastDealerResolver:
         
         # Check cache first
         cache_key = f"dealer_{hash(dealer_name)}"
-        if cache_key in cls._dealer_cache:
-            return cls._dealer_cache[cache_key]
+        cached = _dealer_cache.get(cache_key)
+        if cached is not None:
+            return cached
         
         # Load dealers if not loaded
         cls.load_dealers()
@@ -338,41 +388,57 @@ class FastDealerResolver:
         # Strategy 1: Exact match
         for candidate in cls._dealer_candidates:
             if candidate["normalized"] == normalized:
-                cls._dealer_cache[cache_key] = candidate["name"]
+                _dealer_cache.set(cache_key, candidate["name"])
                 return candidate["name"]
         
         # Strategy 2: Contains match
         for candidate in cls._dealer_candidates:
             if normalized in candidate["normalized"] or candidate["normalized"] in normalized:
-                cls._dealer_cache[cache_key] = candidate["name"]
+                _dealer_cache.set(cache_key, candidate["name"])
                 return candidate["name"]
         
         # Strategy 3: Code match
         for candidate in cls._dealer_candidates:
             if normalized in candidate["code"].lower() or normalized in candidate["customer_code"].lower():
-                cls._dealer_cache[cache_key] = candidate["name"]
+                _dealer_cache.set(cache_key, candidate["name"])
                 return candidate["name"]
         
-        # Strategy 4: Semantic search (only if needed)
+        # Strategy 4: Word match
+        words = normalized.split()
+        for word in words:
+            if len(word) > 2:
+                for candidate in cls._dealer_candidates:
+                    if word in candidate["normalized"]:
+                        _dealer_cache.set(cache_key, candidate["name"])
+                        return candidate["name"]
+        
+        # Strategy 5: Semantic search (if available)
         encoder = get_encoder()
         if encoder and cls._dealer_names:
             try:
-                # Quick semantic search
+                # Quick semantic search on first 100 dealers
                 query_embedding = encoder.encode(normalized, convert_to_numpy=True)
-                
                 best_match = None
                 best_score = 0.0
                 
-                # Only check first 50 for speed
-                for name in cls._dealer_names[:50]:
-                    # Simple similarity (we're doing this fast)
-                    if name.startswith(normalized[:3]) or normalized.startswith(name[:3]):
-                        cls._dealer_cache[cache_key] = name
-                        return name
-            except:
-                pass
+                for name in cls._dealer_names[:100]:
+                    # Calculate similarity
+                    name_embedding = encoder.encode(name, convert_to_numpy=True)
+                    from sklearn.metrics.pairwise import cosine_similarity
+                    score = float(cosine_similarity([query_embedding], [name_embedding])[0][0])
+                    if score > best_score:
+                        best_score = score
+                        best_match = name
+                
+                if best_match and best_score > 0.5:
+                    for candidate in cls._dealer_candidates:
+                        if candidate["normalized"] == best_match:
+                            _dealer_cache.set(cache_key, candidate["name"])
+                            return candidate["name"]
+            except Exception as e:
+                logger.warning(f"Semantic search failed: {e}")
         
-        cls._dealer_cache[cache_key] = None
+        _dealer_cache.set(cache_key, None)
         return None
     
     @classmethod
@@ -384,15 +450,30 @@ class FastDealerResolver:
         
         normalized = cls._normalize(dealer_name)
         similar = []
+        seen = set()
         
         for candidate in cls._dealer_candidates:
+            if candidate["name"] in seen:
+                continue
+            
             # Check if name is similar
             if normalized in candidate["normalized"] or candidate["normalized"] in normalized:
                 similar.append(candidate["name"])
+                seen.add(candidate["name"])
             elif any(word in candidate["normalized"] for word in normalized.split() if len(word) > 2):
                 similar.append(candidate["name"])
+                seen.add(candidate["name"])
+            
+            if len(similar) >= limit:
+                break
         
         return similar[:limit]
+    
+    @classmethod
+    def get_all_dealer_names(cls) -> List[str]:
+        """Get all dealer names"""
+        cls.load_dealers()
+        return [c["name"] for c in cls._dealer_candidates]
 
 # ==========================================================
 # BLOCK 6: SERVICE STATUS ENUM
@@ -426,6 +507,7 @@ class PostgreSQLValidator:
             "errors": [],
             "warnings": [],
             "record_count": 0,
+            "dealer_count": 0,
             "timestamp": datetime.now().isoformat()
         }
         
@@ -438,7 +520,7 @@ class PostgreSQLValidator:
             session = SessionLocal()
             
             try:
-                from sqlalchemy import text, inspect as sa_inspect
+                from sqlalchemy import text, inspect as sa_inspect, func
                 session.execute(text("SELECT 1"))
                 result["connected"] = True
             except Exception as e:
@@ -468,6 +550,9 @@ class PostgreSQLValidator:
             try:
                 from sqlalchemy import func
                 result["record_count"] = int(session.query(func.count(DeliveryReport.id)).scalar() or 0)
+                result["dealer_count"] = int(session.query(
+                    func.count(func.distinct(DeliveryReport.customer_name))
+                ).scalar() or 0)
             except Exception:
                 pass
             
@@ -523,6 +608,12 @@ class ServiceRegistry:
             "class_name": "NationalKPIService",
             "methods": ["get_national_kpi_dashboard", "get_delivery_kpis", "get_warehouse_kpis"],
             "description": "National KPI Service"
+        },
+        "groq": {
+            "module": "app.services.groq_service",
+            "class_name": "GroqService",
+            "methods": ["process_query", "get_response", "classify_intent"],
+            "description": "Groq AI Service"
         }
     }
     
@@ -559,6 +650,9 @@ class ServiceRegistry:
     def is_service_ready(self, service_key: str) -> bool:
         instance = self.get_service_instance(service_key)
         return instance is not None
+    
+    def get_all_services(self) -> Dict[str, Any]:
+        return self._services
 
 # ==========================================================
 # BLOCK 9: ULTRA-FAST ROUTING ENGINE
@@ -568,17 +662,17 @@ class UltraFastRoutingEngine:
     """10x faster routing engine with aggressive caching"""
     
     def __init__(self):
-        self._groq_service = None
         self._executor = ThreadPoolExecutor(max_workers=4)
         
         # Pre-compile patterns
         self.DN_PATTERN = re.compile(r'\b(\d{8,12})\b')
-        self.HELP_PATTERN = re.compile(r'(?:help|menu|hi|hello|hey|good morning|good evening|what can you do|available commands)', re.IGNORECASE)
+        self.HELP_PATTERN = re.compile(r'(?:help|menu|what can you do|available commands|how to use|commands)', re.IGNORECASE)
+        self.GREETING_PATTERN = re.compile(r'^(?:hello|hi|hey|good morning|good evening|howdy|greetings)', re.IGNORECASE)
         self.ANALYTICS_PATTERNS = [
-            (r'(highest|top|best|max).*?(revenue|sales|units|performance|dealer)', "ranking", "dealer", "get_top_dealers"),
-            (r'(lowest|bottom|worst|min).*?(revenue|sales|units|performance|dealer)', "ranking", "dealer", "get_bottom_dealers"),
-            (r'compare.*?(dealer|warehouse|city)', "comparison", "dealer", "compare_dealers"),
-            (r'(national|overall|country).*?(kpi|dashboard|performance)', "national_kpi", "national_kpi", "get_national_kpi_dashboard"),
+            (re.compile(r'(highest|top|best|max).*?(revenue|sales|units|performance|dealer)', re.IGNORECASE), "ranking", "dealer", "get_top_dealers"),
+            (re.compile(r'(lowest|bottom|worst|min).*?(revenue|sales|units|performance|dealer)', re.IGNORECASE), "ranking", "dealer", "get_bottom_dealers"),
+            (re.compile(r'compare.*?(dealer|warehouse|city)', re.IGNORECASE), "comparison", "dealer", "compare_dealers"),
+            (re.compile(r'(national|overall|country).*?(kpi|dashboard|performance)', re.IGNORECASE), "national_kpi", "national_kpi", "get_national_kpi_dashboard"),
         ]
     
     def route(self, message: str) -> RoutingDecision:
@@ -610,23 +704,27 @@ class UltraFastRoutingEngine:
             _routing_cache.set(cache_key, decision)
             return decision
         
-        # FAST PATH 2: Help/Greeting (< 1ms)
-        if self.HELP_PATTERN.search(message_lower):
+        # FAST PATH 2: Entity Extraction (< 2ms)
+        entities = FastEntityExtractor.extract_entities(message_clean)
+        
+        # Check for Help/Greeting
+        if entities.get("is_help") or entities.get("is_greeting"):
             decision = RoutingDecision(
-                intent="help",
+                intent="help" if entities.get("is_help") else "greeting",
                 service_key="groq",
                 method="process_query",
-                confidence=0.9,
+                confidence=0.95,
                 needs_groq=True,
-                reason="Help/greeting",
-                original_message=message_clean
+                reason="Help/Greeting",
+                original_message=message_clean,
+                groq_context={"type": "conversational"}
             )
             _routing_cache.set(cache_key, decision)
             return decision
         
         # FAST PATH 3: Analytics Patterns (< 1ms)
         for pattern, intent, service_key, method in self.ANALYTICS_PATTERNS:
-            if re.search(pattern, message_lower):
+            if pattern.search(message_lower):
                 decision = RoutingDecision(
                     intent=intent,
                     service_key=service_key,
@@ -639,10 +737,7 @@ class UltraFastRoutingEngine:
                 _routing_cache.set(cache_key, decision)
                 return decision
         
-        # FAST PATH 4: Entity Extraction (< 2ms)
-        entities = FastEntityExtractor.extract_entities(message_clean)
-        
-        # Check for pending
+        # FAST PATH 4: Pending Detection
         if entities.get("pending_type"):
             pending_type = entities["pending_type"]
             method_map = {
@@ -696,16 +791,20 @@ class UltraFastRoutingEngine:
                             original_message=message_clean
                         )
                     else:
-                        # Multiple suggestions
+                        # Multiple suggestions - send to Groq for better handling
                         decision = RoutingDecision(
                             intent="dealer_suggestion",
-                            service_key="dealer",
-                            method="suggest_dealers",
-                            entity=dealer_name,
+                            service_key="groq",
+                            method="process_query",
                             confidence=0.7,
-                            needs_groq=False,
+                            needs_groq=True,
                             reason=f"Suggestions: {similar[:3]}",
-                            original_message=message_clean
+                            original_message=message_clean,
+                            groq_context={
+                                "type": "dealer_suggestion",
+                                "query": dealer_name,
+                                "suggestions": similar[:5]
+                            }
                         )
                     _routing_cache.set(cache_key, decision)
                     return decision
@@ -739,7 +838,23 @@ class UltraFastRoutingEngine:
             _routing_cache.set(cache_key, decision)
             return decision
         
-        # FALLBACK: Groq (for complex queries)
+        if entities.get("product"):
+            decision = RoutingDecision(
+                intent="product_dashboard",
+                service_key="product",
+                method="get_product_dashboard",
+                entity=entities["product"][0],
+                confidence=0.85,
+                needs_groq=False,
+                reason="Product detected",
+                original_message=message_clean
+            )
+            _routing_cache.set(cache_key, decision)
+            return decision
+        
+        # ============================================================
+        # GROQ FALLBACK - All unmatched questions go here
+        # ============================================================
         decision = RoutingDecision(
             intent="general_ai",
             service_key="groq",
@@ -747,169 +862,138 @@ class UltraFastRoutingEngine:
             confidence=0.3,
             needs_groq=True,
             reason="Fallback to Groq",
-            original_message=message_clean
+            original_message=message_clean,
+            groq_context={
+                "type": "general_query",
+                "entities": entities
+            }
         )
         _routing_cache.set(cache_key, decision)
         
         elapsed_ms = (time.perf_counter() - start_time) * 1000
         if elapsed_ms > 10:
-            logger.info(f"⏱️ Routing: {elapsed_ms:.2f}ms")
+            logger.info(f"⏱️ Routing: {elapsed_ms:.2f}ms - Fallback to Groq")
         
         return decision
 
 # ==========================================================
-# BLOCK 10: WHATSAPP PROVIDER SERVICE
+# BLOCK 10: GROQ SERVICE INTEGRATION
 # ==========================================================
 
-class WhatsAppProviderService:
-    """10x faster WhatsApp provider service"""
+class GroqIntegration:
+    """Groq service integration for PostgreSQL-aware responses"""
     
     def __init__(self):
-        start_time = time.time()
-        
+        self._groq_service = None
+        self._load_groq_service()
+    
+    def _load_groq_service(self):
+        """Load Groq service"""
         try:
-            logger.info("=" * 70)
-            logger.info("AI Provider Service v8.0 - ULTRA-FAST ROUTING")
-            logger.info("=" * 70)
-            
-            self.routing_engine = UltraFastRoutingEngine()
-            logger.info("✅ UltraFastRoutingEngine initialized")
-            
-            self.registry = ServiceRegistry()
-            logger.info("✅ ServiceRegistry initialized")
-            
-            # Pre-load dealers in background
-            import threading
-            threading.Thread(target=FastDealerResolver.load_dealers, daemon=True).start()
-            
-            init_duration = (time.time() - start_time) * 1000
-            logger.info(f"   INIT TIME: {init_duration:.2f}ms")
-            logger.info("   STATUS: ✅ ULTRA-FAST READY")
-            logger.info("   OPTIMIZATIONS: Aggressive Caching, Lazy Loading, Parallel Processing")
-            logger.info("=" * 70)
-            
+            from app.services.groq_service import get_groq_service
+            self._groq_service = get_groq_service()
+            if self._groq_service:
+                logger.info("✅ Groq service loaded")
         except Exception as e:
-            logger.exception(f"❌ Failed to initialize: {str(e)}")
-            raise
+            logger.warning(f"⚠️ Groq service not available: {e}")
+            self._groq_service = None
     
-    # ==========================================================
-    # MAIN ROUTING METHOD - 10X FASTER
-    # ==========================================================
-    
-    async def process_whatsapp_query(
-        self,
-        message: str,
-        sender_id: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """Process WhatsApp query - 10x faster with aggressive caching"""
-        start_time = time.perf_counter()
-        logger.info(f"📩 Processing: '{message[:50]}'")
+    async def process_with_groq(self, message: str, decision: RoutingDecision) -> Dict[str, Any]:
+        """Process query with Groq - with PostgreSQL context"""
         
-        # Check response cache first
-        cache_key = f"resp_{hash(message)}_{hash(sender_id or '')}"
-        cached_response = _response_cache.get(cache_key)
-        if cached_response:
-            logger.info(f"⚡ Response cache hit: {message[:30]}...")
-            return cached_response
-        
-        try:
-            # STEP 1: Route (< 10ms)
-            routing_decision = self.routing_engine.route(message)
-            
-            # STEP 2: Check Groq
-            if routing_decision.needs_groq or routing_decision.service_key == "groq":
-                return await self._handle_groq(message, routing_decision)
-            
-            # STEP 3: Get Service Instance
-            service_instance = self.registry.get_service_instance(routing_decision.service_key)
-            if not service_instance:
-                return self._format_error("Service not available")
-            
-            # STEP 4: Execute Service
-            method = getattr(service_instance, routing_decision.method, None)
-            if not method:
-                return self._format_error(f"Method '{routing_decision.method}' not found")
-            
-            # Execute with entity
-            if routing_decision.entity:
-                result = method(routing_decision.entity)
-            else:
-                result = method()
-            
-            # Handle async
-            if inspect.iscoroutine(result):
-                result = await result
-            
-            # Format Response
-            response = self._format_response(message, result)
-            
-            # Cache response
-            _response_cache.set(cache_key, response)
-            
-            elapsed_ms = (time.perf_counter() - start_time) * 1000
-            logger.info(f"⏱️ Response time: {elapsed_ms:.2f}ms")
-            
-            return response
-            
-        except Exception as e:
-            logger.exception(f"❌ Failed: {e}")
-            return self._format_error("An unexpected error occurred. Please try again.")
-    
-    # ==========================================================
-    # GROQ HANDLER
-    # ==========================================================
-    
-    async def _handle_groq(self, message: str, decision: RoutingDecision) -> Dict[str, Any]:
-        """Handle Groq queries - with caching"""
         # Check cache
         cache_key = f"groq_{hash(message)}"
-        cached = _response_cache.get(cache_key)
+        cached = _groq_cache.get(cache_key)
         if cached:
             return cached
         
-        # Try to get Groq service
+        # Build context for Groq
+        context = self._build_groq_context(message, decision)
+        
         try:
-            from app.services.groq_service import get_groq_service
-            groq_service = get_groq_service()
-            if groq_service and hasattr(groq_service, 'process_query'):
-                response = await groq_service.process_query(message)
+            if self._groq_service and hasattr(self._groq_service, 'process_query'):
+                # Add context to message
+                enhanced_message = f"{context}\n\nUser Question: {message}"
+                response = await self._groq_service.process_query(enhanced_message)
+                
                 if response:
-                    result = self._format_response(message, response)
-                    _response_cache.set(cache_key, result)
+                    result = {
+                        "success": True,
+                        "response": response if isinstance(response, str) else response.get("response", ""),
+                        "groq_used": True,
+                        "context": context
+                    }
+                    _groq_cache.set(cache_key, result)
                     return result
         except Exception as e:
-            logger.error(f"Groq failed: {e}")
+            logger.error(f"❌ Groq processing failed: {e}")
         
-        # Fallback responses
+        # Fallback if Groq unavailable
         fallback = self._get_fallback_response(message, decision)
-        result = self._format_response(message, fallback)
-        _response_cache.set(cache_key, result)
+        result = {
+            "success": True,
+            "response": fallback,
+            "groq_used": False,
+            "context": context
+        }
+        _groq_cache.set(cache_key, result)
         return result
     
+    def _build_groq_context(self, message: str, decision: RoutingDecision) -> str:
+        """Build context for Groq with PostgreSQL data"""
+        context = "You are a Dealer Intelligence Assistant. Answer based on the following context:\n\n"
+        
+        # Add database context
+        SessionLocal, DeliveryReport = get_core_imports()
+        if SessionLocal and DeliveryReport:
+            try:
+                session = SessionLocal()
+                
+                # Get dealer count
+                dealer_count = session.query(func.count(func.distinct(DeliveryReport.customer_name))).scalar() or 0
+                context += f"- Total Dealers: {dealer_count}\n"
+                
+                # Get recent activity
+                recent = session.query(
+                    func.count(DeliveryReport.dn_no),
+                    func.sum(DeliveryReport.dn_amount)
+                ).filter(
+                    DeliveryReport.dn_create_date >= datetime.now() - timedelta(days=30)
+                ).first()
+                
+                if recent:
+                    context += f"- Recent DNs (30 days): {recent[0] or 0}\n"
+                    context += f"- Recent Revenue: PKR {recent[1] or 0:,.2f}\n"
+                
+                session.close()
+            except Exception as e:
+                logger.warning(f"Failed to build context: {e}")
+        
+        # Add entity context
+        if decision.groq_context:
+            context += f"\nDetected Intent: {decision.intent}\n"
+            if decision.entity:
+                context += f"Entity: {decision.entity}\n"
+            if decision.groq_context.get("suggestions"):
+                context += f"Suggestions: {', '.join(decision.groq_context['suggestions'])}\n"
+        
+        context += "\nProvide helpful, accurate, and concise responses."
+        
+        return context
+    
     def _get_fallback_response(self, message: str, decision: RoutingDecision) -> str:
-        """Get fallback response"""
+        """Get fallback response if Groq unavailable"""
         message_lower = message.lower()
         
         # Dealer suggestion
-        if decision.intent == "dealer_suggestion":
-            similar = FastDealerResolver.find_similar(decision.entity or message, limit=5)
-            if similar:
-                suggestion_text = "🔍 Did you mean:\n\n" + "\n".join([f"• {name}" for name in similar[:5]])
-                suggestion_text += "\n\nPlease type the full dealer name exactly as shown above."
+        if decision.intent == "dealer_suggestion" and decision.groq_context:
+            suggestions = decision.groq_context.get("suggestions", [])
+            if suggestions:
+                suggestion_text = "🔍 I couldn't find exactly that dealer. Did you mean:\n\n"
+                for i, name in enumerate(suggestions[:5], 1):
+                    suggestion_text += f"{i}. {name}\n"
+                suggestion_text += "\nPlease type the full dealer name exactly as shown above."
                 return suggestion_text
-        
-        # Greeting
-        if any(word in message_lower for word in ["hello", "hi", "hey", "good morning", "good evening"]):
-            return (
-                "👋 Hello! I'm your Dealer Intelligence Assistant.\n\n"
-                "I can help you with:\n"
-                "📦 DN queries (send a DN number)\n"
-                "🏪 Dealer analytics\n"
-                "🏭 Warehouse analytics\n"
-                "🏙️ City analytics\n"
-                "📊 Rankings and comparisons\n\n"
-                "Type 'Help' to see all commands."
-            )
         
         # Help
         if "help" in message_lower or "menu" in message_lower:
@@ -948,6 +1032,126 @@ class WhatsAppProviderService:
             "• An analytics query (e.g., 'Top dealers')\n\n"
             "Type 'Help' for all commands."
         )
+
+# ==========================================================
+# BLOCK 11: WHATSAPP PROVIDER SERVICE
+# ==========================================================
+
+class WhatsAppProviderService:
+    """10x faster WhatsApp provider service with Groq integration"""
+    
+    def __init__(self):
+        start_time = time.time()
+        
+        try:
+            logger.info("=" * 70)
+            logger.info("AI Provider Service v8.0 - ULTRA-FAST ROUTING ENGINE")
+            logger.info("=" * 70)
+            
+            self.routing_engine = UltraFastRoutingEngine()
+            logger.info("✅ UltraFastRoutingEngine initialized")
+            
+            self.registry = ServiceRegistry()
+            logger.info("✅ ServiceRegistry initialized")
+            
+            self.groq_integration = GroqIntegration()
+            logger.info("✅ GroqIntegration initialized")
+            
+            # Pre-load dealers in background
+            threading.Thread(target=FastDealerResolver.load_dealers, daemon=True).start()
+            
+            init_duration = (time.time() - start_time) * 1000
+            logger.info(f"   INIT TIME: {init_duration:.2f}ms")
+            logger.info("   STATUS: ✅ ULTRA-FAST READY")
+            logger.info("   GROQ: ✅ Ready for PostgreSQL integration")
+            logger.info("   OPTIMIZATIONS: Aggressive Caching, Lazy Loading")
+            logger.info("=" * 70)
+            
+        except Exception as e:
+            logger.exception(f"❌ Failed to initialize: {str(e)}")
+            raise
+    
+    # ==========================================================
+    # MAIN ROUTING METHOD - 10X FASTER
+    # ==========================================================
+    
+    async def process_whatsapp_query(
+        self,
+        message: str,
+        sender_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Process WhatsApp query - 10x faster with Groq fallback"""
+        start_time = time.perf_counter()
+        logger.info(f"📩 Processing: '{message[:50]}'")
+        
+        # Check response cache first
+        cache_key = f"resp_{hash(message)}_{hash(sender_id or '')}"
+        cached_response = _response_cache.get(cache_key)
+        if cached_response:
+            logger.info(f"⚡ Response cache hit: {message[:30]}...")
+            return cached_response
+        
+        try:
+            # STEP 1: Route (< 10ms)
+            routing_decision = self.routing_engine.route(message)
+            logger.info(f"🎯 Intent: {routing_decision.intent}, Service: {routing_decision.service_key}")
+            
+            # STEP 2: Check if needs Groq
+            if routing_decision.needs_groq or routing_decision.service_key == "groq":
+                result = await self.groq_integration.process_with_groq(message, routing_decision)
+                formatted = self._format_response(message, result.get("response", ""))
+                _response_cache.set(cache_key, formatted)
+                return formatted
+            
+            # STEP 3: Get Service Instance
+            service_instance = self.registry.get_service_instance(routing_decision.service_key)
+            if not service_instance:
+                # Fallback to Groq if service not available
+                result = await self.groq_integration.process_with_groq(message, routing_decision)
+                formatted = self._format_response(message, result.get("response", ""))
+                _response_cache.set(cache_key, formatted)
+                return formatted
+            
+            # STEP 4: Execute Service
+            method = getattr(service_instance, routing_decision.method, None)
+            if not method:
+                return self._format_error(f"Method '{routing_decision.method}' not found")
+            
+            # Execute with entity
+            if routing_decision.entity:
+                result = method(routing_decision.entity)
+            else:
+                result = method()
+            
+            # Handle async
+            if inspect.iscoroutine(result):
+                result = await result
+            
+            # Format Response
+            response = self._format_response(message, result)
+            
+            # Cache response
+            _response_cache.set(cache_key, response)
+            
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+            logger.info(f"⏱️ Response time: {elapsed_ms:.2f}ms")
+            
+            return response
+            
+        except Exception as e:
+            logger.exception(f"❌ Failed: {e}")
+            # Try Groq as fallback
+            try:
+                result = await self.groq_integration.process_with_groq(message, RoutingDecision(
+                    intent="error_fallback",
+                    service_key="groq",
+                    method="process_query",
+                    needs_groq=True,
+                    original_message=message
+                ))
+                return self._format_response(message, result.get("response", "An error occurred. Please try again."))
+            except:
+                return self._format_error("An unexpected error occurred. Please try again.")
     
     # ==========================================================
     # RESPONSE FORMATTING
@@ -955,7 +1159,7 @@ class WhatsAppProviderService:
     
     def _format_response(self, original_message: str, data: Any) -> Dict[str, Any]:
         """Format response for WhatsApp"""
-        # If data is a dictionary with response
+        # If data is a dictionary
         if isinstance(data, dict):
             if data.get("response"):
                 data = data["response"]
@@ -1000,20 +1204,60 @@ class WhatsAppProviderService:
     # ==========================================================
     
     def get_system_health(self) -> Dict[str, Any]:
+        """Get system health"""
         return {
             "status": "healthy",
             "version": "8.0",
             "cache_size": {
-                "response": len(_response_cache._cache),
-                "routing": len(_routing_cache._cache),
-                "entity": len(_entity_cache._cache),
-                "dealer": len(_dealer_cache._cache)
+                "response": _response_cache.size(),
+                "routing": _routing_cache.size(),
+                "entity": _entity_cache.size(),
+                "dealer": _dealer_cache.size(),
+                "groq": _groq_cache.size()
             },
+            "dealer_count": len(FastDealerResolver._dealer_candidates),
+            "groq_available": self.groq_integration._groq_service is not None,
+            "timestamp": datetime.now().isoformat()
+        }
+    
+    def get_service_registry_status(self) -> Dict[str, Any]:
+        """Get service registry status"""
+        pg_validator = PostgreSQLValidator()
+        pg_status = pg_validator.validate()
+        
+        services = {}
+        for key in self.registry.get_all_services():
+            services[key] = {
+                "available": self.registry.is_service_ready(key),
+                "description": self.registry.SERVICES[key]["description"]
+            }
+        
+        return {
+            "services": services,
+            "postgresql": pg_status,
+            "timestamp": datetime.now().isoformat()
+        }
+    
+    def validate_all_services(self) -> Dict[str, Any]:
+        """Validate all services"""
+        pg_validator = PostgreSQLValidator()
+        pg_status = pg_validator.validate()
+        
+        services = {}
+        for key in self.registry.get_all_services():
+            services[key] = {
+                "loaded": self.registry.is_service_ready(key),
+                "instance": self.registry.get_service_instance(key) is not None
+            }
+        
+        return {
+            "postgresql": pg_status,
+            "services": services,
             "timestamp": datetime.now().isoformat()
         }
 
 # ==========================================================
-# BLOCK 11: THREAD-SAFE SINGLETON
+# BLOCK 12: THREAD-SAFE SINGLETON
 # ==========================================================
 
 _whatsapp_provider_service = None
@@ -1033,7 +1277,7 @@ def get_whatsapp_provider_service() -> WhatsAppProviderService:
     return _whatsapp_provider_service
 
 # ==========================================================
-# BLOCK 12: EXPORTS
+# BLOCK 13: EXPORTS
 # ==========================================================
 
 __all__ = [
@@ -1042,7 +1286,11 @@ __all__ = [
     'UltraFastRoutingEngine',
     'FastDealerResolver',
     'FastEntityExtractor',
-    'UltraFastCache'
+    'UltraFastCache',
+    'GroqIntegration',
+    'ServiceRegistry',
+    'ServiceStatus',
+    'RoutingDecision'
 ]
 
 # ==========================================================
@@ -1053,9 +1301,11 @@ logger.info("=" * 70)
 logger.info("AI Provider Service v8.0 - ULTRA-FAST ROUTING ENGINE")
 logger.info("=" * 70)
 logger.info("✅ Lazy Loading - Only load when needed")
-logger.info("✅ Aggressive Caching - 3 cache layers")
+logger.info("✅ Aggressive Caching - 5 cache layers")
 logger.info("✅ Fast Path Routing - < 10ms for common queries")
 logger.info("✅ Entity Extraction - Pre-compiled regex")
 logger.info("✅ Dealer Resolution - Cached in-memory")
+logger.info("✅ Groq Fallback - All unmatched questions")
+logger.info("✅ PostgreSQL Ready - Full integration support")
 logger.info("✅ 10x Faster Response Time")
 logger.info("=" * 70)
