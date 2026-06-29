@@ -5,8 +5,10 @@ from __future__ import annotations
 import logging
 import math
 import os
+import re
 import threading
 import time
+import unicodedata
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from typing import Any, Optional
@@ -170,6 +172,23 @@ class DealerRanking:
         return asdict(self)
 
 
+@dataclass
+class DealerSearchResult:
+    original_message: str
+    extracted_dealer: str
+    normalized_dealer: str
+    dealer_found: Optional[str] = None
+    dealer_code: Optional[str] = None
+    customer_code: Optional[str] = None
+    alias_used: Optional[str] = None
+    rapidfuzz_score: Optional[float] = None
+    semantic_score: Optional[float] = None
+    suggestions: list[dict[str, Any]] = field(default_factory=list)
+    ambiguous: bool = False
+    cache_used: bool = False
+    exception: Optional[str] = None
+
+
 class CityCoordinateService:
     """Cached coordinates; distances are calculated, never hardcoded."""
 
@@ -291,6 +310,21 @@ class DealerAnalyticsService:
         "highest_pending": "pending_pct", "lowest_revenue": "total_revenue", "lowest_units": "total_units",
         "slowest_delivery": "average_delivery_days", "poor_pod": "pod_success_pct",
     }
+    STOP_PHRASES = (
+        "tell me about", "dealer dashboard", "dealer profile", "dealer performance",
+        "dealer statistics", "dealer revenue", "dealer distance", "dealer pending",
+        "dealer status", "dealer pod", "dealer pgi", "show", "display", "dealer",
+        "profile", "statistics", "performance", "status", "revenue", "distance",
+        "pending", "dashboard", "about", "of", "the", "company", "private",
+        "limited", "pvt", "ltd",
+    )
+    DEALER_ALIASES = {
+        "mian": "Mian Group Chakwal",
+        "mgc": "Mian Group Chakwal",
+        "mian chakwal": "Mian Group Chakwal",
+        "mian wah": "Mian Group Chakwal",
+        "mian chakwal wah": "Mian Group Chakwal",
+    }
 
     def __init__(self) -> None:
         self._service_name = "dealer_analytics"
@@ -298,6 +332,10 @@ class DealerAnalyticsService:
         self._startup_time = datetime.utcnow().isoformat()
         self._coordinates = CityCoordinateService()
         self._distance = DistanceService(self._coordinates)
+        self._dealer_cache: TTLCache[str, DealerSearchResult] = TTLCache(maxsize=2048, ttl=CACHE_TTL)
+        self._candidate_cache: TTLCache[str, list[dict[str, str]]] = TTLCache(maxsize=1, ttl=900)
+        self._search_lock = threading.RLock()
+        self._last_diagnostic: dict[str, Any] = {}
 
     @staticmethod
     def _session() -> Session:
@@ -306,7 +344,114 @@ class DealerAnalyticsService:
     @staticmethod
     def _dealer_filter(identifier: str) -> Any:
         token = identifier.strip()
-        return or_(func.lower(DeliveryReport.customer_name) == token.lower(), DeliveryReport.dealer_code == token, DeliveryReport.customer_code == token)
+        return or_(
+            func.lower(func.trim(DeliveryReport.customer_name)) == token.lower(),
+            DeliveryReport.dealer_code == token,
+            DeliveryReport.customer_code == token,
+        )
+
+    @classmethod
+    def _normalize_dealer_text(cls, value: Any) -> str:
+        text_value = unicodedata.normalize("NFKD", _text(value, "").lower())
+        text_value = re.sub(r"[^a-z0-9\s]", " ", text_value)
+        text_value = re.sub(r"\s+", " ", text_value).strip()
+        for phrase in sorted(cls.STOP_PHRASES, key=len, reverse=True):
+            text_value = re.sub(rf"\b{re.escape(phrase)}\b", " ", text_value)
+        return re.sub(r"\s+", " ", text_value).strip()
+
+    def _dealer_candidates(self, session: Session) -> tuple[list[dict[str, str]], bool]:
+        with self._search_lock:
+            cached = self._candidate_cache.get("all")
+        if cached is not None:
+            return cached, True
+        started = time.perf_counter()
+        rows = session.query(
+            DeliveryReport.customer_name,
+            DeliveryReport.dealer_code,
+            DeliveryReport.customer_code,
+        ).filter(DeliveryReport.customer_name.isnot(None)).distinct().all()
+        candidates = [
+            {
+                "name": _text(row.customer_name),
+                "dealer_code": _text(row.dealer_code, ""),
+                "customer_code": _text(row.customer_code, ""),
+                "normalized": self._normalize_dealer_text(row.customer_name),
+            }
+            for row in rows if _text(row.customer_name, "")
+        ]
+        with self._search_lock:
+            self._candidate_cache["all"] = candidates
+        logger.info("Dealer candidate query returned %s rows in %.2fms", len(candidates), (time.perf_counter() - started) * 1000)
+        return candidates, False
+
+    def _resolve_dealer(self, session: Session, message: str) -> DealerSearchResult:
+        started = time.perf_counter()
+        original = _text(message, "")
+        normalized = self._normalize_dealer_text(original)
+        alias = self.DEALER_ALIASES.get(normalized)
+        search_text = alias or normalized
+        cache_key = search_text.lower()
+        with self._search_lock:
+            cached = self._dealer_cache.get(cache_key)
+        if cached:
+            result = DealerSearchResult(**asdict(cached))
+            result.original_message, result.cache_used = original, True
+            return result
+        result = DealerSearchResult(original, search_text, normalized, alias_used=alias)
+        try:
+            candidates, cache_used = self._dealer_candidates(session)
+            result.cache_used = cache_used
+            token = original.strip()
+            code_matches = [item for item in candidates if token in {item["dealer_code"], item["customer_code"]}]
+            if code_matches:
+                best = code_matches[0]
+                result.dealer_found, result.dealer_code, result.customer_code = best["name"], best["dealer_code"], best["customer_code"]
+            else:
+                exact = [item for item in candidates if item["normalized"] == self._normalize_dealer_text(search_text)]
+                contains = [item for item in candidates if search_text and (search_text in item["normalized"] or item["normalized"] in search_text)]
+                pool = exact or contains
+                if len(pool) == 1:
+                    best = pool[0]
+                    result.dealer_found, result.dealer_code, result.customer_code = best["name"], best["dealer_code"], best["customer_code"]
+                    result.rapidfuzz_score = 100.0 if exact else round(float(fuzz.WRatio(search_text, best["normalized"])), 2)
+                else:
+                    choices = {index: item["normalized"] for index, item in enumerate(candidates)}
+                    matches = process.extract(search_text, choices, scorer=fuzz.WRatio, limit=5)
+                    scored = [(candidates[index], float(score)) for _, score, index in matches]
+                    result.suggestions = [{"dealer_name": item["name"], "similarity": round(score, 2), "dealer_code": item["dealer_code"]} for item, score in scored]
+                    if scored:
+                        result.rapidfuzz_score = round(scored[0][1], 2)
+                    confident = [entry for entry in scored if entry[1] >= 85]
+                    if len(confident) == 1 or (len(confident) > 1 and confident[0][1] - confident[1][1] >= 5):
+                        best = confident[0][0]
+                        result.dealer_found, result.dealer_code, result.customer_code = best["name"], best["dealer_code"], best["customer_code"]
+                    elif confident:
+                        result.ambiguous = True
+            with self._search_lock:
+                self._dealer_cache[cache_key] = result
+        except Exception as error:
+            result.exception = str(error)
+            logger.exception("Dealer resolution failed for %s", original)
+        self._last_diagnostic = {**asdict(result), "execution_time_ms": round((time.perf_counter() - started) * 1000, 2)}
+        logger.info("Dealer search original=%r normalized=%r alias=%r score=%r selected=%r", original, normalized, alias, result.rapidfuzz_score, result.dealer_found)
+        return result
+
+    @staticmethod
+    def _suggestion_response(search: DealerSearchResult) -> dict[str, Any]:
+        suggestions = search.suggestions[:5]
+        if search.ambiguous:
+            lines = ["Multiple Dealers Found", ""]
+            for index, item in enumerate(suggestions, 1):
+                lines.extend((str(index), item["dealer_name"], f'{item["similarity"]:.0f}%', ""))
+            lines.append("Reply with dealer number.")
+            code = "MULTIPLE_DEALERS_FOUND"
+        else:
+            lines = ["Did you mean", ""]
+            for item in suggestions:
+                lines.extend((item["dealer_name"], f'{item["similarity"]:.0f}%', ""))
+            code = "DEALER_SUGGESTIONS"
+        message = "\n".join(lines).strip()
+        return {"success": False, "error_code": code, "message": message, "whatsapp_message": message, "suggestions": suggestions, "search": search}
 
     @staticmethod
     def _dealer_key(row: Any) -> str:
@@ -400,14 +545,32 @@ class DealerAnalyticsService:
             return {"success": False, "error_code": "DEALER_REQUIRED", "message": "Please provide a dealer name or code."}
         try:
             with self._session() as session:
-                rows = self._aggregate_query(session, str(identifier))
+                search = self._resolve_dealer(session, str(identifier))
+                if search.exception:
+                    return {"success": False, "error_code": "SEARCH_ERROR", "message": "Dealer search is temporarily unavailable.", "error": search.exception}
+                if not search.dealer_found:
+                    return self._suggestion_response(search)
+                rows = self._aggregate_query(session, search.dealer_code or search.customer_code or search.dealer_found)
                 if not rows:
-                    return {"success": False, "error_code": "DEALER_NOT_FOUND", "message": f"Dealer '{identifier}' was not found."}
+                    return self._suggestion_response(search)
                 data = self._row_to_dashboard(rows[0])
-                return {"success": True, "data": data, "dashboard": data, "whatsapp_message": data.to_whatsapp_message()}
-        except SQLAlchemyError as error:
+                return {"success": True, "data": data, "dashboard": data, "search": search, "whatsapp_message": data.to_whatsapp_message()}
+        except Exception as error:
             logger.exception("Dealer dashboard query failed")
             return {"success": False, "error_code": "DATABASE_UNAVAILABLE", "message": "Dealer database is currently unavailable.", "error": str(error)}
+
+    def diagnose_dealer_search(self, message: str = "", **kwargs: Any) -> dict[str, Any]:
+        started = time.perf_counter()
+        try:
+            with self._session() as session:
+                result = self._resolve_dealer(session, message or kwargs.get("dealer_name") or kwargs.get("dealer") or "")
+                rows = len(self._aggregate_query(session, result.dealer_code or result.customer_code or result.dealer_found)) if result.dealer_found else 0
+            output = asdict(result)
+            output.update({"rows_returned": rows, "distance_calculated": False, "distance_source": "Unknown", "execution_time_ms": round((time.perf_counter() - started) * 1000, 2)})
+            return {"success": result.exception is None, "diagnostic": output}
+        except Exception as error:
+            logger.exception("Dealer diagnostics failed")
+            return {"success": False, "diagnostic": {"original_message": message, "any_exception": str(error), "execution_time_ms": round((time.perf_counter() - started) * 1000, 2)}}
 
     def get_dealer_profile(self, dealer_name: str = "", **kwargs: Any) -> dict[str, Any]:
         result = self.get_dealer_dashboard(dealer_name, **kwargs)
@@ -504,5 +667,4 @@ def get_dealer_analytics_service() -> DealerAnalyticsService:
     return _service
 
 
-__all__ = ["DealerAnalyticsService", "DealerDashboard", "DealerComparison", "DealerRanking", "DistanceAnalytics", "CityCoordinateService", "get_dealer_analytics_service"]
-
+__all__ = ["DealerAnalyticsService", "DealerDashboard", "DealerComparison", "DealerRanking", "DealerSearchResult", "DistanceAnalytics", "CityCoordinateService", "get_dealer_analytics_service"]
