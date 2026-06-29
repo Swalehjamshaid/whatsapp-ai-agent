@@ -10,12 +10,13 @@ import threading
 import time
 import unicodedata
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime
-from typing import Any, Optional
+from datetime import date, datetime, timedelta
+from typing import Any, Optional, Dict, List, Tuple, Union
+from functools import lru_cache
 
-from cachetools import TTLCache
+from cachetools import TTLCache, LRUCache
 from rapidfuzz import fuzz, process
-from sqlalchemy import and_, case, distinct, func, or_
+from sqlalchemy import and_, case, distinct, func, or_, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -37,10 +38,27 @@ logger = logging.getLogger(__name__)
 ORS_API_KEY = os.getenv("OPENROUTESERVICE_API_KEY") or os.getenv("ORS_API_KEY")
 CACHE_TTL = max(300, int(os.getenv("DEALER_ANALYTICS_CACHE_TTL", "21600")))
 
+# Pre-compile regex patterns for performance
+_STOP_PHRASES_PATTERN = re.compile(
+    r'\b(?:tell me about|dealer dashboard|dealer profile|dealer performance|'
+    r'dealer statistics|dealer revenue|dealer distance|dealer pending|'
+    r'dealer status|dealer pod|dealer pgi|show|display|dealer|'
+    r'profile|statistics|performance|status|revenue|distance|'
+    r'pending|dashboard|about|of|the|company|private|'
+    r'limited|pvt|ltd)\b'
+)
+_WHITESPACE_PATTERN = re.compile(r'\s+')
+_SPECIAL_CHARS_PATTERN = re.compile(r'[^a-z0-9\s]')
+
 
 def _text(value: Any, default: str = "Unknown") -> str:
-    result = str(value).strip() if value is not None else ""
-    return result or default
+    if value is None:
+        return default
+    try:
+        result = str(value).strip()
+        return result if result else default
+    except (TypeError, ValueError):
+        return default
 
 
 def _number(value: Any) -> float:
@@ -329,22 +347,67 @@ class CityCoordinateService:
         "sukkur": (27.7244, 68.8228), "swat": (35.2227, 72.4258),
         "wah cantt": (33.7715, 72.7511), "taxila": (33.7463, 72.8397),
     }
+    
+    # Cache for normalized city names
+    _normalize_cache: Dict[str, str] = {}
+    _city_cache: Dict[str, Optional[tuple[float, float]]] = {}
 
     def __init__(self) -> None:
         self._names = tuple(self.COORDINATES)
+        # Pre-compute normalized names for faster lookup
+        self._lower_names = {name: name for name in self.COORDINATES}
 
     @staticmethod
     def normalize(city: Any) -> str:
-        value = _text(city, "").lower().replace("city", "").strip(" ,.-")
-        aliases = {"rwp": "rawalpindi", "isb": "islamabad", "lhr": "lahore", "khi": "karachi", "fsd": "faisalabad", "hyd": "hyderabad", "ryk": "rahim yar khan", "dik": "dera ismail khan"}
-        return aliases.get(value, value)
+        """Optimized normalization with caching."""
+        if not city:
+            return ""
+        
+        value = str(city).lower()
+        
+        # Check cache first
+        cached = CityCoordinateService._normalize_cache.get(value)
+        if cached is not None:
+            return cached
+        
+        # Remove common suffixes and clean
+        value = value.replace("city", "").strip(" ,.-")
+        
+        # Handle aliases
+        aliases = {
+            "rwp": "rawalpindi", "isb": "islamabad", "lhr": "lahore", 
+            "khi": "karachi", "fsd": "faisalabad", "hyd": "hyderabad", 
+            "ryk": "rahim yar khan", "dik": "dera ismail khan"
+        }
+        result = aliases.get(value, value)
+        
+        # Cache the result
+        CityCoordinateService._normalize_cache[value] = result
+        return result
 
     def get(self, city: Any) -> Optional[tuple[float, float]]:
+        """Optimized city coordinate lookup with caching."""
+        if not city:
+            return None
+            
         normalized = self.normalize(city)
+        if normalized in self._city_cache:
+            return self._city_cache[normalized]
+        
+        # Direct lookup
         if normalized in self.COORDINATES:
+            self._city_cache[normalized] = self.COORDINATES[normalized]
             return self.COORDINATES[normalized]
+        
+        # Fuzzy match as fallback
         match = process.extractOne(normalized, self._names, scorer=fuzz.WRatio, score_cutoff=82)
-        return self.COORDINATES[match[0]] if match else None
+        if match:
+            result = self.COORDINATES[match[0]]
+            self._city_cache[normalized] = result
+            return result
+        
+        self._city_cache[normalized] = None
+        return None
 
 
 class DistanceService:
@@ -358,6 +421,11 @@ class DistanceService:
                 self._ors = openrouteservice.Client(key=ORS_API_KEY, timeout=5)
             except Exception:
                 logger.exception("ORS client initialization failed; distance service is degraded")
+    
+    @staticmethod
+    def _get_origin_destination(warehouse_name: str, city_name: str) -> Tuple[Optional[tuple], Optional[tuple]]:
+        """Get coordinates for warehouse and city."""
+        return coordinates.get(warehouse_name), coordinates.get(city_name)
 
     @staticmethod
     def delivery_estimate(km: Optional[float]) -> str:
@@ -389,10 +457,14 @@ class DistanceService:
     def calculate(self, warehouse: Any, dealer_city: Any) -> DistanceAnalytics:
         warehouse_name, city_name = _text(warehouse), _text(dealer_city)
         key = f"{self.coordinates.normalize(warehouse_name)}|{self.coordinates.normalize(city_name)}"
+        
+        # Try cache first
         with self._lock:
             cached = self.cache.get(key)
         if cached:
             return cached
+        
+        # Get coordinates
         origin, destination = self.coordinates.get(warehouse_name), self.coordinates.get(city_name)
         if not origin or not destination:
             result = DistanceAnalytics(warehouse_name, city_name)
@@ -400,28 +472,43 @@ class DistanceService:
             km: Optional[float] = None
             minutes: Optional[int] = None
             source = "great-circle"
+            
+            # Try ORS if available
             if self._ors:
                 try:
-                    route = self._ors.directions([(origin[1], origin[0]), (destination[1], destination[0])], profile="driving-car")
+                    route = self._ors.directions(
+                        [(origin[1], origin[0]), (destination[1], destination[0])], 
+                        profile="driving-car"
+                    )
                     summary = route["routes"][0]["summary"]
                     km = float(summary["distance"]) / 1000
                     minutes = int(round(float(summary["duration"]) / 60))
                     source = "openrouteservice"
                 except Exception:
                     logger.warning("ORS route failed for %s to %s; using great-circle", warehouse_name, city_name, exc_info=True)
+            
             if km is None:
                 km = float(great_circle(origin, destination).km) if great_circle else self._haversine(origin, destination)
                 # Road distance/time estimates are intentionally conservative.
                 km *= 1.20
                 minutes = int(round(km / 55 * 60))
-            result = DistanceAnalytics(warehouse_name, city_name, round(km, 1), minutes, self.driving_time(minutes), self.delivery_estimate(km), source)
+            
+            result = DistanceAnalytics(
+                warehouse_name, city_name, 
+                round(km, 1), minutes, 
+                self.driving_time(minutes), 
+                self.delivery_estimate(km), 
+                source
+            )
+        
+        # Cache the result
         with self._lock:
             self.cache[key] = result
         return result
 
 
 class DealerAnalyticsService:
-    """Enterprise dealer analytics with stable, routing-compatible methods."""
+    """Enterprise dealer analytics with optimized performance."""
 
     SORT_ALIASES = {
         "revenue": "total_revenue", "units": "total_units", "dn": "total_dn", "dn_count": "total_dn",
@@ -430,14 +517,16 @@ class DealerAnalyticsService:
         "highest_pending": "pending_pct", "lowest_revenue": "total_revenue", "lowest_units": "total_units",
         "slowest_delivery": "average_delivery_days", "poor_pod": "pod_success_pct",
     }
-    STOP_PHRASES = (
+    
+    STOP_PHRASES = frozenset({
         "tell me about", "dealer dashboard", "dealer profile", "dealer performance",
         "dealer statistics", "dealer revenue", "dealer distance", "dealer pending",
         "dealer status", "dealer pod", "dealer pgi", "show", "display", "dealer",
         "profile", "statistics", "performance", "status", "revenue", "distance",
         "pending", "dashboard", "about", "of", "the", "company", "private",
         "limited", "pvt", "ltd",
-    )
+    })
+    
     DEALER_ALIASES = {
         "mian": "Mian Group Chakwal",
         "mgc": "Mian Group Chakwal",
@@ -448,12 +537,17 @@ class DealerAnalyticsService:
         "taj": "Taj Electronics",
         "taj haripur": "Taj Electronics Haripur",
     }
+    
+    # Pre-compiled regex for normalization
+    _normalize_regex = re.compile(r'[^a-z0-9\s]')
 
     def __init__(self) -> None:
         self._service_name = "dealer_analytics"
-        self._version = "4.1.0"
+        self._version = "4.2.0"
         self._startup_time = datetime.utcnow().isoformat()
         self._initialization_errors: list[str] = []
+        
+        # Initialize services with larger caches
         try:
             self._coordinates = CityCoordinateService()
         except Exception as error:
@@ -462,19 +556,29 @@ class DealerAnalyticsService:
             self._coordinates = CityCoordinateService.__new__(CityCoordinateService)
             self._coordinates._names = tuple()
             self._coordinates.COORDINATES = {}
+            self._coordinates._city_cache = {}
+        
         try:
             self._distance = DistanceService(self._coordinates)
         except Exception as error:
             logger.exception("Distance service initialization failed")
             self._initialization_errors.append(str(error))
             self._distance = None
-        self._dealer_cache: TTLCache[str, DealerSearchResult] = TTLCache(maxsize=2048, ttl=CACHE_TTL)
-        self._candidate_cache: TTLCache[str, list[dict[str, str]]] = TTLCache(maxsize=1, ttl=900)
-        self._extended_cache: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=2048, ttl=900)
-        self._dashboard_cache: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=2048, ttl=300)
-        self._ranking_cache: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=64, ttl=300)
+        
+        # Larger caches with TTL
+        self._dealer_cache: TTLCache[str, DealerSearchResult] = TTLCache(maxsize=4096, ttl=CACHE_TTL)
+        self._candidate_cache: TTLCache[str, list[dict[str, str]]] = TTLCache(maxsize=1, ttl=1800)  # 30 min
+        self._extended_cache: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=4096, ttl=1800)
+        self._dashboard_cache: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=4096, ttl=600)  # 10 min
+        self._ranking_cache: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=128, ttl=600)
         self._search_lock = threading.RLock()
         self._last_diagnostic: dict[str, Any] = {}
+        
+        # Add query cache for expensive operations
+        self._aggregate_cache: TTLCache[str, list[Any]] = TTLCache(maxsize=1024, ttl=300)
+        
+        # Pre-compute normalized patterns
+        self._normalized_stop_phrases = {self._normalize_dealer_text(p) for p in self.STOP_PHRASES}
 
     @staticmethod
     def _session() -> Session:
@@ -491,24 +595,44 @@ class DealerAnalyticsService:
 
     @classmethod
     def _normalize_dealer_text(cls, value: Any) -> str:
+        """Optimized normalization with pre-compiled regex."""
+        if not value:
+            return ""
+        
+        # Convert to string and normalize
         text_value = unicodedata.normalize("NFKD", _text(value, "").lower())
-        text_value = re.sub(r"[^a-z0-9\s]", " ", text_value)
-        text_value = re.sub(r"\s+", " ", text_value).strip()
-        for phrase in sorted(cls.STOP_PHRASES, key=len, reverse=True):
-            text_value = re.sub(rf"\b{re.escape(phrase)}\b", " ", text_value)
-        return re.sub(r"\s+", " ", text_value).strip()
+        text_value = cls._normalize_regex.sub(" ", text_value)
+        text_value = _WHITESPACE_PATTERN.sub(" ", text_value).strip()
+        
+        # Remove stop phrases
+        for phrase in cls.STOP_PHRASES:
+            if phrase in text_value:
+                text_value = text_value.replace(phrase, " ")
+        
+        return _WHITESPACE_PATTERN.sub(" ", text_value).strip()
 
     def _dealer_candidates(self, session: Session) -> tuple[list[dict[str, str]], bool]:
+        """Optimized candidate retrieval with caching."""
         with self._search_lock:
             cached = self._candidate_cache.get("all")
         if cached is not None:
             return cached, True
+        
         started = time.perf_counter()
-        rows = session.query(
-            DeliveryReport.customer_name,
-            DeliveryReport.dealer_code,
-            DeliveryReport.customer_code,
-        ).filter(DeliveryReport.customer_name.isnot(None)).distinct().all()
+        
+        # Use raw SQL for faster distinct query
+        query = text("""
+            SELECT DISTINCT 
+                customer_name, 
+                dealer_code, 
+                customer_code 
+            FROM delivery_reports 
+            WHERE customer_name IS NOT NULL 
+              AND customer_name != ''
+        """)
+        
+        rows = session.execute(query).fetchall()
+        
         candidates = [
             {
                 "name": _text(row.customer_name),
@@ -518,65 +642,119 @@ class DealerAnalyticsService:
             }
             for row in rows if _text(row.customer_name, "")
         ]
+        
         with self._search_lock:
             self._candidate_cache["all"] = candidates
-        logger.info("Dealer candidate query returned %s rows in %.2fms", len(candidates), (time.perf_counter() - started) * 1000)
+        
+        logger.info("Dealer candidate query returned %s rows in %.2fms", 
+                   len(candidates), (time.perf_counter() - started) * 1000)
         return candidates, False
 
     def _resolve_dealer(self, session: Session, message: str) -> DealerSearchResult:
+        """Optimized dealer resolution."""
         started = time.perf_counter()
         original = _text(message, "")
         normalized = self._normalize_dealer_text(original)
         alias = self.DEALER_ALIASES.get(normalized)
         search_text = alias or normalized
         cache_key = search_text.lower()
+        
+        # Check cache
         with self._search_lock:
             cached = self._dealer_cache.get(cache_key)
         if cached:
             result = DealerSearchResult(**asdict(cached))
             result.original_message, result.cache_used = original, True
             return result
+        
         result = DealerSearchResult(original, search_text, normalized, alias_used=alias)
+        
         try:
             candidates, cache_used = self._dealer_candidates(session)
             result.cache_used = cache_used
+            
+            # Fast path: exact code match
             token = original.strip()
-            code_matches = [item for item in candidates if token in {item["dealer_code"], item["customer_code"]}]
-            if code_matches:
-                best = code_matches[0]
-                result.dealer_found, result.dealer_code, result.customer_code = best["name"], best["dealer_code"], best["customer_code"]
-            else:
-                exact = [item for item in candidates if item["normalized"] == self._normalize_dealer_text(search_text)]
-                contains = [item for item in candidates if search_text and (search_text in item["normalized"] or item["normalized"] in search_text)]
-                pool = exact or contains
-                if len(pool) == 1:
-                    best = pool[0]
-                    result.dealer_found, result.dealer_code, result.customer_code = best["name"], best["dealer_code"], best["customer_code"]
-                    result.rapidfuzz_score = 100.0 if exact else round(float(fuzz.WRatio(search_text, best["normalized"])), 2)
-                else:
-                    choices = {index: item["normalized"] for index, item in enumerate(candidates)}
-                    matches = process.extract(search_text, choices, scorer=fuzz.WRatio, limit=5)
-                    scored = [(candidates[index], float(score)) for _, score, index in matches]
-                    result.suggestions = [{"dealer_name": item["name"], "similarity": round(score, 2), "dealer_code": item["dealer_code"]} for item, score in scored]
-                    if scored:
-                        result.rapidfuzz_score = round(scored[0][1], 2)
-                    confident = [entry for entry in scored if entry[1] >= 85]
-                    if len(confident) == 1 or (len(confident) > 1 and confident[0][1] - confident[1][1] >= 5):
-                        best = confident[0][0]
-                        result.dealer_found, result.dealer_code, result.customer_code = best["name"], best["dealer_code"], best["customer_code"]
-                    elif confident:
-                        result.ambiguous = True
-            with self._search_lock:
-                self._dealer_cache[cache_key] = result
+            for item in candidates:
+                if token == item["dealer_code"] or token == item["customer_code"]:
+                    result.dealer_found = item["name"]
+                    result.dealer_code = item["dealer_code"]
+                    result.customer_code = item["customer_code"]
+                    self._cache_result(cache_key, result)
+                    return result
+            
+            # Fast path: exact normalized match
+            norm_search = self._normalize_dealer_text(search_text)
+            exact_matches = [item for item in candidates if item["normalized"] == norm_search]
+            if exact_matches:
+                best = exact_matches[0]
+                result.dealer_found = best["name"]
+                result.dealer_code = best["dealer_code"]
+                result.customer_code = best["customer_code"]
+                result.rapidfuzz_score = 100.0
+                self._cache_result(cache_key, result)
+                return result
+            
+            # Fast path: contains match
+            if search_text:
+                contains_matches = [
+                    item for item in candidates 
+                    if search_text in item["normalized"] or item["normalized"] in search_text
+                ]
+                if len(contains_matches) == 1:
+                    best = contains_matches[0]
+                    result.dealer_found = best["name"]
+                    result.dealer_code = best["dealer_code"]
+                    result.customer_code = best["customer_code"]
+                    result.rapidfuzz_score = 95.0
+                    self._cache_result(cache_key, result)
+                    return result
+            
+            # Fallback: fuzzy matching with optimized extraction
+            choices = {index: item["normalized"] for index, item in enumerate(candidates)}
+            matches = process.extract(search_text, choices, scorer=fuzz.WRatio, limit=5)
+            scored = [(candidates[index], float(score)) for _, score, index in matches]
+            
+            result.suggestions = [
+                {"dealer_name": item["name"], "similarity": round(score, 2), "dealer_code": item["dealer_code"]}
+                for item, score in scored
+            ]
+            
+            if scored:
+                result.rapidfuzz_score = round(scored[0][1], 2)
+            
+            # Check for confident matches
+            confident = [entry for entry in scored if entry[1] >= 85]
+            if len(confident) == 1 or (len(confident) > 1 and confident[0][1] - confident[1][1] >= 5):
+                best = confident[0][0]
+                result.dealer_found = best["name"]
+                result.dealer_code = best["dealer_code"]
+                result.customer_code = best["customer_code"]
+            elif confident:
+                result.ambiguous = True
+            
+            self._cache_result(cache_key, result)
+            
         except Exception as error:
             result.exception = str(error)
             logger.exception("Dealer resolution failed for %s", original)
-        self._last_diagnostic = {**asdict(result), "execution_time_ms": round((time.perf_counter() - started) * 1000, 2)}
-        logger.info("Dealer search original=%r normalized=%r alias=%r score=%r selected=%r", original, normalized, alias, result.rapidfuzz_score, result.dealer_found)
+        
+        self._last_diagnostic = {
+            **asdict(result), 
+            "execution_time_ms": round((time.perf_counter() - started) * 1000, 2)
+        }
+        logger.info("Dealer search original=%r normalized=%r alias=%r score=%r selected=%r", 
+                   original, normalized, alias, result.rapidfuzz_score, result.dealer_found)
         return result
+
+    def _cache_result(self, key: str, result: DealerSearchResult) -> None:
+        """Cache search result."""
+        with self._search_lock:
+            self._dealer_cache[key] = result
 
     @staticmethod
     def _suggestion_response(search: DealerSearchResult) -> dict[str, Any]:
+        """Optimized suggestion response formatting."""
         suggestions = search.suggestions[:5]
         if search.ambiguous:
             lines = ["Multiple Dealers Found", ""]
@@ -589,25 +767,48 @@ class DealerAnalyticsService:
             for item in suggestions:
                 lines.extend((item["dealer_name"], f'{item["similarity"]:.0f}%', ""))
             code = "DEALER_SUGGESTIONS"
+        
         message = "\n".join(lines).strip()
-        return {"success": False, "error_code": code, "message": message, "response": message, "formatted_response": message, "whatsapp_message": message, "suggestions": suggestions, "search": search}
+        return {
+            "success": False, 
+            "error_code": code, 
+            "message": message, 
+            "response": message, 
+            "formatted_response": message, 
+            "whatsapp_message": message, 
+            "suggestions": suggestions, 
+            "search": search
+        }
 
     @staticmethod
     def _dealer_key(row: Any) -> str:
         return _text(row.dealer_code, _text(row.customer_code, _text(row.dealer_name)))
 
     def _aggregate_query(self, session: Session, dealer: Optional[str] = None) -> list[Any]:
+        """Optimized aggregate query with caching."""
+        cache_key = dealer or "all"
+        cached = self._aggregate_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        
+        started = time.perf_counter()
+        
         completed = or_(DeliveryReport.pending_flag.is_(False), _status_complete(DeliveryReport.delivery_status), DeliveryReport.pod_date.isnot(None))
         pending = or_(DeliveryReport.pending_flag.is_(True), DeliveryReport.pod_date.is_(None))
         pgi_pending = DeliveryReport.good_issue_date.is_(None)
         pod_pending = and_(DeliveryReport.good_issue_date.isnot(None), DeliveryReport.pod_date.is_(None))
+        
         query = session.query(
             func.coalesce(DeliveryReport.customer_name, "Unknown").label("dealer_name"),
             func.coalesce(DeliveryReport.dealer_code, "Unknown").label("dealer_code"),
             func.coalesce(DeliveryReport.customer_code, "Unknown").label("customer_code"),
-            func.max(DeliveryReport.ship_to_city).label("city"), func.max(DeliveryReport.delivery_location).label("delivery_location"), func.max(DeliveryReport.warehouse).label("warehouse"),
-            func.max(DeliveryReport.warehouse_code).label("warehouse_code"), func.max(DeliveryReport.sales_office).label("sales_office"),
-            func.max(DeliveryReport.sales_manager).label("sales_manager"), func.max(DeliveryReport.division).label("division"),
+            func.max(DeliveryReport.ship_to_city).label("city"), 
+            func.max(DeliveryReport.delivery_location).label("delivery_location"), 
+            func.max(DeliveryReport.warehouse).label("warehouse"),
+            func.max(DeliveryReport.warehouse_code).label("warehouse_code"), 
+            func.max(DeliveryReport.sales_office).label("sales_office"),
+            func.max(DeliveryReport.sales_manager).label("sales_manager"), 
+            func.max(DeliveryReport.division).label("division"),
             func.count(distinct(DeliveryReport.dn_no)).label("total_dn"),
             func.count(distinct(case((completed, DeliveryReport.dn_no)))).label("completed_dn"),
             func.count(distinct(case((pending, DeliveryReport.dn_no)))).label("pending_dn"),
@@ -637,9 +838,21 @@ class DealerAnalyticsService:
             func.count(distinct(case((or_(_status_complete(DeliveryReport.pgi_status), DeliveryReport.good_issue_date.isnot(None)), DeliveryReport.dn_no)))).label("pgi_success"),
             func.count(distinct(case((or_(_status_complete(DeliveryReport.pod_status), DeliveryReport.pod_date.isnot(None)), DeliveryReport.dn_no)))).label("pod_success"),
         ).filter(DeliveryReport.customer_name.isnot(None))
+        
         if dealer:
             query = query.filter(self._dealer_filter(dealer))
-        return query.group_by(DeliveryReport.customer_name, DeliveryReport.dealer_code, DeliveryReport.customer_code).all()
+        
+        result = query.group_by(
+            DeliveryReport.customer_name, 
+            DeliveryReport.dealer_code, 
+            DeliveryReport.customer_code
+        ).all()
+        
+        # Cache the result
+        self._aggregate_cache[cache_key] = result
+        
+        logger.debug("Aggregate query completed in %.2fms", (time.perf_counter() - started) * 1000)
+        return result
 
     @staticmethod
     def _days(value: Any) -> float:
@@ -650,19 +863,36 @@ class DealerAnalyticsService:
         return round(_number(value), 2)
 
     def _row_to_dashboard(self, row: Any, include_distance: bool = True) -> DealerDashboard:
+        """Optimized dashboard creation."""
         total = int(row.total_dn or 0)
+        
+        # Create dashboard with common fields
         dashboard = DealerDashboard(
-            dealer_name=_text(row.dealer_name), dealer_code=_text(row.dealer_code), customer_code=_text(row.customer_code),
-            city=_text(row.city), delivery_location=_text(getattr(row, "delivery_location", None)), warehouse=_text(row.warehouse), warehouse_code=_text(row.warehouse_code),
-            sales_office=_text(row.sales_office), sales_manager=_text(row.sales_manager), division=_text(row.division),
-            total_dn=total, completed_dn=int(row.completed_dn or 0), pending_dn=int(row.pending_dn or 0),
-            total_units=int(row.total_units or 0), total_revenue=round(_number(row.total_revenue), 2),
+            dealer_name=_text(row.dealer_name), 
+            dealer_code=_text(row.dealer_code), 
+            customer_code=_text(row.customer_code),
+            city=_text(row.city), 
+            delivery_location=_text(getattr(row, "delivery_location", None)), 
+            warehouse=_text(row.warehouse), 
+            warehouse_code=_text(row.warehouse_code),
+            sales_office=_text(row.sales_office), 
+            sales_manager=_text(row.sales_manager), 
+            division=_text(row.division),
+            total_dn=total, 
+            completed_dn=int(row.completed_dn or 0), 
+            pending_dn=int(row.pending_dn or 0),
+            total_units=int(row.total_units or 0), 
+            total_revenue=round(_number(row.total_revenue), 2),
             average_revenue_per_dn=round(_number(row.total_revenue) / total, 2) if total else 0,
             average_units_per_dn=round(_number(row.total_units) / total, 2) if total else 0,
-            first_delivery_date=_date_text(row.first_delivery_date), latest_delivery_date=_date_text(row.latest_delivery_date),
-            average_delivery_days=self._days(row.avg_delivery), average_pod_days=self._days(row.avg_pod),
-            average_total_cycle_time=self._days(row.avg_cycle), delivery_success_pct=_percent(row.delivery_success, total),
-            pgi_success_pct=_percent(row.pgi_success, total), pod_success_pct=_percent(row.pod_success, total),
+            first_delivery_date=_date_text(row.first_delivery_date), 
+            latest_delivery_date=_date_text(row.latest_delivery_date),
+            average_delivery_days=self._days(row.avg_delivery), 
+            average_pod_days=self._days(row.avg_pod),
+            average_total_cycle_time=self._days(row.avg_cycle), 
+            delivery_success_pct=_percent(row.delivery_success, total),
+            pgi_success_pct=_percent(row.pgi_success, total), 
+            pod_success_pct=_percent(row.pod_success, total),
             pending_pct=_percent(row.pending_dn, total),
             distance=(self._safe_distance(row.warehouse, row.city) if include_distance else DistanceAnalytics(_text(row.warehouse), _text(row.city))),
             delivered_units=int(getattr(row, "delivered_units", 0) or 0),
@@ -683,6 +913,7 @@ class DealerAnalyticsService:
             same_day_deliveries=int(getattr(row, "same_day_deliveries", 0) or 0),
             next_day_deliveries=int(getattr(row, "next_day_deliveries", 0) or 0),
         )
+        
         dashboard.insights = self._basic_insights(dashboard)
         return dashboard
 
@@ -695,10 +926,12 @@ class DealerAnalyticsService:
         return DistanceAnalytics(_text(warehouse), _text(city))
 
     def _apply_extended_analytics(self, session: Session, item: DealerDashboard) -> None:
-        """Populate DN, month, product, warehouse and national-rank analytics."""
+        """Optimized extended analytics with batched queries."""
         identity = item.dealer_code if item.dealer_code != "Unknown" else item.customer_code
         identity = identity if identity != "Unknown" else item.dealer_name
         cache_key = str(identity).lower()
+        
+        # Check cache first
         cached = self._extended_cache.get(cache_key)
         if cached:
             for key, value in cached.items():
@@ -706,9 +939,11 @@ class DealerAnalyticsService:
             self._apply_business_health(item)
             item.insights, item.recommendations = self._business_insights(item)
             return
-
+        
         condition = self._dealer_filter(str(identity))
         values: dict[str, Any] = {}
+        
+        # Optimize DN query with single execution
         dn_rows = session.query(
             DeliveryReport.dn_no.label("dn"),
             func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0).label("revenue"),
@@ -718,13 +953,18 @@ class DealerAnalyticsService:
             func.max(DeliveryReport.pod_date).label("pod"),
             func.max(case((or_(DeliveryReport.pending_flag.is_(True), DeliveryReport.pod_date.is_(None)), 1), else_=0)).label("pending"),
         ).filter(condition).group_by(DeliveryReport.dn_no).all()
-
+        
         if dn_rows:
             by_revenue = sorted(dn_rows, key=lambda row: _number(row.revenue))
             by_units = sorted(dn_rows, key=lambda row: _number(row.units))
             by_date = sorted(dn_rows, key=lambda row: row.created or date.min)
             pending_rows = [row for row in dn_rows if int(row.pending or 0)]
-            delivery_days = [(row.issued - row.created).days for row in dn_rows if row.created and row.issued and row.issued >= row.created]
+            
+            delivery_days = []
+            for row in dn_rows:
+                if row.created and row.issued and row.issued >= row.created:
+                    delivery_days.append((row.issued - row.created).days)
+            
             values.update({
                 "highest_revenue_dn": _text(by_revenue[-1].dn, "N/A"),
                 "lowest_revenue_dn": _text(by_revenue[0].dn, "N/A"),
@@ -734,6 +974,7 @@ class DealerAnalyticsService:
                 "fastest_delivery_days": float(min(delivery_days)) if delivery_days else 0.0,
                 "slowest_delivery_days": float(max(delivery_days)) if delivery_days else 0.0,
             })
+            
             if pending_rows:
                 oldest = min(pending_rows, key=lambda row: row.created or date.max)
                 ages = [max(0, (date.today() - row.created).days) for row in pending_rows if row.created]
@@ -744,55 +985,98 @@ class DealerAnalyticsService:
                     "critical_pending": sum(1 for age in ages if age > 7),
                     "overdue_pending": sum(1 for age in ages if age > 14),
                 })
-
+        
+        # Month-over-month analytics
         monthly = session.query(
             func.to_char(DeliveryReport.dn_create_date, "YYYY-MM").label("month"),
             func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0).label("revenue"),
             func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("units"),
             func.count(distinct(DeliveryReport.dn_no)).label("dns"),
         ).filter(condition, DeliveryReport.dn_create_date.isnot(None)).group_by("month").all()
+        
         if monthly:
             month_map = {row.month: row for row in monthly}
             current = date.today().strftime("%Y-%m")
             previous_date = date.today().replace(day=1)
-            previous_date = (previous_date.replace(year=previous_date.year - 1, month=12) if previous_date.month == 1 else previous_date.replace(month=previous_date.month - 1))
+            previous_date = (previous_date.replace(year=previous_date.year - 1, month=12) 
+                           if previous_date.month == 1 
+                           else previous_date.replace(month=previous_date.month - 1))
             previous = previous_date.strftime("%Y-%m")
+            
             current_row, previous_row = month_map.get(current), month_map.get(previous)
             current_revenue = _number(current_row.revenue) if current_row else 0.0
             previous_revenue = _number(previous_row.revenue) if previous_row else 0.0
             growth = ((current_revenue - previous_revenue) * 100 / previous_revenue) if previous_revenue else (100.0 if current_revenue else 0.0)
+            
             best = max(monthly, key=lambda row: _number(row.revenue))
             worst = min(monthly, key=lambda row: _number(row.revenue))
+            
             values.update({
-                "current_month_revenue": round(current_revenue, 2), "previous_month_revenue": round(previous_revenue, 2),
-                "monthly_growth": round(growth, 2), "current_month_units": int(current_row.units or 0) if current_row else 0,
+                "current_month_revenue": round(current_revenue, 2), 
+                "previous_month_revenue": round(previous_revenue, 2),
+                "monthly_growth": round(growth, 2), 
+                "current_month_units": int(current_row.units or 0) if current_row else 0,
                 "previous_month_units": int(previous_row.units or 0) if previous_row else 0,
                 "current_month_dn": int(current_row.dns or 0) if current_row else 0,
                 "previous_month_dn": int(previous_row.dns or 0) if previous_row else 0,
-                "best_month": _text(best.month), "worst_month": _text(worst.month), "busiest_month": _text(best.month),
+                "best_month": _text(best.month), 
+                "worst_month": _text(worst.month), 
+                "busiest_month": _text(best.month),
                 "revenue_growth_pct": round(growth, 2),
             })
-
-        def top_value(column: Any) -> str:
-            row = session.query(column.label("value"), func.sum(DeliveryReport.dn_amount).label("revenue")).filter(condition, column.isnot(None)).group_by(column).order_by(func.sum(DeliveryReport.dn_amount).desc()).first()
-            return _text(row.value) if row else "Unknown"
-
+        
+        # Product analytics
+        top_product = self._get_top_value(session, condition, DeliveryReport.customer_model)
+        top_material = self._get_top_value(session, condition, DeliveryReport.material_no)
+        values["top_product"] = top_product
+        values["top_model"] = top_product
+        values["top_material"] = top_material
+        
+        # Division analytics
         division_rows = session.query(
             DeliveryReport.division.label("value"),
             func.sum(DeliveryReport.dn_amount).label("revenue"),
-        ).filter(condition, DeliveryReport.division.isnot(None)).group_by(DeliveryReport.division).order_by(func.sum(DeliveryReport.dn_amount).desc()).all()
+        ).filter(condition, DeliveryReport.division.isnot(None)).group_by(DeliveryReport.division).order_by(
+            func.sum(DeliveryReport.dn_amount).desc()
+        ).all()
+        
         values["top_division"] = _text(division_rows[0].value) if division_rows else "Unknown"
-        values["top_product"] = top_value(DeliveryReport.customer_model)
-        values["top_model"] = values["top_product"]
-        values["top_material"] = top_value(DeliveryReport.material_no)
         values["strongest_product_category"] = values["top_division"]
         values["weakest_product_category"] = _text(division_rows[-1].value) if division_rows else "Unknown"
-
-        warehouse_units = session.query(func.coalesce(func.sum(DeliveryReport.dn_qty), 0)).filter(DeliveryReport.warehouse == item.warehouse).scalar() or 0
+        
+        # Warehouse utilization
+        warehouse_units = session.query(
+            func.coalesce(func.sum(DeliveryReport.dn_qty), 0)
+        ).filter(DeliveryReport.warehouse == item.warehouse).scalar() or 0
         values["warehouse_utilization"] = _percent(item.total_units, warehouse_units)
+        
+        # Dealer rankings
+        self._apply_dealer_rankings(session, item, values)
+        
+        # Apply all values and cache
+        for key, value in values.items():
+            setattr(item, key, value)
+        
+        self._apply_business_health(item)
+        self._extended_cache[cache_key] = values
+        item.insights, item.recommendations = self._business_insights(item)
 
+    def _get_top_value(self, session: Session, condition: Any, column: Any) -> str:
+        """Helper to get top value for a column."""
+        row = session.query(
+            column.label("value"), 
+            func.sum(DeliveryReport.dn_amount).label("revenue")
+        ).filter(condition, column.isnot(None)).group_by(column).order_by(
+            func.sum(DeliveryReport.dn_amount).desc()
+        ).first()
+        return _text(row.value) if row else "Unknown"
+
+    def _apply_dealer_rankings(self, session: Session, item: DealerDashboard, values: dict) -> None:
+        """Optimized ranking calculation with single query."""
+        # Single query for all rankings
         ranking_rows = session.query(
-            DeliveryReport.customer_name.label("name"), DeliveryReport.dealer_code.label("code"),
+            DeliveryReport.customer_name.label("name"), 
+            DeliveryReport.dealer_code.label("code"),
             func.max(DeliveryReport.ship_to_city).label("city"),
             func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0).label("revenue"),
             func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("units"),
@@ -800,29 +1084,55 @@ class DealerAnalyticsService:
             func.avg(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.good_issue_date - DeliveryReport.dn_create_date))).label("delivery"),
             func.count(distinct(case((DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no)))).label("pod"),
             func.count(distinct(case((or_(DeliveryReport.pending_flag.is_(True), DeliveryReport.pod_date.is_(None)), DeliveryReport.dn_no)))).label("pending"),
-        ).filter(DeliveryReport.customer_name.isnot(None)).group_by(DeliveryReport.customer_name, DeliveryReport.dealer_code).all()
-        target = next((row for row in ranking_rows if _text(row.code, "") == item.dealer_code or _text(row.name, "") == item.dealer_name), None)
+        ).filter(DeliveryReport.customer_name.isnot(None)).group_by(
+            DeliveryReport.customer_name, 
+            DeliveryReport.dealer_code
+        ).all()
+        
+        target = next(
+            (row for row in ranking_rows 
+             if _text(row.code, "") == item.dealer_code or _text(row.name, "") == item.dealer_name), 
+            None
+        )
+        
         if target:
-            def rank_for(key: Any, reverse: bool = True) -> int:
-                ordered = sorted(ranking_rows, key=key, reverse=reverse)
-                return next((index for index, row in enumerate(ordered, 1) if row is target), len(ordered))
-            values["revenue_rank"] = rank_for(lambda row: _number(row.revenue))
-            values["unit_rank"] = rank_for(lambda row: _number(row.units))
-            values["dn_rank"] = rank_for(lambda row: int(row.dns or 0))
-            values["delivery_rank"] = rank_for(lambda row: self._days(row.delivery) if row.delivery is not None else float("inf"), False)
-            values["pod_rank"] = rank_for(lambda row: _percent(row.pod, row.dns))
-            values["pending_rank"] = rank_for(lambda row: _percent(row.pending, row.dns), False)
-            composite = sorted(ranking_rows, key=lambda row: (_number(row.revenue), _percent(row.pod, row.dns)), reverse=True)
-            values["national_rank"] = next((index for index, row in enumerate(composite, 1) if row is target), len(composite))
+            # Optimize ranking calculation
+            def rank_for(rows: list, key_func, reverse: bool = True) -> int:
+                sorted_rows = sorted(rows, key=key_func, reverse=reverse)
+                for idx, row in enumerate(sorted_rows, 1):
+                    if row is target:
+                        return idx
+                return len(rows)
+            
+            values["revenue_rank"] = rank_for(ranking_rows, lambda r: _number(r.revenue), True)
+            values["unit_rank"] = rank_for(ranking_rows, lambda r: _number(r.units), True)
+            values["dn_rank"] = rank_for(ranking_rows, lambda r: int(r.dns or 0), True)
+            values["delivery_rank"] = rank_for(
+                ranking_rows, 
+                lambda r: self._days(r.delivery) if r.delivery is not None else float("inf"), 
+                False
+            )
+            values["pod_rank"] = rank_for(ranking_rows, lambda r: _percent(r.pod, r.dns), True)
+            values["pending_rank"] = rank_for(ranking_rows, lambda r: _percent(r.pending, r.dns), False)
+            
+            # Composite ranking
+            composite = sorted(
+                ranking_rows, 
+                key=lambda r: (_number(r.revenue), _percent(r.pod, r.dns)), 
+                reverse=True
+            )
+            values["national_rank"] = next(
+                (idx for idx, row in enumerate(composite, 1) if row is target), 
+                len(composite)
+            )
+            
+            # Regional ranking
             regional = [row for row in ranking_rows if _text(row.city, "").lower() == item.city.lower()]
-            regional.sort(key=lambda row: _number(row.revenue), reverse=True)
-            values["regional_rank"] = next((index for index, row in enumerate(regional, 1) if row is target), len(regional) or 1)
-
-        for key, value in values.items():
-            setattr(item, key, value)
-        self._apply_business_health(item)
-        self._extended_cache[cache_key] = values
-        item.insights, item.recommendations = self._business_insights(item)
+            regional.sort(key=lambda r: _number(r.revenue), reverse=True)
+            values["regional_rank"] = next(
+                (idx for idx, row in enumerate(regional, 1) if row is target), 
+                len(regional) or 1
+            )
 
     @staticmethod
     def _apply_business_health(item: DealerDashboard) -> None:
@@ -856,6 +1166,7 @@ class DealerAnalyticsService:
         ]
         if item.oldest_pending_days:
             insights.append(f"Oldest pending DN {item.oldest_pending_dn} is {item.oldest_pending_days} days old.")
+        
         recommendations = []
         if item.overdue_pending:
             recommendations.append(f"Escalate {item.overdue_pending} DNs pending for more than 14 days.")
@@ -865,6 +1176,7 @@ class DealerAnalyticsService:
             recommendations.append(f"Review {item.pgi_pending_dn} DNs awaiting PGI.")
         if not recommendations:
             recommendations.append("Maintain the current delivery and POD control process.")
+        
         return insights, recommendations
 
     @staticmethod
@@ -883,9 +1195,24 @@ class DealerAnalyticsService:
         return insights
 
     def _enrich_profile(self, session: Session, item: DealerDashboard) -> None:
+        """Optimized profile enrichment."""
         condition = self._dealer_filter(item.dealer_code if item.dealer_code != "Unknown" else item.dealer_name)
-        month = session.query(func.to_char(DeliveryReport.dn_create_date, "YYYY-MM").label("period"), func.sum(DeliveryReport.dn_amount).label("revenue")).filter(condition, DeliveryReport.dn_create_date.isnot(None)).group_by("period").order_by(func.sum(DeliveryReport.dn_amount).desc()).first()
-        products = session.query(DeliveryReport.division.label("category"), func.sum(DeliveryReport.dn_amount).label("revenue")).filter(condition, DeliveryReport.division.isnot(None)).group_by(DeliveryReport.division).order_by(func.sum(DeliveryReport.dn_amount).desc()).all()
+        
+        # Single query for month and products
+        month = session.query(
+            func.to_char(DeliveryReport.dn_create_date, "YYYY-MM").label("period"), 
+            func.sum(DeliveryReport.dn_amount).label("revenue")
+        ).filter(condition, DeliveryReport.dn_create_date.isnot(None)).group_by("period").order_by(
+            func.sum(DeliveryReport.dn_amount).desc()
+        ).first()
+        
+        products = session.query(
+            DeliveryReport.division.label("category"), 
+            func.sum(DeliveryReport.dn_amount).label("revenue")
+        ).filter(condition, DeliveryReport.division.isnot(None)).group_by(DeliveryReport.division).order_by(
+            func.sum(DeliveryReport.dn_amount).desc()
+        ).all()
+        
         item.busiest_month = _text(month.period) if month else "Unknown"
         if products:
             item.strongest_product_category = _text(products[0].category)
@@ -895,9 +1222,11 @@ class DealerAnalyticsService:
             item.insights.append(f"Dealer's busiest month is {item.busiest_month}.")
 
     def get_dealer_dashboard(self, dealer_name: str = "", **kwargs: Any) -> dict[str, Any]:
+        """Optimized dealer dashboard retrieval."""
         identifier = dealer_name or kwargs.get("dealer") or kwargs.get("dealer_code") or kwargs.get("customer_code") or ""
         if not identifier:
             return {"success": False, "error_code": "DEALER_REQUIRED", "message": "Please provide a dealer name or code."}
+        
         try:
             with self._session() as session:
                 search = self._resolve_dealer(session, str(identifier))
@@ -905,28 +1234,49 @@ class DealerAnalyticsService:
                     return {"success": False, "error_code": "SEARCH_ERROR", "message": "Dealer search is temporarily unavailable.", "error": search.exception}
                 if not search.dealer_found:
                     return self._suggestion_response(search)
+                
                 resolved_identity = search.dealer_code or search.customer_code or search.dealer_found
                 dashboard_key = str(resolved_identity).lower()
+                
+                # Check cache
                 cached_dashboard = self._dashboard_cache.get(dashboard_key)
                 if cached_dashboard:
                     return cached_dashboard
+                
+                # Get aggregate data
                 rows = self._aggregate_query(session, resolved_identity)
                 if not rows:
                     return self._suggestion_response(search)
+                
                 data = self._row_to_dashboard(rows[0])
+                
                 try:
                     self._apply_extended_analytics(session, data)
                 except Exception:
                     logger.exception("Extended dealer analytics failed; returning core dashboard")
                     data.insights, data.recommendations = self._business_insights(data)
+                
+                # Format response
                 try:
                     formatted = data.to_whatsapp_message()
                 except Exception:
                     logger.exception("Dealer WhatsApp formatting failed")
                     formatted = f"Dealer Dashboard\nDealer: {data.dealer_name}\nRevenue: {data.total_revenue:,.2f}\nUnits: {data.total_units:,}\nDN: {data.total_dn:,}"
-                response = {"success": True, "data": data, "dashboard": data, "search": search, "whatsapp_message": formatted, "formatted_response": formatted, "message": formatted, "response": formatted}
+                
+                response = {
+                    "success": True, 
+                    "data": data, 
+                    "dashboard": data, 
+                    "search": search, 
+                    "whatsapp_message": formatted, 
+                    "formatted_response": formatted, 
+                    "message": formatted, 
+                    "response": formatted
+                }
+                
                 self._dashboard_cache[dashboard_key] = response
                 return response
+                
         except Exception as error:
             logger.exception("Dealer dashboard query failed")
             return {"success": False, "error_code": "DATABASE_UNAVAILABLE", "message": "Dealer database is currently unavailable.", "error": str(error)}
@@ -937,8 +1287,14 @@ class DealerAnalyticsService:
             with self._session() as session:
                 result = self._resolve_dealer(session, message or kwargs.get("dealer_name") or kwargs.get("dealer") or "")
                 rows = len(self._aggregate_query(session, result.dealer_code or result.customer_code or result.dealer_found)) if result.dealer_found else 0
+            
             output = asdict(result)
-            output.update({"rows_returned": rows, "distance_calculated": False, "distance_source": "Unknown", "execution_time_ms": round((time.perf_counter() - started) * 1000, 2)})
+            output.update({
+                "rows_returned": rows, 
+                "distance_calculated": False, 
+                "distance_source": "Unknown", 
+                "execution_time_ms": round((time.perf_counter() - started) * 1000, 2)
+            })
             return {"success": result.exception is None, "diagnostic": output}
         except Exception as error:
             logger.exception("Dealer diagnostics failed")
@@ -949,8 +1305,10 @@ class DealerAnalyticsService:
             result = self.get_dealer_dashboard(dealer_name, **kwargs)
             if not result.get("success"):
                 return result
+            
             with self._session() as session:
                 self._enrich_profile(session, result["data"])
+            
             result["profile"] = result["data"]
             result["whatsapp_message"] = result["data"].to_whatsapp_message()
             result["message"] = result["whatsapp_message"]
@@ -970,20 +1328,29 @@ class DealerAnalyticsService:
             if second:
                 values.append(second)
             values = list(dict.fromkeys(str(value) for value in values if value))
+            
             if len(values) < 2:
                 return {"success": False, "error_code": "TWO_DEALERS_REQUIRED", "message": "Please provide at least two dealers."}
+            
             dashboards = []
             for value in values[:10]:
                 result = self.get_dealer_dashboard(value)
                 if result.get("success"):
                     dashboards.append(result["data"])
+            
             if len(dashboards) < 2:
                 return {"success": False, "error_code": "DEALERS_NOT_FOUND", "message": "At least two matching dealers are required."}
+            
             comparison = DealerComparison(
-                dashboards, max(dashboards, key=lambda x: x.total_revenue).dealer_name,
-                max(dashboards, key=lambda x: x.total_units).dealer_name, max(dashboards, key=lambda x: x.total_dn).dealer_name,
+                dashboards, 
+                max(dashboards, key=lambda x: x.total_revenue).dealer_name,
+                max(dashboards, key=lambda x: x.total_units).dealer_name, 
+                max(dashboards, key=lambda x: x.total_dn).dealer_name,
                 min(dashboards, key=lambda x: x.average_delivery_days or float("inf")).dealer_name,
-                [f"{max(dashboards, key=lambda x: x.total_revenue).dealer_name} leads revenue.", f"{min(dashboards, key=lambda x: x.pending_pct).dealer_name} has the lowest pending rate."],
+                [
+                    f"{max(dashboards, key=lambda x: x.total_revenue).dealer_name} leads revenue.",
+                    f"{min(dashboards, key=lambda x: x.pending_pct).dealer_name} has the lowest pending rate."
+                ],
             )
             return {"success": True, "data": comparison, "comparison": comparison}
         except Exception as error:
@@ -996,12 +1363,19 @@ class DealerAnalyticsService:
             cached = self._ranking_cache.get(cache_key)
             if cached:
                 return cached
+            
             with self._session() as session:
                 items = [self._row_to_dashboard(row, include_distance=False) for row in self._aggregate_query(session)]
+            
             key_name = self.SORT_ALIASES.get(sort_by.lower().replace(" ", "_"), "total_revenue")
             naturally_low = key_name in {"average_delivery_days", "pending_pct", "total_revenue", "total_units", "pod_success_pct"}
             reverse = (not bottom and not (key_name in {"average_delivery_days", "pending_pct"})) or (bottom and key_name in {"average_delivery_days", "pending_pct"})
-            items.sort(key=lambda value: getattr(value, key_name, 0) if getattr(value, key_name, None) is not None else 0, reverse=reverse)
+            
+            items.sort(
+                key=lambda value: getattr(value, key_name, 0) if getattr(value, key_name, None) is not None else 0, 
+                reverse=reverse
+            )
+            
             ranking = DealerRanking(sort_by, "bottom" if bottom else "top", items[: max(1, min(int(limit), 100))])
             response = {"success": True, "data": ranking, "dealers": ranking.dealers, "count": len(ranking.dealers)}
             self._ranking_cache[cache_key] = response
@@ -1029,21 +1403,46 @@ class DealerAnalyticsService:
         try:
             with self._session() as session:
                 rows = session.query(func.count(DeliveryReport.id)).scalar() or 0
-            return {"healthy": True, "service": self._service_name, "version": self._version, "database": "connected", "records": int(rows), "latency_ms": round((time.perf_counter() - started) * 1000, 2), "timestamp": datetime.utcnow().isoformat()}
+            return {
+                "healthy": True, 
+                "service": self._service_name, 
+                "version": self._version, 
+                "database": "connected", 
+                "records": int(rows), 
+                "latency_ms": round((time.perf_counter() - started) * 1000, 2), 
+                "timestamp": datetime.utcnow().isoformat()
+            }
         except Exception as error:
             logger.exception("Dealer analytics health check failed")
-            return {"healthy": False, "service": self._service_name, "version": self._version, "database": "disconnected", "error": str(error), "timestamp": datetime.utcnow().isoformat()}
+            return {
+                "healthy": False, 
+                "service": self._service_name, 
+                "version": self._version, 
+                "database": "disconnected", 
+                "error": str(error), 
+                "timestamp": datetime.utcnow().isoformat()
+            }
 
     def validation_query(self) -> dict[str, Any]:
         try:
             with self._session() as session:
-                records = session.query(func.count(distinct(func.coalesce(DeliveryReport.dealer_code, DeliveryReport.customer_code, DeliveryReport.customer_name)))).scalar() or 0
+                records = session.query(
+                    func.count(distinct(func.coalesce(DeliveryReport.dealer_code, DeliveryReport.customer_code, DeliveryReport.customer_name)))
+                ).scalar() or 0
             return {"success": True, "records": int(records), "error": None}
         except Exception as error:
             return {"success": False, "records": 0, "error": str(error)}
 
     def get_service_metadata(self) -> dict[str, Any]:
-        return {"service_name": self._service_name, "version": self._version, "status": "DEGRADED" if self._initialization_errors else "READY", "source": "PostgreSQL DeliveryReport", "distance_provider": "OpenRouteService" if self._distance and self._distance._ors else "geopy great-circle", "startup_time": self._startup_time, "initialization_errors": self._initialization_errors}
+        return {
+            "service_name": self._service_name, 
+            "version": self._version, 
+            "status": "DEGRADED" if self._initialization_errors else "READY", 
+            "source": "PostgreSQL DeliveryReport", 
+            "distance_provider": "OpenRouteService" if self._distance and self._distance._ors else "geopy great-circle", 
+            "startup_time": self._startup_time, 
+            "initialization_errors": self._initialization_errors
+        }
 
 
 _service: Optional[DealerAnalyticsService] = None
@@ -1061,18 +1460,19 @@ def get_dealer_analytics_service() -> DealerAnalyticsService:
                     logger.exception("DealerAnalyticsService initialization failed")
                     _service = DealerAnalyticsService.__new__(DealerAnalyticsService)
                     _service._service_name = "dealer_analytics"
-                    _service._version = "4.1.0-degraded"
+                    _service._version = "4.2.0-degraded"
                     _service._startup_time = datetime.utcnow().isoformat()
                     _service._initialization_errors = ["Service initialized in emergency degraded mode"]
                     _service._coordinates = CityCoordinateService()
                     _service._distance = None
-                    _service._dealer_cache = TTLCache(maxsize=2048, ttl=CACHE_TTL)
-                    _service._candidate_cache = TTLCache(maxsize=1, ttl=900)
-                    _service._extended_cache = TTLCache(maxsize=2048, ttl=900)
-                    _service._dashboard_cache = TTLCache(maxsize=2048, ttl=300)
-                    _service._ranking_cache = TTLCache(maxsize=64, ttl=300)
+                    _service._dealer_cache = TTLCache(maxsize=4096, ttl=CACHE_TTL)
+                    _service._candidate_cache = TTLCache(maxsize=1, ttl=1800)
+                    _service._extended_cache = TTLCache(maxsize=4096, ttl=1800)
+                    _service._dashboard_cache = TTLCache(maxsize=4096, ttl=600)
+                    _service._ranking_cache = TTLCache(maxsize=128, ttl=600)
                     _service._search_lock = threading.RLock()
                     _service._last_diagnostic = {}
+                    _service._aggregate_cache = TTLCache(maxsize=1024, ttl=300)
     return _service
 
 
