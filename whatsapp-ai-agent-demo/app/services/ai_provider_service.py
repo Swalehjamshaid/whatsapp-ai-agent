@@ -1,582 +1,1419 @@
 """
-File: app/services/ai_provider_service.py
-Version: 10.0 - ENTERPRISE REFACTORED: Service-Oriented Architecture
-Purpose: LIGHTWEIGHT ORCHESTRATOR - SINGLE ENTRY POINT for all WhatsApp requests.
-         Delegates ALL business logic to dedicated services.
-         NO SQL, NO business logic, NO formatting logic.
+File: app/services/ai_provider_service_intents.py
+Version: 5.0 - ENTERPRISE INTENT DETECTION with Full Library Stack
+Purpose: Intent detection using spaCy, Sentence-Transformers, RapidFuzz, FlashRank
+         Uses libraries for intelligent decision making
 """
 
+import re
 import logging
-import time
-import uuid
+import threading
 import asyncio
-import inspect
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Tuple, Set
+from dataclasses import dataclass, field
 from datetime import datetime
-from dataclasses import dataclass
-
-# ============================================================
-# TENACITY FOR RETRY LOGIC
-# ============================================================
-
-try:
-    from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
-    TENACITY_AVAILABLE = True
-except ImportError:
-    TENACITY_AVAILABLE = False
+from functools import lru_cache
+import time
 
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# IMPORT DEDICATED SERVICES
+# LIBRARY IMPORTS WITH FALLBACK
 # ============================================================
 
+# 1. spaCy - Entity Extraction
 try:
-    from .dn_service import get_dn_service
-    from .dealer_service import get_dealer_service
-    from .warehouse_service import get_warehouse_service
-    from .city_service import get_city_service
-    from .product_service import get_product_service
-    from .national_kpi_service import get_national_kpi_service
-    from .groq_service import get_groq_service
-    from .base_service import ServiceResponse
-    SERVICES_AVAILABLE = True
-except ImportError as e:
-    SERVICES_AVAILABLE = False
-    logger.error(f"❌ Service imports failed: {e}")
+    import spacy
+    SPACY_AVAILABLE = True
+    logger.info("✅ spaCy available for entity extraction")
+except ImportError:
+    SPACY_AVAILABLE = False
+    logger.warning("⚠️ spaCy not installed. Install: pip install spacy>=3.8.2")
 
-# ============================================================
-# INTENT DETECTION ENGINE
-# ============================================================
-
+# 2. Sentence-Transformers - Semantic Intent Detection
 try:
-    from .ai_provider_service_intents import IntentDetectionEngine, RoutingDecision
-    INTENTS_AVAILABLE = True
-except ImportError as e:
-    INTENTS_AVAILABLE = False
-    logger.error(f"❌ IntentDetectionEngine import failed: {e}")
+    from sentence_transformers import SentenceTransformer
+    import torch
+    SENTENCE_TRANSFORMERS_AVAILABLE = True
+    logger.info("✅ Sentence-Transformers available for semantic intent detection")
+except ImportError:
+    SENTENCE_TRANSFORMERS_AVAILABLE = False
+    logger.warning("⚠️ Sentence-Transformers not installed. Install: pip install sentence-transformers>=2.2.0")
+
+# 3. RapidFuzz - Fuzzy Matching
+try:
+    from rapidfuzz import fuzz, process
+    RAPIDFUZZ_AVAILABLE = True
+    logger.info("✅ RapidFuzz available for fuzzy matching")
+except ImportError:
+    RAPIDFUZZ_AVAILABLE = False
+    logger.warning("⚠️ RapidFuzz not installed. Install: pip install rapidfuzz>=3.0.0")
+
+# 4. FlashRank - Re-ranking
+try:
+    from flashrank import Ranker
+    FLASHRANK_AVAILABLE = True
+    logger.info("✅ FlashRank available for re-ranking")
+except ImportError:
+    FLASHRANK_AVAILABLE = False
+    logger.warning("⚠️ FlashRank not installed. Install: pip install flashrank>=0.2.10")
+
+# 5. Cachetools - Caching
+try:
+    from cachetools import TTLCache, cached
+    CACHETOOLS_AVAILABLE = True
+    logger.info("✅ Cachetools available for caching")
+except ImportError:
+    CACHETOOLS_AVAILABLE = False
+    logger.warning("⚠️ Cachetools not installed. Install: pip install cachetools>=5.0.0")
+
+# 6. NumPy - Numerical operations
+try:
+    import numpy as np
+    NUMPY_AVAILABLE = True
+    logger.info("✅ NumPy available for numerical operations")
+except ImportError:
+    NUMPY_AVAILABLE = False
+    logger.warning("⚠️ NumPy not installed. Install: pip install numpy>=1.26.0")
+
+# ============================================================
+# ROUTING DECISION
+# ============================================================
+
+@dataclass
+class RoutingDecision:
+    """Routing decision with enhanced metadata from all libraries"""
+    intent: str
+    service_key: str
+    method: str
+    entity: Optional[str] = None
+    entity2: Optional[str] = None
+    confidence: float = 0.0
+    needs_groq: bool = False
+    reason: str = ""
+    original_message: str = ""
+    suggestions: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
     
-    @dataclass
-    class RoutingDecision:
-        intent: str = "general_ai"
-        service_key: str = "groq"
-        method: str = "process_query"
-        entity: Optional[str] = None
-        entity2: Optional[str] = None
-        confidence: float = 0.0
-        needs_groq: bool = True
-        reason: str = ""
-        original_message: str = ""
-        suggestions: list = None
-        metadata: dict = None
+    # Library-specific scores
+    spacy_entities: Dict[str, List[str]] = field(default_factory=dict)
+    semantic_score: float = 0.0
+    fuzzy_score: float = 0.0
+    flashrank_score: float = 0.0
+    pattern_score: float = 0.0
+    combined_score: float = 0.0
+    
+    # Ranking results
+    ranked_candidates: List[Dict[str, Any]] = field(default_factory=list)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "intent": self.intent,
+            "service_key": self.service_key,
+            "method": self.method,
+            "entity": self.entity,
+            "entity2": self.entity2,
+            "confidence": self.confidence,
+            "needs_groq": self.needs_groq,
+            "reason": self.reason,
+            "original_message": self.original_message,
+            "suggestions": self.suggestions,
+            "metadata": self.metadata,
+            "spacy_entities": self.spacy_entities,
+            "semantic_score": self.semantic_score,
+            "fuzzy_score": self.fuzzy_score,
+            "flashrank_score": self.flashrank_score,
+            "pattern_score": self.pattern_score,
+            "combined_score": self.combined_score,
+            "ranked_candidates": self.ranked_candidates
+        }
+
+# ============================================================
+# SPACY ENTITY EXTRACTOR
+# ============================================================
+
+class SpacyEntityExtractor:
+    """Entity extraction using spaCy"""
+    
+    def __init__(self):
+        self.nlp = None
+        self.logger = logging.getLogger(__name__)
         
-        def to_dict(self) -> Dict[str, Any]:
-            return {
-                "intent": self.intent,
-                "service_key": self.service_key,
-                "method": self.method,
-                "entity": self.entity,
-                "entity2": self.entity2,
-                "confidence": self.confidence,
-                "needs_groq": self.needs_groq,
-                "reason": self.reason,
-                "original_message": self.original_message,
-                "suggestions": self.suggestions or [],
-                "metadata": self.metadata or {}
+        if SPACY_AVAILABLE:
+            try:
+                # Try different models
+                models = ["en_core_web_sm", "en_core_web_lg", "en_core_web_md"]
+                for model in models:
+                    try:
+                        self.nlp = spacy.load(model)
+                        self.logger.info(f"✅ spaCy loaded: {model}")
+                        break
+                    except OSError:
+                        continue
+                
+                if not self.nlp:
+                    self.logger.warning("⚠️ No spaCy model found. Download: python -m spacy download en_core_web_sm")
+            except Exception as e:
+                self.logger.warning(f"⚠️ spaCy initialization failed: {e}")
+                self.nlp = None
+    
+    def extract_entities(self, text: str) -> Dict[str, List[str]]:
+        """Extract entities from text"""
+        if not self.nlp:
+            return {}
+        
+        try:
+            doc = self.nlp(text)
+            entities = {
+                "PERSON": [],
+                "ORG": [],
+                "GPE": [],  # Cities, countries
+                "LOC": [],  # Locations
+                "PRODUCT": [],
+                "DATE": [],
+                "MONEY": [],
+                "QUANTITY": [],
+                "FAC": [],  # Facilities (warehouses)
+                "EVENT": []
             }
+            
+            for ent in doc.ents:
+                if ent.label_ in entities:
+                    entities[ent.label_].append(ent.text)
+            
+            # Additional custom extraction for dealer names
+            # Look for patterns like "Dealer XYZ"
+            dealer_pattern = re.compile(r'(?:dealer|customer|partner)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)', re.IGNORECASE)
+            dealer_matches = dealer_pattern.findall(text)
+            if dealer_matches:
+                entities["DEALER"] = dealer_matches
+            
+            # Extract warehouse from text
+            warehouse_pattern = re.compile(r'(?:warehouse|wh|depot|distribution)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)', re.IGNORECASE)
+            warehouse_matches = warehouse_pattern.findall(text)
+            if warehouse_matches:
+                entities["WAREHOUSE"] = warehouse_matches
+            
+            # Extract city from GPE
+            if entities.get("GPE"):
+                # Could be cities
+                pass
+            
+            self.logger.debug(f"Extracted entities: {entities}")
+            return entities
+            
+        except Exception as e:
+            self.logger.warning(f"spaCy entity extraction failed: {e}")
+            return {}
+
+# ============================================================
+# SEMANTIC INTENT DETECTOR
+# ============================================================
+
+class SemanticIntentDetector:
+    """Semantic intent detection using Sentence-Transformers"""
     
-    class IntentDetectionEngine:
-        def detect_intent(self, message: str) -> RoutingDecision:
-            # Simple fallback - check for DN
-            import re
-            if re.sub(r'\D', '', message) and 8 <= len(re.sub(r'\D', '', message)) <= 12:
-                dn_number = re.sub(r'\D', '', message)
-                return RoutingDecision(
-                    intent="dn_lookup",
-                    service_key="dn",
-                    method="get_dn_dashboard",
-                    entity=dn_number,
-                    confidence=1.0,
-                    needs_groq=False,
-                    reason="DN number detected",
-                    original_message=message
-                )
-            return RoutingDecision(
-                intent="general_ai",
-                service_key="groq",
-                method="process_query",
-                needs_groq=True,
-                original_message=message
-            )
+    def __init__(self):
+        self.model = None
+        self.logger = logging.getLogger(__name__)
+        
+        # Intent examples for semantic matching
+        self.intent_examples = {
+            'dn_lookup': [
+                "check delivery note number",
+                "track DN status",
+                "delivery note details",
+                "DN lookup",
+                "find delivery note"
+            ],
+            'pending_dn': [
+                "pending deliveries",
+                "open delivery notes",
+                "outstanding DNs",
+                "deliveries not completed",
+                "waiting for delivery"
+            ],
+            'pending_pgi': [
+                "goods issue pending",
+                "PGI not done",
+                "pending goods issuance",
+                "PGI status"
+            ],
+            'pending_pod': [
+                "proof of delivery pending",
+                "POD not received",
+                "delivery proof missing",
+                "POD status"
+            ],
+            'dealer_dashboard': [
+                "dealer performance summary",
+                "show dealer metrics",
+                "dealer revenue and units",
+                "dealer dashboard overview",
+                "dealer analytics"
+            ],
+            'top_dealers': [
+                "best performing dealers",
+                "top revenue dealers",
+                "dealer ranking",
+                "highest performing dealers"
+            ],
+            'bottom_dealers': [
+                "lowest performing dealers",
+                "dealers with low revenue",
+                "bottom dealer ranking",
+                "worst performing dealers"
+            ],
+            'national_kpi': [
+                "country-wide performance",
+                "national key performance indicators",
+                "Pakistan overall metrics",
+                "executive dashboard",
+                "company performance summary"
+            ],
+            'warehouse_dashboard': [
+                "warehouse performance summary",
+                "depot metrics",
+                "distribution center overview",
+                "warehouse analytics"
+            ],
+            'city_dashboard': [
+                "city performance summary",
+                "city revenue and units",
+                "city analytics",
+                "regional performance"
+            ],
+            'product_dashboard': [
+                "product performance summary",
+                "product revenue and units",
+                "product analytics",
+                "model performance"
+            ],
+            'help': [
+                "show available commands",
+                "what can you do",
+                "help menu",
+                "how to use this bot"
+            ],
+            'greeting': [
+                "hello",
+                "hi there",
+                "good morning",
+                "hey"
+            ],
+            'conversational': [
+                "how are you",
+                "what is your name",
+                "tell me about yourself",
+                "thank you"
+            ]
+        }
+        
+        if SENTENCE_TRANSFORMERS_AVAILABLE:
+            try:
+                # Use lightweight model
+                self.model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
+                self.logger.info("✅ Sentence-Transformers model loaded: all-MiniLM-L6-v2")
+                
+                # Pre-encode intent examples
+                self.intent_embeddings = {}
+                for intent, examples in self.intent_examples.items():
+                    embeddings = self.model.encode(examples, convert_to_numpy=True)
+                    self.intent_embeddings[intent] = embeddings.mean(axis=0)
+                
+                self.logger.info(f"✅ Pre-encoded {len(self.intent_embeddings)} intent embeddings")
+                
+            except Exception as e:
+                self.logger.warning(f"⚠️ Sentence-Transformers initialization failed: {e}")
+                self.model = None
+    
+    def predict(self, text: str) -> Tuple[str, float]:
+        """Predict intent using semantic similarity"""
+        if not self.model or not self.intent_embeddings:
+            return "general_ai", 0.0
+        
+        try:
+            # Encode input text
+            text_embedding = self.model.encode([text], convert_to_numpy=True)[0]
+            
+            # Calculate cosine similarity with each intent
+            similarities = {}
+            for intent, embedding in self.intent_embeddings.items():
+                # Normalize
+                text_norm = text_embedding / np.linalg.norm(text_embedding)
+                intent_norm = embedding / np.linalg.norm(embedding)
+                similarity = np.dot(text_norm, intent_norm)
+                similarities[intent] = float(similarity)
+            
+            # Get best match
+            best_intent = max(similarities, key=similarities.get)
+            best_score = similarities[best_intent]
+            
+            # Apply threshold
+            if best_score < 0.5:
+                return "general_ai", best_score
+            
+            return best_intent, best_score
+            
+        except Exception as e:
+            self.logger.warning(f"Semantic prediction failed: {e}")
+            return "general_ai", 0.0
 
 # ============================================================
-# WHATSAPP PROVIDER SERVICE - LIGHTWEIGHT ORCHESTRATOR
+# FLASHRANK RE-RANKER
 # ============================================================
 
-class WhatsAppProviderService:
+class FlashRankReRanker:
+    """Re-rank candidate intents using FlashRank"""
+    
+    def __init__(self):
+        self.ranker = None
+        self.logger = logging.getLogger(__name__)
+        
+        if FLASHRANK_AVAILABLE:
+            try:
+                self.ranker = Ranker(model="ms-marco-MiniLM-L-12-v2")
+                self.logger.info("✅ FlashRank re-ranker initialized")
+            except Exception as e:
+                self.logger.warning(f"⚠️ FlashRank initialization failed: {e}")
+                self.ranker = None
+    
+    def rerank(self, query: str, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Re-rank candidates using FlashRank"""
+        if not self.ranker or not candidates:
+            return candidates
+        
+        try:
+            # Format for FlashRank
+            passages = [
+                {
+                    "id": i,
+                    "text": candidate.get("text", candidate.get("name", "")),
+                    "meta": candidate
+                }
+                for i, candidate in enumerate(candidates)
+            ]
+            
+            # Re-rank
+            results = self.ranker.rerank(query=query, passages=passages)
+            
+            # Update candidates with scores
+            for result in results:
+                idx = result["id"]
+                if idx < len(candidates):
+                    candidates[idx]["flashrank_score"] = result["score"]
+                    candidates[idx]["flashrank_rank"] = result["rank"]
+            
+            # Sort by FlashRank score
+            candidates.sort(key=lambda x: x.get("flashrank_score", 0), reverse=True)
+            
+            return candidates
+            
+        except Exception as e:
+            self.logger.warning(f"FlashRank re-ranking failed: {e}")
+            return candidates
+
+# ============================================================
+# MAIN INTENT DETECTION ENGINE
+# ============================================================
+
+class IntentDetectionEngine:
     """
-    LIGHTWEIGHT ORCHESTRATOR - Single entry point for all WhatsApp requests.
-    
-    Responsibilities:
-        - Detect intent
-        - Route to business services
-        - Handle exceptions
-        - Return responses
-    
-    DOES NOT CONTAIN:
-        - SQL queries
-        - Business logic
-        - KPI calculations
-        - Dashboard formatting
+    ENTERPRISE Intent Detection Engine using:
+    - spaCy for entity extraction
+    - Sentence-Transformers for semantic intent detection
+    - RapidFuzz for fuzzy matching
+    - FlashRank for re-ranking
+    - Cachetools for caching
     """
     
     def __init__(self):
         self.logger = logging.getLogger(__name__)
-        self._request_id = None
+        self.start_time = time.time()
+        
+        # ============================================================
+        # 1. INITIALIZE COMPONENTS
+        # ============================================================
+        
+        self.logger.info("=" * 70)
+        self.logger.info("🚀 Initializing Enterprise Intent Detection Engine")
+        self.logger.info("=" * 70)
+        
+        # spaCy Entity Extractor
+        self.entity_extractor = SpacyEntityExtractor()
+        self.logger.info(f"   spaCy: {'✅' if self.entity_extractor.nlp else '❌'}")
+        
+        # Semantic Intent Detector
+        self.semantic_detector = SemanticIntentDetector()
+        self.logger.info(f"   Sentence-Transformers: {'✅' if self.semantic_detector.model else '❌'}")
+        
+        # FlashRank Re-Ranker
+        self.reranker = FlashRankReRanker()
+        self.logger.info(f"   FlashRank: {'✅' if self.reranker.ranker else '❌'}")
+        
+        # ============================================================
+        # 2. CACHE
+        # ============================================================
+        
+        self._cache = TTLCache(maxsize=1000, ttl=300) if CACHETOOLS_AVAILABLE else {}
+        self._cache_hits = 0
+        self._cache_misses = 0
+        
+        # ============================================================
+        # 3. PATTERNS
+        # ============================================================
+        
+        self._init_patterns()
+        
+        # ============================================================
+        # 4. DEALER ALIASES
+        # ============================================================
+        
+        self.DEALER_ALIASES = {
+            "sham": "Sham Electronics",
+            "sham electronics": "Sham Electronics",
+            "ruba": "Ruba Digital Wah",
+            "ruba digital": "Ruba Digital Wah",
+            "ruba digital wah": "Ruba Digital Wah",
+            "taj": "Taj Electronics",
+            "taj electronics": "Taj Electronics",
+            "haroon": "Haroon Electronics",
+            "haroon electronics": "Haroon Electronics",
+            "mian": "Mian Group Chakwal",
+            "mian group": "Mian Group Chakwal",
+            "arco": "Arco Electronics",
+            "arco electronics": "Arco Electronics",
+            "shah": "Shah Electronics",
+            "shah electronics": "Shah Electronics",
+        }
+        
+        # ============================================================
+        # 5. DEALER CACHE
+        # ============================================================
+        
+        self._dealer_names = []
+        self._dealer_normalized = []
+        self._dealer_cache_loaded = False
+        self._dealer_cache_lock = threading.RLock()
+        
+        # ============================================================
+        # 6. INTENT STATS
+        # ============================================================
+        
+        self._intent_stats = {}
+        
+        # ============================================================
+        # 7. LOAD DEALER CACHE
+        # ============================================================
+        
+        self._load_dealer_cache()
+        
+        # ============================================================
+        # 8. SUMMARY
+        # ============================================================
+        
+        init_time = (time.time() - self.start_time) * 1000
+        self.logger.info("=" * 70)
+        self.logger.info(f"✅ Intent Detection Engine initialized in {init_time:.2f}ms")
+        self.logger.info("   Components:")
+        self.logger.info(f"   • spaCy: {'✅' if self.entity_extractor.nlp else '❌'} Entity Extraction")
+        self.logger.info(f"   • Sentence-Transformers: {'✅' if self.semantic_detector.model else '❌'} Semantic Detection")
+        self.logger.info(f"   • RapidFuzz: {'✅' if RAPIDFUZZ_AVAILABLE else '❌'} Fuzzy Matching")
+        self.logger.info(f"   • FlashRank: {'✅' if self.reranker.ranker else '❌'} Re-ranking")
+        self.logger.info(f"   • Cachetools: {'✅' if CACHETOOLS_AVAILABLE else '❌'} Caching")
+        self.logger.info("=" * 70)
+    
+    def _init_patterns(self):
+        """Initialize regex patterns"""
+        # DN Patterns
+        self.DN_PATTERN = re.compile(r'\b(\d{8,12})\b')
+        self.DN_PREFIX_PATTERN = re.compile(r'\b(DN|DN/)\s*(\d{6,10})\b', re.IGNORECASE)
+        
+        # Pending Patterns
+        self.PENDING_DN_PATTERN = re.compile(r'(?:pending|open|outstanding)\s*(?:dn|dns|delivery|deliveries)', re.IGNORECASE)
+        self.PENDING_PGI_PATTERN = re.compile(r'(?:pending|open)\s*(?:pgi|goods issue|goods issuance)', re.IGNORECASE)
+        self.PENDING_POD_PATTERN = re.compile(r'(?:pending|open)\s*(?:pod|proof of delivery)', re.IGNORECASE)
+        self.PENDING_GENERAL_PATTERN = re.compile(r'(?:pending|open|outstanding|waiting|delayed)', re.IGNORECASE)
+        
+        # Dealer Patterns
+        self.DEALER_PATTERN = re.compile(
+            r'(?:dealer|about|for|company|customer|tell me about|show me|get|view|display|give me)\s+([a-z0-9\s&\-\.]+)',
+            re.IGNORECASE
+        )
+        self.DEALER_DASHBOARD_PATTERN = re.compile(
+            r'(?:dashboard|profile|summary|overview|info|information|details|status|statistics|performance)\s+(?:of|for)?\s+([a-z0-9\s&\-\.]+)',
+            re.IGNORECASE
+        )
+        
+        # Ranking Patterns
+        self.RANKING_PATTERN = re.compile(
+            r'(?:top|best|highest|lowest|worst|bottom|leading|performance)\s+(\d+)?\s*(?:dealers?|cities?|warehouses?|products?)',
+            re.IGNORECASE
+        )
+        
+        # Comparison Patterns
+        self.COMPARISON_PATTERN = re.compile(
+            r'(?:compare|vs|versus|and)\s+(.*?)(?:\s+and\s+|\s+vs\s+|\s+versus\s+)(.*?)(?:\?|$)',
+            re.IGNORECASE
+        )
+        
+        # Location Patterns
+        self.WAREHOUSE_PATTERN = re.compile(
+            r'(?:warehouse|wh|depot|distribution|store)\s+([a-z0-9\s&\-\.]+)',
+            re.IGNORECASE
+        )
+        self.CITY_PATTERN = re.compile(
+            r'(?:city|in|at|location|region|area)\s+([a-z0-9\s&\-\.]+)',
+            re.IGNORECASE
+        )
+        self.PRODUCT_PATTERN = re.compile(
+            r'(?:product|model|material|item|sku|article|goods)\s+([a-z0-9\s&\-\.]+)',
+            re.IGNORECASE
+        )
+        
+        # National KPI
+        self.NATIONAL_KPI_PATTERN = re.compile(
+            r'(?:national|pakistan|country|overall|executive|kpi dashboard|performance dashboard|company wide|corporate|head office)',
+            re.IGNORECASE
+        )
+        
+        # Conversational
+        self.HELP_PATTERN = re.compile(
+            r'(?:help|menu|commands|what can you do|available commands|how to use|guide|tutorial)',
+            re.IGNORECASE
+        )
+        self.GREETING_PATTERN = re.compile(
+            r'^(?:hello|hi|hey|good morning|good evening|good afternoon|howdy|greetings|yo|sup)',
+            re.IGNORECASE
+        )
+        self.CONVERSATIONAL_PATTERN = re.compile(
+            r'(?:can i|may i|could i|i have|i want|i need|tell me|help me|'
+            r'question|ask you|something|anything|what is|how to|how do|'
+            r'where is|when is|why is|who is|explain|describe|tell about|'
+            r'know about|information about|details about)',
+            re.IGNORECASE
+        )
+    
+    # ============================================================
+    # MAIN DETECT INTENT METHOD
+    # ============================================================
+    
+    def detect_intent(self, message: str) -> RoutingDecision:
+        """
+        Detect intent using hybrid approach with all libraries:
+        1. Pattern matching (fast, deterministic)
+        2. spaCy entity extraction
+        3. Semantic detection (Sentence-Transformers)
+        4. Fuzzy matching (RapidFuzz)
+        5. FlashRank re-ranking
+        6. Combined confidence scoring
+        """
+        cleaned = message.strip()
+        if not cleaned:
+            return self._create_fallback_decision(cleaned, "Empty message")
+        
+        # Check cache
+        cache_key = f"intent:{cleaned[:100]}"
+        if self._cache_enabled() and cache_key in self._cache:
+            self._cache_hits += 1
+            self.logger.debug(f"Cache hit for: {cleaned[:50]}")
+            return self._cache[cache_key]
+        
+        self._cache_misses += 1
+        
+        self.logger.info(f"🔍 Detecting intent for: {cleaned[:100]}")
         start_time = time.time()
         
-        try:
-            self.logger.info("=" * 70)
-            self.logger.info("🤖 WhatsApp AI Agent v10.0 - Service-Oriented Architecture")
-            self.logger.info("=" * 70)
-            
-            # ============================================================
-            # 1. INITIALIZE DEDICATED SERVICES
-            # ============================================================
-            
-            if SERVICES_AVAILABLE:
-                self.dn_service = get_dn_service()
-                self.dealer_service = get_dealer_service()
-                self.warehouse_service = get_warehouse_service()
-                self.city_service = get_city_service()
-                self.product_service = get_product_service()
-                self.national_kpi_service = get_national_kpi_service()
-                self.groq_service = get_groq_service()
-                self.logger.info("✅ All business services initialized")
-            else:
-                self.dn_service = None
-                self.dealer_service = None
-                self.warehouse_service = None
-                self.city_service = None
-                self.product_service = None
-                self.national_kpi_service = None
-                self.groq_service = None
-                self.logger.warning("⚠️ Services not available")
-            
-            # ============================================================
-            # 2. INITIALIZE INTENT DETECTION
-            # ============================================================
-            
-            if INTENTS_AVAILABLE:
-                self.intent_engine = IntentDetectionEngine()
-                self.logger.info("✅ IntentDetectionEngine initialized")
-            else:
-                self.intent_engine = IntentDetectionEngine()
-                self.logger.info("⚠️ Using fallback IntentDetectionEngine")
-            
-            # ============================================================
-            # 3. SERVICE REGISTRY FOR ROUTING
-            # ============================================================
-            
-            self._service_registry = {
-                'dn': self.dn_service,
-                'dealer': self.dealer_service,
-                'warehouse': self.warehouse_service,
-                'city': self.city_service,
-                'product': self.product_service,
-                'national_kpi': self.national_kpi_service,
-                'groq': self.groq_service,
-                'default': self.groq_service
-            }
-            
-            # ============================================================
-            # 4. INTENT TO SERVICE MAPPING
-            # ============================================================
-            
-            self._intent_service_map = {
-                'dn_lookup': 'dn',
-                'pending_dn': 'dn',
-                'pending_pgi': 'dn',
-                'pending_pod': 'dn',
-                'dealer_dashboard': 'dealer',
-                'dealer_suggestion': 'dealer',
-                'top_dealers': 'dealer',
-                'bottom_dealers': 'dealer',
-                'top_dealers_revenue': 'dealer',
-                'top_dealers_units': 'dealer',
-                'comparison': 'dealer',
-                'warehouse_dashboard': 'warehouse',
-                'city_dashboard': 'city',
-                'product_dashboard': 'product',
-                'national_kpi': 'national_kpi',
-                'help': 'groq',
-                'greeting': 'groq',
-                'conversational': 'groq',
-                'general_ai': 'groq',
-                'default': 'groq'
-            }
-            
-            init_duration = (time.time() - start_time) * 1000
-            self.logger.info(f"   INIT TIME: {init_duration:.2f}ms")
-            self.logger.info("   STATUS: ✅ PRODUCTION GRADE")
-            self.logger.info("=" * 70)
-            
-        except Exception as e:
-            self.logger.exception(f"❌ Failed to initialize: {str(e)}")
-            raise
-    
-    # ============================================================
-    # MAIN ENTRY POINT - DO NOT CHANGE SIGNATURE
-    # ============================================================
-    
-    async def process_whatsapp_query(
-        self,
-        message: str,
-        sender_id: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """
-        Single entry point for all WhatsApp requests.
+        # ============================================================
+        # STEP 1: PATTERN-BASED DETECTION (HIGHEST PRIORITY)
+        # ============================================================
         
-        IMPORTANT: DO NOT CHANGE THIS SIGNATURE - webhook.py depends on it.
-        """
-        # Generate request ID for tracking
-        request_id = str(uuid.uuid4())[:8]
-        self._request_id = request_id
+        pattern_decision = self._detect_by_pattern(cleaned)
+        if pattern_decision and pattern_decision.confidence >= 0.98:
+            self.logger.info(f"✅ Pattern match: {pattern_decision.intent} (confidence: {pattern_decision.confidence:.2f})")
+            return self._finalize_decision(pattern_decision, cache_key)
         
-        self.logger.info(f"📩 [REQ:{request_id}] Processing: '{message[:100]}'")
-        start_time = time.perf_counter()
+        # ============================================================
+        # STEP 2: SPACY ENTITY EXTRACTION
+        # ============================================================
         
-        try:
-            # ============================================================
-            # STEP 1: DETECT INTENT
-            # ============================================================
+        spacy_entities = self.entity_extractor.extract_entities(cleaned)
+        self.logger.debug(f"spaCy entities: {spacy_entities}")
+        
+        # ============================================================
+        # STEP 3: SEMANTIC INTENT DETECTION
+        # ============================================================
+        
+        semantic_intent, semantic_score = self.semantic_detector.predict(cleaned)
+        self.logger.debug(f"Semantic intent: {semantic_intent} (score: {semantic_score:.2f})")
+        
+        # ============================================================
+        # STEP 4: RAPIDFUZZ MATCHING
+        # ============================================================
+        
+        fuzzy_result = self._detect_with_fuzzy(cleaned)
+        
+        # ============================================================
+        # STEP 5: COMBINE DECISIONS
+        # ============================================================
+        
+        # Build candidate list for FlashRank
+        candidates = []
+        
+        # Add pattern match
+        if pattern_decision:
+            candidates.append({
+                "id": "pattern",
+                "text": pattern_decision.intent,
+                "confidence": pattern_decision.confidence,
+                "decision": pattern_decision
+            })
+        
+        # Add semantic match
+        if semantic_score > 0.3:
+            candidates.append({
+                "id": "semantic",
+                "text": semantic_intent,
+                "confidence": semantic_score,
+                "intent": semantic_intent
+            })
+        
+        # Add fuzzy match
+        if fuzzy_result:
+            candidates.append({
+                "id": "fuzzy",
+                "text": fuzzy_result.get("intent", ""),
+                "confidence": fuzzy_result.get("score", 0),
+                "entity": fuzzy_result.get("entity", ""),
+                "decision": fuzzy_result.get("decision")
+            })
+        
+        # ============================================================
+        # STEP 6: FLASHRANK RE-RANKING
+        # ============================================================
+        
+        if candidates and self.reranker.ranker:
+            candidates = self.reranker.rerank(cleaned, candidates)
+            self.logger.debug(f"FlashRank re-ranked {len(candidates)} candidates")
+        
+        # ============================================================
+        # STEP 7: FINAL DECISION
+        # ============================================================
+        
+        if candidates:
+            best = candidates[0]
             
-            routing_decision = self.intent_engine.detect_intent(message)
-            self.logger.info(
-                f"🎯 [REQ:{request_id}] Intent: {routing_decision.intent} "
-                f"(confidence: {routing_decision.confidence:.2f})"
+            # Extract spaCy entities for dealer detection
+            if spacy_entities:
+                # Check if ORG entities match dealer names
+                if spacy_entities.get("ORG"):
+                    for org in spacy_entities["ORG"]:
+                        found_dealer = self._find_dealer_fuzzy(org)
+                        if found_dealer:
+                            best["entity"] = found_dealer
+                            best["intent"] = "dealer_dashboard"
+                            break
+                
+                # Check if GPE entities match city names
+                if spacy_entities.get("GPE"):
+                    for gpe in spacy_entities["GPE"]:
+                        # Could be a city
+                        pass
+            
+            # Create final decision
+            intent = best.get("intent", best.get("text", "general_ai"))
+            entity = best.get("entity", pattern_decision.entity if pattern_decision else None)
+            
+            final_decision = self._create_decision(
+                intent=intent,
+                service_key=self._get_service_key(intent),
+                method=self._get_method(intent),
+                entity=entity,
+                confidence=best.get("confidence", 0.5),
+                reason=f"Best candidate from FlashRank: {best.get('id', 'unknown')}",
+                original=cleaned
             )
             
-            # ============================================================
-            # STEP 2: ROUTE TO APPROPRIATE SERVICE
-            # ============================================================
+            # Add library scores
+            final_decision.spacy_entities = spacy_entities
+            final_decision.semantic_score = semantic_score
+            final_decision.flashrank_score = best.get("flashrank_score", 0)
+            final_decision.ranked_candidates = candidates
             
-            response = await self._route_request(routing_decision, request_id)
+            # Calculate combined confidence
+            final_decision.combined_score = self._calculate_combined_score(
+                pattern_decision.confidence if pattern_decision else 0,
+                semantic_score,
+                final_decision.flashrank_score
+            )
             
-            # ============================================================
-            # STEP 3: ENHANCE WITH GROQ (if needed)
-            # ============================================================
-            
-            if routing_decision.needs_groq and self.groq_service:
-                response = await self._enhance_with_groq(
-                    message, routing_decision, response, request_id
+            return self._finalize_decision(final_decision, cache_key)
+        
+        # ============================================================
+        # STEP 8: FALLBACK
+        # ============================================================
+        
+        fallback = self._create_fallback_decision(cleaned, "No intent detected")
+        return self._finalize_decision(fallback, cache_key)
+    
+    def _calculate_combined_score(self, pattern_score: float, semantic_score: float, flashrank_score: float) -> float:
+        """Calculate combined confidence score"""
+        weights = {
+            'pattern': 0.4,
+            'semantic': 0.3,
+            'flashrank': 0.3
+        }
+        
+        combined = (
+            pattern_score * weights['pattern'] +
+            semantic_score * weights['semantic'] +
+            flashrank_score * weights['flashrank']
+        )
+        
+        return min(combined, 1.0)
+    
+    def _get_service_key(self, intent: str) -> str:
+        """Map intent to service key"""
+        service_map = {
+            'dn_lookup': 'dn',
+            'pending_dn': 'dn',
+            'pending_pgi': 'dn',
+            'pending_pod': 'dn',
+            'dealer_dashboard': 'dealer',
+            'dealer_suggestion': 'dealer',
+            'top_dealers': 'dealer',
+            'bottom_dealers': 'dealer',
+            'comparison': 'dealer',
+            'warehouse_dashboard': 'warehouse',
+            'city_dashboard': 'city',
+            'product_dashboard': 'product',
+            'national_kpi': 'national_kpi',
+            'help': 'groq',
+            'greeting': 'groq',
+            'conversational': 'groq',
+            'general_ai': 'groq'
+        }
+        return service_map.get(intent, 'groq')
+    
+    def _get_method(self, intent: str) -> str:
+        """Map intent to method"""
+        method_map = {
+            'dn_lookup': 'get_dn_dashboard',
+            'pending_dn': 'get_pending_dns',
+            'pending_pgi': 'get_pending_pgi',
+            'pending_pod': 'get_pending_pod',
+            'dealer_dashboard': 'get_dealer_dashboard',
+            'dealer_suggestion': 'suggest_dealers',
+            'top_dealers': 'get_top_dealers',
+            'bottom_dealers': 'get_bottom_dealers',
+            'comparison': 'compare_dealers',
+            'warehouse_dashboard': 'get_warehouse_dashboard',
+            'city_dashboard': 'get_city_dashboard',
+            'product_dashboard': 'get_product_dashboard',
+            'national_kpi': 'get_national_kpi_dashboard',
+            'help': 'process_query',
+            'greeting': 'process_query',
+            'conversational': 'process_query',
+            'general_ai': 'process_query'
+        }
+        return method_map.get(intent, 'process_query')
+    
+    # ============================================================
+    # PATTERN-BASED DETECTION
+    # ============================================================
+    
+    def _detect_by_pattern(self, cleaned: str) -> Optional[RoutingDecision]:
+        """Detect intent using regex patterns"""
+        normalized = cleaned.lower()
+        
+        # 1. DN Detection
+        if self._is_dn_number(cleaned):
+            dn_number = re.sub(r'\D', '', cleaned)
+            return self._create_decision(
+                intent="dn_lookup",
+                service_key="dn",
+                method="get_dn_dashboard",
+                entity=dn_number,
+                confidence=1.0,
+                reason="DN number detected",
+                original=cleaned
+            )
+        
+        dn_prefix_match = self.DN_PREFIX_PATTERN.search(cleaned)
+        if dn_prefix_match:
+            dn_number = dn_prefix_match.group(2)
+            return self._create_decision(
+                intent="dn_lookup",
+                service_key="dn",
+                method="get_dn_dashboard",
+                entity=dn_number,
+                confidence=1.0,
+                reason="DN with prefix detected",
+                original=cleaned
+            )
+        
+        dn_match = self.DN_PATTERN.search(cleaned)
+        if dn_match:
+            dn_number = dn_match.group(1)
+            return self._create_decision(
+                intent="dn_lookup",
+                service_key="dn",
+                method="get_dn_dashboard",
+                entity=dn_number,
+                confidence=1.0,
+                reason="DN number extracted",
+                original=cleaned
+            )
+        
+        # 2. Pending Detection
+        if self.PENDING_DN_PATTERN.search(normalized):
+            return self._create_decision(
+                intent="pending_dn",
+                service_key="dn",
+                method="get_pending_dns",
+                confidence=0.98,
+                reason="Pending DN query",
+                original=cleaned
+            )
+        
+        if self.PENDING_PGI_PATTERN.search(normalized):
+            return self._create_decision(
+                intent="pending_pgi",
+                service_key="dn",
+                method="get_pending_pgi",
+                confidence=0.95,
+                reason="Pending PGI query",
+                original=cleaned
+            )
+        
+        if self.PENDING_POD_PATTERN.search(normalized):
+            return self._create_decision(
+                intent="pending_pod",
+                service_key="dn",
+                method="get_pending_pod",
+                confidence=0.95,
+                reason="Pending POD query",
+                original=cleaned
+            )
+        
+        if self.PENDING_GENERAL_PATTERN.search(normalized):
+            return self._create_decision(
+                intent="pending_dn",
+                service_key="dn",
+                method="get_pending_dns",
+                confidence=0.80,
+                reason="General pending query",
+                original=cleaned
+            )
+        
+        # 3. National KPI
+        if self.NATIONAL_KPI_PATTERN.search(normalized):
+            return self._create_decision(
+                intent="national_kpi",
+                service_key="national_kpi",
+                method="get_national_kpi_dashboard",
+                confidence=0.95,
+                reason="National KPI query",
+                original=cleaned
+            )
+        
+        # 4. Ranking
+        ranking_result = self._detect_ranking(normalized)
+        if ranking_result:
+            intent, service_key, method = ranking_result
+            return self._create_decision(
+                intent=intent,
+                service_key=service_key,
+                method=method,
+                confidence=0.90,
+                reason=f"Ranking: {intent}",
+                original=cleaned
+            )
+        
+        # 5. Comparison
+        comparison_match = self.COMPARISON_PATTERN.search(cleaned)
+        if comparison_match:
+            entity1 = comparison_match.group(1).strip()
+            entity2 = comparison_match.group(2).strip()
+            return self._create_decision(
+                intent="comparison",
+                service_key="dealer",
+                method="compare_dealers",
+                entity=entity1,
+                entity2=entity2,
+                confidence=0.90,
+                reason=f"Comparison: {entity1} vs {entity2}",
+                original=cleaned
+            )
+        
+        # 6. Dealer
+        dealer_result = self._detect_dealer(cleaned, normalized)
+        if dealer_result:
+            return dealer_result
+        
+        # 7. Location
+        location_result = self._detect_location(cleaned, normalized)
+        if location_result:
+            return location_result
+        
+        # 8. Conversational
+        if self.HELP_PATTERN.search(normalized):
+            return self._create_decision(
+                intent="help",
+                service_key="groq",
+                method="process_query",
+                confidence=0.95,
+                needs_groq=True,
+                reason="Help query",
+                original=cleaned
+            )
+        
+        if self.GREETING_PATTERN.search(normalized):
+            return self._create_decision(
+                intent="greeting",
+                service_key="groq",
+                method="process_query",
+                confidence=0.95,
+                needs_groq=True,
+                reason="Greeting",
+                original=cleaned
+            )
+        
+        if self.CONVERSATIONAL_PATTERN.search(normalized):
+            return self._create_decision(
+                intent="conversational",
+                service_key="groq",
+                method="process_query",
+                confidence=0.85,
+                needs_groq=True,
+                reason="Conversational question",
+                original=cleaned
+            )
+        
+        return None
+    
+    # ============================================================
+    # DEALER DETECTION WITH RAPIDFUZZ
+    # ============================================================
+    
+    def _detect_dealer(self, cleaned: str, normalized: str) -> Optional[RoutingDecision]:
+        """Detect dealer using RapidFuzz and aliases"""
+        
+        # Check aliases first
+        cleaned_lower = cleaned.lower()
+        for alias, full_name in self.DEALER_ALIASES.items():
+            if alias in cleaned_lower or cleaned_lower in alias:
+                return self._create_decision(
+                    intent="dealer_dashboard",
+                    service_key="dealer",
+                    method="get_dealer_dashboard",
+                    entity=full_name,
+                    confidence=0.95,
+                    reason=f"Dealer alias: {full_name}",
+                    original=cleaned
                 )
-            
-            # ============================================================
-            # STEP 4: FORMAT AND RETURN
-            # ============================================================
-            
-            elapsed_ms = (time.perf_counter() - start_time) * 1000
-            self.logger.info(f"⏱️ [REQ:{request_id}] Response time: {elapsed_ms:.2f}ms")
-            
-            return self._format_orchestrated_response(
-                message=message,
-                response=response,
-                routing_decision=routing_decision,
-                request_id=request_id,
-                elapsed_ms=elapsed_ms
-            )
-            
-        except Exception as e:
-            self.logger.exception(f"❌ [REQ:{request_id}] Failed: {str(e)}")
-            return self._format_error_response(message, str(e), request_id)
-    
-    # ============================================================
-    # REQUEST ROUTING
-    # ============================================================
-    
-    async def _route_request(self, decision: RoutingDecision, request_id: str) -> Dict[str, Any]:
-        """
-        Route request to appropriate business service based on intent.
-        """
-        try:
-            # Determine service key
-            service_key = self._intent_service_map.get(
-                decision.intent,
-                self._intent_service_map.get('default', 'groq')
-            )
-            
-            # Get service instance
-            service = self._service_registry.get(service_key)
-            if not service:
-                self.logger.warning(f"⚠️ [REQ:{request_id}] Service '{service_key}' not found")
-                return {
-                    "success": False,
-                    "error": f"Service '{service_key}' not available",
-                    "whatsapp_message": "⚠️ Service temporarily unavailable."
-                }
-            
-            # Get method
-            method_name = decision.method
-            method = getattr(service, method_name, None)
-            
-            if not method:
-                self.logger.warning(
-                    f"⚠️ [REQ:{request_id}] Method '{method_name}' not found in {service_key}"
-                )
-                return {
-                    "success": False,
-                    "error": f"Method '{method_name}' not found",
-                    "whatsapp_message": "⚠️ Service method not available."
-                }
-            
-            # Execute with appropriate arguments
-            if decision.entity and decision.entity2:
-                result = method(decision.entity, decision.entity2)
-            elif decision.entity:
-                result = method(decision.entity)
-            else:
-                result = method()
-            
-            # Handle async results
-            if asyncio.iscoroutine(result):
-                result = await result
-            
-            # Ensure result is a dict
-            if not isinstance(result, dict):
-                result = {
-                    "success": True,
-                    "data": result,
-                    "whatsapp_message": str(result)
-                }
-            
-            return result
-            
-        except Exception as e:
-            self.logger.error(f"❌ [REQ:{request_id}] Routing failed: {e}")
-            return {
-                "success": False,
-                "error": str(e),
-                "whatsapp_message": f"⚠️ Service error: {str(e)}"
-            }
-    
-    # ============================================================
-    # GROQ ENHANCEMENT
-    # ============================================================
-    
-    async def _enhance_with_groq(
-        self,
-        message: str,
-        decision: RoutingDecision,
-        response: Dict[str, Any],
-        request_id: str
-    ) -> Dict[str, Any]:
-        """
-        Enhance response with Groq AI when needed.
-        """
-        try:
-            if not self.groq_service:
-                return response
-            
-            # Check if enhancement is needed
-            if response.get("success") is False:
-                return response
-            
-            if response.get("whatsapp_message"):
-                # Already has message, but enhance for conversational intents
-                if decision.intent in ['conversational', 'help', 'greeting']:
-                    enhanced = await self.groq_service.enhance_response(
-                        message=message,
-                        decision=decision,
-                        service_response=response,
-                        request_id=request_id
+        
+        # Try dashboard pattern
+        dashboard_match = self.DEALER_DASHBOARD_PATTERN.search(cleaned)
+        if dashboard_match:
+            dealer_name = dashboard_match.group(1).strip()
+            dealer_name = self._clean_dealer_name(dealer_name)
+            if dealer_name:
+                found_dealer = self._find_dealer_fuzzy(dealer_name)
+                if found_dealer:
+                    return self._create_decision(
+                        intent="dealer_dashboard",
+                        service_key="dealer",
+                        method="get_dealer_dashboard",
+                        entity=found_dealer,
+                        confidence=0.90,
+                        reason=f"Dealer dashboard: {found_dealer}",
+                        original=cleaned
                     )
-                    if enhanced:
-                        return enhanced
+        
+        # Try dealer pattern
+        dealer_match = self.DEALER_PATTERN.search(cleaned)
+        if dealer_match:
+            dealer_name = dealer_match.group(1).strip()
+            dealer_name = self._clean_dealer_name(dealer_name)
+            if dealer_name:
+                found_dealer = self._find_dealer_fuzzy(dealer_name)
+                if found_dealer:
+                    return self._create_decision(
+                        intent="dealer_dashboard",
+                        service_key="dealer",
+                        method="get_dealer_dashboard",
+                        entity=found_dealer,
+                        confidence=0.85,
+                        reason=f"Dealer found: {found_dealer}",
+                        original=cleaned
+                    )
+                else:
+                    suggestions = self._find_similar_dealers(dealer_name, limit=5)
+                    if suggestions:
+                        return self._create_decision(
+                            intent="dealer_suggestion",
+                            service_key="dealer",
+                            method="suggest_dealers",
+                            entity=dealer_name,
+                            suggestions=suggestions,
+                            confidence=0.70,
+                            reason=f"Dealer not found, suggestions: {suggestions[:3]}",
+                            original=cleaned
+                        )
+        
+        # Check if it's just a dealer name (short query)
+        words = cleaned.split()
+        if 1 <= len(words) <= 4 and len(cleaned) > 2:
+            if not re.match(r'^\d+$', cleaned):
+                dealer_name = self._clean_dealer_name(cleaned)
+                if dealer_name and len(dealer_name) > 1:
+                    found_dealer = self._find_dealer_fuzzy(dealer_name)
+                    if found_dealer:
+                        return self._create_decision(
+                            intent="dealer_dashboard",
+                            service_key="dealer",
+                            method="get_dealer_dashboard",
+                            entity=found_dealer,
+                            confidence=0.80,
+                            reason=f"Dealer from short query: {found_dealer}",
+                            original=cleaned
+                        )
+        
+        return None
+    
+    def _detect_with_fuzzy(self, cleaned: str) -> Optional[Dict[str, Any]]:
+        """Detect using RapidFuzz"""
+        if not RAPIDFUZZ_AVAILABLE:
+            return None
+        
+        # Check against known patterns
+        # This would match against a database of known entities
+        return None
+    
+    def _detect_location(self, cleaned: str, normalized: str) -> Optional[RoutingDecision]:
+        """Detect warehouse/city/product"""
+        warehouse_match = self.WAREHOUSE_PATTERN.search(cleaned)
+        if warehouse_match:
+            warehouse_name = warehouse_match.group(1).strip()
+            return self._create_decision(
+                intent="warehouse_dashboard",
+                service_key="warehouse",
+                method="get_warehouse_dashboard",
+                entity=warehouse_name,
+                confidence=0.90,
+                reason=f"Warehouse: {warehouse_name}",
+                original=cleaned
+            )
+        
+        city_match = self.CITY_PATTERN.search(cleaned)
+        if city_match:
+            city_name = city_match.group(1).strip()
+            return self._create_decision(
+                intent="city_dashboard",
+                service_key="city",
+                method="get_city_dashboard",
+                entity=city_name,
+                confidence=0.90,
+                reason=f"City: {city_name}",
+                original=cleaned
+            )
+        
+        product_match = self.PRODUCT_PATTERN.search(cleaned)
+        if product_match:
+            product_name = product_match.group(1).strip()
+            return self._create_decision(
+                intent="product_dashboard",
+                service_key="product",
+                method="get_product_dashboard",
+                entity=product_name,
+                confidence=0.90,
+                reason=f"Product: {product_name}",
+                original=cleaned
+            )
+        
+        return None
+    
+    def _detect_ranking(self, normalized: str) -> Optional[Tuple[str, str, str]]:
+        """Detect ranking"""
+        if self.RANKING_PATTERN.search(normalized):
+            if 'dealer' in normalized:
+                if 'bottom' in normalized or 'worst' in normalized:
+                    return ("bottom_dealers", "dealer", "get_bottom_dealers")
+                else:
+                    return ("top_dealers", "dealer", "get_top_dealers")
             
-            return response
+            elif 'city' in normalized:
+                return ("top_cities", "city", "get_top_cities")
             
-        except Exception as e:
-            self.logger.error(f"❌ [REQ:{request_id}] Groq enhancement failed: {e}")
-            return response
+            elif 'warehouse' in normalized or 'wh' in normalized:
+                return ("top_warehouses", "warehouse", "get_top_warehouses")
+            
+            elif 'product' in normalized or 'item' in normalized:
+                return ("top_products", "product", "get_top_products")
+        
+        return None
     
     # ============================================================
-    # RESPONSE FORMATTING
+    # FUZZY MATCHING WITH RAPIDFUZZ
     # ============================================================
     
-    def _format_orchestrated_response(
-        self,
-        message: str,
-        response: Dict[str, Any],
-        routing_decision: RoutingDecision,
-        request_id: str,
-        elapsed_ms: float
-    ) -> Dict[str, Any]:
-        """Format final response from orchestration"""
+    def _load_dealer_cache(self):
+        """Load dealer names from database"""
+        if self._dealer_cache_loaded:
+            return
         
-        # If service returned a response already
-        if response.get("whatsapp_message"):
-            return {
-                "success": response.get("success", True),
-                "message": message,
-                "response": response.get("whatsapp_message"),
-                "error": response.get("error", False),
-                "timestamp": datetime.now().isoformat(),
-                "request_id": request_id,
-                "elapsed_ms": round(elapsed_ms, 2),
-                "metadata": {
-                    "intent": routing_decision.intent,
-                    "confidence": routing_decision.confidence,
-                    "service": routing_decision.service_key
-                }
-            }
-        
-        # If service returned data
-        if response.get("data"):
-            data = response.get("data")
-            if isinstance(data, str):
-                return {
-                    "success": True,
-                    "message": message,
-                    "response": data,
-                    "error": False,
-                    "timestamp": datetime.now().isoformat(),
-                    "request_id": request_id,
-                    "elapsed_ms": round(elapsed_ms, 2),
-                    "metadata": {
-                        "intent": routing_decision.intent,
-                        "confidence": routing_decision.confidence,
-                        "service": routing_decision.service_key
-                    }
-                }
-        
-        # Fallback
-        return {
-            "success": response.get("success", True),
-            "message": message,
-            "response": response.get("response", response.get("whatsapp_message", "✅ Processed successfully")),
-            "error": response.get("error", False),
-            "timestamp": datetime.now().isoformat(),
-            "request_id": request_id,
-            "elapsed_ms": round(elapsed_ms, 2),
-            "metadata": {
-                "intent": routing_decision.intent,
-                "confidence": routing_decision.confidence,
-                "service": routing_decision.service_key
-            }
-        }
-    
-    def _format_error_response(self, message: str, error: str, request_id: str) -> Dict[str, Any]:
-        """Format error response"""
-        return {
-            "success": False,
-            "message": message,
-            "response": f"⚠️ An unexpected error occurred. Please try again later.",
-            "error": True,
-            "timestamp": datetime.now().isoformat(),
-            "request_id": request_id,
-            "metadata": {
-                "error": error
-            }
-        }
-    
-    # ============================================================
-    # SYSTEM HEALTH
-    # ============================================================
-    
-    def get_system_health(self) -> Dict[str, Any]:
-        """Get comprehensive system health status."""
-        services = {
-            'dn': self.dn_service is not None,
-            'dealer': self.dealer_service is not None,
-            'warehouse': self.warehouse_service is not None,
-            'city': self.city_service is not None,
-            'product': self.product_service is not None,
-            'national_kpi': self.national_kpi_service is not None,
-            'groq': self.groq_service is not None
-        }
-        
-        all_loaded = all(services.values())
-        
-        return {
-            "status": "healthy" if all_loaded else "degraded",
-            "version": "10.0",
-            "services": services,
-            "timestamp": datetime.now().isoformat(),
-            "architecture": "Service-Oriented",
-            "intent_engine": INTENTS_AVAILABLE,
-            "tenacity_available": TENACITY_AVAILABLE
-        }
-    
-    def clear_caches(self):
-        """Clear all service caches"""
-        try:
-            for service in self._service_registry.values():
-                if service and hasattr(service, 'clear_cache'):
-                    service.clear_cache()
-            self.logger.info("✅ All caches cleared")
-        except Exception as e:
-            self.logger.error(f"❌ Cache clear failed: {e}")
-
-# ============================================================
-# SINGLETON
-# ============================================================
-
-_whatsapp_provider_service = None
-_provider_service_lock = asyncio.Lock()
-
-async def get_whatsapp_provider_service() -> WhatsAppProviderService:
-    """Get or create WhatsApp provider service singleton"""
-    global _whatsapp_provider_service
-    
-    if _whatsapp_provider_service is None:
-        async with _provider_service_lock:
-            if _whatsapp_provider_service is None:
+        with self._dealer_cache_lock:
+            if self._dealer_cache_loaded:
+                return
+            
+            try:
+                from app.database import SessionLocal
+                from app.models import DeliveryReport
+                
+                session = SessionLocal()
                 try:
-                    _whatsapp_provider_service = WhatsAppProviderService()
-                    logger.info("✅ WhatsAppProviderService initialized (v10.0)")
+                    dealers = session.query(
+                        DeliveryReport.customer_name
+                    ).filter(
+                        DeliveryReport.customer_name.isnot(None)
+                    ).distinct().limit(10000).all()
+                    
+                    self._dealer_names = [d.customer_name for d in dealers if d.customer_name]
+                    self._dealer_normalized = [self._normalize_name(d) for d in self._dealer_names]
+                    self._dealer_cache_loaded = True
+                    self.logger.info(f"✅ Loaded {len(self._dealer_names)} dealers for fuzzy matching")
                 except Exception as e:
-                    logger.exception(f"❌ Initialization failed: {e}")
-                    raise
+                    self.logger.warning(f"⚠️ Failed to load dealers: {e}")
+                finally:
+                    session.close()
+            except Exception as e:
+                self.logger.warning(f"⚠️ Dealer cache load failed: {e}")
     
-    return _whatsapp_provider_service
-
-# ============================================================
-# SYNC VERSION FOR BACKWARD COMPATIBILITY
-# ============================================================
-
-def get_whatsapp_provider_service_sync() -> WhatsAppProviderService:
-    """Synchronous version for backward compatibility"""
-    global _whatsapp_provider_service
+    def _normalize_name(self, name: str) -> str:
+        """Normalize name for matching"""
+        if not name:
+            return ""
+        name = re.sub(r'[^\w\s]', ' ', name)
+        name = re.sub(r'\s+', ' ', name)
+        return name.strip().lower()
     
-    if _whatsapp_provider_service is None:
+    def _find_dealer_fuzzy(self, dealer_name: str) -> Optional[str]:
+        """Find dealer using RapidFuzz"""
+        if not dealer_name or not RAPIDFUZZ_AVAILABLE:
+            return None
+        
+        self._load_dealer_cache()
+        if not self._dealer_names:
+            return None
+        
+        normalized = self._normalize_name(dealer_name)
+        
+        # Try exact match first
+        for i, name in enumerate(self._dealer_names):
+            if self._dealer_normalized[i] == normalized:
+                return name
+        
+        # Try contains match
+        for i, name in enumerate(self._dealer_names):
+            if normalized in self._dealer_normalized[i] or self._dealer_normalized[i] in normalized:
+                return name
+        
+        # Try fuzzy match
         try:
-            _whatsapp_provider_service = WhatsAppProviderService()
-            logger.info("✅ WhatsAppProviderService initialized (v10.0 sync)")
+            results = process.extract(
+                normalized,
+                self._dealer_normalized,
+                scorer=fuzz.ratio,
+                limit=1
+            )
+            
+            if results:
+                best_match, score, _ = results[0]
+                if score >= 75:  # Threshold
+                    idx = self._dealer_normalized.index(best_match)
+                    return self._dealer_names[idx]
         except Exception as e:
-            logger.exception(f"❌ Initialization failed: {e}")
-            raise
+            self.logger.warning(f"RapidFuzz matching failed: {e}")
+        
+        return None
     
-    return _whatsapp_provider_service
+    def _find_similar_dealers(self, dealer_name: str, limit: int = 5) -> List[str]:
+        """Find similar dealers using RapidFuzz"""
+        if not dealer_name or not RAPIDFUZZ_AVAILABLE:
+            return []
+        
+        self._load_dealer_cache()
+        if not self._dealer_names:
+            return []
+        
+        normalized = self._normalize_name(dealer_name)
+        results = []
+        
+        # First, exact and contains matches
+        for i, name in enumerate(self._dealer_names):
+            if normalized == self._dealer_normalized[i] or \
+               normalized in self._dealer_normalized[i] or \
+               self._dealer_normalized[i] in normalized:
+                results.append(name)
+        
+        # Then fuzzy matches
+        if len(results) < limit:
+            try:
+                fuzzy_results = process.extract(
+                    normalized,
+                    self._dealer_normalized,
+                    scorer=fuzz.ratio,
+                    limit=limit
+                )
+                
+                for match, score, idx in fuzzy_results:
+                    if score >= 60:
+                        name = self._dealer_names[idx]
+                        if name not in results:
+                            results.append(name)
+            except Exception as e:
+                self.logger.warning(f"Similar matching failed: {e}")
+        
+        return results[:limit]
+    
+    # ============================================================
+    # HELPER METHODS
+    # ============================================================
+    
+    def _create_decision(
+        self,
+        intent: str,
+        service_key: str,
+        method: str,
+        entity: Optional[str] = None,
+        entity2: Optional[str] = None,
+        confidence: float = 0.0,
+        needs_groq: bool = False,
+        reason: str = "",
+        original: str = "",
+        suggestions: List[str] = None,
+        metadata: Dict[str, Any] = None
+    ) -> RoutingDecision:
+        """Create routing decision"""
+        return RoutingDecision(
+            intent=intent,
+            service_key=service_key,
+            method=method,
+            entity=entity,
+            entity2=entity2,
+            confidence=min(confidence, 1.0),
+            needs_groq=needs_groq,
+            reason=reason,
+            original_message=original,
+            suggestions=suggestions or [],
+            metadata=metadata or {},
+            pattern_score=confidence
+        )
+    
+    def _create_fallback_decision(self, message: str, reason: str) -> RoutingDecision:
+        """Create fallback routing decision"""
+        return self._create_decision(
+            intent="general_ai",
+            service_key="groq",
+            method="process_query",
+            confidence=0.30,
+            needs_groq=True,
+            reason=reason,
+            original=message
+        )
+    
+    def _is_dn_number(self, text: str) -> bool:
+        """Check if text is a valid DN number"""
+        if not text:
+            return False
+        cleaned = re.sub(r'\D', '', text.strip())
+        return 8 <= len(cleaned) <= 12
+    
+    def _clean_dealer_name(self, name: str) -> Optional[str]:
+        """Clean dealer name"""
+        if not name:
+            return None
+        
+        cleaned = re.sub(
+            r'\b(?:dealer|about|for|of|show|get|view|display|give|me|company|customer|'
+            r'dashboard|profile|summary|overview|info|information|details|status|'
+            r'statistics|performance|the|a|an)\b',
+            '',
+            name,
+            flags=re.IGNORECASE
+        ).strip()
+        
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        return cleaned if len(cleaned) > 1 else None
+    
+    def _finalize_decision(self, decision: RoutingDecision, cache_key: str) -> RoutingDecision:
+        """Finalize decision with caching and tracking"""
+        # Cache result
+        if self._cache_enabled():
+            self._cache[cache_key] = decision
+        
+        # Track intent
+        if decision.intent not in self._intent_stats:
+            self._intent_stats[decision.intent] = 0
+        self._intent_stats[decision.intent] += 1
+        
+        self.logger.info(f"🎯 Final Intent: {decision.intent} (confidence: {decision.confidence:.2f})")
+        return decision
+    
+    def _cache_enabled(self) -> bool:
+        """Check if caching is enabled"""
+        return CACHETOOLS_AVAILABLE and hasattr(self, '_cache')
+    
+    def clear_cache(self):
+        """Clear cache"""
+        if self._cache_enabled():
+            self._cache.clear()
+            self._cache_hits = 0
+            self._cache_misses = 0
+            self.logger.info("✅ Cache cleared")
+    
+    def get_cache_stats(self) -> Dict[str, int]:
+        """Get cache statistics"""
+        return {
+            "hits": self._cache_hits,
+            "misses": self._cache_misses,
+            "size": len(self._cache) if self._cache_enabled() else 0
+        }
+    
+    def get_health(self) -> Dict[str, Any]:
+        """Get health status"""
+        return {
+            "status": "healthy",
+            "spacy_available": SPACY_AVAILABLE and self.entity_extractor.nlp is not None,
+            "sentence_transformers_available": SENTENCE_TRANSFORMERS_AVAILABLE and self.semantic_detector.model is not None,
+            "rapidfuzz_available": RAPIDFUZZ_AVAILABLE,
+            "flashrank_available": FLASHRANK_AVAILABLE and self.reranker.ranker is not None,
+            "cache_available": self._cache_enabled(),
+            "dealer_cache_loaded": self._dealer_cache_loaded,
+            "dealer_count": len(self._dealer_names),
+            "cache_stats": self.get_cache_stats(),
+            "intent_stats": self._intent_stats
+        }
 
 # ============================================================
 # EXPORTS
 # ============================================================
 
 __all__ = [
-    'WhatsAppProviderService',
-    'get_whatsapp_provider_service',
-    'get_whatsapp_provider_service_sync',
+    'IntentDetectionEngine',
     'RoutingDecision',
-    'IntentDetectionEngine'
+    'SpacyEntityExtractor',
+    'SemanticIntentDetector',
+    'FlashRankReRanker'
 ]
 
 logger.info("=" * 70)
-logger.info("AI Provider Service v10.0 - REFACTORED")
+logger.info("Intent Detection Engine v5.0 - ENTERPRISE")
 logger.info("=" * 70)
-logger.info("✅ Lightweight Orchestrator")
-logger.info("✅ Service-Oriented Architecture")
-logger.info("✅ No Business Logic")
-logger.info("✅ No SQL Queries")
-logger.info("✅ Backward Compatible")
+logger.info(f"✅ spaCy: {'Available' if SPACY_AVAILABLE else 'Not Available'}")
+logger.info(f"✅ Sentence-Transformers: {'Available' if SENTENCE_TRANSFORMERS_AVAILABLE else 'Not Available'}")
+logger.info(f"✅ RapidFuzz: {'Available' if RAPIDFUZZ_AVAILABLE else 'Not Available'}")
+logger.info(f"✅ FlashRank: {'Available' if FLASHRANK_AVAILABLE else 'Not Available'}")
+logger.info(f"✅ Cachetools: {'Available' if CACHETOOLS_AVAILABLE else 'Not Available'}")
 logger.info("=" * 70)
