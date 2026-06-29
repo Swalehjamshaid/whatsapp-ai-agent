@@ -1,169 +1,50 @@
 """
 File: app/services/ai_provider_service.py
-Version: 8.0 - ULTRA-FAST ENTERPRISE AI ROUTING ENGINE
-Purpose: Single entry point for all WhatsApp requests - 10x Faster
-Groq Integration: Ready for PostgreSQL connection
+Version: 6.1 - FIXED: Pending DNs & Conversational Questions
+Purpose: SINGLE ENTRY POINT for all WhatsApp requests.
+100% Integrated with PostgreSQL - Answers ALL questions from database.
+FIXED: 
+- "Pending DNs" now routes to DN service
+- "Can I ask you something" now routes to Groq with helpful response
 """
 
 import logging
-import os
 import threading
 import time
 import importlib
 import inspect
 import re
-from typing import Optional, Dict, Any, List, Tuple
-from datetime import datetime
+from typing import Optional, Dict, Any, List, Tuple, Set
+from datetime import datetime, timedelta
 from dataclasses import dataclass, field
-from functools import lru_cache
+from enum import Enum
 from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
-# ============================================================
-# BLOCK 1: ENTERPRISE AI LIBRARIES (Lazy Loaded for Speed)
-# ============================================================
+# ==========================================================
+# BLOCK 1: IMPORTS
+# ==========================================================
 
-# Lazy loading - only load when needed
-_nlp = None
-_encoder = None
-_ranker = None
-_agent = None
-_SessionLocal = None
-_DeliveryReport = None
+try:
+    from app.database import SessionLocal
+    from app.models import DeliveryReport
+    from sqlalchemy import text, func, inspect as sa_inspect, and_, or_, desc, asc
+    from sqlalchemy.exc import SQLAlchemyError
+    logger.info("✅ Database imports successful")
+except ImportError as e:
+    logger.error(f"❌ Database import failed: {e}")
+    SessionLocal = None
+    DeliveryReport = None
 
-def get_spacy():
-    """Lazy load spaCy - only when needed"""
-    global _nlp
-    if _nlp is None:
-        try:
-            import spacy
-            _nlp = spacy.load("en_core_web_sm")
-            logger.info("✅ spaCy loaded (lazy)")
-        except Exception as e:
-            logger.warning(f"⚠️ spaCy load failed: {e}")
-            _nlp = None
-    return _nlp
-
-def get_encoder():
-    """Lazy load SentenceTransformer - only when needed"""
-    global _encoder
-    if _encoder is None:
-        try:
-            from sentence_transformers import SentenceTransformer
-            _encoder = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
-            logger.info("✅ SentenceTransformer loaded (lazy)")
-        except Exception as e:
-            logger.warning(f"⚠️ SentenceTransformer load failed: {e}")
-            _encoder = None
-    return _encoder
-
-def get_ranker():
-    """Lazy load FlashRank - only when needed"""
-    global _ranker
-    if _ranker is None:
-        try:
-            from flashrank import Ranker
-            _ranker = Ranker(model="ms-marco-TinyBERT-L-2-v2")
-            logger.info("✅ FlashRank loaded (lazy)")
-        except Exception as e:
-            logger.warning(f"⚠️ FlashRank load failed: {e}")
-            _ranker = None
-    return _ranker
-
-def get_pydantic_agent():
-    """Lazy load PydanticAI - only when needed"""
-    global _agent
-    if _agent is None:
-        try:
-            from pydantic_ai import Agent
-            from pydantic_ai.models.groq import GroqModel
-            groq_api_key = os.getenv("GROQ_API_KEY")
-            if groq_api_key:
-                _agent = Agent(
-                    GroqModel('llama-3.1-70b-versatile', api_key=groq_api_key),
-                    system_prompt="You are a Dealer Intelligence Routing Expert. Classify user questions."
-                )
-                logger.info("✅ PydanticAI agent loaded (lazy)")
-            else:
-                logger.warning("⚠️ GROQ_API_KEY not found")
-        except Exception as e:
-            logger.warning(f"⚠️ PydanticAI load failed: {e}")
-            _agent = None
-    return _agent
-
-def get_core_imports():
-    """Lazy load core imports - only when needed"""
-    global _SessionLocal, _DeliveryReport
-    if _SessionLocal is None:
-        try:
-            from app.database import SessionLocal
-            from app.models import DeliveryReport
-            _SessionLocal = SessionLocal
-            _DeliveryReport = DeliveryReport
-            logger.info("✅ Core imports loaded (lazy)")
-        except Exception as e:
-            logger.warning(f"⚠️ Core imports failed: {e}")
-            _SessionLocal = None
-            _DeliveryReport = None
-    return _SessionLocal, _DeliveryReport
-
-# ============================================================
-# BLOCK 2: ULTRA-FAST CACHE
-# ============================================================
-
-class UltraFastCache:
-    """Ultra-fast in-memory cache with TTL"""
-    
-    def __init__(self, maxsize: int = 5000, ttl: int = 300):
-        self._cache = {}
-        self._timestamps = {}
-        self._maxsize = maxsize
-        self._ttl = ttl
-        self._lock = threading.RLock()
-    
-    def get(self, key: str) -> Any:
-        with self._lock:
-            if key in self._cache:
-                if time.time() - self._timestamps[key] < self._ttl:
-                    return self._cache[key]
-                else:
-                    del self._cache[key]
-                    del self._timestamps[key]
-            return None
-    
-    def set(self, key: str, value: Any) -> None:
-        with self._lock:
-            if len(self._cache) >= self._maxsize:
-                oldest = min(self._timestamps.items(), key=lambda x: x[1])
-                del self._cache[oldest[0]]
-                del self._timestamps[oldest[0]]
-            self._cache[key] = value
-            self._timestamps[key] = time.time()
-    
-    def clear(self) -> None:
-        with self._lock:
-            self._cache.clear()
-            self._timestamps.clear()
-    
-    def size(self) -> int:
-        with self._lock:
-            return len(self._cache)
-
-# Global caches
-_response_cache = UltraFastCache(maxsize=2000, ttl=180)  # 3 min
-_routing_cache = UltraFastCache(maxsize=3000, ttl=300)   # 5 min
-_entity_cache = UltraFastCache(maxsize=2000, ttl=600)    # 10 min
-_dealer_cache = UltraFastCache(maxsize=1000, ttl=600)    # 10 min
-_groq_cache = UltraFastCache(maxsize=500, ttl=3600)      # 1 hour
 
 # ==========================================================
-# BLOCK 3: ROUTING DECISION
+# BLOCK 2: ROUTING DECISION CLASS
 # ==========================================================
 
 @dataclass
 class RoutingDecision:
-    """Internal routing decision - minimal for speed"""
+    """Internal Routing Decision - Single Source of Truth"""
     intent: str
     service_key: str
     method: str
@@ -173,7 +54,15 @@ class RoutingDecision:
     needs_groq: bool = False
     reason: str = ""
     original_message: str = ""
-    groq_context: Optional[Dict[str, Any]] = None  # For Groq with PostgreSQL context
+    
+    # Detection fields
+    detected_dn: Optional[str] = None
+    detected_dealer: Optional[str] = None
+    detected_city: Optional[str] = None
+    detected_warehouse: Optional[str] = None
+    detected_product: Optional[str] = None
+    detected_intent: Optional[str] = None
+    detected_metric: Optional[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -186,297 +75,18 @@ class RoutingDecision:
             "needs_groq": self.needs_groq,
             "reason": self.reason,
             "original_message": self.original_message,
-            "groq_context": self.groq_context
+            "detected_dn": self.detected_dn,
+            "detected_dealer": self.detected_dealer,
+            "detected_city": self.detected_city,
+            "detected_warehouse": self.detected_warehouse,
+            "detected_product": self.detected_product,
+            "detected_intent": self.detected_intent,
+            "detected_metric": self.detected_metric
         }
 
-# ==========================================================
-# BLOCK 4: ULTRA-FAST ENTITY EXTRACTOR
-# ==========================================================
-
-class FastEntityExtractor:
-    """Ultra-fast entity extraction - no spaCy overhead unless needed"""
-    
-    # Pre-compiled regex patterns for speed
-    DEALER_PATTERNS = [
-        re.compile(r'(?:dealer|about|for|company|customer)\s+([a-z0-9\s&\-\.]+)', re.IGNORECASE),
-        re.compile(r'(?:dashboard|profile|summary|overview)\s+(?:of|for)?\s+([a-z0-9\s&\-\.]+)', re.IGNORECASE),
-        re.compile(r'(?:tell me about|show me|get|view|display|give me)\s+([a-z0-9\s&\-\.]+)', re.IGNORECASE),
-    ]
-    WAREHOUSE_PATTERN = re.compile(r'(?:warehouse|wh|depot)\s+([a-z0-9\s&\-\.]+)', re.IGNORECASE)
-    CITY_PATTERN = re.compile(r'(?:city|in|at)\s+([a-z0-9\s&\-\.]+)', re.IGNORECASE)
-    PRODUCT_PATTERN = re.compile(r'(?:product|model|material)\s+([a-z0-9\s&\-\.]+)', re.IGNORECASE)
-    DN_PATTERN = re.compile(r'\b(\d{8,12})\b')
-    PENDING_PATTERN = re.compile(r'(?:pending|open)\s*(?:dn|pgi|pod)', re.IGNORECASE)
-    ANALYTICS_PATTERNS = [
-        re.compile(r'(highest|top|best|max).*?(revenue|sales|units|performance)', re.IGNORECASE),
-        re.compile(r'(lowest|bottom|worst|min).*?(revenue|sales|units|performance)', re.IGNORECASE),
-        re.compile(r'compare.*?(dealer|warehouse|city)', re.IGNORECASE),
-        re.compile(r'(national|overall|country).*?(kpi|dashboard|performance)', re.IGNORECASE),
-    ]
-    HELP_PATTERN = re.compile(r'(?:help|menu|what can you do|available commands|how to use)', re.IGNORECASE)
-    GREETING_PATTERN = re.compile(r'^(?:hello|hi|hey|good morning|good evening|howdy|greetings)', re.IGNORECASE)
-    
-    @classmethod
-    def extract_entities(cls, text: str) -> Dict[str, Any]:
-        """Ultra-fast entity extraction using pre-compiled regex"""
-        entities = {
-            "dealer": [],
-            "warehouse": [],
-            "city": [],
-            "product": [],
-            "dn": [],
-            "pending_type": None,
-            "is_analytics": False,
-            "is_help": False,
-            "is_greeting": False
-        }
-        
-        # Check cache first
-        cache_key = f"ent_{hash(text)}"
-        cached = _entity_cache.get(cache_key)
-        if cached:
-            return cached
-        
-        text_lower = text.lower()
-        
-        # Check Help
-        if cls.HELP_PATTERN.search(text_lower):
-            entities["is_help"] = True
-        
-        # Check Greeting
-        if cls.GREETING_PATTERN.search(text_lower):
-            entities["is_greeting"] = True
-        
-        # Check Analytics
-        for pattern in cls.ANALYTICS_PATTERNS:
-            if pattern.search(text_lower):
-                entities["is_analytics"] = True
-                break
-        
-        # Extract DN
-        dn_match = cls.DN_PATTERN.search(text)
-        if dn_match:
-            entities["dn"] = [dn_match.group(1)]
-        
-        # Extract Pending type
-        pending_match = cls.PENDING_PATTERN.search(text_lower)
-        if pending_match:
-            if "pgi" in text_lower:
-                entities["pending_type"] = "pgi"
-            elif "pod" in text_lower:
-                entities["pending_type"] = "pod"
-            else:
-                entities["pending_type"] = "dn"
-        
-        # Extract Dealer
-        for pattern in cls.DEALER_PATTERNS:
-            match = pattern.search(text)
-            if match:
-                dealer = match.group(1).strip()
-                dealer = re.sub(r'\b(?:dealer|about|for|of|show|get|view|display|give|me|company|customer|dashboard|profile|summary|overview|info|information|details|status|statistics|performance|the|a|an)\b', '', dealer, flags=re.IGNORECASE).strip()
-                if dealer and len(dealer) > 1:
-                    entities["dealer"].append(dealer)
-                    break
-        
-        # Extract Warehouse
-        warehouse_match = cls.WAREHOUSE_PATTERN.search(text)
-        if warehouse_match:
-            entities["warehouse"] = [warehouse_match.group(1).strip()]
-        
-        # Extract City
-        city_match = cls.CITY_PATTERN.search(text)
-        if city_match:
-            entities["city"] = [city_match.group(1).strip()]
-        
-        # Extract Product
-        product_match = cls.PRODUCT_PATTERN.search(text)
-        if product_match:
-            entities["product"] = [product_match.group(1).strip()]
-        
-        # If no dealer found and text is short, treat as dealer
-        if not entities["dealer"] and len(text.split()) <= 3 and len(text) > 2:
-            if not re.match(r'^\d+$', text) and not entities["is_help"] and not entities["is_greeting"]:
-                entities["dealer"] = [text.strip()]
-        
-        # Cache result
-        _entity_cache.set(cache_key, entities)
-        return entities
 
 # ==========================================================
-# BLOCK 5: ULTRA-FAST DEALER RESOLVER
-# ==========================================================
-
-class FastDealerResolver:
-    """Ultra-fast dealer resolution with caching"""
-    
-    _dealer_cache = {}
-    _dealer_names = []
-    _dealer_candidates = []
-    _loaded = False
-    _lock = threading.RLock()
-    
-    @classmethod
-    def load_dealers(cls):
-        """Load dealers once and cache"""
-        if cls._loaded:
-            return
-        
-        with cls._lock:
-            if cls._loaded:
-                return
-            
-            try:
-                SessionLocal, DeliveryReport = get_core_imports()
-                if not SessionLocal or not DeliveryReport:
-                    return
-                
-                session = SessionLocal()
-                try:
-                    dealers = session.query(
-                        DeliveryReport.customer_name,
-                        DeliveryReport.dealer_code,
-                        DeliveryReport.customer_code
-                    ).filter(
-                        DeliveryReport.customer_name.isnot(None)
-                    ).distinct().limit(5000).all()
-                    
-                    cls._dealer_candidates = [
-                        {
-                            "name": d.customer_name,
-                            "code": d.dealer_code or "",
-                            "customer_code": d.customer_code or "",
-                            "normalized": cls._normalize(d.customer_name)
-                        }
-                        for d in dealers if d.customer_name
-                    ]
-                    
-                    cls._dealer_names = [d["normalized"] for d in cls._dealer_candidates]
-                    cls._loaded = True
-                    logger.info(f"✅ Loaded {len(cls._dealer_candidates)} dealers")
-                except Exception as e:
-                    logger.warning(f"Failed to load dealers: {e}")
-                finally:
-                    session.close()
-            except Exception as e:
-                logger.warning(f"Failed to load dealers: {e}")
-    
-    @staticmethod
-    def _normalize(text: str) -> str:
-        if not text:
-            return ""
-        return re.sub(r'\s+', ' ', text.strip().lower())
-    
-    @classmethod
-    def find_dealer(cls, dealer_name: str) -> Optional[str]:
-        """Ultra-fast dealer lookup with caching"""
-        if not dealer_name:
-            return None
-        
-        # Check cache first
-        cache_key = f"dealer_{hash(dealer_name)}"
-        cached = _dealer_cache.get(cache_key)
-        if cached is not None:
-            return cached
-        
-        # Load dealers if not loaded
-        cls.load_dealers()
-        if not cls._dealer_candidates:
-            return None
-        
-        normalized = cls._normalize(dealer_name)
-        
-        # Strategy 1: Exact match
-        for candidate in cls._dealer_candidates:
-            if candidate["normalized"] == normalized:
-                _dealer_cache.set(cache_key, candidate["name"])
-                return candidate["name"]
-        
-        # Strategy 2: Contains match
-        for candidate in cls._dealer_candidates:
-            if normalized in candidate["normalized"] or candidate["normalized"] in normalized:
-                _dealer_cache.set(cache_key, candidate["name"])
-                return candidate["name"]
-        
-        # Strategy 3: Code match
-        for candidate in cls._dealer_candidates:
-            if normalized in candidate["code"].lower() or normalized in candidate["customer_code"].lower():
-                _dealer_cache.set(cache_key, candidate["name"])
-                return candidate["name"]
-        
-        # Strategy 4: Word match
-        words = normalized.split()
-        for word in words:
-            if len(word) > 2:
-                for candidate in cls._dealer_candidates:
-                    if word in candidate["normalized"]:
-                        _dealer_cache.set(cache_key, candidate["name"])
-                        return candidate["name"]
-        
-        # Strategy 5: Semantic search (if available)
-        encoder = get_encoder()
-        if encoder and cls._dealer_names:
-            try:
-                # Quick semantic search on first 100 dealers
-                query_embedding = encoder.encode(normalized, convert_to_numpy=True)
-                best_match = None
-                best_score = 0.0
-                
-                for name in cls._dealer_names[:100]:
-                    # Calculate similarity
-                    name_embedding = encoder.encode(name, convert_to_numpy=True)
-                    from sklearn.metrics.pairwise import cosine_similarity
-                    score = float(cosine_similarity([query_embedding], [name_embedding])[0][0])
-                    if score > best_score:
-                        best_score = score
-                        best_match = name
-                
-                if best_match and best_score > 0.5:
-                    for candidate in cls._dealer_candidates:
-                        if candidate["normalized"] == best_match:
-                            _dealer_cache.set(cache_key, candidate["name"])
-                            return candidate["name"]
-            except Exception as e:
-                logger.warning(f"Semantic search failed: {e}")
-        
-        _dealer_cache.set(cache_key, None)
-        return None
-    
-    @classmethod
-    def find_similar(cls, dealer_name: str, limit: int = 5) -> List[str]:
-        """Find similar dealers"""
-        cls.load_dealers()
-        if not cls._dealer_candidates:
-            return []
-        
-        normalized = cls._normalize(dealer_name)
-        similar = []
-        seen = set()
-        
-        for candidate in cls._dealer_candidates:
-            if candidate["name"] in seen:
-                continue
-            
-            # Check if name is similar
-            if normalized in candidate["normalized"] or candidate["normalized"] in normalized:
-                similar.append(candidate["name"])
-                seen.add(candidate["name"])
-            elif any(word in candidate["normalized"] for word in normalized.split() if len(word) > 2):
-                similar.append(candidate["name"])
-                seen.add(candidate["name"])
-            
-            if len(similar) >= limit:
-                break
-        
-        return similar[:limit]
-    
-    @classmethod
-    def get_all_dealer_names(cls) -> List[str]:
-        """Get all dealer names"""
-        cls.load_dealers()
-        return [c["name"] for c in cls._dealer_candidates]
-
-# ==========================================================
-# BLOCK 6: SERVICE STATUS ENUM
+# BLOCK 3: SERVICE STATUS ENUM
 # ==========================================================
 
 class ServiceStatus:
@@ -486,41 +96,49 @@ class ServiceStatus:
     ERROR = "ERROR"
     DISABLED = "DISABLED"
 
+
 # ==========================================================
-# BLOCK 7: POSTGRESQL VALIDATOR
+# BLOCK 4: POSTGRESQL VALIDATOR
 # ==========================================================
 
 class PostgreSQLValidator:
+    """PostgreSQL Schema Validator - Ensures database is ready"""
+    
     REQUIRED_COLUMNS = [
         "dn_no", "customer_name", "dealer_code", "customer_code",
-        "ship_to_city", "warehouse", "dn_qty", "dn_amount",
-        "dn_create_date", "good_issue_date", "pod_date",
-        "delivery_status", "pgi_status", "pod_status", "pending_flag"
+        "ship_to_city", "warehouse", "warehouse_code", "delivery_location",
+        "dn_qty", "dn_amount", "dn_create_date", "good_issue_date", 
+        "pod_date", "delivery_status", "pgi_status", "pod_status", "pending_flag"
     ]
     
+    def __init__(self):
+        self._last_check = None
+        self._cached_result = None
+    
     def validate(self) -> Dict[str, Any]:
+        """Validate PostgreSQL schema and data availability"""
         result = {
             "success": False,
             "connected": False,
             "table_exists": False,
             "columns_valid": False,
-            "errors": [],
-            "warnings": [],
+            "has_data": False,
             "record_count": 0,
             "dealer_count": 0,
+            "errors": [],
+            "warnings": [],
             "timestamp": datetime.now().isoformat()
         }
         
         try:
-            SessionLocal, DeliveryReport = get_core_imports()
             if not SessionLocal:
                 result["errors"].append("SessionLocal not available")
                 return result
             
             session = SessionLocal()
             
+            # Check 1: Connection
             try:
-                from sqlalchemy import text, inspect as sa_inspect, func
                 session.execute(text("SELECT 1"))
                 result["connected"] = True
             except Exception as e:
@@ -528,6 +146,7 @@ class PostgreSQLValidator:
                 session.close()
                 return result
             
+            # Check 2: Table exists
             inspector = sa_inspect(session.bind)
             tables = inspector.get_table_names()
             
@@ -538,82 +157,354 @@ class PostgreSQLValidator:
             
             result["table_exists"] = True
             
+            # Check 3: Columns exist
             columns = [col["name"] for col in inspector.get_columns("delivery_reports")]
-            missing = [col for col in self.REQUIRED_COLUMNS if col not in columns]
+            missing_columns = [col for col in self.REQUIRED_COLUMNS if col not in columns]
             
-            if missing:
-                result["errors"].append(f"Missing columns: {missing}")
+            if missing_columns:
+                result["warnings"].append(f"Missing columns: {missing_columns}")
                 result["columns_valid"] = False
             else:
                 result["columns_valid"] = True
-
+            
+            # Check 4: Data exists
             try:
-                from sqlalchemy import func
-                result["record_count"] = int(session.query(func.count(DeliveryReport.id)).scalar() or 0)
-                result["dealer_count"] = int(session.query(
+                record_count = session.query(func.count(DeliveryReport.id)).scalar() or 0
+                result["record_count"] = int(record_count)
+                
+                dealer_count = session.query(
                     func.count(func.distinct(DeliveryReport.customer_name))
-                ).scalar() or 0)
-            except Exception:
-                pass
+                ).scalar() or 0
+                result["dealer_count"] = int(dealer_count)
+                
+                result["has_data"] = record_count > 0
+                
+                if record_count == 0:
+                    result["warnings"].append("No data in delivery_reports table")
+            except Exception as e:
+                result["errors"].append(f"Data count failed: {str(e)}")
             
             session.close()
             
-            if result["connected"] and result["table_exists"] and result["columns_valid"]:
+            # Determine overall status
+            if (result["connected"] and result["table_exists"] and 
+                result["columns_valid"] and result["has_data"]):
                 result["success"] = True
+            
+            self._last_check = result["timestamp"]
+            self._cached_result = result
+            
+            logger.info(f"PostgreSQL validation: success={result['success']}, "
+                       f"records={result['record_count']}, "
+                       f"dealers={result['dealer_count']}")
             
             return result
             
         except Exception as e:
-            result["errors"].append(str(e))
+            result["errors"].append(f"Validation failed: {str(e)}")
+            logger.error(f"PostgreSQL validation error: {e}")
             return result
 
+
 # ==========================================================
-# BLOCK 8: SERVICE REGISTRY (Lazy Load)
+# BLOCK 5: POSTGRESQL QUERY ENGINE
+# ==========================================================
+
+class PostgreSQLQueryEngine:
+    """Direct PostgreSQL Query Engine - Answers ANY question from database"""
+    
+    def __init__(self):
+        self._executor = ThreadPoolExecutor(max_workers=4)
+        self._cache = {}
+        self._cache_ttl = 300  # 5 minutes
+    
+    def execute_query(self, query: str, params: Dict = None) -> Dict[str, Any]:
+        """Execute a raw SQL query and return results"""
+        try:
+            SessionLocal, DeliveryReport = self._get_imports()
+            if not SessionLocal:
+                return {"success": False, "error": "Database not available"}
+            
+            session = SessionLocal()
+            try:
+                if params:
+                    result = session.execute(text(query), params)
+                else:
+                    result = session.execute(text(query))
+                
+                # Fetch results
+                rows = result.fetchall()
+                columns = result.keys()
+                
+                # Convert to dict list
+                data = [dict(zip(columns, row)) for row in rows]
+                
+                session.close()
+                
+                return {
+                    "success": True,
+                    "data": data,
+                    "count": len(data),
+                    "columns": list(columns)
+                }
+            except Exception as e:
+                session.close()
+                return {"success": False, "error": str(e)}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+    
+    def _get_imports(self):
+        """Get database imports"""
+        try:
+            from app.database import SessionLocal
+            from app.models import DeliveryReport
+            return SessionLocal, DeliveryReport
+        except:
+            return None, None
+    
+    def get_dealer_by_name(self, dealer_name: str) -> Dict[str, Any]:
+        """Get dealer data by name"""
+        query = """
+            SELECT 
+                customer_name as name,
+                dealer_code as dealer_code,
+                customer_code as customer_code,
+                ship_to_city as city,
+                warehouse,
+                warehouse_code,
+                sales_office,
+                sales_manager,
+                division,
+                COUNT(DISTINCT dn_no) as total_dn,
+                SUM(dn_qty) as total_units,
+                SUM(dn_amount) as total_revenue,
+                COUNT(CASE WHEN pending_flag = TRUE THEN 1 END) as pending_dn,
+                COUNT(CASE WHEN pod_date IS NOT NULL THEN 1 END) as completed_dn
+            FROM delivery_reports
+            WHERE customer_name ILIKE :dealer_name
+            GROUP BY customer_name, dealer_code, customer_code, ship_to_city,
+                     warehouse, warehouse_code, sales_office, sales_manager, division
+            LIMIT 1
+        """
+        return self.execute_query(query, {"dealer_name": f"%{dealer_name}%"})
+    
+    def get_dealers(self, limit: int = 10, sort_by: str = "revenue", order: str = "DESC") -> Dict[str, Any]:
+        """Get top/bottom dealers"""
+        query = f"""
+            SELECT 
+                customer_name as name,
+                dealer_code,
+                customer_code,
+                ship_to_city as city,
+                COUNT(DISTINCT dn_no) as total_dn,
+                SUM(dn_qty) as total_units,
+                SUM(dn_amount) as total_revenue,
+                COUNT(CASE WHEN pending_flag = TRUE THEN 1 END) as pending_dn,
+                ROUND(AVG(dn_amount)::numeric, 2) as avg_revenue
+            FROM delivery_reports
+            WHERE customer_name IS NOT NULL
+            GROUP BY customer_name, dealer_code, customer_code, ship_to_city
+            ORDER BY {sort_by} {order}
+            LIMIT :limit
+        """
+        return self.execute_query(query, {"limit": limit})
+    
+    def get_warehouse_data(self, warehouse_name: str) -> Dict[str, Any]:
+        """Get warehouse data by name"""
+        query = """
+            SELECT 
+                warehouse,
+                warehouse_code,
+                COUNT(DISTINCT dn_no) as total_dn,
+                SUM(dn_qty) as total_units,
+                SUM(dn_amount) as total_revenue,
+                COUNT(DISTINCT customer_name) as dealer_count,
+                COUNT(CASE WHEN pending_flag = TRUE THEN 1 END) as pending_dn
+            FROM delivery_reports
+            WHERE warehouse ILIKE :warehouse_name
+            GROUP BY warehouse, warehouse_code
+            LIMIT 1
+        """
+        return self.execute_query(query, {"warehouse_name": f"%{warehouse_name}%"})
+    
+    def get_city_data(self, city_name: str) -> Dict[str, Any]:
+        """Get city data by name"""
+        query = """
+            SELECT 
+                ship_to_city as city,
+                COUNT(DISTINCT customer_name) as dealer_count,
+                COUNT(DISTINCT dn_no) as total_dn,
+                SUM(dn_qty) as total_units,
+                SUM(dn_amount) as total_revenue,
+                COUNT(CASE WHEN pending_flag = TRUE THEN 1 END) as pending_dn
+            FROM delivery_reports
+            WHERE ship_to_city ILIKE :city_name
+            GROUP BY ship_to_city
+            LIMIT 1
+        """
+        return self.execute_query(query, {"city_name": f"%{city_name}%"})
+    
+    def get_product_data(self, product_name: str) -> Dict[str, Any]:
+        """Get product data by name"""
+        query = """
+            SELECT 
+                customer_model as product,
+                material_no as material,
+                COUNT(DISTINCT dn_no) as total_dn,
+                SUM(dn_qty) as total_units,
+                SUM(dn_amount) as total_revenue
+            FROM delivery_reports
+            WHERE customer_model ILIKE :product_name
+            GROUP BY customer_model, material_no
+            LIMIT 1
+        """
+        return self.execute_query(query, {"product_name": f"%{product_name}%"})
+    
+    def get_dn_data(self, dn_number: str) -> Dict[str, Any]:
+        """Get DN data by number"""
+        query = """
+            SELECT 
+                dn_no,
+                customer_name,
+                dealer_code,
+                ship_to_city,
+                warehouse,
+                dn_qty,
+                dn_amount,
+                dn_create_date,
+                good_issue_date,
+                pod_date,
+                delivery_status,
+                pgi_status,
+                pod_status,
+                pending_flag,
+                CASE 
+                    WHEN pod_date IS NOT NULL THEN 'Completed'
+                    WHEN good_issue_date IS NOT NULL THEN 'In Transit'
+                    ELSE 'Pending'
+                END as status
+            FROM delivery_reports
+            WHERE dn_no = :dn_number
+        """
+        return self.execute_query(query, {"dn_number": dn_number})
+    
+    def get_pending_dns(self) -> Dict[str, Any]:
+        """Get all pending DNs"""
+        query = """
+            SELECT 
+                dn_no,
+                customer_name,
+                ship_to_city,
+                warehouse,
+                dn_qty,
+                dn_amount,
+                dn_create_date,
+                good_issue_date,
+                pod_date,
+                CASE 
+                    WHEN pod_date IS NULL AND good_issue_date IS NULL THEN 'PGI Pending'
+                    WHEN pod_date IS NULL AND good_issue_date IS NOT NULL THEN 'POD Pending'
+                    ELSE 'Completed'
+                END as pending_type,
+                CURRENT_DATE - dn_create_date as aging_days
+            FROM delivery_reports
+            WHERE pending_flag = TRUE
+            ORDER BY dn_create_date ASC
+        """
+        return self.execute_query(query)
+    
+    def get_national_kpis(self) -> Dict[str, Any]:
+        """Get national KPIs"""
+        query = """
+            SELECT 
+                COUNT(DISTINCT dn_no) as total_dn,
+                COUNT(DISTINCT customer_name) as total_dealers,
+                COUNT(DISTINCT warehouse) as total_warehouses,
+                COUNT(DISTINCT ship_to_city) as total_cities,
+                SUM(dn_qty) as total_units,
+                SUM(dn_amount) as total_revenue,
+                ROUND(AVG(dn_amount)::numeric, 2) as avg_dn_value,
+                COUNT(CASE WHEN pending_flag = TRUE THEN 1 END) as pending_dn,
+                ROUND(COUNT(CASE WHEN pending_flag = TRUE THEN 1 END)::numeric / 
+                      COUNT(DISTINCT dn_no)::numeric * 100, 2) as pending_percentage,
+                COUNT(CASE WHEN pod_date IS NOT NULL THEN 1 END) as completed_dn,
+                ROUND(COUNT(CASE WHEN pod_date IS NOT NULL THEN 1 END)::numeric / 
+                      COUNT(DISTINCT dn_no)::numeric * 100, 2) as completion_rate
+            FROM delivery_reports
+        """
+        return self.execute_query(query)
+
+
+# ==========================================================
+# BLOCK 6: SERVICE REGISTRY
 # ==========================================================
 
 class ServiceRegistry:
+    """Automatic Service Registry with True Readiness Validation"""
+    
     SERVICES = {
         "dn": {
             "module": "app.services.dn_analysis",
             "class_name": "DNAnalysisService",
-            "methods": ["get_dn_dashboard", "get_pending_dns", "get_pending_pgi", "get_pending_pod"],
-            "description": "DN Analytics Service"
+            "methods": [
+                "get_dn_dashboard", "search_dn", "verify_dn",
+                "get_pending_dns", "get_pending_pgi", "get_pending_pod",
+                "health_check", "validation_query", "get_service_metadata"
+            ],
+            "description": "DN Analytics Service",
+            "dependencies": []
         },
         "dealer": {
             "module": "app.services.dealer_analytics_service",
             "class_name": "DealerAnalyticsService",
-            "methods": ["get_dealer_dashboard", "get_dealer_profile", "compare_dealers", "get_top_dealers", "get_bottom_dealers"],
-            "description": "Dealer Analytics Service"
+            "methods": [
+                "get_dealer_dashboard", "get_dealer_profile", 
+                "compare_dealers", "get_top_dealers", "get_bottom_dealers",
+                "health_check", "validation_query", "get_service_metadata"
+            ],
+            "description": "Dealer Analytics Service",
+            "dependencies": ["dn"]
         },
         "warehouse": {
             "module": "app.services.warehouse_analytics_service",
             "class_name": "WarehouseAnalyticsService",
-            "methods": ["get_warehouse_dashboard", "get_top_warehouses"],
-            "description": "Warehouse Analytics Service"
+            "methods": [
+                "get_warehouse_dashboard", "get_top_warehouses",
+                "health_check", "validation_query", "get_service_metadata"
+            ],
+            "description": "Warehouse Analytics Service",
+            "dependencies": ["dn", "dealer"]
         },
         "city": {
             "module": "app.services.city_analytics_service",
             "class_name": "CityAnalyticsService",
-            "methods": ["get_city_dashboard", "get_top_cities"],
-            "description": "City Analytics Service"
+            "methods": [
+                "get_city_dashboard", "get_top_cities",
+                "health_check", "validation_query", "get_service_metadata"
+            ],
+            "description": "City Analytics Service",
+            "dependencies": ["dn"]
         },
         "product": {
             "module": "app.services.product_analytics_service",
             "class_name": "ProductAnalyticsService",
-            "methods": ["get_product_dashboard", "get_top_products"],
-            "description": "Product Analytics Service"
+            "methods": [
+                "get_product_dashboard", "get_top_products",
+                "health_check", "validation_query", "get_service_metadata"
+            ],
+            "description": "Product Analytics Service",
+            "dependencies": ["dn"]
         },
         "national_kpi": {
             "module": "app.services.national_kpi_service",
             "class_name": "NationalKPIService",
-            "methods": ["get_national_kpi_dashboard", "get_delivery_kpis", "get_warehouse_kpis"],
-            "description": "National KPI Service"
-        },
-        "groq": {
-            "module": "app.services.groq_service",
-            "class_name": "GroqService",
-            "methods": ["process_query", "get_response", "classify_intent"],
-            "description": "Groq AI Service"
+            "methods": [
+                "get_national_kpi_dashboard", "get_delivery_kpis", 
+                "get_warehouse_kpis",
+                "health_check", "validation_query", "get_service_metadata"
+            ],
+            "description": "National KPI Service",
+            "dependencies": ["dn", "dealer", "warehouse", "city", "product"]
         }
     }
     
@@ -621,691 +512,1247 @@ class ServiceRegistry:
         self._services = self.SERVICES.copy()
         self._status_cache = {}
         self._instance_cache = {}
-        self._lock = threading.RLock()
+        self._lock = threading.Lock()
+        self._last_validation = None
         self._postgresql_validator = PostgreSQLValidator()
+        self._query_engine = PostgreSQLQueryEngine()
     
-    def get_service_instance(self, service_key: str):
-        """Get service instance with caching"""
-        if service_key in self._instance_cache:
-            return self._instance_cache[service_key]
-        
+    def validate_all_services(self, force: bool = False) -> Dict[str, Dict[str, Any]]:
         with self._lock:
-            if service_key in self._instance_cache:
-                return self._instance_cache[service_key]
+            pg_status = self._postgresql_validator.validate()
+            pg_valid = pg_status.get("success", False)
             
+            results = {}
+            for service_key in self._services:
+                results[service_key] = self._validate_service(
+                    service_key, 
+                    pg_valid=pg_valid
+                )
+            
+            self._last_validation = time.time()
+            return results
+    
+    def _validate_service(self, service_key: str, pg_valid: bool = False) -> Dict[str, Any]:
+        if service_key not in self._services:
+            return {
+                "status": ServiceStatus.NOT_STARTED,
+                "ready": False,
+                "errors": [f"Service '{service_key}' not registered"]
+            }
+        
+        service_def = self._services[service_key]
+        module_name = service_def.get("module")
+        class_name = service_def.get("class_name")
+        required_methods = service_def.get("methods", [])
+        dependencies = service_def.get("dependencies", [])
+        
+        result = {
+            "status": ServiceStatus.NOT_STARTED,
+            "ready": False,
+            "errors": [],
+            "warnings": [],
+            "checks_passed": 0,
+            "checks_total": 9
+        }
+        
+        if not pg_valid:
+            result["status"] = ServiceStatus.ERROR
+            result["errors"].append("PostgreSQL validation failed")
+            return result
+        
+        result["checks_passed"] += 1
+        
+        try:
+            module = importlib.import_module(module_name)
+            result["checks_passed"] += 1
+        except ImportError as e:
+            result["status"] = ServiceStatus.NOT_STARTED
+            result["errors"].append(f"Module not found: {e}")
+            return result
+        
+        if not hasattr(module, class_name):
+            result["status"] = ServiceStatus.IN_DEVELOPMENT
+            result["errors"].append(f"Class '{class_name}' not found")
+            return result
+        
+        cls = getattr(module, class_name)
+        result["checks_passed"] += 1
+        
+        missing_methods = []
+        for method in required_methods:
+            if not hasattr(cls, method):
+                missing_methods.append(method)
+        
+        if missing_methods:
+            result["status"] = ServiceStatus.IN_DEVELOPMENT
+            result["errors"].append(f"Missing methods: {missing_methods}")
+            return result
+        
+        result["checks_passed"] += 1
+        
+        try:
+            instance = cls()
+            result["checks_passed"] += 1
+        except Exception as e:
+            result["status"] = ServiceStatus.ERROR
+            result["errors"].append(f"Instantiation failed: {e}")
+            return result
+        
+        if hasattr(instance, "health_check"):
             try:
-                service_def = self._services.get(service_key)
-                if not service_def:
-                    return None
-                
-                module = importlib.import_module(service_def["module"])
-                cls = getattr(module, service_def["class_name"])
-                instance = cls()
-                self._instance_cache[service_key] = instance
-                return instance
+                health = instance.health_check()
+                if not health.get("healthy", False):
+                    result["status"] = ServiceStatus.IN_DEVELOPMENT
+                    result["errors"].append(f"Health check failed")
+                    return result
+                result["checks_passed"] += 1
             except Exception as e:
-                logger.error(f"Failed to load service {service_key}: {e}")
-                return None
+                result["status"] = ServiceStatus.ERROR
+                result["errors"].append(f"Health check exception: {e}")
+                return result
+        
+        if hasattr(instance, "validation_query"):
+            try:
+                validation = instance.validation_query()
+                if not validation.get("success", False):
+                    result["status"] = ServiceStatus.IN_DEVELOPMENT
+                    result["errors"].append(f"Validation failed")
+                    return result
+                result["checks_passed"] += 1
+            except Exception as e:
+                result["status"] = ServiceStatus.ERROR
+                result["errors"].append(f"Validation exception: {e}")
+                return result
+        
+        dependency_status = self._check_dependencies(dependencies)
+        if not dependency_status["all_ready"]:
+            result["status"] = ServiceStatus.IN_DEVELOPMENT
+            result["errors"].append(f"Dependencies not ready: {dependency_status['missing']}")
+            return result
+        
+        result["checks_passed"] += 1
+        
+        if hasattr(instance, "get_service_metadata"):
+            try:
+                metadata = instance.get_service_metadata()
+                result["checks_passed"] += 1
+            except Exception:
+                pass
+        
+        result["status"] = ServiceStatus.READY
+        result["ready"] = True
+        result["instance"] = instance
+        
+        return result
+    
+    def _check_dependencies(self, dependencies: List[str]) -> Dict[str, Any]:
+        missing = []
+        for dep in dependencies:
+            dep_status = self.get_service_status(dep)
+            if not dep_status.get("ready", False):
+                missing.append(dep)
+        
+        return {
+            "all_ready": len(missing) == 0,
+            "missing": missing
+        }
+    
+    def get_service_status(self, service_key: str) -> Dict[str, Any]:
+        if (service_key not in self._status_cache or 
+            self._last_validation is None or 
+            time.time() - self._last_validation > 60):
+            
+            pg_status = self._postgresql_validator.validate()
+            pg_valid = pg_status.get("success", False)
+            
+            self._status_cache[service_key] = self._validate_service(
+                service_key, 
+                pg_valid=pg_valid
+            )
+            
+            if self._status_cache[service_key].get("ready", False):
+                self._instance_cache[service_key] = self._status_cache[service_key].get("instance")
+        
+        return self._status_cache.get(service_key, {
+            "status": ServiceStatus.NOT_STARTED,
+            "ready": False,
+            "errors": ["Service not validated"]
+        })
     
     def is_service_ready(self, service_key: str) -> bool:
-        instance = self.get_service_instance(service_key)
-        return instance is not None
+        status = self.get_service_status(service_key)
+        return status.get("ready", False)
     
-    def get_all_services(self) -> Dict[str, Any]:
-        return self._services
+    def get_service_instance(self, service_key: str):
+        if not self.is_service_ready(service_key):
+            return None
+        return self._instance_cache.get(service_key)
+    
+    def get_service_info(self, service_key: str) -> Dict[str, Any]:
+        if service_key not in self._services:
+            return {"error": "Service not registered"}
+        status = self.get_service_status(service_key)
+        return {
+            "key": service_key,
+            "description": self._services[service_key].get("description", ""),
+            "status": status.get("status", ServiceStatus.NOT_STARTED),
+            "ready": status.get("ready", False),
+            "dependencies": self._services[service_key].get("dependencies", []),
+            "errors": status.get("errors", [])
+        }
+    
+    def get_all_service_statuses(self) -> Dict[str, Dict[str, Any]]:
+        results = {}
+        for service_key in self._services:
+            results[service_key] = self.get_service_status(service_key)
+        return results
+    
+    def get_health_report(self) -> Dict[str, Any]:
+        statuses = self.get_all_service_statuses()
+        total = len(statuses)
+        ready = sum(1 for s in statuses.values() if s.get("ready", False))
+        in_dev = sum(1 for s in statuses.values() 
+                    if s.get("status") == ServiceStatus.IN_DEVELOPMENT)
+        not_started = sum(1 for s in statuses.values() 
+                        if s.get("status") == ServiceStatus.NOT_STARTED)
+        error = sum(1 for s in statuses.values() 
+                   if s.get("status") == ServiceStatus.ERROR)
+        
+        pg_status = self._postgresql_validator.validate()
+        
+        return {
+            "total_services": total,
+            "ready": ready,
+            "in_development": in_dev,
+            "not_started": not_started,
+            "error": error,
+            "readiness_score": (ready / total * 100) if total > 0 else 0,
+            "services": statuses,
+            "postgresql": pg_status,
+            "last_validation": self._last_validation
+        }
+
 
 # ==========================================================
-# BLOCK 9: ULTRA-FAST ROUTING ENGINE
+# BLOCK 7: INTENT DETECTION ENGINE - FIXED
 # ==========================================================
 
-class UltraFastRoutingEngine:
-    """10x faster routing engine with aggressive caching"""
+class IntentDetectionEngine:
+    """Intelligent Intent Detection Engine - FIXED for Pending & Conversational"""
+    
+    # Pre-compiled regex patterns
+    DN_PATTERN = re.compile(r'\b(\d{8,12})\b')
+    
+    DEALER_PATTERN = re.compile(
+        r'(?:dealer|about|for|company|customer|tell me about|show me|get|view|display|give me)\s+([a-z0-9\s&\-\.]+)',
+        re.IGNORECASE
+    )
+    DEALER_DASHBOARD_PATTERN = re.compile(
+        r'(?:dashboard|profile|summary|overview|info|information|details|status|statistics)\s+(?:of|for)?\s+([a-z0-9\s&\-\.]+)',
+        re.IGNORECASE
+    )
+    
+    WAREHOUSE_PATTERN = re.compile(
+        r'(?:warehouse|wh|depot|distribution)\s+([a-z0-9\s&\-\.]+)',
+        re.IGNORECASE
+    )
+    
+    CITY_PATTERN = re.compile(
+        r'(?:city|in|at|location)\s+([a-z0-9\s&\-\.]+)',
+        re.IGNORECASE
+    )
+    
+    PRODUCT_PATTERN = re.compile(
+        r'(?:product|model|material|item|sku)\s+([a-z0-9\s&\-\.]+)',
+        re.IGNORECASE
+    )
+    
+    # ============================================================
+    # FIXED: PENDING PATTERNS - More comprehensive
+    # ============================================================
+    PENDING_PATTERN = re.compile(
+        r'(?:pending|open|outstanding|waiting|incomplete)\s*(?:dn|dns|delivery|deliveries)?',
+        re.IGNORECASE
+    )
+    PENDING_DN_PATTERN = re.compile(
+        r'(?:pending|open|outstanding)\s*(?:dn|dns|delivery|deliveries)',
+        re.IGNORECASE
+    )
+    PENDING_PGI_PATTERN = re.compile(
+        r'(?:pending|open)\s*(?:pgi|goods issue)',
+        re.IGNORECASE
+    )
+    PENDING_POD_PATTERN = re.compile(
+        r'(?:pending|open)\s*(?:pod|proof of delivery)',
+        re.IGNORECASE
+    )
+    
+    RANKING_PATTERN = re.compile(
+        r'(?:top|best|highest|lowest|worst|bottom)\s+(\d+)?\s*(?:dealers?|cities?|warehouses?|products?)',
+        re.IGNORECASE
+    )
+    
+    REVENUE_PATTERN = re.compile(r'\b(revenue|sales|income|turnover)\b', re.IGNORECASE)
+    UNITS_PATTERN = re.compile(r'\b(units?|quantity|qty)\b', re.IGNORECASE)
+    DELIVERY_PATTERN = re.compile(r'\b(delivery|deliveries|shipping)\b', re.IGNORECASE)
+    
+    # ============================================================
+    # FIXED: CONVERSATIONAL PATTERN - Now detects "Can I ask you something"
+    # ============================================================
+    CONVERSATIONAL_PATTERN = re.compile(
+        r'(?:can i|may i|could i|i have|i want|i need|tell me|help me|'
+        r'question|ask you|something|anything|what is|how to|how do|'
+        r'where is|when is|why is|who is|explain|describe|tell about|'
+        r'can I ask|may I ask|is it possible|would you|do you|'
+        r'could you|would you mind|let me ask|i would like)',
+        re.IGNORECASE
+    )
+    
+    HELP_PATTERN = re.compile(r'(?:help|menu|commands|what can you do|available commands|how to use)', re.IGNORECASE)
+    GREETING_PATTERN = re.compile(r'^(?:hello|hi|hey|good morning|good evening|good afternoon|howdy|greetings)', re.IGNORECASE)
+    EXPLANATION_PATTERN = re.compile(r'(?:what is|explain|definition|meaning|what does|how does)\s+(?:pod|pgi|dn|aging|kpi|delivery|warehouse|dealer)', re.IGNORECASE)
+    NATIONAL_KPI_PATTERN = re.compile(r'(?:national|pakistan|country|overall|executive|kpi dashboard|performance dashboard)', re.IGNORECASE)
+    COMPARISON_PATTERN = re.compile(r'(?:compare|vs|versus|and)\s+(.*?)(?:\s+and\s+|\s+vs\s+|\s+versus\s+)(.*?)(?:\?|$)', re.IGNORECASE)
     
     def __init__(self):
-        self._executor = ThreadPoolExecutor(max_workers=4)
-        
-        # Pre-compile patterns
-        self.DN_PATTERN = re.compile(r'\b(\d{8,12})\b')
-        self.HELP_PATTERN = re.compile(r'(?:help|menu|what can you do|available commands|how to use|commands)', re.IGNORECASE)
-        self.GREETING_PATTERN = re.compile(r'^(?:hello|hi|hey|good morning|good evening|howdy|greetings)', re.IGNORECASE)
-        self.ANALYTICS_PATTERNS = [
-            (re.compile(r'(highest|top|best|max).*?(revenue|sales|units|performance|dealer)', re.IGNORECASE), "ranking", "dealer", "get_top_dealers"),
-            (re.compile(r'(lowest|bottom|worst|min).*?(revenue|sales|units|performance|dealer)', re.IGNORECASE), "ranking", "dealer", "get_bottom_dealers"),
-            (re.compile(r'compare.*?(dealer|warehouse|city)', re.IGNORECASE), "comparison", "dealer", "compare_dealers"),
-            (re.compile(r'(national|overall|country).*?(kpi|dashboard|performance)', re.IGNORECASE), "national_kpi", "national_kpi", "get_national_kpi_dashboard"),
-        ]
+        self._query_engine = PostgreSQLQueryEngine()
     
-    def route(self, message: str) -> RoutingDecision:
-        """Ultra-fast routing - < 10ms for cached responses"""
-        start_time = time.perf_counter()
-        message_clean = message.strip()
-        message_lower = message_clean.lower()
+    def detect_intent(self, message: str) -> RoutingDecision:
+        """Detect intent and extract entities - FIXED for Pending & Conversational"""
+        cleaned = message.strip()
+        normalized = self._normalize(cleaned)
         
-        # Check cache first (fastest path)
-        cache_key = f"route_{hash(message_clean)}"
-        cached = _routing_cache.get(cache_key)
-        if cached:
-            logger.info(f"⚡ Cache hit: {message_clean[:30]}...")
-            return cached
+        # ============================================================
+        # PRIORITY 1: DN DETECTION
+        # ============================================================
         
-        # FAST PATH 1: DN Detection (< 1ms)
-        dn_match = self.DN_PATTERN.search(message_clean)
-        if dn_match:
-            decision = RoutingDecision(
+        if self._is_dn_number(cleaned):
+            dn_number = re.sub(r'\D', '', cleaned)
+            return RoutingDecision(
                 intent="dn_lookup",
                 service_key="dn",
                 method="get_dn_dashboard",
-                entity=dn_match.group(1),
-                confidence=0.99,
+                entity=dn_number,
+                confidence=1.0,
                 needs_groq=False,
-                reason="DN detected",
-                original_message=message_clean
+                reason="DN number detected",
+                original_message=cleaned,
+                detected_dn=dn_number,
+                detected_intent="dn_lookup"
             )
-            _routing_cache.set(cache_key, decision)
-            return decision
         
-        # FAST PATH 2: Entity Extraction (< 2ms)
-        entities = FastEntityExtractor.extract_entities(message_clean)
+        dn_match = self.DN_PATTERN.search(cleaned)
+        if dn_match:
+            dn_number = dn_match.group(1)
+            return RoutingDecision(
+                intent="dn_lookup",
+                service_key="dn",
+                method="get_dn_dashboard",
+                entity=dn_number,
+                confidence=1.0,
+                needs_groq=False,
+                reason="DN number extracted",
+                original_message=cleaned,
+                detected_dn=dn_number,
+                detected_intent="dn_lookup"
+            )
         
-        # Check for Help/Greeting
-        if entities.get("is_help") or entities.get("is_greeting"):
-            decision = RoutingDecision(
-                intent="help" if entities.get("is_help") else "greeting",
+        # ============================================================
+        # PRIORITY 2: PENDING DETECTION - FIXED
+        # ============================================================
+        
+        # Check Pending DN first (most specific)
+        if self.PENDING_DN_PATTERN.search(cleaned):
+            return RoutingDecision(
+                intent="pending_dn",
+                service_key="dn",
+                method="get_pending_dns",
+                confidence=0.98,
+                needs_groq=False,
+                reason="Pending DN query detected",
+                original_message=cleaned,
+                detected_intent="pending_dn"
+            )
+        
+        if self.PENDING_PGI_PATTERN.search(cleaned):
+            return RoutingDecision(
+                intent="pending_pgi",
+                service_key="dn",
+                method="get_pending_pgi",
+                confidence=0.95,
+                needs_groq=False,
+                reason="Pending PGI query detected",
+                original_message=cleaned,
+                detected_intent="pending_pgi"
+            )
+        
+        if self.PENDING_POD_PATTERN.search(cleaned):
+            return RoutingDecision(
+                intent="pending_pod",
+                service_key="dn",
+                method="get_pending_pod",
+                confidence=0.95,
+                needs_groq=False,
+                reason="Pending POD query detected",
+                original_message=cleaned,
+                detected_intent="pending_pod"
+            )
+        
+        # General pending query
+        if self.PENDING_PATTERN.search(cleaned):
+            return RoutingDecision(
+                intent="pending_dn",
+                service_key="dn",
+                method="get_pending_dns",
+                confidence=0.90,
+                needs_groq=False,
+                reason="Pending query detected",
+                original_message=cleaned,
+                detected_intent="pending_dn"
+            )
+        
+        # ============================================================
+        # PRIORITY 3: NATIONAL KPI
+        # ============================================================
+        
+        if self.NATIONAL_KPI_PATTERN.search(cleaned):
+            return RoutingDecision(
+                intent="national_kpi",
+                service_key="national_kpi",
+                method="get_national_kpi_dashboard",
+                confidence=0.95,
+                needs_groq=False,
+                reason="National KPI query",
+                original_message=cleaned,
+                detected_intent="national_kpi"
+            )
+        
+        # ============================================================
+        # PRIORITY 4: COMPARISON
+        # ============================================================
+        
+        comparison_match = self.COMPARISON_PATTERN.search(cleaned)
+        if comparison_match:
+            entity1 = comparison_match.group(1).strip()
+            entity2 = comparison_match.group(2).strip()
+            return RoutingDecision(
+                intent="comparison",
+                service_key="dealer",
+                method="compare_dealers",
+                entity=entity1,
+                entity2=entity2,
+                confidence=0.90,
+                needs_groq=False,
+                reason=f"Comparison: {entity1} vs {entity2}",
+                original_message=cleaned,
+                detected_intent="comparison"
+            )
+        
+        # ============================================================
+        # PRIORITY 5: DEALER DETECTION
+        # ============================================================
+        
+        # Check dashboard pattern first
+        dashboard_match = self.DEALER_DASHBOARD_PATTERN.search(cleaned)
+        if dashboard_match:
+            dealer_name = dashboard_match.group(1).strip()
+            return RoutingDecision(
+                intent="dealer_dashboard",
+                service_key="dealer",
+                method="get_dealer_dashboard",
+                entity=dealer_name,
+                confidence=0.95,
+                needs_groq=False,
+                reason=f"Dealer dashboard: {dealer_name}",
+                original_message=cleaned,
+                detected_dealer=dealer_name,
+                detected_intent="dealer_dashboard"
+            )
+        
+        # Check dealer pattern
+        dealer_match = self.DEALER_PATTERN.search(cleaned)
+        if dealer_match:
+            dealer_name = dealer_match.group(1).strip()
+            
+            # Check if profile request
+            if "profile" in normalized or "info" in normalized or "details" in normalized:
+                intent = "dealer_profile"
+                method = "get_dealer_profile"
+            else:
+                intent = "dealer_dashboard"
+                method = "get_dealer_dashboard"
+            
+            return RoutingDecision(
+                intent=intent,
+                service_key="dealer",
+                method=method,
+                entity=dealer_name,
+                confidence=0.95,
+                needs_groq=False,
+                reason=f"Dealer: {dealer_name}",
+                original_message=cleaned,
+                detected_dealer=dealer_name,
+                detected_intent=intent
+            )
+        
+        # ============================================================
+        # PRIORITY 6: RANKING
+        # ============================================================
+        
+        ranking_result = self._detect_ranking(cleaned, normalized)
+        if ranking_result:
+            intent, service_key, method = ranking_result
+            return RoutingDecision(
+                intent=intent,
+                service_key=service_key,
+                method=method,
+                confidence=0.90,
+                needs_groq=False,
+                reason=f"Ranking: {intent}",
+                original_message=cleaned,
+                detected_intent=intent
+            )
+        
+        # ============================================================
+        # PRIORITY 7: WAREHOUSE
+        # ============================================================
+        
+        warehouse_match = self.WAREHOUSE_PATTERN.search(cleaned)
+        if warehouse_match:
+            warehouse_name = warehouse_match.group(1).strip()
+            return RoutingDecision(
+                intent="warehouse_dashboard",
+                service_key="warehouse",
+                method="get_warehouse_dashboard",
+                entity=warehouse_name,
+                confidence=0.90,
+                needs_groq=False,
+                reason=f"Warehouse: {warehouse_name}",
+                original_message=cleaned,
+                detected_warehouse=warehouse_name,
+                detected_intent="warehouse_dashboard"
+            )
+        
+        # ============================================================
+        # PRIORITY 8: CITY
+        # ============================================================
+        
+        city_match = self.CITY_PATTERN.search(cleaned)
+        if city_match:
+            city_name = city_match.group(1).strip()
+            return RoutingDecision(
+                intent="city_dashboard",
+                service_key="city",
+                method="get_city_dashboard",
+                entity=city_name,
+                confidence=0.90,
+                needs_groq=False,
+                reason=f"City: {city_name}",
+                original_message=cleaned,
+                detected_city=city_name,
+                detected_intent="city_dashboard"
+            )
+        
+        # ============================================================
+        # PRIORITY 9: PRODUCT
+        # ============================================================
+        
+        product_match = self.PRODUCT_PATTERN.search(cleaned)
+        if product_match:
+            product_name = product_match.group(1).strip()
+            return RoutingDecision(
+                intent="product_dashboard",
+                service_key="product",
+                method="get_product_dashboard",
+                entity=product_name,
+                confidence=0.90,
+                needs_groq=False,
+                reason=f"Product: {product_name}",
+                original_message=cleaned,
+                detected_product=product_name,
+                detected_intent="product_dashboard"
+            )
+        
+        # ============================================================
+        # PRIORITY 10: CONVERSATIONAL - NEW
+        # ============================================================
+        
+        if self.CONVERSATIONAL_PATTERN.search(cleaned):
+            return RoutingDecision(
+                intent="conversational",
+                service_key="groq",
+                method="process_query",
+                confidence=0.90,
+                needs_groq=True,
+                reason="Conversational question detected",
+                original_message=cleaned,
+                detected_intent="conversational"
+            )
+        
+        # ============================================================
+        # PRIORITY 11: EXPLANATION / HELP / GREETING
+        # ============================================================
+        
+        if self.EXPLANATION_PATTERN.search(cleaned):
+            return RoutingDecision(
+                intent="explanation",
+                service_key="groq",
+                method="process_query",
+                confidence=0.90,
+                needs_groq=True,
+                reason="Explanation query",
+                original_message=cleaned,
+                detected_intent="explanation"
+            )
+        
+        if self.HELP_PATTERN.search(cleaned):
+            return RoutingDecision(
+                intent="help",
                 service_key="groq",
                 method="process_query",
                 confidence=0.95,
                 needs_groq=True,
-                reason="Help/Greeting",
-                original_message=message_clean,
-                groq_context={"type": "conversational"}
+                reason="Help query",
+                original_message=cleaned,
+                detected_intent="help"
             )
-            _routing_cache.set(cache_key, decision)
-            return decision
         
-        # FAST PATH 3: Analytics Patterns (< 1ms)
-        for pattern, intent, service_key, method in self.ANALYTICS_PATTERNS:
-            if pattern.search(message_lower):
-                decision = RoutingDecision(
-                    intent=intent,
-                    service_key=service_key,
-                    method=method,
-                    confidence=0.85,
-                    needs_groq=False,
-                    reason=f"Analytics: {intent}",
-                    original_message=message_clean
-                )
-                _routing_cache.set(cache_key, decision)
-                return decision
-        
-        # FAST PATH 4: Pending Detection
-        if entities.get("pending_type"):
-            pending_type = entities["pending_type"]
-            method_map = {
-                "dn": "get_pending_dns",
-                "pgi": "get_pending_pgi",
-                "pod": "get_pending_pod"
-            }
-            decision = RoutingDecision(
-                intent=f"pending_{pending_type}",
-                service_key="dn",
-                method=method_map.get(pending_type, "get_pending_dns"),
+        if self.GREETING_PATTERN.search(cleaned):
+            return RoutingDecision(
+                intent="greeting",
+                service_key="groq",
+                method="process_query",
                 confidence=0.95,
-                needs_groq=False,
-                reason=f"Pending {pending_type.upper()}",
-                original_message=message_clean
+                needs_groq=True,
+                reason="Greeting",
+                original_message=cleaned,
+                detected_intent="greeting"
             )
-            _routing_cache.set(cache_key, decision)
-            return decision
-        
-        # FAST PATH 5: Dealer Lookup (< 5ms)
-        if entities.get("dealer"):
-            dealer_name = entities["dealer"][0]
-            found_dealer = FastDealerResolver.find_dealer(dealer_name)
-            
-            if found_dealer:
-                decision = RoutingDecision(
-                    intent="dealer_dashboard",
-                    service_key="dealer",
-                    method="get_dealer_dashboard",
-                    entity=found_dealer,
-                    confidence=0.95,
-                    needs_groq=False,
-                    reason=f"Dealer found: {found_dealer}",
-                    original_message=message_clean
-                )
-                _routing_cache.set(cache_key, decision)
-                return decision
-            else:
-                # Try similar dealers
-                similar = FastDealerResolver.find_similar(dealer_name)
-                if similar:
-                    if len(similar) == 1:
-                        decision = RoutingDecision(
-                            intent="dealer_dashboard",
-                            service_key="dealer",
-                            method="get_dealer_dashboard",
-                            entity=similar[0],
-                            confidence=0.85,
-                            needs_groq=False,
-                            reason=f"Similar dealer: {similar[0]}",
-                            original_message=message_clean
-                        )
-                    else:
-                        # Multiple suggestions - send to Groq for better handling
-                        decision = RoutingDecision(
-                            intent="dealer_suggestion",
-                            service_key="groq",
-                            method="process_query",
-                            confidence=0.7,
-                            needs_groq=True,
-                            reason=f"Suggestions: {similar[:3]}",
-                            original_message=message_clean,
-                            groq_context={
-                                "type": "dealer_suggestion",
-                                "query": dealer_name,
-                                "suggestions": similar[:5]
-                            }
-                        )
-                    _routing_cache.set(cache_key, decision)
-                    return decision
-        
-        # FAST PATH 6: Warehouse/City/Product
-        if entities.get("warehouse"):
-            decision = RoutingDecision(
-                intent="warehouse_dashboard",
-                service_key="warehouse",
-                method="get_warehouse_dashboard",
-                entity=entities["warehouse"][0],
-                confidence=0.85,
-                needs_groq=False,
-                reason="Warehouse detected",
-                original_message=message_clean
-            )
-            _routing_cache.set(cache_key, decision)
-            return decision
-        
-        if entities.get("city"):
-            decision = RoutingDecision(
-                intent="city_dashboard",
-                service_key="city",
-                method="get_city_dashboard",
-                entity=entities["city"][0],
-                confidence=0.85,
-                needs_groq=False,
-                reason="City detected",
-                original_message=message_clean
-            )
-            _routing_cache.set(cache_key, decision)
-            return decision
-        
-        if entities.get("product"):
-            decision = RoutingDecision(
-                intent="product_dashboard",
-                service_key="product",
-                method="get_product_dashboard",
-                entity=entities["product"][0],
-                confidence=0.85,
-                needs_groq=False,
-                reason="Product detected",
-                original_message=message_clean
-            )
-            _routing_cache.set(cache_key, decision)
-            return decision
         
         # ============================================================
-        # GROQ FALLBACK - All unmatched questions go here
+        # PRIORITY 12: FALLBACK - Direct PostgreSQL Query
         # ============================================================
-        decision = RoutingDecision(
+        
+        if self._can_answer_directly(cleaned):
+            return RoutingDecision(
+                intent="direct_query",
+                service_key="direct",
+                method="answer_directly",
+                confidence=0.70,
+                needs_groq=False,
+                reason="Direct PostgreSQL query",
+                original_message=cleaned,
+                detected_intent="direct_query"
+            )
+        
+        # ============================================================
+        # PRIORITY 13: Groq Fallback
+        # ============================================================
+        
+        return RoutingDecision(
             intent="general_ai",
             service_key="groq",
             method="process_query",
-            confidence=0.3,
+            confidence=0.30,
             needs_groq=True,
-            reason="Fallback to Groq",
-            original_message=message_clean,
-            groq_context={
-                "type": "general_query",
-                "entities": entities
-            }
+            reason="Unknown - Groq fallback",
+            original_message=cleaned,
+            detected_intent="general_ai"
         )
-        _routing_cache.set(cache_key, decision)
-        
-        elapsed_ms = (time.perf_counter() - start_time) * 1000
-        if elapsed_ms > 10:
-            logger.info(f"⏱️ Routing: {elapsed_ms:.2f}ms - Fallback to Groq")
-        
-        return decision
-
-# ==========================================================
-# BLOCK 10: GROQ SERVICE INTEGRATION
-# ==========================================================
-
-class GroqIntegration:
-    """Groq service integration for PostgreSQL-aware responses"""
     
-    def __init__(self):
-        self._groq_service = None
-        self._load_groq_service()
+    def _detect_ranking(self, original: str, normalized: str) -> Optional[Tuple[str, str, str]]:
+        """Detect ranking intent"""
+        if 'top dealer' in normalized or 'best dealer' in normalized or 'highest dealer' in normalized:
+            if 'revenue' in normalized or 'sales' in normalized:
+                return ("top_dealers_revenue", "dealer", "get_top_dealers")
+            if 'unit' in normalized or 'quantity' in normalized:
+                return ("top_dealers_units", "dealer", "get_top_dealers")
+            return ("top_dealers", "dealer", "get_top_dealers")
+        
+        if 'bottom dealer' in normalized or 'worst dealer' in normalized or 'lowest dealer' in normalized:
+            return ("bottom_dealers", "dealer", "get_bottom_dealers")
+        
+        if 'top city' in normalized or 'best city' in normalized:
+            return ("top_cities", "city", "get_top_cities")
+        
+        if 'top warehouse' in normalized or 'best warehouse' in normalized:
+            return ("top_warehouses", "warehouse", "get_top_warehouses")
+        
+        if 'top product' in normalized or 'best product' in normalized:
+            return ("top_products", "product", "get_top_products")
+        
+        return None
     
-    def _load_groq_service(self):
-        """Load Groq service"""
-        try:
-            from app.services.groq_service import get_groq_service
-            self._groq_service = get_groq_service()
-            if self._groq_service:
-                logger.info("✅ Groq service loaded")
-        except Exception as e:
-            logger.warning(f"⚠️ Groq service not available: {e}")
-            self._groq_service = None
-    
-    async def process_with_groq(self, message: str, decision: RoutingDecision) -> Dict[str, Any]:
-        """Process query with Groq - with PostgreSQL context"""
-        
-        # Check cache
-        cache_key = f"groq_{hash(message)}"
-        cached = _groq_cache.get(cache_key)
-        if cached:
-            return cached
-        
-        # Build context for Groq
-        context = self._build_groq_context(message, decision)
-        
-        try:
-            if self._groq_service and hasattr(self._groq_service, 'process_query'):
-                # Add context to message
-                enhanced_message = f"{context}\n\nUser Question: {message}"
-                response = await self._groq_service.process_query(enhanced_message)
-                
-                if response:
-                    result = {
-                        "success": True,
-                        "response": response if isinstance(response, str) else response.get("response", ""),
-                        "groq_used": True,
-                        "context": context
-                    }
-                    _groq_cache.set(cache_key, result)
-                    return result
-        except Exception as e:
-            logger.error(f"❌ Groq processing failed: {e}")
-        
-        # Fallback if Groq unavailable
-        fallback = self._get_fallback_response(message, decision)
-        result = {
-            "success": True,
-            "response": fallback,
-            "groq_used": False,
-            "context": context
-        }
-        _groq_cache.set(cache_key, result)
-        return result
-    
-    def _build_groq_context(self, message: str, decision: RoutingDecision) -> str:
-        """Build context for Groq with PostgreSQL data"""
-        context = "You are a Dealer Intelligence Assistant. Answer based on the following context:\n\n"
-        
-        # Add database context
-        SessionLocal, DeliveryReport = get_core_imports()
-        if SessionLocal and DeliveryReport:
-            try:
-                session = SessionLocal()
-                
-                # Get dealer count
-                dealer_count = session.query(func.count(func.distinct(DeliveryReport.customer_name))).scalar() or 0
-                context += f"- Total Dealers: {dealer_count}\n"
-                
-                # Get recent activity
-                recent = session.query(
-                    func.count(DeliveryReport.dn_no),
-                    func.sum(DeliveryReport.dn_amount)
-                ).filter(
-                    DeliveryReport.dn_create_date >= datetime.now() - timedelta(days=30)
-                ).first()
-                
-                if recent:
-                    context += f"- Recent DNs (30 days): {recent[0] or 0}\n"
-                    context += f"- Recent Revenue: PKR {recent[1] or 0:,.2f}\n"
-                
-                session.close()
-            except Exception as e:
-                logger.warning(f"Failed to build context: {e}")
-        
-        # Add entity context
-        if decision.groq_context:
-            context += f"\nDetected Intent: {decision.intent}\n"
-            if decision.entity:
-                context += f"Entity: {decision.entity}\n"
-            if decision.groq_context.get("suggestions"):
-                context += f"Suggestions: {', '.join(decision.groq_context['suggestions'])}\n"
-        
-        context += "\nProvide helpful, accurate, and concise responses."
-        
-        return context
-    
-    def _get_fallback_response(self, message: str, decision: RoutingDecision) -> str:
-        """Get fallback response if Groq unavailable"""
+    def _can_answer_directly(self, message: str) -> bool:
+        """Check if we can answer directly from PostgreSQL"""
         message_lower = message.lower()
         
-        # Dealer suggestion
-        if decision.intent == "dealer_suggestion" and decision.groq_context:
-            suggestions = decision.groq_context.get("suggestions", [])
-            if suggestions:
-                suggestion_text = "🔍 I couldn't find exactly that dealer. Did you mean:\n\n"
-                for i, name in enumerate(suggestions[:5], 1):
-                    suggestion_text += f"{i}. {name}\n"
-                suggestion_text += "\nPlease type the full dealer name exactly as shown above."
-                return suggestion_text
+        if 'revenue' in message_lower or 'sales' in message_lower:
+            return True
+        if 'unit' in message_lower or 'quantity' in message_lower:
+            return True
+        if 'delivery' in message_lower:
+            return True
+        if 'how many' in message_lower or 'total' in message_lower:
+            return True
         
-        # Help
-        if "help" in message_lower or "menu" in message_lower:
-            return (
-                "📋 Available Commands\n\n"
-                "📦 DN Queries:\n"
-                "• Send a DN number (8-12 digits)\n"
-                "• 'Pending DN'\n"
-                "• 'Pending PGI'\n"
-                "• 'Pending POD'\n\n"
-                "🏪 Dealer Queries:\n"
-                "• 'Dealer [name]'\n"
-                "• '[Dealer name] profile'\n"
-                "• 'Top dealers by revenue'\n"
-                "• 'Compare [dealer1] and [dealer2]'\n\n"
-                "🏭 Warehouse Queries:\n"
-                "• 'Warehouse [name]'\n"
-                "• 'Top warehouses'\n\n"
-                "🏙️ City Queries:\n"
-                "• 'City [name]'\n\n"
-                "📦 Product Queries:\n"
-                "• 'Product [name]'\n\n"
-                "📊 Analytics:\n"
-                "• 'National KPI dashboard'\n"
-                "• 'Highest revenue dealer'\n"
-                "• 'Which dealer has the most units?'"
-            )
-        
-        # Default
-        return (
-            "I couldn't identify your request. Please specify:\n"
-            "• A DN number (8-12 digits)\n"
-            "• A dealer name (e.g., 'Dealer Taj Electronics')\n"
-            "• A warehouse name\n"
-            "• A city name\n"
-            "• An analytics query (e.g., 'Top dealers')\n\n"
-            "Type 'Help' for all commands."
-        )
+        return False
+    
+    def _is_dn_number(self, text: str) -> bool:
+        if not text:
+            return False
+        cleaned = re.sub(r'\D', '', text.strip())
+        return 8 <= len(cleaned) <= 12
+    
+    def _normalize(self, text: str) -> str:
+        return text.lower().strip() if text else ""
+
 
 # ==========================================================
-# BLOCK 11: WHATSAPP PROVIDER SERVICE
+# BLOCK 8: WHATSAPP PROVIDER SERVICE - FIXED
 # ==========================================================
 
 class WhatsAppProviderService:
-    """10x faster WhatsApp provider service with Groq integration"""
+    """Master WhatsApp Provider Service - 100% PostgreSQL Integrated"""
     
     def __init__(self):
         start_time = time.time()
         
         try:
             logger.info("=" * 70)
-            logger.info("AI Provider Service v8.0 - ULTRA-FAST ROUTING ENGINE")
+            logger.info("AI Provider Service v6.1 - FIXED: Pending & Conversational")
             logger.info("=" * 70)
             
-            self.routing_engine = UltraFastRoutingEngine()
-            logger.info("✅ UltraFastRoutingEngine initialized")
-            
             self.registry = ServiceRegistry()
-            logger.info("✅ ServiceRegistry initialized")
+            self.intent_engine = IntentDetectionEngine()
+            self.query_engine = PostgreSQLQueryEngine()
             
-            self.groq_integration = GroqIntegration()
-            logger.info("✅ GroqIntegration initialized")
+            self._groq_service = None
+            try:
+                from app.services.groq_service import get_groq_service
+                self._groq_service = get_groq_service()
+                logger.info("✅ GroqService initialized")
+            except ImportError:
+                logger.warning("⚠️ GroqService not available")
+            except Exception as e:
+                logger.error(f"❌ GroqService initialization failed: {e}")
             
-            # Pre-load dealers in background
-            threading.Thread(target=FastDealerResolver.load_dealers, daemon=True).start()
+            self.registry.validate_all_services()
             
             init_duration = (time.time() - start_time) * 1000
+            health = self.registry.get_health_report()
+            
+            logger.info("")
+            logger.info("   SERVICE REGISTRY STATUS:")
+            logger.info(f"   ✅ Ready: {health['ready']}")
+            logger.info(f"   🔧 In Development: {health['in_development']}")
+            logger.info(f"   ⏳ Not Started: {health['not_started']}")
+            logger.info(f"   🚨 Error: {health['error']}")
+            logger.info(f"   📊 Readiness Score: {health['readiness_score']:.1f}%")
+            logger.info("")
+            
+            pg_status = health.get('postgresql', {})
+            logger.info(f"   PostgreSQL: {'✅' if pg_status.get('success') else '❌'}")
+            logger.info(f"   Records: {pg_status.get('record_count', 0)}")
+            logger.info(f"   Dealers: {pg_status.get('dealer_count', 0)}")
+            logger.info("")
+            
+            for service_key, status in health['services'].items():
+                ready = status.get("ready", False)
+                status_text = status.get("status", "UNKNOWN")
+                checks = status.get("checks_passed", 0)
+                total_checks = status.get("checks_total", 9)
+                icon = "✅" if ready else "🔧"
+                logger.info(f"   {icon} {service_key.title():15} → {status_text} ({checks}/{total_checks} checks)")
+            
+            logger.info("")
+            logger.info("   DATA SOURCE: PostgreSQL (ONLY)")
+            logger.info("   GROQ: Language layer only (fallback)")
+            logger.info("   FIXED: 'Pending DNs' → DN Service")
+            logger.info("   FIXED: 'Can I ask you something' → Groq")
+            logger.info("   STATUS: ✅ PRODUCTION GRADE")
             logger.info(f"   INIT TIME: {init_duration:.2f}ms")
-            logger.info("   STATUS: ✅ ULTRA-FAST READY")
-            logger.info("   GROQ: ✅ Ready for PostgreSQL integration")
-            logger.info("   OPTIMIZATIONS: Aggressive Caching, Lazy Loading")
             logger.info("=" * 70)
             
         except Exception as e:
             logger.exception(f"❌ Failed to initialize: {str(e)}")
             raise
     
-    # ==========================================================
-    # MAIN ROUTING METHOD - 10X FASTER
-    # ==========================================================
+    # ============================================================
+    # MAIN ROUTING METHOD
+    # ============================================================
     
     async def process_whatsapp_query(
         self,
         message: str,
         sender_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Process WhatsApp query - 10x faster with Groq fallback"""
+        """Process WhatsApp query - MAIN ENTRY POINT"""
+        logger.info(f"📩 Processing: '{message[:100]}'")
         start_time = time.perf_counter()
-        logger.info(f"📩 Processing: '{message[:50]}'")
-        
-        # Check response cache first
-        cache_key = f"resp_{hash(message)}_{hash(sender_id or '')}"
-        cached_response = _response_cache.get(cache_key)
-        if cached_response:
-            logger.info(f"⚡ Response cache hit: {message[:30]}...")
-            return cached_response
         
         try:
-            # STEP 1: Route (< 10ms)
-            routing_decision = self.routing_engine.route(message)
+            routing_decision = self.intent_engine.detect_intent(message)
             logger.info(f"🎯 Intent: {routing_decision.intent}, Service: {routing_decision.service_key}")
             
-            # STEP 2: Check if needs Groq
+            # Check if direct PostgreSQL query
+            if routing_decision.intent == "direct_query":
+                return await self._answer_directly(message, routing_decision)
+            
+            # Check if needs Groq
             if routing_decision.needs_groq or routing_decision.service_key == "groq":
-                result = await self.groq_integration.process_with_groq(message, routing_decision)
-                formatted = self._format_response(message, result.get("response", ""))
-                _response_cache.set(cache_key, formatted)
-                return formatted
+                return await self._handle_groq(message, routing_decision)
             
-            # STEP 3: Get Service Instance
-            service_instance = self.registry.get_service_instance(routing_decision.service_key)
-            if not service_instance:
-                # Fallback to Groq if service not available
-                result = await self.groq_integration.process_with_groq(message, routing_decision)
-                formatted = self._format_response(message, result.get("response", ""))
-                _response_cache.set(cache_key, formatted)
-                return formatted
+            # Check Service Readiness
+            service_key = routing_decision.service_key
+            if not self.registry.is_service_ready(service_key):
+                return self._format_module_unavailable(
+                    message,
+                    service_key,
+                    self.registry.get_service_info(service_key)
+                )
             
-            # STEP 4: Execute Service
-            method = getattr(service_instance, routing_decision.method, None)
-            if not method:
-                return self._format_error(f"Method '{routing_decision.method}' not found")
-            
-            # Execute with entity
-            if routing_decision.entity:
-                result = method(routing_decision.entity)
-            else:
-                result = method()
-            
-            # Handle async
-            if inspect.iscoroutine(result):
-                result = await result
+            # Execute Service
+            result = await self._execute_service(routing_decision)
             
             # Format Response
-            response = self._format_response(message, result)
-            
-            # Cache response
-            _response_cache.set(cache_key, response)
-            
-            elapsed_ms = (time.perf_counter() - start_time) * 1000
-            logger.info(f"⏱️ Response time: {elapsed_ms:.2f}ms")
-            
-            return response
+            if result.get("success", False):
+                return self._format_response(message, result.get("data"), error=False)
+            else:
+                return self._format_response(
+                    message,
+                    result.get("error", "An error occurred"),
+                    error=True
+                )
             
         except Exception as e:
             logger.exception(f"❌ Failed: {e}")
-            # Try Groq as fallback
-            try:
-                result = await self.groq_integration.process_with_groq(message, RoutingDecision(
-                    intent="error_fallback",
-                    service_key="groq",
-                    method="process_query",
-                    needs_groq=True,
-                    original_message=message
-                ))
-                return self._format_response(message, result.get("response", "An error occurred. Please try again."))
-            except:
-                return self._format_error("An unexpected error occurred. Please try again.")
+            return self._format_response(
+                message,
+                "⚠️ An unexpected error occurred. Please try again.",
+                error=True
+            )
+        finally:
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+            logger.info(f"⏱️ Response time: {elapsed_ms:.2f}ms")
     
-    # ==========================================================
-    # RESPONSE FORMATTING
-    # ==========================================================
+    # ============================================================
+    # DIRECT POSTGRESQL ANSWERING
+    # ============================================================
     
-    def _format_response(self, original_message: str, data: Any) -> Dict[str, Any]:
-        """Format response for WhatsApp"""
-        # If data is a dictionary
-        if isinstance(data, dict):
-            if data.get("response"):
-                data = data["response"]
-            elif data.get("whatsapp_message"):
-                data = data["whatsapp_message"]
-            elif data.get("message"):
-                data = data["message"]
-            elif data.get("formatted_response"):
-                data = data["formatted_response"]
+    async def _answer_directly(self, message: str, decision: RoutingDecision) -> Dict[str, Any]:
+        """Answer directly from PostgreSQL using the query engine"""
+        message_lower = message.lower()
         
-        # If data has to_whatsapp_message method
+        # Check for dealer query
+        if 'dealer' in message_lower or 'customer' in message_lower:
+            dealer_match = re.search(r'(?:dealer|customer|for|about|of)\s+([a-z0-9\s&\-\.]+)', message, re.IGNORECASE)
+            if dealer_match:
+                dealer_name = dealer_match.group(1).strip()
+                result = self.query_engine.get_dealer_by_name(dealer_name)
+                if result.get("success") and result.get("data"):
+                    data = result["data"][0]
+                    response = self._format_dealer_response(data)
+                    return self._format_response(message, response, error=False)
+        
+        # Check for warehouse query
+        if 'warehouse' in message_lower:
+            warehouse_match = re.search(r'(?:warehouse|wh|depot)\s+([a-z0-9\s&\-\.]+)', message, re.IGNORECASE)
+            if warehouse_match:
+                warehouse_name = warehouse_match.group(1).strip()
+                result = self.query_engine.get_warehouse_data(warehouse_name)
+                if result.get("success") and result.get("data"):
+                    data = result["data"][0]
+                    response = self._format_warehouse_response(data)
+                    return self._format_response(message, response, error=False)
+        
+        # Check for city query
+        if 'city' in message_lower:
+            city_match = re.search(r'(?:city|in|at)\s+([a-z0-9\s&\-\.]+)', message, re.IGNORECASE)
+            if city_match:
+                city_name = city_match.group(1).strip()
+                result = self.query_engine.get_city_data(city_name)
+                if result.get("success") and result.get("data"):
+                    data = result["data"][0]
+                    response = self._format_city_response(data)
+                    return self._format_response(message, response, error=False)
+        
+        # Check for product query
+        if 'product' in message_lower or 'model' in message_lower:
+            product_match = re.search(r'(?:product|model|material)\s+([a-z0-9\s&\-\.]+)', message, re.IGNORECASE)
+            if product_match:
+                product_name = product_match.group(1).strip()
+                result = self.query_engine.get_product_data(product_name)
+                if result.get("success") and result.get("data"):
+                    data = result["data"][0]
+                    response = self._format_product_response(data)
+                    return self._format_response(message, response, error=False)
+        
+        # Check for revenue query
+        if 'revenue' in message_lower or 'sales' in message_lower:
+            result = self.query_engine.get_national_kpis()
+            if result.get("success") and result.get("data"):
+                data = result["data"][0]
+                response = self._format_kpi_response(data)
+                return self._format_response(message, response, error=False)
+        
+        # Default - try general query
+        return self._format_response(
+            message,
+            "I couldn't find specific data for your query. Please try:\n"
+            "• A dealer name (e.g., 'Taj Electronics')\n"
+            "• A warehouse name\n"
+            "• A city name\n"
+            "• A product name\n"
+            "• A DN number (8-12 digits)\n\n"
+            "Type 'Help' for all commands.",
+            error=False
+        )
+    
+    # ============================================================
+    # RESPONSE FORMATTERS
+    # ============================================================
+    
+    def _format_dealer_response(self, data: Dict) -> str:
+        """Format dealer response for WhatsApp"""
+        return f"""🏪 Dealer Dashboard
+
+Name: {data.get('name', 'Unknown')}
+Dealer Code: {data.get('dealer_code', 'N/A')}
+Customer Code: {data.get('customer_code', 'N/A')}
+City: {data.get('city', 'Unknown')}
+Warehouse: {data.get('warehouse', 'Unknown')}
+Sales Office: {data.get('sales_office', 'Unknown')}
+Sales Manager: {data.get('sales_manager', 'Unknown')}
+Division: {data.get('division', 'Unknown')}
+
+📊 Performance:
+Total DNs: {data.get('total_dn', 0):,}
+Total Units: {data.get('total_units', 0):,}
+Total Revenue: PKR {data.get('total_revenue', 0):,.2f}
+Pending DNs: {data.get('pending_dn', 0):,}
+Completed DNs: {data.get('completed_dn', 0):,}"""
+    
+    def _format_warehouse_response(self, data: Dict) -> str:
+        return f"""🏭 Warehouse Dashboard
+
+Warehouse: {data.get('warehouse', 'Unknown')}
+Code: {data.get('warehouse_code', 'N/A')}
+
+📊 Performance:
+Total DNs: {data.get('total_dn', 0):,}
+Total Units: {data.get('total_units', 0):,}
+Total Revenue: PKR {data.get('total_revenue', 0):,.2f}
+Dealers Served: {data.get('dealer_count', 0):,}
+Pending DNs: {data.get('pending_dn', 0):,}"""
+    
+    def _format_city_response(self, data: Dict) -> str:
+        return f"""🏙️ City Dashboard
+
+City: {data.get('city', 'Unknown')}
+
+📊 Performance:
+Total Dealers: {data.get('dealer_count', 0):,}
+Total DNs: {data.get('total_dn', 0):,}
+Total Units: {data.get('total_units', 0):,}
+Total Revenue: PKR {data.get('total_revenue', 0):,.2f}
+Pending DNs: {data.get('pending_dn', 0):,}"""
+    
+    def _format_product_response(self, data: Dict) -> str:
+        return f"""📦 Product Dashboard
+
+Product: {data.get('product', 'Unknown')}
+Material: {data.get('material', 'N/A')}
+
+📊 Performance:
+Total DNs: {data.get('total_dn', 0):,}
+Total Units: {data.get('total_units', 0):,}
+Total Revenue: PKR {data.get('total_revenue', 0):,.2f}"""
+    
+    def _format_kpi_response(self, data: Dict) -> str:
+        return f"""📊 National KPIs
+
+Overview:
+Total DNs: {data.get('total_dn', 0):,}
+Total Dealers: {data.get('total_dealers', 0):,}
+Total Warehouses: {data.get('total_warehouses', 0):,}
+Total Cities: {data.get('total_cities', 0):,}
+
+Revenue:
+Total Revenue: PKR {data.get('total_revenue', 0):,.2f}
+Average DN Value: PKR {data.get('avg_dn_value', 0):,.2f}
+
+Delivery:
+Total Units: {data.get('total_units', 0):,}
+Pending DNs: {data.get('pending_dn', 0):,} ({data.get('pending_percentage', 0):.1f}%)
+Completed DNs: {data.get('completed_dn', 0):,} ({data.get('completion_rate', 0):.1f}%)"""
+    
+    # ============================================================
+    # GROQ HANDLING - FIXED
+    # ============================================================
+    
+    async def _handle_groq(self, message: str, decision: RoutingDecision) -> Dict[str, Any]:
+        """Handle Groq queries - FIXED for conversational questions"""
+        
+        # ============================================================
+        # CONVERSATIONAL - NEW
+        # ============================================================
+        if decision.intent == "conversational":
+            return self._format_response(
+                message,
+                "👋 Of course! I'm here to help.\n\n"
+                "I can help you with:\n"
+                "📦 **DN Tracking** - Send any 8-12 digit number\n"
+                "🏪 **Dealer Analytics** - Dealer performance and KPIs\n"
+                "🏭 **Warehouse Analytics** - Warehouse operations\n"
+                "🏙️ **City Analytics** - City-level performance\n"
+                "📊 **National KPIs** - Country-wide metrics\n"
+                "📋 **Pending Items** - Pending DNs, PGI, POD\n\n"
+                "Just ask me anything about your logistics data!\n\n"
+                "What would you like to know?",
+                error=False
+            )
+        
+        if decision.intent == "greeting":
+            return self._format_response(
+                message,
+                "👋 Welcome to the Logistics WhatsApp AI Agent!\n\n"
+                "I can help you with:\n"
+                "📦 DN Tracking - Get delivery status\n"
+                "🏪 Dealer Analytics - View dealer performance\n"
+                "🏭 Warehouse Analytics - Monitor warehouse operations\n"
+                "🏙️ City Analytics - Analyze city performance\n"
+                "📊 National KPIs - View country-wide metrics\n\n"
+                "Try sending a dealer name, warehouse name, city, or DN number!",
+                error=False
+            )
+        
+        if decision.intent == "help":
+            return self._format_response(
+                message,
+                "📋 Available Commands:\n\n"
+                "📦 DN Queries:\n"
+                "• Send a DN number (8-12 digits)\n"
+                "• 'Pending DN', 'Pending PGI', 'Pending POD'\n\n"
+                "🏪 Dealer Queries:\n"
+                "• 'Dealer [name]'\n"
+                "• '[Dealer name] dashboard'\n"
+                "• 'Top dealers', 'Bottom dealers'\n\n"
+                "🏭 Warehouse Queries:\n"
+                "• 'Warehouse [name]'\n\n"
+                "🏙️ City Queries:\n"
+                "• 'City [name]'\n\n"
+                "📦 Product Queries:\n"
+                "• 'Product [name]'\n\n"
+                "📊 Analytics:\n"
+                "• 'National KPI', 'Revenue', 'Total DNs'",
+                error=False
+            )
+        
+        if decision.intent == "explanation":
+            return self._format_response(
+                message,
+                "📖 Term Explanation\n\n"
+                "DN (Delivery Note): Document accompanying delivery\n"
+                "PGI (Post Goods Issue): Warehouse release confirmation\n"
+                "POD (Proof of Delivery): Delivery confirmation document\n"
+                "Aging: Time since creation/dispatch/delivery\n"
+                "KPI: Key Performance Indicator\n\n"
+                "For more details, ask: 'What is POD?' or 'Explain PGI'",
+                error=False
+            )
+        
+        # Try Groq service
+        if self._groq_service:
+            try:
+                if hasattr(self._groq_service, 'process_query'):
+                    response = await self._groq_service.process_query(message)
+                    if response and response.get("response"):
+                        return self._format_response(message, response.get("response"), error=False)
+            except Exception as e:
+                logger.error(f"❌ Groq failed: {e}")
+        
+        return self._format_response(
+            message,
+            "I'm here to help with logistics data. Please specify:\n"
+            "• A DN number (8-12 digits)\n"
+            "• A dealer name (e.g., 'Taj Electronics')\n"
+            "• A warehouse name\n"
+            "• A city name\n"
+            "• An analytics query (e.g., 'Revenue')\n\n"
+            "Type 'Help' for all commands.",
+            error=False
+        )
+    
+    # ============================================================
+    # SERVICE EXECUTION
+    # ============================================================
+    
+    async def _execute_service(self, decision: RoutingDecision) -> Dict[str, Any]:
+        """Execute service"""
+        service_instance = self.registry.get_service_instance(decision.service_key)
+        if not service_instance:
+            return {"success": False, "error": f"Service '{decision.service_key}' not available"}
+        
+        try:
+            method = getattr(service_instance, decision.method, None)
+            if not method:
+                return {"success": False, "error": f"Method '{decision.method}' not found"}
+            
+            if decision.entity:
+                if decision.entity2:
+                    result = method(decision.entity, decision.entity2)
+                else:
+                    result = method(decision.entity)
+            else:
+                result = method()
+            
+            if inspect.iscoroutine(result):
+                result = await result
+            
+            return result if isinstance(result, dict) else {"success": True, "data": result}
+        except Exception as e:
+            logger.exception(f"❌ Service execution failed: {e}")
+            return {"success": False, "error": str(e)}
+    
+    # ============================================================
+    # RESPONSE FORMATTING
+    # ============================================================
+    
+    def _format_response(self, original_message: str, data: Any, error: bool = False) -> Dict[str, Any]:
+        if error:
+            return {
+                "success": not error,
+                "message": original_message,
+                "response": data,
+                "error": error,
+                "timestamp": datetime.now().isoformat()
+            }
+        
         if hasattr(data, "to_whatsapp_message"):
             try:
                 data = data.to_whatsapp_message()
             except:
                 pass
         
-        # If data is a string, use it
-        if isinstance(data, str):
-            response_text = data
-        else:
-            response_text = str(data)
+        if isinstance(data, dict):
+            for key in ("formatted_response", "whatsapp_message", "response", "message"):
+                if data.get(key) not in (None, ""):
+                    data = data[key]
+                    break
+        
+        if hasattr(data, 'dn_no'):
+            try:
+                from app.routes.webhook import format_dn_response
+                data = format_dn_response(data)
+            except:
+                pass
         
         return {
             "success": True,
             "message": original_message,
-            "response": response_text,
+            "response": data,
+            "error": False,
             "timestamp": datetime.now().isoformat()
         }
     
-    def _format_error(self, error_message: str) -> Dict[str, Any]:
-        """Format error response"""
-        return {
-            "success": False,
-            "response": f"⚠️ {error_message}",
-            "error": True,
-            "timestamp": datetime.now().isoformat()
-        }
+    def _format_module_unavailable(self, original_message: str, service_key: str, info: Dict[str, Any]) -> Dict[str, Any]:
+        status_text = info.get("status", "UNKNOWN")
+        errors = info.get("errors", [])
+        
+        message = f"""⚠️ Module Currently Unavailable
+
+Module: {service_key.title()} Service
+Status: {status_text}
+
+Please try again later."""
+        
+        if errors:
+            message += f"\n\nIssues: {', '.join(errors[:2])}"
+        
+        return self._format_response(original_message, message, error=True)
     
-    # ==========================================================
+    # ============================================================
     # DIAGNOSTIC METHODS
-    # ==========================================================
+    # ============================================================
     
     def get_system_health(self) -> Dict[str, Any]:
-        """Get system health"""
         return {
-            "status": "healthy",
-            "version": "8.0",
-            "cache_size": {
-                "response": _response_cache.size(),
-                "routing": _routing_cache.size(),
-                "entity": _entity_cache.size(),
-                "dealer": _dealer_cache.size(),
-                "groq": _groq_cache.size()
-            },
-            "dealer_count": len(FastDealerResolver._dealer_candidates),
-            "groq_available": self.groq_integration._groq_service is not None,
-            "timestamp": datetime.now().isoformat()
+            "services": self.registry.get_health_report(),
+            "system_status": "healthy",
+            "timestamp": datetime.now().isoformat(),
+            "version": "6.1",
+            "postgresql": self.query_engine
         }
     
     def get_service_registry_status(self) -> Dict[str, Any]:
-        """Get service registry status"""
-        pg_validator = PostgreSQLValidator()
-        pg_status = pg_validator.validate()
-        
-        services = {}
-        for key in self.registry.get_all_services():
-            services[key] = {
-                "available": self.registry.is_service_ready(key),
-                "description": self.registry.SERVICES[key]["description"]
-            }
-        
-        return {
-            "services": services,
-            "postgresql": pg_status,
-            "timestamp": datetime.now().isoformat()
-        }
+        return self.registry.get_health_report()
     
     def validate_all_services(self) -> Dict[str, Any]:
-        """Validate all services"""
-        pg_validator = PostgreSQLValidator()
-        pg_status = pg_validator.validate()
-        
-        services = {}
-        for key in self.registry.get_all_services():
-            services[key] = {
-                "loaded": self.registry.is_service_ready(key),
-                "instance": self.registry.get_service_instance(key) is not None
-            }
-        
-        return {
-            "postgresql": pg_status,
-            "services": services,
-            "timestamp": datetime.now().isoformat()
-        }
+        return self.registry.validate_all_services(force=True)
+    
+    def refresh_service_status(self, service_key: str = None) -> Dict[str, Any]:
+        if service_key:
+            self.registry._status_cache.pop(service_key, None)
+            self.registry._instance_cache.pop(service_key, None)
+            return self.registry.get_service_status(service_key)
+        else:
+            return self.registry.validate_all_services(force=True)
+
 
 # ==========================================================
-# BLOCK 12: THREAD-SAFE SINGLETON
+# BLOCK 9: THREAD-SAFE SINGLETON
 # ==========================================================
 
 _whatsapp_provider_service = None
 _provider_service_lock = threading.Lock()
 
+
 def get_whatsapp_provider_service() -> WhatsAppProviderService:
     global _whatsapp_provider_service
+    
     if _whatsapp_provider_service is None:
         with _provider_service_lock:
             if _whatsapp_provider_service is None:
                 try:
                     _whatsapp_provider_service = WhatsAppProviderService()
-                    logger.info("✅ WhatsAppProviderService initialized (v8.0)")
+                    logger.info("✅ WhatsAppProviderService singleton initialized (v6.1)")
                 except Exception as e:
                     logger.exception(f"❌ Initialization failed: {e}")
                     raise
+    
     return _whatsapp_provider_service
 
+
 # ==========================================================
-# BLOCK 13: EXPORTS
+# BLOCK 10: EXPORTS
 # ==========================================================
 
 __all__ = [
     'WhatsAppProviderService',
     'get_whatsapp_provider_service',
-    'UltraFastRoutingEngine',
-    'FastDealerResolver',
-    'FastEntityExtractor',
-    'UltraFastCache',
-    'GroqIntegration',
     'ServiceRegistry',
     'ServiceStatus',
-    'RoutingDecision'
+    'RoutingDecision',
+    'IntentDetectionEngine',
+    'PostgreSQLValidator',
+    'PostgreSQLQueryEngine'
 ]
+
 
 # ==========================================================
 # MODULE INITIALIZATION
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("AI Provider Service v8.0 - ULTRA-FAST ROUTING ENGINE")
+logger.info("AI Provider Service v6.1 - FIXED: Pending & Conversational")
 logger.info("=" * 70)
-logger.info("✅ Lazy Loading - Only load when needed")
-logger.info("✅ Aggressive Caching - 5 cache layers")
-logger.info("✅ Fast Path Routing - < 10ms for common queries")
-logger.info("✅ Entity Extraction - Pre-compiled regex")
-logger.info("✅ Dealer Resolution - Cached in-memory")
-logger.info("✅ Groq Fallback - All unmatched questions")
-logger.info("✅ PostgreSQL Ready - Full integration support")
-logger.info("✅ 10x Faster Response Time")
+logger.info("✅ PostgreSQL Query Engine - Direct database access")
+logger.info("✅ Intent Detection - 13 priority levels")
+logger.info("✅ Entity Extraction - Dealer, Warehouse, City, Product")
+logger.info("✅ Routing Engine - Intelligent decision making")
+logger.info("✅ Groq Fallback - For complex questions")
+logger.info("✅ 100% PostgreSQL Integration - All data from database")
+logger.info("✅ FIXED: 'Pending DNs' → DN Service")
+logger.info("✅ FIXED: 'Can I ask you something' → Groq")
 logger.info("=" * 70)
