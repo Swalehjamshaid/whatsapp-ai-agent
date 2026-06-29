@@ -1,8 +1,11 @@
 """
 File: app/services/ai_provider_service.py
-Version: 6.0 - COMPLETE POSTGRESQL INTEGRATION
+Version: 6.1 - FIXED: Pending DNs & Conversational Questions
 Purpose: SINGLE ENTRY POINT for all WhatsApp requests.
 100% Integrated with PostgreSQL - Answers ALL questions from database.
+FIXED: 
+- "Pending DNs" now routes to DN service
+- "Can I ask you something" now routes to Groq with helpful response
 """
 
 import logging
@@ -731,11 +734,11 @@ class ServiceRegistry:
 
 
 # ==========================================================
-# BLOCK 7: INTENT DETECTION ENGINE
+# BLOCK 7: INTENT DETECTION ENGINE - FIXED
 # ==========================================================
 
 class IntentDetectionEngine:
-    """Intelligent Intent Detection Engine"""
+    """Intelligent Intent Detection Engine - FIXED for Pending & Conversational"""
     
     # Pre-compiled regex patterns
     DN_PATTERN = re.compile(r'\b(\d{8,12})\b')
@@ -764,9 +767,25 @@ class IntentDetectionEngine:
         re.IGNORECASE
     )
     
-    PENDING_PATTERN = re.compile(r'(?:pending|open)\s*(?:dn|pgi|pod|delivery|deliveries)?', re.IGNORECASE)
-    PENDING_PGI_PATTERN = re.compile(r'(?:pending|open)\s*(?:pgi|goods issue)', re.IGNORECASE)
-    PENDING_POD_PATTERN = re.compile(r'(?:pending|open)\s*(?:pod|proof of delivery)', re.IGNORECASE)
+    # ============================================================
+    # FIXED: PENDING PATTERNS - More comprehensive
+    # ============================================================
+    PENDING_PATTERN = re.compile(
+        r'(?:pending|open|outstanding|waiting|incomplete)\s*(?:dn|dns|delivery|deliveries)?',
+        re.IGNORECASE
+    )
+    PENDING_DN_PATTERN = re.compile(
+        r'(?:pending|open|outstanding)\s*(?:dn|dns|delivery|deliveries)',
+        re.IGNORECASE
+    )
+    PENDING_PGI_PATTERN = re.compile(
+        r'(?:pending|open)\s*(?:pgi|goods issue)',
+        re.IGNORECASE
+    )
+    PENDING_POD_PATTERN = re.compile(
+        r'(?:pending|open)\s*(?:pod|proof of delivery)',
+        re.IGNORECASE
+    )
     
     RANKING_PATTERN = re.compile(
         r'(?:top|best|highest|lowest|worst|bottom)\s+(\d+)?\s*(?:dealers?|cities?|warehouses?|products?)',
@@ -776,6 +795,18 @@ class IntentDetectionEngine:
     REVENUE_PATTERN = re.compile(r'\b(revenue|sales|income|turnover)\b', re.IGNORECASE)
     UNITS_PATTERN = re.compile(r'\b(units?|quantity|qty)\b', re.IGNORECASE)
     DELIVERY_PATTERN = re.compile(r'\b(delivery|deliveries|shipping)\b', re.IGNORECASE)
+    
+    # ============================================================
+    # FIXED: CONVERSATIONAL PATTERN - Now detects "Can I ask you something"
+    # ============================================================
+    CONVERSATIONAL_PATTERN = re.compile(
+        r'(?:can i|may i|could i|i have|i want|i need|tell me|help me|'
+        r'question|ask you|something|anything|what is|how to|how do|'
+        r'where is|when is|why is|who is|explain|describe|tell about|'
+        r'can I ask|may I ask|is it possible|would you|do you|'
+        r'could you|would you mind|let me ask|i would like)',
+        re.IGNORECASE
+    )
     
     HELP_PATTERN = re.compile(r'(?:help|menu|commands|what can you do|available commands|how to use)', re.IGNORECASE)
     GREETING_PATTERN = re.compile(r'^(?:hello|hi|hey|good morning|good evening|good afternoon|howdy|greetings)', re.IGNORECASE)
@@ -787,7 +818,7 @@ class IntentDetectionEngine:
         self._query_engine = PostgreSQLQueryEngine()
     
     def detect_intent(self, message: str) -> RoutingDecision:
-        """Detect intent and extract entities"""
+        """Detect intent and extract entities - FIXED for Pending & Conversational"""
         cleaned = message.strip()
         normalized = self._normalize(cleaned)
         
@@ -827,8 +858,21 @@ class IntentDetectionEngine:
             )
         
         # ============================================================
-        # PRIORITY 2: PENDING DETECTION
+        # PRIORITY 2: PENDING DETECTION - FIXED
         # ============================================================
+        
+        # Check Pending DN first (most specific)
+        if self.PENDING_DN_PATTERN.search(cleaned):
+            return RoutingDecision(
+                intent="pending_dn",
+                service_key="dn",
+                method="get_pending_dns",
+                confidence=0.98,
+                needs_groq=False,
+                reason="Pending DN query detected",
+                original_message=cleaned,
+                detected_intent="pending_dn"
+            )
         
         if self.PENDING_PGI_PATTERN.search(cleaned):
             return RoutingDecision(
@@ -837,7 +881,7 @@ class IntentDetectionEngine:
                 method="get_pending_pgi",
                 confidence=0.95,
                 needs_groq=False,
-                reason="Pending PGI query",
+                reason="Pending PGI query detected",
                 original_message=cleaned,
                 detected_intent="pending_pgi"
             )
@@ -849,19 +893,20 @@ class IntentDetectionEngine:
                 method="get_pending_pod",
                 confidence=0.95,
                 needs_groq=False,
-                reason="Pending POD query",
+                reason="Pending POD query detected",
                 original_message=cleaned,
                 detected_intent="pending_pod"
             )
         
+        # General pending query
         if self.PENDING_PATTERN.search(cleaned):
             return RoutingDecision(
                 intent="pending_dn",
                 service_key="dn",
                 method="get_pending_dns",
-                confidence=0.95,
+                confidence=0.90,
                 needs_groq=False,
-                reason="Pending DN query",
+                reason="Pending query detected",
                 original_message=cleaned,
                 detected_intent="pending_dn"
             )
@@ -1029,7 +1074,23 @@ class IntentDetectionEngine:
             )
         
         # ============================================================
-        # PRIORITY 10: EXPLANATION / HELP / GREETING
+        # PRIORITY 10: CONVERSATIONAL - NEW
+        # ============================================================
+        
+        if self.CONVERSATIONAL_PATTERN.search(cleaned):
+            return RoutingDecision(
+                intent="conversational",
+                service_key="groq",
+                method="process_query",
+                confidence=0.90,
+                needs_groq=True,
+                reason="Conversational question detected",
+                original_message=cleaned,
+                detected_intent="conversational"
+            )
+        
+        # ============================================================
+        # PRIORITY 11: EXPLANATION / HELP / GREETING
         # ============================================================
         
         if self.EXPLANATION_PATTERN.search(cleaned):
@@ -1069,10 +1130,9 @@ class IntentDetectionEngine:
             )
         
         # ============================================================
-        # PRIORITY 11: FALLBACK - Direct PostgreSQL Query
+        # PRIORITY 12: FALLBACK - Direct PostgreSQL Query
         # ============================================================
         
-        # Try to detect if this is a simple query that can be answered directly
         if self._can_answer_directly(cleaned):
             return RoutingDecision(
                 intent="direct_query",
@@ -1086,7 +1146,7 @@ class IntentDetectionEngine:
             )
         
         # ============================================================
-        # PRIORITY 12: Groq Fallback
+        # PRIORITY 13: Groq Fallback
         # ============================================================
         
         return RoutingDecision(
@@ -1127,19 +1187,12 @@ class IntentDetectionEngine:
         """Check if we can answer directly from PostgreSQL"""
         message_lower = message.lower()
         
-        # Revenue questions
         if 'revenue' in message_lower or 'sales' in message_lower:
             return True
-        
-        # Units questions
         if 'unit' in message_lower or 'quantity' in message_lower:
             return True
-        
-        # Delivery questions
         if 'delivery' in message_lower:
             return True
-        
-        # Count questions
         if 'how many' in message_lower or 'total' in message_lower:
             return True
         
@@ -1156,7 +1209,7 @@ class IntentDetectionEngine:
 
 
 # ==========================================================
-# BLOCK 8: WHATSAPP PROVIDER SERVICE
+# BLOCK 8: WHATSAPP PROVIDER SERVICE - FIXED
 # ==========================================================
 
 class WhatsAppProviderService:
@@ -1167,7 +1220,7 @@ class WhatsAppProviderService:
         
         try:
             logger.info("=" * 70)
-            logger.info("AI Provider Service v6.0 - POSTGRESQL INTEGRATED")
+            logger.info("AI Provider Service v6.1 - FIXED: Pending & Conversational")
             logger.info("=" * 70)
             
             self.registry = ServiceRegistry()
@@ -1215,6 +1268,8 @@ class WhatsAppProviderService:
             logger.info("")
             logger.info("   DATA SOURCE: PostgreSQL (ONLY)")
             logger.info("   GROQ: Language layer only (fallback)")
+            logger.info("   FIXED: 'Pending DNs' → DN Service")
+            logger.info("   FIXED: 'Can I ask you something' → Groq")
             logger.info("   STATUS: ✅ PRODUCTION GRADE")
             logger.info(f"   INIT TIME: {init_duration:.2f}ms")
             logger.info("=" * 70)
@@ -1291,7 +1346,6 @@ class WhatsAppProviderService:
         
         # Check for dealer query
         if 'dealer' in message_lower or 'customer' in message_lower:
-            # Extract dealer name
             dealer_match = re.search(r'(?:dealer|customer|for|about|of)\s+([a-z0-9\s&\-\.]+)', message, re.IGNORECASE)
             if dealer_match:
                 dealer_name = dealer_match.group(1).strip()
@@ -1434,11 +1488,31 @@ Pending DNs: {data.get('pending_dn', 0):,} ({data.get('pending_percentage', 0):.
 Completed DNs: {data.get('completed_dn', 0):,} ({data.get('completion_rate', 0):.1f}%)"""
     
     # ============================================================
-    # GROQ HANDLING
+    # GROQ HANDLING - FIXED
     # ============================================================
     
     async def _handle_groq(self, message: str, decision: RoutingDecision) -> Dict[str, Any]:
-        """Handle Groq queries"""
+        """Handle Groq queries - FIXED for conversational questions"""
+        
+        # ============================================================
+        # CONVERSATIONAL - NEW
+        # ============================================================
+        if decision.intent == "conversational":
+            return self._format_response(
+                message,
+                "👋 Of course! I'm here to help.\n\n"
+                "I can help you with:\n"
+                "📦 **DN Tracking** - Send any 8-12 digit number\n"
+                "🏪 **Dealer Analytics** - Dealer performance and KPIs\n"
+                "🏭 **Warehouse Analytics** - Warehouse operations\n"
+                "🏙️ **City Analytics** - City-level performance\n"
+                "📊 **National KPIs** - Country-wide metrics\n"
+                "📋 **Pending Items** - Pending DNs, PGI, POD\n\n"
+                "Just ask me anything about your logistics data!\n\n"
+                "What would you like to know?",
+                error=False
+            )
+        
         if decision.intent == "greeting":
             return self._format_response(
                 message,
@@ -1607,7 +1681,7 @@ Please try again later."""
             "services": self.registry.get_health_report(),
             "system_status": "healthy",
             "timestamp": datetime.now().isoformat(),
-            "version": "6.0",
+            "version": "6.1",
             "postgresql": self.query_engine
         }
     
@@ -1642,7 +1716,7 @@ def get_whatsapp_provider_service() -> WhatsAppProviderService:
             if _whatsapp_provider_service is None:
                 try:
                     _whatsapp_provider_service = WhatsAppProviderService()
-                    logger.info("✅ WhatsAppProviderService singleton initialized (v6.0)")
+                    logger.info("✅ WhatsAppProviderService singleton initialized (v6.1)")
                 except Exception as e:
                     logger.exception(f"❌ Initialization failed: {e}")
                     raise
@@ -1671,12 +1745,14 @@ __all__ = [
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("AI Provider Service v6.0 - POSTGRESQL INTEGRATED")
+logger.info("AI Provider Service v6.1 - FIXED: Pending & Conversational")
 logger.info("=" * 70)
 logger.info("✅ PostgreSQL Query Engine - Direct database access")
-logger.info("✅ Intent Detection - 12 priority levels")
+logger.info("✅ Intent Detection - 13 priority levels")
 logger.info("✅ Entity Extraction - Dealer, Warehouse, City, Product")
 logger.info("✅ Routing Engine - Intelligent decision making")
 logger.info("✅ Groq Fallback - For complex questions")
 logger.info("✅ 100% PostgreSQL Integration - All data from database")
+logger.info("✅ FIXED: 'Pending DNs' → DN Service")
+logger.info("✅ FIXED: 'Can I ask you something' → Groq")
 logger.info("=" * 70)
