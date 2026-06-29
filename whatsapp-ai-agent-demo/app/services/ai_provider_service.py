@@ -1,6 +1,6 @@
 """
 File: app/services/ai_provider_service.py
-Version: 6.0 - ENTERPRISE AI ROUTING ENGINE
+Version: 6.1 - ENTERPRISE AI ROUTING ENGINE WITH FIXED DEALER DETECTION
 Purpose: Single entry point for all WhatsApp requests with AI-powered routing
 """
 
@@ -26,22 +26,23 @@ logger = logging.getLogger(__name__)
 # 1. spaCy - Entity Recognition
 try:
     import spacy
-    nlp = spacy.load("en_core_web_sm")
-    logger.info("✅ spaCy loaded successfully")
+    # Try loading the model, download if not available
+    try:
+        nlp = spacy.load("en_core_web_sm")
+        logger.info("✅ spaCy loaded successfully")
+    except OSError:
+        logger.warning("⚠️ spaCy model not found, downloading...")
+        try:
+            import subprocess
+            subprocess.run(["python", "-m", "spacy", "download", "en_core_web_sm"], check=True)
+            nlp = spacy.load("en_core_web_sm")
+            logger.info("✅ spaCy downloaded and loaded")
+        except Exception as e:
+            logger.error(f"❌ spaCy download failed: {e}")
+            nlp = None
 except ImportError:
     nlp = None
     logger.warning("⚠️ spaCy not available")
-except OSError:
-    logger.warning("⚠️ spaCy model not found, downloading...")
-    try:
-        import subprocess
-        subprocess.run(["python", "-m", "spacy", "download", "en_core_web_sm"])
-        import spacy
-        nlp = spacy.load("en_core_web_sm")
-        logger.info("✅ spaCy downloaded and loaded")
-    except:
-        nlp = None
-        logger.warning("⚠️ spaCy download failed")
 
 # 2. Sentence Transformers - Semantic Search
 try:
@@ -133,7 +134,7 @@ except ImportError:
 try:
     from app.database import SessionLocal
     from app.models import DeliveryReport
-    from sqlalchemy import text, func, inspect as sa_inspect
+    from sqlalchemy import text, func, inspect as sa_inspect, or_
     logger.info("✅ Core imports successful")
 except ImportError as e:
     logger.error(f"❌ Core import failed: {e}")
@@ -205,14 +206,14 @@ class SpacyEntityExtractor:
     """Entity extraction using spaCy"""
     
     ENTITY_TYPES = {
-        "DEALER": ["dealer", "customer", "company", "firm"],
-        "WAREHOUSE": ["warehouse", "depot", "distribution", "fulfillment"],
-        "CITY": ["city", "town", "district", "region"],
-        "PRODUCT": ["product", "model", "material", "item", "sku"],
-        "DN": ["dn", "delivery note", "order", "shipment"],
-        "DIVISION": ["division", "category", "segment"],
-        "SALES_OFFICE": ["sales office", "branch", "office", "region"],
-        "SALES_MANAGER": ["sales manager", "manager", "representative"]
+        "DEALER": ["dealer", "customer", "company", "firm", "distributor", "retailer"],
+        "WAREHOUSE": ["warehouse", "depot", "distribution", "fulfillment", "storage"],
+        "CITY": ["city", "town", "district", "region", "area", "location"],
+        "PRODUCT": ["product", "model", "material", "item", "sku", "goods"],
+        "DN": ["dn", "delivery note", "order", "shipment", "invoice"],
+        "DIVISION": ["division", "category", "segment", "department"],
+        "SALES_OFFICE": ["sales office", "branch", "office", "region", "zone"],
+        "SALES_MANAGER": ["sales manager", "manager", "representative", "agent"]
     }
     
     def __init__(self):
@@ -238,9 +239,9 @@ class SpacyEntityExtractor:
         
         # Extract named entities
         for ent in doc.ents:
-            if ent.label_ in ["ORG", "PERSON"]:
+            if ent.label_ in ["ORG", "PERSON", "PRODUCT"]:
                 entities["dealer"].append(ent.text)
-            elif ent.label_ in ["GPE", "LOC"]:
+            elif ent.label_ in ["GPE", "LOC", "FAC"]:
                 entities["city"].append(ent.text)
         
         # Extract noun phrases
@@ -281,10 +282,20 @@ class SpacyEntityExtractor:
         if dn_match:
             entities["dn"] = [dn_match.group(1)]
         
-        # Extract using patterns
-        dealer_match = re.search(r'(?:dealer|about|for)\s+([a-z0-9\s&\-\.]+)', text, re.IGNORECASE)
-        if dealer_match:
-            entities["dealer"].append(dealer_match.group(1).strip())
+        # Extract using patterns - IMPROVED
+        patterns = [
+            (r'(?:dealer|about|for|company|customer)\s+([a-z0-9\s&\-\.]+)', "dealer"),
+            (r'(?:warehouse|wh|depot)\s+([a-z0-9\s&\-\.]+)', "warehouse"),
+            (r'(?:city|in|at)\s+([a-z0-9\s&\-\.]+)', "city"),
+            (r'(?:product|model|material)\s+([a-z0-9\s&\-\.]+)', "product"),
+        ]
+        
+        for pattern, entity_type in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                entity = match.group(1).strip()
+                if entity and len(entity) > 1:
+                    entities[entity_type].append(entity)
         
         return entities
 
@@ -331,7 +342,7 @@ class SemanticSearchEngine:
         except Exception:
             return 0.0
     
-    def find_best_match(self, query: str, candidates: List[str], threshold: float = 0.7) -> Tuple[Optional[str], float]:
+    def find_best_match(self, query: str, candidates: List[str], threshold: float = 0.6) -> Tuple[Optional[str], float]:
         """Find best semantic match from candidates"""
         if not candidates or not self.encoder:
             return None, 0.0
@@ -536,7 +547,7 @@ class AIClassifier:
         return classification
 
 # ==========================================================
-# BLOCK 8: INTELLIGENT ROUTING ENGINE
+# BLOCK 8: INTELLIGENT ROUTING ENGINE - FIXED VERSION
 # ==========================================================
 
 class IntelligentRoutingEngine:
@@ -550,9 +561,23 @@ class IntelligentRoutingEngine:
         self._routing_cache = {}
         self._cache_ttl = 300
         
-        # Pre-compile regex patterns (fallback)
+        # ENHANCED: Pre-compile regex patterns for better dealer detection
         self.DN_PATTERN = re.compile(r'\b(\d{8,12})\b')
-        self.DEALER_PATTERN = re.compile(r'(?:dealer|about|for)\s+([a-z0-9\s&\-\.]+)', re.IGNORECASE)
+        
+        # IMPROVED: Better dealer detection patterns
+        self.DEALER_DASHBOARD_PATTERN = re.compile(
+            r'(?:dashboard|profile|summary|overview|info|information|details|status|statistics)\s+(?:of|for)?\s+([a-z0-9\s&\-\.]+)',
+            re.IGNORECASE
+        )
+        self.DEALER_PATTERN = re.compile(
+            r'(?:dealer|about|tell me about|show me|get|view|display|give me|company|customer)\s+([a-z0-9\s&\-\.]+)',
+            re.IGNORECASE
+        )
+        self.SIMPLE_DEALER_PATTERN = re.compile(
+            r'^([a-z0-9\s&\-\.]{2,50})$',
+            re.IGNORECASE
+        )
+        
         self.PENDING_PATTERN = re.compile(r'(?:pending|open)\s*(?:dn|pgi|pod)', re.IGNORECASE)
         
         # Dealer candidates cache
@@ -561,6 +586,7 @@ class IntelligentRoutingEngine:
         self._city_candidates = []
         self._product_candidates = []
         self._candidates_loaded = False
+        self._dealer_names = []  # Simple list for fast lookup
     
     def load_candidates(self):
         """Load candidates from PostgreSQL"""
@@ -591,6 +617,9 @@ class IntelligentRoutingEngine:
                     }
                     for d in dealers if d.customer_name
                 ]
+                
+                # Also store just names for faster lookup
+                self._dealer_names = [d["normalized"] for d in self._dealer_candidates]
                 
                 # Load warehouses
                 warehouses = session.query(
@@ -643,334 +672,376 @@ class IntelligentRoutingEngine:
             return ""
         return re.sub(r'\s+', ' ', text.strip().lower())
     
+    def _find_dealer_in_db(self, dealer_name: str) -> Optional[str]:
+        """Find dealer in database using multiple strategies"""
+        if not SessionLocal or DeliveryReport is None:
+            return None
+        
+        session = None
+        try:
+            session = SessionLocal()
+            normalized = self._normalize_text(dealer_name)
+            
+            # Strategy 1: Exact match on customer_name
+            result = session.query(DeliveryReport.customer_name).filter(
+                func.lower(DeliveryReport.customer_name) == normalized
+            ).first()
+            if result:
+                return result.customer_name
+            
+            # Strategy 2: Contains match on customer_name
+            result = session.query(DeliveryReport.customer_name).filter(
+                func.lower(DeliveryReport.customer_name).contains(normalized)
+            ).first()
+            if result:
+                return result.customer_name
+            
+            # Strategy 3: Dealer code match
+            result = session.query(DeliveryReport.customer_name).filter(
+                func.lower(DeliveryReport.dealer_code).contains(normalized)
+            ).first()
+            if result:
+                return result.customer_name
+            
+            # Strategy 4: Customer code match
+            result = session.query(DeliveryReport.customer_name).filter(
+                func.lower(DeliveryReport.customer_code).contains(normalized)
+            ).first()
+            if result:
+                return result.customer_name
+            
+            # Strategy 5: Semantic search on all dealer names
+            if self._dealer_names:
+                best, score = self.semantic_search.find_best_match(normalized, self._dealer_names, threshold=0.5)
+                if best:
+                    # Find the original name
+                    for candidate in self._dealer_candidates:
+                        if candidate["normalized"] == best:
+                            return candidate["name"]
+            
+            return None
+        except Exception as e:
+            logger.error(f"Dealer search failed: {e}")
+            return None
+        finally:
+            if session:
+                session.close()
+    
+    def _find_similar_dealers(self, dealer_name: str) -> List[str]:
+        """Find similar dealers using semantic search and fuzzy matching"""
+        if not SessionLocal or DeliveryReport is None:
+            return []
+        
+        session = None
+        try:
+            session = SessionLocal()
+            normalized = self._normalize_text(dealer_name)
+            
+            # Get all dealer names
+            results = session.query(DeliveryReport.customer_name).filter(
+                DeliveryReport.customer_name.isnot(None)
+            ).distinct().limit(100).all()
+            
+            dealer_names = [r.customer_name for r in results if r.customer_name]
+            
+            # Use semantic search
+            if self.semantic_search:
+                scored = []
+                for name in dealer_names:
+                    score = self.semantic_search.semantic_similarity(normalized, self._normalize_text(name))
+                    if score > 0.3:
+                        scored.append((name, score))
+                
+                scored.sort(key=lambda x: x[1], reverse=True)
+                return [name for name, score in scored[:5]]
+            
+            # Fallback: fuzzy match
+            from rapidfuzz import process, fuzz
+            matches = process.extract(normalized, dealer_names, scorer=fuzz.WRatio, limit=5)
+            return [match[0] for match in matches if match[1] > 60]
+            
+        except Exception as e:
+            logger.error(f"Similar dealer search failed: {e}")
+            return []
+        finally:
+            if session:
+                session.close()
+    
     def route(self, message: str) -> RoutingDecision:
-        """Route a message using multi-stage AI pipeline"""
+        """Route a message using multi-stage AI pipeline with enhanced dealer detection"""
         start_time = time.perf_counter()
+        message_clean = message.strip()
+        message_lower = message_clean.lower()
         
         # Check cache
-        cache_key = f"route_{hash(message)}"
+        cache_key = f"route_{hash(message_clean)}"
         if cache_key in self._routing_cache:
             cached_time, cached_decision = self._routing_cache[cache_key]
             if time.time() - cached_time < self._cache_ttl:
-                logger.info(f"Cache hit for: {message[:50]}...")
+                logger.info(f"Cache hit for: {message_clean[:50]}...")
                 return cached_decision
         
-        # STAGE 1: AI Classification (PydanticAI)
-        ai_result = None
-        if self.ai_classifier:
-            try:
-                ai_result = self.ai_classifier.classify(message)
-                logger.info(f"AI classification: {ai_result}")
-            except Exception as e:
-                logger.warning(f"AI classification failed: {e}")
-        
-        # STAGE 2: spaCy Entity Extraction
-        entities = {}
-        if self.spacy_extractor:
-            try:
-                entities = self.spacy_extractor.extract_entities(message)
-                logger.info(f"spaCy entities: {entities}")
-            except Exception as e:
-                logger.warning(f"spaCy extraction failed: {e}")
-        
-        # STAGE 3: Semantic Search (if AI gave us a candidate)
-        semantic_result = None
-        if ai_result and ai_result.get("entity_type") and ai_result.get("entity_name"):
-            entity_type = ai_result.get("entity_type")
-            entity_name = ai_result.get("entity_name")
-            
-            candidates = self._get_candidates_for_type(entity_type)
-            if candidates:
-                best, score = self.semantic_search.find_best_match(entity_name, candidates, threshold=0.6)
-                if best:
-                    semantic_result = {"entity": best, "score": score, "type": entity_type}
-                    logger.info(f"Semantic match: {best} (score: {score:.2f})")
-        
-        # STAGE 4: Build candidate routes
-        routes = self._generate_candidate_routes(message, ai_result, entities, semantic_result)
-        
-        # STAGE 5: FlashRank reranking
-        if self.flashrank and len(routes) > 1:
-            try:
-                routes = self.flashrank.rerank(message, routes)
-                logger.info(f"FlashRank reranked {len(routes)} routes")
-            except Exception as e:
-                logger.warning(f"FlashRank reranking failed: {e}")
-        
-        # STAGE 6: Select best route
-        if routes:
-            best_route = routes[0]
-            
-            # Use AI confidence if available
-            if ai_result and ai_result.get("confidence", 0) > 0.7:
-                confidence = ai_result.get("confidence", 0.5)
-            else:
-                confidence = best_route.get("confidence", 0.5)
-            
+        # ============================================================
+        # FAST PATH 1: DN Detection (Highest priority)
+        # ============================================================
+        dn_match = self.DN_PATTERN.search(message_clean)
+        if dn_match:
             decision = RoutingDecision(
-                intent=best_route.get("intent", "general_ai"),
-                service_key=best_route.get("service_key", "groq"),
-                method=best_route.get("method", "process_query"),
-                entity=best_route.get("entity"),
-                entity2=best_route.get("entity2"),
-                confidence=confidence,
-                needs_groq=best_route.get("needs_groq", False),
-                reason=best_route.get("reason", "AI routing"),
-                original_message=message,
-                ai_classification=ai_result
+                intent="dn_lookup",
+                service_key="dn",
+                method="get_dn_dashboard",
+                entity=dn_match.group(1),
+                confidence=0.99,
+                needs_groq=False,
+                reason="DN detected (fast path)",
+                original_message=message_clean
             )
-        else:
-            # Fallback to regex
-            decision = self._regex_fallback(message)
+            self._cache_decision(cache_key, decision)
+            return decision
         
-        # Cache the decision
-        self._routing_cache[cache_key] = (time.time(), decision)
+        # ============================================================
+        # FAST PATH 2: Pending Detection
+        # ============================================================
+        if self.PENDING_PATTERN.search(message_lower):
+            if "pgi" in message_lower:
+                decision = RoutingDecision(
+                    intent="pending_pgi",
+                    service_key="dn",
+                    method="get_pending_pgi",
+                    confidence=0.95,
+                    needs_groq=False,
+                    reason="Pending PGI detected",
+                    original_message=message_clean
+                )
+            elif "pod" in message_lower:
+                decision = RoutingDecision(
+                    intent="pending_pod",
+                    service_key="dn",
+                    method="get_pending_pod",
+                    confidence=0.95,
+                    needs_groq=False,
+                    reason="Pending POD detected",
+                    original_message=message_clean
+                )
+            else:
+                decision = RoutingDecision(
+                    intent="pending_dn",
+                    service_key="dn",
+                    method="get_pending_dns",
+                    confidence=0.95,
+                    needs_groq=False,
+                    reason="Pending DN detected",
+                    original_message=message_clean
+                )
+            self._cache_decision(cache_key, decision)
+            return decision
         
-        elapsed_ms = (time.perf_counter() - start_time) * 1000
-        logger.info(f"Routing completed in {elapsed_ms:.2f}ms, intent: {decision.intent}, confidence: {decision.confidence:.2f}")
+        # ============================================================
+        # FAST PATH 3: Dealer Dashboard Detection (IMPROVED)
+        # ============================================================
         
-        return decision
-    
-    def _get_candidates_for_type(self, entity_type: str) -> List[str]:
-        """Get candidate list for entity type"""
-        self.load_candidates()
+        # Check for dealer-related keywords
+        dealer_keywords = ['dealer', 'about', 'tell me about', 'show me', 'get', 'view', 'display', 'give me', 'company', 'customer']
+        dashboard_keywords = ['dashboard', 'profile', 'summary', 'overview', 'info', 'information', 'details', 'status', 'statistics', 'performance']
         
-        if entity_type == "dealer":
-            return [c["normalized"] for c in self._dealer_candidates]
-        elif entity_type == "warehouse":
-            return [c["normalized"] for c in self._warehouse_candidates]
-        elif entity_type == "city":
-            return [c["normalized"] for c in self._city_candidates]
-        elif entity_type == "product":
-            return [c["normalized"] for c in self._product_candidates]
-        elif entity_type == "dn":
-            return []  # DN numbers are exact matches
-        return []
-    
-    def _generate_candidate_routes(self, message: str, ai_result: Optional[Dict], entities: Dict, semantic: Optional[Dict]) -> List[Dict]:
-        """Generate candidate routes from AI, entities, and semantic matches"""
-        routes = []
-        message_lower = message.lower()
+        is_dealer_related = any(kw in message_lower for kw in dealer_keywords)
+        is_dashboard_related = any(kw in message_lower for kw in dashboard_keywords)
         
-        # Route 1: From AI classification
-        if ai_result:
-            intent = ai_result.get("intent", "unknown")
-            entity_type = ai_result.get("entity_type", "none")
-            entity_name = ai_result.get("entity_name", "")
-            metric = ai_result.get("metric")
-            aggregation = ai_result.get("aggregation")
+        dealer_name = None
+        
+        # Try pattern 1: "dashboard/profile of X"
+        match = self.DEALER_DASHBOARD_PATTERN.search(message_clean)
+        if match:
+            dealer_name = match.group(1).strip()
+        
+        # Try pattern 2: "dealer X" or "tell me about X"
+        if not dealer_name:
+            match = self.DEALER_PATTERN.search(message_clean)
+            if match:
+                dealer_name = match.group(1).strip()
+        
+        # Try pattern 3: Simple name (2-50 chars, no spaces)
+        if not dealer_name and is_dealer_related and not is_dashboard_related:
+            match = self.SIMPLE_DEALER_PATTERN.search(message_clean)
+            if match:
+                dealer_name = match.group(1).strip()
+        
+        # Try pattern 4: Just the name if message is short
+        if not dealer_name and len(message_clean.split()) <= 3:
+            # Check if it looks like a dealer name (not a number, not a single word)
+            if len(message_clean) > 2 and not re.match(r'^\d+$', message_clean):
+                dealer_name = message_clean
+        
+        if dealer_name:
+            # Clean up the dealer name
+            dealer_name = re.sub(r'\b(?:dealer|about|for|of|show|get|view|display|give|me|company|customer|dashboard|profile|summary|overview|info|information|details|status|statistics|performance|the|a|an)\b', '', dealer_name, flags=re.IGNORECASE).strip()
             
-            # Map AI intent to service
-            service_map = {
-                "dealer_dashboard": ("dealer", "get_dealer_dashboard"),
-                "dealer_profile": ("dealer", "get_dealer_profile"),
-                "dealer_ranking": ("dealer", "get_top_dealers"),
-                "dealer_comparison": ("dealer", "compare_dealers"),
-                "dn_lookup": ("dn", "get_dn_dashboard"),
-                "pending_dn": ("dn", "get_pending_dns"),
-                "warehouse_dashboard": ("warehouse", "get_warehouse_dashboard"),
-                "city_dashboard": ("city", "get_city_dashboard"),
-                "product_dashboard": ("product", "get_product_dashboard"),
-                "ranking": ("dealer", "get_top_dealers"),
-                "comparison": ("dealer", "compare_dealers"),
-                "national_kpi": ("national_kpi", "get_national_kpi_dashboard"),
-            }
-            
-            if intent in service_map:
-                service_key, method = service_map[intent]
-                
-                # Check if this is a ranking question
-                if "highest" in message_lower or "top" in message_lower or "best" in message_lower:
-                    return [{
-                        "intent": "ranking",
-                        "service_key": "dealer",
-                        "method": "get_top_dealers",
-                        "entity": None,
-                        "confidence": 0.85,
-                        "needs_groq": False,
-                        "reason": "AI detected ranking question"
-                    }]
-                
-                # Check if this is a comparison
-                if "compare" in message_lower or "vs" in message_lower or "versus" in message_lower:
-                    return [{
-                        "intent": "comparison",
-                        "service_key": "dealer",
-                        "method": "compare_dealers",
-                        "entity": None,
-                        "confidence": 0.85,
-                        "needs_groq": False,
-                        "reason": "AI detected comparison"
-                    }]
-                
-                routes.append({
-                    "intent": intent,
-                    "service_key": service_key,
-                    "method": method,
-                    "entity": entity_name if entity_name else None,
-                    "confidence": ai_result.get("confidence", 0.7),
-                    "needs_groq": False,
-                    "reason": f"AI classification: {intent}"
-                })
+            if dealer_name and len(dealer_name) > 1:
+                # Try to find in database
+                found_dealer = self._find_dealer_in_db(dealer_name)
+                if found_dealer:
+                    decision = RoutingDecision(
+                        intent="dealer_dashboard",
+                        service_key="dealer",
+                        method="get_dealer_dashboard",
+                        entity=found_dealer,
+                        confidence=0.95,
+                        needs_groq=False,
+                        reason=f"Dealer found: {found_dealer}",
+                        original_message=message_clean
+                    )
+                    self._cache_decision(cache_key, decision)
+                    return decision
+                else:
+                    # Try to find similar dealers
+                    similar = self._find_similar_dealers(dealer_name)
+                    if similar:
+                        # Return the first match if it's good enough
+                        if len(similar) == 1:
+                            decision = RoutingDecision(
+                                intent="dealer_dashboard",
+                                service_key="dealer",
+                                method="get_dealer_dashboard",
+                                entity=similar[0],
+                                confidence=0.85,
+                                needs_groq=False,
+                                reason=f"Semantic match: {similar[0]}",
+                                original_message=message_clean
+                            )
+                            self._cache_decision(cache_key, decision)
+                            return decision
+                        else:
+                            # Multiple suggestions
+                            suggestions_text = "Did you mean:\n" + "\n".join([f"• {name}" for name in similar[:5]])
+                            decision = RoutingDecision(
+                                intent="dealer_suggestion",
+                                service_key="dealer",
+                                method="suggest_dealers",
+                                entity=dealer_name,
+                                confidence=0.7,
+                                needs_groq=False,
+                                reason=f"Dealer not found, suggestions: {similar[:3]}",
+                                original_message=message_clean
+                            )
+                            self._cache_decision(cache_key, decision)
+                            return decision
         
-        # Route 2: From semantic match
-        if semantic:
-            entity = semantic.get("entity")
-            entity_type = semantic.get("type")
-            if entity:
-                service_map = {
-                    "dealer": ("dealer", "get_dealer_dashboard"),
-                    "warehouse": ("warehouse", "get_warehouse_dashboard"),
-                    "city": ("city", "get_city_dashboard"),
-                    "product": ("product", "get_product_dashboard"),
-                }
-                if entity_type in service_map:
-                    service_key, method = service_map[entity_type]
-                    routes.append({
-                        "intent": f"{entity_type}_dashboard",
-                        "service_key": service_key,
-                        "method": method,
-                        "entity": entity,
-                        "confidence": semantic.get("score", 0.7),
-                        "needs_groq": False,
-                        "reason": f"Semantic match: {entity}"
-                    })
-        
-        # Route 3: From spaCy entities
-        if entities:
-            for entity_type, entity_list in entities.items():
-                if entity_list:
-                    entity = entity_list[0]
-                    service_map = {
-                        "dealer": ("dealer", "get_dealer_dashboard"),
-                        "warehouse": ("warehouse", "get_warehouse_dashboard"),
-                        "city": ("city", "get_city_dashboard"),
-                        "product": ("product", "get_product_dashboard"),
-                        "dn": ("dn", "get_dn_dashboard"),
-                    }
-                    if entity_type in service_map and entity_type != "dn":
-                        service_key, method = service_map[entity_type]
-                        routes.append({
-                            "intent": f"{entity_type}_dashboard",
-                            "service_key": service_key,
-                            "method": method,
-                            "entity": entity,
-                            "confidence": 0.7,
-                            "needs_groq": False,
-                            "reason": f"spaCy entity: {entity_type}"
-                        })
-        
-        # Route 4: Analytics intent detection
+        # ============================================================
+        # STAGE: Analytics Intent Detection
+        # ============================================================
         analytics_patterns = [
-            (r'(highest|top|best|max).*?(revenue|sales|units|performance)', "ranking", "dealer", "get_top_dealers"),
-            (r'(lowest|bottom|worst|min).*?(revenue|sales|units|performance)', "ranking", "dealer", "get_bottom_dealers"),
+            (r'(highest|top|best|max).*?(revenue|sales|units|performance|dealer)', "ranking", "dealer", "get_top_dealers"),
+            (r'(lowest|bottom|worst|min).*?(revenue|sales|units|performance|dealer)', "ranking", "dealer", "get_bottom_dealers"),
             (r'compare.*?(dealer|warehouse|city)', "comparison", "dealer", "compare_dealers"),
             (r'(national|overall|country).*?(kpi|dashboard|performance)', "national_kpi", "national_kpi", "get_national_kpi_dashboard"),
         ]
         
         for pattern, intent, service_key, method in analytics_patterns:
             if re.search(pattern, message_lower):
-                routes.append({
-                    "intent": intent,
-                    "service_key": service_key,
-                    "method": method,
-                    "entity": None,
-                    "confidence": 0.8,
-                    "needs_groq": False,
-                    "reason": f"Analytics pattern: {intent}"
-                })
-        
-        return routes
-    
-    def _regex_fallback(self, message: str) -> RoutingDecision:
-        """Fallback to regex-based routing"""
-        cleaned = message.strip()
-        normalized = cleaned.lower()
-        
-        # DN detection
-        dn_match = self.DN_PATTERN.search(cleaned)
-        if dn_match:
-            return RoutingDecision(
-                intent="dn_lookup",
-                service_key="dn",
-                method="get_dn_dashboard",
-                entity=dn_match.group(1),
-                confidence=0.9,
-                needs_groq=False,
-                reason="DN detected (regex fallback)",
-                original_message=cleaned
-            )
-        
-        # Pending detection
-        if self.PENDING_PATTERN.search(normalized):
-            if "pgi" in normalized:
-                return RoutingDecision(
-                    intent="pending_pgi",
-                    service_key="dn",
-                    method="get_pending_pgi",
-                    confidence=0.9,
+                decision = RoutingDecision(
+                    intent=intent,
+                    service_key=service_key,
+                    method=method,
+                    confidence=0.85,
                     needs_groq=False,
-                    reason="Pending PGI (regex fallback)",
-                    original_message=cleaned
+                    reason=f"Analytics pattern: {intent}",
+                    original_message=message_clean
                 )
-            elif "pod" in normalized:
-                return RoutingDecision(
-                    intent="pending_pod",
-                    service_key="dn",
-                    method="get_pending_pod",
-                    confidence=0.9,
-                    needs_groq=False,
-                    reason="Pending POD (regex fallback)",
-                    original_message=cleaned
-                )
-            else:
-                return RoutingDecision(
-                    intent="pending_dn",
-                    service_key="dn",
-                    method="get_pending_dns",
-                    confidence=0.9,
-                    needs_groq=False,
-                    reason="Pending DN (regex fallback)",
-                    original_message=cleaned
-                )
+                self._cache_decision(cache_key, decision)
+                return decision
         
-        # Dealer detection
-        dealer_match = self.DEALER_PATTERN.search(cleaned)
-        if dealer_match:
-            dealer = dealer_match.group(1).strip()
-            return RoutingDecision(
-                intent="dealer_dashboard",
-                service_key="dealer",
-                method="get_dealer_dashboard",
-                entity=dealer,
-                confidence=0.8,
-                needs_groq=False,
-                reason=f"Dealer detected (regex fallback): {dealer}",
-                original_message=cleaned
-            )
+        # ============================================================
+        # STAGE: AI Classification (for complex queries)
+        # ============================================================
+        if len(message_lower.split()) > 3:
+            ai_result = self.ai_classifier.classify(message_clean)
+            if ai_result:
+                intent = ai_result.get("intent")
+                entity_name = ai_result.get("entity_name")
+                target_service = ai_result.get("target_service")
+                confidence = ai_result.get("confidence", 0.5)
+                
+                if intent in ["dealer_dashboard", "dealer_profile"] and entity_name:
+                    found_dealer = self._find_dealer_in_db(entity_name)
+                    if found_dealer:
+                        decision = RoutingDecision(
+                            intent="dealer_dashboard",
+                            service_key="dealer",
+                            method="get_dealer_dashboard",
+                            entity=found_dealer,
+                            confidence=confidence,
+                            needs_groq=False,
+                            reason=f"AI detected dealer: {found_dealer}",
+                            original_message=message_clean
+                        )
+                        self._cache_decision(cache_key, decision)
+                        return decision
+                
+                # If AI suggested a service, try it
+                if target_service in ["dn", "dealer", "warehouse", "city", "product", "national_kpi"]:
+                    service_map = {
+                        "dn": ("dn_lookup", "get_dn_dashboard"),
+                        "dealer": ("dealer_dashboard", "get_dealer_dashboard"),
+                        "warehouse": ("warehouse_dashboard", "get_warehouse_dashboard"),
+                        "city": ("city_dashboard", "get_city_dashboard"),
+                        "product": ("product_dashboard", "get_product_dashboard"),
+                        "national_kpi": ("national_kpi", "get_national_kpi_dashboard"),
+                    }
+                    if target_service in service_map:
+                        intent, method = service_map[target_service]
+                        decision = RoutingDecision(
+                            intent=intent,
+                            service_key=target_service,
+                            method=method,
+                            entity=entity_name if entity_name else None,
+                            confidence=confidence,
+                            needs_groq=False,
+                            reason=f"AI routing: {target_service}",
+                            original_message=message_clean
+                        )
+                        self._cache_decision(cache_key, decision)
+                        return decision
         
-        # Help / Greeting
-        if re.search(r'(?:help|menu|hi|hello|hey)', normalized):
-            return RoutingDecision(
+        # ============================================================
+        # STAGE: Help / Greeting
+        # ============================================================
+        if re.search(r'(?:help|menu|hi|hello|hey|good morning|good evening|what can you do|available commands)', message_lower):
+            decision = RoutingDecision(
                 intent="help",
                 service_key="groq",
                 method="process_query",
                 confidence=0.9,
                 needs_groq=True,
-                reason="Help/greeting (regex fallback)",
-                original_message=cleaned
+                reason="Help/greeting detected",
+                original_message=message_clean
             )
+            self._cache_decision(cache_key, decision)
+            return decision
         
-        # Default to Groq
-        return RoutingDecision(
+        # ============================================================
+        # FALLBACK: Groq
+        # ============================================================
+        decision = RoutingDecision(
             intent="general_ai",
             service_key="groq",
             method="process_query",
             confidence=0.3,
             needs_groq=True,
-            reason="Unknown - Groq (regex fallback)",
-            original_message=cleaned
+            reason="No intent detected - Groq fallback",
+            original_message=message_clean
         )
+        self._cache_decision(cache_key, decision)
+        return decision
+    
+    def _cache_decision(self, cache_key: str, decision: RoutingDecision) -> None:
+        """Cache routing decision"""
+        self._routing_cache[cache_key] = (time.time(), decision)
+        # Limit cache size
+        if len(self._routing_cache) > 2000:
+            # Remove oldest 100 entries
+            oldest = sorted(self._routing_cache.items(), key=lambda x: x[1][0])[:100]
+            for key, _ in oldest:
+                del self._routing_cache[key]
 
 # ==========================================================
 # BLOCK 9: SERVICE STATUS ENUM
@@ -1316,7 +1387,7 @@ class WhatsAppProviderService:
         
         try:
             logger.info("=" * 70)
-            logger.info("AI Provider Service v6.0 - ENTERPRISE AI ROUTING")
+            logger.info("AI Provider Service v6.1 - ENTERPRISE AI ROUTING (FIXED DEALER DETECTION)")
             logger.info("=" * 70)
             
             self.routing_engine = IntelligentRoutingEngine()
@@ -1365,6 +1436,7 @@ class WhatsAppProviderService:
             logger.info("   STATUS: ✅ PRODUCTION GRADE")
             logger.info(f"   INIT TIME: {init_duration:.2f}ms")
             logger.info("   AI FEATURES: PydanticAI, spaCy, SentenceTransformers, FlashRank, SQLGlot")
+            logger.info("   FIXED: Dealer detection for names like 'Haroon Electronics'")
             logger.info("=" * 70)
             
         except Exception as e:
@@ -1384,11 +1456,12 @@ class WhatsAppProviderService:
         Process a WhatsApp query - MAIN ENTRY POINT.
         
         Uses AI-powered routing with multi-stage pipeline:
-        1. PydanticAI classification
-        2. spaCy entity extraction
-        3. Semantic search (Sentence Transformers)
-        4. FlashRank reranking
-        5. Regex fallback
+        1. Fast path (DN, Pending)
+        2. Dealer detection with database lookup
+        3. Analytics intent detection
+        4. PydanticAI classification
+        5. Semantic search fallback
+        6. Regex fallback
         """
         logger.info(f"📩 Processing WhatsApp query: '{message[:100]}'")
         start_time = time.perf_counter()
@@ -1461,6 +1534,14 @@ class WhatsAppProviderService:
             except Exception as e:
                 logger.error(f"❌ Groq failed: {e}")
         
+        # Check if this is a dealer suggestion response
+        if decision.intent == "dealer_suggestion":
+            suggestions = self.routing_engine._find_similar_dealers(decision.entity or message)
+            if suggestions:
+                suggestion_text = "🔍 Did you mean:\n\n" + "\n".join([f"• {name}" for name in suggestions[:5]])
+                suggestion_text += "\n\nPlease type the full dealer name exactly as shown above."
+                return self._format_response(message, suggestion_text, error=False)
+        
         # Fallback responses
         if any(word in message.lower() for word in ["hello", "hi", "hey", "good morning", "good evening"]):
             return self._format_response(
@@ -1503,6 +1584,14 @@ class WhatsAppProviderService:
                 error=False
             )
         else:
+            # Check if we have a dealer suggestion
+            if decision.entity and len(decision.entity) > 2:
+                similar = self.routing_engine._find_similar_dealers(decision.entity)
+                if similar:
+                    suggestion_text = "🔍 I couldn't find exactly that dealer. Did you mean:\n\n" + "\n".join([f"• {name}" for name in similar[:5]])
+                    suggestion_text += "\n\nPlease type the full dealer name exactly as shown above."
+                    return self._format_response(message, suggestion_text, error=False)
+            
             return self._format_response(
                 message,
                 "I couldn't identify your request. Please specify:\n"
@@ -1649,7 +1738,7 @@ Readiness:
             "services": service_health,
             "system_status": "healthy" if service_health.get("readiness_score", 0) > 50 else "degraded",
             "timestamp": datetime.now().isoformat(),
-            "version": "6.0",
+            "version": "6.1",
             "ai_features": {
                 "pydantic_ai": Agent is not None,
                 "spacy": nlp is not None,
@@ -1687,7 +1776,7 @@ def get_whatsapp_provider_service() -> WhatsAppProviderService:
             if _whatsapp_provider_service is None:
                 try:
                     _whatsapp_provider_service = WhatsAppProviderService()
-                    logger.info("✅ WhatsAppProviderService singleton initialized (v6.0)")
+                    logger.info("✅ WhatsAppProviderService singleton initialized (v6.1)")
                 except Exception as e:
                     logger.exception(f"❌ Initialization failed: {e}")
                     raise
@@ -1715,7 +1804,7 @@ __all__ = [
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("AI Provider Service v6.0 - ENTERPRISE AI ROUTING ENGINE")
+logger.info("AI Provider Service v6.1 - ENTERPRISE AI ROUTING ENGINE")
 logger.info("=" * 70)
 logger.info("✅ PydanticAI - Structured classification")
 logger.info("✅ spaCy - Entity extraction")
@@ -1725,4 +1814,5 @@ logger.info("✅ SQLGlot - SQL validation")
 logger.info("✅ PGVector - Vector similarity")
 logger.info("✅ PyArrow - Fast data processing")
 logger.info("✅ Polars - Fast DataFrame")
+logger.info("✅ FIXED: Dealer detection for names like 'Haroon Electronics'")
 logger.info("=" * 70)
