@@ -9,6 +9,7 @@
 # ==========================================================
 
 import logging
+import os
 import threading
 import time
 import importlib
@@ -27,10 +28,10 @@ logger = logging.getLogger(__name__)
 try:
     from app.database import SessionLocal
     from app.models import DeliveryReport
-    from sqlalchemy import text, inspect as sa_inspect
-    logger.info("✅ Core imports successful")
+    from sqlalchemy import text, func, inspect as sa_inspect
+    logger.info("âœ… Core imports successful")
 except ImportError as e:
-    logger.error(f"❌ Core import failed: {e}")
+    logger.error(f"âŒ Core import failed: {e}")
     SessionLocal = None
     DeliveryReport = None
 
@@ -74,15 +75,16 @@ class IntentDetectionEngine:
     """Built-in Intent Detection - NO ai_query_service.py dependency."""
     
     DN_PATTERN = re.compile(r'\b(\d{8,12})\b')
-    DEALER_PATTERN = re.compile(r'(?:dealer|show|display|get|view|tell me about|about)\s+([a-z0-9\s&\-\.]+)', re.IGNORECASE)
-    PENDING_DN_PATTERN = re.compile(r'(?:pending|open|show\s+pending|list\s+pending)\s*(?:dn|delivery|deliveries)?', re.IGNORECASE)
+    DEALER_PATTERN = re.compile(r'(?:dealer(?:\s+(?:dashboard|profile|performance|revenue|pending|distance))?|show|display|get|view|tell me about|about)\s+([a-z0-9\s&\-\.]+)', re.IGNORECASE)
+    PENDING_DN_PATTERN = re.compile(r'^(?:(?:show|list)\s+)?(?:pending|open)\s+(?:dn|dns|delivery|deliveries)$|^(?:pending|open)$', re.IGNORECASE)
     PENDING_PGI_PATTERN = re.compile(r'(?:pending|open)\s*(?:pgi|goods issue)', re.IGNORECASE)
     PENDING_POD_PATTERN = re.compile(r'(?:pending|open)\s*(?:pod|proof of delivery)', re.IGNORECASE)
-    CITY_PATTERN = re.compile(r'(?:city|in)\s+([a-z\s]+)', re.IGNORECASE)
-    WAREHOUSE_PATTERN = re.compile(r'(?:warehouse|wh)\s+([a-z0-9\s]+)', re.IGNORECASE)
+    CITY_PATTERN = re.compile(r'^(?:city|in)\s+([a-z\s]+)$|^([a-z\s]+)\s+city$', re.IGNORECASE)
+    WAREHOUSE_PATTERN = re.compile(r'^(?:warehouse|wh)\s+([a-z0-9\s]+)$|^([a-z0-9\s]+)\s+warehouse$', re.IGNORECASE)
     PRODUCT_PATTERN = re.compile(r'(?:product|model|material)\s+([a-z0-9\s\-]+)', re.IGNORECASE)
     HELP_PATTERN = re.compile(r'(?:help|menu|commands|what can you do|available commands|how to use)', re.IGNORECASE)
     GREETING_PATTERN = re.compile(r'^(?:hello|hi|hey|good morning|good evening|good afternoon|howdy|greetings)', re.IGNORECASE)
+    NATIONAL_KPI_PATTERN = re.compile(r'(?:national\s+kpi|country\s+kpi|overall\s+kpi|national\s+dashboard)', re.IGNORECASE)
     
     def detect_intent(self, message: str) -> RoutingDecision:
         """Detect intent from message - NO external dependencies."""
@@ -118,7 +120,20 @@ class IntentDetectionEngine:
                 original_message=cleaned
             )
         
-        # 3. Pending DN
+        # 3. Pending PGI/POD must be checked before the general pending route.
+        if self.PENDING_PGI_PATTERN.search(cleaned):
+            return RoutingDecision(
+                intent="pending_pgi", service_key="dn", method="get_pending_pgi",
+                confidence=0.98, needs_groq=False, reason="Pending PGI", original_message=cleaned
+            )
+
+        if self.PENDING_POD_PATTERN.search(cleaned):
+            return RoutingDecision(
+                intent="pending_pod", service_key="dn", method="get_pending_pod",
+                confidence=0.98, needs_groq=False, reason="Pending POD", original_message=cleaned
+            )
+
+        # 4. Pending DN
         if self.PENDING_DN_PATTERN.search(cleaned):
             return RoutingDecision(
                 intent="pending_dn",
@@ -127,30 +142,6 @@ class IntentDetectionEngine:
                 confidence=0.95,
                 needs_groq=False,
                 reason="Pending DN",
-                original_message=cleaned
-            )
-        
-        # 4. Pending PGI
-        if self.PENDING_PGI_PATTERN.search(cleaned):
-            return RoutingDecision(
-                intent="pending_pgi",
-                service_key="dn",
-                method="get_pending_pgi",
-                confidence=0.95,
-                needs_groq=False,
-                reason="Pending PGI",
-                original_message=cleaned
-            )
-        
-        # 5. Pending POD
-        if self.PENDING_POD_PATTERN.search(cleaned):
-            return RoutingDecision(
-                intent="pending_pod",
-                service_key="dn",
-                method="get_pending_pod",
-                confidence=0.95,
-                needs_groq=False,
-                reason="Pending POD",
                 original_message=cleaned
             )
         
@@ -173,11 +164,12 @@ class IntentDetectionEngine:
         # 7. City Detection
         city_match = self.CITY_PATTERN.search(cleaned)
         if city_match:
+            city = next((group for group in city_match.groups() if group), "").strip()
             return RoutingDecision(
                 intent="city_dashboard",
                 service_key="city",
                 method="get_city_dashboard",
-                entity=city_match.group(1).strip(),
+                entity=city,
                 confidence=0.90,
                 needs_groq=False,
                 reason="City detected",
@@ -187,11 +179,12 @@ class IntentDetectionEngine:
         # 8. Warehouse Detection
         warehouse_match = self.WAREHOUSE_PATTERN.search(cleaned)
         if warehouse_match:
+            warehouse = next((group for group in warehouse_match.groups() if group), "").strip()
             return RoutingDecision(
                 intent="warehouse_dashboard",
                 service_key="warehouse",
                 method="get_warehouse_dashboard",
-                entity=warehouse_match.group(1).strip(),
+                entity=warehouse,
                 confidence=0.90,
                 needs_groq=False,
                 reason="Warehouse detected",
@@ -212,7 +205,15 @@ class IntentDetectionEngine:
                 original_message=cleaned
             )
         
-        # 10. Help
+        # 10. National KPI
+        if self.NATIONAL_KPI_PATTERN.search(cleaned):
+            return RoutingDecision(
+                intent="national_kpi", service_key="national_kpi",
+                method="get_national_kpi_dashboard", confidence=0.95,
+                needs_groq=False, reason="National KPI detected", original_message=cleaned
+            )
+
+        # 11. Help
         if self.HELP_PATTERN.search(cleaned):
             return RoutingDecision(
                 intent="help",
@@ -285,6 +286,12 @@ class PostgreSQLValidator:
             "table_exists": False,
             "columns_valid": False,
             "errors": [],
+            "warnings": [],
+            "record_count": 0,
+            "latest_upload_batch": None,
+            "latest_imported_date": None,
+            "duplicate_dn_count": 0,
+            "missing_indexes": [],
             "timestamp": datetime.now().isoformat()
         }
         
@@ -321,6 +328,27 @@ class PostgreSQLValidator:
                 result["columns_valid"] = False
             else:
                 result["columns_valid"] = True
+
+            try:
+                result["record_count"] = int(session.query(func.count(DeliveryReport.id)).scalar() or 0)
+                latest = session.query(
+                    DeliveryReport.upload_batch_id,
+                    DeliveryReport.imported_at
+                ).order_by(DeliveryReport.imported_at.desc().nullslast()).first()
+                if latest:
+                    result["latest_upload_batch"] = latest.upload_batch_id
+                    result["latest_imported_date"] = latest.imported_at.isoformat() if latest.imported_at else None
+                duplicate_groups = session.query(DeliveryReport.dn_no).filter(
+                    DeliveryReport.dn_no.isnot(None)
+                ).group_by(DeliveryReport.dn_no).having(func.count(DeliveryReport.id) > 1).subquery()
+                result["duplicate_dn_count"] = int(session.query(func.count()).select_from(duplicate_groups).scalar() or 0)
+                existing_indexes = {index["name"] for index in inspector.get_indexes("delivery_reports")}
+                expected_indexes = {"idx_dealer_status", "idx_city_status", "idx_pending_queries", "idx_warehouse_code_status"}
+                result["missing_indexes"] = sorted(expected_indexes - existing_indexes)
+                if result["missing_indexes"]:
+                    result["warnings"].append(f"Missing recommended indexes: {result['missing_indexes']}")
+            except Exception as diagnostic_error:
+                result["warnings"].append(f"Extended diagnostics failed: {diagnostic_error}")
             
             session.close()
             
@@ -597,20 +625,27 @@ class WhatsAppProviderService:
             logger.info("=" * 70)
             
             self.intent_engine = IntentDetectionEngine()
-            logger.info("✅ IntentDetectionEngine initialized")
+            logger.info("âœ… IntentDetectionEngine initialized")
             
             self.registry = ServiceRegistry()
-            logger.info("✅ ServiceRegistry initialized")
+            logger.info("âœ… ServiceRegistry initialized")
+            self._intent_cache: Dict[str, Tuple[float, RoutingDecision]] = {}
+            self._intent_cache_ttl = max(30, int(os.getenv("INTENT_CACHE_TTL", "300")))
+            try:
+                self._dealer_confidence_threshold = float(os.getenv("DEALER_INTENT_THRESHOLD", "85"))
+            except (TypeError, ValueError):
+                self._dealer_confidence_threshold = 85.0
+                logger.warning("Invalid DEALER_INTENT_THRESHOLD; using 85")
             
             self._groq_service = None
             try:
                 from app.services.groq_service import get_groq_service
                 self._groq_service = get_groq_service()
-                logger.info("✅ GroqService initialized")
+                logger.info("âœ… GroqService initialized")
             except ImportError:
-                logger.warning("⚠️ GroqService not available")
+                logger.warning("âš ï¸ GroqService not available")
             except Exception as e:
-                logger.error(f"❌ GroqService initialization failed: {e}")
+                logger.error(f"âŒ GroqService initialization failed: {e}")
             
             self.registry.validate_all_services()
             
@@ -619,15 +654,15 @@ class WhatsAppProviderService:
             
             logger.info("")
             logger.info("   SERVICE REGISTRY STATUS:")
-            logger.info(f"   ✅ Ready: {health['ready']}")
-            logger.info(f"   🔧 In Development: {health['in_development']}")
-            logger.info(f"   ⏳ Not Started: {health['not_started']}")
-            logger.info(f"   🚨 Error: {health['error']}")
-            logger.info(f"   📊 Readiness Score: {health['readiness_score']:.1f}%")
+            logger.info(f"   âœ… Ready: {health['ready']}")
+            logger.info(f"   ðŸ”§ In Development: {health['in_development']}")
+            logger.info(f"   â³ Not Started: {health['not_started']}")
+            logger.info(f"   ðŸš¨ Error: {health['error']}")
+            logger.info(f"   ðŸ“Š Readiness Score: {health['readiness_score']:.1f}%")
             logger.info("")
             
             pg_status = health.get('postgresql', {})
-            logger.info(f"   PostgreSQL: {'✅' if pg_status.get('success') else '❌'} {pg_status.get('connected', False)}")
+            logger.info(f"   PostgreSQL: {'âœ…' if pg_status.get('success') else 'âŒ'} {pg_status.get('connected', False)}")
             logger.info("")
             
             for service_key, status in health['services'].items():
@@ -635,16 +670,16 @@ class WhatsAppProviderService:
                 status_text = status.get("status", "UNKNOWN")
                 checks = status.get("checks_passed", 0)
                 total_checks = status.get("checks_total", 7)
-                icon = "✅" if ready else "🔧"
-                logger.info(f"   {icon} {service_key.title():15} → {status_text} ({checks}/{total_checks} checks)")
+                icon = "âœ…" if ready else "ðŸ”§"
+                logger.info(f"   {icon} {service_key.title():15} â†’ {status_text} ({checks}/{total_checks} checks)")
             
             logger.info("")
-            logger.info("   STATUS: ✅ PRODUCTION GRADE")
+            logger.info("   STATUS: âœ… PRODUCTION GRADE")
             logger.info(f"   INIT TIME: {init_duration:.2f}ms")
             logger.info("=" * 70)
             
         except Exception as e:
-            logger.exception(f"❌ Failed to initialize: {str(e)}")
+            logger.exception(f"âŒ Failed to initialize: {str(e)}")
             raise
     
     # ==========================================================
@@ -662,18 +697,27 @@ class WhatsAppProviderService:
         NO DEPENDENCY ON ai_query_service.py.
         Uses built-in intent detection.
         """
-        logger.info(f"📩 Processing WhatsApp query: '{message[:100]}'")
+        logger.info(f"ðŸ“© Processing WhatsApp query: '{message[:100]}'")
         
         try:
             # STEP 1: Detect intent using built-in engine
             routing_decision = self.intent_engine.detect_intent(message)
-            logger.info(f"🎯 Intent: {routing_decision.intent}, Service: {routing_decision.service_key}")
+            logger.info(f"ðŸŽ¯ Intent: {routing_decision.intent}, Service: {routing_decision.service_key}")
             
-            # STEP 2: Check if this needs Groq
+            # STEP 2: Preserve regex routing, then enrich only the unknown fallback.
+            if routing_decision.service_key == "groq" and routing_decision.intent == "general_ai":
+                routing_decision = self._detect_secondary_intent(message, routing_decision)
+                logger.info(
+                    "ðŸ§­ Secondary intent: %s confidence=%.2f service=%s method=%s",
+                    routing_decision.intent, routing_decision.confidence,
+                    routing_decision.service_key, routing_decision.method
+                )
+
+            # STEP 3: Check if this needs Groq
             if routing_decision.needs_groq or routing_decision.service_key == "groq":
                 return await self._handle_groq(message, routing_decision)
             
-            # STEP 3: Check Service Readiness
+            # STEP 4: Check Service Readiness
             service_key = routing_decision.service_key
             if not self.registry.is_service_ready(service_key):
                 return self._format_module_unavailable(
@@ -682,25 +726,126 @@ class WhatsAppProviderService:
                     self.registry.get_service_info(service_key)
                 )
             
-            # STEP 4: Execute Service
+            # STEP 5: Execute Service
             result = await self._execute_service(routing_decision)
-            
-            if result.get("success", False):
-                return self._format_response(message, result.get("data"), error=False)
-            else:
-                return self._format_response(
-                    message,
-                    result.get("error", "An error occurred while processing your request."),
-                    error=True
-                )
-            
-        except Exception as e:
-            logger.exception(f"❌ Failed: {e}")
+            payload = self._extract_service_payload(result)
+            # Suggestions and structured service messages are valid WhatsApp
+            # responses even when the service uses success=False.
+            has_presentable_response = any(
+                result.get(key) not in (None, "")
+                for key in ("formatted_response", "whatsapp_message", "response", "message", "suggestions")
+            )
             return self._format_response(
                 message,
-                f"⚠️ An unexpected error occurred.\n\nPlease try again later.",
+                payload,
+                error=not result.get("success", False) and not has_presentable_response
+            )
+            
+        except Exception as e:
+            logger.exception(f"âŒ Failed: {e}")
+            return self._format_response(
+                message,
+                f"âš ï¸ An unexpected error occurred.\n\nPlease try again later.",
                 error=True
             )
+
+    def _detect_secondary_intent(
+        self,
+        message: str,
+        default: RoutingDecision
+    ) -> RoutingDecision:
+        """Dealer fuzzy lookup, then DB-backed warehouse/city/product lookup."""
+        normalized = re.sub(r"\s+", " ", message.strip().lower())
+        now = time.time()
+        cached = self._intent_cache.get(normalized)
+        if cached and now - cached[0] <= self._intent_cache_ttl:
+            return cached[1]
+
+        decision = default
+        try:
+            dealer = self.registry.get_service_instance("dealer")
+            diagnose = getattr(dealer, "diagnose_dealer_search", None) if dealer else None
+            if diagnose:
+                diagnostic_result = diagnose(message)
+                diagnostic = diagnostic_result.get("diagnostic", {}) if isinstance(diagnostic_result, dict) else {}
+                found = diagnostic.get("dealer_found")
+                score = diagnostic.get("rapidfuzz_score")
+                suggestions = diagnostic.get("suggestions") or []
+                best_suggestion = float(suggestions[0].get("similarity", 0)) if suggestions else 0.0
+                confidence_score = float(score or (100 if found else best_suggestion))
+                if found or confidence_score >= self._dealer_confidence_threshold:
+                    decision = RoutingDecision(
+                        intent="dealer_dashboard", service_key="dealer",
+                        method="get_dealer_dashboard", entity=message.strip(),
+                        confidence=min(1.0, confidence_score / 100.0), needs_groq=False,
+                        reason="Dealer fuzzy/diagnostic match", original_message=message
+                    )
+                    logger.info("ðŸª Dealer auto-detected found=%r score=%.2f", found, confidence_score)
+        except Exception:
+            logger.exception("Dealer secondary detection failed; continuing routing pipeline")
+
+        if decision is default:
+            decision = self._detect_database_entity(message, default)
+
+        self._intent_cache[normalized] = (now, decision)
+        if len(self._intent_cache) > 2048:
+            oldest = sorted(self._intent_cache.items(), key=lambda item: item[1][0])[:256]
+            for key, _ in oldest:
+                self._intent_cache.pop(key, None)
+        return decision
+
+    def _detect_database_entity(
+        self,
+        message: str,
+        default: RoutingDecision
+    ) -> RoutingDecision:
+        """Resolve bare warehouse, city, or product values without raw SQL."""
+        if not SessionLocal or DeliveryReport is None:
+            return default
+        token = message.strip()
+        if not token or len(token) < 2:
+            return default
+        session = None
+        try:
+            session = SessionLocal()
+            checks = (
+                ("warehouse", DeliveryReport.warehouse, "warehouse_dashboard", "get_warehouse_dashboard"),
+                ("city", DeliveryReport.ship_to_city, "city_dashboard", "get_city_dashboard"),
+                ("product", DeliveryReport.customer_model, "product_dashboard", "get_product_dashboard"),
+                ("product", DeliveryReport.material_no, "product_dashboard", "get_product_dashboard"),
+            )
+            for service_key, column, intent, method in checks:
+                match = session.query(column).filter(
+                    column.isnot(None),
+                    func.lower(func.trim(column)) == token.lower()
+                ).limit(1).scalar()
+                if match:
+                    return RoutingDecision(
+                        intent=intent, service_key=service_key, method=method,
+                        entity=str(match), confidence=0.92, needs_groq=False,
+                        reason=f"PostgreSQL {service_key} exact match", original_message=message
+                    )
+            return default
+        except Exception:
+            logger.exception("Database entity fallback failed")
+            return default
+        finally:
+            if session is not None:
+                session.close()
+
+    @staticmethod
+    def _extract_service_payload(result: Dict[str, Any]) -> Any:
+        """Preserve service-owned formatting and structured responses."""
+        if not isinstance(result, dict):
+            return result
+        for key in (
+            "formatted_response", "whatsapp_message", "response", "message",
+            "dashboard", "profile", "data", "suggestions", "error"
+        ):
+            value = result.get(key)
+            if value not in (None, ""):
+                return value
+        return result
     
     # ==========================================================
     # GROQ HANDLING
@@ -712,10 +857,12 @@ class WhatsAppProviderService:
             try:
                 if hasattr(self._groq_service, 'process_query'):
                     response = await self._groq_service.process_query(message)
-                    if response and response.get("response"):
+                    if isinstance(response, dict) and response.get("response"):
                         return self._format_response(message, response.get("response"), error=False)
+                    if isinstance(response, str) and response.strip():
+                        return self._format_response(message, response, error=False)
             except Exception as e:
-                logger.error(f"❌ Groq failed: {e}")
+                logger.error(f"âŒ Groq failed: {e}")
         
         # Fallback
         if decision.intent == "greeting":
@@ -727,20 +874,20 @@ class WhatsAppProviderService:
         elif decision.intent == "help":
             return self._format_response(
                 message,
-                "📋 Available Commands:\n\n"
-                "📦 DN Queries:\n"
+                "ðŸ“‹ Available Commands:\n\n"
+                "ðŸ“¦ DN Queries:\n"
                 "- Send a DN number (8-12 digits)\n"
                 "- 'Pending DN'\n"
                 "- 'Pending PGI'\n"
                 "- 'Pending POD'\n\n"
-                "🏪 Dealer Queries:\n"
+                "ðŸª Dealer Queries:\n"
                 "- 'Dealer [name]'\n"
                 "- '[Dealer name] profile'\n\n"
-                "🏭 Warehouse Queries:\n"
+                "ðŸ­ Warehouse Queries:\n"
                 "- 'Warehouse [name]'\n\n"
-                "🏙️ City Queries:\n"
+                "ðŸ™ï¸ City Queries:\n"
                 "- 'City [name]'\n\n"
-                "📦 Product Queries:\n"
+                "ðŸ“¦ Product Queries:\n"
                 "- 'Product [name]'\n\n"
                 "All data comes from PostgreSQL.",
                 error=False
@@ -748,8 +895,8 @@ class WhatsAppProviderService:
         else:
             return self._format_response(
                 message,
-                "I'm sorry, I couldn't process your request. Please try again later.",
-                error=True
+                "I couldn't confidently identify that request. Please include a DN number, dealer, warehouse, city, or product name. Type 'Help' for examples.",
+                error=False
             )
     
     # ==========================================================
@@ -758,6 +905,7 @@ class WhatsAppProviderService:
     
     async def _execute_service(self, decision: RoutingDecision) -> Dict[str, Any]:
         """Execute service."""
+        started = time.perf_counter()
         service_instance = self.registry.get_service_instance(decision.service_key)
         if not service_instance:
             return {"success": False, "error": f"Service '{decision.service_key}' not available"}
@@ -781,20 +929,26 @@ class WhatsAppProviderService:
             return result if isinstance(result, dict) else {"success": True, "data": result}
             
         except Exception as e:
-            logger.exception(f"❌ Service execution failed: {e}")
+            logger.exception(f"âŒ Service execution failed: {e}")
             return {"success": False, "error": str(e)}
+        finally:
+            logger.info(
+                "â±ï¸ Service execution service=%s method=%s duration_ms=%.2f",
+                decision.service_key, decision.method,
+                (time.perf_counter() - started) * 1000
+            )
     
     # ==========================================================
-    # ✅ FIXED: RESPONSE FORMATTING WITH WHATSAPP FORMATTER
+    # âœ… FIXED: RESPONSE FORMATTING WITH WHATSAPP FORMATTER
     # ==========================================================
     
     def _format_response(self, original_message: str, data: Any, error: bool = False) -> Dict[str, Any]:
         """
         Format response for WhatsApp.
         
-        ✅ FIXED: If data is a DNDashboard object, format it professionally
-        ✅ PRESERVES: All attributes and data
-        ✅ HANDLES: DNDashboard objects, dicts, strings, and other types
+        âœ… FIXED: If data is a DNDashboard object, format it professionally
+        âœ… PRESERVES: All attributes and data
+        âœ… HANDLES: DNDashboard objects, dicts, strings, and other types
         """
         # If it's an error, return as-is
         if error:
@@ -806,29 +960,42 @@ class WhatsAppProviderService:
                 "timestamp": datetime.now().isoformat()
             }
         
+        # Preserve formatting owned by any analytics dashboard.
+        if hasattr(data, "to_whatsapp_message"):
+            try:
+                data = data.to_whatsapp_message()
+            except Exception:
+                logger.exception("Generic dashboard WhatsApp formatting failed")
+
+        if isinstance(data, dict):
+            for key in ("formatted_response", "whatsapp_message", "response", "message"):
+                if data.get(key) not in (None, ""):
+                    data = data[key]
+                    break
+
         # ============================================================
-        # ✅ FIX: Format DNDashboard objects for WhatsApp
+        # âœ… FIX: Format DNDashboard objects for WhatsApp
         # ============================================================
         if hasattr(data, 'dn_no'):
             try:
                 # Import the formatter from webhook
                 from app.routes.webhook import format_dn_response
                 formatted_data = format_dn_response(data)
-                logger.info("📱 Formatted DNDashboard for WhatsApp")
+                logger.info("ðŸ“± Formatted DNDashboard for WhatsApp")
                 return {
                     "success": not error,
                     "message": original_message,
-                    "response": formatted_data,  # ← Now a beautiful string!
+                    "response": formatted_data,  # â† Now a beautiful string!
                     "error": error,
                     "timestamp": datetime.now().isoformat()
                 }
             except ImportError as e:
-                logger.warning(f"⚠️ Could not import formatter: {e}")
+                logger.warning(f"âš ï¸ Could not import formatter: {e}")
             except Exception as e:
-                logger.warning(f"⚠️ Formatting failed: {e}")
+                logger.warning(f"âš ï¸ Formatting failed: {e}")
         
         # ============================================================
-        # ✅ Handle dictionaries with 'data' field
+        # âœ… Handle dictionaries with 'data' field
         # ============================================================
         if isinstance(data, dict) and 'data' in data:
             inner_data = data['data']
@@ -847,7 +1014,7 @@ class WhatsAppProviderService:
                     pass
         
         # ============================================================
-        # ✅ Handle dictionaries with 'response' field
+        # âœ… Handle dictionaries with 'response' field
         # ============================================================
         if isinstance(data, dict) and 'response' in data:
             inner_data = data['response']
@@ -866,7 +1033,7 @@ class WhatsAppProviderService:
                     pass
         
         # ============================================================
-        # ✅ Default: Return data as-is
+        # âœ… Default: Return data as-is
         # ============================================================
         return {
             "success": not error,
@@ -882,7 +1049,7 @@ class WhatsAppProviderService:
         checks_passed = info.get("checks_passed", 0)
         checks_total = info.get("checks_total", 7)
         
-        message = f"""⚠️ Module Currently Under Development
+        message = f"""âš ï¸ Module Currently Under Development
 
 Module:
 {service_key.title()} Service
@@ -916,7 +1083,7 @@ Readiness:
             "services": service_health,
             "system_status": "healthy" if service_health.get("readiness_score", 0) > 50 else "degraded",
             "timestamp": datetime.now().isoformat(),
-            "version": "5.1"
+            "version": "5.2"
         }
     
     def get_service_info(self, service_key: str) -> Dict[str, Any]:
@@ -945,9 +1112,9 @@ def get_whatsapp_provider_service() -> WhatsAppProviderService:
             if _whatsapp_provider_service is None:
                 try:
                     _whatsapp_provider_service = WhatsAppProviderService()
-                    logger.info("✅ WhatsAppProviderService singleton initialized")
+                    logger.info("âœ… WhatsAppProviderService singleton initialized")
                 except Exception as e:
-                    logger.exception(f"❌ Initialization failed: {e}")
+                    logger.exception(f"âŒ Initialization failed: {e}")
                     raise
     return _whatsapp_provider_service
 
@@ -971,10 +1138,10 @@ __all__ = [
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("AI Provider Service v5.1 - WITH WHATSAPP FORMATTING")
+logger.info("AI Provider Service v5.2 - INTELLIGENT ROUTING")
 logger.info("=" * 70)
-logger.info("✅ Intent detection built-in")
-logger.info("✅ No external routing dependencies")
-logger.info("✅ WhatsApp formatting enabled")
-logger.info("✅ Ready for production")
+logger.info("âœ… Intent detection built-in")
+logger.info("âœ… No external routing dependencies")
+logger.info("âœ… WhatsApp formatting enabled")
+logger.info("âœ… Ready for production")
 logger.info("=" * 70)
