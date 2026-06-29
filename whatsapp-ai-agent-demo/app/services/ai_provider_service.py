@@ -1,24 +1,23 @@
 """
 File: app/services/ai_provider_service_intents.py
 Version: 5.0 - ENTERPRISE INTENT DETECTION with Full Library Stack
-Purpose: Intent detection using spaCy, Sentence-Transformers, RapidFuzz, FlashRank
-         Uses libraries for intelligent decision making
+Purpose: Intent detection using all available libraries from requirements.txt
+         Libraries: spaCy, sentence-transformers, RapidFuzz, FlashRank, scikit-learn
 """
 
 import re
 import logging
 import threading
-import asyncio
+import time
 from typing import Optional, Dict, Any, List, Tuple, Set
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import lru_cache
-import time
 
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# LIBRARY IMPORTS WITH FALLBACK
+# LIBRARY IMPORTS - ALL FROM YOUR REQUIREMENTS.TXT
 # ============================================================
 
 # 1. spaCy - Entity Extraction
@@ -26,9 +25,9 @@ try:
     import spacy
     SPACY_AVAILABLE = True
     logger.info("✅ spaCy available for entity extraction")
-except ImportError:
+except ImportError as e:
     SPACY_AVAILABLE = False
-    logger.warning("⚠️ spaCy not installed. Install: pip install spacy>=3.8.2")
+    logger.warning(f"⚠️ spaCy not available: {e}")
 
 # 2. Sentence-Transformers - Semantic Intent Detection
 try:
@@ -36,45 +35,73 @@ try:
     import torch
     SENTENCE_TRANSFORMERS_AVAILABLE = True
     logger.info("✅ Sentence-Transformers available for semantic intent detection")
-except ImportError:
+except ImportError as e:
     SENTENCE_TRANSFORMERS_AVAILABLE = False
-    logger.warning("⚠️ Sentence-Transformers not installed. Install: pip install sentence-transformers>=2.2.0")
+    logger.warning(f"⚠️ Sentence-Transformers not available: {e}")
 
 # 3. RapidFuzz - Fuzzy Matching
 try:
     from rapidfuzz import fuzz, process
     RAPIDFUZZ_AVAILABLE = True
     logger.info("✅ RapidFuzz available for fuzzy matching")
-except ImportError:
+except ImportError as e:
     RAPIDFUZZ_AVAILABLE = False
-    logger.warning("⚠️ RapidFuzz not installed. Install: pip install rapidfuzz>=3.0.0")
+    logger.warning(f"⚠️ RapidFuzz not available: {e}")
 
 # 4. FlashRank - Re-ranking
 try:
     from flashrank import Ranker
     FLASHRANK_AVAILABLE = True
     logger.info("✅ FlashRank available for re-ranking")
-except ImportError:
+except ImportError as e:
     FLASHRANK_AVAILABLE = False
-    logger.warning("⚠️ FlashRank not installed. Install: pip install flashrank>=0.2.10")
+    logger.warning(f"⚠️ FlashRank not available: {e}")
 
 # 5. Cachetools - Caching
 try:
     from cachetools import TTLCache, cached
     CACHETOOLS_AVAILABLE = True
     logger.info("✅ Cachetools available for caching")
-except ImportError:
+except ImportError as e:
     CACHETOOLS_AVAILABLE = False
-    logger.warning("⚠️ Cachetools not installed. Install: pip install cachetools>=5.0.0")
+    logger.warning(f"⚠️ Cachetools not available: {e}")
 
 # 6. NumPy - Numerical operations
 try:
     import numpy as np
     NUMPY_AVAILABLE = True
     logger.info("✅ NumPy available for numerical operations")
-except ImportError:
+except ImportError as e:
     NUMPY_AVAILABLE = False
-    logger.warning("⚠️ NumPy not installed. Install: pip install numpy>=1.26.0")
+    logger.warning(f"⚠️ NumPy not available: {e}")
+
+# 7. Scikit-learn - ML utilities
+try:
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.metrics.pairwise import cosine_similarity
+    SKLEARN_AVAILABLE = True
+    logger.info("✅ Scikit-learn available for ML utilities")
+except ImportError as e:
+    SKLEARN_AVAILABLE = False
+    logger.warning(f"⚠️ Scikit-learn not available: {e}")
+
+# 8. Tenacity - Retry logic
+try:
+    from tenacity import retry, stop_after_attempt, wait_exponential
+    TENACITY_AVAILABLE = True
+    logger.info("✅ Tenacity available for retry logic")
+except ImportError as e:
+    TENACITY_AVAILABLE = False
+    logger.warning(f"⚠️ Tenacity not available: {e}")
+
+# 9. Pydantic - Data validation
+try:
+    from pydantic import BaseModel, Field
+    PYDANTIC_AVAILABLE = True
+    logger.info("✅ Pydantic available for data validation")
+except ImportError as e:
+    PYDANTIC_AVAILABLE = False
+    logger.warning(f"⚠️ Pydantic not available: {e}")
 
 # ============================================================
 # ROUTING DECISION
@@ -101,6 +128,7 @@ class RoutingDecision:
     fuzzy_score: float = 0.0
     flashrank_score: float = 0.0
     pattern_score: float = 0.0
+    ml_score: float = 0.0
     combined_score: float = 0.0
     
     # Ranking results
@@ -124,6 +152,7 @@ class RoutingDecision:
             "fuzzy_score": self.fuzzy_score,
             "flashrank_score": self.flashrank_score,
             "pattern_score": self.pattern_score,
+            "ml_score": self.ml_score,
             "combined_score": self.combined_score,
             "ranked_candidates": self.ranked_candidates
         }
@@ -182,7 +211,6 @@ class SpacyEntityExtractor:
                     entities[ent.label_].append(ent.text)
             
             # Additional custom extraction for dealer names
-            # Look for patterns like "Dealer XYZ"
             dealer_pattern = re.compile(r'(?:dealer|customer|partner)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)', re.IGNORECASE)
             dealer_matches = dealer_pattern.findall(text)
             if dealer_matches:
@@ -193,11 +221,6 @@ class SpacyEntityExtractor:
             warehouse_matches = warehouse_pattern.findall(text)
             if warehouse_matches:
                 entities["WAREHOUSE"] = warehouse_matches
-            
-            # Extract city from GPE
-            if entities.get("GPE"):
-                # Could be cities
-                pass
             
             self.logger.debug(f"Extracted entities: {entities}")
             return entities
@@ -224,88 +247,109 @@ class SemanticIntentDetector:
                 "track DN status",
                 "delivery note details",
                 "DN lookup",
-                "find delivery note"
+                "find delivery note",
+                "DN number",
+                "delivery note"
             ],
             'pending_dn': [
                 "pending deliveries",
                 "open delivery notes",
                 "outstanding DNs",
                 "deliveries not completed",
-                "waiting for delivery"
+                "waiting for delivery",
+                "pending DN",
+                "pending delivery"
             ],
             'pending_pgi': [
                 "goods issue pending",
                 "PGI not done",
                 "pending goods issuance",
-                "PGI status"
+                "PGI status",
+                "goods issue"
             ],
             'pending_pod': [
                 "proof of delivery pending",
                 "POD not received",
                 "delivery proof missing",
-                "POD status"
+                "POD status",
+                "proof of delivery"
             ],
             'dealer_dashboard': [
                 "dealer performance summary",
                 "show dealer metrics",
                 "dealer revenue and units",
                 "dealer dashboard overview",
-                "dealer analytics"
+                "dealer analytics",
+                "dealer profile",
+                "dealer status"
             ],
             'top_dealers': [
                 "best performing dealers",
                 "top revenue dealers",
                 "dealer ranking",
-                "highest performing dealers"
+                "highest performing dealers",
+                "top dealers",
+                "best dealers"
             ],
             'bottom_dealers': [
                 "lowest performing dealers",
                 "dealers with low revenue",
                 "bottom dealer ranking",
-                "worst performing dealers"
+                "worst performing dealers",
+                "bottom dealers",
+                "worst dealers"
             ],
             'national_kpi': [
                 "country-wide performance",
                 "national key performance indicators",
                 "Pakistan overall metrics",
                 "executive dashboard",
-                "company performance summary"
+                "company performance summary",
+                "national KPI",
+                "Pakistan performance"
             ],
             'warehouse_dashboard': [
                 "warehouse performance summary",
                 "depot metrics",
                 "distribution center overview",
-                "warehouse analytics"
+                "warehouse analytics",
+                "warehouse dashboard"
             ],
             'city_dashboard': [
                 "city performance summary",
                 "city revenue and units",
                 "city analytics",
-                "regional performance"
+                "regional performance",
+                "city dashboard"
             ],
             'product_dashboard': [
                 "product performance summary",
                 "product revenue and units",
                 "product analytics",
-                "model performance"
+                "model performance",
+                "product dashboard"
             ],
             'help': [
                 "show available commands",
                 "what can you do",
                 "help menu",
-                "how to use this bot"
+                "how to use this bot",
+                "help",
+                "commands"
             ],
             'greeting': [
                 "hello",
                 "hi there",
                 "good morning",
-                "hey"
+                "hey",
+                "greetings"
             ],
             'conversational': [
                 "how are you",
                 "what is your name",
                 "tell me about yourself",
-                "thank you"
+                "thank you",
+                "thanks"
             ]
         }
         
@@ -360,6 +404,117 @@ class SemanticIntentDetector:
             return "general_ai", 0.0
 
 # ============================================================
+# ML INTENT CLASSIFIER (using scikit-learn)
+# ============================================================
+
+class MLIntentClassifier:
+    """Machine Learning based intent classifier using TF-IDF"""
+    
+    def __init__(self):
+        self.vectorizer = None
+        self.intent_vectors = {}
+        self.logger = logging.getLogger(__name__)
+        
+        # Same intent examples as semantic detector
+        self.intent_examples = {
+            'dn_lookup': [
+                "check DN", "DN number", "delivery note", "track DN",
+                "DN status", "DN lookup", "find DN", "DN details"
+            ],
+            'pending_dn': [
+                "pending DN", "open delivery", "outstanding DN",
+                "pending delivery", "delivery pending", "waiting for DN"
+            ],
+            'dealer_dashboard': [
+                "dealer dashboard", "dealer performance", "dealer revenue",
+                "dealer units", "dealer profile", "dealer summary"
+            ],
+            'top_dealers': [
+                "top dealers", "best dealers", "top performing dealers",
+                "dealer ranking", "highest revenue dealers"
+            ],
+            'national_kpi': [
+                "national KPI", "Pakistan performance", "country metrics",
+                "executive dashboard", "company performance"
+            ],
+            'help': [
+                "help", "menu", "commands", "what can you do",
+                "available commands", "how to use"
+            ],
+            'greeting': [
+                "hello", "hi", "hey", "good morning", "greetings"
+            ]
+        }
+        
+        self._init_vectorizer()
+    
+    def _init_vectorizer(self):
+        """Initialize TF-IDF vectorizer"""
+        if not SKLEARN_AVAILABLE:
+            return
+        
+        try:
+            self.vectorizer = TfidfVectorizer(
+                ngram_range=(1, 3),
+                max_features=1000,
+                stop_words='english',
+                lowercase=True
+            )
+            
+            # Prepare training data
+            all_examples = []
+            intent_labels = []
+            
+            for intent, examples in self.intent_examples.items():
+                all_examples.extend(examples)
+                intent_labels.extend([intent] * len(examples))
+            
+            # Fit vectorizer
+            vectors = self.vectorizer.fit_transform(all_examples)
+            
+            # Store vectors per intent
+            for intent in self.intent_examples.keys():
+                indices = [i for i, label in enumerate(intent_labels) if label == intent]
+                if indices:
+                    intent_vectors = vectors[indices]
+                    self.intent_vectors[intent] = intent_vectors.mean(axis=0)
+            
+            self.logger.info(f"✅ ML classifier trained on {len(all_examples)} examples")
+            
+        except Exception as e:
+            self.logger.warning(f"⚠️ ML initialization failed: {e}")
+            self.vectorizer = None
+    
+    def predict(self, text: str) -> Tuple[str, float]:
+        """Predict intent using ML"""
+        if not SKLEARN_AVAILABLE or not self.vectorizer:
+            return "general_ai", 0.0
+        
+        try:
+            text_vector = self.vectorizer.transform([text])
+            
+            similarities = {}
+            for intent, intent_vector in self.intent_vectors.items():
+                if intent_vector is not None:
+                    similarity = cosine_similarity(text_vector, intent_vector)[0][0]
+                    similarities[intent] = similarity
+            
+            if not similarities:
+                return "general_ai", 0.0
+            
+            best_intent = max(similarities, key=similarities.get)
+            best_score = similarities[best_intent]
+            
+            if best_score < 0.1:
+                return "general_ai", best_score
+            
+            return best_intent, best_score
+            
+        except Exception as e:
+            self.logger.warning(f"ML prediction failed: {e}")
+            return "general_ai", 0.0
+
+# ============================================================
 # FLASHRANK RE-RANKER
 # ============================================================
 
@@ -372,8 +527,18 @@ class FlashRankReRanker:
         
         if FLASHRANK_AVAILABLE:
             try:
-                self.ranker = Ranker(model="ms-marco-MiniLM-L-12-v2")
-                self.logger.info("✅ FlashRank re-ranker initialized")
+                # Try different models
+                models = ["ms-marco-MiniLM-L-12-v2", "ms-marco-TinyBERT-L-2-v2"]
+                for model in models:
+                    try:
+                        self.ranker = Ranker(model=model)
+                        self.logger.info(f"✅ FlashRank loaded: {model}")
+                        break
+                    except Exception:
+                        continue
+                
+                if not self.ranker:
+                    self.logger.warning("⚠️ No FlashRank model found")
             except Exception as e:
                 self.logger.warning(f"⚠️ FlashRank initialization failed: {e}")
                 self.ranker = None
@@ -388,7 +553,7 @@ class FlashRankReRanker:
             passages = [
                 {
                     "id": i,
-                    "text": candidate.get("text", candidate.get("name", "")),
+                    "text": candidate.get("text", candidate.get("name", str(candidate))),
                     "meta": candidate
                 }
                 for i, candidate in enumerate(candidates)
@@ -419,9 +584,10 @@ class FlashRankReRanker:
 
 class IntentDetectionEngine:
     """
-    ENTERPRISE Intent Detection Engine using:
+    ENTERPRISE Intent Detection Engine using all available libraries:
     - spaCy for entity extraction
-    - Sentence-Transformers for semantic intent detection
+    - Sentence-Transformers for semantic detection
+    - scikit-learn for ML-based classification
     - RapidFuzz for fuzzy matching
     - FlashRank for re-ranking
     - Cachetools for caching
@@ -432,7 +598,7 @@ class IntentDetectionEngine:
         self.start_time = time.time()
         
         # ============================================================
-        # 1. INITIALIZE COMPONENTS
+        # 1. INITIALIZE ALL COMPONENTS
         # ============================================================
         
         self.logger.info("=" * 70)
@@ -447,9 +613,16 @@ class IntentDetectionEngine:
         self.semantic_detector = SemanticIntentDetector()
         self.logger.info(f"   Sentence-Transformers: {'✅' if self.semantic_detector.model else '❌'}")
         
+        # ML Intent Classifier
+        self.ml_classifier = MLIntentClassifier()
+        self.logger.info(f"   scikit-learn: {'✅' if SKLEARN_AVAILABLE else '❌'}")
+        
         # FlashRank Re-Ranker
         self.reranker = FlashRankReRanker()
         self.logger.info(f"   FlashRank: {'✅' if self.reranker.ranker else '❌'}")
+        
+        # RapidFuzz
+        self.logger.info(f"   RapidFuzz: {'✅' if RAPIDFUZZ_AVAILABLE else '❌'}")
         
         # ============================================================
         # 2. CACHE
@@ -518,6 +691,7 @@ class IntentDetectionEngine:
         self.logger.info("   Components:")
         self.logger.info(f"   • spaCy: {'✅' if self.entity_extractor.nlp else '❌'} Entity Extraction")
         self.logger.info(f"   • Sentence-Transformers: {'✅' if self.semantic_detector.model else '❌'} Semantic Detection")
+        self.logger.info(f"   • scikit-learn: {'✅' if SKLEARN_AVAILABLE else '❌'} ML Classification")
         self.logger.info(f"   • RapidFuzz: {'✅' if RAPIDFUZZ_AVAILABLE else '❌'} Fuzzy Matching")
         self.logger.info(f"   • FlashRank: {'✅' if self.reranker.ranker else '❌'} Re-ranking")
         self.logger.info(f"   • Cachetools: {'✅' if CACHETOOLS_AVAILABLE else '❌'} Caching")
@@ -604,9 +778,10 @@ class IntentDetectionEngine:
         1. Pattern matching (fast, deterministic)
         2. spaCy entity extraction
         3. Semantic detection (Sentence-Transformers)
-        4. Fuzzy matching (RapidFuzz)
-        5. FlashRank re-ranking
-        6. Combined confidence scoring
+        4. ML-based classification (scikit-learn)
+        5. Fuzzy matching (RapidFuzz)
+        6. FlashRank re-ranking
+        7. Combined confidence scoring
         """
         cleaned = message.strip()
         if not cleaned:
@@ -648,13 +823,20 @@ class IntentDetectionEngine:
         self.logger.debug(f"Semantic intent: {semantic_intent} (score: {semantic_score:.2f})")
         
         # ============================================================
-        # STEP 4: RAPIDFUZZ MATCHING
+        # STEP 4: ML-BASED CLASSIFICATION
+        # ============================================================
+        
+        ml_intent, ml_score = self.ml_classifier.predict(cleaned)
+        self.logger.debug(f"ML intent: {ml_intent} (score: {ml_score:.2f})")
+        
+        # ============================================================
+        # STEP 5: RAPIDFUZZ MATCHING
         # ============================================================
         
         fuzzy_result = self._detect_with_fuzzy(cleaned)
         
         # ============================================================
-        # STEP 5: COMBINE DECISIONS
+        # STEP 6: COMBINE DECISIONS
         # ============================================================
         
         # Build candidate list for FlashRank
@@ -666,7 +848,8 @@ class IntentDetectionEngine:
                 "id": "pattern",
                 "text": pattern_decision.intent,
                 "confidence": pattern_decision.confidence,
-                "decision": pattern_decision
+                "decision": pattern_decision,
+                "entity": pattern_decision.entity
             })
         
         # Add semantic match
@@ -676,6 +859,15 @@ class IntentDetectionEngine:
                 "text": semantic_intent,
                 "confidence": semantic_score,
                 "intent": semantic_intent
+            })
+        
+        # Add ML match
+        if ml_score > 0.2:
+            candidates.append({
+                "id": "ml",
+                "text": ml_intent,
+                "confidence": ml_score,
+                "intent": ml_intent
             })
         
         # Add fuzzy match
@@ -689,7 +881,7 @@ class IntentDetectionEngine:
             })
         
         # ============================================================
-        # STEP 6: FLASHRANK RE-RANKING
+        # STEP 7: FLASHRANK RE-RANKING
         # ============================================================
         
         if candidates and self.reranker.ranker:
@@ -697,7 +889,7 @@ class IntentDetectionEngine:
             self.logger.debug(f"FlashRank re-ranked {len(candidates)} candidates")
         
         # ============================================================
-        # STEP 7: FINAL DECISION
+        # STEP 8: FINAL DECISION
         # ============================================================
         
         if candidates:
@@ -730,13 +922,14 @@ class IntentDetectionEngine:
                 method=self._get_method(intent),
                 entity=entity,
                 confidence=best.get("confidence", 0.5),
-                reason=f"Best candidate from FlashRank: {best.get('id', 'unknown')}",
+                reason=f"Best candidate from combined analysis: {best.get('id', 'unknown')}",
                 original=cleaned
             )
             
             # Add library scores
             final_decision.spacy_entities = spacy_entities
             final_decision.semantic_score = semantic_score
+            final_decision.ml_score = ml_score
             final_decision.flashrank_score = best.get("flashrank_score", 0)
             final_decision.ranked_candidates = candidates
             
@@ -744,29 +937,32 @@ class IntentDetectionEngine:
             final_decision.combined_score = self._calculate_combined_score(
                 pattern_decision.confidence if pattern_decision else 0,
                 semantic_score,
+                ml_score,
                 final_decision.flashrank_score
             )
             
             return self._finalize_decision(final_decision, cache_key)
         
         # ============================================================
-        # STEP 8: FALLBACK
+        # STEP 9: FALLBACK
         # ============================================================
         
         fallback = self._create_fallback_decision(cleaned, "No intent detected")
         return self._finalize_decision(fallback, cache_key)
     
-    def _calculate_combined_score(self, pattern_score: float, semantic_score: float, flashrank_score: float) -> float:
-        """Calculate combined confidence score"""
+    def _calculate_combined_score(self, pattern_score: float, semantic_score: float, ml_score: float, flashrank_score: float) -> float:
+        """Calculate combined confidence score with weights"""
         weights = {
-            'pattern': 0.4,
-            'semantic': 0.3,
-            'flashrank': 0.3
+            'pattern': 0.35,
+            'semantic': 0.25,
+            'ml': 0.20,
+            'flashrank': 0.20
         }
         
         combined = (
             pattern_score * weights['pattern'] +
             semantic_score * weights['semantic'] +
+            ml_score * weights['ml'] +
             flashrank_score * weights['flashrank']
         )
         
@@ -1387,6 +1583,7 @@ class IntentDetectionEngine:
             "status": "healthy",
             "spacy_available": SPACY_AVAILABLE and self.entity_extractor.nlp is not None,
             "sentence_transformers_available": SENTENCE_TRANSFORMERS_AVAILABLE and self.semantic_detector.model is not None,
+            "sklearn_available": SKLEARN_AVAILABLE,
             "rapidfuzz_available": RAPIDFUZZ_AVAILABLE,
             "flashrank_available": FLASHRANK_AVAILABLE and self.reranker.ranker is not None,
             "cache_available": self._cache_enabled(),
@@ -1405,6 +1602,7 @@ __all__ = [
     'RoutingDecision',
     'SpacyEntityExtractor',
     'SemanticIntentDetector',
+    'MLIntentClassifier',
     'FlashRankReRanker'
 ]
 
@@ -1413,6 +1611,7 @@ logger.info("Intent Detection Engine v5.0 - ENTERPRISE")
 logger.info("=" * 70)
 logger.info(f"✅ spaCy: {'Available' if SPACY_AVAILABLE else 'Not Available'}")
 logger.info(f"✅ Sentence-Transformers: {'Available' if SENTENCE_TRANSFORMERS_AVAILABLE else 'Not Available'}")
+logger.info(f"✅ scikit-learn: {'Available' if SKLEARN_AVAILABLE else 'Not Available'}")
 logger.info(f"✅ RapidFuzz: {'Available' if RAPIDFUZZ_AVAILABLE else 'Not Available'}")
 logger.info(f"✅ FlashRank: {'Available' if FLASHRANK_AVAILABLE else 'Not Available'}")
 logger.info(f"✅ Cachetools: {'Available' if CACHETOOLS_AVAILABLE else 'Not Available'}")
