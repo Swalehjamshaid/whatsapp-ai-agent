@@ -1,20 +1,21 @@
 """
 File: app/services/ai_provider_service_intents.py
-Version: 2.0 - ENTERPRISE INTENT DETECTION ENGINE
+Version: 3.0 - ENTERPRISE INTENT DETECTION ENGINE (SIMPLIFIED)
 Purpose: PURE intent detection - NO business logic, NO SQL, NO formatting
-         Uses: spaCy, SentenceTransformer, RapidFuzz, FlashRank
-         Enterprise features: Entity Resolver, Confidence Engine, Strategy Pattern
+         Uses: spaCy, SentenceTransformer, RapidFuzz, FlashRank, Semantic Router
+         Enterprise features: Text Normalization, Entity Extraction, Dependency Injection
 """
 
 import logging
 import re
 import time
-import threading
+import hashlib
 from typing import Optional, Dict, Any, List, Tuple, Set
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from abc import ABC, abstractmethod
+from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
@@ -57,11 +58,21 @@ except ImportError:
 
 # Cachetools - Caching
 try:
-    from cachetools import TTLCache
+    from cachetools import TTLCache, cached
     CACHETOOLS_AVAILABLE = True
 except ImportError:
     CACHETOOLS_AVAILABLE = False
     TTLCache = None
+
+# Semantic Router
+try:
+    from semantic_router import Route, Router, SemanticRouter
+    SEMANTIC_ROUTER_AVAILABLE = True
+except ImportError:
+    SEMANTIC_ROUTER_AVAILABLE = False
+    Route = None
+    Router = None
+    SemanticRouter = None
 
 # NumPy - Numerical operations
 try:
@@ -76,7 +87,7 @@ except ImportError:
 # ============================================================
 
 class EntityType(Enum):
-    """Entity types"""
+    """Entity types for extraction"""
     DEALER = "dealer"
     CITY = "city"
     WAREHOUSE = "warehouse"
@@ -84,50 +95,56 @@ class EntityType(Enum):
     DN = "dn"
     UNKNOWN = "unknown"
 
-class ServiceType(Enum):
-    """Service types"""
-    CRITICAL = "critical"
-    OPTIONAL = "optional"
-    AI = "ai"
+class IntentType(Enum):
+    """Intent types"""
+    DN_LOOKUP = "dn_lookup"
+    PENDING_DN = "pending_dn"
+    PENDING_PGI = "pending_pgi"
+    PENDING_POD = "pending_pod"
+    DEALER_DASHBOARD = "dealer_dashboard"
+    DEALER_COMPARISON = "comparison"
+    TOP_DEALERS = "top_dealers"
+    BOTTOM_DEALERS = "bottom_dealers"
+    WAREHOUSE_DASHBOARD = "warehouse_dashboard"
+    CITY_DASHBOARD = "city_dashboard"
+    PRODUCT_DASHBOARD = "product_dashboard"
+    NATIONAL_KPI = "national_kpi"
+    HELP = "help"
+    GREETING = "greeting"
+    CONVERSATIONAL = "conversational"
+    GENERAL_AI = "general_ai"
 
-class IntentStrategy(Enum):
-    """Intent detection strategies"""
-    PATTERN = "pattern"
-    SPACY = "spacy"
-    SEMANTIC = "semantic"
-    RAPIDFUZZ = "rapidfuzz"
-    FLASHRANK = "flashrank"
-    FALLBACK = "fallback"
+class ServiceKey(Enum):
+    """Service keys for routing"""
+    DN = "dn"
+    DEALER = "dealer"
+    WAREHOUSE = "warehouse"
+    CITY = "city"
+    PRODUCT = "product"
+    NATIONAL_KPI = "national_kpi"
+    GROQ = "groq"
 
 # ============================================================
 # DATA CLASSES
 # ============================================================
 
 @dataclass
-class ServiceMetadata:
-    """Service metadata for routing decisions"""
-    service_key: str
-    method: str
-    service_type: ServiceType = ServiceType.CRITICAL
-    timeout_seconds: float = 5.0
-    retry_count: int = 3
-    cacheable: bool = True
-    requires_database: bool = True
-    requires_repository: bool = True
-    requires_ai: bool = False
-    priority: int = 1
-    version: str = "1.0"
-    expected_response: str = "structured"
+class NormalizedText:
+    """Normalized text result"""
+    original: str
+    cleaned: str
+    normalized: str
+    tokens: List[str]
+    entity_candidates: Dict[str, List[str]]
 
 @dataclass
-class Entity:
-    """Entity resolution result"""
+class ExtractedEntity:
+    """Extracted entity result"""
     type: EntityType
-    name: str
-    original_text: str
+    text: str
+    normalized: str
     confidence: float
-    normalized_name: str
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    position: int
 
 @dataclass
 class IntentCandidate:
@@ -140,15 +157,15 @@ class IntentCandidate:
     confidence: float = 0.0
     needs_groq: bool = False
     reason: str = ""
-    strategy: IntentStrategy = IntentStrategy.PATTERN
-    extracted_entities: Dict[str, List[str]] = field(default_factory=dict)
+    strategy: str = ""
+    extracted_entities: List[ExtractedEntity] = field(default_factory=list)
 
 @dataclass
 class RoutingDecision:
     """
-    ENTERPRISE ROUTING DECISION - NO business logic
+    PURE ROUTING DECISION - NO business logic
     
-    Contains ONLY routing information with service metadata.
+    Contains ONLY routing information.
     """
     intent: str
     service_key: str
@@ -161,9 +178,6 @@ class RoutingDecision:
     original_message: str = ""
     suggestions: List[str] = field(default_factory=list)
     
-    # Service metadata
-    service_metadata: Optional[ServiceMetadata] = None
-    
     # Detection metadata
     detection_method: str = "unknown"
     combined_score: float = 0.0
@@ -173,10 +187,9 @@ class RoutingDecision:
     flashrank_score: float = 0.0
     entity_confidence: float = 0.0
     
-    # Entity extraction
-    extracted_entities: Dict[str, List[str]] = field(default_factory=dict)
-    primary_entity: Optional[Entity] = None
-    candidates: List[IntentCandidate] = field(default_factory=list)
+    # Entities
+    extracted_entities: List[ExtractedEntity] = field(default_factory=list)
+    primary_entity: Optional[ExtractedEntity] = None
     
     # Validation
     validated: bool = False
@@ -188,713 +201,410 @@ class RoutingDecision:
             "service_key": self.service_key,
             "method": self.method,
             "entity": self.entity,
-            "entity2": self.entity2,
             "confidence": self.confidence,
             "needs_groq": self.needs_groq,
             "reason": self.reason,
             "original_message": self.original_message[:100],
             "suggestions": self.suggestions,
-            "service_metadata": {
-                "service_type": self.service_metadata.service_type.value if self.service_metadata else None,
-                "timeout": self.service_metadata.timeout_seconds if self.service_metadata else None,
-                "retry_count": self.service_metadata.retry_count if self.service_metadata else None,
-                "requires_database": self.service_metadata.requires_database if self.service_metadata else None
-            } if self.service_metadata else {},
             "detection_method": self.detection_method,
             "combined_score": self.combined_score,
-            "primary_entity": self.primary_entity.name if self.primary_entity else None,
             "validated": self.validated
         }
 
 # ============================================================
-# ROUTING CONFIGURATION (Embedded)
+# ROUTING TABLE (PURE ROUTING - NO BUSINESS LOGIC)
 # ============================================================
 
-class RoutingConfig:
-    """Centralized routing configuration"""
+class RoutingTable:
+    """
+    PURE ROUTING TABLE - Maps intents to services and methods.
+    NO business logic, NO SQL, NO formatting.
+    """
     
     # Intent to route mapping
     INTENT_ROUTES = {
-        "dn_lookup": ServiceMetadata("dn", "get_dn_dashboard", priority=10),
-        "pending_dn": ServiceMetadata("dn", "get_pending_dns", priority=9),
-        "pending_pgi": ServiceMetadata("dn", "get_pending_pgi", priority=9),
-        "pending_pod": ServiceMetadata("dn", "get_pending_pod", priority=9),
-        "dealer_dashboard": ServiceMetadata("dealer", "get_dealer_dashboard", priority=8),
-        "dealer_suggestion": ServiceMetadata("dealer", "suggest_dealers", priority=7),
-        "top_dealers": ServiceMetadata("dealer", "get_top_dealers", priority=8),
-        "bottom_dealers": ServiceMetadata("dealer", "get_bottom_dealers", priority=8),
-        "comparison": ServiceMetadata("dealer", "compare_dealers", priority=8),
-        "warehouse_dashboard": ServiceMetadata("warehouse", "get_warehouse_dashboard", 
-                                               priority=7, service_type=ServiceType.OPTIONAL),
-        "city_dashboard": ServiceMetadata("city", "get_city_dashboard", 
-                                          priority=7, service_type=ServiceType.OPTIONAL),
-        "product_dashboard": ServiceMetadata("product", "get_product_dashboard", 
-                                             priority=7, service_type=ServiceType.OPTIONAL),
-        "national_kpi": ServiceMetadata("national_kpi", "get_national_kpi_dashboard", priority=8),
-        "help": ServiceMetadata("groq", "process_query", priority=5, 
-                                requires_database=False, requires_repository=False, requires_ai=True),
-        "greeting": ServiceMetadata("groq", "process_query", priority=5,
-                                    requires_database=False, requires_repository=False, requires_ai=True),
-        "conversational": ServiceMetadata("groq", "process_query", priority=4,
-                                          requires_database=False, requires_repository=False, requires_ai=True),
-        "general_ai": ServiceMetadata("groq", "process_query", priority=1,
-                                      requires_database=False, requires_repository=False, requires_ai=True)
+        IntentType.DN_LOOKUP.value: {"service": ServiceKey.DN.value, "method": "get_dn_dashboard"},
+        IntentType.PENDING_DN.value: {"service": ServiceKey.DN.value, "method": "get_pending_dns"},
+        IntentType.PENDING_PGI.value: {"service": ServiceKey.DN.value, "method": "get_pending_pgi"},
+        IntentType.PENDING_POD.value: {"service": ServiceKey.DN.value, "method": "get_pending_pod"},
+        IntentType.DEALER_DASHBOARD.value: {"service": ServiceKey.DEALER.value, "method": "get_dealer_dashboard"},
+        IntentType.DEALER_COMPARISON.value: {"service": ServiceKey.DEALER.value, "method": "compare_dealers"},
+        IntentType.TOP_DEALERS.value: {"service": ServiceKey.DEALER.value, "method": "get_top_dealers"},
+        IntentType.BOTTOM_DEALERS.value: {"service": ServiceKey.DEALER.value, "method": "get_bottom_dealers"},
+        IntentType.WAREHOUSE_DASHBOARD.value: {"service": ServiceKey.WAREHOUSE.value, "method": "get_warehouse_dashboard"},
+        IntentType.CITY_DASHBOARD.value: {"service": ServiceKey.CITY.value, "method": "get_city_dashboard"},
+        IntentType.PRODUCT_DASHBOARD.value: {"service": ServiceKey.PRODUCT.value, "method": "get_product_dashboard"},
+        IntentType.NATIONAL_KPI.value: {"service": ServiceKey.NATIONAL_KPI.value, "method": "get_national_kpi_dashboard"},
+        IntentType.HELP.value: {"service": ServiceKey.GROQ.value, "method": "process_query"},
+        IntentType.GREETING.value: {"service": ServiceKey.GROQ.value, "method": "process_query"},
+        IntentType.CONVERSATIONAL.value: {"service": ServiceKey.GROQ.value, "method": "process_query"},
+        IntentType.GENERAL_AI.value: {"service": ServiceKey.GROQ.value, "method": "process_query"},
     }
     
     # Confidence thresholds
     CONFIDENCE_THRESHOLDS = {
-        "dn_lookup": 0.90,
-        "pending_dn": 0.85,
-        "pending_pgi": 0.85,
-        "pending_pod": 0.85,
-        "dealer_dashboard": 0.80,
-        "top_dealers": 0.80,
-        "bottom_dealers": 0.80,
-        "comparison": 0.80,
-        "warehouse_dashboard": 0.75,
-        "city_dashboard": 0.75,
-        "product_dashboard": 0.75,
-        "national_kpi": 0.85,
-        "help": 0.70,
-        "greeting": 0.70,
-        "conversational": 0.65,
-        "general_ai": 0.30
+        IntentType.DN_LOOKUP.value: 0.90,
+        IntentType.PENDING_DN.value: 0.85,
+        IntentType.PENDING_PGI.value: 0.85,
+        IntentType.PENDING_POD.value: 0.85,
+        IntentType.DEALER_DASHBOARD.value: 0.80,
+        IntentType.TOP_DEALERS.value: 0.80,
+        IntentType.BOTTOM_DEALERS.value: 0.80,
+        IntentType.DEALER_COMPARISON.value: 0.80,
+        IntentType.WAREHOUSE_DASHBOARD.value: 0.75,
+        IntentType.CITY_DASHBOARD.value: 0.75,
+        IntentType.PRODUCT_DASHBOARD.value: 0.75,
+        IntentType.NATIONAL_KPI.value: 0.85,
+        IntentType.HELP.value: 0.70,
+        IntentType.GREETING.value: 0.70,
+        IntentType.CONVERSATIONAL.value: 0.65,
+        IntentType.GENERAL_AI.value: 0.30,
     }
     
     @classmethod
-    def get_route(cls, intent: str) -> Optional[ServiceMetadata]:
+    def get_route(cls, intent: str) -> Optional[Dict[str, str]]:
+        """Get route for intent"""
         return cls.INTENT_ROUTES.get(intent)
     
     @classmethod
     def get_threshold(cls, intent: str) -> float:
+        """Get confidence threshold for intent"""
         return cls.CONFIDENCE_THRESHOLDS.get(intent, 0.50)
     
     @classmethod
     def validate_route(cls, intent: str, service_key: str, method: str) -> bool:
+        """Validate that route exists and matches"""
         route = cls.get_route(intent)
         if not route:
             return False
-        return route.service_key == service_key and route.method == method
+        return route["service"] == service_key and route["method"] == method
 
 # ============================================================
-# ENTITY RESOLVER LAYER
+# TEXT NORMALIZER
 # ============================================================
 
-class DealerAliasResolver:
-    """Resolve dealer aliases - BUSINESS DATA MOVED HERE"""
-    
-    ALIASES = {
-        "sham": "Sham Electronics",
-        "sham electronics": "Sham Electronics",
-        "ruba": "Ruba Digital Wah",
-        "ruba digital": "Ruba Digital Wah",
-        "ruba digital wah": "Ruba Digital Wah",
-        "taj": "Taj Electronics",
-        "taj electronics": "Taj Electronics",
-        "haroon": "Haroon Electronics",
-        "haroon electronics": "Haroon Electronics",
-        "mian": "Mian Group Chakwal",
-        "mian group": "Mian Group Chakwal",
-        "arco": "Arco Electronics",
-        "arco electronics": "Arco Electronics",
-        "shah": "Shah Electronics",
-        "shah electronics": "Shah Electronics",
-    }
+class TextNormalizer:
+    """
+    Text Normalization - Pure text processing.
+    NO business logic, NO SQL, NO formatting.
+    """
     
     def __init__(self):
         self.logger = logging.getLogger(__name__)
-        self._cache = TTLCache(maxsize=500, ttl=3600) if CACHETOOLS_AVAILABLE else {}
-    
-    def resolve(self, text: str) -> Optional[Tuple[str, float]]:
-        if not text:
-            return None
-        
-        cache_key = f"alias:{text.lower()}"
-        if cache_key in self._cache:
-            return self._cache[cache_key]
-        
-        text_lower = text.lower()
-        for alias, full_name in self.ALIASES.items():
-            if alias in text_lower or text_lower in alias:
-                result = (full_name, 1.0)
-                self._cache[cache_key] = result
-                return result
-        
-        return None
-
-class EntityResolver:
-    """Enterprise Entity Resolver"""
-    
-    def __init__(self):
-        self.logger = logging.getLogger(__name__)
-        self.alias_resolver = DealerAliasResolver()
-        self._dealer_names = []
-        self._dealer_normalized = []
-        self._loaded = False
-        self._lock = threading.RLock()
-        self._cache = TTLCache(maxsize=1000, ttl=3600) if CACHETOOLS_AVAILABLE else {}
-        self.logger.info("✅ EntityResolver initialized")
-    
-    def _load_dealers(self):
-        if self._loaded:
-            return
-        
-        with self._lock:
-            if self._loaded:
-                return
-            
-            try:
-                from app.database import SessionLocal
-                from app.models import DeliveryReport
-                
-                session = SessionLocal()
-                try:
-                    dealers = session.query(
-                        DeliveryReport.customer_name
-                    ).filter(
-                        DeliveryReport.customer_name.isnot(None)
-                    ).distinct().limit(10000).all()
-                    
-                    self._dealer_names = [d.customer_name for d in dealers if d.customer_name]
-                    self._dealer_normalized = [self._normalize(d) for d in self._dealer_names]
-                    self._loaded = True
-                    self.logger.info(f"✅ Loaded {len(self._dealer_names)} dealers")
-                except Exception as e:
-                    self.logger.warning(f"Failed to load dealers: {e}")
-                finally:
-                    session.close()
-            except Exception as e:
-                self.logger.warning(f"Failed to load dealers: {e}")
-    
-    def _normalize(self, text: str) -> str:
-        if not text:
-            return ""
-        text = re.sub(r'[^\w\s]', ' ', text)
-        text = re.sub(r'\s+', ' ', text)
-        return text.strip().lower()
-    
-    def resolve_dealer(self, text: str) -> Optional[Entity]:
-        if not text:
-            return None
-        
-        cache_key = f"dealer:{text}"
-        if cache_key in self._cache:
-            return self._cache[cache_key]
-        
-        # Try alias first
-        alias_result = self.alias_resolver.resolve(text)
-        if alias_result:
-            name, confidence = alias_result
-            entity = Entity(
-                type=EntityType.DEALER,
-                name=name,
-                original_text=text,
-                confidence=confidence,
-                normalized_name=self._normalize(name)
-            )
-            self._cache[cache_key] = entity
-            return entity
-        
-        self._load_dealers()
-        if not self._dealer_names:
-            return None
-        
-        normalized = self._normalize(text)
-        
-        # Exact match
-        for i, name in enumerate(self._dealer_names):
-            if self._dealer_normalized[i] == normalized:
-                entity = Entity(
-                    type=EntityType.DEALER,
-                    name=name,
-                    original_text=text,
-                    confidence=1.0,
-                    normalized_name=normalized
-                )
-                self._cache[cache_key] = entity
-                return entity
-        
-        # Contains match
-        for i, name in enumerate(self._dealer_names):
-            if normalized in self._dealer_normalized[i] or self._dealer_normalized[i] in normalized:
-                entity = Entity(
-                    type=EntityType.DEALER,
-                    name=name,
-                    original_text=text,
-                    confidence=0.90,
-                    normalized_name=normalized
-                )
-                self._cache[cache_key] = entity
-                return entity
-        
-        # Fuzzy match
-        if RAPIDFUZZ_AVAILABLE:
-            try:
-                results = process.extract(
-                    normalized,
-                    self._dealer_normalized,
-                    scorer=fuzz.ratio,
-                    limit=5
-                )
-                
-                if results and results[0][1] >= 75:
-                    best_match, score, idx = results[0]
-                    entity = Entity(
-                        type=EntityType.DEALER,
-                        name=self._dealer_names[idx],
-                        original_text=text,
-                        confidence=score / 100.0,
-                        normalized_name=best_match
-                    )
-                    self._cache[cache_key] = entity
-                    return entity
-            except Exception as e:
-                self.logger.warning(f"Fuzzy matching failed: {e}")
-        
-        return None
-    
-    def get_suggestions(self, text: str, limit: int = 5) -> List[Entity]:
-        self._load_dealers()
-        if not self._dealer_names:
-            return []
-        
-        normalized = self._normalize(text)
-        suggestions = []
-        
-        for i, name in enumerate(self._dealer_names):
-            if normalized in self._dealer_normalized[i] or self._dealer_normalized[i] in normalized:
-                if len(suggestions) < limit:
-                    suggestions.append(Entity(
-                        type=EntityType.DEALER,
-                        name=name,
-                        original_text=text,
-                        confidence=0.80,
-                        normalized_name=self._dealer_normalized[i]
-                    ))
-        
-        if len(suggestions) < limit and RAPIDFUZZ_AVAILABLE:
-            try:
-                results = process.extract(
-                    normalized,
-                    self._dealer_normalized,
-                    scorer=fuzz.ratio,
-                    limit=limit
-                )
-                for match, score, idx in results:
-                    if score >= 60:
-                        suggestions.append(Entity(
-                            type=EntityType.DEALER,
-                            name=self._dealer_names[idx],
-                            original_text=text,
-                            confidence=score / 100.0,
-                            normalized_name=match
-                        ))
-            except Exception:
-                pass
-        
-        return suggestions[:limit]
-
-# ============================================================
-# CONFIDENCE ENGINE
-# ============================================================
-
-class ConfidenceEngine:
-    """Dynamic confidence scoring engine"""
-    
-    # Dynamic weights based on strategy reliability
-    STRATEGY_WEIGHTS = {
-        IntentStrategy.PATTERN: 0.40,
-        IntentStrategy.SEMANTIC: 0.25,
-        IntentStrategy.RAPIDFUZZ: 0.15,
-        IntentStrategy.SPACY: 0.10,
-        IntentStrategy.FLASHRANK: 0.10
-    }
-    
-    # Entity quality boost
-    ENTITY_QUALITY_BOOST = 0.05
-    
-    def __init__(self):
-        self.logger = logging.getLogger(__name__)
-    
-    def calculate_combined_score(
-        self,
-        candidates: List[IntentCandidate],
-        primary_entity: Optional[Entity] = None
-    ) -> float:
-        """Calculate dynamic combined confidence score"""
-        if not candidates:
-            return 0.0
-        
-        # Group by strategy and take highest confidence
-        strategy_scores = {}
-        for candidate in candidates:
-            strategy = candidate.strategy
-            if strategy not in strategy_scores or candidate.confidence > strategy_scores[strategy]:
-                strategy_scores[strategy] = candidate.confidence
-        
-        # Calculate weighted score
-        weighted_sum = 0.0
-        total_weight = 0.0
-        
-        for strategy, confidence in strategy_scores.items():
-            weight = self.STRATEGY_WEIGHTS.get(strategy, 0.10)
-            weighted_sum += confidence * weight
-            total_weight += weight
-        
-        if total_weight == 0:
-            return 0.0
-        
-        base_score = weighted_sum / total_weight
-        
-        # Entity quality boost
-        if primary_entity and primary_entity.confidence > 0.8:
-            base_score += self.ENTITY_QUALITY_BOOST
-        
-        return min(base_score, 1.0)
-
-# ============================================================
-# INTENT STRATEGIES
-# ============================================================
-
-class IntentStrategyBase(ABC):
-    """Base class for intent detection strategies"""
-    
-    def __init__(self):
-        self.logger = logging.getLogger(__name__)
-    
-    @abstractmethod
-    def detect(self, text: str) -> Optional[IntentCandidate]:
-        """Detect intent from text"""
-        pass
-    
-    @abstractmethod
-    def get_strategy_type(self) -> IntentStrategy:
-        pass
-
-class PatternStrategy(IntentStrategyBase):
-    """Pattern-based intent detection"""
-    
-    def __init__(self):
-        super().__init__()
-        self.DN_PATTERN = re.compile(r'\b(\d{8,12})\b')
-        self.PENDING_DN = re.compile(r'(?:pending|open|outstanding)\s*(?:dn|dns|delivery|deliveries)', re.IGNORECASE)
-        self.PENDING_PGI = re.compile(r'(?:pending|open)\s*(?:pgi|goods issue|goods issuance)', re.IGNORECASE)
-        self.PENDING_POD = re.compile(r'(?:pending|open)\s*(?:pod|proof of delivery)', re.IGNORECASE)
-        self.HELP = re.compile(r'(?:help|menu|commands|what can you do|available commands)', re.IGNORECASE)
-        self.GREETING = re.compile(r'^(?:hello|hi|hey|good morning|good evening|howdy|greetings)', re.IGNORECASE)
-        self.CONVERSATIONAL = re.compile(
-            r'(?:can i|may i|could i|i have|i want|i need|tell me|help me|'
-            r'question|ask you|what is|how to|how do|where is|when is|why is|who is)',
-            re.IGNORECASE
-        )
-        self.RANKING = re.compile(
-            r'(?:top|best|highest|lowest|worst|bottom|leading)\s+(\d+)?\s*(?:dealers?|cities?|warehouses?|products?)',
-            re.IGNORECASE
-        )
-        self.COMPARISON = re.compile(
-            r'(?:compare|vs|versus|and)\s+(.*?)(?:\s+and\s+|\s+vs\s+|\s+versus\s+)(.*?)(?:\?|$)',
-            re.IGNORECASE
-        )
-        self.WAREHOUSE = re.compile(r'(?:warehouse|wh|depot|distribution|store)\s+([a-z0-9\s&\-\.]+)', re.IGNORECASE)
-        self.CITY = re.compile(r'(?:city|in|at|location|region|area)\s+([a-z0-9\s&\-\.]+)', re.IGNORECASE)
-        self.PRODUCT = re.compile(r'(?:product|model|material|item|sku|article|goods)\s+([a-z0-9\s&\-\.]+)', re.IGNORECASE)
-    
-    def get_strategy_type(self) -> IntentStrategy:
-        return IntentStrategy.PATTERN
-    
-    def _is_dn_number(self, text: str) -> bool:
-        if not text:
-            return False
-        cleaned = re.sub(r'\D', '', text.strip())
-        return 8 <= len(cleaned) <= 12
-    
-    def _clean_entity(self, name: str) -> Optional[str]:
-        if not name:
-            return None
-        cleaned = re.sub(
+        # Patterns for normalization
+        self.space_pattern = re.compile(r'\s+')
+        self.punctuation_pattern = re.compile(r'[^\w\s-]')
+        self.dealer_indicators = re.compile(
             r'\b(?:dealer|about|for|of|show|get|view|display|give|me|company|customer|'
             r'dashboard|profile|summary|overview|info|information|details|status|'
             r'statistics|performance|the|a|an)\b',
-            '',
-            name,
-            flags=re.IGNORECASE
-        ).strip()
-        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-        return cleaned if len(cleaned) > 1 else None
+            re.IGNORECASE
+        )
+        self.logger.info("✅ TextNormalizer initialized")
     
-    def detect(self, text: str) -> Optional[IntentCandidate]:
-        cleaned = text.strip()
-        normalized = cleaned.lower()
+    def normalize(self, text: str) -> NormalizedText:
+        """
+        Normalize text for processing
         
-        # DN Detection
-        if self._is_dn_number(cleaned):
-            dn_number = re.sub(r'\D', '', cleaned)
-            return IntentCandidate(
-                intent="dn_lookup",
-                service_key="dn",
-                method="get_dn_dashboard",
-                entity=dn_number,
-                confidence=1.0,
-                reason="DN number detected",
-                strategy=IntentStrategy.PATTERN
+        Steps:
+        1. Convert to lowercase
+        2. Remove extra spaces
+        3. Remove unwanted punctuation
+        4. Normalize entity names
+        5. Tokenize
+        """
+        if not text:
+            return NormalizedText(
+                original="",
+                cleaned="",
+                normalized="",
+                tokens=[],
+                entity_candidates={}
             )
         
-        dn_match = self.DN_PATTERN.search(cleaned)
-        if dn_match:
-            return IntentCandidate(
-                intent="dn_lookup",
-                service_key="dn",
-                method="get_dn_dashboard",
-                entity=dn_match.group(1),
-                confidence=1.0,
-                reason="DN number extracted",
-                strategy=IntentStrategy.PATTERN
-            )
+        # Step 1: Lowercase
+        lower_text = text.lower()
         
-        # Pending Detection
-        if self.PENDING_DN.search(normalized):
-            return IntentCandidate(
-                intent="pending_dn",
-                service_key="dn",
-                method="get_pending_dns",
-                confidence=0.98,
-                reason="Pending DN query",
-                strategy=IntentStrategy.PATTERN
-            )
+        # Step 2: Remove extra spaces
+        cleaned = self.space_pattern.sub(' ', lower_text).strip()
         
-        if self.PENDING_PGI.search(normalized):
-            return IntentCandidate(
-                intent="pending_pgi",
-                service_key="dn",
-                method="get_pending_pgi",
-                confidence=0.95,
-                reason="Pending PGI query",
-                strategy=IntentStrategy.PATTERN
-            )
+        # Step 3: Remove unwanted punctuation (keep hyphens for entity names)
+        cleaned = self.punctuation_pattern.sub(' ', cleaned)
+        cleaned = self.space_pattern.sub(' ', cleaned).strip()
         
-        if self.PENDING_POD.search(normalized):
-            return IntentCandidate(
-                intent="pending_pod",
-                service_key="dn",
-                method="get_pending_pod",
-                confidence=0.95,
-                reason="Pending POD query",
-                strategy=IntentStrategy.PATTERN
-            )
+        # Step 4: Tokenize
+        tokens = cleaned.split()
         
-        # Ranking
-        if self.RANKING.search(normalized):
-            if 'dealer' in normalized:
-                if 'bottom' in normalized or 'worst' in normalized:
-                    return IntentCandidate(
-                        intent="bottom_dealers",
-                        service_key="dealer",
-                        method="get_bottom_dealers",
-                        confidence=0.90,
-                        reason="Bottom dealers ranking",
-                        strategy=IntentStrategy.PATTERN
-                    )
-                else:
-                    return IntentCandidate(
-                        intent="top_dealers",
-                        service_key="dealer",
-                        method="get_top_dealers",
-                        confidence=0.90,
-                        reason="Top dealers ranking",
-                        strategy=IntentStrategy.PATTERN
-                    )
+        # Step 5: Extract entity candidates
+        entity_candidates = self._extract_entity_candidates(text, cleaned)
         
-        # Comparison
-        comparison_match = self.COMPARISON.search(cleaned)
-        if comparison_match:
-            return IntentCandidate(
-                intent="comparison",
-                service_key="dealer",
-                method="compare_dealers",
-                entity=comparison_match.group(1).strip(),
-                entity2=comparison_match.group(2).strip(),
-                confidence=0.90,
-                reason="Comparison detected",
-                strategy=IntentStrategy.PATTERN
-            )
+        return NormalizedText(
+            original=text,
+            cleaned=cleaned,
+            normalized=cleaned,
+            tokens=tokens,
+            entity_candidates=entity_candidates
+        )
+    
+    def _extract_entity_candidates(self, original: str, cleaned: str) -> Dict[str, List[str]]:
+        """Extract potential entity candidates from text"""
+        candidates = {}
         
-        # Short entity detection
-        if len(cleaned.split()) <= 4 and len(cleaned) > 2 and not re.match(r'^\d+$', cleaned):
-            entity_name = self._clean_entity(cleaned)
-            if entity_name and len(entity_name) > 1:
-                # Check if it looks like a dealer
-                if any(word in normalized for word in ['electronics', 'traders', 'enterprises', 'group', 'mart']):
-                    return IntentCandidate(
-                        intent="dealer_dashboard",
-                        service_key="dealer",
-                        method="get_dealer_dashboard",
-                        entity=entity_name,
-                        confidence=0.80,
-                        reason="Short query - dealer name",
-                        strategy=IntentStrategy.PATTERN
-                    )
+        # Remove common indicators for cleaner entity extraction
+        entity_text = self.dealer_indicators.sub('', cleaned)
+        entity_text = self.space_pattern.sub(' ', entity_text).strip()
         
-        # Location detection
-        warehouse_match = self.WAREHOUSE.search(cleaned)
-        if warehouse_match:
-            return IntentCandidate(
-                intent="warehouse_dashboard",
-                service_key="warehouse",
-                method="get_warehouse_dashboard",
-                entity=warehouse_match.group(1).strip(),
-                confidence=0.90,
-                reason="Warehouse detected",
-                strategy=IntentStrategy.PATTERN
-            )
+        if entity_text and len(entity_text) > 1:
+            candidates["potential_entity"] = [entity_text]
         
-        city_match = self.CITY.search(cleaned)
-        if city_match:
-            return IntentCandidate(
-                intent="city_dashboard",
-                service_key="city",
-                method="get_city_dashboard",
-                entity=city_match.group(1).strip(),
-                confidence=0.90,
-                reason="City detected",
-                strategy=IntentStrategy.PATTERN
-            )
+        # Look for phrases after "dealer", "warehouse", "city", "product"
+        patterns = {
+            "dealer": re.compile(r'dealer\s+([a-z0-9\s\-\.]+)', re.IGNORECASE),
+            "warehouse": re.compile(r'warehouse\s+([a-z0-9\s\-\.]+)', re.IGNORECASE),
+            "city": re.compile(r'city\s+([a-z0-9\s\-\.]+)', re.IGNORECASE),
+            "product": re.compile(r'product\s+([a-z0-9\s\-\.]+)', re.IGNORECASE),
+        }
         
-        product_match = self.PRODUCT.search(cleaned)
-        if product_match:
-            return IntentCandidate(
-                intent="product_dashboard",
-                service_key="product",
-                method="get_product_dashboard",
-                entity=product_match.group(1).strip(),
-                confidence=0.90,
-                reason="Product detected",
-                strategy=IntentStrategy.PATTERN
-            )
+        for entity_type, pattern in patterns.items():
+            match = pattern.search(original)
+            if match:
+                value = match.group(1).strip()
+                if value and len(value) > 1:
+                    if entity_type not in candidates:
+                        candidates[entity_type] = []
+                    candidates[entity_type].append(value)
         
-        # Conversational
-        if self.HELP.search(normalized):
-            return IntentCandidate(
-                intent="help",
-                service_key="groq",
-                method="process_query",
-                confidence=0.95,
-                needs_groq=True,
-                reason="Help query",
-                strategy=IntentStrategy.PATTERN
-            )
+        # Look for short queries (2-4 words) that might be entity names
+        if len(cleaned.split()) <= 4 and len(cleaned) > 2:
+            if "dealer" not in cleaned and "warehouse" not in cleaned and "city" not in cleaned and "product" not in cleaned:
+                if not re.match(r'^\d+$', cleaned):
+                    candidates["entity_name"] = [cleaned]
         
-        if self.GREETING.search(normalized):
-            return IntentCandidate(
-                intent="greeting",
-                service_key="groq",
-                method="process_query",
-                confidence=0.95,
-                needs_groq=True,
-                reason="Greeting",
-                strategy=IntentStrategy.PATTERN
-            )
-        
-        if self.CONVERSATIONAL.search(normalized):
-            return IntentCandidate(
-                intent="conversational",
-                service_key="groq",
-                method="process_query",
-                confidence=0.85,
-                needs_groq=True,
-                reason="Conversational",
-                strategy=IntentStrategy.PATTERN
-            )
-        
-        return None
+        return candidates
 
-class SpaCyStrategy(IntentStrategyBase):
-    """spaCy-based entity extraction"""
+# ============================================================
+# ENTITY EXTRACTOR (PURE ENTITY EXTRACTION)
+# ============================================================
+
+class EntityExtractor:
+    """
+    Pure Entity Extraction using spaCy.
+    NO business logic, NO SQL, NO formatting.
+    """
     
     def __init__(self):
-        super().__init__()
+        self.logger = logging.getLogger(__name__)
         self.nlp = None
-        try:
-            if SPACY_AVAILABLE:
+        
+        if SPACY_AVAILABLE:
+            try:
                 try:
                     self.nlp = spacy.load("en_core_web_sm")
                 except OSError:
                     try:
                         self.nlp = spacy.load("en_core_web_lg")
                     except OSError:
-                        pass
-        except Exception as e:
-            self.logger.warning(f"spaCy init failed: {e}")
+                        self.logger.warning("⚠️ spaCy model not found. Download: python -m spacy download en_core_web_sm")
+            except Exception as e:
+                self.logger.warning(f"⚠️ spaCy initialization failed: {e}")
+        
+        self.logger.info(f"✅ EntityExtractor initialized (spaCy: {'✅' if self.nlp else '❌'})")
     
-    def get_strategy_type(self) -> IntentStrategy:
-        return IntentStrategy.SPACY
-    
-    def detect(self, text: str) -> Optional[IntentCandidate]:
+    def extract_entities(self, text: str) -> List[ExtractedEntity]:
+        """
+        Extract entities from text using spaCy.
+        ONLY entity extraction - NO business logic.
+        """
         if not self.nlp:
-            return None
+            return []
         
         try:
             doc = self.nlp(text)
-            extracted = {}
+            entities = []
+            
+            # Define entity type mapping
+            entity_map = {
+                "ORG": EntityType.DEALER,
+                "GPE": EntityType.CITY,
+                "LOC": EntityType.WAREHOUSE,
+                "PRODUCT": EntityType.PRODUCT,
+                "FAC": EntityType.WAREHOUSE,
+            }
             
             for ent in doc.ents:
-                if ent.label_ == "ORG":
-                    if "dealer" not in extracted:
-                        extracted["dealer"] = []
-                    extracted["dealer"].append(ent.text)
-                elif ent.label_ == "GPE":
-                    if "city" not in extracted:
-                        extracted["city"] = []
-                    extracted["city"].append(ent.text)
-                elif ent.label_ == "PRODUCT":
-                    if "product" not in extracted:
-                        extracted["product"] = []
-                    extracted["product"].append(ent.text)
+                if ent.label_ in entity_map:
+                    entity_type = entity_map[ent.label_]
+                    # Determine confidence based on entity type
+                    confidence = self._calculate_entity_confidence(ent)
+                    
+                    extracted = ExtractedEntity(
+                        type=entity_type,
+                        text=ent.text,
+                        normalized=ent.text.lower().strip(),
+                        confidence=confidence,
+                        position=ent.start_char
+                    )
+                    entities.append(extracted)
             
-            if extracted.get("dealer"):
-                return IntentCandidate(
-                    intent="dealer_dashboard",
-                    service_key="dealer",
-                    method="get_dealer_dashboard",
-                    entity=extracted["dealer"][0],
-                    confidence=0.70,
-                    reason=f"spaCy ORG entity: {extracted['dealer'][0]}",
-                    strategy=IntentStrategy.SPACY,
-                    extracted_entities=extracted
-                )
+            # Sort by position (earliest first)
+            entities.sort(key=lambda x: x.position)
             
-            if extracted.get("city") and "city" in text.lower():
-                return IntentCandidate(
-                    intent="city_dashboard",
-                    service_key="city",
-                    method="get_city_dashboard",
-                    entity=extracted["city"][0],
-                    confidence=0.70,
-                    reason=f"spaCy GPE entity: {extracted['city'][0]}",
-                    strategy=IntentStrategy.SPACY,
-                    extracted_entities=extracted
-                )
+            return entities
             
-            if extracted.get("product"):
-                return IntentCandidate(
-                    intent="product_dashboard",
-                    service_key="product",
-                    method="get_product_dashboard",
-                    entity=extracted["product"][0],
-                    confidence=0.70,
-                    reason=f"spaCy PRODUCT entity: {extracted['product'][0]}",
-                    strategy=IntentStrategy.SPACY,
-                    extracted_entities=extracted
-                )
         except Exception as e:
-            self.logger.warning(f"spaCy detection failed: {e}")
+            self.logger.warning(f"spaCy entity extraction failed: {e}")
+            return []
+    
+    def _calculate_entity_confidence(self, ent) -> float:
+        """Calculate confidence for extracted entity"""
+        # Higher confidence for longer entities
+        length_factor = min(1.0, len(ent.text) / 20)
         
-        return None
+        # Higher confidence for certain entity types
+        type_confidence = {
+            "ORG": 0.85,
+            "GPE": 0.80,
+            "LOC": 0.80,
+            "PRODUCT": 0.75,
+            "FAC": 0.75,
+        }
+        
+        base = type_confidence.get(ent.label_, 0.70)
+        return min(1.0, base + (length_factor * 0.10))
 
-class SemanticStrategy(IntentStrategyBase):
-    """SentenceTransformer-based semantic detection"""
+# ============================================================
+# ENTITY MATCHER (RAPIDFUZZ)
+# ============================================================
+
+class EntityMatcher:
+    """
+    Pure Entity Matching using RapidFuzz.
+    NO business logic, NO SQL, NO formatting.
+    
+    This resolves entities by matching against known patterns.
+    """
+    
+    # Known entity patterns (business data kept separate)
+    # These would normally come from a database or configuration
+    DEALER_PATTERNS = [
+        "sham electronics", "ruba digital wah", "taj electronics",
+        "haroon electronics", "mian group chakwal", "arco electronics",
+        "shah electronics"
+    ]
+    
+    CITY_PATTERNS = [
+        "lahore", "karachi", "islamabad", "rawalpindi", "faisalabad",
+        "multan", "peshawar", "quetta", "gujranwala"
+    ]
+    
+    WAREHOUSE_PATTERNS = [
+        "main warehouse", "north warehouse", "south warehouse",
+        "central warehouse", "east warehouse", "west warehouse"
+    ]
+    
+    PRODUCT_PATTERNS = [
+        "ac-123", "tv-456", "refrigerator", "washing machine",
+        "microwave", "oven", "dishwasher"
+    ]
     
     def __init__(self):
-        super().__init__()
+        self.logger = logging.getLogger(__name__)
+        self.logger.info("✅ EntityMatcher initialized")
+        
+        # Pre-compile patterns for matching
+        self._normalize_patterns()
+    
+    def _normalize_patterns(self):
+        """Normalize patterns for matching"""
+        self._dealer_norm = [p.lower().strip() for p in self.DEALER_PATTERNS]
+        self._city_norm = [p.lower().strip() for p in self.CITY_PATTERNS]
+        self._warehouse_norm = [p.lower().strip() for p in self.WAREHOUSE_PATTERNS]
+        self._product_norm = [p.lower().strip() for p in self.PRODUCT_PATTERNS]
+    
+    def match_entity(self, text: str, entity_type: EntityType) -> Optional[ExtractedEntity]:
+        """
+        Match entity against known patterns using RapidFuzz.
+        """
+        if not RAPIDFUZZ_AVAILABLE or not text:
+            return None
+        
+        text_lower = text.lower().strip()
+        patterns = []
+        pattern_type = entity_type
+        
+        if entity_type == EntityType.DEALER:
+            patterns = self._dealer_norm
+        elif entity_type == EntityType.CITY:
+            patterns = self._city_norm
+        elif entity_type == EntityType.WAREHOUSE:
+            patterns = self._warehouse_norm
+        elif entity_type == EntityType.PRODUCT:
+            patterns = self._product_norm
+        else:
+            return None
+        
+        if not patterns:
+            return None
+        
+        try:
+            # Try exact match first
+            for pattern in patterns:
+                if text_lower == pattern:
+                    return ExtractedEntity(
+                        type=entity_type,
+                        text=pattern,
+                        normalized=pattern,
+                        confidence=1.0,
+                        position=0
+                    )
+            
+            # Try contains match
+            for pattern in patterns:
+                if text_lower in pattern or pattern in text_lower:
+                    return ExtractedEntity(
+                        type=entity_type,
+                        text=pattern,
+                        normalized=pattern,
+                        confidence=0.85,
+                        position=0
+                    )
+            
+            # Try fuzzy match
+            results = process.extract(
+                text_lower,
+                patterns,
+                scorer=fuzz.ratio,
+                limit=1
+            )
+            
+            if results and results[0][1] >= 70:
+                best_match, score, _ = results[0]
+                return ExtractedEntity(
+                    type=entity_type,
+                    text=best_match,
+                    normalized=best_match,
+                    confidence=score / 100.0,
+                    position=0
+                )
+            
+            return None
+            
+        except Exception as e:
+            self.logger.warning(f"Entity matching failed: {e}")
+            return None
+
+# ============================================================
+# SEMANTIC ROUTER
+# ============================================================
+
+class SemanticRouter:
+    """
+    Semantic Router for intent detection.
+    Uses sentence-transformers for semantic understanding.
+    """
+    
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
         self.model = None
         self.intent_embeddings = {}
         self._init_model()
@@ -906,29 +616,79 @@ class SemanticStrategy(IntentStrategyBase):
         try:
             self.model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
             
+            # Intent examples for semantic routing
             intent_examples = {
-                'dn_lookup': ["check DN", "delivery note", "DN number"],
-                'pending_dn': ["pending deliveries", "open delivery notes", "outstanding DNs"],
-                'dealer_dashboard': ["dealer performance", "dealer revenue", "dealer dashboard"],
-                'top_dealers': ["top dealers", "best performing", "dealer ranking"],
-                'help': ["help me", "available commands", "what can you do"]
+                IntentType.DN_LOOKUP.value: [
+                    "check delivery note number", "track DN", "delivery note details",
+                    "DN lookup", "DN number", "delivery note"
+                ],
+                IntentType.PENDING_DN.value: [
+                    "pending deliveries", "open delivery notes", "outstanding DNs",
+                    "deliveries not completed", "pending DN"
+                ],
+                IntentType.PENDING_PGI.value: [
+                    "goods issue pending", "PGI not done", "pending goods issuance"
+                ],
+                IntentType.PENDING_POD.value: [
+                    "proof of delivery pending", "POD not received", "POD status"
+                ],
+                IntentType.DEALER_DASHBOARD.value: [
+                    "dealer performance", "dealer revenue", "dealer dashboard",
+                    "show dealer metrics", "dealer analytics", "dealer profile"
+                ],
+                IntentType.TOP_DEALERS.value: [
+                    "best performing dealers", "top revenue dealers", "dealer ranking",
+                    "highest performing dealers", "top dealers"
+                ],
+                IntentType.BOTTOM_DEALERS.value: [
+                    "lowest performing dealers", "bottom dealers", "worst dealers"
+                ],
+                IntentType.WAREHOUSE_DASHBOARD.value: [
+                    "warehouse performance", "depot metrics", "warehouse dashboard"
+                ],
+                IntentType.CITY_DASHBOARD.value: [
+                    "city performance", "city revenue", "city dashboard"
+                ],
+                IntentType.PRODUCT_DASHBOARD.value: [
+                    "product performance", "product revenue", "product dashboard"
+                ],
+                IntentType.NATIONAL_KPI.value: [
+                    "national performance", "country-wide metrics", "executive dashboard",
+                    "Pakistan performance", "company performance"
+                ],
+                IntentType.HELP.value: [
+                    "show commands", "available commands", "help menu",
+                    "what can you do", "how to use"
+                ],
+                IntentType.GREETING.value: [
+                    "hello", "hi there", "good morning", "hey"
+                ],
+                IntentType.CONVERSATIONAL.value: [
+                    "how are you", "what is your name", "tell me about yourself",
+                    "thank you", "thanks"
+                ]
             }
             
             import numpy as np
             for intent, examples in intent_examples.items():
-                embeddings = self.model.encode(examples, convert_to_numpy=True)
-                self.intent_embeddings[intent] = embeddings.mean(axis=0)
+                if examples:
+                    embeddings = self.model.encode(examples, convert_to_numpy=True)
+                    self.intent_embeddings[intent] = embeddings.mean(axis=0)
             
-            self.logger.info("✅ Semantic strategy initialized")
+            self.logger.info(f"✅ Semantic Router initialized with {len(self.intent_embeddings)} intents")
+            
         except Exception as e:
-            self.logger.warning(f"Semantic init failed: {e}")
+            self.logger.warning(f"⚠️ Semantic Router initialization failed: {e}")
     
-    def get_strategy_type(self) -> IntentStrategy:
-        return IntentStrategy.SEMANTIC
-    
-    def detect(self, text: str) -> Optional[IntentCandidate]:
+    def route(self, text: str) -> Tuple[str, float]:
+        """
+        Route text to intent using semantic similarity.
+        
+        Returns:
+            Tuple of (intent, confidence)
+        """
         if not self.model or not self.intent_embeddings:
-            return None
+            return IntentType.GENERAL_AI.value, 0.0
         
         try:
             import numpy as np
@@ -938,104 +698,80 @@ class SemanticStrategy(IntentStrategyBase):
             for intent, embedding in self.intent_embeddings.items():
                 text_norm = text_embedding / np.linalg.norm(text_embedding)
                 intent_norm = embedding / np.linalg.norm(embedding)
-                similarities[intent] = float(np.dot(text_norm, intent_norm))
+                similarity = np.dot(text_norm, intent_norm)
+                similarities[intent] = float(similarity)
             
             best_intent = max(similarities, key=similarities.get)
             best_score = similarities[best_intent]
             
+            # Apply threshold
             if best_score < 0.3:
-                return None
+                return IntentType.GENERAL_AI.value, best_score
             
-            route_map = {
-                'dn_lookup': ('dn', 'get_dn_dashboard'),
-                'pending_dn': ('dn', 'get_pending_dns'),
-                'dealer_dashboard': ('dealer', 'get_dealer_dashboard'),
-                'top_dealers': ('dealer', 'get_top_dealers'),
-                'help': ('groq', 'process_query')
-            }
+            return best_intent, best_score
             
-            service_key, method = route_map.get(best_intent, ('groq', 'process_query'))
-            
-            return IntentCandidate(
-                intent=best_intent,
-                service_key=service_key,
-                method=method,
-                confidence=best_score,
-                reason=f"Semantic match: {best_intent}",
-                strategy=IntentStrategy.SEMANTIC,
-                needs_groq=best_intent in ['help']
-            )
         except Exception as e:
-            self.logger.warning(f"Semantic detection failed: {e}")
-        
-        return None
+            self.logger.warning(f"Semantic routing failed: {e}")
+            return IntentType.GENERAL_AI.value, 0.0
 
-class RapidFuzzStrategy(IntentStrategyBase):
-    """RapidFuzz-based fuzzy matching"""
-    
-    def __init__(self, entity_resolver: EntityResolver):
-        super().__init__()
-        self.entity_resolver = entity_resolver
-    
-    def get_strategy_type(self) -> IntentStrategy:
-        return IntentStrategy.RAPIDFUZZ
-    
-    def detect(self, text: str) -> Optional[IntentCandidate]:
-        # Use entity resolver for dealer matching
-        entity = self.entity_resolver.resolve_dealer(text)
-        if entity and entity.confidence >= 0.75:
-            return IntentCandidate(
-                intent="dealer_dashboard",
-                service_key="dealer",
-                method="get_dealer_dashboard",
-                entity=entity.name,
-                confidence=entity.confidence,
-                reason=f"RapidFuzz dealer match: {entity.name}",
-                strategy=IntentStrategy.RAPIDFUZZ
-            )
-        return None
+# ============================================================
+# CONFIDENCE ENGINE
+# ============================================================
 
-class FallbackStrategy(IntentStrategyBase):
-    """Fallback strategy"""
+class ConfidenceEngine:
+    """
+    Dynamic confidence scoring engine.
+    Combines multiple scores into a single confidence value.
+    """
     
-    def get_strategy_type(self) -> IntentStrategy:
-        return IntentStrategy.FALLBACK
+    # Weights for different strategies
+    STRATEGY_WEIGHTS = {
+        "pattern": 0.35,
+        "semantic": 0.25,
+        "fuzzy": 0.15,
+        "spacy": 0.10,
+        "flashrank": 0.10,
+        "entity": 0.05
+    }
     
-    def detect(self, text: str) -> Optional[IntentCandidate]:
-        # Check if it looks like a DN number
-        cleaned = re.sub(r'\D', '', text.strip())
-        if cleaned and 8 <= len(cleaned) <= 12:
-            return IntentCandidate(
-                intent="dn_lookup",
-                service_key="dn",
-                method="get_dn_dashboard",
-                entity=cleaned,
-                confidence=0.60,
-                reason="DN fallback",
-                strategy=IntentStrategy.FALLBACK
-            )
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
+        self.logger.info("✅ ConfidenceEngine initialized")
+    
+    def calculate_combined_score(
+        self,
+        pattern_score: float = 0.0,
+        semantic_score: float = 0.0,
+        fuzzy_score: float = 0.0,
+        spacy_score: float = 0.0,
+        flashrank_score: float = 0.0,
+        entity_score: float = 0.0
+    ) -> float:
+        """
+        Calculate combined confidence score with weights.
+        """
+        scores = {
+            "pattern": pattern_score,
+            "semantic": semantic_score,
+            "fuzzy": fuzzy_score,
+            "spacy": spacy_score,
+            "flashrank": flashrank_score,
+            "entity": entity_score
+        }
         
-        # Check if it looks like a dealer name
-        if len(text.split()) <= 4 and len(text) > 2 and not re.match(r'^\d+$', text):
-            return IntentCandidate(
-                intent="dealer_dashboard",
-                service_key="dealer",
-                method="get_dealer_dashboard",
-                entity=text,
-                confidence=0.40,
-                reason="Dealer fallback",
-                strategy=IntentStrategy.FALLBACK
-            )
+        weighted_sum = 0.0
+        total_weight = 0.0
         
-        return IntentCandidate(
-            intent="general_ai",
-            service_key="groq",
-            method="process_query",
-            confidence=0.30,
-            needs_groq=True,
-            reason="General fallback",
-            strategy=IntentStrategy.FALLBACK
-        )
+        for strategy, score in scores.items():
+            weight = self.STRATEGY_WEIGHTS.get(strategy, 0.10)
+            weighted_sum += score * weight
+            total_weight += weight
+        
+        if total_weight == 0:
+            return 0.0
+        
+        combined = weighted_sum / total_weight
+        return min(combined, 1.0)
 
 # ============================================================
 # ENTERPRISE INTENT DETECTION ENGINE
@@ -1043,16 +779,18 @@ class FallbackStrategy(IntentStrategyBase):
 
 class IntentDetectionEngine:
     """
-    ENTERPRISE INTENT DETECTION ENGINE
+    ENTERPRISE INTENT DETECTION ENGINE - v3.0 SIMPLIFIED
     
     Features:
-    - Strategy pattern for detection
-    - Entity resolver layer
-    - Confidence engine
-    - FlashRank re-ranking
-    - Route validation
-    - Service metadata
-    - Comprehensive caching
+    - Text Normalization
+    - Entity Extraction (spaCy)
+    - Entity Matching (RapidFuzz)
+    - Semantic Routing (SentenceTransformer)
+    - FlashRank Re-ranking
+    - Confidence Engine
+    - Caching
+    
+    NO business logic, NO SQL, NO formatting.
     """
     
     def __init__(self):
@@ -1060,96 +798,269 @@ class IntentDetectionEngine:
         self.start_time = time.time()
         
         # ============================================================
-        # 1. INITIALIZE ENTITY RESOLVER
+        # 1. INITIALIZE COMPONENTS
         # ============================================================
-        self.entity_resolver = EntityResolver()
-        self.logger.info("✅ EntityResolver initialized")
         
-        # ============================================================
-        # 2. INITIALIZE DETECTION STRATEGIES
-        # ============================================================
-        self.strategies = [
-            PatternStrategy(),
-            SpaCyStrategy(),
-            SemanticStrategy(),
-            RapidFuzzStrategy(self.entity_resolver),
-            FallbackStrategy()
-        ]
-        self.logger.info(f"✅ {len(self.strategies)} detection strategies initialized")
+        # Text Normalizer
+        self.normalizer = TextNormalizer()
+        self.logger.info("✅ TextNormalizer initialized")
         
-        # ============================================================
-        # 3. INITIALIZE FLASHRANK
-        # ============================================================
+        # Entity Extractor (spaCy)
+        self.entity_extractor = EntityExtractor()
+        self.logger.info("✅ EntityExtractor initialized")
+        
+        # Entity Matcher (RapidFuzz)
+        self.entity_matcher = EntityMatcher()
+        self.logger.info("✅ EntityMatcher initialized")
+        
+        # Semantic Router (SentenceTransformer)
+        self.semantic_router = SemanticRouter()
+        self.logger.info("✅ SemanticRouter initialized")
+        
+        # FlashRank Re-ranker
         self.ranker = None
         if FLASHRANK_AVAILABLE:
             try:
                 self.ranker = Ranker(model="ms-marco-MiniLM-L-12-v2")
                 self.logger.info("✅ FlashRank initialized")
             except Exception as e:
-                self.logger.warning(f"FlashRank init failed: {e}")
+                self.logger.warning(f"⚠️ FlashRank init failed: {e}")
         
-        # ============================================================
-        # 4. INITIALIZE CONFIDENCE ENGINE
-        # ============================================================
+        # Confidence Engine
         self.confidence_engine = ConfidenceEngine()
         self.logger.info("✅ ConfidenceEngine initialized")
         
         # ============================================================
-        # 5. SETUP CACHE
+        # 2. SETUP CACHE
         # ============================================================
         self._cache = TTLCache(maxsize=1000, ttl=300) if CACHETOOLS_AVAILABLE else {}
         self._cache_hits = 0
         self._cache_misses = 0
         
         # ============================================================
-        # 6. LOG SUMMARY
+        # 3. PATTERNS
+        # ============================================================
+        self._init_patterns()
+        
+        # ============================================================
+        # 4. LOG SUMMARY
         # ============================================================
         init_time = (time.time() - self.start_time) * 1000
         self.logger.info("=" * 60)
-        self.logger.info(f"✅ IntentDetectionEngine initialized in {init_time:.2f}ms")
-        self.logger.info(f"   Strategies: {len(self.strategies)}")
+        self.logger.info(f"✅ IntentDetectionEngine v3.0 initialized in {init_time:.2f}ms")
         self.logger.info(f"   spaCy: {'✅' if SPACY_AVAILABLE else '❌'}")
         self.logger.info(f"   SentenceTransformer: {'✅' if SENTENCE_TRANSFORMERS_AVAILABLE else '❌'}")
         self.logger.info(f"   RapidFuzz: {'✅' if RAPIDFUZZ_AVAILABLE else '❌'}")
         self.logger.info(f"   FlashRank: {'✅' if self.ranker else '❌'}")
         self.logger.info("=" * 60)
     
+    def _init_patterns(self):
+        """Initialize regex patterns for pattern-based detection"""
+        # DN Pattern
+        self.DN_PATTERN = re.compile(r'\b(\d{8,12})\b')
+        
+        # Pending Patterns
+        self.PENDING_DN_PATTERN = re.compile(
+            r'(?:pending|open|outstanding)\s*(?:dn|dns|delivery|deliveries)',
+            re.IGNORECASE
+        )
+        self.PENDING_PGI_PATTERN = re.compile(
+            r'(?:pending|open)\s*(?:pgi|goods issue)',
+            re.IGNORECASE
+        )
+        self.PENDING_POD_PATTERN = re.compile(
+            r'(?:pending|open)\s*(?:pod|proof of delivery)',
+            re.IGNORECASE
+        )
+        
+        # Ranking Patterns
+        self.TOP_DEALERS_PATTERN = re.compile(
+            r'(?:top|best|highest)\s*(?:dealers?|performers?)',
+            re.IGNORECASE
+        )
+        self.BOTTOM_DEALERS_PATTERN = re.compile(
+            r'(?:bottom|lowest|worst)\s*(?:dealers?|performers?)',
+            re.IGNORECASE
+        )
+        
+        # Comparison Pattern
+        self.COMPARISON_PATTERN = re.compile(
+            r'(?:compare|vs|versus|difference between)\s+(.*?)(?:\s+and\s+|\s+vs\s+|\s+versus\s+)(.*?)(?:\?|$)',
+            re.IGNORECASE
+        )
+        
+        # National KPI Pattern
+        self.NATIONAL_KPI_PATTERN = re.compile(
+            r'(?:national|pakistan|country|overall|executive)\s*(?:kpi|performance|dashboard)',
+            re.IGNORECASE
+        )
+        
+        # Help/Greeting Patterns
+        self.HELP_PATTERN = re.compile(
+            r'(?:help|menu|commands|what can you do)',
+            re.IGNORECASE
+        )
+        self.GREETING_PATTERN = re.compile(
+            r'^(?:hello|hi|hey|good morning|good evening|howdy|greetings)',
+            re.IGNORECASE
+        )
+    
     def detect_intent(self, message: str) -> RoutingDecision:
         """
-        Detect intent using all strategies and return RoutingDecision
+        Detect intent from message and return RoutingDecision.
+        
+        Steps:
+        1. Normalize text
+        2. Extract entities
+        3. Match entities
+        4. Detect intent (pattern + semantic)
+        5. Re-rank candidates (FlashRank)
+        6. Calculate confidence
+        7. Return RoutingDecision
         """
-        cleaned = message.strip()
-        if not cleaned:
-            return self._create_fallback_decision(cleaned, "Empty message")
+        if not message or not message.strip():
+            return self._create_fallback_decision(message, "Empty message")
         
         # Check cache
-        cache_key = f"intent:{cleaned[:100]}"
+        cache_key = self._get_cache_key(message)
         if self._cache_enabled() and cache_key in self._cache:
             self._cache_hits += 1
-            self.logger.debug(f"Cache hit for: {cleaned[:50]}")
+            self.logger.debug(f"Cache hit for: {message[:50]}")
             return self._cache[cache_key]
         
         self._cache_misses += 1
-        self.logger.info(f"🔍 Detecting intent for: {cleaned[:100]}")
+        self.logger.info(f"🔍 Detecting intent for: {message[:100]}")
         
         # ============================================================
-        # STEP 1: RUN ALL STRATEGIES
+        # STEP 1: TEXT NORMALIZATION
         # ============================================================
+        normalized = self.normalizer.normalize(message)
+        self.logger.debug(f"Normalized: {normalized.cleaned}")
+        
+        # ============================================================
+        # STEP 2: ENTITY EXTRACTION (spaCy)
+        # ============================================================
+        extracted_entities = self.entity_extractor.extract_entities(message)
+        self.logger.debug(f"Extracted entities: {len(extracted_entities)}")
+        
+        # ============================================================
+        # STEP 3: ENTITY MATCHING (RapidFuzz)
+        # ============================================================
+        matched_entities = []
+        for entity in extracted_entities:
+            matched = self.entity_matcher.match_entity(entity.text, entity.type)
+            if matched and matched.confidence > 0.7:
+                matched_entities.append(matched)
+        
+        # ============================================================
+        # STEP 4: INTENT DETECTION (Pattern + Semantic)
+        # ============================================================
+        
+        # 4a: Pattern-based detection
+        pattern_intent, pattern_score, pattern_entity = self._detect_by_pattern(
+            message, normalized, matched_entities
+        )
+        
+        # 4b: Semantic detection
+        semantic_intent, semantic_score = self.semantic_router.route(normalized.cleaned)
+        
+        # ============================================================
+        # STEP 5: CANDIDATE SELECTION
+        # ============================================================
+        
         candidates = []
-        for strategy in self.strategies:
-            try:
-                result = strategy.detect(cleaned)
-                if result:
-                    candidates.append(result)
-                    self.logger.debug(f"  {strategy.get_strategy_type().value}: {result.intent} ({result.confidence:.2f})")
-            except Exception as e:
-                self.logger.warning(f"Strategy {strategy.get_strategy_type().value} failed: {e}")
         
-        if not candidates:
-            return self._create_fallback_decision(cleaned, "No intent detected")
+        # Pattern candidate
+        if pattern_intent and pattern_score > 0.5:
+            route = RoutingTable.get_route(pattern_intent)
+            if route:
+                candidates.append(IntentCandidate(
+                    intent=pattern_intent,
+                    service_key=route["service"],
+                    method=route["method"],
+                    entity=pattern_entity,
+                    confidence=pattern_score,
+                    needs_groq=pattern_intent in [IntentType.HELP.value, IntentType.GREETING.value, IntentType.CONVERSATIONAL.value, IntentType.GENERAL_AI.value],
+                    reason=f"Pattern match: {pattern_intent}",
+                    strategy="pattern"
+                ))
+        
+        # Semantic candidate
+        if semantic_intent and semantic_score > 0.3:
+            route = RoutingTable.get_route(semantic_intent)
+            if route:
+                candidates.append(IntentCandidate(
+                    intent=semantic_intent,
+                    service_key=route["service"],
+                    method=route["method"],
+                    confidence=semantic_score,
+                    needs_groq=semantic_intent in [IntentType.HELP.value, IntentType.GREETING.value, IntentType.CONVERSATIONAL.value, IntentType.GENERAL_AI.value],
+                    reason=f"Semantic match: {semantic_intent}",
+                    strategy="semantic"
+                ))
+        
+        # Entity-based candidate
+        if matched_entities:
+            primary_entity = matched_entities[0]
+            if primary_entity.type == EntityType.DEALER:
+                route = RoutingTable.get_route(IntentType.DEALER_DASHBOARD.value)
+                if route:
+                    candidates.append(IntentCandidate(
+                        intent=IntentType.DEALER_DASHBOARD.value,
+                        service_key=route["service"],
+                        method=route["method"],
+                        entity=primary_entity.text,
+                        confidence=primary_entity.confidence * 0.85,
+                        needs_groq=False,
+                        reason=f"Entity match: {primary_entity.text}",
+                        strategy="entity",
+                        extracted_entities=matched_entities
+                    ))
+            elif primary_entity.type == EntityType.CITY:
+                route = RoutingTable.get_route(IntentType.CITY_DASHBOARD.value)
+                if route:
+                    candidates.append(IntentCandidate(
+                        intent=IntentType.CITY_DASHBOARD.value,
+                        service_key=route["service"],
+                        method=route["method"],
+                        entity=primary_entity.text,
+                        confidence=primary_entity.confidence * 0.80,
+                        needs_groq=False,
+                        reason=f"Entity match: {primary_entity.text}",
+                        strategy="entity",
+                        extracted_entities=matched_entities
+                    ))
+            elif primary_entity.type == EntityType.WAREHOUSE:
+                route = RoutingTable.get_route(IntentType.WAREHOUSE_DASHBOARD.value)
+                if route:
+                    candidates.append(IntentCandidate(
+                        intent=IntentType.WAREHOUSE_DASHBOARD.value,
+                        service_key=route["service"],
+                        method=route["method"],
+                        entity=primary_entity.text,
+                        confidence=primary_entity.confidence * 0.80,
+                        needs_groq=False,
+                        reason=f"Entity match: {primary_entity.text}",
+                        strategy="entity",
+                        extracted_entities=matched_entities
+                    ))
+            elif primary_entity.type == EntityType.PRODUCT:
+                route = RoutingTable.get_route(IntentType.PRODUCT_DASHBOARD.value)
+                if route:
+                    candidates.append(IntentCandidate(
+                        intent=IntentType.PRODUCT_DASHBOARD.value,
+                        service_key=route["service"],
+                        method=route["method"],
+                        entity=primary_entity.text,
+                        confidence=primary_entity.confidence * 0.80,
+                        needs_groq=False,
+                        reason=f"Entity match: {primary_entity.text}",
+                        strategy="entity",
+                        extracted_entities=matched_entities
+                    ))
         
         # ============================================================
-        # STEP 2: FLASHRANK RE-RANKING
+        # STEP 6: FLASHRANK RE-RANKING
         # ============================================================
         if self.ranker and len(candidates) > 1:
             try:
@@ -1157,58 +1068,47 @@ class IntentDetectionEngine:
                     {"id": i, "text": f"{c.intent}: {c.entity or ''}", "meta": c}
                     for i, c in enumerate(candidates)
                 ]
-                results = self.ranker.rerank(query=cleaned, passages=passages)
+                results = self.ranker.rerank(query=message, passages=passages)
                 for result in results:
                     idx = result["id"]
                     if idx < len(candidates):
                         candidates[idx].confidence = result["score"]
+                candidates.sort(key=lambda x: x.confidence, reverse=True)
             except Exception as e:
                 self.logger.warning(f"FlashRank failed: {e}")
         
         # ============================================================
-        # STEP 3: ENTITY RESOLUTION
+        # STEP 7: SELECT BEST CANDIDATE
         # ============================================================
-        primary_entity = None
-        for candidate in candidates:
-            if candidate.entity and candidate.intent in ['dealer_dashboard', 'dealer_suggestion']:
-                entity = self.entity_resolver.resolve_dealer(candidate.entity)
-                if entity and entity.confidence > 0.7:
-                    primary_entity = entity
-                    candidate.entity = entity.name
-                    candidate.confidence = max(candidate.confidence, entity.confidence)
-                    break
+        if not candidates:
+            return self._create_fallback_decision(message, "No intent detected")
         
-        # ============================================================
-        # STEP 4: CONFIDENCE ENGINE
-        # ============================================================
-        combined_score = self.confidence_engine.calculate_combined_score(candidates, primary_entity)
+        best = candidates[0]
         
-        # ============================================================
-        # STEP 5: SELECT BEST CANDIDATE
-        # ============================================================
-        best = max(candidates, key=lambda x: x.confidence)
-        
-        # Apply confidence threshold
-        threshold = RoutingConfig.get_threshold(best.intent)
+        # Get confidence threshold
+        threshold = RoutingTable.get_threshold(best.intent)
         if best.confidence < threshold:
             self.logger.info(f"⚠️ Low confidence: {best.confidence:.2f} < {threshold:.2f}")
-            best = next((c for c in candidates if c.intent == 'general_ai'), None) or best
+            # Try to find a better candidate
+            better = next((c for c in candidates if c.intent == IntentType.GENERAL_AI.value), None)
+            if better and better.confidence >= 0.3:
+                best = better
         
         # ============================================================
-        # STEP 6: CREATE ROUTING DECISION
+        # STEP 8: CREATE ROUTING DECISION
         # ============================================================
         routing_decision = self._create_routing_decision(
             candidate=best,
-            combined_score=combined_score,
-            primary_entity=primary_entity,
-            candidates=candidates,
-            original_message=cleaned
+            pattern_score=pattern_score,
+            semantic_score=semantic_score,
+            extracted_entities=matched_entities,
+            original_message=message
         )
         
         # ============================================================
-        # STEP 7: VALIDATE ROUTE
+        # STEP 9: VALIDATE ROUTE
         # ============================================================
-        routing_decision.validated = RoutingConfig.validate_route(
+        routing_decision.validated = RoutingTable.validate_route(
             routing_decision.intent,
             routing_decision.service_key,
             routing_decision.method
@@ -1221,23 +1121,103 @@ class IntentDetectionEngine:
             self.logger.warning(f"⚠️ {routing_decision.validation_errors[0]}")
         
         # ============================================================
-        # STEP 8: CACHE AND RETURN
+        # STEP 10: CACHE AND RETURN
         # ============================================================
         self._cache[cache_key] = routing_decision
         self.logger.info(f"🎯 Final: {routing_decision.intent} ({routing_decision.confidence:.2f})")
         return routing_decision
     
+    def _detect_by_pattern(self, text: str, normalized: NormalizedText, entities: List[ExtractedEntity]) -> Tuple[Optional[str], float, Optional[str]]:
+        """
+        Detect intent using regex patterns.
+        
+        Returns:
+            Tuple of (intent, confidence, entity)
+        """
+        cleaned = text.strip()
+        cleaned_lower = cleaned.lower()
+        
+        # DN Detection
+        if self.DN_PATTERN.search(cleaned):
+            dn_number = self.DN_PATTERN.search(cleaned).group(1)
+            return IntentType.DN_LOOKUP.value, 1.0, dn_number
+        
+        # Pending DN
+        if self.PENDING_DN_PATTERN.search(cleaned_lower):
+            return IntentType.PENDING_DN.value, 0.95, None
+        
+        # Pending PGI
+        if self.PENDING_PGI_PATTERN.search(cleaned_lower):
+            return IntentType.PENDING_PGI.value, 0.95, None
+        
+        # Pending POD
+        if self.PENDING_POD_PATTERN.search(cleaned_lower):
+            return IntentType.PENDING_POD.value, 0.95, None
+        
+        # Top Dealers
+        if self.TOP_DEALERS_PATTERN.search(cleaned_lower):
+            return IntentType.TOP_DEALERS.value, 0.90, None
+        
+        # Bottom Dealers
+        if self.BOTTOM_DEALERS_PATTERN.search(cleaned_lower):
+            return IntentType.BOTTOM_DEALERS.value, 0.90, None
+        
+        # Comparison
+        comparison_match = self.COMPARISON_PATTERN.search(cleaned)
+        if comparison_match:
+            entity1 = comparison_match.group(1).strip()
+            entity2 = comparison_match.group(2).strip()
+            return IntentType.DEALER_COMPARISON.value, 0.85, entity1
+        
+        # National KPI
+        if self.NATIONAL_KPI_PATTERN.search(cleaned_lower):
+            return IntentType.NATIONAL_KPI.value, 0.90, None
+        
+        # Help
+        if self.HELP_PATTERN.search(cleaned_lower):
+            return IntentType.HELP.value, 0.95, None
+        
+        # Greeting
+        if self.GREETING_PATTERN.search(cleaned_lower):
+            return IntentType.GREETING.value, 0.95, None
+        
+        # Short text with entity - check if it's a dealer name
+        if len(cleaned.split()) <= 4 and len(cleaned) > 2 and not re.match(r'^\d+$', cleaned):
+            # Check if any entity matches
+            for entity in entities:
+                if entity.type == EntityType.DEALER:
+                    return IntentType.DEALER_DASHBOARD.value, 0.80, entity.text
+                elif entity.type == EntityType.CITY:
+                    return IntentType.CITY_DASHBOARD.value, 0.80, entity.text
+                elif entity.type == EntityType.WAREHOUSE:
+                    return IntentType.WAREHOUSE_DASHBOARD.value, 0.80, entity.text
+                elif entity.type == EntityType.PRODUCT:
+                    return IntentType.PRODUCT_DASHBOARD.value, 0.80, entity.text
+            
+            # If no entity matched but looks like a dealer name
+            if any(word in cleaned_lower for word in ['electronics', 'traders', 'enterprises', 'group', 'mart']):
+                return IntentType.DEALER_DASHBOARD.value, 0.75, cleaned
+        
+        return None, 0.0, None
+    
     def _create_routing_decision(
         self,
         candidate: IntentCandidate,
-        combined_score: float,
-        primary_entity: Optional[Entity],
-        candidates: List[IntentCandidate],
+        pattern_score: float,
+        semantic_score: float,
+        extracted_entities: List[ExtractedEntity],
         original_message: str
     ) -> RoutingDecision:
         """Create RoutingDecision from candidate"""
-        # Get service metadata
-        metadata = RoutingConfig.get_route(candidate.intent)
+        # Calculate combined confidence
+        combined_score = self.confidence_engine.calculate_combined_score(
+            pattern_score=pattern_score,
+            semantic_score=semantic_score,
+            fuzzy_score=candidate.confidence if candidate.strategy == "fuzzy" else 0.0,
+            spacy_score=0.0,
+            flashrank_score=0.0,
+            entity_score=0.0
+        )
         
         decision = RoutingDecision(
             intent=candidate.intent,
@@ -1250,39 +1230,33 @@ class IntentDetectionEngine:
             reason=candidate.reason,
             original_message=original_message,
             suggestions=[],
-            service_metadata=metadata,
-            detection_method=candidate.strategy.value,
+            detection_method=candidate.strategy,
             combined_score=combined_score,
-            candidates=candidates,
-            primary_entity=primary_entity,
-            extracted_entities=candidate.extracted_entities or {}
+            pattern_score=pattern_score,
+            semantic_score=semantic_score,
+            extracted_entities=extracted_entities,
+            primary_entity=extracted_entities[0] if extracted_entities else None
         )
-        
-        # Add suggestions if dealer not found
-        if candidate.intent == 'dealer_dashboard' and not primary_entity:
-            suggestions = self.entity_resolver.get_suggestions(candidate.entity or original_message, limit=5)
-            decision.suggestions = [s.name for s in suggestions]
         
         return decision
     
     def _create_fallback_decision(self, message: str, reason: str) -> RoutingDecision:
         """Create fallback routing decision"""
-        candidate = IntentCandidate(
-            intent="general_ai",
-            service_key="groq",
+        return RoutingDecision(
+            intent=IntentType.GENERAL_AI.value,
+            service_key=ServiceKey.GROQ.value,
             method="process_query",
             confidence=0.30,
             needs_groq=True,
             reason=reason,
-            strategy=IntentStrategy.FALLBACK
+            original_message=message,
+            detection_method="fallback",
+            combined_score=0.30
         )
-        return self._create_routing_decision(
-            candidate=candidate,
-            combined_score=0.30,
-            primary_entity=None,
-            candidates=[candidate],
-            original_message=message
-        )
+    
+    def _get_cache_key(self, text: str) -> str:
+        """Generate cache key from text"""
+        return f"intent:{hashlib.md5(text[:100].encode()).hexdigest()}"
     
     def _cache_enabled(self) -> bool:
         return CACHETOOLS_AVAILABLE and hasattr(self, '_cache')
@@ -1304,16 +1278,12 @@ class IntentDetectionEngine:
     def get_health(self) -> Dict[str, Any]:
         return {
             "status": "healthy",
-            "strategies": len(self.strategies),
+            "version": "3.0",
             "spacy_available": SPACY_AVAILABLE,
             "sentence_transformers_available": SENTENCE_TRANSFORMERS_AVAILABLE,
             "rapidfuzz_available": RAPIDFUZZ_AVAILABLE,
             "flashrank_available": FLASHRANK_AVAILABLE and self.ranker is not None,
-            "cache_stats": self.get_cache_stats(),
-            "entity_resolver": {
-                "loaded": self.entity_resolver._loaded,
-                "dealer_count": len(self.entity_resolver._dealer_names)
-            }
+            "cache_stats": self.get_cache_stats()
         }
 
 # ============================================================
@@ -1323,8 +1293,10 @@ class IntentDetectionEngine:
 __all__ = [
     'IntentDetectionEngine',
     'RoutingDecision',
-    'EntityResolver',
-    'ServiceMetadata',
+    'RoutingTable',
+    'EntityType',
+    'IntentType',
+    'ServiceKey',
     'SPACY_AVAILABLE',
     'SENTENCE_TRANSFORMERS_AVAILABLE',
     'RAPIDFUZZ_AVAILABLE',
@@ -1332,14 +1304,14 @@ __all__ = [
 ]
 
 logger.info("=" * 70)
-logger.info("Intent Detection Engine v2.0 - ENTERPRISE")
+logger.info("Intent Detection Engine v3.0 - ENTERPRISE SIMPLIFIED")
 logger.info("=" * 70)
-logger.info("✅ Strategy Pattern - 5 detection strategies")
-logger.info("✅ Entity Resolver Layer")
-logger.info("✅ Confidence Engine")
+logger.info("✅ Text Normalization")
+logger.info("✅ Entity Extraction (spaCy)")
+logger.info("✅ Entity Matching (RapidFuzz)")
+logger.info("✅ Semantic Routing (SentenceTransformer)")
 logger.info("✅ FlashRank Re-ranking")
-logger.info("✅ Route Validation")
-logger.info("✅ Service Metadata")
-logger.info("✅ Comprehensive Caching")
+logger.info("✅ Confidence Engine")
+logger.info("✅ Caching")
 logger.info("✅ NO business logic, NO SQL, NO formatting")
 logger.info("=" * 70)
