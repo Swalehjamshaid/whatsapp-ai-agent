@@ -1,0 +1,150 @@
+"""Process-wide, lazy AI resource bootstrap for analytics services."""
+
+from __future__ import annotations
+
+import logging
+import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Callable, Optional, TypeVar
+
+logger = logging.getLogger(__name__)
+T = TypeVar("T")
+
+
+class AIProviderManager:
+    """Initialize expensive optional resources once and reuse them safely."""
+
+    _instance: Optional["AIProviderManager"] = None
+    _instance_lock = threading.Lock()
+
+    def __new__(cls) -> "AIProviderManager":
+        if cls._instance is None:
+            with cls._instance_lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+                    cls._instance._initialized = False
+        return cls._instance
+
+    def __init__(self) -> None:
+        if self._initialized:
+            return
+        with self._instance_lock:
+            if self._initialized:
+                return
+            self._lock = threading.RLock()
+            self._resources: dict[str, Any] = {}
+            self._errors: dict[str, str] = {}
+            self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="ai-bootstrap")
+            self._initialized = True
+
+    def _once(self, key: str, factory: Callable[[], T]) -> Optional[T]:
+        existing = self._resources.get(key)
+        if existing is not None:
+            return existing
+        if key in self._errors:
+            return None
+        with self._lock:
+            existing = self._resources.get(key)
+            if existing is not None:
+                return existing
+            try:
+                value = factory()
+                self._resources[key] = value
+                logger.info("AI bootstrap resource ready: %s", key)
+                return value
+            except Exception as error:
+                self._errors[key] = str(error)
+                logger.warning("AI bootstrap resource unavailable: %s: %s", key, error)
+                return None
+
+    def get_embeddings(self) -> Any:
+        def factory() -> Any:
+            from sentence_transformers import SentenceTransformer
+            model_name = os.getenv("SENTENCE_TRANSFORMER_MODEL", "all-MiniLM-L6-v2")
+            return SentenceTransformer(model_name, device="cpu")
+        return self._once("embeddings", factory)
+
+    def get_spacy(self) -> Any:
+        def factory() -> Any:
+            import spacy
+            model_name = os.getenv("SPACY_MODEL", "en_core_web_sm")
+            try:
+                return spacy.load(model_name)
+            except Exception:
+                return spacy.blank("en")
+        return self._once("spacy", factory)
+
+    def get_flashrank(self) -> Any:
+        def factory() -> Any:
+            from flashrank import Ranker
+            return Ranker(model_name=os.getenv("FLASHRANK_MODEL", "ms-marco-TinyBERT-L-2-v2"))
+        return self._once("flashrank", factory)
+
+    def get_groq(self) -> Any:
+        def factory() -> Any:
+            from groq import Groq
+            return Groq(api_key=os.getenv("GROQ_API_KEY"))
+        return self._once("groq", factory)
+
+    def get_openai(self) -> Any:
+        def factory() -> Any:
+            from openai import OpenAI
+            return OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        return self._once("openai", factory)
+
+    def get_anthropic(self) -> Any:
+        def factory() -> Any:
+            from anthropic import Anthropic
+            return Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        return self._once("anthropic", factory)
+
+    def get_instructor(self) -> Any:
+        def factory() -> Any:
+            import instructor
+            client = self.get_openai()
+            return instructor.from_openai(client) if client else None
+        return self._once("instructor", factory)
+
+    def get_agent(self, factory: Optional[Callable[[], T]] = None, key: str = "agent") -> Optional[T]:
+        if factory is None:
+            return self._resources.get(key)
+        return self._once(key, factory)
+
+    def get_sqlglot(self) -> Any:
+        return self._once("sqlglot", lambda: __import__("sqlglot"))
+
+    def warmup(self, include_ai_providers: bool = False) -> None:
+        """Schedule optional startup warm-up without blocking FastAPI startup."""
+        factories = [self.get_embeddings, self.get_spacy, self.get_flashrank, self.get_sqlglot]
+        if include_ai_providers:
+            factories.extend((self.get_groq, self.get_openai, self.get_anthropic, self.get_instructor))
+        for factory in factories:
+            self._executor.submit(factory)
+
+    def health(self) -> dict[str, Any]:
+        return {
+            "initialized": sorted(self._resources),
+            "errors": dict(self._errors),
+            "ready": self._initialized,
+        }
+
+
+_manager = AIProviderManager()
+
+
+def get_ai_provider_manager() -> AIProviderManager:
+    return _manager
+
+
+def warmup_ai_resources(include_ai_providers: bool = False) -> None:
+    _manager.warmup(include_ai_providers=include_ai_providers)
+
+
+if os.getenv("AI_BOOTSTRAP_AUTO_WARMUP", "true").lower() == "true":
+    warmup_ai_resources(
+        include_ai_providers=os.getenv("AI_BOOTSTRAP_PROVIDER_WARMUP", "false").lower() == "true"
+    )
+
+
+__all__ = ["AIProviderManager", "get_ai_provider_manager", "warmup_ai_resources"]
