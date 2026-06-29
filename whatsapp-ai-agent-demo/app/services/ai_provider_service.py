@@ -311,18 +311,56 @@ class WhatsAppProviderService:
                 self.intent_engine = IntentDetectionEngine()
                 logger.info("⚠️ Using fallback IntentDetectionEngine")
             
-            # Load all services
-            self.dn_service = self.registry.get_service_instance("dn")
-            self.dealer_service = self.registry.get_service_instance("dealer")
-            self.warehouse_service = self.registry.get_service_instance("warehouse")
-            self.city_service = self.registry.get_service_instance("city")
-            self.product_service = self.registry.get_service_instance("product")
-            self.national_kpi_service = self.registry.get_service_instance("national_kpi")
-            self.groq_service = self.registry.get_service_instance("groq")
+            # Load all services with detailed logging
+            logger.info("=" * 50)
+            logger.info("🔧 LOADING SERVICES...")
+            logger.info("=" * 50)
             
-            # Log service status
-            logger.info("")
-            logger.info("📊 SERVICE STATUS:")
+            self.dn_service = self.registry.get_service_instance("dn")
+            if self.dn_service:
+                logger.info("✅ DN Service loaded (dn_analysis.py)")
+            else:
+                logger.error("❌ DN Service FAILED to load (dn_analysis.py)")
+            
+            self.dealer_service = self.registry.get_service_instance("dealer")
+            if self.dealer_service:
+                logger.info("✅ Dealer Service loaded (dealer_analytics_service.py)")
+            else:
+                logger.error("❌ Dealer Service FAILED to load (dealer_analytics_service.py)")
+            
+            self.warehouse_service = self.registry.get_service_instance("warehouse")
+            if self.warehouse_service:
+                logger.info("✅ Warehouse Service loaded (warehouse_service.py)")
+            else:
+                logger.warning("⚠️ Warehouse Service FAILED to load (warehouse_service.py - optional)")
+            
+            self.city_service = self.registry.get_service_instance("city")
+            if self.city_service:
+                logger.info("✅ City Service loaded (city_service.py)")
+            else:
+                logger.warning("⚠️ City Service FAILED to load (city_service.py - optional)")
+            
+            self.product_service = self.registry.get_service_instance("product")
+            if self.product_service:
+                logger.info("✅ Product Service loaded (product_service.py)")
+            else:
+                logger.warning("⚠️ Product Service FAILED to load (product_service.py - optional)")
+            
+            self.national_kpi_service = self.registry.get_service_instance("national_kpi")
+            if self.national_kpi_service:
+                logger.info("✅ National KPI Service loaded (national_kpi_service.py)")
+            else:
+                logger.warning("⚠️ National KPI Service FAILED to load (national_kpi_service.py - optional)")
+            
+            self.groq_service = self.registry.get_service_instance("groq")
+            if self.groq_service:
+                logger.info("✅ Groq Service loaded (groq_service.py)")
+            else:
+                logger.warning("⚠️ Groq Service FAILED to load (groq_service.py - optional)")
+            
+            # Log summary
+            logger.info("=" * 50)
+            logger.info("📊 SERVICE STATUS SUMMARY:")
             logger.info(f"   DN: {'✅' if self.dn_service else '❌'} (dn_analysis.py)")
             logger.info(f"   Dealer: {'✅' if self.dealer_service else '❌'} (dealer_analytics_service.py)")
             logger.info(f"   Warehouse: {'✅' if self.warehouse_service else '❌'} (warehouse_service.py)")
@@ -330,7 +368,7 @@ class WhatsAppProviderService:
             logger.info(f"   Product: {'✅' if self.product_service else '❌'} (product_service.py)")
             logger.info(f"   National KPI: {'✅' if self.national_kpi_service else '❌'} (national_kpi_service.py)")
             logger.info(f"   Groq: {'✅' if self.groq_service else '❌'} (groq_service.py)")
-            logger.info("")
+            logger.info("=" * 50)
             
             init_duration = (time.time() - start_time) * 1000
             logger.info(f"   INIT TIME: {init_duration:.2f}ms")
@@ -373,7 +411,7 @@ class WhatsAppProviderService:
             # STEP 2: ROUTE TO APPROPRIATE SERVICE
             # ============================================================
             
-            # Route based on intent
+            # DN Lookup
             if routing_decision.intent == "dn_lookup":
                 logger.info(f"🔍 [REQ:{request_id}] Routing to DN service")
                 result = await self._handle_dn(routing_decision, request_id)
@@ -386,6 +424,7 @@ class WhatsAppProviderService:
                     request_id=request_id
                 )
             
+            # Pending Queries
             elif routing_decision.intent in ["pending_dn", "pending_pgi", "pending_pod"]:
                 logger.info(f"🔍 [REQ:{request_id}] Routing to DN service for pending query")
                 result = await self._handle_pending(routing_decision, request_id)
@@ -398,6 +437,7 @@ class WhatsAppProviderService:
                     request_id=request_id
                 )
             
+            # Dealer Dashboard
             elif routing_decision.intent in ["dealer_dashboard", "dealer_suggestion"]:
                 logger.info(f"🔍 [REQ:{request_id}] Routing to Dealer service")
                 result = await self._handle_dealer(routing_decision, request_id)
@@ -410,6 +450,7 @@ class WhatsAppProviderService:
                     request_id=request_id
                 )
             
+            # Dealer Ranking
             elif routing_decision.intent in ["top_dealers", "bottom_dealers"]:
                 logger.info(f"🔍 [REQ:{request_id}] Routing to Dealer service for ranking")
                 result = await self._handle_dealer_ranking(routing_decision, request_id)
@@ -422,6 +463,7 @@ class WhatsAppProviderService:
                     request_id=request_id
                 )
             
+            # Warehouse Dashboard
             elif routing_decision.intent == "warehouse_dashboard":
                 logger.info(f"🔍 [REQ:{request_id}] Routing to Warehouse service")
                 result = await self._handle_warehouse(routing_decision, request_id)
@@ -434,6 +476,7 @@ class WhatsAppProviderService:
                     request_id=request_id
                 )
             
+            # City Dashboard
             elif routing_decision.intent == "city_dashboard":
                 logger.info(f"🔍 [REQ:{request_id}] Routing to City service")
                 result = await self._handle_city(routing_decision, request_id)
@@ -446,6 +489,7 @@ class WhatsAppProviderService:
                     request_id=request_id
                 )
             
+            # Product Dashboard
             elif routing_decision.intent == "product_dashboard":
                 logger.info(f"🔍 [REQ:{request_id}] Routing to Product service")
                 result = await self._handle_product(routing_decision, request_id)
@@ -458,6 +502,7 @@ class WhatsAppProviderService:
                     request_id=request_id
                 )
             
+            # National KPI
             elif routing_decision.intent == "national_kpi":
                 logger.info(f"🔍 [REQ:{request_id}] Routing to National KPI service")
                 result = await self._handle_national_kpi(routing_decision, request_id)
@@ -470,12 +515,13 @@ class WhatsAppProviderService:
                     request_id=request_id
                 )
             
+            # Groq (Conversational)
             elif routing_decision.needs_groq or routing_decision.service_key == "groq":
                 logger.info(f"🔍 [REQ:{request_id}] Routing to Groq service")
                 return await self._handle_groq(message, routing_decision, request_id)
             
+            # Fallback
             else:
-                # Fallback
                 return self._format_response(
                     message,
                     "I couldn't identify your request. Please specify:\n"
