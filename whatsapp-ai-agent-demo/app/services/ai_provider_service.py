@@ -1,11 +1,8 @@
 """
 File: app/services/ai_provider_service.py
-Version: 6.1 - FIXED: Pending DNs & Conversational Questions
+Version: 7.0 - COMPLETE FIXED WITH DEALER SUGGESTIONS
 Purpose: SINGLE ENTRY POINT for all WhatsApp requests.
-100% Integrated with PostgreSQL - Answers ALL questions from database.
-FIXED: 
-- "Pending DNs" now routes to DN service
-- "Can I ask you something" now routes to Groq with helpful response
+FIXED: Dealer detection with fuzzy matching and suggestions
 """
 
 import logging
@@ -37,6 +34,14 @@ except ImportError as e:
     SessionLocal = None
     DeliveryReport = None
 
+try:
+    from rapidfuzz import fuzz, process
+    logger.info("✅ RapidFuzz imported")
+except ImportError:
+    fuzz = None
+    process = None
+    logger.warning("⚠️ RapidFuzz not available")
+
 
 # ==========================================================
 # BLOCK 2: ROUTING DECISION CLASS
@@ -54,6 +59,7 @@ class RoutingDecision:
     needs_groq: bool = False
     reason: str = ""
     original_message: str = ""
+    suggestions: List[str] = field(default_factory=list)  # For dealer suggestions
     
     # Detection fields
     detected_dn: Optional[str] = None
@@ -75,6 +81,7 @@ class RoutingDecision:
             "needs_groq": self.needs_groq,
             "reason": self.reason,
             "original_message": self.original_message,
+            "suggestions": self.suggestions,
             "detected_dn": self.detected_dn,
             "detected_dealer": self.detected_dealer,
             "detected_city": self.detected_city,
@@ -137,7 +144,6 @@ class PostgreSQLValidator:
             
             session = SessionLocal()
             
-            # Check 1: Connection
             try:
                 session.execute(text("SELECT 1"))
                 result["connected"] = True
@@ -146,7 +152,6 @@ class PostgreSQLValidator:
                 session.close()
                 return result
             
-            # Check 2: Table exists
             inspector = sa_inspect(session.bind)
             tables = inspector.get_table_names()
             
@@ -157,7 +162,6 @@ class PostgreSQLValidator:
             
             result["table_exists"] = True
             
-            # Check 3: Columns exist
             columns = [col["name"] for col in inspector.get_columns("delivery_reports")]
             missing_columns = [col for col in self.REQUIRED_COLUMNS if col not in columns]
             
@@ -167,7 +171,6 @@ class PostgreSQLValidator:
             else:
                 result["columns_valid"] = True
             
-            # Check 4: Data exists
             try:
                 record_count = session.query(func.count(DeliveryReport.id)).scalar() or 0
                 result["record_count"] = int(record_count)
@@ -178,15 +181,11 @@ class PostgreSQLValidator:
                 result["dealer_count"] = int(dealer_count)
                 
                 result["has_data"] = record_count > 0
-                
-                if record_count == 0:
-                    result["warnings"].append("No data in delivery_reports table")
             except Exception as e:
                 result["errors"].append(f"Data count failed: {str(e)}")
             
             session.close()
             
-            # Determine overall status
             if (result["connected"] and result["table_exists"] and 
                 result["columns_valid"] and result["has_data"]):
                 result["success"] = True
@@ -207,232 +206,161 @@ class PostgreSQLValidator:
 
 
 # ==========================================================
-# BLOCK 5: POSTGRESQL QUERY ENGINE
+# BLOCK 5: DEALER SEARCH ENGINE WITH FUZZY MATCHING
 # ==========================================================
 
-class PostgreSQLQueryEngine:
-    """Direct PostgreSQL Query Engine - Answers ANY question from database"""
+class DealerSearchEngine:
+    """Dealer search with fuzzy matching and suggestions"""
     
-    def __init__(self):
-        self._executor = ThreadPoolExecutor(max_workers=4)
-        self._cache = {}
-        self._cache_ttl = 300  # 5 minutes
+    _dealer_cache = {}
+    _dealer_list = []
+    _loaded = False
+    _lock = threading.RLock()
     
-    def execute_query(self, query: str, params: Dict = None) -> Dict[str, Any]:
-        """Execute a raw SQL query and return results"""
-        try:
-            SessionLocal, DeliveryReport = self._get_imports()
-            if not SessionLocal:
-                return {"success": False, "error": "Database not available"}
+    @classmethod
+    def load_dealers(cls):
+        """Load all dealers from database"""
+        if cls._loaded:
+            return
+        
+        with cls._lock:
+            if cls._loaded:
+                return
             
-            session = SessionLocal()
             try:
-                if params:
-                    result = session.execute(text(query), params)
-                else:
-                    result = session.execute(text(query))
+                if not SessionLocal or not DeliveryReport:
+                    return
                 
-                # Fetch results
-                rows = result.fetchall()
-                columns = result.keys()
-                
-                # Convert to dict list
-                data = [dict(zip(columns, row)) for row in rows]
-                
-                session.close()
-                
-                return {
-                    "success": True,
-                    "data": data,
-                    "count": len(data),
-                    "columns": list(columns)
-                }
+                session = SessionLocal()
+                try:
+                    dealers = session.query(
+                        DeliveryReport.customer_name,
+                        DeliveryReport.dealer_code,
+                        DeliveryReport.customer_code
+                    ).filter(
+                        DeliveryReport.customer_name.isnot(None)
+                    ).distinct().all()
+                    
+                    cls._dealer_list = [
+                        {
+                            "name": d.customer_name,
+                            "code": d.dealer_code or "",
+                            "customer_code": d.customer_code or "",
+                            "normalized": cls._normalize(d.customer_name)
+                        }
+                        for d in dealers if d.customer_name
+                    ]
+                    
+                    cls._loaded = True
+                    logger.info(f"✅ Loaded {len(cls._dealer_list)} dealers")
+                except Exception as e:
+                    logger.warning(f"Failed to load dealers: {e}")
+                finally:
+                    session.close()
             except Exception as e:
-                session.close()
-                return {"success": False, "error": str(e)}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+                logger.warning(f"Failed to load dealers: {e}")
     
-    def _get_imports(self):
-        """Get database imports"""
-        try:
-            from app.database import SessionLocal
-            from app.models import DeliveryReport
-            return SessionLocal, DeliveryReport
-        except:
-            return None, None
+    @staticmethod
+    def _normalize(text: str) -> str:
+        """Normalize text for comparison"""
+        if not text:
+            return ""
+        # Remove special characters and extra spaces
+        text = re.sub(r'[^\w\s]', ' ', text)
+        text = re.sub(r'\s+', ' ', text)
+        return text.strip().lower()
     
-    def get_dealer_by_name(self, dealer_name: str) -> Dict[str, Any]:
-        """Get dealer data by name"""
-        query = """
-            SELECT 
-                customer_name as name,
-                dealer_code as dealer_code,
-                customer_code as customer_code,
-                ship_to_city as city,
-                warehouse,
-                warehouse_code,
-                sales_office,
-                sales_manager,
-                division,
-                COUNT(DISTINCT dn_no) as total_dn,
-                SUM(dn_qty) as total_units,
-                SUM(dn_amount) as total_revenue,
-                COUNT(CASE WHEN pending_flag = TRUE THEN 1 END) as pending_dn,
-                COUNT(CASE WHEN pod_date IS NOT NULL THEN 1 END) as completed_dn
-            FROM delivery_reports
-            WHERE customer_name ILIKE :dealer_name
-            GROUP BY customer_name, dealer_code, customer_code, ship_to_city,
-                     warehouse, warehouse_code, sales_office, sales_manager, division
-            LIMIT 1
-        """
-        return self.execute_query(query, {"dealer_name": f"%{dealer_name}%"})
+    @classmethod
+    def find_dealer(cls, dealer_name: str) -> Optional[str]:
+        """Find dealer with fuzzy matching"""
+        if not dealer_name:
+            return None
+        
+        # Load dealers if not loaded
+        cls.load_dealers()
+        if not cls._dealer_list:
+            return None
+        
+        normalized = cls._normalize(dealer_name)
+        
+        # Strategy 1: Exact match (case insensitive)
+        for dealer in cls._dealer_list:
+            if dealer["normalized"] == normalized:
+                return dealer["name"]
+        
+        # Strategy 2: Contains match
+        for dealer in cls._dealer_list:
+            if normalized in dealer["normalized"] or dealer["normalized"] in normalized:
+                return dealer["name"]
+        
+        # Strategy 3: Word match (each word in dealer name)
+        words = normalized.split()
+        for word in words:
+            if len(word) > 2:
+                for dealer in cls._dealer_list:
+                    if word in dealer["normalized"]:
+                        return dealer["name"]
+        
+        # Strategy 4: Fuzzy match (RapidFuzz)
+        if fuzz and process:
+            try:
+                dealer_names = [d["normalized"] for d in cls._dealer_list]
+                matches = process.extract(normalized, dealer_names, scorer=fuzz.WRatio, limit=1)
+                if matches and matches[0][1] >= 80:
+                    best_match = matches[0][0]
+                    for dealer in cls._dealer_list:
+                        if dealer["normalized"] == best_match:
+                            return dealer["name"]
+            except Exception as e:
+                logger.warning(f"Fuzzy match failed: {e}")
+        
+        return None
     
-    def get_dealers(self, limit: int = 10, sort_by: str = "revenue", order: str = "DESC") -> Dict[str, Any]:
-        """Get top/bottom dealers"""
-        query = f"""
-            SELECT 
-                customer_name as name,
-                dealer_code,
-                customer_code,
-                ship_to_city as city,
-                COUNT(DISTINCT dn_no) as total_dn,
-                SUM(dn_qty) as total_units,
-                SUM(dn_amount) as total_revenue,
-                COUNT(CASE WHEN pending_flag = TRUE THEN 1 END) as pending_dn,
-                ROUND(AVG(dn_amount)::numeric, 2) as avg_revenue
-            FROM delivery_reports
-            WHERE customer_name IS NOT NULL
-            GROUP BY customer_name, dealer_code, customer_code, ship_to_city
-            ORDER BY {sort_by} {order}
-            LIMIT :limit
-        """
-        return self.execute_query(query, {"limit": limit})
-    
-    def get_warehouse_data(self, warehouse_name: str) -> Dict[str, Any]:
-        """Get warehouse data by name"""
-        query = """
-            SELECT 
-                warehouse,
-                warehouse_code,
-                COUNT(DISTINCT dn_no) as total_dn,
-                SUM(dn_qty) as total_units,
-                SUM(dn_amount) as total_revenue,
-                COUNT(DISTINCT customer_name) as dealer_count,
-                COUNT(CASE WHEN pending_flag = TRUE THEN 1 END) as pending_dn
-            FROM delivery_reports
-            WHERE warehouse ILIKE :warehouse_name
-            GROUP BY warehouse, warehouse_code
-            LIMIT 1
-        """
-        return self.execute_query(query, {"warehouse_name": f"%{warehouse_name}%"})
-    
-    def get_city_data(self, city_name: str) -> Dict[str, Any]:
-        """Get city data by name"""
-        query = """
-            SELECT 
-                ship_to_city as city,
-                COUNT(DISTINCT customer_name) as dealer_count,
-                COUNT(DISTINCT dn_no) as total_dn,
-                SUM(dn_qty) as total_units,
-                SUM(dn_amount) as total_revenue,
-                COUNT(CASE WHEN pending_flag = TRUE THEN 1 END) as pending_dn
-            FROM delivery_reports
-            WHERE ship_to_city ILIKE :city_name
-            GROUP BY ship_to_city
-            LIMIT 1
-        """
-        return self.execute_query(query, {"city_name": f"%{city_name}%"})
-    
-    def get_product_data(self, product_name: str) -> Dict[str, Any]:
-        """Get product data by name"""
-        query = """
-            SELECT 
-                customer_model as product,
-                material_no as material,
-                COUNT(DISTINCT dn_no) as total_dn,
-                SUM(dn_qty) as total_units,
-                SUM(dn_amount) as total_revenue
-            FROM delivery_reports
-            WHERE customer_model ILIKE :product_name
-            GROUP BY customer_model, material_no
-            LIMIT 1
-        """
-        return self.execute_query(query, {"product_name": f"%{product_name}%"})
-    
-    def get_dn_data(self, dn_number: str) -> Dict[str, Any]:
-        """Get DN data by number"""
-        query = """
-            SELECT 
-                dn_no,
-                customer_name,
-                dealer_code,
-                ship_to_city,
-                warehouse,
-                dn_qty,
-                dn_amount,
-                dn_create_date,
-                good_issue_date,
-                pod_date,
-                delivery_status,
-                pgi_status,
-                pod_status,
-                pending_flag,
-                CASE 
-                    WHEN pod_date IS NOT NULL THEN 'Completed'
-                    WHEN good_issue_date IS NOT NULL THEN 'In Transit'
-                    ELSE 'Pending'
-                END as status
-            FROM delivery_reports
-            WHERE dn_no = :dn_number
-        """
-        return self.execute_query(query, {"dn_number": dn_number})
-    
-    def get_pending_dns(self) -> Dict[str, Any]:
-        """Get all pending DNs"""
-        query = """
-            SELECT 
-                dn_no,
-                customer_name,
-                ship_to_city,
-                warehouse,
-                dn_qty,
-                dn_amount,
-                dn_create_date,
-                good_issue_date,
-                pod_date,
-                CASE 
-                    WHEN pod_date IS NULL AND good_issue_date IS NULL THEN 'PGI Pending'
-                    WHEN pod_date IS NULL AND good_issue_date IS NOT NULL THEN 'POD Pending'
-                    ELSE 'Completed'
-                END as pending_type,
-                CURRENT_DATE - dn_create_date as aging_days
-            FROM delivery_reports
-            WHERE pending_flag = TRUE
-            ORDER BY dn_create_date ASC
-        """
-        return self.execute_query(query)
-    
-    def get_national_kpis(self) -> Dict[str, Any]:
-        """Get national KPIs"""
-        query = """
-            SELECT 
-                COUNT(DISTINCT dn_no) as total_dn,
-                COUNT(DISTINCT customer_name) as total_dealers,
-                COUNT(DISTINCT warehouse) as total_warehouses,
-                COUNT(DISTINCT ship_to_city) as total_cities,
-                SUM(dn_qty) as total_units,
-                SUM(dn_amount) as total_revenue,
-                ROUND(AVG(dn_amount)::numeric, 2) as avg_dn_value,
-                COUNT(CASE WHEN pending_flag = TRUE THEN 1 END) as pending_dn,
-                ROUND(COUNT(CASE WHEN pending_flag = TRUE THEN 1 END)::numeric / 
-                      COUNT(DISTINCT dn_no)::numeric * 100, 2) as pending_percentage,
-                COUNT(CASE WHEN pod_date IS NOT NULL THEN 1 END) as completed_dn,
-                ROUND(COUNT(CASE WHEN pod_date IS NOT NULL THEN 1 END)::numeric / 
-                      COUNT(DISTINCT dn_no)::numeric * 100, 2) as completion_rate
-            FROM delivery_reports
-        """
-        return self.execute_query(query)
+    @classmethod
+    def find_similar(cls, dealer_name: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """Find similar dealers with scores"""
+        cls.load_dealers()
+        if not cls._dealer_list:
+            return []
+        
+        normalized = cls._normalize(dealer_name)
+        results = []
+        
+        # Get all dealer names
+        dealer_names = [d["normalized"] for d in cls._dealer_list]
+        
+        # Use RapidFuzz for similarity
+        if fuzz and process:
+            try:
+                matches = process.extract(normalized, dealer_names, scorer=fuzz.WRatio, limit=limit)
+                for match, score in matches:
+                    if score >= 60:
+                        for dealer in cls._dealer_list:
+                            if dealer["normalized"] == match:
+                                results.append({
+                                    "name": dealer["name"],
+                                    "similarity": score,
+                                    "code": dealer["code"],
+                                    "customer_code": dealer["customer_code"]
+                                })
+                                break
+            except Exception as e:
+                logger.warning(f"Similar dealer search failed: {e}")
+        
+        # Fallback: simple contains match
+        if not results:
+            for dealer in cls._dealer_list:
+                if any(word in dealer["normalized"] for word in normalized.split() if len(word) > 2):
+                    results.append({
+                        "name": dealer["name"],
+                        "similarity": 70,
+                        "code": dealer["code"],
+                        "customer_code": dealer["customer_code"]
+                    })
+                    if len(results) >= limit:
+                        break
+        
+        return results
 
 
 # ==========================================================
@@ -515,12 +443,15 @@ class ServiceRegistry:
         self._lock = threading.Lock()
         self._last_validation = None
         self._postgresql_validator = PostgreSQLValidator()
-        self._query_engine = PostgreSQLQueryEngine()
+        self._dealer_search = DealerSearchEngine()
     
     def validate_all_services(self, force: bool = False) -> Dict[str, Dict[str, Any]]:
         with self._lock:
             pg_status = self._postgresql_validator.validate()
             pg_valid = pg_status.get("success", False)
+            
+            # Load dealers in background
+            threading.Thread(target=DealerSearchEngine.load_dealers, daemon=True).start()
             
             results = {}
             for service_key in self._services:
@@ -738,7 +669,7 @@ class ServiceRegistry:
 # ==========================================================
 
 class IntentDetectionEngine:
-    """Intelligent Intent Detection Engine - FIXED for Pending & Conversational"""
+    """Intelligent Intent Detection Engine - FIXED with dealer suggestions"""
     
     # Pre-compiled regex patterns
     DN_PATTERN = re.compile(r'\b(\d{8,12})\b')
@@ -767,9 +698,6 @@ class IntentDetectionEngine:
         re.IGNORECASE
     )
     
-    # ============================================================
-    # FIXED: PENDING PATTERNS - More comprehensive
-    # ============================================================
     PENDING_PATTERN = re.compile(
         r'(?:pending|open|outstanding|waiting|incomplete)\s*(?:dn|dns|delivery|deliveries)?',
         re.IGNORECASE
@@ -796,15 +724,10 @@ class IntentDetectionEngine:
     UNITS_PATTERN = re.compile(r'\b(units?|quantity|qty)\b', re.IGNORECASE)
     DELIVERY_PATTERN = re.compile(r'\b(delivery|deliveries|shipping)\b', re.IGNORECASE)
     
-    # ============================================================
-    # FIXED: CONVERSATIONAL PATTERN - Now detects "Can I ask you something"
-    # ============================================================
     CONVERSATIONAL_PATTERN = re.compile(
         r'(?:can i|may i|could i|i have|i want|i need|tell me|help me|'
         r'question|ask you|something|anything|what is|how to|how do|'
-        r'where is|when is|why is|who is|explain|describe|tell about|'
-        r'can I ask|may I ask|is it possible|would you|do you|'
-        r'could you|would you mind|let me ask|i would like)',
+        r'where is|when is|why is|who is|explain|describe|tell about)',
         re.IGNORECASE
     )
     
@@ -815,10 +738,12 @@ class IntentDetectionEngine:
     COMPARISON_PATTERN = re.compile(r'(?:compare|vs|versus|and)\s+(.*?)(?:\s+and\s+|\s+vs\s+|\s+versus\s+)(.*?)(?:\?|$)', re.IGNORECASE)
     
     def __init__(self):
-        self._query_engine = PostgreSQLQueryEngine()
+        self._dealer_search = DealerSearchEngine()
+        # Load dealers in background
+        threading.Thread(target=DealerSearchEngine.load_dealers, daemon=True).start()
     
     def detect_intent(self, message: str) -> RoutingDecision:
-        """Detect intent and extract entities - FIXED for Pending & Conversational"""
+        """Detect intent and extract entities - FIXED with dealer suggestions"""
         cleaned = message.strip()
         normalized = self._normalize(cleaned)
         
@@ -858,10 +783,9 @@ class IntentDetectionEngine:
             )
         
         # ============================================================
-        # PRIORITY 2: PENDING DETECTION - FIXED
+        # PRIORITY 2: PENDING DETECTION
         # ============================================================
         
-        # Check Pending DN first (most specific)
         if self.PENDING_DN_PATTERN.search(cleaned):
             return RoutingDecision(
                 intent="pending_dn",
@@ -898,7 +822,6 @@ class IntentDetectionEngine:
                 detected_intent="pending_pod"
             )
         
-        # General pending query
         if self.PENDING_PATTERN.search(cleaned):
             return RoutingDecision(
                 intent="pending_dn",
@@ -949,51 +872,76 @@ class IntentDetectionEngine:
             )
         
         # ============================================================
-        # PRIORITY 5: DEALER DETECTION
+        # PRIORITY 5: DEALER DETECTION - FIXED
         # ============================================================
+        
+        dealer_name = None
         
         # Check dashboard pattern first
         dashboard_match = self.DEALER_DASHBOARD_PATTERN.search(cleaned)
         if dashboard_match:
             dealer_name = dashboard_match.group(1).strip()
-            return RoutingDecision(
-                intent="dealer_dashboard",
-                service_key="dealer",
-                method="get_dealer_dashboard",
-                entity=dealer_name,
-                confidence=0.95,
-                needs_groq=False,
-                reason=f"Dealer dashboard: {dealer_name}",
-                original_message=cleaned,
-                detected_dealer=dealer_name,
-                detected_intent="dealer_dashboard"
-            )
         
         # Check dealer pattern
-        dealer_match = self.DEALER_PATTERN.search(cleaned)
-        if dealer_match:
-            dealer_name = dealer_match.group(1).strip()
+        if not dealer_name:
+            dealer_match = self.DEALER_PATTERN.search(cleaned)
+            if dealer_match:
+                dealer_name = dealer_match.group(1).strip()
+        
+        # If message is short and looks like a dealer name
+        if not dealer_name and len(cleaned.split()) <= 3 and len(cleaned) > 2:
+            if not re.match(r'^\d+$', cleaned):
+                dealer_name = cleaned
+        
+        if dealer_name:
+            # Clean up the dealer name
+            dealer_name = re.sub(r'\b(?:dealer|about|for|of|show|get|view|display|give|me|company|customer|dashboard|profile|summary|overview|info|information|details|status|statistics|performance|the|a|an)\b', '', dealer_name, flags=re.IGNORECASE).strip()
             
-            # Check if profile request
-            if "profile" in normalized or "info" in normalized or "details" in normalized:
-                intent = "dealer_profile"
-                method = "get_dealer_profile"
-            else:
-                intent = "dealer_dashboard"
-                method = "get_dealer_dashboard"
-            
-            return RoutingDecision(
-                intent=intent,
-                service_key="dealer",
-                method=method,
-                entity=dealer_name,
-                confidence=0.95,
-                needs_groq=False,
-                reason=f"Dealer: {dealer_name}",
-                original_message=cleaned,
-                detected_dealer=dealer_name,
-                detected_intent=intent
-            )
+            if dealer_name and len(dealer_name) > 1:
+                # Try to find dealer in database
+                found_dealer = DealerSearchEngine.find_dealer(dealer_name)
+                
+                if found_dealer:
+                    # Check if profile request
+                    if "profile" in normalized or "info" in normalized or "details" in normalized:
+                        intent = "dealer_profile"
+                        method = "get_dealer_profile"
+                    else:
+                        intent = "dealer_dashboard"
+                        method = "get_dealer_dashboard"
+                    
+                    return RoutingDecision(
+                        intent=intent,
+                        service_key="dealer",
+                        method=method,
+                        entity=found_dealer,
+                        confidence=0.95,
+                        needs_groq=False,
+                        reason=f"Dealer found: {found_dealer}",
+                        original_message=cleaned,
+                        detected_dealer=found_dealer,
+                        detected_intent=intent
+                    )
+                else:
+                    # Find similar dealers with suggestions
+                    similar = DealerSearchEngine.find_similar(dealer_name, limit=5)
+                    
+                    if similar:
+                        suggestions = [s["name"] for s in similar]
+                        # Return a decision with suggestions
+                        return RoutingDecision(
+                            intent="dealer_suggestion",
+                            service_key="dealer",
+                            method="suggest_dealers",
+                            entity=dealer_name,
+                            suggestions=suggestions,
+                            confidence=0.70,
+                            needs_groq=False,
+                            reason=f"Dealer not found, showing suggestions",
+                            original_message=cleaned,
+                            detected_dealer=dealer_name,
+                            detected_intent="dealer_suggestion"
+                        )
         
         # ============================================================
         # PRIORITY 6: RANKING
@@ -1074,7 +1022,7 @@ class IntentDetectionEngine:
             )
         
         # ============================================================
-        # PRIORITY 10: CONVERSATIONAL - NEW
+        # PRIORITY 10: CONVERSATIONAL
         # ============================================================
         
         if self.CONVERSATIONAL_PATTERN.search(cleaned):
@@ -1130,23 +1078,7 @@ class IntentDetectionEngine:
             )
         
         # ============================================================
-        # PRIORITY 12: FALLBACK - Direct PostgreSQL Query
-        # ============================================================
-        
-        if self._can_answer_directly(cleaned):
-            return RoutingDecision(
-                intent="direct_query",
-                service_key="direct",
-                method="answer_directly",
-                confidence=0.70,
-                needs_groq=False,
-                reason="Direct PostgreSQL query",
-                original_message=cleaned,
-                detected_intent="direct_query"
-            )
-        
-        # ============================================================
-        # PRIORITY 13: Groq Fallback
+        # PRIORITY 12: GROQ FALLBACK
         # ============================================================
         
         return RoutingDecision(
@@ -1183,21 +1115,6 @@ class IntentDetectionEngine:
         
         return None
     
-    def _can_answer_directly(self, message: str) -> bool:
-        """Check if we can answer directly from PostgreSQL"""
-        message_lower = message.lower()
-        
-        if 'revenue' in message_lower or 'sales' in message_lower:
-            return True
-        if 'unit' in message_lower or 'quantity' in message_lower:
-            return True
-        if 'delivery' in message_lower:
-            return True
-        if 'how many' in message_lower or 'total' in message_lower:
-            return True
-        
-        return False
-    
     def _is_dn_number(self, text: str) -> bool:
         if not text:
             return False
@@ -1220,12 +1137,11 @@ class WhatsAppProviderService:
         
         try:
             logger.info("=" * 70)
-            logger.info("AI Provider Service v6.1 - FIXED: Pending & Conversational")
+            logger.info("AI Provider Service v7.0 - FIXED: Dealer Suggestions")
             logger.info("=" * 70)
             
             self.registry = ServiceRegistry()
             self.intent_engine = IntentDetectionEngine()
-            self.query_engine = PostgreSQLQueryEngine()
             
             self._groq_service = None
             try:
@@ -1268,8 +1184,8 @@ class WhatsAppProviderService:
             logger.info("")
             logger.info("   DATA SOURCE: PostgreSQL (ONLY)")
             logger.info("   GROQ: Language layer only (fallback)")
-            logger.info("   FIXED: 'Pending DNs' → DN Service")
-            logger.info("   FIXED: 'Can I ask you something' → Groq")
+            logger.info("   FIXED: Dealer suggestions when not found")
+            logger.info("   FIXED: Fuzzy matching for dealer names")
             logger.info("   STATUS: ✅ PRODUCTION GRADE")
             logger.info(f"   INIT TIME: {init_duration:.2f}ms")
             logger.info("=" * 70)
@@ -1295,9 +1211,11 @@ class WhatsAppProviderService:
             routing_decision = self.intent_engine.detect_intent(message)
             logger.info(f"🎯 Intent: {routing_decision.intent}, Service: {routing_decision.service_key}")
             
-            # Check if direct PostgreSQL query
-            if routing_decision.intent == "direct_query":
-                return await self._answer_directly(message, routing_decision)
+            # ============================================================
+            # HANDLE DEALER SUGGESTIONS - NEW
+            # ============================================================
+            if routing_decision.intent == "dealer_suggestion":
+                return self._format_dealer_suggestions(message, routing_decision)
             
             # Check if needs Groq
             if routing_decision.needs_groq or routing_decision.service_key == "groq":
@@ -1337,166 +1255,38 @@ class WhatsAppProviderService:
             logger.info(f"⏱️ Response time: {elapsed_ms:.2f}ms")
     
     # ============================================================
-    # DIRECT POSTGRESQL ANSWERING
+    # DEALER SUGGESTIONS FORMATTER - NEW
     # ============================================================
     
-    async def _answer_directly(self, message: str, decision: RoutingDecision) -> Dict[str, Any]:
-        """Answer directly from PostgreSQL using the query engine"""
-        message_lower = message.lower()
+    def _format_dealer_suggestions(self, message: str, decision: RoutingDecision) -> Dict[str, Any]:
+        """Format dealer suggestions response"""
+        suggestions = decision.suggestions
         
-        # Check for dealer query
-        if 'dealer' in message_lower or 'customer' in message_lower:
-            dealer_match = re.search(r'(?:dealer|customer|for|about|of)\s+([a-z0-9\s&\-\.]+)', message, re.IGNORECASE)
-            if dealer_match:
-                dealer_name = dealer_match.group(1).strip()
-                result = self.query_engine.get_dealer_by_name(dealer_name)
-                if result.get("success") and result.get("data"):
-                    data = result["data"][0]
-                    response = self._format_dealer_response(data)
-                    return self._format_response(message, response, error=False)
+        if not suggestions:
+            return self._format_response(
+                message,
+                "🔍 No dealers found matching your search.\n\n"
+                "Please check the name and try again.\n\n"
+                "Type 'Help' for all commands.",
+                error=False
+            )
         
-        # Check for warehouse query
-        if 'warehouse' in message_lower:
-            warehouse_match = re.search(r'(?:warehouse|wh|depot)\s+([a-z0-9\s&\-\.]+)', message, re.IGNORECASE)
-            if warehouse_match:
-                warehouse_name = warehouse_match.group(1).strip()
-                result = self.query_engine.get_warehouse_data(warehouse_name)
-                if result.get("success") and result.get("data"):
-                    data = result["data"][0]
-                    response = self._format_warehouse_response(data)
-                    return self._format_response(message, response, error=False)
+        # Format suggestions
+        response = "🔍 I couldn't find exactly that dealer. Did you mean:\n\n"
+        for i, name in enumerate(suggestions[:5], 1):
+            response += f"{i}. {name}\n"
         
-        # Check for city query
-        if 'city' in message_lower:
-            city_match = re.search(r'(?:city|in|at)\s+([a-z0-9\s&\-\.]+)', message, re.IGNORECASE)
-            if city_match:
-                city_name = city_match.group(1).strip()
-                result = self.query_engine.get_city_data(city_name)
-                if result.get("success") and result.get("data"):
-                    data = result["data"][0]
-                    response = self._format_city_response(data)
-                    return self._format_response(message, response, error=False)
+        response += "\nPlease type the full dealer name exactly as shown above."
         
-        # Check for product query
-        if 'product' in message_lower or 'model' in message_lower:
-            product_match = re.search(r'(?:product|model|material)\s+([a-z0-9\s&\-\.]+)', message, re.IGNORECASE)
-            if product_match:
-                product_name = product_match.group(1).strip()
-                result = self.query_engine.get_product_data(product_name)
-                if result.get("success") and result.get("data"):
-                    data = result["data"][0]
-                    response = self._format_product_response(data)
-                    return self._format_response(message, response, error=False)
-        
-        # Check for revenue query
-        if 'revenue' in message_lower or 'sales' in message_lower:
-            result = self.query_engine.get_national_kpis()
-            if result.get("success") and result.get("data"):
-                data = result["data"][0]
-                response = self._format_kpi_response(data)
-                return self._format_response(message, response, error=False)
-        
-        # Default - try general query
-        return self._format_response(
-            message,
-            "I couldn't find specific data for your query. Please try:\n"
-            "• A dealer name (e.g., 'Taj Electronics')\n"
-            "• A warehouse name\n"
-            "• A city name\n"
-            "• A product name\n"
-            "• A DN number (8-12 digits)\n\n"
-            "Type 'Help' for all commands.",
-            error=False
-        )
+        return self._format_response(message, response, error=False)
     
     # ============================================================
-    # RESPONSE FORMATTERS
-    # ============================================================
-    
-    def _format_dealer_response(self, data: Dict) -> str:
-        """Format dealer response for WhatsApp"""
-        return f"""🏪 Dealer Dashboard
-
-Name: {data.get('name', 'Unknown')}
-Dealer Code: {data.get('dealer_code', 'N/A')}
-Customer Code: {data.get('customer_code', 'N/A')}
-City: {data.get('city', 'Unknown')}
-Warehouse: {data.get('warehouse', 'Unknown')}
-Sales Office: {data.get('sales_office', 'Unknown')}
-Sales Manager: {data.get('sales_manager', 'Unknown')}
-Division: {data.get('division', 'Unknown')}
-
-📊 Performance:
-Total DNs: {data.get('total_dn', 0):,}
-Total Units: {data.get('total_units', 0):,}
-Total Revenue: PKR {data.get('total_revenue', 0):,.2f}
-Pending DNs: {data.get('pending_dn', 0):,}
-Completed DNs: {data.get('completed_dn', 0):,}"""
-    
-    def _format_warehouse_response(self, data: Dict) -> str:
-        return f"""🏭 Warehouse Dashboard
-
-Warehouse: {data.get('warehouse', 'Unknown')}
-Code: {data.get('warehouse_code', 'N/A')}
-
-📊 Performance:
-Total DNs: {data.get('total_dn', 0):,}
-Total Units: {data.get('total_units', 0):,}
-Total Revenue: PKR {data.get('total_revenue', 0):,.2f}
-Dealers Served: {data.get('dealer_count', 0):,}
-Pending DNs: {data.get('pending_dn', 0):,}"""
-    
-    def _format_city_response(self, data: Dict) -> str:
-        return f"""🏙️ City Dashboard
-
-City: {data.get('city', 'Unknown')}
-
-📊 Performance:
-Total Dealers: {data.get('dealer_count', 0):,}
-Total DNs: {data.get('total_dn', 0):,}
-Total Units: {data.get('total_units', 0):,}
-Total Revenue: PKR {data.get('total_revenue', 0):,.2f}
-Pending DNs: {data.get('pending_dn', 0):,}"""
-    
-    def _format_product_response(self, data: Dict) -> str:
-        return f"""📦 Product Dashboard
-
-Product: {data.get('product', 'Unknown')}
-Material: {data.get('material', 'N/A')}
-
-📊 Performance:
-Total DNs: {data.get('total_dn', 0):,}
-Total Units: {data.get('total_units', 0):,}
-Total Revenue: PKR {data.get('total_revenue', 0):,.2f}"""
-    
-    def _format_kpi_response(self, data: Dict) -> str:
-        return f"""📊 National KPIs
-
-Overview:
-Total DNs: {data.get('total_dn', 0):,}
-Total Dealers: {data.get('total_dealers', 0):,}
-Total Warehouses: {data.get('total_warehouses', 0):,}
-Total Cities: {data.get('total_cities', 0):,}
-
-Revenue:
-Total Revenue: PKR {data.get('total_revenue', 0):,.2f}
-Average DN Value: PKR {data.get('avg_dn_value', 0):,.2f}
-
-Delivery:
-Total Units: {data.get('total_units', 0):,}
-Pending DNs: {data.get('pending_dn', 0):,} ({data.get('pending_percentage', 0):.1f}%)
-Completed DNs: {data.get('completed_dn', 0):,} ({data.get('completion_rate', 0):.1f}%)"""
-    
-    # ============================================================
-    # GROQ HANDLING - FIXED
+    # GROQ HANDLING
     # ============================================================
     
     async def _handle_groq(self, message: str, decision: RoutingDecision) -> Dict[str, Any]:
-        """Handle Groq queries - FIXED for conversational questions"""
+        """Handle Groq queries"""
         
-        # ============================================================
-        # CONVERSATIONAL - NEW
-        # ============================================================
         if decision.intent == "conversational":
             return self._format_response(
                 message,
@@ -1681,8 +1471,8 @@ Please try again later."""
             "services": self.registry.get_health_report(),
             "system_status": "healthy",
             "timestamp": datetime.now().isoformat(),
-            "version": "6.1",
-            "postgresql": self.query_engine
+            "version": "7.0",
+            "dealer_search": "enabled"
         }
     
     def get_service_registry_status(self) -> Dict[str, Any]:
@@ -1716,7 +1506,7 @@ def get_whatsapp_provider_service() -> WhatsAppProviderService:
             if _whatsapp_provider_service is None:
                 try:
                     _whatsapp_provider_service = WhatsAppProviderService()
-                    logger.info("✅ WhatsAppProviderService singleton initialized (v6.1)")
+                    logger.info("✅ WhatsAppProviderService singleton initialized (v7.0)")
                 except Exception as e:
                     logger.exception(f"❌ Initialization failed: {e}")
                     raise
@@ -1736,7 +1526,7 @@ __all__ = [
     'RoutingDecision',
     'IntentDetectionEngine',
     'PostgreSQLValidator',
-    'PostgreSQLQueryEngine'
+    'DealerSearchEngine'
 ]
 
 
@@ -1745,14 +1535,11 @@ __all__ = [
 # ==========================================================
 
 logger.info("=" * 70)
-logger.info("AI Provider Service v6.1 - FIXED: Pending & Conversational")
+logger.info("AI Provider Service v7.0 - FIXED: Dealer Suggestions")
 logger.info("=" * 70)
-logger.info("✅ PostgreSQL Query Engine - Direct database access")
-logger.info("✅ Intent Detection - 13 priority levels")
-logger.info("✅ Entity Extraction - Dealer, Warehouse, City, Product")
-logger.info("✅ Routing Engine - Intelligent decision making")
+logger.info("✅ Dealer Search Engine - Fuzzy matching")
+logger.info("✅ Dealer Suggestions - When not found")
+logger.info("✅ Intent Detection - 12 priority levels")
+logger.info("✅ PostgreSQL Integration - All data from database")
 logger.info("✅ Groq Fallback - For complex questions")
-logger.info("✅ 100% PostgreSQL Integration - All data from database")
-logger.info("✅ FIXED: 'Pending DNs' → DN Service")
-logger.info("✅ FIXED: 'Can I ask you something' → Groq")
 logger.info("=" * 70)
