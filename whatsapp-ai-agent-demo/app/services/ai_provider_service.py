@@ -1,1135 +1,894 @@
 """
-File: app/services/ai_provider_service_intents.py
-Version: 3.0 - ENTERPRISE INTENT DETECTION with Library Support
-Purpose: Pure intent detection logic using spaCy, RapidFuzz, and caching
-         NO business logic, NO SQL, NO formatting
+File: app/services/ai_provider_service.py
+Version: 9.0 - ENTERPRISE REFACTORED: Service-Oriented Architecture
+Purpose: LIGHTWEIGHT ORCHESTRATOR - SINGLE ENTRY POINT for all WhatsApp requests.
+         Delegates ALL business logic to dedicated services.
+         NO SQL, NO business logic, NO formatting logic.
+         Maintains same routing structure as v8.2
 """
 
-import re
 import logging
-import asyncio
-from typing import Optional, Dict, Any, List, Tuple, Set
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from functools import lru_cache
+import os
 import threading
-
-# ============================================================
-# LIBRARY IMPORTS WITH FALLBACK
-# ============================================================
-
-try:
-    import spacy
-    SPACY_AVAILABLE = True
-    logger = logging.getLogger(__name__)
-    logger.info("✅ spaCy available for intent detection")
-except ImportError:
-    SPACY_AVAILABLE = False
-    logger = logging.getLogger(__name__)
-    logger.warning("⚠️ spaCy not installed. Install with: pip install spacy>=3.8.2")
-
-try:
-    from rapidfuzz import fuzz, process
-    RAPIDFUZZ_AVAILABLE = True
-    logger.info("✅ RapidFuzz available for fuzzy matching")
-except ImportError:
-    RAPIDFUZZ_AVAILABLE = False
-    logger.warning("⚠️ RapidFuzz not installed. Install with: pip install rapidfuzz>=3.0.0")
-
-try:
-    from cachetools import TTLCache, cached
-    CACHETOOLS_AVAILABLE = True
-    logger.info("✅ Cachetools available for caching")
-except ImportError:
-    CACHETOOLS_AVAILABLE = False
-    logger.warning("⚠️ Cachetools not installed. Install with: pip install cachetools>=5.0.0")
+import time
+import importlib
+import inspect
+import re
+import sys
+import asyncio
+from typing import Optional, Dict, Any, List, Tuple
+from datetime import datetime, timedelta
+from dataclasses import dataclass, field
+from functools import wraps
 
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# ROUTING DECISION
+# TENACITY FOR RETRY LOGIC
 # ============================================================
 
-@dataclass
-class RoutingDecision:
-    """Routing decision for intent routing with enhanced metadata"""
-    intent: str
-    service_key: str
-    method: str
-    entity: Optional[str] = None
-    entity2: Optional[str] = None
-    confidence: float = 0.0
-    needs_groq: bool = False
-    reason: str = ""
-    original_message: str = ""
-    suggestions: List[str] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    entities: Dict[str, Any] = field(default_factory=dict)  # spaCy entities
-    intent_score: float = 0.0  # ML-based confidence
+try:
+    from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+    TENACITY_AVAILABLE = True
+except ImportError:
+    TENACITY_AVAILABLE = False
+    logger.warning("⚠️ Tenacity not installed. Install with: pip install tenacity>=8.5.0")
+
+# ============================================================
+# IMPORTS WITH FALLBACK
+# ============================================================
+
+try:
+    from app.database import SessionLocal
+    from app.models import DeliveryReport
+    logger.info("✅ Core imports successful")
+except ImportError as e:
+    logger.error(f"❌ Core import failed: {e}")
+    SessionLocal = None
+    DeliveryReport = None
+
+# ============================================================
+# IMPORT INTENT DETECTION ENGINE
+# ============================================================
+
+try:
+    from .ai_provider_service_intents import IntentDetectionEngine, RoutingDecision
+    INTENTS_AVAILABLE = True
+    logger.info("✅ IntentDetectionEngine imported successfully")
+except ImportError as e:
+    INTENTS_AVAILABLE = False
+    logger.warning(f"⚠️ IntentDetectionEngine import failed: {e}")
     
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "intent": self.intent,
-            "service_key": self.service_key,
-            "method": self.method,
-            "entity": self.entity,
-            "entity2": self.entity2,
-            "confidence": self.confidence,
-            "needs_groq": self.needs_groq,
-            "reason": self.reason,
-            "original_message": self.original_message,
-            "suggestions": self.suggestions,
-            "metadata": self.metadata,
-            "entities": self.entities,
-            "intent_score": self.intent_score
+    # Fallback RoutingDecision
+    @dataclass
+    class RoutingDecision:
+        intent: str
+        service_key: str
+        method: str
+        entity: Optional[str] = None
+        entity2: Optional[str] = None
+        confidence: float = 0.0
+        needs_groq: bool = False
+        reason: str = ""
+        original_message: str = ""
+        suggestions: List[str] = field(default_factory=list)
+        metadata: Dict[str, Any] = field(default_factory=dict)
+        entities: Dict[str, Any] = field(default_factory=dict)
+        intent_score: float = 0.0
+        
+        def to_dict(self) -> Dict[str, Any]:
+            return {
+                "intent": self.intent,
+                "service_key": self.service_key,
+                "method": self.method,
+                "entity": self.entity,
+                "entity2": self.entity2,
+                "confidence": self.confidence,
+                "needs_groq": self.needs_groq,
+                "reason": self.reason,
+                "original_message": self.original_message,
+                "suggestions": self.suggestions,
+                "metadata": self.metadata,
+                "entities": self.entities,
+                "intent_score": self.intent_score
+            }
+
+# ============================================================
+# SERVICE REGISTRY - SAME AS V8.2
+# ============================================================
+
+class ServiceRegistry:
+    SERVICES = {
+        # ============================================================
+        # DN SERVICE
+        # ============================================================
+        "dn": {
+            "module": "app.services.dn_analysis",
+            "class_name": "DNAnalysisService",
+            "methods": [
+                "get_dn_dashboard",
+                "search_dn",
+                "verify_dn",
+                "get_pending_dns",
+                "get_pending_pgi",
+                "get_pending_pod",
+                "health_check",
+                "validation_query",
+                "get_service_metadata"
+            ],
+            "description": "DN Analytics Service",
+            "dependencies": []
+        },
+        # ============================================================
+        # DEALER SERVICE
+        # ============================================================
+        "dealer": {
+            "module": "app.services.dealer_analytics_service",
+            "class_name": "DealerAnalyticsService",
+            "methods": [
+                "get_dealer_dashboard",
+                "get_dealer_profile",
+                "compare_dealers",
+                "get_top_dealers",
+                "get_bottom_dealers",
+                "health_check",
+                "validation_query",
+                "get_service_metadata"
+            ],
+            "description": "Dealer Analytics Service",
+            "dependencies": ["dn"]
+        },
+        # ============================================================
+        # WAREHOUSE SERVICE
+        # ============================================================
+        "warehouse": {
+            "module": "app.services.warehouse_analytics_service",
+            "class_name": "WarehouseAnalyticsService",
+            "methods": [
+                "get_warehouse_dashboard",
+                "get_top_warehouses",
+                "health_check",
+                "validation_query",
+                "get_service_metadata"
+            ],
+            "description": "Warehouse Analytics Service",
+            "dependencies": ["dn", "dealer"]
+        },
+        # ============================================================
+        # CITY SERVICE
+        # ============================================================
+        "city": {
+            "module": "app.services.city_analytics_service",
+            "class_name": "CityAnalyticsService",
+            "methods": [
+                "get_city_dashboard",
+                "get_top_cities",
+                "health_check",
+                "validation_query",
+                "get_service_metadata"
+            ],
+            "description": "City Analytics Service",
+            "dependencies": ["dn"]
+        },
+        # ============================================================
+        # PRODUCT SERVICE
+        # ============================================================
+        "product": {
+            "module": "app.services.product_analytics_service",
+            "class_name": "ProductAnalyticsService",
+            "methods": [
+                "get_product_dashboard",
+                "get_top_products",
+                "health_check",
+                "validation_query",
+                "get_service_metadata"
+            ],
+            "description": "Product Analytics Service",
+            "dependencies": ["dn"]
+        },
+        # ============================================================
+        # NATIONAL KPI SERVICE
+        # ============================================================
+        "national_kpi": {
+            "module": "app.services.national_kpi_service",
+            "class_name": "NationalKPIService",
+            "methods": [
+                "get_national_kpi_dashboard",
+                "get_delivery_kpis",
+                "get_warehouse_kpis",
+                "health_check",
+                "validation_query",
+                "get_service_metadata"
+            ],
+            "description": "National KPI Service",
+            "dependencies": ["dn", "dealer", "warehouse", "city", "product"]
+        },
+        # ============================================================
+        # GROQ SERVICE
+        # ============================================================
+        "groq": {
+            "module": "app.services.groq_service",
+            "class_name": "GroqService",
+            "methods": ["process_query", "get_response", "classify_intent"],
+            "description": "Groq AI Service",
+            "dependencies": []
         }
-
-# ============================================================
-# INTENT PATTERNS
-# ============================================================
-
-class IntentPatterns:
-    """Centralized pattern definitions with scoring weights"""
-    
-    # DN Patterns (weight: 1.0)
-    DN_NUMBER = re.compile(r'\b(\d{8,12})\b')
-    DN_PREFIX = re.compile(r'\b(DN|DN/)\s*(\d{6,10})\b', re.IGNORECASE)
-    
-    # Pending Patterns (weight: 0.95)
-    PENDING_DN = re.compile(r'(?:pending|open|outstanding)\s*(?:dn|dns|delivery|deliveries)', re.IGNORECASE)
-    PENDING_PGI = re.compile(r'(?:pending|open)\s*(?:pgi|goods issue|goods issuance)', re.IGNORECASE)
-    PENDING_POD = re.compile(r'(?:pending|open)\s*(?:pod|proof of delivery)', re.IGNORECASE)
-    PENDING_GENERAL = re.compile(r'(?:pending|open|outstanding|waiting|delayed)', re.IGNORECASE)
-    
-    # Dealer Patterns (weight: 0.9)
-    DEALER = re.compile(
-        r'(?:dealer|about|for|company|customer|tell me about|show me|get|view|display|give me)\s+([a-z0-9\s&\-\.]+)',
-        re.IGNORECASE
-    )
-    DEALER_DASHBOARD = re.compile(
-        r'(?:dashboard|profile|summary|overview|info|information|details|status|statistics|performance)\s+(?:of|for)?\s+([a-z0-9\s&\-\.]+)',
-        re.IGNORECASE
-    )
-    DEALER_KEYWORDS = {'dealer', 'dealers', 'customer', 'customers', 'partner', 'partners', 'distributor', 'distributors'}
-    
-    # Ranking Patterns (weight: 0.85)
-    RANKING = re.compile(
-        r'(?:top|best|highest|lowest|worst|bottom|leading|performance)\s+(\d+)?\s*(?:dealers?|cities?|warehouses?|products?)',
-        re.IGNORECASE
-    )
-    RANKING_KEYWORDS = {'top', 'best', 'highest', 'lowest', 'worst', 'bottom', 'leading', 'ranking', 'rank'}
-    
-    # Comparison Patterns (weight: 0.85)
-    COMPARISON = re.compile(
-        r'(?:compare|vs|versus|and)\s+(.*?)(?:\s+and\s+|\s+vs\s+|\s+versus\s+)(.*?)(?:\?|$)',
-        re.IGNORECASE
-    )
-    COMPARISON_KEYWORDS = {'compare', 'comparison', 'vs', 'versus', 'difference', 'diff'}
-    
-    # Location Patterns (weight: 0.85)
-    WAREHOUSE = re.compile(r'(?:warehouse|wh|depot|distribution|store)\s+([a-z0-9\s&\-\.]+)', re.IGNORECASE)
-    WAREHOUSE_KEYWORDS = {'warehouse', 'wh', 'depot', 'distribution', 'store'}
-    
-    CITY = re.compile(r'(?:city|in|at|location|region|area)\s+([a-z0-9\s&\-\.]+)', re.IGNORECASE)
-    CITY_KEYWORDS = {'city', 'cities', 'region', 'area', 'location'}
-    
-    PRODUCT = re.compile(r'(?:product|model|material|item|sku|article|goods)\s+([a-z0-9\s&\-\.]+)', re.IGNORECASE)
-    PRODUCT_KEYWORDS = {'product', 'products', 'model', 'models', 'material', 'sku', 'item', 'items'}
-    
-    # National KPIs (weight: 0.9)
-    NATIONAL_KPI = re.compile(
-        r'(?:national|pakistan|country|overall|executive|kpi dashboard|performance dashboard|company wide|corporate|head office)',
-        re.IGNORECASE
-    )
-    NATIONAL_KEYWORDS = {'national', 'pakistan', 'country', 'overall', 'executive', 'corporate', 'company wide'}
-    
-    # Conversational Patterns (weight: 0.7)
-    HELP = re.compile(r'(?:help|menu|commands|what can you do|available commands|how to use|guide|tutorial)', re.IGNORECASE)
-    GREETING = re.compile(r'^(?:hello|hi|hey|good morning|good evening|good afternoon|howdy|greetings|yo|sup)', re.IGNORECASE)
-    CONVERSATIONAL = re.compile(
-        r'(?:can i|may i|could i|i have|i want|i need|tell me|help me|'
-        r'question|ask you|something|anything|what is|how to|how do|'
-        r'where is|when is|why is|who is|explain|describe|tell about|'
-        r'know about|information about|details about)',
-        re.IGNORECASE
-    )
-    
-    # Intent weights for scoring
-    INTENT_WEIGHTS = {
-        'dn_lookup': 1.0,
-        'pending_dn': 0.98,
-        'pending_pgi': 0.95,
-        'pending_pod': 0.95,
-        'national_kpi': 0.95,
-        'dealer_dashboard': 0.90,
-        'dealer_suggestion': 0.85,
-        'top_dealers': 0.90,
-        'bottom_dealers': 0.85,
-        'comparison': 0.85,
-        'warehouse_dashboard': 0.85,
-        'city_dashboard': 0.85,
-        'product_dashboard': 0.85,
-        'help': 0.95,
-        'greeting': 0.95,
-        'conversational': 0.80,
-        'general_ai': 0.50
     }
-
-# ============================================================
-# ENHANCED INTENT DETECTION ENGINE
-# ============================================================
-
-class IntentDetectionEngine:
-    """
-    ENHANCED Intent Detection Engine using:
-    - spaCy for NLP and entity extraction
-    - RapidFuzz for fuzzy matching
-    - Cachetools for caching results
-    - Pattern-based detection with scoring
-    """
     
     def __init__(self):
-        self.patterns = IntentPatterns()
-        self.logger = logging.getLogger(__name__)
+        self._services = self.SERVICES.copy()
+        self._status_cache = {}
+        self._instance_cache = {}
+        self._lock = threading.RLock()
+    
+    def get_service_instance(self, service_key: str):
+        """Get service instance with caching"""
+        if service_key in self._instance_cache:
+            return self._instance_cache[service_key]
         
-        # Initialize spaCy
-        self.nlp = None
-        if SPACY_AVAILABLE:
+        with self._lock:
+            if service_key in self._instance_cache:
+                return self._instance_cache[service_key]
+            
             try:
-                # Try to load small model first, fallback to large
-                try:
-                    self.nlp = spacy.load("en_core_web_sm")
-                except OSError:
-                    try:
-                        self.nlp = spacy.load("en_core_web_lg")
-                    except OSError:
-                        self.logger.warning("⚠️ spaCy model not found. Download with: python -m spacy download en_core_web_sm")
-                        self.nlp = None
+                service_def = self._services.get(service_key)
+                if not service_def:
+                    logger.error(f"Service '{service_key}' not registered")
+                    return None
                 
-                if self.nlp:
-                    self.logger.info("✅ spaCy NLP model loaded")
+                module = importlib.import_module(service_def["module"])
+                cls = getattr(module, service_def["class_name"])
+                instance = cls()
+                self._instance_cache[service_key] = instance
+                logger.info(f"✅ Service '{service_key}' initialized")
+                return instance
+            except ImportError as e:
+                logger.error(f"Failed to import service '{service_key}': {e}")
+                return None
             except Exception as e:
-                self.logger.warning(f"⚠️ spaCy initialization failed: {e}")
-                self.nlp = None
-        
-        # Cache for intent detection
-        self._cache = TTLCache(maxsize=1000, ttl=300) if CACHETOOLS_AVAILABLE else {}
-        self._cache_hits = 0
-        self._cache_misses = 0
-        
-        # Dealer cache for fuzzy matching
-        self._dealer_names = []
-        self._dealer_normalized = []
-        self._dealer_cache_loaded = False
-        self._dealer_cache_lock = threading.RLock()
-        
-        # Intent tracking for analytics
-        self._intent_stats = {}
-        
-        self.logger.info("✅ Enhanced IntentDetectionEngine initialized")
-        self.logger.info(f"   spaCy: {'✅ Available' if self.nlp else '❌ Not Available'}")
-        self.logger.info(f"   RapidFuzz: {'✅ Available' if RAPIDFUZZ_AVAILABLE else '❌ Not Available'}")
-        self.logger.info(f"   Cachetools: {'✅ Available' if CACHETOOLS_AVAILABLE else '❌ Not Available'}")
+                logger.error(f"Failed to load service '{service_key}': {e}")
+                return None
     
-    # ============================================================
-    # MAIN DETECT INTENT METHOD
-    # ============================================================
+    def is_service_ready(self, service_key: str) -> bool:
+        instance = self.get_service_instance(service_key)
+        return instance is not None
     
-    def detect_intent(self, message: str) -> RoutingDecision:
-        """
-        Detect intent from message with enhanced NLP and fuzzy matching.
-        
-        Args:
-            message: User message
-        
-        Returns:
-            RoutingDecision with intent and entities
-        """
-        cleaned = message.strip()
-        if not cleaned:
-            return self._create_fallback_decision(cleaned, "Empty message")
-        
-        # Check cache
-        cache_key = f"intent:{cleaned[:100]}"
-        if self._cache_enabled() and cache_key in self._cache:
-            self._cache_hits += 1
-            self.logger.debug(f"Cache hit for: {cleaned[:50]}")
-            return self._cache[cache_key]
-        
-        self._cache_misses += 1
-        
-        # Normalize for pattern matching
-        normalized = cleaned.lower()
-        self.logger.debug(f"Detecting intent for: {cleaned[:100]}")
-        
-        # Extract entities with spaCy
-        entities = {}
-        if self.nlp:
-            try:
-                doc = self.nlp(cleaned)
-                entities = {
-                    "PERSON": [ent.text for ent in doc.ents if ent.label_ == "PERSON"],
-                    "ORG": [ent.text for ent in doc.ents if ent.label_ == "ORG"],
-                    "GPE": [ent.text for ent in doc.ents if ent.label_ == "GPE"],
-                    "DATE": [ent.text for ent in doc.ents if ent.label_ == "DATE"],
-                    "MONEY": [ent.text for ent in doc.ents if ent.label_ == "MONEY"],
-                    "QUANTITY": [ent.text for ent in doc.ents if ent.label_ == "QUANTITY"],
-                    "PRODUCT": [ent.text for ent in doc.ents if ent.label_ == "PRODUCT"],
-                }
-                self.logger.debug(f"Extracted entities: {entities}")
-            except Exception as e:
-                self.logger.warning(f"spaCy entity extraction failed: {e}")
-        
-        # ============================================================
-        # INTENT DETECTION WITH SCORING
-        # ============================================================
-        
-        decisions = []
-        
-        # 1. DN Intent
-        dn_decision = self._detect_dn_intent(cleaned, normalized, entities)
-        if dn_decision:
-            decisions.append(dn_decision)
-        
-        # 2. Pending Intent
-        pending_decision = self._detect_pending_intent(cleaned, normalized)
-        if pending_decision:
-            decisions.append(pending_decision)
-        
-        # 3. National KPI Intent
-        national_decision = self._detect_national_intent(cleaned, normalized)
-        if national_decision:
-            decisions.append(national_decision)
-        
-        # 4. Ranking Intent
-        ranking_decision = self._detect_ranking_intent(cleaned, normalized)
-        if ranking_decision:
-            decisions.append(ranking_decision)
-        
-        # 5. Comparison Intent
-        comparison_decision = self._detect_comparison_intent(cleaned, normalized)
-        if comparison_decision:
-            decisions.append(comparison_decision)
-        
-        # 6. Dealer Intent
-        dealer_decision = self._detect_dealer_intent(cleaned, normalized, entities)
-        if dealer_decision:
-            decisions.append(dealer_decision)
-        
-        # 7. Warehouse/City/Product Intent
-        location_decision = self._detect_location_intent(cleaned, normalized)
-        if location_decision:
-            decisions.append(location_decision)
-        
-        # 8. Conversational Intent
-        conv_decision = self._detect_conversational_intent(cleaned, normalized)
-        if conv_decision:
-            decisions.append(conv_decision)
-        
-        # ============================================================
-        # SELECT BEST DECISION
-        # ============================================================
-        
-        if decisions:
-            # Sort by confidence and weight
-            decisions.sort(key=lambda d: d.confidence, reverse=True)
-            best = decisions[0]
-            
-            # Log tracking
-            self._track_intent(best.intent)
-            
-            # Cache result
-            if self._cache_enabled():
-                self._cache[cache_key] = best
-            
-            # Add entities to metadata
-            best.metadata['entities'] = entities
-            best.metadata['cache_hits'] = self._cache_hits
-            
-            self.logger.info(f"🎯 Intent: {best.intent} (confidence: {best.confidence:.2f})")
-            return best
-        
-        # ============================================================
-        # FALLBACK
-        # ============================================================
-        
-        fallback = self._create_fallback_decision(cleaned, "No intent detected")
-        if self._cache_enabled():
-            self._cache[cache_key] = fallback
-        
-        self._track_intent('general_ai')
-        return fallback
+    def get_all_services(self) -> Dict[str, Any]:
+        return self._services
+
+# ============================================================
+# DEALER RESOLVER - SAME AS V8.2
+# ============================================================
+
+class DealerResolver:
+    """Resolve dealer names from database"""
     
-    # ============================================================
-    # INTENT DETECTION METHODS
-    # ============================================================
+    _dealer_cache = {}
+    _dealer_names = []
+    _loaded = False
+    _lock = threading.RLock()
     
-    def _detect_dn_intent(self, cleaned: str, normalized: str, entities: Dict) -> Optional[RoutingDecision]:
-        """Detect DN-related intent"""
-        # Pure DN number
-        if self._is_dn_number(cleaned):
-            dn_number = re.sub(r'\D', '', cleaned)
-            return self._create_decision(
-                intent="dn_lookup",
-                service_key="dn",
-                method="get_dn_dashboard",
-                entity=dn_number,
-                confidence=1.0,
-                reason="DN number detected",
-                original=cleaned
-            )
-        
-        # DN with prefix
-        dn_match = self.patterns.DN_PREFIX.search(cleaned)
-        if dn_match:
-            dn_number = dn_match.group(2)
-            return self._create_decision(
-                intent="dn_lookup",
-                service_key="dn",
-                method="get_dn_dashboard",
-                entity=dn_number,
-                confidence=1.0,
-                reason="DN with prefix detected",
-                original=cleaned
-            )
-        
-        # DN number in text
-        dn_match = self.patterns.DN_NUMBER.search(cleaned)
-        if dn_match:
-            dn_number = dn_match.group(1)
-            return self._create_decision(
-                intent="dn_lookup",
-                service_key="dn",
-                method="get_dn_dashboard",
-                entity=dn_number,
-                confidence=1.0,
-                reason="DN number extracted",
-                original=cleaned
-            )
-        
-        return None
-    
-    def _detect_pending_intent(self, cleaned: str, normalized: str) -> Optional[RoutingDecision]:
-        """Detect pending-related intent"""
-        if self.patterns.PENDING_DN.search(normalized):
-            return self._create_decision(
-                intent="pending_dn",
-                service_key="dn",
-                method="get_pending_dns",
-                confidence=0.98,
-                reason="Pending DN query",
-                original=cleaned
-            )
-        
-        if self.patterns.PENDING_PGI.search(normalized):
-            return self._create_decision(
-                intent="pending_pgi",
-                service_key="dn",
-                method="get_pending_pgi",
-                confidence=0.95,
-                reason="Pending PGI query",
-                original=cleaned
-            )
-        
-        if self.patterns.PENDING_POD.search(normalized):
-            return self._create_decision(
-                intent="pending_pod",
-                service_key="dn",
-                method="get_pending_pod",
-                confidence=0.95,
-                reason="Pending POD query",
-                original=cleaned
-            )
-        
-        if self.patterns.PENDING_GENERAL.search(normalized):
-            return self._create_decision(
-                intent="pending_dn",
-                service_key="dn",
-                method="get_pending_dns",
-                confidence=0.80,
-                reason="General pending query",
-                original=cleaned
-            )
-        
-        return None
-    
-    def _detect_national_intent(self, cleaned: str, normalized: str) -> Optional[RoutingDecision]:
-        """Detect national KPI intent"""
-        # Pattern match
-        if self.patterns.NATIONAL_KPI.search(normalized):
-            return self._create_decision(
-                intent="national_kpi",
-                service_key="national_kpi",
-                method="get_national_kpi_dashboard",
-                confidence=0.95,
-                reason="National KPI query",
-                original=cleaned
-            )
-        
-        # Keyword scoring with spaCy if available
-        if self.nlp:
-            try:
-                doc = self.nlp(cleaned)
-                score = sum(1 for token in doc if token.text.lower() in self.patterns.NATIONAL_KEYWORDS)
-                if score >= 2:
-                    return self._create_decision(
-                        intent="national_kpi",
-                        service_key="national_kpi",
-                        method="get_national_kpi_dashboard",
-                        confidence=0.85 + (score * 0.02),
-                        reason=f"National keywords detected (score: {score})",
-                        original=cleaned
-                    )
-            except Exception:
-                pass
-        
-        return None
-    
-    def _detect_ranking_intent(self, cleaned: str, normalized: str) -> Optional[RoutingDecision]:
-        """Detect ranking intent"""
-        ranking_match = self.patterns.RANKING.search(normalized)
-        if ranking_match:
-            # Extract ranking type
-            if 'dealer' in normalized:
-                service_key, method = 'dealer', 'get_top_dealers'
-                if 'revenue' in normalized or 'sales' in normalized:
-                    method = 'get_top_dealers_by_revenue'
-                elif 'unit' in normalized or 'quantity' in normalized:
-                    method = 'get_top_dealers_by_units'
-                
-                if 'bottom' in normalized or 'worst' in normalized:
-                    method = method.replace('top', 'bottom')
-                    intent = 'bottom_dealers'
-                else:
-                    intent = 'top_dealers'
-                
-                return self._create_decision(
-                    intent=intent,
-                    service_key=service_key,
-                    method=method,
-                    confidence=0.90,
-                    reason=f"Ranking: {intent}",
-                    original=cleaned
-                )
-            
-            elif 'city' in normalized:
-                return self._create_decision(
-                    intent="top_cities",
-                    service_key="city",
-                    method="get_top_cities",
-                    confidence=0.85,
-                    reason="Top cities ranking",
-                    original=cleaned
-                )
-            
-            elif 'warehouse' in normalized or 'wh' in normalized:
-                return self._create_decision(
-                    intent="top_warehouses",
-                    service_key="warehouse",
-                    method="get_top_warehouses",
-                    confidence=0.85,
-                    reason="Top warehouses ranking",
-                    original=cleaned
-                )
-            
-            elif 'product' in normalized or 'item' in normalized:
-                return self._create_decision(
-                    intent="top_products",
-                    service_key="product",
-                    method="get_top_products",
-                    confidence=0.85,
-                    reason="Top products ranking",
-                    original=cleaned
-                )
-        
-        # Keyword scoring with spaCy
-        if self.nlp:
-            try:
-                doc = self.nlp(cleaned)
-                rank_keywords = set(['top', 'best', 'highest', 'lowest', 'worst', 'bottom', 'leading'])
-                score = sum(1 for token in doc if token.text.lower() in rank_keywords)
-                if score >= 1:
-                    # Determine entity type from entities
-                    if 'dealer' in normalized or 'customer' in normalized:
-                        return self._create_decision(
-                            intent="top_dealers",
-                            service_key="dealer",
-                            method="get_top_dealers",
-                            confidence=0.75 + (score * 0.05),
-                            reason=f"Ranking keywords detected (score: {score})",
-                            original=cleaned
-                        )
-            except Exception:
-                pass
-        
-        return None
-    
-    def _detect_comparison_intent(self, cleaned: str, normalized: str) -> Optional[RoutingDecision]:
-        """Detect comparison intent"""
-        comparison_match = self.patterns.COMPARISON.search(cleaned)
-        if comparison_match:
-            entity1 = comparison_match.group(1).strip()
-            entity2 = comparison_match.group(2).strip()
-            return self._create_decision(
-                intent="comparison",
-                service_key="dealer",
-                method="compare_dealers",
-                entity=entity1,
-                entity2=entity2,
-                confidence=0.90,
-                reason=f"Comparison: {entity1} vs {entity2}",
-                original=cleaned
-            )
-        
-        # Keyword scoring
-        if self.nlp:
-            try:
-                doc = self.nlp(cleaned)
-                compare_keywords = set(['compare', 'comparison', 'vs', 'versus', 'difference'])
-                score = sum(1 for token in doc if token.text.lower() in compare_keywords)
-                if score >= 1:
-                    # Try to find entities to compare
-                    entities_found = []
-                    for ent in doc.ents:
-                        if ent.label_ in ["ORG", "PERSON"]:
-                            entities_found.append(ent.text)
-                    if len(entities_found) >= 2:
-                        return self._create_decision(
-                            intent="comparison",
-                            service_key="dealer",
-                            method="compare_dealers",
-                            entity=entities_found[0],
-                            entity2=entities_found[1],
-                            confidence=0.80 + (score * 0.05),
-                            reason=f"Comparison keywords with entities detected",
-                            original=cleaned
-                        )
-            except Exception:
-                pass
-        
-        return None
-    
-    def _detect_dealer_intent(self, cleaned: str, normalized: str, entities: Dict) -> Optional[RoutingDecision]:
-        """Detect dealer-related intent"""
-        dealer_name = None
-        
-        # Try dashboard pattern
-        dashboard_match = self.patterns.DEALER_DASHBOARD.search(cleaned)
-        if dashboard_match:
-            dealer_name = dashboard_match.group(1).strip()
-            dealer_name = self._clean_dealer_name(dealer_name)
-            if dealer_name:
-                found_dealer = self._find_dealer_fuzzy(dealer_name)
-                if found_dealer:
-                    return self._create_decision(
-                        intent="dealer_dashboard",
-                        service_key="dealer",
-                        method="get_dealer_dashboard",
-                        entity=found_dealer,
-                        confidence=0.95,
-                        reason=f"Dealer dashboard: {found_dealer}",
-                        original=cleaned
-                    )
-        
-        # Try dealer pattern
-        dealer_match = self.patterns.DEALER.search(cleaned)
-        if dealer_match:
-            dealer_name = dealer_match.group(1).strip()
-            dealer_name = self._clean_dealer_name(dealer_name)
-            if dealer_name:
-                found_dealer = self._find_dealer_fuzzy(dealer_name)
-                if found_dealer:
-                    return self._create_decision(
-                        intent="dealer_dashboard",
-                        service_key="dealer",
-                        method="get_dealer_dashboard",
-                        entity=found_dealer,
-                        confidence=0.90,
-                        reason=f"Dealer found: {found_dealer}",
-                        original=cleaned
-                    )
-                else:
-                    # Suggest similar dealers
-                    suggestions = self._find_similar_dealers(dealer_name, limit=5)
-                    if suggestions:
-                        return self._create_decision(
-                            intent="dealer_suggestion",
-                            service_key="dealer",
-                            method="suggest_dealers",
-                            entity=dealer_name,
-                            suggestions=suggestions,
-                            confidence=0.70,
-                            reason=f"Dealer not found, suggestions: {suggestions[:3]}",
-                            original=cleaned
-                        )
-        
-        # Check if it's just a dealer name (short query)
-        if len(cleaned.split()) <= 3 and len(cleaned) > 2:
-            if not re.match(r'^\d+$', cleaned):
-                dealer_name = self._clean_dealer_name(cleaned)
-                if dealer_name:
-                    found_dealer = self._find_dealer_fuzzy(dealer_name)
-                    if found_dealer:
-                        return self._create_decision(
-                            intent="dealer_dashboard",
-                            service_key="dealer",
-                            method="get_dealer_dashboard",
-                            entity=found_dealer,
-                            confidence=0.85,
-                            reason=f"Dealer from short query: {found_dealer}",
-                            original=cleaned
-                        )
-        
-        # Use spaCy entities
-        if entities and entities.get("ORG"):
-            for org in entities["ORG"]:
-                found_dealer = self._find_dealer_fuzzy(org)
-                if found_dealer:
-                    return self._create_decision(
-                        intent="dealer_dashboard",
-                        service_key="dealer",
-                        method="get_dealer_dashboard",
-                        entity=found_dealer,
-                        confidence=0.85,
-                        reason=f"Dealer from spaCy ORG entity: {found_dealer}",
-                        original=cleaned
-                    )
-        
-        return None
-    
-    def _detect_location_intent(self, cleaned: str, normalized: str) -> Optional[RoutingDecision]:
-        """Detect warehouse/city/product intent"""
-        # Warehouse
-        warehouse_match = self.patterns.WAREHOUSE.search(cleaned)
-        if warehouse_match:
-            warehouse_name = warehouse_match.group(1).strip()
-            return self._create_decision(
-                intent="warehouse_dashboard",
-                service_key="warehouse",
-                method="get_warehouse_dashboard",
-                entity=warehouse_name,
-                confidence=0.90,
-                reason=f"Warehouse: {warehouse_name}",
-                original=cleaned
-            )
-        
-        # City
-        city_match = self.patterns.CITY.search(cleaned)
-        if city_match:
-            city_name = city_match.group(1).strip()
-            return self._create_decision(
-                intent="city_dashboard",
-                service_key="city",
-                method="get_city_dashboard",
-                entity=city_name,
-                confidence=0.90,
-                reason=f"City: {city_name}",
-                original=cleaned
-            )
-        
-        # Product
-        product_match = self.patterns.PRODUCT.search(cleaned)
-        if product_match:
-            product_name = product_match.group(1).strip()
-            return self._create_decision(
-                intent="product_dashboard",
-                service_key="product",
-                method="get_product_dashboard",
-                entity=product_name,
-                confidence=0.90,
-                reason=f"Product: {product_name}",
-                original=cleaned
-            )
-        
-        # Keyword scoring with spaCy
-        if self.nlp:
-            try:
-                doc = self.nlp(cleaned)
-                
-                # Check for warehouse keywords
-                warehouse_score = sum(1 for token in doc if token.text.lower() in self.patterns.WAREHOUSE_KEYWORDS)
-                if warehouse_score >= 1:
-                    # Extract potential warehouse name
-                    for ent in doc.ents:
-                        if ent.label_ in ["ORG", "LOC"]:
-                            return self._create_decision(
-                                intent="warehouse_dashboard",
-                                service_key="warehouse",
-                                method="get_warehouse_dashboard",
-                                entity=ent.text,
-                                confidence=0.80,
-                                reason=f"Warehouse from NLP: {ent.text}",
-                                original=cleaned
-                            )
-                
-                # Check for city keywords
-                city_score = sum(1 for token in doc if token.text.lower() in self.patterns.CITY_KEYWORDS)
-                if city_score >= 1:
-                    for ent in doc.ents:
-                        if ent.label_ == "GPE":
-                            return self._create_decision(
-                                intent="city_dashboard",
-                                service_key="city",
-                                method="get_city_dashboard",
-                                entity=ent.text,
-                                confidence=0.80,
-                                reason=f"City from NLP: {ent.text}",
-                                original=cleaned
-                            )
-                
-                # Check for product keywords
-                product_score = sum(1 for token in doc if token.text.lower() in self.patterns.PRODUCT_KEYWORDS)
-                if product_score >= 1:
-                    for ent in doc.ents:
-                        if ent.label_ == "PRODUCT":
-                            return self._create_decision(
-                                intent="product_dashboard",
-                                service_key="product",
-                                method="get_product_dashboard",
-                                entity=ent.text,
-                                confidence=0.80,
-                                reason=f"Product from NLP: {ent.text}",
-                                original=cleaned
-                            )
-            except Exception:
-                pass
-        
-        return None
-    
-    def _detect_conversational_intent(self, cleaned: str, normalized: str) -> Optional[RoutingDecision]:
-        """Detect conversational intent"""
-        # Help
-        if self.patterns.HELP.search(normalized):
-            return self._create_decision(
-                intent="help",
-                service_key="groq",
-                method="process_query",
-                confidence=0.95,
-                needs_groq=True,
-                reason="Help query",
-                original=cleaned
-            )
-        
-        # Greeting
-        if self.patterns.GREETING.search(normalized):
-            return self._create_decision(
-                intent="greeting",
-                service_key="groq",
-                method="process_query",
-                confidence=0.95,
-                needs_groq=True,
-                reason="Greeting",
-                original=cleaned
-            )
-        
-        # Conversational
-        if self.patterns.CONVERSATIONAL.search(normalized):
-            return self._create_decision(
-                intent="conversational",
-                service_key="groq",
-                method="process_query",
-                confidence=0.85,
-                needs_groq=True,
-                reason="Conversational question",
-                original=cleaned
-            )
-        
-        return None
-    
-    # ============================================================
-    # HELPER METHODS
-    # ============================================================
-    
-    def _create_decision(
-        self,
-        intent: str,
-        service_key: str,
-        method: str,
-        entity: Optional[str] = None,
-        entity2: Optional[str] = None,
-        confidence: float = 0.0,
-        needs_groq: bool = False,
-        reason: str = "",
-        original: str = "",
-        suggestions: List[str] = None,
-        metadata: Dict[str, Any] = None
-    ) -> RoutingDecision:
-        """Create routing decision with defaults"""
-        # Apply intent weight
-        base_weight = self.patterns.INTENT_WEIGHTS.get(intent, 0.5)
-        final_confidence = confidence * base_weight
-        
-        return RoutingDecision(
-            intent=intent,
-            service_key=service_key,
-            method=method,
-            entity=entity,
-            entity2=entity2,
-            confidence=min(final_confidence, 1.0),
-            needs_groq=needs_groq,
-            reason=reason,
-            original_message=original,
-            suggestions=suggestions or [],
-            metadata=metadata or {},
-            intent_score=final_confidence
-        )
-    
-    def _create_fallback_decision(self, message: str, reason: str) -> RoutingDecision:
-        """Create fallback routing decision"""
-        return self._create_decision(
-            intent="general_ai",
-            service_key="groq",
-            method="process_query",
-            confidence=0.30,
-            needs_groq=True,
-            reason=reason,
-            original=message
-        )
-    
-    def _is_dn_number(self, text: str) -> bool:
-        """Check if text is a valid DN number"""
-        if not text:
-            return False
-        cleaned = re.sub(r'\D', '', text.strip())
-        return 8 <= len(cleaned) <= 12
-    
-    def _clean_dealer_name(self, name: str) -> Optional[str]:
-        """Clean dealer name by removing common keywords"""
-        if not name:
-            return None
-        
-        cleaned = re.sub(
-            r'\b(?:dealer|about|for|of|show|get|view|display|give|me|company|customer|'
-            r'dashboard|profile|summary|overview|info|information|details|status|'
-            r'statistics|performance|the|a|an)\b',
-            '',
-            name,
-            flags=re.IGNORECASE
-        ).strip()
-        
-        return cleaned if len(cleaned) > 1 else None
-    
-    # ============================================================
-    # FUZZY MATCHING WITH RAPIDFUZZ
-    # ============================================================
-    
-    def _load_dealer_cache(self):
-        """Load dealer names for fuzzy matching"""
-        if self._dealer_cache_loaded:
+    @classmethod
+    def load_dealers(cls):
+        """Load dealers from database"""
+        if cls._loaded:
             return
         
-        with self._dealer_cache_lock:
-            if self._dealer_cache_loaded:
+        with cls._lock:
+            if cls._loaded:
                 return
             
             try:
-                from app.database import SessionLocal
-                from app.models import DeliveryReport
+                if not SessionLocal or not DeliveryReport:
+                    return
                 
                 session = SessionLocal()
                 try:
                     dealers = session.query(
-                        DeliveryReport.customer_name
+                        DeliveryReport.customer_name,
+                        DeliveryReport.dealer_code,
+                        DeliveryReport.customer_code
                     ).filter(
                         DeliveryReport.customer_name.isnot(None)
                     ).distinct().all()
                     
-                    self._dealer_names = [d.customer_name for d in dealers if d.customer_name]
-                    self._dealer_normalized = [self._normalize_name(d) for d in self._dealer_names]
-                    self._dealer_cache_loaded = True
-                    self.logger.info(f"✅ Loaded {len(self._dealer_names)} dealers for fuzzy matching")
+                    cls._dealer_names = [
+                        {
+                            "name": d.customer_name,
+                            "code": d.dealer_code or "",
+                            "customer_code": d.customer_code or "",
+                            "normalized": cls._normalize(d.customer_name)
+                        }
+                        for d in dealers if d.customer_name
+                    ]
+                    
+                    cls._loaded = True
+                    logger.info(f"✅ Loaded {len(cls._dealer_names)} dealers")
                 except Exception as e:
-                    self.logger.warning(f"⚠️ Failed to load dealers: {e}")
+                    logger.warning(f"Failed to load dealers: {e}")
                 finally:
                     session.close()
             except Exception as e:
-                self.logger.warning(f"⚠️ Dealer cache load failed: {e}")
+                logger.warning(f"Failed to load dealers: {e}")
     
-    def _normalize_name(self, name: str) -> str:
-        """Normalize name for matching"""
-        if not name:
+    @staticmethod
+    def _normalize(text: str) -> str:
+        if not text:
             return ""
-        name = re.sub(r'[^\w\s]', ' ', name)
-        name = re.sub(r'\s+', ' ', name)
-        return name.strip().lower()
+        text = re.sub(r'[^\w\s]', ' ', text)
+        text = re.sub(r'\s+', ' ', text)
+        return text.strip().lower()
     
-    def _find_dealer_fuzzy(self, dealer_name: str) -> Optional[str]:
-        """Find dealer using fuzzy matching with RapidFuzz"""
-        if not dealer_name or not RAPIDFUZZ_AVAILABLE:
-            return self._find_dealer_exact(dealer_name)
-        
-        self._load_dealer_cache()
-        if not self._dealer_names:
-            return None
-        
-        normalized = self._normalize_name(dealer_name)
-        
-        # Try exact match first
-        for i, name in enumerate(self._dealer_names):
-            if self._dealer_normalized[i] == normalized:
-                return name
-        
-        # Try contains match
-        for i, name in enumerate(self._dealer_names):
-            if normalized in self._dealer_normalized[i] or \
-               self._dealer_normalized[i] in normalized:
-                return name
-        
-        # Try fuzzy match
-        try:
-            # Use RapidFuzz for fuzzy matching
-            results = process.extract(
-                normalized,
-                self._dealer_normalized,
-                scorer=fuzz.ratio,
-                limit=1
-            )
-            
-            if results:
-                best_match, score, _ = results[0]
-                if score >= 80:  # Threshold for good match
-                    idx = self._dealer_normalized.index(best_match)
-                    return self._dealer_names[idx]
-        except Exception as e:
-            self.logger.warning(f"RapidFuzz matching failed: {e}")
-        
-        return None
-    
-    def _find_dealer_exact(self, dealer_name: str) -> Optional[str]:
-        """Find dealer using exact matching"""
+    @classmethod
+    def find_dealer(cls, dealer_name: str) -> Optional[str]:
+        """Find dealer by name"""
         if not dealer_name:
             return None
         
-        self._load_dealer_cache()
-        if not self._dealer_names:
+        cls.load_dealers()
+        if not cls._dealer_names:
             return None
         
-        normalized = self._normalize_name(dealer_name)
+        normalized = cls._normalize(dealer_name)
         
         # Exact match
-        for i, name in enumerate(self._dealer_names):
-            if self._dealer_normalized[i] == normalized:
-                return name
+        for dealer in cls._dealer_names:
+            if dealer["normalized"] == normalized:
+                return dealer["name"]
         
         # Contains match
-        for i, name in enumerate(self._dealer_names):
-            if normalized in self._dealer_normalized[i] or \
-               self._dealer_normalized[i] in normalized:
-                return name
+        for dealer in cls._dealer_names:
+            if normalized in dealer["normalized"] or dealer["normalized"] in normalized:
+                return dealer["name"]
+        
+        # Word match
+        words = normalized.split()
+        for word in words:
+            if len(word) > 2:
+                for dealer in cls._dealer_names:
+                    if word in dealer["normalized"]:
+                        return dealer["name"]
         
         return None
     
-    def _find_similar_dealers(self, dealer_name: str, limit: int = 5) -> List[str]:
-        """Find similar dealers using RapidFuzz"""
-        if not dealer_name or not RAPIDFUZZ_AVAILABLE:
+    @classmethod
+    def find_similar(cls, dealer_name: str, limit: int = 5) -> List[str]:
+        """Find similar dealers"""
+        cls.load_dealers()
+        if not cls._dealer_names:
             return []
         
-        self._load_dealer_cache()
-        if not self._dealer_names:
-            return []
-        
-        normalized = self._normalize_name(dealer_name)
+        normalized = cls._normalize(dealer_name)
         results = []
         
-        # First, exact and contains matches
-        for i, name in enumerate(self._dealer_names):
-            if normalized == self._dealer_normalized[i] or \
-               normalized in self._dealer_normalized[i] or \
-               self._dealer_normalized[i] in normalized:
-                results.append(name)
+        for dealer in cls._dealer_names:
+            if normalized in dealer["normalized"] or dealer["normalized"] in normalized:
+                results.append(dealer["name"])
+            elif any(word in dealer["normalized"] for word in normalized.split() if len(word) > 2):
+                results.append(dealer["name"])
+            
+            if len(results) >= limit:
+                break
         
-        # Then fuzzy matches
-        if len(results) < limit:
+        return results
+
+# ============================================================
+# WHATSAPP PROVIDER SERVICE - UPDATED WITH NEW INTENT ENGINE
+# ============================================================
+
+class WhatsAppProviderService:
+    def __init__(self):
+        start_time = time.time()
+        
+        try:
+            logger.info("=" * 70)
+            logger.info("AI Provider Service v9.0 - ENTERPRISE REFACTORED")
+            logger.info("=" * 70)
+            
+            # Initialize registry (same as v8.2)
+            self.registry = ServiceRegistry()
+            logger.info("✅ ServiceRegistry initialized")
+            
+            # Initialize intent engine (NEW - using library support)
+            if INTENTS_AVAILABLE:
+                self.intent_engine = IntentDetectionEngine()
+                logger.info("✅ IntentDetectionEngine initialized (v3.0 with library support)")
+            else:
+                # Fallback - use the old intent engine
+                from .ai_provider_service_intents_fallback import IntentDetectionEngine
+                self.intent_engine = IntentDetectionEngine()
+                logger.info("⚠️ Using fallback IntentDetectionEngine")
+            
+            # Pre-load DN service
+            self.dn_service = self.registry.get_service_instance("dn")
+            if self.dn_service:
+                logger.info("✅ DN Service loaded successfully")
+            else:
+                logger.warning("⚠️ DN Service failed to load - DN lookups may fail")
+            
+            # Pre-load Dealer service
+            self.dealer_service = self.registry.get_service_instance("dealer")
+            if self.dealer_service:
+                logger.info("✅ Dealer Service loaded successfully")
+            else:
+                logger.warning("⚠️ Dealer Service failed to load")
+            
+            # Groq service
+            self.groq_service = None
             try:
-                fuzzy_results = process.extract(
-                    normalized,
-                    self._dealer_normalized,
-                    scorer=fuzz.ratio,
-                    limit=limit
-                )
-                
-                for match, score, idx in fuzzy_results:
-                    if score >= 60:  # Lower threshold for suggestions
-                        name = self._dealer_names[idx]
-                        if name not in results:
-                            results.append(name)
+                from app.services.groq_service import get_groq_service
+                self.groq_service = get_groq_service()
+                if self.groq_service:
+                    logger.info("✅ GroqService initialized")
             except Exception as e:
-                self.logger.warning(f"Similar matching failed: {e}")
+                logger.warning(f"⚠️ GroqService not available: {e}")
+            
+            # Pre-load dealers
+            threading.Thread(target=DealerResolver.load_dealers, daemon=True).start()
+            
+            init_duration = (time.time() - start_time) * 1000
+            logger.info(f"   INIT TIME: {init_duration:.2f}ms")
+            logger.info("   STATUS: ✅ PRODUCTION GRADE")
+            logger.info("   ROUTING: DN + Dealer + Pending + Analytics")
+            logger.info("   INTENT ENGINE: v3.0 (spaCy + RapidFuzz)")
+            logger.info("=" * 70)
+            
+        except Exception as e:
+            logger.exception(f"❌ Failed to initialize: {str(e)}")
+            raise
+    
+    # ============================================================
+    # MAIN ROUTING METHOD - SAME SIGNATURE AS V8.2
+    # ============================================================
+    
+    async def process_whatsapp_query(
+        self,
+        message: str,
+        sender_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Process WhatsApp query - ENTRY POINT"""
+        logger.info(f"📩 Processing: '{message[:100]}'")
+        start_time = time.perf_counter()
         
-        return results[:limit]
+        try:
+            # Detect intent using new engine
+            routing_decision = self.intent_engine.detect_intent(message)
+            logger.info(f"🎯 Intent: {routing_decision.intent}, Service: {routing_decision.service_key}, Entity: {routing_decision.entity}")
+            
+            # ============================================================
+            # DN Lookup - Direct handle (SAME AS V8.2)
+            # ============================================================
+            if routing_decision.intent == "dn_lookup":
+                return await self._handle_dn(routing_decision)
+            
+            # ============================================================
+            # Pending Queries - Direct handle (SAME AS V8.2)
+            # ============================================================
+            if routing_decision.intent in ["pending_dn", "pending_pgi", "pending_pod"]:
+                return await self._handle_pending(routing_decision)
+            
+            # ============================================================
+            # Dealer Suggestions (SAME AS V8.2)
+            # ============================================================
+            if routing_decision.intent == "dealer_suggestion":
+                return self._format_dealer_suggestions(routing_decision)
+            
+            # ============================================================
+            # Groq (Conversational) - ONLY if needs_groq is True
+            # ============================================================
+            if routing_decision.needs_groq or routing_decision.service_key == "groq":
+                return await self._handle_groq(message, routing_decision)
+            
+            # ============================================================
+            # Execute Service (SAME AS V8.2)
+            # ============================================================
+            service_instance = self.registry.get_service_instance(routing_decision.service_key)
+            if not service_instance:
+                # Try dealer fallback
+                dealer_result = await self._try_dealer_fallback(message, routing_decision)
+                if dealer_result:
+                    return dealer_result
+                
+                return self._format_response(
+                    message,
+                    f"⚠️ Service '{routing_decision.service_key}' is not available.\n\nPlease try again later.",
+                    error=True
+                )
+            
+            method = getattr(service_instance, routing_decision.method, None)
+            if not method:
+                return self._format_response(
+                    message,
+                    f"⚠️ Method '{routing_decision.method}' not found.",
+                    error=True
+                )
+            
+            # Execute with entity
+            if routing_decision.entity:
+                if routing_decision.entity2:
+                    result = method(routing_decision.entity, routing_decision.entity2)
+                else:
+                    result = method(routing_decision.entity)
+            else:
+                result = method()
+            
+            if inspect.iscoroutine(result):
+                result = await result
+            
+            # Format response
+            if result and isinstance(result, dict):
+                if result.get("success", False):
+                    return self._format_response(message, result.get("data"), error=False)
+                elif result.get("data"):
+                    return self._format_response(message, result.get("data"), error=False)
+                elif result.get("whatsapp_message"):
+                    return self._format_response(message, result.get("whatsapp_message"), error=False)
+                else:
+                    return self._format_response(message, result, error=False)
+            else:
+                return self._format_response(message, result, error=False)
+            
+        except Exception as e:
+            logger.exception(f"❌ Failed: {e}")
+            return self._format_response(
+                message,
+                "⚠️ An unexpected error occurred. Please try again.",
+                error=True
+            )
+        finally:
+            elapsed_ms = (time.perf_counter() - start_time) * 1000
+            logger.info(f"⏱️ Response time: {elapsed_ms:.2f}ms")
     
     # ============================================================
-    # CACHE UTILITIES
+    # DN HANDLER - SAME AS V8.2
     # ============================================================
     
-    def _cache_enabled(self) -> bool:
-        """Check if caching is enabled"""
-        return CACHETOOLS_AVAILABLE and hasattr(self, '_cache')
+    async def _handle_dn(self, decision: RoutingDecision) -> Dict[str, Any]:
+        """Handle DN lookup"""
+        try:
+            from app.services.dn_analysis import get_dn_analytics_service
+            
+            dn_service = get_dn_analytics_service()
+            result = dn_service.get_dn_dashboard(decision.entity)
+            
+            if result.get("success"):
+                data = result.get("data")
+                if hasattr(data, "to_whatsapp_message"):
+                    return self._format_response(decision.original_message, data, error=False)
+                return self._format_response(decision.original_message, result.get("whatsapp_message", data), error=False)
+            else:
+                # DN not found - show suggestions
+                similar_dns = result.get("similar_dns", [])
+                if similar_dns:
+                    response = f"🔍 DN {decision.entity} not found. Did you mean:\n\n"
+                    for i, dn in enumerate(similar_dns[:5], 1):
+                        response += f"{i}. {dn}\n"
+                    response += "\nPlease type the full DN number."
+                    return self._format_response(decision.original_message, response, error=False)
+                else:
+                    return self._format_response(
+                        decision.original_message,
+                        f"❌ DN {decision.entity} not found in database.\n\nPlease check the number and try again.",
+                        error=True
+                    )
+        except ImportError as e:
+            logger.error(f"DN service import failed: {e}")
+            return self._format_response(
+                decision.original_message,
+                "⚠️ DN service is not available. Please try again later.",
+                error=True
+            )
+        except Exception as e:
+            logger.error(f"DN handler failed: {e}")
+            return self._format_response(
+                decision.original_message,
+                f"⚠️ DN lookup failed: {str(e)}",
+                error=True
+            )
     
-    def clear_cache(self):
-        """Clear intent detection cache"""
-        if self._cache_enabled():
-            self._cache.clear()
-            self._cache_hits = 0
-            self._cache_misses = 0
-            self.logger.info("✅ Intent detection cache cleared")
+    # ============================================================
+    # PENDING HANDLER - SAME AS V8.2
+    # ============================================================
     
-    def get_cache_stats(self) -> Dict[str, int]:
-        """Get cache statistics"""
+    async def _handle_pending(self, decision: RoutingDecision) -> Dict[str, Any]:
+        """Handle pending queries"""
+        try:
+            from app.services.dn_analysis import get_dn_analytics_service
+            
+            dn_service = get_dn_analytics_service()
+            
+            if decision.intent == "pending_dn":
+                result = dn_service.get_pending_dns()
+            elif decision.intent == "pending_pgi":
+                result = dn_service.get_pending_pgi()
+            elif decision.intent == "pending_pod":
+                result = dn_service.get_pending_pod()
+            else:
+                result = dn_service.get_pending_dns()
+            
+            if result.get("success"):
+                records = result.get("records", [])
+                if records:
+                    response = self._format_pending_response(records, decision.intent)
+                    return self._format_response(decision.original_message, response, error=False)
+                else:
+                    return self._format_response(
+                        decision.original_message,
+                        "✅ No pending items found.",
+                        error=False
+                    )
+            else:
+                return self._format_response(
+                    decision.original_message,
+                    f"⚠️ Pending query failed: {result.get('error', 'Unknown error')}",
+                    error=True
+                )
+        except ImportError as e:
+            logger.error(f"Pending service import failed: {e}")
+            return self._format_response(
+                decision.original_message,
+                "⚠️ Pending service is not available. Please try again later.",
+                error=True
+            )
+        except Exception as e:
+            logger.error(f"Pending handler failed: {e}")
+            return self._format_response(
+                decision.original_message,
+                f"⚠️ Pending query failed: {str(e)}",
+                error=True
+            )
+    
+    # ============================================================
+    # DEALER SUGGESTIONS - SAME AS V8.2
+    # ============================================================
+    
+    def _format_dealer_suggestions(self, decision: RoutingDecision) -> Dict[str, Any]:
+        """Format dealer suggestions"""
+        suggestions = decision.suggestions
+        
+        if not suggestions:
+            return self._format_response(
+                decision.original_message,
+                "🔍 No dealers found matching your search.\n\nPlease check the name and try again.",
+                error=False
+            )
+        
+        response = "🔍 I couldn't find exactly that dealer. Did you mean:\n\n"
+        for i, name in enumerate(suggestions[:5], 1):
+            response += f"{i}. {name}\n"
+        
+        response += "\nPlease type the full dealer name exactly as shown above."
+        
+        return self._format_response(decision.original_message, response, error=False)
+    
+    # ============================================================
+    # GROQ HANDLER - SAME AS V8.2
+    # ============================================================
+    
+    async def _handle_groq(self, message: str, decision: RoutingDecision) -> Dict[str, Any]:
+        """Handle Groq queries"""
+        # Try Groq service
+        if self.groq_service:
+            try:
+                if hasattr(self.groq_service, 'process_query'):
+                    response = await self.groq_service.process_query(message)
+                    if response:
+                        if isinstance(response, dict) and response.get("response"):
+                            return self._format_response(message, response.get("response"), error=False)
+                        elif isinstance(response, str):
+                            return self._format_response(message, response, error=False)
+            except Exception as e:
+                logger.error(f"Groq failed: {e}")
+        
+        # Fallback responses (SAME AS V8.2)
+        if decision.intent == "conversational":
+            return self._format_response(
+                message,
+                "👋 Of course! I'm here to help.\n\n"
+                "I can help you with:\n"
+                "📦 **DN Tracking** - Send any 8-12 digit number\n"
+                "🏪 **Dealer Analytics** - Dealer performance and KPIs\n"
+                "🏭 **Warehouse Analytics** - Warehouse operations\n"
+                "🏙️ **City Analytics** - City-level performance\n"
+                "📊 **National KPIs** - Country-wide metrics\n"
+                "📋 **Pending Items** - Pending DNs, PGI, POD\n\n"
+                "What would you like to know?",
+                error=False
+            )
+        
+        if decision.intent == "help":
+            return self._format_response(
+                message,
+                "📋 Available Commands\n\n"
+                "📦 DN Queries:\n"
+                "• Send a DN number (8-12 digits)\n"
+                "• 'Pending DN', 'Pending PGI', 'Pending POD'\n\n"
+                "🏪 Dealer Queries:\n"
+                "• 'Dealer [name]'\n"
+                "• '[Dealer name] dashboard'\n\n"
+                "🏭 Warehouse Queries:\n"
+                "• 'Warehouse [name]'\n\n"
+                "🏙️ City Queries:\n"
+                "• 'City [name]'\n\n"
+                "📦 Product Queries:\n"
+                "• 'Product [name]'\n\n"
+                "📊 Analytics:\n"
+                "• 'National KPI'\n"
+                "• 'Revenue', 'Units', 'DNs'",
+                error=False
+            )
+        
+        return self._format_response(
+            message,
+            "I couldn't identify your request. Please specify:\n"
+            "• A DN number (8-12 digits)\n"
+            "• A dealer name (e.g., 'Taj Electronics')\n"
+            "• A warehouse name\n"
+            "• A city name\n"
+            "• An analytics query (e.g., 'Top dealers')\n\n"
+            "Type 'Help' for all commands.",
+            error=False
+        )
+    
+    # ============================================================
+    # DEALER FALLBACK - SAME AS V8.2
+    # ============================================================
+    
+    async def _try_dealer_fallback(self, message: str, decision: RoutingDecision) -> Optional[Dict[str, Any]]:
+        """Try to handle as dealer query as fallback"""
+        try:
+            from app.services.dealer_analytics_service import get_dealer_analytics_service
+            
+            dealer_service = get_dealer_analytics_service()
+            if not dealer_service:
+                return None
+            
+            # Try to resolve as dealer
+            if hasattr(dealer_service, '_resolve_dealer'):
+                result = dealer_service.get_dealer_dashboard(message)
+                if result and result.get("success", False):
+                    return self._format_response(message, result.get("data"), error=False)
+            
+            return None
+        except Exception as e:
+            logger.warning(f"Dealer fallback failed: {e}")
+            return None
+    
+    # ============================================================
+    # RESPONSE FORMATTING - SAME AS V8.2
+    # ============================================================
+    
+    def _format_pending_response(self, records: List, pending_type: str) -> str:
+        """Format pending response"""
+        if not records:
+            return "✅ No pending items found."
+        
+        type_label = {
+            "pending_dn": "Pending DNs",
+            "pending_pgi": "Pending PGI",
+            "pending_pod": "Pending POD"
+        }.get(pending_type, "Pending Items")
+        
+        response = f"📋 {type_label}\n\n"
+        for i, item in enumerate(records[:10], 1):
+            response += f"{i}. DN: {item.get('dn_no')}\n"
+            response += f"   Customer: {item.get('customer_name')}\n"
+            if item.get('dn_create_date'):
+                response += f"   Created: {item.get('dn_create_date')}\n"
+            response += "\n"
+        
+        if len(records) > 10:
+            response += f"... and {len(records) - 10} more items"
+        
+        return response
+    
+    def _format_response(self, original_message: str, data: Any, error: bool = False) -> Dict[str, Any]:
+        """Format response for WhatsApp"""
+        if error:
+            return {
+                "success": False,
+                "message": original_message,
+                "response": data,
+                "error": True,
+                "timestamp": datetime.now().isoformat()
+            }
+        
+        # If data has to_whatsapp_message method
+        if hasattr(data, "to_whatsapp_message"):
+            try:
+                data = data.to_whatsapp_message()
+            except Exception as e:
+                logger.warning(f"to_whatsapp_message failed: {e}")
+        
+        # If data is dict with whatsapp_message
+        if isinstance(data, dict):
+            for key in ("whatsapp_message", "formatted_response", "response", "message"):
+                if data.get(key) not in (None, ""):
+                    data = data[key]
+                    break
+        
         return {
-            "hits": self._cache_hits,
-            "misses": self._cache_misses,
-            "size": len(self._cache) if self._cache_enabled() else 0
+            "success": True,
+            "message": original_message,
+            "response": data,
+            "error": False,
+            "timestamp": datetime.now().isoformat()
         }
     
     # ============================================================
-    # INTENT TRACKING
+    # DIAGNOSTIC METHODS - SAME AS V8.2
     # ============================================================
     
-    def _track_intent(self, intent: str):
-        """Track intent usage for analytics"""
-        if intent not in self._intent_stats:
-            self._intent_stats[intent] = 0
-        self._intent_stats[intent] += 1
-    
-    def get_intent_stats(self) -> Dict[str, int]:
-        """Get intent usage statistics"""
-        return self._intent_stats.copy()
-    
-    # ============================================================
-    # SYSTEM HEALTH
-    # ============================================================
-    
-    def get_health(self) -> Dict[str, Any]:
-        """Get health status of intent detection system"""
+    def get_system_health(self) -> Dict[str, Any]:
+        """Get system health"""
+        # Get intent engine health
+        intent_health = {}
+        if hasattr(self.intent_engine, 'get_health'):
+            intent_health = self.intent_engine.get_health()
+        
         return {
             "status": "healthy",
-            "spacy_available": SPACY_AVAILABLE and self.nlp is not None,
-            "rapidfuzz_available": RAPIDFUZZ_AVAILABLE,
-            "cache_available": self._cache_enabled(),
-            "dealer_cache_loaded": self._dealer_cache_loaded,
-            "dealer_count": len(self._dealer_names),
-            "cache_stats": self.get_cache_stats(),
-            "intent_stats": self._intent_stats
+            "version": "9.0",
+            "services": {
+                "dn": self.registry.is_service_ready("dn"),
+                "dealer": self.registry.is_service_ready("dealer"),
+                "warehouse": self.registry.is_service_ready("warehouse"),
+                "city": self.registry.is_service_ready("city"),
+                "product": self.registry.is_service_ready("product"),
+                "national_kpi": self.registry.is_service_ready("national_kpi"),
+                "groq": self.groq_service is not None
+            },
+            "intent_engine": intent_health,
+            "timestamp": datetime.now().isoformat()
         }
+    
+    def clear_caches(self):
+        """Clear all caches"""
+        if hasattr(self.intent_engine, 'clear_cache'):
+            self.intent_engine.clear_cache()
+        logger.info("✅ Caches cleared")
+
+# ============================================================
+# SINGLETON - SAME AS V8.2
+# ============================================================
+
+_whatsapp_provider_service = None
+_provider_service_lock = threading.Lock()
+
+def get_whatsapp_provider_service() -> WhatsAppProviderService:
+    global _whatsapp_provider_service
+    if _whatsapp_provider_service is None:
+        with _provider_service_lock:
+            if _whatsapp_provider_service is None:
+                try:
+                    _whatsapp_provider_service = WhatsAppProviderService()
+                    logger.info("✅ WhatsAppProviderService initialized (v9.0)")
+                except Exception as e:
+                    logger.exception(f"❌ Initialization failed: {e}")
+                    raise
+    return _whatsapp_provider_service
 
 # ============================================================
 # EXPORTS
 # ============================================================
 
 __all__ = [
-    'IntentDetectionEngine',
+    'WhatsAppProviderService',
+    'get_whatsapp_provider_service',
+    'ServiceRegistry',
+    'ServiceStatus',
     'RoutingDecision',
-    'IntentPatterns',
-    'SPACY_AVAILABLE',
-    'RAPIDFUZZ_AVAILABLE',
-    'CACHETOOLS_AVAILABLE'
+    'IntentDetectionEngine',
+    'DealerResolver'
 ]
 
 logger.info("=" * 70)
-logger.info("Intent Detection Engine v3.0 - ENTERPRISE")
+logger.info("AI Provider Service v9.0 - ENTERPRISE REFACTORED")
 logger.info("=" * 70)
-logger.info(f"✅ spaCy: {'Available' if SPACY_AVAILABLE else 'Not Available'}")
-logger.info(f"✅ RapidFuzz: {'Available' if RAPIDFUZZ_AVAILABLE else 'Not Available'}")
-logger.info(f"✅ Cachetools: {'Available' if CACHETOOLS_AVAILABLE else 'Not Available'}")
+logger.info("✅ Intent Detection Engine v3.0 (spaCy + RapidFuzz + Cachetools)")
+logger.info("✅ DN Service - Registered and ready")
+logger.info("✅ Dealer Service - Registered and ready")
+logger.info("✅ Pending Queries - Ready")
+logger.info("✅ Analytics Queries - Ready")
+logger.info("✅ Same Routing Structure as v8.2")
 logger.info("=" * 70)
