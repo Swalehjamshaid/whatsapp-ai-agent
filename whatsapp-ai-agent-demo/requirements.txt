@@ -167,5 +167,14 @@ tokenizers>=0.15.0
 
 # Accelerate (Faster model loading)
 accelerate>=0.27.0
+# ==========================================================
+# ENTERPRISE AI & ANALYTICS
+# Compatible with your existing requirements
+# ==========================================================
 
+pydantic-ai>=0.3.4
+instructor>=1.7.9
+sqlglot>=25.34.1
+pgvector>=0.3.6
+pyarrow>=17.0.0
 
