@@ -1,8 +1,8 @@
 """
 File: app/services/ai_provider_service.py
-Version: 8.2 - COMPLETE FIXED: DN + Dealer Routing
+Version: 8.3 - FIXED: Service Loading & Error Handling
 Purpose: SINGLE ENTRY POINT for all WhatsApp requests.
-FIXED: DN numbers AND Dealer names now work correctly
+FIXED: "Service not available" errors
 """
 
 import logging
@@ -74,167 +74,103 @@ class ServiceStatus:
     DISABLED = "DISABLED"
 
 # ============================================================
-# SERVICE REGISTRY - WITH DN SERVICE
+# DIRECT SERVICE LOADER - FIXED
 # ============================================================
 
-class ServiceRegistry:
-    SERVICES = {
-        # ============================================================
-        # DN SERVICE - REGISTERED
-        # ============================================================
-        "dn": {
-            "module": "app.services.dn_analysis",
-            "class_name": "DNAnalysisService",
-            "methods": [
-                "get_dn_dashboard",
-                "search_dn",
-                "verify_dn",
-                "get_pending_dns",
-                "get_pending_pgi",
-                "get_pending_pod",
-                "health_check",
-                "validation_query",
-                "get_service_metadata"
-            ],
-            "description": "DN Analytics Service",
-            "dependencies": []
-        },
-        # ============================================================
-        # DEALER SERVICE
-        # ============================================================
-        "dealer": {
-            "module": "app.services.dealer_analytics_service",
-            "class_name": "DealerAnalyticsService",
-            "methods": [
-                "get_dealer_dashboard",
-                "get_dealer_profile",
-                "compare_dealers",
-                "get_top_dealers",
-                "get_bottom_dealers",
-                "health_check",
-                "validation_query",
-                "get_service_metadata"
-            ],
-            "description": "Dealer Analytics Service",
-            "dependencies": ["dn"]
-        },
-        # ============================================================
-        # WAREHOUSE SERVICE
-        # ============================================================
-        "warehouse": {
-            "module": "app.services.warehouse_analytics_service",
-            "class_name": "WarehouseAnalyticsService",
-            "methods": [
-                "get_warehouse_dashboard",
-                "get_top_warehouses",
-                "health_check",
-                "validation_query",
-                "get_service_metadata"
-            ],
-            "description": "Warehouse Analytics Service",
-            "dependencies": ["dn", "dealer"]
-        },
-        # ============================================================
-        # CITY SERVICE
-        # ============================================================
-        "city": {
-            "module": "app.services.city_analytics_service",
-            "class_name": "CityAnalyticsService",
-            "methods": [
-                "get_city_dashboard",
-                "get_top_cities",
-                "health_check",
-                "validation_query",
-                "get_service_metadata"
-            ],
-            "description": "City Analytics Service",
-            "dependencies": ["dn"]
-        },
-        # ============================================================
-        # PRODUCT SERVICE
-        # ============================================================
-        "product": {
-            "module": "app.services.product_analytics_service",
-            "class_name": "ProductAnalyticsService",
-            "methods": [
-                "get_product_dashboard",
-                "get_top_products",
-                "health_check",
-                "validation_query",
-                "get_service_metadata"
-            ],
-            "description": "Product Analytics Service",
-            "dependencies": ["dn"]
-        },
-        # ============================================================
-        # NATIONAL KPI SERVICE
-        # ============================================================
-        "national_kpi": {
-            "module": "app.services.national_kpi_service",
-            "class_name": "NationalKPIService",
-            "methods": [
-                "get_national_kpi_dashboard",
-                "get_delivery_kpis",
-                "get_warehouse_kpis",
-                "health_check",
-                "validation_query",
-                "get_service_metadata"
-            ],
-            "description": "National KPI Service",
-            "dependencies": ["dn", "dealer", "warehouse", "city", "product"]
-        },
-        # ============================================================
-        # GROQ SERVICE
-        # ============================================================
-        "groq": {
-            "module": "app.services.groq_service",
-            "class_name": "GroqService",
-            "methods": ["process_query", "get_response", "classify_intent"],
-            "description": "Groq AI Service",
-            "dependencies": []
-        }
-    }
+class DirectServiceLoader:
+    """Direct service loader with fallback - NO registry dependency"""
     
-    def __init__(self):
-        self._services = self.SERVICES.copy()
-        self._status_cache = {}
-        self._instance_cache = {}
-        self._lock = threading.RLock()
+    _dealer_service = None
+    _dn_service = None
+    _groq_service = None
+    _lock = threading.RLock()
     
-    def get_service_instance(self, service_key: str):
-        """Get service instance with caching"""
-        if service_key in self._instance_cache:
-            return self._instance_cache[service_key]
+    @classmethod
+    def get_dealer_service(cls):
+        """Get dealer service directly"""
+        if cls._dealer_service is not None:
+            return cls._dealer_service
         
-        with self._lock:
-            if service_key in self._instance_cache:
-                return self._instance_cache[service_key]
+        with cls._lock:
+            if cls._dealer_service is not None:
+                return cls._dealer_service
             
             try:
-                service_def = self._services.get(service_key)
-                if not service_def:
-                    logger.error(f"Service '{service_key}' not registered")
-                    return None
-                
-                module = importlib.import_module(service_def["module"])
-                cls = getattr(module, service_def["class_name"])
-                instance = cls()
-                self._instance_cache[service_key] = instance
-                logger.info(f"✅ Service '{service_key}' initialized")
-                return instance
+                # Try direct import
+                from app.services.dealer_analytics_service import get_dealer_analytics_service
+                cls._dealer_service = get_dealer_analytics_service()
+                logger.info("✅ Dealer service loaded directly")
+                return cls._dealer_service
             except ImportError as e:
-                logger.error(f"Failed to import service '{service_key}': {e}")
-                return None
+                logger.error(f"❌ Dealer service import failed: {e}")
+                
+                # Try alternative import path
+                try:
+                    import sys
+                    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                    from dealer_analytics_service import get_dealer_analytics_service
+                    cls._dealer_service = get_dealer_analytics_service()
+                    logger.info("✅ Dealer service loaded from alternative path")
+                    return cls._dealer_service
+                except Exception as e2:
+                    logger.error(f"❌ Alternative import failed: {e2}")
+                    return None
             except Exception as e:
-                logger.error(f"Failed to load service '{service_key}': {e}")
+                logger.error(f"❌ Dealer service init failed: {e}")
                 return None
     
-    def is_service_ready(self, service_key: str) -> bool:
-        instance = self.get_service_instance(service_key)
-        return instance is not None
+    @classmethod
+    def get_dn_service(cls):
+        """Get DN service directly"""
+        if cls._dn_service is not None:
+            return cls._dn_service
+        
+        with cls._lock:
+            if cls._dn_service is not None:
+                return cls._dn_service
+            
+            try:
+                from app.services.dn_analysis import get_dn_analytics_service
+                cls._dn_service = get_dn_analytics_service()
+                logger.info("✅ DN service loaded directly")
+                return cls._dn_service
+            except ImportError as e:
+                logger.error(f"❌ DN service import failed: {e}")
+                
+                # Try alternative import path
+                try:
+                    import sys
+                    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                    from dn_analysis import get_dn_analytics_service
+                    cls._dn_service = get_dn_analytics_service()
+                    logger.info("✅ DN service loaded from alternative path")
+                    return cls._dn_service
+                except Exception as e2:
+                    logger.error(f"❌ Alternative import failed: {e2}")
+                    return None
+            except Exception as e:
+                logger.error(f"❌ DN service init failed: {e}")
+                return None
     
-    def get_all_services(self) -> Dict[str, Any]:
-        return self._services
+    @classmethod
+    def get_groq_service(cls):
+        """Get Groq service directly"""
+        if cls._groq_service is not None:
+            return cls._groq_service
+        
+        with cls._lock:
+            if cls._groq_service is not None:
+                return cls._groq_service
+            
+            try:
+                from app.services.groq_service import get_groq_service
+                cls._groq_service = get_groq_service()
+                if cls._groq_service:
+                    logger.info("✅ Groq service loaded directly")
+                return cls._groq_service
+            except Exception as e:
+                logger.warning(f"⚠️ Groq service not available: {e}")
+                return None
 
 # ============================================================
 # DEALER RESOLVER - For dealer name detection
@@ -260,6 +196,7 @@ class DealerResolver:
             
             try:
                 if not SessionLocal or not DeliveryReport:
+                    logger.warning("⚠️ SessionLocal or DeliveryReport not available")
                     return
                 
                 session = SessionLocal()
@@ -285,11 +222,11 @@ class DealerResolver:
                     cls._loaded = True
                     logger.info(f"✅ Loaded {len(cls._dealer_names)} dealers")
                 except Exception as e:
-                    logger.warning(f"Failed to load dealers: {e}")
+                    logger.warning(f"❌ Failed to load dealers: {e}")
                 finally:
                     session.close()
             except Exception as e:
-                logger.warning(f"Failed to load dealers: {e}")
+                logger.warning(f"❌ Failed to load dealers: {e}")
     
     @staticmethod
     def _normalize(text: str) -> str:
@@ -342,7 +279,6 @@ class DealerResolver:
         results = []
         
         for dealer in cls._dealer_names:
-            # Check if name is similar
             if normalized in dealer["normalized"] or dealer["normalized"] in normalized:
                 results.append(dealer["name"])
             elif any(word in dealer["normalized"] for word in normalized.split() if len(word) > 2):
@@ -354,7 +290,7 @@ class DealerResolver:
         return results
 
 # ============================================================
-# INTENT DETECTION ENGINE - FIXED
+# INTENT DETECTION ENGINE
 # ============================================================
 
 class IntentDetectionEngine:
@@ -571,7 +507,7 @@ class IntentDetectionEngine:
             )
         
         # ============================================================
-        # PRIORITY 6: DEALER DETECTION (for dealer names)
+        # PRIORITY 6: DEALER DETECTION
         # ============================================================
         dealer_name = None
         
@@ -758,45 +694,96 @@ class WhatsAppProviderService:
         
         try:
             logger.info("=" * 70)
-            logger.info("AI Provider Service v8.2 - COMPLETE FIXED")
+            logger.info("AI Provider Service v8.3 - FIXED: Service Loading")
             logger.info("=" * 70)
-            
-            # Initialize registry
-            self.registry = ServiceRegistry()
-            logger.info("✅ ServiceRegistry initialized")
             
             # Initialize intent engine
             self.intent_engine = IntentDetectionEngine()
             logger.info("✅ IntentDetectionEngine initialized")
             
-            # Pre-load DN service
-            self.dn_service = self.registry.get_service_instance("dn")
-            if self.dn_service:
-                logger.info("✅ DN Service loaded successfully")
-            else:
-                logger.warning("⚠️ DN Service failed to load - DN lookups may fail")
-            
-            # Pre-load Dealer service
-            self.dealer_service = self.registry.get_service_instance("dealer")
-            if self.dealer_service:
-                logger.info("✅ Dealer Service loaded successfully")
-            else:
-                logger.warning("⚠️ Dealer Service failed to load")
-            
-            # Groq service
+            # Load services directly (bypass registry)
+            self.dealer_service = None
+            self.dn_service = None
             self.groq_service = None
+            
+            # Try to load dealer service
+            try:
+                from app.services.dealer_analytics_service import get_dealer_analytics_service
+                self.dealer_service = get_dealer_analytics_service()
+                if self.dealer_service:
+                    logger.info("✅ Dealer Service loaded successfully")
+                else:
+                    logger.warning("⚠️ Dealer Service returned None")
+            except ImportError as e:
+                logger.error(f"❌ Dealer Service import failed: {e}")
+                # Try direct import
+                try:
+                    import sys
+                    import os
+                    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                    from dealer_analytics_service import get_dealer_analytics_service
+                    self.dealer_service = get_dealer_analytics_service()
+                    if self.dealer_service:
+                        logger.info("✅ Dealer Service loaded from direct path")
+                except Exception as e2:
+                    logger.error(f"❌ Direct import failed: {e2}")
+                    self.dealer_service = None
+            except Exception as e:
+                logger.error(f"❌ Dealer Service init failed: {e}")
+                self.dealer_service = None
+            
+            # Try to load DN service
+            try:
+                from app.services.dn_analysis import get_dn_analytics_service
+                self.dn_service = get_dn_analytics_service()
+                if self.dn_service:
+                    logger.info("✅ DN Service loaded successfully")
+                else:
+                    logger.warning("⚠️ DN Service returned None")
+            except ImportError as e:
+                logger.error(f"❌ DN Service import failed: {e}")
+                # Try direct import
+                try:
+                    import sys
+                    import os
+                    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                    from dn_analysis import get_dn_analytics_service
+                    self.dn_service = get_dn_analytics_service()
+                    if self.dn_service:
+                        logger.info("✅ DN Service loaded from direct path")
+                except Exception as e2:
+                    logger.error(f"❌ Direct import failed: {e2}")
+                    self.dn_service = None
+            except Exception as e:
+                logger.error(f"❌ DN Service init failed: {e}")
+                self.dn_service = None
+            
+            # Try to load Groq service
             try:
                 from app.services.groq_service import get_groq_service
                 self.groq_service = get_groq_service()
                 if self.groq_service:
-                    logger.info("✅ GroqService initialized")
+                    logger.info("✅ Groq Service loaded successfully")
+                else:
+                    logger.warning("⚠️ Groq Service not available")
             except Exception as e:
-                logger.warning(f"⚠️ GroqService not available: {e}")
+                logger.warning(f"⚠️ Groq Service not available: {e}")
+                self.groq_service = None
+            
+            # Print status
+            logger.info("")
+            logger.info("   SERVICE STATUS:")
+            logger.info(f"   Dealer Service: {'✅' if self.dealer_service else '❌'} Loaded")
+            logger.info(f"   DN Service: {'✅' if self.dn_service else '❌'} Loaded")
+            logger.info(f"   Groq Service: {'✅' if self.groq_service else '⚠️'} Available")
+            logger.info("")
+            
+            # Pre-load dealers
+            threading.Thread(target=DealerResolver.load_dealers, daemon=True).start()
             
             init_duration = (time.time() - start_time) * 1000
             logger.info(f"   INIT TIME: {init_duration:.2f}ms")
             logger.info("   STATUS: ✅ PRODUCTION GRADE")
-            logger.info("   ROUTING: DN + Dealer + Pending + Analytics")
             logger.info("=" * 70)
             
         except Exception as e:
@@ -821,13 +808,13 @@ class WhatsAppProviderService:
             logger.info(f"🎯 Intent: {routing_decision.intent}, Service: {routing_decision.service_key}, Entity: {routing_decision.entity}")
             
             # ============================================================
-            # DN Lookup - Direct handle
+            # DN Lookup
             # ============================================================
             if routing_decision.intent == "dn_lookup":
                 return await self._handle_dn(routing_decision)
             
             # ============================================================
-            # Pending Queries - Direct handle
+            # Pending Queries
             # ============================================================
             if routing_decision.intent in ["pending_dn", "pending_pgi", "pending_pod"]:
                 return await self._handle_pending(routing_decision)
@@ -839,59 +826,43 @@ class WhatsAppProviderService:
                 return self._format_dealer_suggestions(routing_decision)
             
             # ============================================================
+            # Dealer Dashboard
+            # ============================================================
+            if routing_decision.intent in ["dealer_dashboard", "dealer_profile"]:
+                return await self._handle_dealer(routing_decision)
+            
+            # ============================================================
             # Groq (Conversational)
             # ============================================================
             if routing_decision.needs_groq or routing_decision.service_key == "groq":
                 return await self._handle_groq(message, routing_decision)
             
             # ============================================================
-            # Execute Service
+            # Try to handle via service
             # ============================================================
-            service_instance = self.registry.get_service_instance(routing_decision.service_key)
-            if not service_instance:
-                # Try dealer fallback
-                dealer_result = await self._try_dealer_fallback(message, routing_decision)
-                if dealer_result:
-                    return dealer_result
-                
-                return self._format_response(
-                    message,
-                    f"⚠️ Service '{routing_decision.service_key}' is not available.\n\nPlease try again later.",
-                    error=True
-                )
+            if routing_decision.service_key == "dealer":
+                return await self._handle_dealer(routing_decision)
             
-            method = getattr(service_instance, routing_decision.method, None)
-            if not method:
-                return self._format_response(
-                    message,
-                    f"⚠️ Method '{routing_decision.method}' not found.",
-                    error=True
-                )
-            
-            # Execute with entity
-            if routing_decision.entity:
-                if routing_decision.entity2:
-                    result = method(routing_decision.entity, routing_decision.entity2)
+            if routing_decision.service_key == "dn":
+                if routing_decision.intent == "dn_lookup":
+                    return await self._handle_dn(routing_decision)
                 else:
-                    result = method(routing_decision.entity)
-            else:
-                result = method()
+                    return await self._handle_pending(routing_decision)
             
-            if inspect.iscoroutine(result):
-                result = await result
-            
-            # Format response
-            if result and isinstance(result, dict):
-                if result.get("success", False):
-                    return self._format_response(message, result.get("data"), error=False)
-                elif result.get("data"):
-                    return self._format_response(message, result.get("data"), error=False)
-                elif result.get("whatsapp_message"):
-                    return self._format_response(message, result.get("whatsapp_message"), error=False)
-                else:
-                    return self._format_response(message, result, error=False)
-            else:
-                return self._format_response(message, result, error=False)
+            # ============================================================
+            # Fallback
+            # ============================================================
+            return self._format_response(
+                message,
+                "I couldn't identify your request. Please specify:\n"
+                "• A DN number (8-12 digits)\n"
+                "• A dealer name (e.g., 'Taj Electronics')\n"
+                "• A warehouse name\n"
+                "• A city name\n"
+                "• An analytics query (e.g., 'Top dealers')\n\n"
+                "Type 'Help' for all commands.",
+                error=False
+            )
             
         except Exception as e:
             logger.exception(f"❌ Failed: {e}")
@@ -905,16 +876,75 @@ class WhatsAppProviderService:
             logger.info(f"⏱️ Response time: {elapsed_ms:.2f}ms")
     
     # ============================================================
+    # DEALER HANDLER
+    # ============================================================
+    
+    async def _handle_dealer(self, decision: RoutingDecision) -> Dict[str, Any]:
+        """Handle dealer queries"""
+        try:
+            if not self.dealer_service:
+                logger.error("❌ Dealer service not available")
+                return self._format_response(
+                    decision.original_message,
+                    "⚠️ Dealer service is not available. Please try again later.",
+                    error=True
+                )
+            
+            # Get the method
+            method = getattr(self.dealer_service, decision.method, None)
+            if not method:
+                return self._format_response(
+                    decision.original_message,
+                    f"⚠️ Method '{decision.method}' not found.",
+                    error=True
+                )
+            
+            # Execute
+            if decision.entity:
+                result = method(decision.entity)
+            else:
+                result = method()
+            
+            if inspect.iscoroutine(result):
+                result = await result
+            
+            # Format response
+            if result and isinstance(result, dict):
+                if result.get("success", False):
+                    return self._format_response(decision.original_message, result.get("data"), error=False)
+                elif result.get("data"):
+                    return self._format_response(decision.original_message, result.get("data"), error=False)
+                elif result.get("whatsapp_message"):
+                    return self._format_response(decision.original_message, result.get("whatsapp_message"), error=False)
+                else:
+                    return self._format_response(decision.original_message, result, error=False)
+            else:
+                return self._format_response(decision.original_message, result, error=False)
+                
+        except Exception as e:
+            logger.error(f"Dealer handler failed: {e}")
+            return self._format_response(
+                decision.original_message,
+                f"⚠️ Dealer lookup failed: {str(e)}",
+                error=True
+            )
+    
+    # ============================================================
     # DN HANDLER
     # ============================================================
     
     async def _handle_dn(self, decision: RoutingDecision) -> Dict[str, Any]:
         """Handle DN lookup"""
         try:
-            from app.services.dn_analysis import get_dn_analytics_service
+            if not self.dn_service:
+                logger.error("❌ DN service not available")
+                return self._format_response(
+                    decision.original_message,
+                    "⚠️ DN service is not available. Please try again later.",
+                    error=True
+                )
             
-            dn_service = get_dn_analytics_service()
-            result = dn_service.get_dn_dashboard(decision.entity)
+            result = self.dn_service.get_dn_dashboard(decision.entity)
             
             if result.get("success"):
                 data = result.get("data")
@@ -922,7 +952,6 @@ class WhatsAppProviderService:
                     return self._format_response(decision.original_message, data, error=False)
                 return self._format_response(decision.original_message, result.get("whatsapp_message", data), error=False)
             else:
-                # DN not found - show suggestions
                 similar_dns = result.get("similar_dns", [])
                 if similar_dns:
                     response = f"🔍 DN {decision.entity} not found. Did you mean:\n\n"
@@ -936,13 +965,6 @@ class WhatsAppProviderService:
                         f"❌ DN {decision.entity} not found in database.\n\nPlease check the number and try again.",
                         error=True
                     )
-        except ImportError as e:
-            logger.error(f"DN service import failed: {e}")
-            return self._format_response(
-                decision.original_message,
-                "⚠️ DN service is not available. Please try again later.",
-                error=True
-            )
         except Exception as e:
             logger.error(f"DN handler failed: {e}")
             return self._format_response(
@@ -958,18 +980,22 @@ class WhatsAppProviderService:
     async def _handle_pending(self, decision: RoutingDecision) -> Dict[str, Any]:
         """Handle pending queries"""
         try:
-            from app.services.dn_analysis import get_dn_analytics_service
-            
-            dn_service = get_dn_analytics_service()
+            if not self.dn_service:
+                logger.error("❌ DN service not available")
+                return self._format_response(
+                    decision.original_message,
+                    "⚠️ DN service is not available. Please try again later.",
+                    error=True
+                )
             
             if decision.intent == "pending_dn":
-                result = dn_service.get_pending_dns()
+                result = self.dn_service.get_pending_dns()
             elif decision.intent == "pending_pgi":
-                result = dn_service.get_pending_pgi()
+                result = self.dn_service.get_pending_pgi()
             elif decision.intent == "pending_pod":
-                result = dn_service.get_pending_pod()
+                result = self.dn_service.get_pending_pod()
             else:
-                result = dn_service.get_pending_dns()
+                result = self.dn_service.get_pending_dns()
             
             if result.get("success"):
                 records = result.get("records", [])
@@ -988,13 +1014,6 @@ class WhatsAppProviderService:
                     f"⚠️ Pending query failed: {result.get('error', 'Unknown error')}",
                     error=True
                 )
-        except ImportError as e:
-            logger.error(f"Pending service import failed: {e}")
-            return self._format_response(
-                decision.original_message,
-                "⚠️ Pending service is not available. Please try again later.",
-                error=True
-            )
         except Exception as e:
             logger.error(f"Pending handler failed: {e}")
             return self._format_response(
@@ -1096,30 +1115,6 @@ class WhatsAppProviderService:
         )
     
     # ============================================================
-    # DEALER FALLBACK
-    # ============================================================
-    
-    async def _try_dealer_fallback(self, message: str, decision: RoutingDecision) -> Optional[Dict[str, Any]]:
-        """Try to handle as dealer query as fallback"""
-        try:
-            from app.services.dealer_analytics_service import get_dealer_analytics_service
-            
-            dealer_service = get_dealer_analytics_service()
-            if not dealer_service:
-                return None
-            
-            # Try to resolve as dealer
-            if hasattr(dealer_service, '_resolve_dealer'):
-                result = dealer_service.get_dealer_dashboard(message)
-                if result and result.get("success", False):
-                    return self._format_response(message, result.get("data"), error=False)
-            
-            return None
-        except Exception as e:
-            logger.warning(f"Dealer fallback failed: {e}")
-            return None
-    
-    # ============================================================
     # RESPONSE FORMATTING
     # ============================================================
     
@@ -1185,16 +1180,13 @@ class WhatsAppProviderService:
     # ============================================================
     
     def get_system_health(self) -> Dict[str, Any]:
+        """Get system health"""
         return {
             "status": "healthy",
-            "version": "8.2",
+            "version": "8.3",
             "services": {
-                "dn": self.registry.is_service_ready("dn"),
-                "dealer": self.registry.is_service_ready("dealer"),
-                "warehouse": self.registry.is_service_ready("warehouse"),
-                "city": self.registry.is_service_ready("city"),
-                "product": self.registry.is_service_ready("product"),
-                "national_kpi": self.registry.is_service_ready("national_kpi"),
+                "dealer": self.dealer_service is not None,
+                "dn": self.dn_service is not None,
                 "groq": self.groq_service is not None
             },
             "timestamp": datetime.now().isoformat()
@@ -1214,7 +1206,7 @@ def get_whatsapp_provider_service() -> WhatsAppProviderService:
             if _whatsapp_provider_service is None:
                 try:
                     _whatsapp_provider_service = WhatsAppProviderService()
-                    logger.info("✅ WhatsAppProviderService initialized (v8.2)")
+                    logger.info("✅ WhatsAppProviderService initialized (v8.3)")
                 except Exception as e:
                     logger.exception(f"❌ Initialization failed: {e}")
                     raise
@@ -1227,7 +1219,6 @@ def get_whatsapp_provider_service() -> WhatsAppProviderService:
 __all__ = [
     'WhatsAppProviderService',
     'get_whatsapp_provider_service',
-    'ServiceRegistry',
     'ServiceStatus',
     'RoutingDecision',
     'IntentDetectionEngine',
@@ -1235,10 +1226,10 @@ __all__ = [
 ]
 
 logger.info("=" * 70)
-logger.info("AI Provider Service v8.2 - COMPLETE FIXED")
+logger.info("AI Provider Service v8.3 - FIXED: Service Loading")
 logger.info("=" * 70)
-logger.info("✅ DN Service - Registered and ready")
-logger.info("✅ Dealer Service - Registered and ready")
-logger.info("✅ Pending Queries - Ready")
-logger.info("✅ Analytics Queries - Ready")
+logger.info("✅ Direct Service Loading - No registry dependency")
+logger.info("✅ Dealer Service - Direct import")
+logger.info("✅ DN Service - Direct import")
+logger.info("✅ Groq Service - Optional")
 logger.info("=" * 70)
