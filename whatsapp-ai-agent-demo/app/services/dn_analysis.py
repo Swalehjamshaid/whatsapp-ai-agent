@@ -89,14 +89,12 @@ class DNAggregate:
 
 @dataclass
 class DNDashboard:
-    """Business-only representation consumed by the WhatsApp dashboard."""
+    """Business-only DN dashboard with native WhatsApp rendering."""
 
     dn_no: str
     dealer_name: str
-
     warehouse: str
     city: str
-
     sales_manager: Optional[str]
     sales_office: Optional[str]
 
@@ -119,6 +117,90 @@ class DNDashboard:
     pending_flag_text: str
 
     products: list[Row]
+
+    @staticmethod
+    def _format_money(value: Any) -> str:
+        """Format money without exposing Python Decimal syntax."""
+        return f"{safe_decimal(value):,.2f}"
+
+    def to_whatsapp_message(self) -> str:
+        """Render a clean business-only WhatsApp message."""
+        product_sections: list[str] = []
+
+        for product in self.products:
+            product_sections.append(
+                "\n".join(
+                    (
+                        f"Model: {safe_string(product.get('model')) or 'N/A'}",
+                        (
+                            "Material No: "
+                            f"{safe_string(product.get('material_no')) or 'N/A'}"
+                        ),
+                        f"Quantity: {safe_int(product.get('quantity')):,}",
+                        (
+                            "Revenue: "
+                            f"{self._format_money(product.get('revenue'))}"
+                        ),
+                    )
+                )
+            )
+
+        product_details = (
+            "\n\n".join(product_sections)
+            if product_sections
+            else "N/A"
+        )
+
+        return "\n".join(
+            (
+                "📦 Delivery Note",
+                self.dn_no,
+                "",
+                "🏢 Dealer",
+                self.dealer_name,
+                "",
+                "📍 Location",
+                f"Warehouse: {self.warehouse}",
+                f"City: {self.city}",
+                "",
+                "👤 Sales",
+                f"Sales Manager: {self.sales_manager or 'N/A'}",
+                f"Sales Office: {self.sales_office or 'N/A'}",
+                "",
+                "📦 Products",
+                f"Model Count: {self.model_count:,}",
+                f"Material Count: {self.material_count:,}",
+                f"Total Units: {self.total_units:,}",
+                f"Total Revenue: {self._format_money(self.total_revenue)}",
+                "",
+                "📅 Timeline",
+                f"DN Create Date: {self.dn_create_date}",
+                f"PGI Date: {self.good_issue_date}",
+                f"POD Date: {self.pod_date}",
+                "",
+                "⏱ Performance",
+                f"Delivery Days: {self.delivery_aging_text}",
+                f"POD Days: {self.pod_aging_text}",
+                f"Total Cycle Days: {self.total_cycle_text}",
+                "",
+                "🚚 Status",
+                f"Delivery Status: {self.delivery_status}",
+                f"PGI Status: {self.pgi_status}",
+                f"POD Status: {self.pod_status}",
+                f"Pending Flag: {self.pending_flag_text}",
+                "",
+                "📋 Product Details",
+                product_details,
+            )
+        )
+
+    def __str__(self) -> str:
+        """Use WhatsApp formatting when converted to a string."""
+        return self.to_whatsapp_message()
+
+    def __repr__(self) -> str:
+        """Prevent the dataclass representation leaking to WhatsApp."""
+        return self.to_whatsapp_message()
 
 
 # ==================================================================================================
@@ -326,6 +408,7 @@ def handle_errors(func: F) -> F:
     ) -> Any:
         try:
             return func(self, *args, **kwargs)
+
         except Exception as error:
             logger.error("Error in %s: %s", func.__name__, error)
 
@@ -350,7 +433,7 @@ class DNAnalysisService:
 
     def __init__(self) -> None:
         self._service_name = "dn_analysis"
-        self._version = "16.0"
+        self._version = "16.1"
         self._status = "INITIALIZING"
         self._query_count = 0
         self._total_execution_time_ms = 0.0
@@ -397,9 +480,11 @@ class DNAnalysisService:
 
         try:
             yield session
+
         except Exception:
             session.rollback()
             raise
+
         finally:
             session.close()
 
@@ -411,6 +496,7 @@ class DNAnalysisService:
 
         try:
             return SessionLocal()
+
         except Exception as error:
             logger.error("Failed to get database session: %s", error)
             return None
@@ -519,6 +605,7 @@ class DNAnalysisService:
         return {
             "success": True,
             "data": dashboard,
+            "whatsapp_message": dashboard.to_whatsapp_message(),
             "all_rows": rows,
         }
 
@@ -538,7 +625,7 @@ class DNAnalysisService:
 
         models: set[str] = set()
         materials: set[str] = set()
-        products: list[Row] = []
+        product_map: dict[tuple[str, str], Row] = {}
 
         total_units = 0
         total_revenue = Decimal(0)
@@ -562,10 +649,17 @@ class DNAnalysisService:
             total_units += quantity
             total_revenue += revenue
 
-            products.append(
-                {
-                    "model": model or "N/A",
-                    "material_no": material_no or "N/A",
+            product_key = (
+                model or "N/A",
+                material_no or "N/A",
+            )
+
+            product = product_map.get(product_key)
+
+            if product is None:
+                product_map[product_key] = {
+                    "model": product_key[0],
+                    "material_no": product_key[1],
                     "quantity": quantity,
                     "revenue": revenue,
                     "average_price": (
@@ -574,38 +668,59 @@ class DNAnalysisService:
                         else Decimal(0)
                     ),
                 }
+
+            else:
+                product_quantity = (
+                    safe_int(product.get("quantity"))
+                    + quantity
+                )
+                product_revenue = (
+                    safe_decimal(product.get("revenue"))
+                    + revenue
+                )
+
+                product["quantity"] = product_quantity
+                product["revenue"] = product_revenue
+                product["average_price"] = (
+                    product_revenue / product_quantity
+                    if product_quantity
+                    else Decimal(0)
+                )
+
+            row_create_date = safe_date(
+                row.get("dn_create_date")
+            )
+            row_issue_date = safe_date(
+                row.get("good_issue_date")
+            )
+            row_pod_date = safe_date(
+                row.get("pod_date")
             )
 
-            row_create_date = safe_date(row.get("dn_create_date"))
-            row_issue_date = safe_date(row.get("good_issue_date"))
-            row_pod_date = safe_date(row.get("pod_date"))
-
-            # DN Create Date = minimum date across all DN rows.
             if row_create_date and (
                 dn_create_date is None
                 or row_create_date < dn_create_date
             ):
                 dn_create_date = row_create_date
 
-            # PGI Date = maximum date across all DN rows.
             if row_issue_date and (
                 good_issue_date is None
                 or row_issue_date > good_issue_date
             ):
                 good_issue_date = row_issue_date
 
-            # POD Date = maximum date across all DN rows.
             if row_pod_date and (
                 pod_date is None
                 or row_pod_date > pod_date
             ):
                 pod_date = row_pod_date
 
-        products.sort(
+        products = sorted(
+            product_map.values(),
             key=lambda product: (
                 product["model"],
                 product["material_no"],
-            )
+            ),
         )
 
         row_count = len(rows)
@@ -615,8 +730,8 @@ class DNAnalysisService:
             pod_date,
         )
 
-        # PostgreSQL is authoritative. Date-derived statuses are only
-        # fallback values when a database status is NULL or blank.
+        # PostgreSQL remains authoritative. Derived values are only
+        # used if a database status is NULL or blank.
         delivery_status = (
             safe_string(first.get("delivery_status"))
             or fallback_stage
@@ -639,6 +754,7 @@ class DNAnalysisService:
                 good_issue_date is None
                 or pod_date is None
             )
+
         elif isinstance(raw_pending_flag, str):
             pending_flag = raw_pending_flag.strip().lower() in {
                 "1",
@@ -647,6 +763,7 @@ class DNAnalysisService:
                 "y",
                 "pending",
             }
+
         else:
             pending_flag = bool(raw_pending_flag)
 
@@ -736,7 +853,7 @@ class DNAnalysisService:
         self,
         aggregated: DNAggregate,
     ) -> DNDashboard:
-        """Build the business-only WhatsApp dashboard payload."""
+        """Build the business-only WhatsApp dashboard."""
         return DNDashboard(
             dn_no=aggregated.dn_no,
             dealer_name=aggregated.dealer_name,
