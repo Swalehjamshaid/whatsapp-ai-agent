@@ -1,7 +1,6 @@
 """
 File: whatsapp-ai-agent-demo/app/services/dealer_analytics_service.py
-Enterprise dealer intelligence built only from DeliveryReport/PostgreSQL.
-Ultra-fast distance calculation with geopy and openrouteservice.
+Enterprise Dealer Intelligence Engine - Answers 50+ dealer questions naturally through WhatsApp.
 """
 
 from __future__ import annotations
@@ -15,9 +14,10 @@ import time
 import unicodedata
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
-from typing import Any, Optional, Dict, List, Tuple
+from typing import Any, Optional, Dict, List, Tuple, Union
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from enum import Enum
 
 from cachetools import TTLCache
 from rapidfuzz import fuzz, process
@@ -28,7 +28,6 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models import DeliveryReport
 
-# Geo libraries for distance calculation
 try:
     import openrouteservice
     from openrouteservice import Client
@@ -38,11 +37,9 @@ except ImportError:
 
 try:
     from geopy.distance import great_circle, geodesic
-    from geopy.geocoders import Nominatim
 except ImportError:
     great_circle = None
     geodesic = None
-    Nominatim = None
 
 
 logger = logging.getLogger(__name__)
@@ -61,7 +58,7 @@ _STOP_PHRASES_PATTERN = re.compile(
 _WHITESPACE_PATTERN = re.compile(r'\s+')
 _SPECIAL_CHARS_PATTERN = re.compile(r'[^a-z0-9\s]')
 
-# Thread pool for parallel distance calculations
+# Thread pool for parallel operations
 _executor = ThreadPoolExecutor(max_workers=4)
 
 
@@ -95,6 +92,932 @@ def _date_text(value: Any) -> str:
 
 def _status_complete(column: Any) -> Any:
     return func.lower(func.coalesce(column, "")).in_(("completed", "complete", "delivered", "done", "yes"))
+
+
+# ============================================================
+# INTENT AND METRIC ENUMS
+# ============================================================
+
+class DealerIntent(Enum):
+    """Dealer question intents."""
+    DEALER_INFO = "dealer_info"
+    REVENUE = "revenue"
+    DN = "dn"
+    UNITS = "units"
+    DELIVERY = "delivery"
+    PGI = "pgi"
+    POD = "pod"
+    PENDING = "pending"
+    PRODUCT = "product"
+    WAREHOUSE = "warehouse"
+    RANKING = "ranking"
+    HEALTH = "health"
+    DASHBOARD = "dashboard"
+    PROFILE = "profile"
+    COMPARISON = "comparison"
+    UNKNOWN = "unknown"
+
+
+class MetricType(Enum):
+    """Metric types for question answering."""
+    TOTAL_REVENUE = "total_revenue"
+    REVENUE_GROWTH = "revenue_growth"
+    MONTHLY_REVENUE = "monthly_revenue"
+    PENDING_REVENUE = "pending_revenue"
+    DELIVERED_REVENUE = "delivered_revenue"
+    AVG_REVENUE_PER_DN = "avg_revenue_per_dn"
+    AVG_REVENUE_PER_UNIT = "avg_revenue_per_unit"
+    
+    TOTAL_DN = "total_dn"
+    COMPLETED_DN = "completed_dn"
+    PENDING_DN = "pending_dn"
+    AVG_DN_VALUE = "avg_dn_value"
+    HIGHEST_DN = "highest_dn"
+    LOWEST_DN = "lowest_dn"
+    NEWEST_DN = "newest_dn"
+    OLDEST_PENDING_DN = "oldest_pending_dn"
+    
+    TOTAL_UNITS = "total_units"
+    DELIVERED_UNITS = "delivered_units"
+    PENDING_UNITS = "pending_units"
+    AVG_UNITS_PER_DN = "avg_units_per_dn"
+    
+    DELIVERY_SUCCESS = "delivery_success"
+    AVG_DELIVERY_DAYS = "avg_delivery_days"
+    FASTEST_DELIVERY = "fastest_delivery"
+    SLOWEST_DELIVERY = "slowest_delivery"
+    SAME_DAY_DELIVERY = "same_day_delivery"
+    NEXT_DAY_DELIVERY = "next_day_delivery"
+    
+    PGI_SUCCESS = "pgi_success"
+    PENDING_PGI = "pending_pgi"
+    AVG_PGI_DAYS = "avg_pgi_days"
+    LATEST_PGI = "latest_pgi"
+    
+    POD_SUCCESS = "pod_success"
+    PENDING_POD = "pending_pod"
+    AVG_POD_DAYS = "avg_pod_days"
+    LATEST_POD = "latest_pod"
+    
+    PENDING_PCT = "pending_pct"
+    CRITICAL_PENDING = "critical_pending"
+    OVERDUE_PENDING = "overdue_pending"
+    PENDING_AGE = "pending_age"
+    
+    TOP_PRODUCT = "top_product"
+    TOP_MODEL = "top_model"
+    TOP_MATERIAL = "top_material"
+    STRONGEST_CATEGORY = "strongest_category"
+    WEAKEST_CATEGORY = "weakest_category"
+    TOP_DIVISION = "top_division"
+    
+    WAREHOUSE = "warehouse"
+    WAREHOUSE_CODE = "warehouse_code"
+    WAREHOUSE_UTILIZATION = "warehouse_utilization"
+    DISTANCE = "distance"
+    DRIVING_TIME = "driving_time"
+    ESTIMATED_DELIVERY = "estimated_delivery"
+    
+    DEALER_NAME = "dealer_name"
+    DEALER_CODE = "dealer_code"
+    CUSTOMER_CODE = "customer_code"
+    CITY = "city"
+    SALES_OFFICE = "sales_office"
+    SALES_MANAGER = "sales_manager"
+    DIVISION = "division"
+    DELIVERY_LOCATION = "delivery_location"
+    
+    NATIONAL_RANK = "national_rank"
+    REGIONAL_RANK = "regional_rank"
+    REVENUE_RANK = "revenue_rank"
+    DELIVERY_RANK = "delivery_rank"
+    DN_RANK = "dn_rank"
+    UNIT_RANK = "unit_rank"
+    PENDING_RANK = "pending_rank"
+    POD_RANK = "pod_rank"
+    
+    BUSINESS_SCORE = "business_score"
+    OVERALL_STATUS = "overall_status"
+    EXECUTIVE_SUMMARY = "executive_summary"
+
+
+# ============================================================
+# INTENT AND METRIC RESOLVERS
+# ============================================================
+
+class IntentResolver:
+    """Resolves user questions to dealer intents."""
+    
+    INTENT_MAP = {
+        # Dealer Information
+        r'\b(?:tell me about|about|who is|what is)\s+(\w+)': DealerIntent.DEALER_INFO,
+        r'\bdealer (?:info|information|details|summary|overview)\b': DealerIntent.DEALER_INFO,
+        r'\b(?:sales manager|manager)\b': DealerIntent.DEALER_INFO,
+        r'\b(?:sales office|office|region)\b': DealerIntent.DEALER_INFO,
+        r'\b(?:dealer code|customer code)\b': DealerIntent.DEALER_INFO,
+        r'\b(?:city|location)\b': DealerIntent.DEALER_INFO,
+        
+        # Revenue
+        r'\brevenue\b': DealerIntent.REVENUE,
+        r'\bsales\b': DealerIntent.REVENUE,
+        r'\bincome\b': DealerIntent.REVENUE,
+        r'\bturnover\b': DealerIntent.REVENUE,
+        r'\brevenue (?:growth|trend|change)\b': DealerIntent.REVENUE,
+        r'\b(?:this|current) month revenue\b': DealerIntent.REVENUE,
+        r'\blast month revenue\b': DealerIntent.REVENUE,
+        r'\bpending revenue\b': DealerIntent.REVENUE,
+        r'\bdelivered revenue\b': DealerIntent.REVENUE,
+        r'\baverage revenue\b': DealerIntent.REVENUE,
+        
+        # DN
+        r'\bdn\b': DealerIntent.DN,
+        r'\bdelivery note\b': DealerIntent.DN,
+        r'\b(?:total|completed|pending) dns?\b': DealerIntent.DN,
+        r'\bnewest dn\b': DealerIntent.DN,
+        r'\boldest pending dn\b': DealerIntent.DN,
+        r'\bhighest (?:value|revenue) dn\b': DealerIntent.DN,
+        r'\blower?st (?:value|revenue) dn\b': DealerIntent.DN,
+        
+        # Units
+        r'\bunits?\b': DealerIntent.UNITS,
+        r'\bquantity\b': DealerIntent.UNITS,
+        r'\b(?:total|delivered|pending) units?\b': DealerIntent.UNITS,
+        r'\bunit (?:growth|trend)\b': DealerIntent.UNITS,
+        r'\baverage units?\b': DealerIntent.UNITS,
+        
+        # Delivery
+        r'\bdelivery\b': DealerIntent.DELIVERY,
+        r'\bdelivery (?:success|performance|trend)\b': DealerIntent.DELIVERY,
+        r'\b(?:average|fastest|slowest) delivery\b': DealerIntent.DELIVERY,
+        r'\bsame day delivery\b': DealerIntent.DELIVERY,
+        r'\bnext day delivery\b': DealerIntent.DELIVERY,
+        r'\bdriving time\b': DealerIntent.DELIVERY,
+        r'\bestimated delivery\b': DealerIntent.DELIVERY,
+        r'\bdelivery days?\b': DealerIntent.DELIVERY,
+        
+        # PGI
+        r'\bpgi\b': DealerIntent.PGI,
+        r'\bgood issue\b': DealerIntent.PGI,
+        r'\bpending pgi\b': DealerIntent.PGI,
+        r'\b(?:average|latest) pgi\b': DealerIntent.PGI,
+        
+        # POD
+        r'\bpod\b': DealerIntent.POD,
+        r'\bproof of delivery\b': DealerIntent.POD,
+        r'\bpending pod\b': DealerIntent.POD,
+        r'\b(?:average|latest) pod\b': DealerIntent.POD,
+        
+        # Pending
+        r'\bpending\b': DealerIntent.PENDING,
+        r'\boutstanding\b': DealerIntent.PENDING,
+        r'\bwaiting\b': DealerIntent.PENDING,
+        r'\bincomplete\b': DealerIntent.PENDING,
+        r'\bpending (?:dashboard|analytics|status)\b': DealerIntent.PENDING,
+        r'\b(?:critical|overdue) pending\b': DealerIntent.PENDING,
+        
+        # Products
+        r'\bproduct\b': DealerIntent.PRODUCT,
+        r'\bmodel\b': DealerIntent.PRODUCT,
+        r'\bmaterial\b': DealerIntent.PRODUCT,
+        r'\bcategory\b': DealerIntent.PRODUCT,
+        r'\bdivision\b': DealerIntent.PRODUCT,
+        r'\btop (?:product|model|material)\b': DealerIntent.PRODUCT,
+        r'\bstrongest category\b': DealerIntent.PRODUCT,
+        r'\bweakest category\b': DealerIntent.PRODUCT,
+        
+        # Warehouse
+        r'\bwarehouse\b': DealerIntent.WAREHOUSE,
+        r'\bdepot\b': DealerIntent.WAREHOUSE,
+        r'\bdistribution center\b': DealerIntent.WAREHOUSE,
+        r'\bwarehouse (?:code|utilization|performance)\b': DealerIntent.WAREHOUSE,
+        r'\bdistance\b': DealerIntent.WAREHOUSE,
+        
+        # Ranking
+        r'\brank\b': DealerIntent.RANKING,
+        r'\branking\b': DealerIntent.RANKING,
+        r'\b(?:national|regional) rank\b': DealerIntent.RANKING,
+        r'\b(?:revenue|delivery|dn|unit|pending|pod) rank\b': DealerIntent.RANKING,
+        r'\btop dealers?\b': DealerIntent.RANKING,
+        r'\bbottom dealers?\b': DealerIntent.RANKING,
+        
+        # Health
+        r'\b(?:business|health|score)\b': DealerIntent.HEALTH,
+        r'\b(?:overall|performance) status\b': DealerIntent.HEALTH,
+        r'\b(?:executive|management) summary\b': DealerIntent.HEALTH,
+        r'\brecommendations?\b': DealerIntent.HEALTH,
+        r'\b(?:strengths|weaknesses)\b': DealerIntent.HEALTH,
+        r'\binsights?\b': DealerIntent.HEALTH,
+        
+        # Dashboard/Profile
+        r'\bdashboard\b': DealerIntent.DASHBOARD,
+        r'\bprofile\b': DealerIntent.PROFILE,
+        r'\bsummary\b': DealerIntent.PROFILE,
+        r'\boverview\b': DealerIntent.PROFILE,
+        r'\bperformance\b': DealerIntent.PROFILE,
+        
+        # Comparison
+        r'\bcompare\b': DealerIntent.COMPARISON,
+        r'\bvs\b': DealerIntent.COMPARISON,
+        r'\bversus\b': DealerIntent.COMPARISON,
+    }
+    
+    METRIC_MAP = {
+        # Revenue
+        r'\btotal revenue\b': MetricType.TOTAL_REVENUE,
+        r'\brevenue (?:growth|trend|change)\b': MetricType.REVENUE_GROWTH,
+        r'\b(?:this|current) month revenue\b': MetricType.MONTHLY_REVENUE,
+        r'\blast month revenue\b': MetricType.MONTHLY_REVENUE,
+        r'\bpending revenue\b': MetricType.PENDING_REVENUE,
+        r'\bdelivered revenue\b': MetricType.DELIVERED_REVENUE,
+        r'\baverage revenue per dn\b': MetricType.AVG_REVENUE_PER_DN,
+        r'\baverage revenue per unit\b': MetricType.AVG_REVENUE_PER_UNIT,
+        
+        # DN
+        r'\btotal dns?\b': MetricType.TOTAL_DN,
+        r'\bcompleted dns?\b': MetricType.COMPLETED_DN,
+        r'\bpending dns?\b': MetricType.PENDING_DN,
+        r'\baverage dn value\b': MetricType.AVG_DN_VALUE,
+        r'\bhighest (?:value|revenue) dn\b': MetricType.HIGHEST_DN,
+        r'\blower?st (?:value|revenue) dn\b': MetricType.LOWEST_DN,
+        r'\bnewest dn\b': MetricType.NEWEST_DN,
+        r'\boldest pending dn\b': MetricType.OLDEST_PENDING_DN,
+        
+        # Units
+        r'\btotal units?\b': MetricType.TOTAL_UNITS,
+        r'\bdelivered units?\b': MetricType.DELIVERED_UNITS,
+        r'\bpending units?\b': MetricType.PENDING_UNITS,
+        r'\baverage units per dn\b': MetricType.AVG_UNITS_PER_DN,
+        
+        # Delivery
+        r'\bdelivery success\b': MetricType.DELIVERY_SUCCESS,
+        r'\baverage delivery days?\b': MetricType.AVG_DELIVERY_DAYS,
+        r'\bfastest delivery\b': MetricType.FASTEST_DELIVERY,
+        r'\bslowest delivery\b': MetricType.SLOWEST_DELIVERY,
+        r'\bsame day delivery\b': MetricType.SAME_DAY_DELIVERY,
+        r'\bnext day delivery\b': MetricType.NEXT_DAY_DELIVERY,
+        
+        # PGI
+        r'\bpgi success\b': MetricType.PGI_SUCCESS,
+        r'\bpending pgi\b': MetricType.PENDING_PGI,
+        r'\baverage pgi days?\b': MetricType.AVG_PGI_DAYS,
+        r'\blatest pgi\b': MetricType.LATEST_PGI,
+        
+        # POD
+        r'\bpod success\b': MetricType.POD_SUCCESS,
+        r'\bpending pod\b': MetricType.PENDING_POD,
+        r'\baverage pod days?\b': MetricType.AVG_POD_DAYS,
+        r'\blatest pod\b': MetricType.LATEST_POD,
+        
+        # Pending
+        r'\bpending percentage\b': MetricType.PENDING_PCT,
+        r'\bcritical pending\b': MetricType.CRITICAL_PENDING,
+        r'\boverdue pending\b': MetricType.OVERDUE_PENDING,
+        r'\bpending age\b': MetricType.PENDING_AGE,
+        
+        # Products
+        r'\btop product\b': MetricType.TOP_PRODUCT,
+        r'\btop model\b': MetricType.TOP_MODEL,
+        r'\btop material\b': MetricType.TOP_MATERIAL,
+        r'\bstrongest category\b': MetricType.STRONGEST_CATEGORY,
+        r'\bweakest category\b': MetricType.WEAKEST_CATEGORY,
+        r'\btop division\b': MetricType.TOP_DIVISION,
+        
+        # Warehouse
+        r'\bwarehouse\b': MetricType.WAREHOUSE,
+        r'\bwarehouse code\b': MetricType.WAREHOUSE_CODE,
+        r'\bwarehouse utilization\b': MetricType.WAREHOUSE_UTILIZATION,
+        r'\bdistance\b': MetricType.DISTANCE,
+        r'\bdriving time\b': MetricType.DRIVING_TIME,
+        r'\bestimated delivery\b': MetricType.ESTIMATED_DELIVERY,
+        
+        # Dealer Info
+        r'\bdealer name\b': MetricType.DEALER_NAME,
+        r'\bdealer code\b': MetricType.DEALER_CODE,
+        r'\bcustomer code\b': MetricType.CUSTOMER_CODE,
+        r'\bcity\b': MetricType.CITY,
+        r'\bsales office\b': MetricType.SALES_OFFICE,
+        r'\bsales manager\b': MetricType.SALES_MANAGER,
+        r'\bdivision\b': MetricType.DIVISION,
+        r'\bdelivery location\b': MetricType.DELIVERY_LOCATION,
+        
+        # Ranking
+        r'\bnational rank\b': MetricType.NATIONAL_RANK,
+        r'\bregional rank\b': MetricType.REGIONAL_RANK,
+        r'\brevenue rank\b': MetricType.REVENUE_RANK,
+        r'\bdelivery rank\b': MetricType.DELIVERY_RANK,
+        r'\bdn rank\b': MetricType.DN_RANK,
+        r'\bunit rank\b': MetricType.UNIT_RANK,
+        r'\bpending rank\b': MetricType.PENDING_RANK,
+        r'\bpod rank\b': MetricType.POD_RANK,
+        
+        # Health
+        r'\bbusiness score\b': MetricType.BUSINESS_SCORE,
+        r'\boverall status\b': MetricType.OVERALL_STATUS,
+        r'\bexecutive summary\b': MetricType.EXECUTIVE_SUMMARY,
+    }
+    
+    @classmethod
+    def resolve_intent(cls, question: str) -> DealerIntent:
+        """Resolve the intent from a question."""
+        question_lower = question.lower()
+        
+        # Check for dashboard/profile first (full response)
+        if any(word in question_lower for word in ['dashboard', 'profile', 'summary', 'overview', 'performance']):
+            if 'dashboard' in question_lower:
+                return DealerIntent.DASHBOARD
+            if 'profile' in question_lower or 'summary' in question_lower:
+                return DealerIntent.PROFILE
+        
+        # Check for comparison
+        if 'compare' in question_lower or 'vs' in question_lower or 'versus' in question_lower:
+            return DealerIntent.COMPARISON
+        
+        # Check intent patterns
+        for pattern, intent in cls.INTENT_MAP.items():
+            if re.search(pattern, question_lower):
+                return intent
+        
+        return DealerIntent.UNKNOWN
+    
+    @classmethod
+    def resolve_metric(cls, question: str) -> Optional[MetricType]:
+        """Resolve the specific metric from a question."""
+        question_lower = question.lower()
+        
+        # Check metric patterns
+        for pattern, metric in cls.METRIC_MAP.items():
+            if re.search(pattern, question_lower):
+                return metric
+        
+        return None
+
+
+# ============================================================
+# DEALER QUESTION ENGINE
+# ============================================================
+
+@dataclass
+class DealerQuestion:
+    """Represents a parsed dealer question."""
+    dealer: str
+    intent: DealerIntent
+    metric: Optional[MetricType]
+    original_question: str
+    is_full_dashboard: bool = False
+    is_comparison: bool = False
+
+
+@dataclass
+class DealerAnswer:
+    """Represents an answer to a dealer question."""
+    question: DealerQuestion
+    answer: str
+    whatsapp_message: str
+    data: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    execution_time_ms: float = 0.0
+
+
+class DealerQuestionEngine:
+    """Intelligent dealer question answering engine."""
+    
+    def __init__(self, service: 'DealerAnalyticsService'):
+        self.service = service
+        self.intent_resolver = IntentResolver()
+    
+    def answer_question(self, question: str, dealer_name: str = "", **kwargs) -> Dict[str, Any]:
+        """
+        Answer a dealer question naturally.
+        
+        Examples:
+            "What is dealer revenue?"
+            "Show pending DNs for Taj Electronics"
+            "Tell me about Mian Group Chakwal"
+            "Dealer dashboard for Taj Electronics"
+        """
+        start_time = time.perf_counter()
+        
+        # Parse the question
+        parsed = self._parse_question(question, dealer_name)
+        
+        # Get dealer data
+        dashboard_result = self.service.get_dealer_dashboard(
+            parsed.dealer or dealer_name or kwargs.get("dealer", ""),
+            **kwargs
+        )
+        
+        if not dashboard_result.get("success"):
+            return dashboard_result
+        
+        dealer_data = dashboard_result.get("data")
+        if not dealer_data:
+            return {"success": False, "error_code": "DEALER_NOT_FOUND", "message": "Dealer not found."}
+        
+        # Generate answer based on intent
+        answer_data = self._generate_answer(parsed, dealer_data, dashboard_result)
+        
+        # Prepare response
+        response = {
+            "success": True,
+            "dealer": parsed.dealer,
+            "intent": parsed.intent.value if parsed.intent else "unknown",
+            "metric": parsed.metric.value if parsed.metric else None,
+            "answer": answer_data.get("answer", ""),
+            "whatsapp_message": answer_data.get("whatsapp_message", ""),
+            "data": answer_data.get("data", dealer_data),
+            "dashboard": dealer_data,
+            "execution_time_ms": round((time.perf_counter() - start_time) * 1000, 2)
+        }
+        
+        logger.info(
+            f"Question answered: dealer={parsed.dealer}, intent={parsed.intent.value if parsed.intent else 'unknown'}, "
+            f"metric={parsed.metric.value if parsed.metric else 'none'}, time={response['execution_time_ms']}ms"
+        )
+        
+        return response
+    
+    def _parse_question(self, question: str, dealer_name: str = "") -> DealerQuestion:
+        """Parse the question to extract dealer, intent, and metric."""
+        question_lower = question.lower()
+        
+        # Extract dealer name from question if not provided
+        if not dealer_name:
+            # Try to extract dealer name from question
+            words = question_lower.split()
+            for i, word in enumerate(words):
+                # Look for patterns like "for {dealer}" or "about {dealer}"
+                if word in ['for', 'about', 'of', 'on'] and i + 1 < len(words):
+                    potential_dealer = ' '.join(words[i+1:])
+                    if len(potential_dealer) > 2:
+                        dealer_name = potential_dealer
+                        break
+            
+            # If no dealer found, try the whole question
+            if not dealer_name:
+                dealer_name = question_lower
+        
+        # Resolve intent
+        intent = IntentResolver.resolve_intent(question)
+        
+        # Resolve metric
+        metric = IntentResolver.resolve_metric(question) if intent != DealerIntent.UNKNOWN else None
+        
+        # Check if full dashboard requested
+        is_full_dashboard = intent in [DealerIntent.DASHBOARD, DealerIntent.PROFILE] or \
+                           any(word in question_lower for word in ['dashboard', 'profile', 'summary', 'overview'])
+        
+        # Check if comparison
+        is_comparison = intent == DealerIntent.COMPARISON
+        
+        return DealerQuestion(
+            dealer=dealer_name,
+            intent=intent,
+            metric=metric,
+            original_question=question,
+            is_full_dashboard=is_full_dashboard,
+            is_comparison=is_comparison
+        )
+    
+    def _generate_answer(self, parsed: DealerQuestion, dealer: DealerDashboard, dashboard_result: Dict) -> Dict:
+        """Generate an answer based on intent and metric."""
+        
+        # Full dashboard
+        if parsed.is_full_dashboard:
+            return self._format_dashboard_response(dealer, dashboard_result)
+        
+        # Specific intent responses
+        intent_handlers = {
+            DealerIntent.DEALER_INFO: self._answer_dealer_info,
+            DealerIntent.REVENUE: self._answer_revenue,
+            DealerIntent.DN: self._answer_dn,
+            DealerIntent.UNITS: self._answer_units,
+            DealerIntent.DELIVERY: self._answer_delivery,
+            DealerIntent.PGI: self._answer_pgi,
+            DealerIntent.POD: self._answer_pod,
+            DealerIntent.PENDING: self._answer_pending,
+            DealerIntent.PRODUCT: self._answer_product,
+            DealerIntent.WAREHOUSE: self._answer_warehouse,
+            DealerIntent.RANKING: self._answer_ranking,
+            DealerIntent.HEALTH: self._answer_health,
+        }
+        
+        handler = intent_handlers.get(parsed.intent)
+        if handler:
+            return handler(dealer, parsed.metric)
+        
+        # Fallback: return dealer info
+        return self._answer_dealer_info(dealer, None)
+    
+    def _format_dashboard_response(self, dealer: DealerDashboard, dashboard_result: Dict) -> Dict:
+        """Format full dashboard response."""
+        return {
+            "answer": dashboard_result.get("whatsapp_message", ""),
+            "whatsapp_message": dashboard_result.get("whatsapp_message", ""),
+            "data": dealer
+        }
+    
+    def _answer_dealer_info(self, dealer: DealerDashboard, metric: Optional[MetricType]) -> Dict:
+        """Answer dealer information questions."""
+        if metric == MetricType.DEALER_NAME:
+            answer = f"👤 Dealer Name\n\n{dealer.dealer_name}"
+        elif metric == MetricType.DEALER_CODE:
+            answer = f"🏷️ Dealer Code\n\n{dealer.dealer_code}"
+        elif metric == MetricType.CUSTOMER_CODE:
+            answer = f"🏷️ Customer Code\n\n{dealer.customer_code}"
+        elif metric == MetricType.CITY:
+            answer = f"📍 City\n\n{dealer.city}"
+        elif metric == MetricType.SALES_OFFICE:
+            answer = f"🏢 Sales Office\n\n{dealer.sales_office}"
+        elif metric == MetricType.SALES_MANAGER:
+            answer = f"👨‍💼 Sales Manager\n\n{dealer.sales_manager}"
+        elif metric == MetricType.DIVISION:
+            answer = f"📊 Division\n\n{dealer.division}"
+        elif metric == MetricType.DELIVERY_LOCATION:
+            answer = f"📍 Delivery Location\n\n{dealer.delivery_location}"
+        else:
+            # Full dealer info
+            answer = (
+                f"👤 Dealer Information\n\n"
+                f"Name: {dealer.dealer_name}\n"
+                f"Dealer Code: {dealer.dealer_code}\n"
+                f"Customer Code: {dealer.customer_code}\n"
+                f"City: {dealer.city}\n"
+                f"Delivery Location: {dealer.delivery_location}\n"
+                f"Sales Office: {dealer.sales_office}\n"
+                f"Sales Manager: {dealer.sales_manager}\n"
+                f"Division: {dealer.division}\n"
+                f"Warehouse: {dealer.warehouse} ({dealer.warehouse_code})"
+            )
+        
+        return {
+            "answer": answer,
+            "whatsapp_message": answer,
+            "data": dealer
+        }
+    
+    def _answer_revenue(self, dealer: DealerDashboard, metric: Optional[MetricType]) -> Dict:
+        """Answer revenue questions."""
+        if metric == MetricType.TOTAL_REVENUE:
+            answer = f"💰 Total Revenue\n\nPKR {dealer.total_revenue:,.2f}"
+        elif metric == MetricType.REVENUE_GROWTH:
+            growth = dealer.revenue_growth_pct or 0.0
+            trend = "📈" if growth >= 0 else "📉"
+            answer = f"{trend} Revenue Growth\n\n{growth:+.1f}% month over month"
+        elif metric == MetricType.MONTHLY_REVENUE:
+            answer = f"📊 Monthly Revenue\n\nCurrent: PKR {dealer.current_month_revenue:,.2f}\nPrevious: PKR {dealer.previous_month_revenue:,.2f}\nGrowth: {dealer.monthly_growth:+.1f}%"
+        elif metric == MetricType.PENDING_REVENUE:
+            answer = f"⏳ Pending Revenue\n\nPKR {dealer.pending_revenue:,.2f}"
+        elif metric == MetricType.DELIVERED_REVENUE:
+            answer = f"✅ Delivered Revenue\n\nPKR {dealer.delivered_revenue:,.2f}"
+        elif metric == MetricType.AVG_REVENUE_PER_DN:
+            answer = f"📊 Average Revenue per DN\n\nPKR {dealer.average_revenue_per_dn:,.2f}"
+        elif metric == MetricType.AVG_REVENUE_PER_UNIT:
+            answer = f"📊 Average Revenue per Unit\n\nPKR {dealer.average_revenue_per_unit:,.2f}"
+        else:
+            # Full revenue summary
+            answer = (
+                f"💰 Revenue Summary\n\n"
+                f"Total Revenue: PKR {dealer.total_revenue:,.2f}\n"
+                f"Delivered: PKR {dealer.delivered_revenue:,.2f}\n"
+                f"Pending: PKR {dealer.pending_revenue:,.2f}\n"
+                f"Monthly Growth: {dealer.monthly_growth:+.1f}%\n"
+                f"Avg Revenue per DN: PKR {dealer.average_revenue_per_dn:,.2f}\n"
+                f"Avg Revenue per Unit: PKR {dealer.average_revenue_per_unit:,.2f}"
+            )
+        
+        return {
+            "answer": answer,
+            "whatsapp_message": answer,
+            "data": dealer
+        }
+    
+    def _answer_dn(self, dealer: DealerDashboard, metric: Optional[MetricType]) -> Dict:
+        """Answer DN questions."""
+        if metric == MetricType.TOTAL_DN:
+            answer = f"📋 Total DNs\n\n{dealer.total_dn:,}"
+        elif metric == MetricType.COMPLETED_DN:
+            answer = f"✅ Completed DNs\n\n{dealer.completed_dn:,}"
+        elif metric == MetricType.PENDING_DN:
+            answer = f"⏳ Pending DNs\n\n{dealer.pending_dn:,}"
+        elif metric == MetricType.AVG_DN_VALUE:
+            answer = f"📊 Average DN Value\n\nPKR {dealer.average_revenue_per_dn:,.2f}"
+        elif metric == MetricType.HIGHEST_DN:
+            answer = f"🏆 Highest Revenue DN\n\n{dealer.highest_revenue_dn}"
+        elif metric == MetricType.LOWEST_DN:
+            answer = f"📉 Lowest Revenue DN\n\n{dealer.lowest_revenue_dn}"
+        elif metric == MetricType.NEWEST_DN:
+            answer = f"🆕 Newest DN\n\n{dealer.newest_dn}"
+        elif metric == MetricType.OLDEST_PENDING_DN:
+            answer = f"⏰ Oldest Pending DN\n\n{dealer.oldest_pending_dn} ({dealer.oldest_pending_days} days old)"
+        else:
+            # Full DN summary
+            answer = (
+                f"📋 DN Summary\n\n"
+                f"Total: {dealer.total_dn:,}\n"
+                f"Completed: {dealer.completed_dn:,}\n"
+                f"Pending: {dealer.pending_dn:,}\n"
+                f"Average Value: PKR {dealer.average_revenue_per_dn:,.2f}\n"
+                f"Newest: {dealer.newest_dn}\n"
+                f"Highest Revenue: {dealer.highest_revenue_dn}\n"
+                f"Oldest Pending: {dealer.oldest_pending_dn} ({dealer.oldest_pending_days} days)"
+            )
+        
+        return {
+            "answer": answer,
+            "whatsapp_message": answer,
+            "data": dealer
+        }
+    
+    def _answer_units(self, dealer: DealerDashboard, metric: Optional[MetricType]) -> Dict:
+        """Answer units questions."""
+        if metric == MetricType.TOTAL_UNITS:
+            answer = f"📦 Total Units\n\n{dealer.total_units:,}"
+        elif metric == MetricType.DELIVERED_UNITS:
+            answer = f"✅ Delivered Units\n\n{dealer.delivered_units:,}"
+        elif metric == MetricType.PENDING_UNITS:
+            answer = f"⏳ Pending Units\n\n{dealer.pending_units:,}"
+        elif metric == MetricType.AVG_UNITS_PER_DN:
+            answer = f"📊 Average Units per DN\n\n{dealer.average_units_per_dn:.2f}"
+        else:
+            # Full units summary
+            answer = (
+                f"📦 Units Summary\n\n"
+                f"Total: {dealer.total_units:,}\n"
+                f"Delivered: {dealer.delivered_units:,}\n"
+                f"Pending: {dealer.pending_units:,}\n"
+                f"Average per DN: {dealer.average_units_per_dn:.2f}\n"
+                f"Highest DN: {dealer.highest_unit_dn}\n"
+                f"Lowest DN: {dealer.lowest_unit_dn}"
+            )
+        
+        return {
+            "answer": answer,
+            "whatsapp_message": answer,
+            "data": dealer
+        }
+    
+    def _answer_delivery(self, dealer: DealerDashboard, metric: Optional[MetricType]) -> Dict:
+        """Answer delivery questions."""
+        distance_text = f"{dealer.distance.distance_km:,.1f} KM" if dealer.distance.distance_km else "Unknown"
+        
+        if metric == MetricType.DELIVERY_SUCCESS:
+            answer = f"🚚 Delivery Success\n\n{dealer.delivery_success_pct:.1f}%"
+        elif metric == MetricType.AVG_DELIVERY_DAYS:
+            answer = f"📅 Average Delivery Days\n\n{dealer.average_delivery_days:.2f} days"
+        elif metric == MetricType.FASTEST_DELIVERY:
+            answer = f"⚡ Fastest Delivery\n\n{dealer.fastest_delivery_days:.0f} days"
+        elif metric == MetricType.SLOWEST_DELIVERY:
+            answer = f"🐢 Slowest Delivery\n\n{dealer.slowest_delivery_days:.0f} days"
+        elif metric == MetricType.SAME_DAY_DELIVERY:
+            answer = f"📦 Same Day Deliveries\n\n{dealer.same_day_deliveries:,}"
+        elif metric == MetricType.NEXT_DAY_DELIVERY:
+            answer = f"📦 Next Day Deliveries\n\n{dealer.next_day_deliveries:,}"
+        elif metric == MetricType.DISTANCE:
+            answer = f"📍 Distance\n\n{distance_text}"
+        elif metric == MetricType.DRIVING_TIME:
+            answer = f"🚗 Driving Time\n\n{dealer.distance.estimated_driving_time}"
+        elif metric == MetricType.ESTIMATED_DELIVERY:
+            answer = f"📦 Estimated Delivery\n\n{dealer.distance.estimated_delivery_time}"
+        else:
+            # Full delivery summary
+            answer = (
+                f"🚚 Delivery Performance\n\n"
+                f"Success Rate: {dealer.delivery_success_pct:.1f}%\n"
+                f"Average Days: {dealer.average_delivery_days:.2f}\n"
+                f"Fastest: {dealer.fastest_delivery_days:.0f} days\n"
+                f"Slowest: {dealer.slowest_delivery_days:.0f} days\n"
+                f"Same Day: {dealer.same_day_deliveries:,}\n"
+                f"Next Day: {dealer.next_day_deliveries:,}\n"
+                f"Distance: {distance_text}\n"
+                f"Driving Time: {dealer.distance.estimated_driving_time}"
+            )
+        
+        return {
+            "answer": answer,
+            "whatsapp_message": answer,
+            "data": dealer
+        }
+    
+    def _answer_pgi(self, dealer: DealerDashboard, metric: Optional[MetricType]) -> Dict:
+        """Answer PGI questions."""
+        if metric == MetricType.PGI_SUCCESS:
+            answer = f"✅ PGI Success\n\n{dealer.pgi_success_pct:.1f}%"
+        elif metric == MetricType.PENDING_PGI:
+            answer = f"⏳ Pending PGI\n\n{dealer.pgi_pending_dn:,} DNs"
+        elif metric == MetricType.AVG_PGI_DAYS:
+            answer = f"📅 Average PGI Days\n\n{dealer.average_delivery_days:.2f} days"
+        elif metric == MetricType.LATEST_PGI:
+            answer = f"🆕 Latest PGI\n\n{dealer.latest_pgi_date}"
+        else:
+            # Full PGI summary
+            answer = (
+                f"📋 PGI Summary\n\n"
+                f"Success Rate: {dealer.pgi_success_pct:.1f}%\n"
+                f"Pending: {dealer.pgi_pending_dn:,} DNs\n"
+                f"Average Days: {dealer.average_delivery_days:.2f}\n"
+                f"Latest: {dealer.latest_pgi_date}"
+            )
+        
+        return {
+            "answer": answer,
+            "whatsapp_message": answer,
+            "data": dealer
+        }
+    
+    def _answer_pod(self, dealer: DealerDashboard, metric: Optional[MetricType]) -> Dict:
+        """Answer POD questions."""
+        if metric == MetricType.POD_SUCCESS:
+            answer = f"✅ POD Success\n\n{dealer.pod_success_pct:.1f}%"
+        elif metric == MetricType.PENDING_POD:
+            answer = f"⏳ Pending POD\n\n{dealer.pod_pending_dn:,} DNs"
+        elif metric == MetricType.AVG_POD_DAYS:
+            answer = f"📅 Average POD Days\n\n{dealer.average_pod_days:.2f} days"
+        elif metric == MetricType.LATEST_POD:
+            answer = f"🆕 Latest POD\n\n{dealer.latest_pod_date}"
+        else:
+            # Full POD summary
+            answer = (
+                f"📋 POD Summary\n\n"
+                f"Success Rate: {dealer.pod_success_pct:.1f}%\n"
+                f"Pending: {dealer.pod_pending_dn:,} DNs\n"
+                f"Average Days: {dealer.average_pod_days:.2f}\n"
+                f"Latest: {dealer.latest_pod_date}"
+            )
+        
+        return {
+            "answer": answer,
+            "whatsapp_message": answer,
+            "data": dealer
+        }
+    
+    def _answer_pending(self, dealer: DealerDashboard, metric: Optional[MetricType]) -> Dict:
+        """Answer pending questions."""
+        if metric == MetricType.PENDING_PCT:
+            answer = f"⏳ Pending Percentage\n\n{dealer.pending_pct:.1f}%"
+        elif metric == MetricType.PENDING_REVENUE:
+            answer = f"⏳ Pending Revenue\n\nPKR {dealer.pending_revenue:,.2f}"
+        elif metric == MetricType.PENDING_UNITS:
+            answer = f"⏳ Pending Units\n\n{dealer.pending_units:,}"
+        elif metric == MetricType.PENDING_DN:
+            answer = f"⏳ Pending DNs\n\n{dealer.pending_dn:,}"
+        elif metric == MetricType.CRITICAL_PENDING:
+            answer = f"🔴 Critical Pending\n\n{dealer.critical_pending} DNs (>7 days)"
+        elif metric == MetricType.OVERDUE_PENDING:
+            answer = f"🔴 Overdue Pending\n\n{dealer.overdue_pending} DNs (>14 days)"
+        elif metric == MetricType.PENDING_AGE:
+            answer = f"⏰ Pending Age\n\nOldest: {dealer.oldest_pending_days} days\nAverage: {dealer.pending_average_days:.1f} days"
+        else:
+            # Full pending dashboard
+            answer = (
+                f"⚠️ Pending Dashboard\n\n"
+                f"Pending DNs: {dealer.pending_dn:,}\n"
+                f"Pending Units: {dealer.pending_units:,}\n"
+                f"Pending Revenue: PKR {dealer.pending_revenue:,.2f}\n"
+                f"Pending Rate: {dealer.pending_pct:.1f}%\n"
+                f"Average Days: {dealer.pending_average_days:.1f}\n"
+                f"Oldest: {dealer.oldest_pending_dn} ({dealer.oldest_pending_days} days)\n"
+                f"Critical: {dealer.critical_pending} (>7 days)\n"
+                f"Overdue: {dealer.overdue_pending} (>14 days)"
+            )
+        
+        return {
+            "answer": answer,
+            "whatsapp_message": answer,
+            "data": dealer
+        }
+    
+    def _answer_product(self, dealer: DealerDashboard, metric: Optional[MetricType]) -> Dict:
+        """Answer product questions."""
+        if metric == MetricType.TOP_PRODUCT:
+            answer = f"🏆 Top Product\n\n{dealer.top_product}"
+        elif metric == MetricType.TOP_MODEL:
+            answer = f"🏆 Top Model\n\n{dealer.top_model}"
+        elif metric == MetricType.TOP_MATERIAL:
+            answer = f"🏆 Top Material\n\n{dealer.top_material}"
+        elif metric == MetricType.STRONGEST_CATEGORY:
+            answer = f"📊 Strongest Category\n\n{dealer.strongest_product_category}"
+        elif metric == MetricType.WEAKEST_CATEGORY:
+            answer = f"📊 Weakest Category\n\n{dealer.weakest_product_category}"
+        elif metric == MetricType.TOP_DIVISION:
+            answer = f"🏆 Top Division\n\n{dealer.top_division}"
+        else:
+            # Full product summary
+            answer = (
+                f"📦 Product Performance\n\n"
+                f"Top Product: {dealer.top_product}\n"
+                f"Top Model: {dealer.top_model}\n"
+                f"Top Material: {dealer.top_material}\n"
+                f"Top Division: {dealer.top_division}\n"
+                f"Strongest Category: {dealer.strongest_product_category}\n"
+                f"Weakest Category: {dealer.weakest_product_category}"
+            )
+        
+        return {
+            "answer": answer,
+            "whatsapp_message": answer,
+            "data": dealer
+        }
+    
+    def _answer_warehouse(self, dealer: DealerDashboard, metric: Optional[MetricType]) -> Dict:
+        """Answer warehouse questions."""
+        distance_text = f"{dealer.distance.distance_km:,.1f} KM" if dealer.distance.distance_km else "Unknown"
+        
+        if metric == MetricType.WAREHOUSE:
+            answer = f"🏭 Warehouse\n\n{dealer.warehouse}"
+        elif metric == MetricType.WAREHOUSE_CODE:
+            answer = f"🏭 Warehouse Code\n\n{dealer.warehouse_code}"
+        elif metric == MetricType.WAREHOUSE_UTILIZATION:
+            answer = f"📊 Warehouse Utilization\n\n{dealer.warehouse_utilization:.1f}%"
+        elif metric == MetricType.DISTANCE:
+            answer = f"📍 Distance\n\n{distance_text}"
+        elif metric == MetricType.DRIVING_TIME:
+            answer = f"🚗 Driving Time\n\n{dealer.distance.estimated_driving_time}"
+        elif metric == MetricType.ESTIMATED_DELIVERY:
+            answer = f"📦 Estimated Delivery\n\n{dealer.distance.estimated_delivery_time}"
+        else:
+            # Full warehouse summary
+            answer = (
+                f"🏭 Warehouse Information\n\n"
+                f"Warehouse: {dealer.warehouse} ({dealer.warehouse_code})\n"
+                f"Distance: {distance_text}\n"
+                f"Driving Time: {dealer.distance.estimated_driving_time}\n"
+                f"Estimated Delivery: {dealer.distance.estimated_delivery_time}\n"
+                f"Utilization: {dealer.warehouse_utilization:.1f}%"
+            )
+        
+        return {
+            "answer": answer,
+            "whatsapp_message": answer,
+            "data": dealer
+        }
+    
+    def _answer_ranking(self, dealer: DealerDashboard, metric: Optional[MetricType]) -> Dict:
+        """Answer ranking questions."""
+        if metric == MetricType.NATIONAL_RANK:
+            answer = f"🏆 National Rank\n\n#{dealer.national_rank or 'N/A'}"
+        elif metric == MetricType.REGIONAL_RANK:
+            answer = f"🏆 Regional Rank\n\n#{dealer.regional_rank or 'N/A'}"
+        elif metric == MetricType.REVENUE_RANK:
+            answer = f"🏆 Revenue Rank\n\n#{dealer.revenue_rank or 'N/A'}"
+        elif metric == MetricType.DELIVERY_RANK:
+            answer = f"🏆 Delivery Rank\n\n#{dealer.delivery_rank or 'N/A'}"
+        elif metric == MetricType.DN_RANK:
+            answer = f"🏆 DN Rank\n\n#{dealer.dn_rank or 'N/A'}"
+        elif metric == MetricType.UNIT_RANK:
+            answer = f"🏆 Unit Rank\n\n#{dealer.unit_rank or 'N/A'}"
+        elif metric == MetricType.PENDING_RANK:
+            answer = f"🏆 Pending Rank\n\n#{dealer.pending_rank or 'N/A'}"
+        elif metric == MetricType.POD_RANK:
+            answer = f"🏆 POD Rank\n\n#{dealer.pod_rank or 'N/A'}"
+        else:
+            # Full ranking summary
+            answer = (
+                f"🏆 Dealer Rankings\n\n"
+                f"National: #{dealer.national_rank or 'N/A'}\n"
+                f"Regional: #{dealer.regional_rank or 'N/A'}\n"
+                f"Revenue: #{dealer.revenue_rank or 'N/A'}\n"
+                f"Delivery: #{dealer.delivery_rank or 'N/A'}\n"
+                f"DN: #{dealer.dn_rank or 'N/A'}\n"
+                f"Units: #{dealer.unit_rank or 'N/A'}\n"
+                f"Pending: #{dealer.pending_rank or 'N/A'}\n"
+                f"POD: #{dealer.pod_rank or 'N/A'}"
+            )
+        
+        return {
+            "answer": answer,
+            "whatsapp_message": answer,
+            "data": dealer
+        }
+    
+    def _answer_health(self, dealer: DealerDashboard, metric: Optional[MetricType]) -> Dict:
+        """Answer business health questions."""
+        if metric == MetricType.BUSINESS_SCORE:
+            answer = f"💳 Business Score\n\n{dealer.business_score:.1f}/100"
+        elif metric == MetricType.OVERALL_STATUS:
+            status_emoji = "🟢" if dealer.overall_status == "Excellent" else "🟡" if dealer.overall_status == "Good" else "🟠" if dealer.overall_status == "Watch" else "🔴"
+            answer = f"{status_emoji} Overall Status\n\n{dealer.overall_status}"
+        elif metric == MetricType.EXECUTIVE_SUMMARY:
+            answer = f"📝 Executive Summary\n\n{dealer.executive_summary}"
+        else:
+            # Full health summary
+            status_emoji = "🟢" if dealer.overall_status == "Excellent" else "🟡" if dealer.overall_status == "Good" else "🟠" if dealer.overall_status == "Watch" else "🔴"
+            answer = (
+                f"💳 Business Health\n\n"
+                f"Score: {dealer.business_score:.1f}/100\n"
+                f"Status: {status_emoji} {dealer.overall_status}\n\n"
+                f"📝 Executive Summary\n"
+                f"{dealer.executive_summary}\n\n"
+                f"💡 Key Insights\n"
+                f"{chr(10).join(f'• {insight}' for insight in dealer.insights[:5])}\n\n"
+                f"💡 Recommendations\n"
+                f"{chr(10).join(f'• {rec}' for rec in dealer.recommendations[:3])}"
+            )
+        
+        return {
+            "answer": answer,
+            "whatsapp_message": answer,
+            "data": dealer
+        }
 
 
 @dataclass
@@ -331,9 +1254,8 @@ class DealerSearchResult:
 
 
 class CityCoordinateService:
-    """Ultra-fast cached coordinates service with geopy and manual fallback."""
+    """Cached coordinates; distances are calculated, never hardcoded."""
 
-    # Pakistan city coordinates (pre-calculated for speed)
     COORDINATES: Dict[str, tuple[float, float]] = {
         "abbottabad": (34.1688, 73.2215), "attock": (33.7667, 72.3667),
         "bahawalpur": (29.3956, 71.6836), "bannu": (32.9861, 70.6042),
@@ -357,107 +1279,62 @@ class CityCoordinateService:
         "wah cantt": (33.7715, 72.7511), "taxila": (33.7463, 72.8397),
     }
     
-    # City aliases for faster lookup
-    CITY_ALIASES: Dict[str, str] = {
-        "rwp": "rawalpindi", "isb": "islamabad", "lhr": "lahore",
-        "khi": "karachi", "fsd": "faisalabad", "hyd": "hyderabad",
-        "ryk": "rahim yar khan", "dik": "dera ismail khan",
-        "pindi": "rawalpindi", "isl": "islamabad",
-    }
-    
-    # Cache for normalized city names (LRU for speed)
     _normalize_cache: Dict[str, str] = {}
     _city_cache: Dict[str, Optional[tuple[float, float]]] = {}
 
     def __init__(self) -> None:
-        self._names = tuple(self.COORDINATES.keys())
-        self._geocoder = None
-        # Initialize geocoder if available (with timeout)
-        if Nominatim:
-            try:
-                self._geocoder = Nominatim(user_agent="dealer_analytics", timeout=1)
-            except Exception:
-                self._geocoder = None
+        self._names = tuple(self.COORDINATES)
 
     @staticmethod
     def normalize(city: Any) -> str:
-        """Ultra-fast normalization with caching."""
         if not city:
             return ""
         
-        value = str(city).lower().strip()
+        value = str(city).lower()
         
-        # Check cache first (fastest path)
         cached = CityCoordinateService._normalize_cache.get(value)
         if cached is not None:
             return cached
         
-        # Remove common suffixes
-        value = value.replace("city", "").replace("town", "").strip(" ,.-")
+        value = value.replace("city", "").strip(" ,.-")
         
-        # Check aliases
-        result = CityCoordinateService.CITY_ALIASES.get(value, value)
-        
-        # Cache the result
+        aliases = {
+            "rwp": "rawalpindi", "isb": "islamabad", "lhr": "lahore", 
+            "khi": "karachi", "fsd": "faisalabad", "hyd": "hyderabad", 
+            "ryk": "rahim yar khan", "dik": "dera ismail khan"
+        }
+        result = aliases.get(value, value)
         CityCoordinateService._normalize_cache[value] = result
         return result
 
     def get(self, city: Any) -> Optional[tuple[float, float]]:
-        """Get coordinates with multi-layer caching."""
         if not city:
             return None
             
         normalized = self.normalize(city)
-        
-        # Check coordinate cache
         if normalized in self._city_cache:
             return self._city_cache[normalized]
         
-        # Direct lookup in coordinates dict (fastest)
         if normalized in self.COORDINATES:
-            coords = self.COORDINATES[normalized]
-            self._city_cache[normalized] = coords
-            return coords
+            self._city_cache[normalized] = self.COORDINATES[normalized]
+            return self.COORDINATES[normalized]
         
-        # Try to find by partial match
-        for key in self.COORDINATES:
-            if normalized in key or key in normalized:
-                coords = self.COORDINATES[key]
-                self._city_cache[normalized] = coords
-                return coords
-        
-        # Try fuzzy match as last resort
-        match = process.extractOne(normalized, self._names, scorer=fuzz.WRatio, score_cutoff=80)
+        match = process.extractOne(normalized, self._names, scorer=fuzz.WRatio, score_cutoff=82)
         if match:
-            coords = self.COORDINATES[match[0]]
-            self._city_cache[normalized] = coords
-            return coords
-        
-        # Try geocoding if available (slow fallback)
-        if self._geocoder:
-            try:
-                location = self._geocoder.geocode(f"{normalized}, Pakistan")
-                if location:
-                    coords = (location.latitude, location.longitude)
-                    self._city_cache[normalized] = coords
-                    return coords
-            except Exception:
-                pass
+            result = self.COORDINATES[match[0]]
+            self._city_cache[normalized] = result
+            return result
         
         self._city_cache[normalized] = None
         return None
 
 
 class DistanceService:
-    """Ultra-fast distance service with geopy and openrouteservice."""
-    
     def __init__(self, coordinates: CityCoordinateService) -> None:
         self.coordinates = coordinates
-        self.cache: TTLCache[str, DistanceAnalytics] = TTLCache(maxsize=8192, ttl=CACHE_TTL)
+        self.cache: TTLCache[str, DistanceAnalytics] = TTLCache(maxsize=4096, ttl=CACHE_TTL)
         self._lock = threading.RLock()
         self._ors = None
-        
-        # Initialize ORS if available
         if ORS_API_KEY and Client:
             try:
                 self._ors = Client(key=ORS_API_KEY, timeout=2)
@@ -483,128 +1360,64 @@ class DistanceService:
         if minutes is None:
             return "Unknown"
         hours, mins = divmod(max(0, minutes), 60)
-        if hours and mins:
-            return f"{hours} hr {mins} min"
-        return f"{hours} hr" if hours else f"{mins} min"
+        return f"{hours} hr {mins} min" if hours and mins else (f"{hours} hr" if hours else f"{mins} min")
 
     @staticmethod
     def _haversine(origin: tuple[float, float], destination: tuple[float, float]) -> float:
-        """Ultra-fast haversine distance calculation."""
-        lat1, lon1 = origin
-        lat2, lon2 = destination
-        
-        # Convert to radians
-        lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
-        
-        # Haversine formula
-        dlat = lat2 - lat1
-        dlon = lon2 - lon1
-        a = math.sin(dlat/2)**2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon/2)**2
-        c = 2 * math.asin(math.sqrt(a))
-        
-        return 6371.0088 * c  # Earth's radius in km
-
-    def _calculate_with_geopy(self, origin: tuple, destination: tuple) -> tuple[float, str]:
-        """Calculate distance using geopy (fast)."""
-        if great_circle:
-            try:
-                km = great_circle(origin, destination).kilometers
-                return km, "geopy"
-            except Exception:
-                pass
-        
-        # Fallback to haversine
-        km = self._haversine(origin, destination)
-        return km, "haversine"
-
-    def _calculate_with_ors(self, origin: tuple, destination: tuple) -> Optional[tuple[float, int, str]]:
-        """Calculate distance using OpenRouteService (slower but more accurate)."""
-        if not self._ors:
-            return None
-        
-        try:
-            route = self._ors.directions(
-                [(origin[1], origin[0]), (destination[1], destination[0])],
-                profile="driving-car",
-                format='json'
-            )
-            
-            if route and route.get('routes'):
-                summary = route['routes'][0]['summary']
-                km = float(summary['distance']) / 1000
-                minutes = int(round(float(summary['duration']) / 60))
-                return km, minutes, "openrouteservice"
-        except Exception:
-            pass
-        
-        return None
+        lat1, lon1, lat2, lon2 = map(math.radians, (*origin, *destination))
+        value = math.sin((lat2 - lat1) / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2
+        return 6371.0088 * 2 * math.asin(math.sqrt(value))
 
     def calculate(self, warehouse: Any, dealer_city: Any) -> DistanceAnalytics:
-        """Ultra-fast distance calculation with multi-layer caching."""
-        warehouse_name = _text(warehouse)
-        city_name = _text(dealer_city)
+        warehouse_name, city_name = _text(warehouse), _text(dealer_city)
+        key = f"{self.coordinates.normalize(warehouse_name)}|{self.coordinates.normalize(city_name)}"
         
-        # Create cache key
-        norm_warehouse = self.coordinates.normalize(warehouse_name)
-        norm_city = self.coordinates.normalize(city_name)
-        cache_key = f"{norm_warehouse}|{norm_city}"
-        
-        # Check cache first (fastest path)
         with self._lock:
-            cached = self.cache.get(cache_key)
+            cached = self.cache.get(key)
         if cached:
             return cached
         
-        # Get coordinates
-        origin = self.coordinates.get(warehouse_name)
-        destination = self.coordinates.get(city_name)
-        
-        result = DistanceAnalytics(warehouse_name, city_name)
-        
+        origin, destination = self.coordinates.get(warehouse_name), self.coordinates.get(city_name)
         if not origin or not destination:
-            # Cache the "unknown" result to avoid repeated lookups
-            with self._lock:
-                self.cache[cache_key] = result
-            return result
+            result = DistanceAnalytics(warehouse_name, city_name)
+        else:
+            km: Optional[float] = None
+            minutes: Optional[int] = None
+            source = "great-circle"
+            
+            if self._ors:
+                try:
+                    route = self._ors.directions(
+                        [(origin[1], origin[0]), (destination[1], destination[0])], 
+                        profile="driving-car"
+                    )
+                    summary = route["routes"][0]["summary"]
+                    km = float(summary["distance"]) / 1000
+                    minutes = int(round(float(summary["duration"]) / 60))
+                    source = "openrouteservice"
+                except Exception:
+                    logger.warning("ORS route failed for %s to %s; using great-circle", warehouse_name, city_name, exc_info=True)
+            
+            if km is None:
+                km = float(great_circle(origin, destination).km) if great_circle else self._haversine(origin, destination)
+                km *= 1.20
+                minutes = int(round(km / 55 * 60))
+            
+            result = DistanceAnalytics(
+                warehouse_name, city_name, 
+                round(km, 1), minutes, 
+                self.driving_time(minutes), 
+                self.delivery_estimate(km), 
+                source
+            )
         
-        # Fast path: calculate with geopy/haversine (usually < 1ms)
-        km, source = self._calculate_with_geopy(origin, destination)
-        
-        # Road distance adjustment (conservative estimate)
-        km_road = km * 1.20
-        minutes = int(round(km_road / 55 * 60))
-        
-        # Try ORS for better accuracy (if available, run in background)
-        if self._ors:
-            try:
-                # Use executor for non-blocking ORS call
-                future = _executor.submit(self._calculate_with_ors, origin, destination)
-                result_ors = future.result(timeout=1)
-                if result_ors:
-                    km_road, minutes, source = result_ors
-            except Exception:
-                pass
-        
-        # Create result
-        result = DistanceAnalytics(
-            warehouse_name,
-            city_name,
-            round(km_road, 1),
-            minutes,
-            self.driving_time(minutes),
-            self.delivery_estimate(km_road),
-            source
-        )
-        
-        # Cache result
         with self._lock:
-            self.cache[cache_key] = result
-        
+            self.cache[key] = result
         return result
 
 
 class DealerAnalyticsService:
-    """Enterprise dealer analytics with ultra-fast performance (< 2 seconds)."""
+    """Enterprise Dealer Intelligence Engine with Question Answering."""
 
     SORT_ALIASES = {
         "revenue": "total_revenue", "units": "total_units", "dn": "total_dn", "dn_count": "total_dn",
@@ -634,16 +1447,14 @@ class DealerAnalyticsService:
         "taj haripur": "Taj Electronics Haripur",
     }
     
-    # Pre-compiled regex for normalization
     _normalize_regex = re.compile(r'[^a-z0-9\s]')
 
     def __init__(self) -> None:
         self._service_name = "dealer_analytics"
-        self._version = "5.0.0-ultra"
+        self._version = "5.0.0-intelligence"
         self._startup_time = datetime.utcnow().isoformat()
         self._initialization_errors: list[str] = []
         
-        # Initialize services with larger caches
         try:
             self._coordinates = CityCoordinateService()
         except Exception as error:
@@ -661,20 +1472,17 @@ class DealerAnalyticsService:
             self._initialization_errors.append(str(error))
             self._distance = None
         
-        # Larger caches for speed
-        self._dealer_cache: TTLCache[str, DealerSearchResult] = TTLCache(maxsize=8192, ttl=CACHE_TTL)
-        self._candidate_cache: TTLCache[str, list[dict[str, str]]] = TTLCache(maxsize=1, ttl=3600)
-        self._extended_cache: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=8192, ttl=3600)
-        self._dashboard_cache: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=8192, ttl=600)
-        self._ranking_cache: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=256, ttl=600)
+        self._dealer_cache: TTLCache[str, DealerSearchResult] = TTLCache(maxsize=4096, ttl=CACHE_TTL)
+        self._candidate_cache: TTLCache[str, list[dict[str, str]]] = TTLCache(maxsize=1, ttl=1800)
+        self._extended_cache: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=4096, ttl=1800)
+        self._dashboard_cache: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=4096, ttl=600)
+        self._ranking_cache: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=128, ttl=600)
         self._search_lock = threading.RLock()
         self._last_diagnostic: dict[str, Any] = {}
+        self._aggregate_cache: TTLCache[str, list[Any]] = TTLCache(maxsize=1024, ttl=300)
         
-        # Query cache
-        self._aggregate_cache: TTLCache[str, list[Any]] = TTLCache(maxsize=2048, ttl=300)
-        
-        # Pre-compute normalized patterns
-        self._normalized_stop_phrases = {self._normalize_dealer_text(p) for p in self.STOP_PHRASES}
+        # Initialize Question Engine
+        self._question_engine = DealerQuestionEngine(self)
 
     @staticmethod
     def _session() -> Session:
@@ -691,7 +1499,6 @@ class DealerAnalyticsService:
 
     @classmethod
     def _normalize_dealer_text(cls, value: Any) -> str:
-        """Ultra-fast normalization with pre-compiled regex."""
         if not value:
             return ""
         
@@ -706,15 +1513,12 @@ class DealerAnalyticsService:
         return _WHITESPACE_PATTERN.sub(" ", text_value).strip()
 
     def _dealer_candidates(self, session: Session) -> tuple[list[dict[str, str]], bool]:
-        """Ultra-fast candidate retrieval with caching."""
         with self._search_lock:
             cached = self._candidate_cache.get("all")
         if cached is not None:
             return cached, True
         
         started = time.perf_counter()
-        
-        # Optimized query
         query = text("""
             SELECT DISTINCT 
                 customer_name, 
@@ -723,7 +1527,6 @@ class DealerAnalyticsService:
             FROM delivery_reports 
             WHERE customer_name IS NOT NULL 
               AND customer_name != ''
-            ORDER BY customer_name
         """)
         
         rows = session.execute(query).fetchall()
@@ -746,7 +1549,6 @@ class DealerAnalyticsService:
         return candidates, False
 
     def _resolve_dealer(self, session: Session, message: str) -> DealerSearchResult:
-        """Ultra-fast dealer resolution (< 50ms)."""
         started = time.perf_counter()
         original = _text(message, "")
         normalized = self._normalize_dealer_text(original)
@@ -754,7 +1556,6 @@ class DealerAnalyticsService:
         search_text = alias or normalized
         cache_key = search_text.lower()
         
-        # Check cache
         with self._search_lock:
             cached = self._dealer_cache.get(cache_key)
         if cached:
@@ -768,7 +1569,6 @@ class DealerAnalyticsService:
             candidates, cache_used = self._dealer_candidates(session)
             result.cache_used = cache_used
             
-            # Fast path: exact code match
             token = original.strip()
             for item in candidates:
                 if token == item["dealer_code"] or token == item["customer_code"]:
@@ -778,7 +1578,6 @@ class DealerAnalyticsService:
                     self._cache_result(cache_key, result)
                     return result
             
-            # Fast path: exact normalized match
             norm_search = self._normalize_dealer_text(search_text)
             exact_matches = [item for item in candidates if item["normalized"] == norm_search]
             if exact_matches:
@@ -790,7 +1589,6 @@ class DealerAnalyticsService:
                 self._cache_result(cache_key, result)
                 return result
             
-            # Fast path: contains match
             if search_text:
                 contains_matches = [
                     item for item in candidates 
@@ -805,7 +1603,6 @@ class DealerAnalyticsService:
                     self._cache_result(cache_key, result)
                     return result
             
-            # Fallback: fuzzy matching
             choices = {index: item["normalized"] for index, item in enumerate(candidates)}
             matches = process.extract(search_text, choices, scorer=fuzz.WRatio, limit=5)
             scored = [(candidates[index], float(score)) for _, score, index in matches]
@@ -840,7 +1637,6 @@ class DealerAnalyticsService:
         return result
 
     def _cache_result(self, key: str, result: DealerSearchResult) -> None:
-        """Cache search result."""
         with self._search_lock:
             self._dealer_cache[key] = result
 
@@ -871,8 +1667,11 @@ class DealerAnalyticsService:
             "search": search
         }
 
+    @staticmethod
+    def _dealer_key(row: Any) -> str:
+        return _text(row.dealer_code, _text(row.customer_code, _text(row.dealer_name)))
+
     def _aggregate_query(self, session: Session, dealer: Optional[str] = None) -> list[Any]:
-        """Optimized aggregate query with caching."""
         cache_key = dealer or "all"
         cached = self._aggregate_cache.get(cache_key)
         if cached is not None:
@@ -936,7 +1735,6 @@ class DealerAnalyticsService:
         ).all()
         
         self._aggregate_cache[cache_key] = result
-        
         logger.debug("Aggregate query: %.2fms", (time.perf_counter() - started) * 1000)
         return result
 
@@ -949,7 +1747,6 @@ class DealerAnalyticsService:
         return round(_number(value), 2)
 
     def _row_to_dashboard(self, row: Any, include_distance: bool = True) -> DealerDashboard:
-        """Ultra-fast dashboard creation."""
         total = int(row.total_dn or 0)
         
         dashboard = DealerDashboard(
@@ -1003,7 +1800,6 @@ class DealerAnalyticsService:
         return dashboard
 
     def _safe_distance(self, warehouse: Any, city: Any) -> DistanceAnalytics:
-        """Ultra-fast distance calculation with caching."""
         try:
             if self._distance is not None:
                 return self._distance.calculate(warehouse, city)
@@ -1012,12 +1808,10 @@ class DealerAnalyticsService:
         return DistanceAnalytics(_text(warehouse), _text(city))
 
     def _apply_extended_analytics(self, session: Session, item: DealerDashboard) -> None:
-        """Optimized extended analytics with parallel queries."""
         identity = item.dealer_code if item.dealer_code != "Unknown" else item.customer_code
         identity = identity if identity != "Unknown" else item.dealer_name
         cache_key = str(identity).lower()
         
-        # Check cache first
         cached = self._extended_cache.get(cache_key)
         if cached:
             for key, value in cached.items():
@@ -1029,35 +1823,13 @@ class DealerAnalyticsService:
         condition = self._dealer_filter(str(identity))
         values: dict[str, Any] = {}
         
-        # Use ThreadPoolExecutor for parallel queries
+        # Parallel queries
         futures = {}
+        futures['dn'] = _executor.submit(self._get_dn_analytics, session, condition)
+        futures['monthly'] = _executor.submit(self._get_monthly_analytics, session, condition)
+        futures['product'] = _executor.submit(self._get_product_analytics, session, condition)
+        futures['division'] = _executor.submit(self._get_division_analytics, session, condition)
         
-        # Submit DN query
-        futures['dn'] = _executor.submit(
-            self._get_dn_analytics, session, condition
-        )
-        
-        # Submit monthly query
-        futures['monthly'] = _executor.submit(
-            self._get_monthly_analytics, session, condition
-        )
-        
-        # Submit product query
-        futures['product'] = _executor.submit(
-            self._get_product_analytics, session, condition
-        )
-        
-        # Submit division query
-        futures['division'] = _executor.submit(
-            self._get_division_analytics, session, condition
-        )
-        
-        # Submit warehouse query
-        futures['warehouse'] = _executor.submit(
-            self._get_warehouse_utilization, session, item.warehouse
-        )
-        
-        # Collect results
         for key, future in futures.items():
             try:
                 result = future.result(timeout=1)
@@ -1066,10 +1838,8 @@ class DealerAnalyticsService:
             except Exception:
                 pass
         
-        # Dealer rankings (single query)
         self._apply_dealer_rankings(session, item, values)
         
-        # Apply all values and cache
         for key, value in values.items():
             setattr(item, key, value)
         
@@ -1078,7 +1848,6 @@ class DealerAnalyticsService:
         item.insights, item.recommendations = self._business_insights(item)
 
     def _get_dn_analytics(self, session: Session, condition: Any) -> dict[str, Any]:
-        """Get DN analytics."""
         dn_rows = session.query(
             DeliveryReport.dn_no.label("dn"),
             func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0).label("revenue"),
@@ -1126,7 +1895,6 @@ class DealerAnalyticsService:
         return values
 
     def _get_monthly_analytics(self, session: Session, condition: Any) -> dict[str, Any]:
-        """Get monthly analytics."""
         monthly = session.query(
             func.to_char(DeliveryReport.dn_create_date, "YYYY-MM").label("month"),
             func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0).label("revenue"),
@@ -1168,7 +1936,6 @@ class DealerAnalyticsService:
         }
 
     def _get_product_analytics(self, session: Session, condition: Any) -> dict[str, Any]:
-        """Get product analytics."""
         top_product = self._get_top_value(session, condition, DeliveryReport.customer_model)
         top_material = self._get_top_value(session, condition, DeliveryReport.material_no)
         return {
@@ -1178,7 +1945,6 @@ class DealerAnalyticsService:
         }
 
     def _get_division_analytics(self, session: Session, condition: Any) -> dict[str, Any]:
-        """Get division analytics."""
         division_rows = session.query(
             DeliveryReport.division.label("value"),
             func.sum(DeliveryReport.dn_amount).label("revenue"),
@@ -1199,15 +1965,7 @@ class DealerAnalyticsService:
             "weakest_product_category": _text(division_rows[-1].value) if len(division_rows) > 1 else _text(division_rows[0].value),
         }
 
-    def _get_warehouse_utilization(self, session: Session, warehouse: str) -> dict[str, Any]:
-        """Get warehouse utilization."""
-        warehouse_units = session.query(
-            func.coalesce(func.sum(DeliveryReport.dn_qty), 0)
-        ).filter(DeliveryReport.warehouse == warehouse).scalar() or 0
-        return {"warehouse_utilization": 0.0}  # Will be calculated in main
-
     def _get_top_value(self, session: Session, condition: Any, column: Any) -> str:
-        """Helper to get top value for a column."""
         row = session.query(
             column.label("value"), 
             func.sum(DeliveryReport.dn_amount).label("revenue")
@@ -1217,8 +1975,6 @@ class DealerAnalyticsService:
         return _text(row.value) if row else "Unknown"
 
     def _apply_dealer_rankings(self, session: Session, item: DealerDashboard, values: dict) -> None:
-        """Ultra-fast ranking calculation."""
-        # Try cache first
         cache_key = f"rankings_{item.dealer_code}"
         cached_rankings = self._ranking_cache.get(cache_key)
         if cached_rankings:
@@ -1249,7 +2005,6 @@ class DealerAnalyticsService:
         if not target:
             return
         
-        # Fast ranking calculation
         def rank_for(rows: list, key_func, reverse: bool = True) -> int:
             sorted_rows = sorted(rows, key=key_func, reverse=reverse)
             for idx, row in enumerate(sorted_rows, 1):
@@ -1270,7 +2025,6 @@ class DealerAnalyticsService:
             "pending_rank": rank_for(ranking_rows, lambda r: _percent(r.pending, r.dns), False),
         }
         
-        # Composite ranking
         composite = sorted(
             ranking_rows, 
             key=lambda r: (_number(r.revenue), _percent(r.pod, r.dns)), 
@@ -1281,7 +2035,6 @@ class DealerAnalyticsService:
             len(composite)
         )
         
-        # Regional ranking
         regional = [row for row in ranking_rows if _text(row.city, "").lower() == item.city.lower()]
         regional.sort(key=lambda r: _number(r.revenue), reverse=True)
         rankings["regional_rank"] = next(
@@ -1353,7 +2106,6 @@ class DealerAnalyticsService:
         return insights
 
     def _enrich_profile(self, session: Session, item: DealerDashboard) -> None:
-        """Optimized profile enrichment."""
         condition = self._dealer_filter(item.dealer_code if item.dealer_code != "Unknown" else item.dealer_name)
         
         month = session.query(
@@ -1378,8 +2130,31 @@ class DealerAnalyticsService:
         if item.busiest_month != "Unknown":
             item.insights.append(f"Dealer's busiest month is {item.busiest_month}.")
 
+    # ============================================================
+    # PUBLIC API METHODS
+    # ============================================================
+
+    def answer_dealer_question(self, question: str, dealer_name: str = "", **kwargs) -> Dict[str, Any]:
+        """
+        Answer any dealer-related question naturally through WhatsApp.
+        
+        Examples:
+            "What is dealer revenue?"
+            "Show pending DNs for Taj Electronics"
+            "Tell me about Mian Group Chakwal"
+            "Dealer dashboard for Taj Electronics"
+            "What is the business score?"
+            "Who is the sales manager?"
+            "Top product for this dealer"
+            "Warehouse distance"
+            "National rank"
+            "Pending percentage"
+            "Delivery success rate"
+        """
+        return self._question_engine.answer_question(question, dealer_name, **kwargs)
+
     def get_dealer_dashboard(self, dealer_name: str = "", **kwargs: Any) -> dict[str, Any]:
-        """Ultra-fast dealer dashboard retrieval (< 2 seconds)."""
+        """Get complete dealer dashboard."""
         start_time = time.perf_counter()
         
         identifier = dealer_name or kwargs.get("dealer") or kwargs.get("dealer_code") or kwargs.get("customer_code") or ""
@@ -1388,7 +2163,6 @@ class DealerAnalyticsService:
         
         try:
             with self._session() as session:
-                # Step 1: Resolve dealer (cached)
                 search = self._resolve_dealer(session, str(identifier))
                 if search.exception:
                     return {"success": False, "error_code": "SEARCH_ERROR", "message": "Dealer search is temporarily unavailable.", "error": search.exception}
@@ -1398,27 +2172,22 @@ class DealerAnalyticsService:
                 resolved_identity = search.dealer_code or search.customer_code or search.dealer_found
                 dashboard_key = str(resolved_identity).lower()
                 
-                # Step 2: Check cache
                 cached_dashboard = self._dashboard_cache.get(dashboard_key)
                 if cached_dashboard:
                     return cached_dashboard
                 
-                # Step 3: Get aggregate data (cached)
                 rows = self._aggregate_query(session, resolved_identity)
                 if not rows:
                     return self._suggestion_response(search)
                 
-                # Step 4: Create dashboard
                 data = self._row_to_dashboard(rows[0])
                 
-                # Step 5: Apply extended analytics (parallel)
                 try:
                     self._apply_extended_analytics(session, data)
                 except Exception:
                     logger.exception("Extended dealer analytics failed")
                     data.insights, data.recommendations = self._business_insights(data)
                 
-                # Step 6: Format response
                 try:
                     formatted = data.to_whatsapp_message()
                 except Exception:
@@ -1628,20 +2397,36 @@ def get_dealer_analytics_service() -> DealerAnalyticsService:
                     logger.exception("DealerAnalyticsService initialization failed")
                     _service = DealerAnalyticsService.__new__(DealerAnalyticsService)
                     _service._service_name = "dealer_analytics"
-                    _service._version = "5.0.0-degraded"
+                    _service._version = "5.0.0-intelligence-degraded"
                     _service._startup_time = datetime.utcnow().isoformat()
                     _service._initialization_errors = ["Service initialized in emergency degraded mode"]
                     _service._coordinates = CityCoordinateService()
                     _service._distance = None
-                    _service._dealer_cache = TTLCache(maxsize=8192, ttl=CACHE_TTL)
-                    _service._candidate_cache = TTLCache(maxsize=1, ttl=3600)
-                    _service._extended_cache = TTLCache(maxsize=8192, ttl=3600)
-                    _service._dashboard_cache = TTLCache(maxsize=8192, ttl=600)
-                    _service._ranking_cache = TTLCache(maxsize=256, ttl=600)
+                    _service._dealer_cache = TTLCache(maxsize=4096, ttl=CACHE_TTL)
+                    _service._candidate_cache = TTLCache(maxsize=1, ttl=1800)
+                    _service._extended_cache = TTLCache(maxsize=4096, ttl=1800)
+                    _service._dashboard_cache = TTLCache(maxsize=4096, ttl=600)
+                    _service._ranking_cache = TTLCache(maxsize=128, ttl=600)
                     _service._search_lock = threading.RLock()
                     _service._last_diagnostic = {}
-                    _service._aggregate_cache = TTLCache(maxsize=2048, ttl=300)
+                    _service._aggregate_cache = TTLCache(maxsize=1024, ttl=300)
+                    _service._question_engine = DealerQuestionEngine(_service)
     return _service
 
 
-__all__ = ["DealerAnalyticsService", "DealerDashboard", "DealerComparison", "DealerRanking", "DealerSearchResult", "DistanceAnalytics", "CityCoordinateService", "get_dealer_analytics_service"]
+__all__ = [
+    "DealerAnalyticsService", 
+    "DealerDashboard", 
+    "DealerComparison", 
+    "DealerRanking", 
+    "DealerSearchResult", 
+    "DistanceAnalytics", 
+    "CityCoordinateService", 
+    "get_dealer_analytics_service",
+    "DealerQuestionEngine",
+    "DealerQuestion",
+    "DealerAnswer",
+    "DealerIntent",
+    "MetricType",
+    "IntentResolver"
+]
