@@ -237,7 +237,12 @@ class DistanceService:
         self.coordinates = coordinates
         self.cache: TTLCache[str, DistanceAnalytics] = TTLCache(maxsize=4096, ttl=CACHE_TTL)
         self._lock = threading.RLock()
-        self._ors = openrouteservice.Client(key=ORS_API_KEY, timeout=5) if ORS_API_KEY and openrouteservice else None
+        self._ors = None
+        if ORS_API_KEY and openrouteservice:
+            try:
+                self._ors = openrouteservice.Client(key=ORS_API_KEY, timeout=5)
+            except Exception:
+                logger.exception("ORS client initialization failed; distance service is degraded")
 
     @staticmethod
     def delivery_estimate(km: Optional[float]) -> str:
@@ -324,14 +329,30 @@ class DealerAnalyticsService:
         "mian chakwal": "Mian Group Chakwal",
         "mian wah": "Mian Group Chakwal",
         "mian chakwal wah": "Mian Group Chakwal",
+        "mian group chakwal wah": "Mian Group Chakwal",
+        "taj": "Taj Electronics",
+        "taj haripur": "Taj Electronics Haripur",
     }
 
     def __init__(self) -> None:
         self._service_name = "dealer_analytics"
-        self._version = "3.0.0"
+        self._version = "3.1.0"
         self._startup_time = datetime.utcnow().isoformat()
-        self._coordinates = CityCoordinateService()
-        self._distance = DistanceService(self._coordinates)
+        self._initialization_errors: list[str] = []
+        try:
+            self._coordinates = CityCoordinateService()
+        except Exception as error:
+            logger.exception("Coordinate service initialization failed")
+            self._initialization_errors.append(str(error))
+            self._coordinates = CityCoordinateService.__new__(CityCoordinateService)
+            self._coordinates._names = tuple()
+            self._coordinates.COORDINATES = {}
+        try:
+            self._distance = DistanceService(self._coordinates)
+        except Exception as error:
+            logger.exception("Distance service initialization failed")
+            self._initialization_errors.append(str(error))
+            self._distance = None
         self._dealer_cache: TTLCache[str, DealerSearchResult] = TTLCache(maxsize=2048, ttl=CACHE_TTL)
         self._candidate_cache: TTLCache[str, list[dict[str, str]]] = TTLCache(maxsize=1, ttl=900)
         self._search_lock = threading.RLock()
@@ -451,7 +472,7 @@ class DealerAnalyticsService:
                 lines.extend((item["dealer_name"], f'{item["similarity"]:.0f}%', ""))
             code = "DEALER_SUGGESTIONS"
         message = "\n".join(lines).strip()
-        return {"success": False, "error_code": code, "message": message, "whatsapp_message": message, "suggestions": suggestions, "search": search}
+        return {"success": False, "error_code": code, "message": message, "response": message, "formatted_response": message, "whatsapp_message": message, "suggestions": suggestions, "search": search}
 
     @staticmethod
     def _dealer_key(row: Any) -> str:
@@ -507,10 +528,18 @@ class DealerAnalyticsService:
             average_delivery_days=self._days(row.avg_delivery), average_pod_days=self._days(row.avg_pod),
             average_total_cycle_time=self._days(row.avg_cycle), delivery_success_pct=_percent(row.delivery_success, total),
             pgi_success_pct=_percent(row.pgi_success, total), pod_success_pct=_percent(row.pod_success, total),
-            pending_pct=_percent(row.pending_dn, total), distance=self._distance.calculate(row.warehouse, row.city),
+            pending_pct=_percent(row.pending_dn, total), distance=self._safe_distance(row.warehouse, row.city),
         )
         dashboard.insights = self._basic_insights(dashboard)
         return dashboard
+
+    def _safe_distance(self, warehouse: Any, city: Any) -> DistanceAnalytics:
+        try:
+            if self._distance is not None:
+                return self._distance.calculate(warehouse, city)
+        except Exception:
+            logger.exception("Distance calculation failed for warehouse=%r city=%r", warehouse, city)
+        return DistanceAnalytics(_text(warehouse), _text(city))
 
     @staticmethod
     def _basic_insights(item: DealerDashboard) -> list[str]:
@@ -554,7 +583,12 @@ class DealerAnalyticsService:
                 if not rows:
                     return self._suggestion_response(search)
                 data = self._row_to_dashboard(rows[0])
-                return {"success": True, "data": data, "dashboard": data, "search": search, "whatsapp_message": data.to_whatsapp_message()}
+                try:
+                    formatted = data.to_whatsapp_message()
+                except Exception:
+                    logger.exception("Dealer WhatsApp formatting failed")
+                    formatted = f"Dealer Dashboard\nDealer: {data.dealer_name}\nRevenue: {data.total_revenue:,.2f}\nUnits: {data.total_units:,}\nDN: {data.total_dn:,}"
+                return {"success": True, "data": data, "dashboard": data, "search": search, "whatsapp_message": formatted, "formatted_response": formatted, "message": formatted, "response": formatted}
         except Exception as error:
             logger.exception("Dealer dashboard query failed")
             return {"success": False, "error_code": "DATABASE_UNAVAILABLE", "message": "Dealer database is currently unavailable.", "error": str(error)}
@@ -573,44 +607,50 @@ class DealerAnalyticsService:
             return {"success": False, "diagnostic": {"original_message": message, "any_exception": str(error), "execution_time_ms": round((time.perf_counter() - started) * 1000, 2)}}
 
     def get_dealer_profile(self, dealer_name: str = "", **kwargs: Any) -> dict[str, Any]:
-        result = self.get_dealer_dashboard(dealer_name, **kwargs)
-        if not result.get("success"):
-            return result
         try:
+            result = self.get_dealer_dashboard(dealer_name, **kwargs)
+            if not result.get("success"):
+                return result
             with self._session() as session:
                 self._enrich_profile(session, result["data"])
             result["profile"] = result["data"]
             result["whatsapp_message"] = result["data"].to_whatsapp_message()
+            result["message"] = result["whatsapp_message"]
+            result["response"] = result["whatsapp_message"]
             return result
-        except SQLAlchemyError:
-            logger.warning("Profile enrichment failed", exc_info=True)
-            return result
+        except Exception as error:
+            logger.exception("Dealer profile failed")
+            return {"success": False, "error_code": "PROFILE_ERROR", "message": "Dealer profile is temporarily unavailable.", "error": str(error)}
 
     def compare_dealers(self, dealer_names: Any = None, dealer_two: Optional[str] = None, **kwargs: Any) -> dict[str, Any]:
-        values = dealer_names or kwargs.get("dealers") or kwargs.get("dealer1") or []
-        if isinstance(values, str):
-            values = [values]
-        values = list(values)
-        second = dealer_two or kwargs.get("dealer2")
-        if second:
-            values.append(second)
-        values = list(dict.fromkeys(str(value) for value in values if value))
-        if len(values) < 2:
-            return {"success": False, "error_code": "TWO_DEALERS_REQUIRED", "message": "Please provide at least two dealers."}
-        dashboards = []
-        for value in values[:10]:
-            result = self.get_dealer_dashboard(value)
-            if result.get("success"):
-                dashboards.append(result["data"])
-        if len(dashboards) < 2:
-            return {"success": False, "error_code": "DEALERS_NOT_FOUND", "message": "At least two matching dealers are required."}
-        comparison = DealerComparison(
-            dashboards, max(dashboards, key=lambda x: x.total_revenue).dealer_name,
-            max(dashboards, key=lambda x: x.total_units).dealer_name, max(dashboards, key=lambda x: x.total_dn).dealer_name,
-            min(dashboards, key=lambda x: x.average_delivery_days or float("inf")).dealer_name,
-            [f"{max(dashboards, key=lambda x: x.total_revenue).dealer_name} leads revenue.", f"{min(dashboards, key=lambda x: x.pending_pct).dealer_name} has the lowest pending rate."],
-        )
-        return {"success": True, "data": comparison, "comparison": comparison}
+        try:
+            values = dealer_names or kwargs.get("dealers") or kwargs.get("dealer1") or []
+            if isinstance(values, str):
+                values = [values]
+            values = list(values)
+            second = dealer_two or kwargs.get("dealer2")
+            if second:
+                values.append(second)
+            values = list(dict.fromkeys(str(value) for value in values if value))
+            if len(values) < 2:
+                return {"success": False, "error_code": "TWO_DEALERS_REQUIRED", "message": "Please provide at least two dealers."}
+            dashboards = []
+            for value in values[:10]:
+                result = self.get_dealer_dashboard(value)
+                if result.get("success"):
+                    dashboards.append(result["data"])
+            if len(dashboards) < 2:
+                return {"success": False, "error_code": "DEALERS_NOT_FOUND", "message": "At least two matching dealers are required."}
+            comparison = DealerComparison(
+                dashboards, max(dashboards, key=lambda x: x.total_revenue).dealer_name,
+                max(dashboards, key=lambda x: x.total_units).dealer_name, max(dashboards, key=lambda x: x.total_dn).dealer_name,
+                min(dashboards, key=lambda x: x.average_delivery_days or float("inf")).dealer_name,
+                [f"{max(dashboards, key=lambda x: x.total_revenue).dealer_name} leads revenue.", f"{min(dashboards, key=lambda x: x.pending_pct).dealer_name} has the lowest pending rate."],
+            )
+            return {"success": True, "data": comparison, "comparison": comparison}
+        except Exception as error:
+            logger.exception("Dealer comparison failed")
+            return {"success": False, "error_code": "COMPARISON_ERROR", "message": "Dealer comparison is temporarily unavailable.", "error": str(error)}
 
     def _rank(self, sort_by: str, limit: int, bottom: bool) -> dict[str, Any]:
         try:
@@ -627,10 +667,18 @@ class DealerAnalyticsService:
             return {"success": False, "error_code": "RANKING_ERROR", "message": "Dealer ranking is currently unavailable.", "error": str(error)}
 
     def get_top_dealers(self, limit: int = 10, sort_by: str = "revenue", **kwargs: Any) -> dict[str, Any]:
-        return self._rank(str(kwargs.get("metric", sort_by)), int(kwargs.get("count", limit)), False)
+        try:
+            return self._rank(str(kwargs.get("metric", sort_by)), int(kwargs.get("count", limit)), False)
+        except Exception as error:
+            logger.exception("Top dealer request failed")
+            return {"success": False, "error_code": "RANKING_ERROR", "message": "Dealer ranking is temporarily unavailable.", "error": str(error)}
 
     def get_bottom_dealers(self, limit: int = 10, sort_by: str = "highest_pending", **kwargs: Any) -> dict[str, Any]:
-        return self._rank(str(kwargs.get("metric", sort_by)), int(kwargs.get("count", limit)), True)
+        try:
+            return self._rank(str(kwargs.get("metric", sort_by)), int(kwargs.get("count", limit)), True)
+        except Exception as error:
+            logger.exception("Bottom dealer request failed")
+            return {"success": False, "error_code": "RANKING_ERROR", "message": "Dealer ranking is temporarily unavailable.", "error": str(error)}
 
     def health_check(self) -> dict[str, Any]:
         started = time.perf_counter()
@@ -651,7 +699,7 @@ class DealerAnalyticsService:
             return {"success": False, "records": 0, "error": str(error)}
 
     def get_service_metadata(self) -> dict[str, Any]:
-        return {"service_name": self._service_name, "version": self._version, "status": "READY", "source": "PostgreSQL DeliveryReport", "distance_provider": "OpenRouteService" if ORS_API_KEY and openrouteservice else "geopy great-circle", "startup_time": self._startup_time}
+        return {"service_name": self._service_name, "version": self._version, "status": "DEGRADED" if self._initialization_errors else "READY", "source": "PostgreSQL DeliveryReport", "distance_provider": "OpenRouteService" if self._distance and self._distance._ors else "geopy great-circle", "startup_time": self._startup_time, "initialization_errors": self._initialization_errors}
 
 
 _service: Optional[DealerAnalyticsService] = None
@@ -663,7 +711,21 @@ def get_dealer_analytics_service() -> DealerAnalyticsService:
     if _service is None:
         with _service_lock:
             if _service is None:
-                _service = DealerAnalyticsService()
+                try:
+                    _service = DealerAnalyticsService()
+                except Exception:
+                    logger.exception("DealerAnalyticsService initialization failed")
+                    _service = DealerAnalyticsService.__new__(DealerAnalyticsService)
+                    _service._service_name = "dealer_analytics"
+                    _service._version = "3.1.0-degraded"
+                    _service._startup_time = datetime.utcnow().isoformat()
+                    _service._initialization_errors = ["Service initialized in emergency degraded mode"]
+                    _service._coordinates = CityCoordinateService()
+                    _service._distance = None
+                    _service._dealer_cache = TTLCache(maxsize=2048, ttl=CACHE_TTL)
+                    _service._candidate_cache = TTLCache(maxsize=1, ttl=900)
+                    _service._search_lock = threading.RLock()
+                    _service._last_diagnostic = {}
     return _service
 
 
