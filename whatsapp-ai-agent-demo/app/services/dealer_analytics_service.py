@@ -29,6 +29,11 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.models import DeliveryReport
 
+try:
+    from app.services.ai_bootstrap_service import get_ai_provider_manager
+except ImportError:
+    get_ai_provider_manager = None  # type: ignore[assignment]
+
 # ============================================================
 # ENTERPRISE AI LIBRARIES - LATEST VERSIONS
 # ============================================================
@@ -245,12 +250,11 @@ class SemanticSearchEngine:
     
     def __init__(self):
         self.encoder = None
-        if SentenceTransformer:
-            try:
-                self.encoder = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
-                logger.info("SentenceTransformer loaded successfully")
-            except Exception as e:
-                logger.warning(f"SentenceTransformer initialization failed: {e}")
+        try:
+            manager = get_ai_provider_manager() if get_ai_provider_manager else None
+            self.encoder = manager.get_embeddings() if manager else None
+        except Exception as e:
+            logger.warning("Shared SentenceTransformer unavailable: %s", e)
     
     def encode_text(self, text: str) -> List[float]:
         """Encode text to vector embedding with caching"""
@@ -568,13 +572,13 @@ class AIDealerAgent:
         delivery = data.get('delivery_success_pct', 0)
         
         return (
-            f"📊 Dealer Summary\n\n"
+            f"ðŸ“Š Dealer Summary\n\n"
             f"Dealer: {dealer}\n"
             f"Revenue: PKR {revenue:,.2f}\n"
             f"Total DNs: {dns:,}\n"
             f"Pending DNs: {pending:,}\n"
             f"Delivery Success: {delivery:.1f}%\n\n"
-            f"💡 Key Insight\n"
+            f"ðŸ’¡ Key Insight\n"
             f"{self._extract_insights(data)[0] if self._extract_insights(data) else 'Performance is stable'}"
         )
 
@@ -989,7 +993,8 @@ class DistanceService:
     
     def __init__(self, coordinates: CityCoordinateService) -> None:
         self.coordinates = coordinates
-        self.cache: TTLCache[str, DistanceAnalytics] = TTLCache(maxsize=8192, ttl=CACHE_TTL)
+        # Route results are effectively static for a warehouse/city pair.
+        self.cache: LRUCache[str, DistanceAnalytics] = LRUCache(maxsize=16384)
         self._lock = threading.RLock()
         self._ors = None
         if ORS_API_KEY:
@@ -1109,7 +1114,7 @@ class DealerAnalyticsService:
 
     def __init__(self) -> None:
         self._service_name = "dealer_analytics"
-        self._version = "6.0.0-ai-ultra"
+        self._version = "6.1.0-performance"
         self._startup_time = datetime.utcnow().isoformat()
         self._initialization_errors: list[str] = []
         
@@ -1128,16 +1133,19 @@ class DealerAnalyticsService:
             self._initialization_errors.append(str(error))
             self._distance = None
         
-        # Initialize AI Agent
+        # Reuse process-wide AI resources; never reload models per service.
+        self._ai_manager = get_ai_provider_manager() if get_ai_provider_manager else None
         self._ai_agent = None
         try:
-            self._ai_agent = AIDealerAgent()
-            logger.info("AI Agent initialized successfully")
+            self._ai_agent = (
+                self._ai_manager.get_agent(AIDealerAgent, key="dealer_agent")
+                if self._ai_manager else None
+            )
         except Exception as error:
             self._initialization_errors.append(str(error))
-            logger.warning(f"AI Agent initialization failed: {error}")
+            logger.warning("Shared AI agent unavailable: %s", error)
         
-        # Initialize Semantic Search
+        # The wrapper is cheap and reuses the shared embedding encoder.
         self._semantic_search = SemanticSearchEngine()
         
         # Caches for speed
@@ -1146,6 +1154,7 @@ class DealerAnalyticsService:
         self._extended_cache: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=8192, ttl=3600)
         self._dashboard_cache: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=8192, ttl=600)
         self._ranking_cache: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=256, ttl=600)
+        self._national_ranking_cache: TTLCache[str, dict[str, dict[str, Any]]] = TTLCache(maxsize=1, ttl=600)
         self._search_lock = threading.RLock()
         self._aggregate_cache: TTLCache[str, list[Any]] = TTLCache(maxsize=2048, ttl=300)
         
@@ -1540,21 +1549,20 @@ class DealerAnalyticsService:
         condition = self._dealer_filter(str(identity))
         values: dict[str, Any] = {}
         
-        # Parallel queries for speed
-        futures = {
-            'dn': _executor.submit(self._get_dn_analytics, session, condition),
-            'monthly': _executor.submit(self._get_monthly_analytics, session, condition),
-            'product': _executor.submit(self._get_product_analytics, session, condition),
-            'division': _executor.submit(self._get_division_analytics, session, condition),
-        }
-        
-        for key, future in futures.items():
+        # SQLAlchemy Session is intentionally used only by this request thread.
+        # Dealer code/customer code indexes keep these scoped queries fast.
+        for loader in (
+            self._get_dn_analytics,
+            self._get_monthly_analytics,
+            self._get_product_analytics,
+            self._get_division_analytics,
+        ):
             try:
-                result = future.result(timeout=0.5)
+                result = loader(session, condition)
                 if result:
                     values.update(result)
             except Exception:
-                pass
+                logger.exception("Extended analytics loader failed: %s", loader.__name__)
         
         self._apply_dealer_rankings(session, item, values)
         
@@ -1713,59 +1721,62 @@ class DealerAnalyticsService:
         if cached_rankings:
             values.update(cached_rankings)
             return
-        
+
         try:
-            ranking_rows = session.query(
-                DeliveryReport.customer_name.label("name"), 
-                DeliveryReport.dealer_code.label("code"),
-                func.max(DeliveryReport.ship_to_city).label("city"),
-                func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0).label("revenue"),
-                func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("units"),
-                func.count(distinct(DeliveryReport.dn_no)).label("dns"),
-                func.avg(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.good_issue_date - DeliveryReport.dn_create_date))).label("delivery"),
-                func.count(distinct(case((DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no)))).label("pod"),
-                func.count(distinct(case((or_(DeliveryReport.pending_flag.is_(True), DeliveryReport.pod_date.is_(None)), DeliveryReport.dn_no)))).label("pending"),
-            ).filter(DeliveryReport.customer_name.isnot(None)).group_by(
-                DeliveryReport.customer_name, 
-                DeliveryReport.dealer_code
-            ).all()
-            
-            target = next(
-                (row for row in ranking_rows 
-                 if _text(row.code, "") == item.dealer_code or _text(row.name, "") == item.dealer_name), 
-                None
+            ranking_map = self._national_ranking_cache.get("all")
+            if ranking_map is None:
+                ranking_map = self._build_national_ranking_map(session)
+                self._national_ranking_cache["all"] = ranking_map
+            rankings = (
+                ranking_map.get(f"code:{item.dealer_code}")
+                or ranking_map.get(f"name:{item.dealer_name.lower()}")
             )
-            
-            if not target:
+            if not rankings:
                 return
-            
-            def rank_for(rows: list, key_func, reverse: bool = True) -> int:
-                sorted_rows = sorted(rows, key=key_func, reverse=reverse)
-                for idx, row in enumerate(sorted_rows, 1):
-                    if row is target:
-                        return idx
-                return len(rows)
-            
-            rankings = {
-                "revenue_rank": rank_for(ranking_rows, lambda r: _number(r.revenue), True),
-                "unit_rank": rank_for(ranking_rows, lambda r: _number(r.units), True),
-                "dn_rank": rank_for(ranking_rows, lambda r: int(r.dns or 0), True),
-                "delivery_rank": rank_for(ranking_rows, lambda r: self._days(r.delivery) if r.delivery is not None else float("inf"), False),
-                "pod_rank": rank_for(ranking_rows, lambda r: _percent(r.pod, r.dns), True),
-                "pending_rank": rank_for(ranking_rows, lambda r: _percent(r.pending, r.dns), False),
-            }
-            
-            composite = sorted(ranking_rows, key=lambda r: (_number(r.revenue), _percent(r.pod, r.dns)), reverse=True)
-            rankings["national_rank"] = next((idx for idx, row in enumerate(composite, 1) if row is target), len(composite))
-            
-            regional = [row for row in ranking_rows if _text(row.city, "").lower() == item.city.lower()]
-            regional.sort(key=lambda r: _number(r.revenue), reverse=True)
-            rankings["regional_rank"] = next((idx for idx, row in enumerate(regional, 1) if row is target), len(regional) or 1)
-            
             values.update(rankings)
             self._ranking_cache[cache_key] = rankings
         except Exception:
-            pass
+            logger.exception("Dealer ranking lookup failed")
+
+    def _build_national_ranking_map(self, session: Session) -> dict[str, dict[str, Any]]:
+        """Scan national dealer aggregates once and cache every dealer rank."""
+        rows = session.query(
+            DeliveryReport.customer_name.label("name"), DeliveryReport.dealer_code.label("code"),
+            func.max(DeliveryReport.ship_to_city).label("city"),
+            func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0).label("revenue"),
+            func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("units"),
+            func.count(distinct(DeliveryReport.dn_no)).label("dns"),
+            func.avg(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.good_issue_date - DeliveryReport.dn_create_date))).label("delivery"),
+            func.count(distinct(case((DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no)))).label("pod"),
+            func.count(distinct(case((or_(DeliveryReport.pending_flag.is_(True), DeliveryReport.pod_date.is_(None)), DeliveryReport.dn_no)))).label("pending"),
+        ).filter(DeliveryReport.customer_name.isnot(None)).group_by(
+            DeliveryReport.customer_name, DeliveryReport.dealer_code
+        ).all()
+        result: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            ranks: dict[str, Any] = {}
+            result[f"name:{_text(row.name).lower()}"] = ranks
+            if _text(row.code, ""):
+                result[f"code:{_text(row.code, '')}"] = ranks
+
+        def assign(field: str, key: Any, reverse: bool) -> None:
+            for index, row in enumerate(sorted(rows, key=key, reverse=reverse), 1):
+                result[f"name:{_text(row.name).lower()}"][field] = index
+
+        assign("revenue_rank", lambda row: _number(row.revenue), True)
+        assign("unit_rank", lambda row: _number(row.units), True)
+        assign("dn_rank", lambda row: int(row.dns or 0), True)
+        assign("delivery_rank", lambda row: self._days(row.delivery) if row.delivery is not None else float("inf"), False)
+        assign("pod_rank", lambda row: _percent(row.pod, row.dns), True)
+        assign("pending_rank", lambda row: _percent(row.pending, row.dns), False)
+        assign("national_rank", lambda row: (_number(row.revenue), _percent(row.pod, row.dns)), True)
+
+        cities = {_text(row.city, "").lower() for row in rows}
+        for city in cities:
+            regional = [row for row in rows if _text(row.city, "").lower() == city]
+            for index, row in enumerate(sorted(regional, key=lambda value: _number(value.revenue), reverse=True), 1):
+                result[f"name:{_text(row.name).lower()}"]["regional_rank"] = index
+        return result
 
     @staticmethod
     def _apply_business_health(item: DealerDashboard) -> None:
@@ -1955,22 +1966,22 @@ class DealerAnalyticsService:
     def _generate_intent_response(self, data: DealerDashboard, intent: DealerIntent) -> str:
         """Generate response based on intent"""
         if intent == DealerIntent.REVENUE:
-            return f"💰 Revenue: PKR {data.total_revenue:,.2f}\nGrowth: {data.monthly_growth:+.1f}%"
+            return f"ðŸ’° Revenue: PKR {data.total_revenue:,.2f}\nGrowth: {data.monthly_growth:+.1f}%"
         elif intent == DealerIntent.PENDING:
-            return f"⚠️ Pending: {data.pending_dn} DNs\nValue: PKR {data.pending_revenue:,.2f}"
+            return f"âš ï¸ Pending: {data.pending_dn} DNs\nValue: PKR {data.pending_revenue:,.2f}"
         elif intent == DealerIntent.DELIVERY:
-            return f"🚚 Delivery Success: {data.delivery_success_pct:.1f}%\nAvg: {data.average_delivery_days:.2f} days"
+            return f"ðŸšš Delivery Success: {data.delivery_success_pct:.1f}%\nAvg: {data.average_delivery_days:.2f} days"
         elif intent == DealerIntent.POD:
-            return f"📄 POD Success: {data.pod_success_pct:.1f}%\nAvg: {data.average_pod_days:.2f} days"
+            return f"ðŸ“„ POD Success: {data.pod_success_pct:.1f}%\nAvg: {data.average_pod_days:.2f} days"
         elif intent == DealerIntent.HEALTH:
-            return f"💳 Business Score: {data.business_score:.1f}/100\nStatus: {data.overall_status}"
+            return f"ðŸ’³ Business Score: {data.business_score:.1f}/100\nStatus: {data.overall_status}"
         elif intent == DealerIntent.WAREHOUSE:
             dist = data.distance.distance_km or 0
-            return f"🏭 Warehouse: {data.warehouse}\nDistance: {dist:.1f} KM"
+            return f"ðŸ­ Warehouse: {data.warehouse}\nDistance: {dist:.1f} KM"
         elif intent == DealerIntent.DASHBOARD:
             return data.to_whatsapp_message()
         else:
-            return f"📊 Dealer: {data.dealer_name}\nRevenue: PKR {data.total_revenue:,.2f}\nDNs: {data.total_dn}\nPending: {data.pending_dn}"
+            return f"ðŸ“Š Dealer: {data.dealer_name}\nRevenue: PKR {data.total_revenue:,.2f}\nDNs: {data.total_dn}\nPending: {data.pending_dn}"
 
     # ============================================================
     # EXISTING PUBLIC METHODS (Maintained for Backward Compatibility)
@@ -2238,18 +2249,20 @@ def get_dealer_analytics_service() -> DealerAnalyticsService:
                     logger.exception("DealerAnalyticsService initialization failed")
                     _service = DealerAnalyticsService.__new__(DealerAnalyticsService)
                     _service._service_name = "dealer_analytics"
-                    _service._version = "6.0.0-ai-ultra-degraded"
+                    _service._version = "6.1.0-performance-degraded"
                     _service._startup_time = datetime.utcnow().isoformat()
                     _service._initialization_errors = [f"Emergency mode: {str(e)}"]
                     _service._coordinates = CityCoordinateService()
                     _service._distance = None
                     _service._ai_agent = None
+                    _service._ai_manager = get_ai_provider_manager() if get_ai_provider_manager else None
                     _service._semantic_search = SemanticSearchEngine()
                     _service._dealer_cache = TTLCache(maxsize=8192, ttl=CACHE_TTL)
                     _service._candidate_cache = TTLCache(maxsize=1, ttl=3600)
                     _service._extended_cache = TTLCache(maxsize=8192, ttl=3600)
                     _service._dashboard_cache = TTLCache(maxsize=8192, ttl=600)
                     _service._ranking_cache = TTLCache(maxsize=256, ttl=600)
+                    _service._national_ranking_cache = TTLCache(maxsize=1, ttl=600)
                     _service._search_lock = threading.RLock()
                     _service._aggregate_cache = TTLCache(maxsize=2048, ttl=300)
                     _service._normalized_stop_phrases = set()
