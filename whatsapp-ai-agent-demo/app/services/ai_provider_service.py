@@ -132,9 +132,6 @@ except ImportError as e:
 
 class ServiceRegistry:
     SERVICES = {
-        # ============================================================
-        # DN SERVICE - MATCHES dn_analysis.py
-        # ============================================================
         "dn": {
             "module": "app.services.dn_analysis",
             "class_name": "DNAnalysisService",
@@ -149,9 +146,6 @@ class ServiceRegistry:
             ],
             "description": "DN Analytics Service",
         },
-        # ============================================================
-        # DEALER SERVICE - MATCHES dealer_analytics_service.py
-        # ============================================================
         "dealer": {
             "module": "app.services.dealer_analytics_service",
             "class_name": "DealerAnalyticsService",
@@ -167,9 +161,6 @@ class ServiceRegistry:
             ],
             "description": "Dealer Analytics Service",
         },
-        # ============================================================
-        # WAREHOUSE SERVICE - MATCHES warehouse_service.py
-        # ============================================================
         "warehouse": {
             "module": "app.services.warehouse_service",
             "class_name": "WarehouseAnalyticsService",
@@ -181,9 +172,6 @@ class ServiceRegistry:
             ],
             "description": "Warehouse Analytics Service",
         },
-        # ============================================================
-        # CITY SERVICE - MATCHES city_service.py
-        # ============================================================
         "city": {
             "module": "app.services.city_service",
             "class_name": "CityAnalyticsService",
@@ -195,9 +183,6 @@ class ServiceRegistry:
             ],
             "description": "City Analytics Service",
         },
-        # ============================================================
-        # PRODUCT SERVICE - MATCHES product_service.py
-        # ============================================================
         "product": {
             "module": "app.services.product_service",
             "class_name": "ProductAnalyticsService",
@@ -209,9 +194,6 @@ class ServiceRegistry:
             ],
             "description": "Product Analytics Service",
         },
-        # ============================================================
-        # NATIONAL KPI SERVICE - MATCHES national_kpi_service.py
-        # ============================================================
         "national_kpi": {
             "module": "app.services.national_kpi_service",
             "class_name": "NationalKPIService",
@@ -223,11 +205,8 @@ class ServiceRegistry:
             ],
             "description": "National KPI Service",
         },
-        # ============================================================
-        # GROQ SERVICE - SHOULD BE groq_service.py
-        # ============================================================
         "groq": {
-            "module": "app.services.groq_service",  # ← Should be groq_service.py
+            "module": "app.services.groq_service",
             "class_name": "GroqService",
             "expected_methods": ["process_query"],
             "description": "Groq AI Service",
@@ -573,9 +552,7 @@ class WhatsAppProviderService:
                         error=True,
                         request_id=request_id
                     )
-            
             return None
-            
         except Exception as e:
             logger.error(f"❌ [REQ:{request_id}] DN handler failed: {e}")
             return None
@@ -604,9 +581,7 @@ class WhatsAppProviderService:
                         error=True,
                         request_id=request_id
                     )
-            
             return None
-            
         except Exception as e:
             logger.error(f"❌ [REQ:{request_id}] Dealer handler failed: {e}")
             return None
@@ -633,9 +608,7 @@ class WhatsAppProviderService:
                         error=True,
                         request_id=request_id
                     )
-            
             return None
-            
         except Exception as e:
             logger.error(f"❌ [REQ:{request_id}] Dealer ranking handler failed: {e}")
             return None
@@ -666,9 +639,7 @@ class WhatsAppProviderService:
                         error=True,
                         request_id=request_id
                     )
-            
             return None
-            
         except Exception as e:
             logger.error(f"❌ [REQ:{request_id}] Pending handler failed: {e}")
             return None
@@ -697,9 +668,7 @@ class WhatsAppProviderService:
                         error=True,
                         request_id=request_id
                     )
-            
             return None
-            
         except Exception as e:
             logger.error(f"❌ [REQ:{request_id}] Warehouse handler failed: {e}")
             return None
@@ -728,13 +697,11 @@ class WhatsAppProviderService:
                         error=True,
                         request_id=request_id
                     )
-            
             return None
-            
         except Exception as e:
             logger.error(f"❌ [REQ:{request_id}] City handler failed: {e}")
             return None
-    
+
     async def _handle_product(self, decision: RoutingDecision, request_id: str) -> Optional[Dict[str, Any]]:
         """Handle Product dashboard"""
         try:
@@ -743,258 +710,58 @@ class WhatsAppProviderService:
                 return None
             
             entity = decision.entity or decision.original_message
-            logger.info(f"🔍 [REQ:{request_id}] Looking up product: {entity}")
             result = self.product_service.get_product_dashboard(entity)
-            
             if result and isinstance(result, dict):
-                if result.get("success", False):
-                    data = result.get("data")
-                    if hasattr(data, "to_whatsapp_message"):
-                        return self._format_response(decision.original_message, data, error=False, request_id=request_id)
-                    return self._format_response(decision.original_message, result.get("whatsapp_message", data), error=False, request_id=request_id)
-                else:
-                    return self._format_response(
-                        decision.original_message,
-                        result.get("whatsapp_message", f"❌ Product '{entity}' not found."),
-                        error=True,
-                        request_id=request_id
-                    )
-            
+                return self._format_response(decision.original_message, result.get("whatsapp_message", result.get("data")), error=not result.get("success", False), request_id=request_id)
             return None
-            
         except Exception as e:
             logger.error(f"❌ [REQ:{request_id}] Product handler failed: {e}")
             return None
-    
+
     async def _handle_national_kpi(self, decision: RoutingDecision, request_id: str) -> Optional[Dict[str, Any]]:
-        """Handle National KPI"""
+        """Handle National KPI queries"""
         try:
             if not self.national_kpi_service:
                 logger.error(f"❌ [REQ:{request_id}] National KPI service not available")
                 return None
             
-            logger.info(f"🔍 [REQ:{request_id}] Getting National KPI dashboard")
             result = self.national_kpi_service.get_national_kpi_dashboard()
-            
             if result and isinstance(result, dict):
-                if result.get("success", False):
-                    return self._format_response(decision.original_message, result.get("whatsapp_message"), error=False, request_id=request_id)
-                else:
-                    return self._format_response(
-                        decision.original_message,
-                        result.get("whatsapp_message", "⚠️ National KPI query failed."),
-                        error=True,
-                        request_id=request_id
-                    )
-            
+                return self._format_response(decision.original_message, result.get("whatsapp_message", result.get("data")), error=not result.get("success", False), request_id=request_id)
             return None
-            
         except Exception as e:
             logger.error(f"❌ [REQ:{request_id}] National KPI handler failed: {e}")
             return None
-    
+
     async def _handle_groq(self, message: str, decision: RoutingDecision, request_id: str) -> Dict[str, Any]:
-        """Handle Groq queries"""
+        """Handle general AI conversational query"""
         try:
-            if self.groq_service and hasattr(self.groq_service, 'process_query'):
-                response = await self.groq_service.process_query(message)
-                if response:
-                    if isinstance(response, dict) and response.get("response"):
-                        return self._format_response(message, response.get("response"), error=False, request_id=request_id)
-                    elif isinstance(response, str):
-                        return self._format_response(message, response, error=False, request_id=request_id)
+            if not self.groq_service:
+                return self._format_response(message, "⚠️ Conversational AI is currently unavailable.", error=True, request_id=request_id)
+            
+            ai_response = self.groq_service.process_query(message)
+            return self._format_response(message, ai_response, error=False, request_id=request_id)
         except Exception as e:
-            logger.error(f"❌ [REQ:{request_id}] Groq failed: {e}")
-        
-        # Fallback responses
-        if decision.intent == "help":
-            return self._format_response(
-                message,
-                "📋 **Available Commands**\n\n"
-                "📦 **DN Queries:**\n"
-                "• Send any 8-12 digit number\n"
-                "• 'Pending DN'\n"
-                "• 'Pending PGI'\n"
-                "• 'Pending POD'\n\n"
-                "🏪 **Dealer Queries:**\n"
-                "• Send a dealer name\n"
-                "• 'Top dealers'\n"
-                "• 'Bottom dealers'\n\n"
-                "🏭 **Warehouse Queries:**\n"
-                "• 'Warehouse [name]'\n\n"
-                "🏙️ **City Queries:**\n"
-                "• 'City [name]'\n\n"
-                "📦 **Product Queries:**\n"
-                "• 'Product [name]'\n\n"
-                "📊 **Analytics:**\n"
-                "• 'National KPI'\n\n"
-                "🤖 **General:**\n"
-                "• 'Hello', 'Hi'\n"
-                "• 'Help', 'Menu'",
-                error=False,
-                request_id=request_id
-            )
-        
-        if decision.intent == "greeting":
-            return self._format_response(
-                message,
-                "👋 **Hello! Welcome to Sham Electronics**\n\n"
-                "I'm your AI assistant. I can help you with:\n\n"
-                "📦 **DN Tracking** - Send any 8-12 digit number\n"
-                "🏪 **Dealer Analytics** - Send a dealer name\n"
-                "🏭 **Warehouse Analytics** - 'Warehouse [name]'\n"
-                "🏙️ **City Analytics** - 'City [name]'\n"
-                "📦 **Product Analytics** - 'Product [name]'\n"
-                "📊 **National KPIs** - 'National KPI'\n"
-                "📋 **Pending Items** - 'Pending DN'\n\n"
-                "Type **Help** for all commands.",
-                error=False,
-                request_id=request_id
-            )
-        
-        return self._format_response(
-            message,
-            "I'm here to help! What would you like to know?\n\n"
-            "Try sending:\n"
-            "• A DN number (like 6243699261)\n"
-            "• A dealer name (like 'Sham Electronics')\n"
-            "• 'Warehouse Lahore' for warehouse info\n"
-            "• 'City Karachi' for city info\n"
-            "• 'Product AC-123' for product info\n"
-            "• 'National KPI' for overall performance\n"
-            "• 'Help' for commands",
-            error=False,
-            request_id=request_id
-        )
-    
+            logger.error(f"❌ [REQ:{request_id}] Groq handler failed: {e}")
+            return self._format_response(message, "⚠️ Failed to process conversational response.", error=True, request_id=request_id)
+
     # ============================================================
-    # RESPONSE FORMATTING
+    # RESPONSE FORMATTING LOGIC
     # ============================================================
-    
-    def _format_response(self, original_message: str, data: Any, error: bool = False, request_id: Optional[str] = None) -> Dict[str, Any]:
-        """Format response for WhatsApp"""
-        if error:
-            return {
-                "success": False,
-                "message": original_message,
-                "response": data,
-                "error": True,
-                "timestamp": datetime.now().isoformat(),
-                "request_id": request_id
-            }
-        
-        if hasattr(data, "to_whatsapp_message"):
-            try:
-                data = data.to_whatsapp_message()
-            except:
-                pass
-        
-        if isinstance(data, dict):
-            for key in ("whatsapp_message", "formatted_response", "response", "message"):
-                if data.get(key) not in (None, ""):
-                    data = data[key]
-                    break
-        
+
+    def _format_response(self, original_message: str, reply: Any, error: bool = False, request_id: str = "") -> Dict[str, Any]:
+        """Unified formatting rules matching webhook demands."""
+        if hasattr(reply, "to_whatsapp_message"):
+            reply_text = reply.to_whatsapp_message()
+        elif isinstance(reply, dict):
+            reply_text = str(reply)
+        else:
+            reply_text = str(reply)
+
         return {
-            "success": True,
-            "message": original_message,
-            "response": data,
-            "error": False,
-            "timestamp": datetime.now().isoformat(),
-            "request_id": request_id
+            "original_message": original_message,
+            "whatsapp_message": reply_text,
+            "status": "error" if error else "success",
+            "request_id": request_id,
+            "timestamp": datetime.utcnow().isoformat()
         }
-    
-    # ============================================================
-    # DIAGNOSTIC METHODS
-    # ============================================================
-    
-    def get_system_health(self) -> Dict[str, Any]:
-        """Get system health"""
-        return {
-            "status": "healthy",
-            "version": "10.0",
-            "services": {
-                "dn": {
-                    "available": self.dn_service is not None,
-                    "health": self.registry.get_service_health("dn")
-                },
-                "dealer": {
-                    "available": self.dealer_service is not None,
-                    "health": self.registry.get_service_health("dealer")
-                },
-                "warehouse": {
-                    "available": self.warehouse_service is not None,
-                    "health": self.registry.get_service_health("warehouse")
-                },
-                "city": {
-                    "available": self.city_service is not None,
-                    "health": self.registry.get_service_health("city")
-                },
-                "product": {
-                    "available": self.product_service is not None,
-                    "health": self.registry.get_service_health("product")
-                },
-                "national_kpi": {
-                    "available": self.national_kpi_service is not None,
-                    "health": self.registry.get_service_health("national_kpi")
-                },
-                "groq": {
-                    "available": self.groq_service is not None,
-                    "health": self.registry.get_service_health("groq")
-                }
-            },
-            "timestamp": datetime.now().isoformat()
-        }
-    
-    def clear_caches(self):
-        """Clear all caches"""
-        if hasattr(self.intent_engine, 'clear_cache'):
-            self.intent_engine.clear_cache()
-        logger.info("✅ Caches cleared")
-
-# ============================================================
-# SINGLETON
-# ============================================================
-
-_whatsapp_provider_service = None
-_provider_service_lock = threading.Lock()
-
-def get_whatsapp_provider_service() -> WhatsAppProviderService:
-    global _whatsapp_provider_service
-    if _whatsapp_provider_service is None:
-        with _provider_service_lock:
-            if _whatsapp_provider_service is None:
-                try:
-                    _whatsapp_provider_service = WhatsAppProviderService()
-                    logger.info("✅ WhatsAppProviderService initialized (v10.0)")
-                except Exception as e:
-                    logger.exception(f"❌ Initialization failed: {e}")
-                    raise
-    return _whatsapp_provider_service
-
-# ============================================================
-# EXPORTS
-# ============================================================
-
-__all__ = [
-    'WhatsAppProviderService',
-    'get_whatsapp_provider_service',
-    'ServiceRegistry',
-    'RoutingDecision',
-    'IntentDetectionEngine'
-]
-
-logger.info("=" * 70)
-logger.info("AI Provider Service v10.0 - ENTERPRISE COMPLETE")
-logger.info("=" * 70)
-logger.info("✅ Service Registry - Matches all your file names")
-logger.info("   → dn → dn_analysis.py")
-logger.info("   → dealer → dealer_analytics_service.py")
-logger.info("   → warehouse → warehouse_service.py")
-logger.info("   → city → city_service.py")
-logger.info("   → product → product_service.py")
-logger.info("   → national_kpi → national_kpi_service.py")
-logger.info("   → groq → groq_service.py")
-logger.info("✅ Lightweight Orchestrator")
-logger.info("✅ NO business logic, NO SQL, NO formatting")
-logger.info("=" * 70)
