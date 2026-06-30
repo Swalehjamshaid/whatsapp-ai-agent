@@ -14,6 +14,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict, dataclass, is_dataclass
+from datetime import datetime, timezone
 from functools import partial
 from typing import Any, Final, Protocol
 
@@ -50,11 +51,19 @@ class DatabaseConnectionError(OrchestrationError):
     """Compatibility exception for domain services that wrap DB failures."""
 
 
-class RequestInput(BaseModel):
+class ServiceRequest(BaseModel):
+    """Validated request context passed through the orchestration pipeline."""
+
     model_config = ConfigDict(str_strip_whitespace=True)
 
+    request_id: str
     message: str = Field(min_length=1, max_length=16_000)
     sender: str | None = Field(default=None, max_length=255)
+    intent: str | None = None
+    entity: Any = None
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     @field_validator("message")
     @classmethod
@@ -63,6 +72,10 @@ class RequestInput(BaseModel):
         if not normalized:
             raise ValueError("Message cannot be empty")
         return normalized
+
+
+# Preserve imports used by integrations built against the preceding name.
+RequestInput = ServiceRequest
 
 
 class ServiceResponse(BaseModel):
@@ -76,6 +89,7 @@ class ServiceResponse(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     error: str = ""
     request_id: str = ""
+    processing_time: float = Field(default=0.0, ge=0.0)
 
 
 class RoutingDecisionView(BaseModel):
@@ -127,16 +141,25 @@ ROUTES: Final[dict[str, RouteTarget]] = {
     "warehouse_dashboard": RouteTarget("warehouse_service", "get_warehouse_dashboard"),
     "city_dashboard": RouteTarget("city_service", "get_city_dashboard"),
     "product_dashboard": RouteTarget("product_service", "get_product_dashboard"),
+    "national_kpi": RouteTarget("kpi_service", "get_national_kpi_dashboard"),
+    "national_kpi_dashboard": RouteTarget("kpi_service", "get_national_kpi_dashboard"),
     "general_ai": RouteTarget("groq_service", "process_query"),
 }
 
 
 _SYMBOLS: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
     "dn_service": ("app.services.dn_analysis", ("DNAnalysisService", "DNService")),
-    "dealer_service": ("app.services.dealer_service", ("DealerService",)),
+    "dealer_service": (
+        "app.services.dealer_analytics_service",
+        ("DealerAnalyticsService", "DealerService"),
+    ),
     "warehouse_service": ("app.services.warehouse_service", ("WarehouseService",)),
     "city_service": ("app.services.city_service", ("CityService",)),
     "product_service": ("app.services.product_service", ("ProductService",)),
+    "kpi_service": (
+        "app.services.kpi_service",
+        ("KPIService", "KpiService", "NationalKPIService"),
+    ),
     "groq_service": ("app.services.groq_service", ("GroqService",)),
     "intent_engine": (
         "app.services.ai_provider_service_intents",
@@ -155,6 +178,19 @@ def _load_component(key: str) -> Any:
         module = importlib.import_module(module_name)
     except ImportError as exc:
         raise ConfigurationError(f"Cannot import {module_name}") from exc
+    # Function-oriented service modules are already fully configured by their
+    # owning module. Prefer that public interface to constructing a second,
+    # potentially unconfigured service instance (notably for database-backed
+    # DN analytics).
+    routed_methods = {
+        target.method
+        for target in ROUTES.values()
+        if target.provider_name == key
+    }
+    if routed_methods and any(
+        callable(getattr(module, method, None)) for method in routed_methods
+    ):
+        return module
     for symbol in candidates:
         component = getattr(module, symbol, None)
         if component is not None:
@@ -174,13 +210,14 @@ class ApplicationContainer(containers.DeclarativeContainer):
     """Dependency-injector registry; applications may override any provider."""
 
     config = providers.Configuration()
-    intent_engine = providers.Singleton(_load_component, "intent_engine")
-    dn_service = providers.Singleton(_load_component, "dn_service")
-    dealer_service = providers.Singleton(_load_component, "dealer_service")
-    warehouse_service = providers.Singleton(_load_component, "warehouse_service")
-    city_service = providers.Singleton(_load_component, "city_service")
-    product_service = providers.Singleton(_load_component, "product_service")
-    groq_service = providers.Singleton(_load_component, "groq_service")
+    intent_engine = providers.ThreadSafeSingleton(_load_component, "intent_engine")
+    dn_service = providers.ThreadSafeSingleton(_load_component, "dn_service")
+    dealer_service = providers.ThreadSafeSingleton(_load_component, "dealer_service")
+    warehouse_service = providers.ThreadSafeSingleton(_load_component, "warehouse_service")
+    city_service = providers.ThreadSafeSingleton(_load_component, "city_service")
+    product_service = providers.ThreadSafeSingleton(_load_component, "product_service")
+    kpi_service = providers.ThreadSafeSingleton(_load_component, "kpi_service")
+    groq_service = providers.ThreadSafeSingleton(_load_component, "groq_service")
 
 
 def _object_mapping(value: Any) -> dict[str, Any]:
@@ -432,7 +469,12 @@ class AIProviderOrchestrator:
         started = time.perf_counter()
         bound = logger.bind(request_id=request_id, sender=sender)
         try:
-            request = RequestInput(message=message, sender=sender)
+            request = ServiceRequest(
+                request_id=request_id,
+                message=message,
+                sender=sender,
+                metadata=dict(context),
+            )
             decision_object, cache_hit = await self._detect_intent(request.message, request.sender)
             decision = _decision_view(decision_object)
             target = self.router.target_for(decision)
@@ -457,6 +499,9 @@ class AIProviderOrchestrator:
                     timeout=self.request_timeout,
                 )
             elapsed = (time.perf_counter() - started) * 1000
+            business_response = business_response.model_copy(
+                update={"processing_time": elapsed}
+            )
             bound.info(
                 "Request completed success={} response_time_ms={:.2f}",
                 business_response.success,
@@ -486,6 +531,58 @@ class AIProviderOrchestrator:
             bound.exception("Unexpected orchestration dependency failure")
             return "I could not process that request right now. Please try again shortly."
 
+    def get_registry_status(self, *, refresh: bool = False) -> dict[str, Any]:
+        """Validate imports, instances, and routed methods without business calls."""
+        cache_key = "service_registry"
+        if not refresh and cache_key in self.metadata_cache:
+            return self.metadata_cache[cache_key]
+        routed_methods: dict[str, set[str]] = {}
+        for target in ROUTES.values():
+            routed_methods.setdefault(target.provider_name, set()).add(target.method)
+        routed_methods["intent_engine"] = set()
+        statuses: dict[str, dict[str, Any]] = {}
+        for provider_name, methods in routed_methods.items():
+            try:
+                service = self._resolve_provider(provider_name)
+                if provider_name == "intent_engine":
+                    self._find_callable(service, self._INTENT_METHODS, "Intent engine")
+                missing = sorted(
+                    method for method in methods
+                    if not callable(getattr(service, method, None))
+                )
+                metadata_method = getattr(service, "get_service_metadata", None)
+                metadata = metadata_method() if callable(metadata_method) and not inspect.iscoroutinefunction(metadata_method) else {}
+                statuses[provider_name] = {
+                    "available": not missing,
+                    "class": type(service).__name__,
+                    "module": getattr(service, "__name__", type(service).__module__),
+                    "methods": sorted(methods),
+                    "missing_methods": missing,
+                    "metadata": metadata if isinstance(metadata, Mapping) else {},
+                    "reason": "" if not missing else f"Missing methods: {', '.join(missing)}",
+                }
+            except (ConfigurationError, ImportError, MethodNotFoundError, TypeError) as exc:
+                logger.exception("Service registry validation failed for {}", provider_name)
+                statuses[provider_name] = {
+                    "available": False,
+                    "methods": sorted(methods),
+                    "reason": f"{type(exc).__name__}: {exc}",
+                }
+        result = {
+            "healthy": all(status["available"] for status in statuses.values()),
+            "services": statuses,
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "cache_ttl_seconds": 300,
+        }
+        self.metadata_cache[cache_key] = result
+        return result
+
+    def refresh_status(self) -> dict[str, Any]:
+        """Clear diagnostic caches and revalidate the entire service registry."""
+        self.metadata_cache.clear()
+        self.router._method_cache.clear()
+        return self.get_registry_status(refresh=True)
+
     async def health_check(self) -> dict[str, Any]:
         """Resolve and probe every dependency without running business logic."""
         if "health" in self.metadata_cache:
@@ -493,7 +590,7 @@ class AIProviderOrchestrator:
         checks: dict[str, dict[str, Any]] = {}
         for name in (
             "intent_engine", "dn_service", "dealer_service", "warehouse_service",
-            "city_service", "product_service", "groq_service",
+            "city_service", "product_service", "kpi_service", "groq_service",
         ):
             try:
                 service = self._resolve_provider(name)
@@ -534,6 +631,38 @@ async def health_check() -> dict[str, Any]:
     return await orchestrator.health_check()
 
 
+def get_whatsapp_provider_service() -> AIProviderOrchestrator:
+    """Return the process-wide, dependency-injected orchestrator singleton."""
+    return orchestrator
+
+
+def get_service_registry_status() -> dict[str, Any]:
+    """Return cached service-registry diagnostics."""
+    return orchestrator.get_registry_status()
+
+
+def validate_all_services() -> dict[str, Any]:
+    """Validate every registered service and routed method."""
+    return orchestrator.get_registry_status(refresh=True)
+
+
+def refresh_service_status() -> dict[str, Any]:
+    """Invalidate diagnostic state and return a fresh registry report."""
+    return orchestrator.refresh_status()
+
+
+def get_system_health() -> dict[str, Any]:
+    """Synchronous health snapshot suitable for existing status endpoints."""
+    registry = orchestrator.get_registry_status()
+    return {
+        "healthy": registry["healthy"],
+        "status": "healthy" if registry["healthy"] else "unhealthy",
+        "reason": "" if registry["healthy"] else "One or more services failed validation",
+        "services": registry["services"],
+        "checked_at": registry["checked_at"],
+    }
+
+
 __all__ = [
     "AIProviderOrchestrator",
     "ApplicationContainer",
@@ -542,12 +671,19 @@ __all__ = [
     "MethodNotFoundError",
     "ROUTES",
     "RouteTarget",
+    "RequestInput",
+    "ServiceRequest",
     "ServiceResponse",
     "ServiceRouter",
     "ServiceUnavailableError",
     "container",
+    "get_service_registry_status",
+    "get_system_health",
+    "get_whatsapp_provider_service",
     "health_check",
     "orchestrator",
     "process_query",
     "process_whatsapp_query",
+    "refresh_service_status",
+    "validate_all_services",
 ]
