@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import inspect
+import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
@@ -23,6 +24,7 @@ from cachetools import TTLCache
 from dependency_injector import containers, providers
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from sqlalchemy.exc import SQLAlchemyError
 from tenacity import (
     AsyncRetrying,
     retry_if_exception_type,
@@ -49,6 +51,14 @@ class MethodNotFoundError(OrchestrationError):
 
 class DatabaseConnectionError(OrchestrationError):
     """Compatibility exception for domain services that wrap DB failures."""
+
+
+class RoutingError(OrchestrationError):
+    pass
+
+
+class GroqError(OrchestrationError):
+    pass
 
 
 class ServiceRequest(BaseModel):
@@ -305,24 +315,103 @@ class ServiceRouter:
         return method
 
     @staticmethod
-    def _arguments(method: Callable[..., Any], decision: Any, message: str) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    def _arguments(
+        method: Callable[..., Any],
+        decision: Any,
+        message: str,
+        target: RouteTarget,
+    ) -> tuple[tuple[Any, ...], dict[str, Any]]:
+        """Bind intent output safely to the selected public service signature."""
         raw = _object_mapping(decision)
         supplied = raw.get("parameters") or raw.get("params") or raw.get("arguments")
-        if isinstance(supplied, Mapping):
-            return (), dict(supplied)
         entity = raw.get("entity")
         signature = inspect.signature(method)
-        required = [
-            parameter for parameter in signature.parameters.values()
+        parameters = [
+            parameter
+            for parameter in signature.parameters.values()
             if parameter.name != "self"
-            and parameter.default is inspect.Parameter.empty
-            and parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
         ]
-        if not required:
-            return (), {}
-        value = entity if entity not in (None, "", {}) else message
-        if isinstance(value, Mapping):
-            return (), dict(value)
+        accepts_kwargs = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        )
+        named = {
+            parameter.name
+            for parameter in parameters
+            if parameter.kind
+            in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            )
+        }
+        if isinstance(supplied, Mapping):
+            kwargs = dict(supplied) if accepts_kwargs else {
+                key: value for key, value in supplied.items() if key in named
+            }
+            if kwargs:
+                signature.bind(**kwargs)
+                return (), kwargs
+
+        positional = [
+            parameter
+            for parameter in parameters
+            if parameter.kind
+            in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            )
+        ]
+        if not positional:
+            keyword_only = [
+                parameter
+                for parameter in parameters
+                if parameter.kind is inspect.Parameter.KEYWORD_ONLY
+            ]
+            if not keyword_only:
+                return (), {}
+            value = entity if entity not in (None, "", {}) else message
+            if target.provider_name == "dn_service":
+                match = re.search(r"(?<!\d)(\d{6,20})(?!\d)", str(value))
+                if match is None:
+                    match = re.search(r"(?<!\d)(\d{6,20})(?!\d)", message)
+                if match is None:
+                    raise RoutingError("A valid DN number was not found in the request")
+                value = match.group(1)
+            kwargs = {keyword_only[0].name: value}
+            signature.bind(**kwargs)
+            return (), kwargs
+
+        value: Any = None
+        if isinstance(entity, Mapping):
+            first_name = positional[0].name
+            aliases = (
+                first_name,
+                "dn_no",
+                "dn",
+                "value",
+                "id",
+                "name",
+                "query",
+            )
+            value = next(
+                (entity[key] for key in aliases if entity.get(key) not in (None, "")),
+                None,
+            )
+        elif entity not in (None, "", {}):
+            value = entity
+
+        if target.provider_name == "dn_service":
+            candidate = str(value or message)
+            match = re.search(r"(?<!\d)(\d{6,20})(?!\d)", candidate)
+            if match is None:
+                match = re.search(r"(?<!\d)(\d{6,20})(?!\d)", message)
+            if match is None:
+                raise RoutingError("A valid DN number was not found in the request")
+            value = match.group(1)
+        elif value in (None, "", {}):
+            value = message
+
+        signature.bind(value)
         return (value,), {}
 
     async def execute(
@@ -334,7 +423,7 @@ class ServiceRouter:
     ) -> ServiceResponse:
         target = self.target_for(decision)
         method = self._resolve_method(target)
-        args, kwargs = self._arguments(method, decision_object, message)
+        args, kwargs = self._arguments(method, decision_object, message, target)
         transient = (TimeoutError, ConnectionError, DatabaseConnectionError)
         try:
             async for attempt in AsyncRetrying(
@@ -412,6 +501,31 @@ class AIProviderOrchestrator:
             return service
         raise MethodNotFoundError(f"{label} exposes none of: {', '.join(candidates)}")
 
+    @staticmethod
+    def _root_cause(exc: BaseException) -> BaseException:
+        root = exc
+        visited: set[int] = set()
+        while id(root) not in visited:
+            visited.add(id(root))
+            next_error = root.__cause__ or root.__context__
+            if next_error is None:
+                break
+            root = next_error
+        return root
+
+    @staticmethod
+    def _raw_response_fallback(data: Any) -> str:
+        """Return readable structured data when a presentation layer is absent."""
+        try:
+            rendered = orjson.dumps(
+                data,
+                option=orjson.OPT_INDENT_2 | orjson.OPT_NON_STR_KEYS,
+                default=str,
+            ).decode("utf-8")
+        except (TypeError, ValueError, orjson.JSONEncodeError):
+            rendered = str(data)
+        return rendered[:4_000]
+
     async def _detect_intent(self, message: str, sender: str | None) -> tuple[Any, bool]:
         key = self._intent_cache_key(message, sender)
         if key in self.intent_cache:
@@ -468,15 +582,22 @@ class AIProviderOrchestrator:
         request_id = str(context.get("request_id") or uuid.uuid4())
         started = time.perf_counter()
         bound = logger.bind(request_id=request_id, sender=sender)
+        stage = "request_validation"
+        decision: RoutingDecisionView | None = None
+        target: RouteTarget | None = None
         try:
+            bound.info("Request received original_message={!r}", message)
             request = ServiceRequest(
                 request_id=request_id,
                 message=message,
                 sender=sender,
                 metadata=dict(context),
             )
+            bound.info("Request normalized normalized_message={!r}", request.message)
+            stage = "intent_detection"
             decision_object, cache_hit = await self._detect_intent(request.message, request.sender)
             decision = _decision_view(decision_object)
+            stage = "routing"
             target = self.router.target_for(decision)
             bound = bound.bind(
                 intent=decision.intent,
@@ -484,52 +605,143 @@ class AIProviderOrchestrator:
                 service=target.provider_name,
                 method=target.method,
             )
-            bound.info("Routing request cache_hit={}", cache_hit)
+            bound.info(
+                "Routing decision entity={!r} reason={!r} cache_hit={} cache_miss={}",
+                decision.entity,
+                decision.reason,
+                cache_hit,
+                not cache_hit,
+            )
+            stage = "business_service_execution"
+            service_started = time.perf_counter()
             business_response = await asyncio.wait_for(
                 self.router.execute(
                     decision_object, decision, request.message, request_id
                 ),
                 timeout=self.request_timeout,
             )
+            service_ms = (time.perf_counter() - service_started) * 1000
+            groq_ms = 0.0
             if decision.requires_ai and target.provider_name != "groq_service":
-                business_response = await asyncio.wait_for(
-                    self._enhance(
-                        decision, business_response, request.message, request_id
-                    ),
-                    timeout=self.request_timeout,
-                )
+                stage = "groq_enhancement"
+                groq_started = time.perf_counter()
+                try:
+                    business_response = await asyncio.wait_for(
+                        self._enhance(
+                            decision, business_response, request.message, request_id
+                        ),
+                        timeout=self.request_timeout,
+                    )
+                except Exception as exc:
+                    root = self._root_cause(exc)
+                    bound.opt(exception=True).error(
+                        "Optional Groq enhancement failed; returning business response "
+                        "exception_type={} exception_message={!r} root_cause_type={} "
+                        "root_cause={!r}",
+                        type(exc).__name__,
+                        str(exc),
+                        type(root).__name__,
+                        str(root),
+                    )
+                    business_response = business_response.model_copy(update={
+                        "metadata": business_response.metadata
+                        | {
+                            "ai_enhanced": False,
+                            "groq_error_type": type(exc).__name__,
+                            "groq_error": str(exc),
+                        }
+                    })
+                groq_ms = (time.perf_counter() - groq_started) * 1000
+            stage = "response_formatting"
             elapsed = (time.perf_counter() - started) * 1000
             business_response = business_response.model_copy(
                 update={"processing_time": elapsed}
             )
             bound.info(
-                "Request completed success={} response_time_ms={:.2f}",
+                "Request completed success={} service_time_ms={:.2f} groq_time_ms={:.2f} "
+                "total_time_ms={:.2f} response_length={}",
                 business_response.success,
+                service_ms,
+                groq_ms,
                 elapsed,
+                len(business_response.whatsapp_message),
             )
             if business_response.whatsapp_message:
                 return business_response.whatsapp_message
             if business_response.success:
-                return "Your request was processed successfully."
-            return business_response.error or "I could not process that request right now."
-        except ValidationError:
-            bound.exception("Request or response validation failed")
+                return self._raw_response_fallback(business_response.data)
+            error = business_response.error.strip()
+            if target.provider_name == "dn_service" and "not found" in error.casefold():
+                dn_match = re.search(r"(?<!\d)(\d{6,20})(?!\d)", request.message)
+                dn_no = dn_match.group(1) if dn_match else str(decision.entity)
+                return f"DN {dn_no} was not found in PostgreSQL."
+            if any(token in error.casefold() for token in ("database", "connection", "sql", "timeout")):
+                return "Database is currently unavailable."
+            return error or f"Service execution failed. Reference ID: {request_id}"
+        except ValidationError as exc:
+            bound.opt(exception=True).error(
+                "Failure stage={} exception_type={} exception_message={!r}",
+                stage, type(exc).__name__, str(exc),
+            )
             return "Please send a valid, non-empty request."
-        except MethodNotFoundError:
-            bound.exception("Configured service method was not found")
-            return "That service operation is temporarily unavailable."
-        except (ServiceUnavailableError, ConfigurationError, ImportError):
-            bound.exception("A required service is unavailable")
-            return "The requested service is temporarily unavailable. Please try again shortly."
-        except (TimeoutError, asyncio.TimeoutError):
-            bound.exception("Request timed out")
-            return "The request took too long to complete. Please try again."
-        except DatabaseConnectionError:
-            bound.exception("A business service reported a database connection failure")
-            return "Business data is temporarily unavailable. Please try again shortly."
-        except (ConnectionError, OSError, RuntimeError, TypeError, ValueError):
-            bound.exception("Unexpected orchestration dependency failure")
-            return "I could not process that request right now. Please try again shortly."
+        except RoutingError as exc:
+            bound.opt(exception=True).error("Failure stage={} exception_type={} exception_message={!r}", stage, type(exc).__name__, str(exc))
+            return f"{exc}. Reference ID: {request_id}"
+        except MethodNotFoundError as exc:
+            bound.opt(exception=True).error("Failure stage={} exception_type={} exception_message={!r}", stage, type(exc).__name__, str(exc))
+            service_name = target.provider_name if target else "Selected service"
+            return f"{service_name} does not support the requested operation. Reference ID: {request_id}"
+        except (ServiceUnavailableError, ConfigurationError, ImportError) as exc:
+            bound.opt(exception=True).error("Failure stage={} exception_type={} exception_message={!r}", stage, type(exc).__name__, str(exc))
+            service_name = target.provider_name if target else "Requested service"
+            return f"{service_name} is unavailable. Reference ID: {request_id}"
+        except (TimeoutError, asyncio.TimeoutError) as exc:
+            bound.opt(exception=True).error("Failure stage={} exception_type={} exception_message={!r}", stage, type(exc).__name__, str(exc))
+            return f"The request timed out. Reference ID: {request_id}"
+        except (DatabaseConnectionError, SQLAlchemyError, ConnectionError) as exc:
+            root = self._root_cause(exc)
+            bound.opt(exception=True).error(
+                "Failure stage={} database_status=unavailable exception_type={} "
+                "exception_message={!r} root_cause_type={} root_cause={!r}",
+                stage, type(exc).__name__, str(exc), type(root).__name__, str(root),
+            )
+            return f"Database is currently unavailable. Reference ID: {request_id}"
+        except (AttributeError, ValueError, TypeError, KeyError, IndexError, RuntimeError, OSError) as exc:
+            root = self._root_cause(exc)
+            bound.opt(exception=True).error(
+                "Failure stage={} intent={} entity={!r} service={} method={} "
+                "exception_type={} exception_message={!r} root_cause_type={} "
+                "root_cause={!r} execution_time_ms={:.2f}",
+                stage,
+                decision.intent if decision else None,
+                decision.entity if decision else None,
+                target.provider_name if target else None,
+                target.method if target else None,
+                type(exc).__name__,
+                str(exc),
+                type(root).__name__,
+                str(root),
+                (time.perf_counter() - started) * 1000,
+            )
+            return f"Unexpected internal error. Reference ID: {request_id}"
+        except Exception as exc:
+            root = self._root_cause(exc)
+            bound.opt(exception=True).critical(
+                "Unhandled failure stage={} intent={} entity={!r} service={} method={} "
+                "exception_type={} exception_message={!r} root_cause_type={} "
+                "root_cause={!r} execution_time_ms={:.2f}",
+                stage,
+                decision.intent if decision else None,
+                decision.entity if decision else None,
+                target.provider_name if target else None,
+                target.method if target else None,
+                type(exc).__name__,
+                str(exc),
+                type(root).__name__,
+                str(root),
+                (time.perf_counter() - started) * 1000,
+            )
+            return f"Unexpected internal error. Reference ID: {request_id}"
 
     def get_registry_status(self, *, refresh: bool = False) -> dict[str, Any]:
         """Validate imports, instances, and routed methods without business calls."""
