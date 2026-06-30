@@ -725,43 +725,70 @@ class WhatsAppProviderService:
                 logger.error(f"❌ [REQ:{request_id}] National KPI service not available")
                 return None
             
+            logger.info(f"🔍 [REQ:{request_id}] Gathering national KPIs")
             result = self.national_kpi_service.get_national_kpi_dashboard()
+            
             if result and isinstance(result, dict):
-                return self._format_response(decision.original_message, result.get("whatsapp_message", result.get("data")), error=not result.get("success", False), request_id=request_id)
+                return self._format_response(
+                    decision.original_message, 
+                    result.get("whatsapp_message", result.get("data")), 
+                    error=not result.get("success", False), 
+                    request_id=request_id
+                )
             return None
         except Exception as e:
             logger.error(f"❌ [REQ:{request_id}] National KPI handler failed: {e}")
             return None
 
     async def _handle_groq(self, message: str, decision: RoutingDecision, request_id: str) -> Dict[str, Any]:
-        """Handle general AI conversational query"""
+        """Handle unstructured conversational logic via GroqService"""
         try:
             if not self.groq_service:
-                return self._format_response(message, "⚠️ Conversational AI is currently unavailable.", error=True, request_id=request_id)
+                logger.error(f"❌ [REQ:{request_id}] Groq service not available")
+                return self._format_response(
+                    message,
+                    "⚠️ Conversational AI engine is currently offline. Please use strict pattern matching.",
+                    error=True,
+                    request_id=request_id
+                )
             
+            # Delegate raw prompt processing to your actual microservice
             ai_response = self.groq_service.process_query(message)
-            return self._format_response(message, ai_response, error=False, request_id=request_id)
+            if isinstance(ai_response, dict):
+                return self._format_response(
+                    message,
+                    ai_response.get("whatsapp_message", ai_response.get("data", "Error processing text")),
+                    error=not ai_response.get("success", True),
+                    request_id=request_id
+                )
+            
+            return self._format_response(message, str(ai_response), error=False, request_id=request_id)
         except Exception as e:
-            logger.error(f"❌ [REQ:{request_id}] Groq handler failed: {e}")
-            return self._format_response(message, "⚠️ Failed to process conversational response.", error=True, request_id=request_id)
+            logger.error(f"❌ [REQ:{request_id}] Groq interface handler failure: {e}")
+            return self._format_response(message, "⚠️ Conversational component failed.", error=True, request_id=request_id)
 
     # ============================================================
-    # RESPONSE FORMATTING LOGIC
+    # UNIFIED OUTPUT SYSTEM - MATCHES WEBHOOK SCHEMAS
     # ============================================================
 
-    def _format_response(self, original_message: str, reply: Any, error: bool = False, request_id: str = "") -> Dict[str, Any]:
-        """Unified formatting rules matching webhook demands."""
-        if hasattr(reply, "to_whatsapp_message"):
-            reply_text = reply.to_whatsapp_message()
-        elif isinstance(reply, dict):
-            reply_text = str(reply)
+    def _format_response(self, query: str, content: Any, error: bool = False, request_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Builds uniform structural boundaries for responses.
+        Ensures NO string building or data formatting happens inside this file.
+        """
+        # Unpack rich dataclasses if they have string conversions
+        if hasattr(content, "to_whatsapp_message"):
+            text_payload = content.to_whatsapp_message()
         else:
-            reply_text = str(reply)
+            text_payload = str(content)
 
         return {
-            "original_message": original_message,
-            "whatsapp_message": reply_text,
-            "status": "error" if error else "success",
-            "request_id": request_id,
-            "timestamp": datetime.utcnow().isoformat()
+            "query": query,
+            "whatsapp_message": text_payload,
+            "success": not error,
+            "metadata": {
+                "request_id": request_id,
+                "timestamp": datetime.utcnow().isoformat(),
+                "orchestrator_version": "10.0"
+            }
         }
