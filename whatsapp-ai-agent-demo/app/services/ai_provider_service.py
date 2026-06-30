@@ -724,6 +724,24 @@ class AIProviderOrchestrator:
                 (time.perf_counter() - started) * 1000,
             )
             return f"Unexpected internal error. Reference ID: {request_id}"
+
+    async def process_whatsapp_query(
+        self,
+        message: str,
+        sender: str | None = None,
+        **context: Any,
+    ) -> str:
+        """Compatibility entry point used on the provider-service instance."""
+        return await self.process(message, sender, **context)
+
+    async def process_query(
+        self,
+        message: str,
+        sender: str | None = None,
+        **context: Any,
+    ) -> str:
+        """Compatibility alias for callers resolving the singleton directly."""
+        return await self.process_whatsapp_query(message, sender, **context)
         except Exception as exc:
             root = self._root_cause(exc)
             bound.opt(exception=True).critical(
@@ -820,6 +838,9 @@ class AIProviderOrchestrator:
 container = ApplicationContainer()
 orchestrator = AIProviderOrchestrator(container)
 
+# Preserve the historical service class name used by imports and type checks.
+WhatsAppProviderService = AIProviderOrchestrator
+
 
 async def process_whatsapp_query(
     message: str,
@@ -827,7 +848,7 @@ async def process_whatsapp_query(
     **context: Any,
 ) -> str:
     """Primary backward-compatible webhook entry point."""
-    return await orchestrator.process(message, sender, **context)
+    return await orchestrator.process_whatsapp_query(message, sender, **context)
 
 
 async def process_query(
@@ -888,6 +909,7 @@ __all__ = [
     "ServiceResponse",
     "ServiceRouter",
     "ServiceUnavailableError",
+    "WhatsAppProviderService",
     "container",
     "get_service_registry_status",
     "get_system_health",
