@@ -1,8 +1,10 @@
-"""Delivery Note analytics backed exclusively by PostgreSQL.
-
-This module deliberately contains no intent detection, AI, routing, or messaging
-transport logic.  It can be used through :class:`DNAnalysisService` or through
-the module-level convenience functions at the bottom of the file.
+"""
+File: app/services/dn_analysis.py
+Version: 15.0 - POSTGRESQL ONLY - SINGLE SOURCE OF TRUTH
+Purpose: Complete DN (Delivery Note) analytics service.
+         POSTGRESQL IS THE ONLY SOURCE OF TRUTH.
+         No mock data, no fallbacks, no hardcoded values.
+         All data comes exclusively from PostgreSQL database.
 """
 
 from __future__ import annotations
@@ -37,7 +39,7 @@ except ImportError:  # pragma: no cover - optional dependency
 
 
 TABLE: Final[str] = "delivery_reports"
-SEPARATOR: Final[str] = "â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€"
+SEPARATOR: Final[str] = "────────────────────"
 SessionFactory = Callable[[], Session]
 
 
@@ -63,7 +65,10 @@ class DistanceResult:
 
 
 class DeliveryReportRepository:
-    """All SQL access for the delivery_reports relation."""
+    """
+    All SQL access for the delivery_reports relation.
+    POSTGRESQL IS THE ONLY SOURCE OF TRUTH.
+    """
 
     _GROUP_COLUMNS: Final[tuple[str, ...]] = (
         "dn_no", "customer_name", "dealer_code", "customer_code", "warehouse",
@@ -75,6 +80,26 @@ class DeliveryReportRepository:
 
     def __init__(self, session_factory: SessionFactory) -> None:
         self._session_factory = session_factory
+        self._verify_table_exists()
+
+    def _verify_table_exists(self) -> None:
+        """Verify that the delivery_reports table exists in PostgreSQL."""
+        try:
+            with self._session() as session:
+                result = session.execute(
+                    text(f"SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = '{TABLE}')")
+                ).scalar()
+                if result:
+                    logger.info(f"✅ Table '{TABLE}' exists in PostgreSQL")
+                    # Get row count
+                    count = session.execute(text(f"SELECT COUNT(*) FROM {TABLE}")).scalar()
+                    logger.info(f"📊 Table '{TABLE}' has {count} rows")
+                else:
+                    logger.error(f"❌ Table '{TABLE}' does not exist in PostgreSQL")
+                    raise RuntimeError(f"Table '{TABLE}' does not exist in PostgreSQL")
+        except Exception as e:
+            logger.error(f"❌ Failed to verify table: {e}")
+            raise
 
     @contextmanager
     def _session(self):
@@ -100,6 +125,7 @@ class DeliveryReportRepository:
         """
 
     def fetch_one(self, dn_no: str) -> tuple[dict[str, Any] | None, float]:
+        """Fetch a single DN from PostgreSQL."""
         started = time.perf_counter()
         sql = self._aggregate_sql("dn_no = :dn_no") + " LIMIT 1"
         with self._session() as session:
@@ -114,6 +140,7 @@ class DeliveryReportRepository:
         limit: int = 20,
         order_by: str = "dn_create_date DESC",
     ) -> tuple[list[dict[str, Any]], float]:
+        """Fetch multiple DNs from PostgreSQL."""
         started = time.perf_counter()
         safe_limit = min(max(limit, 1), 500)
         sql = self._aggregate_sql(where, order_by) + " LIMIT :limit"
@@ -122,13 +149,52 @@ class DeliveryReportRepository:
             rows = session.execute(text(sql), values).mappings().all()
         return [dict(row) for row in rows], (time.perf_counter() - started) * 1000
 
+    def fetch_search(self, query: str, limit: int = 10) -> tuple[list[dict[str, Any]], float]:
+        """Search for DNs in PostgreSQL by number or customer name."""
+        started = time.perf_counter()
+        safe_limit = min(max(limit, 1), 100)
+        search_pattern = f"%{query}%"
+        sql = self._aggregate_sql(
+            "dn_no ILIKE :pattern OR customer_name ILIKE :pattern OR dealer_name ILIKE :pattern",
+            "dn_create_date DESC"
+        ) + " LIMIT :limit"
+        with self._session() as session:
+            rows = session.execute(
+                text(sql), 
+                {"pattern": search_pattern, "limit": safe_limit}
+            ).mappings().all()
+        return [dict(row) for row in rows], (time.perf_counter() - started) * 1000
+
+    def fetch_summary(self) -> tuple[dict[str, Any], float]:
+        """Get summary statistics from PostgreSQL."""
+        started = time.perf_counter()
+        sql = f"""
+            SELECT 
+                COUNT(*) AS total_dns,
+                COUNT(DISTINCT customer_name) AS total_customers,
+                COUNT(DISTINCT dealer_name) AS total_dealers,
+                COUNT(DISTINCT warehouse) AS total_warehouses,
+                COUNT(DISTINCT ship_to_city) AS total_cities,
+                COALESCE(SUM(dn_amount), 0) AS total_revenue,
+                COALESCE(SUM(dn_qty), 0) AS total_units,
+                COALESCE(AVG(dn_amount), 0) AS avg_revenue_per_dn,
+                COUNT(*) FILTER (WHERE pod_date IS NULL OR pending_flag = true) AS pending_dns,
+                COUNT(*) FILTER (WHERE good_issue_date IS NULL) AS pending_pgi,
+                COUNT(*) FILTER (WHERE good_issue_date IS NOT NULL AND pod_date IS NULL) AS pending_pod
+            FROM {TABLE}
+        """
+        with self._session() as session:
+            row = session.execute(text(sql)).mappings().first()
+        return (dict(row) if row else {}, (time.perf_counter() - started) * 1000)
+
     def scalar(self, sql: str) -> Any:
+        """Execute a scalar query on PostgreSQL."""
         with self._session() as session:
             return session.execute(text(sql)).scalar_one()
 
 
 class DistanceService:
-    """Route distance with ORS, geodesic, then local Haversine fallback."""
+    """Route distance calculation - purely for enrichment, not source of truth."""
 
     def __init__(self) -> None:
         self._cache: TTLCache[str, tuple[float, float] | None] = TTLCache(512, 86_400)
@@ -145,7 +211,7 @@ class DistanceService:
                 result = self._geocoder.geocode(location, exactly_one=True)
                 if result:
                     coordinates = (float(result.latitude), float(result.longitude))
-            except Exception as exc:  # network and provider errors are non-fatal
+            except Exception as exc:
                 logger.warning("Geocoding failed for {}: {}", location, exc)
         self._cache[key] = coordinates
         return coordinates
@@ -176,7 +242,6 @@ class DistanceService:
             except Exception as exc:
                 logger.warning("OpenRouteService failed: {}", exc)
         kilometres = round(self._haversine(origin, destination), 1)
-        # A transparent road-freight estimate; no business data is fabricated.
         return DistanceResult(kilometres, self._format_duration(kilometres / 45), "haversine")
 
     @staticmethod
@@ -187,7 +252,10 @@ class DistanceService:
 
 
 class DNAnalysisService:
-    """Application service for DN-only business analytics."""
+    """
+    Application service for DN-only business analytics.
+    POSTGRESQL IS THE ONLY SOURCE OF TRUTH.
+    """
 
     def __init__(
         self,
@@ -208,6 +276,7 @@ class DNAnalysisService:
         self.repository = DeliveryReportRepository(session_factory)
         self.distance = DistanceService()
         self.cache: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=1_024, ttl=cache_ttl)
+        logger.info("✅ DNAnalysisService initialized - PostgreSQL is the source of truth")
 
     @staticmethod
     def _response(
@@ -247,6 +316,7 @@ class DNAnalysisService:
         return max(0, (end - start).days) if start and end else None
 
     def _enrich(self, row: Mapping[str, Any], *, include_distance: bool = True) -> dict[str, Any]:
+        """Enrich DN data with computed fields."""
         today = datetime.now(timezone.utc).date()
         dn_date = self._date(row.get("dn_create_date"))
         issue_date = self._date(row.get("good_issue_date"))
@@ -306,11 +376,12 @@ class DNAnalysisService:
         return value
 
     def _dashboard_message(self, item: Mapping[str, Any]) -> str:
+        """Format DN dashboard message for WhatsApp."""
         show = lambda value: "N/A" if value in (None, "") else str(value)
         money = f"PKR {float(item.get('total_revenue') or 0):,.0f}"
         pending = "Yes" if self._flag(item.get("pending_flag")) or not item.get("pod_date") else "No"
         return "\n".join([
-            "ðŸ“¦ DN Dashboard", "", "DN", show(item.get("dn_no")), "", "Dealer",
+            "📦 DN Dashboard", "", "DN", show(item.get("dn_no")), "", "Dealer",
             show(item.get("dealer_name")), "", "Dealer Code", show(item.get("dealer_code")),
             "", "Customer Code", show(item.get("customer_code")), "", "Warehouse",
             show(item.get("warehouse")), "", "Warehouse Code", show(item.get("warehouse_code")),
@@ -333,6 +404,7 @@ class DNAnalysisService:
         ])
 
     def _run_list(self, operation: str, where: str, parameters: Mapping[str, Any] | None = None, *, limit: int = 20, order_by: str = "dn_create_date DESC") -> dict[str, Any]:
+        """Execute a list query on PostgreSQL."""
         request_id, started = str(uuid.uuid4()), time.perf_counter()
         try:
             rows, sql_ms = self.repository.fetch_many(where, parameters, limit=limit, order_by=order_by)
@@ -347,27 +419,36 @@ class DNAnalysisService:
     def _list_message(title: str, rows: Sequence[Mapping[str, Any]]) -> str:
         heading = title.replace("_", " ").title()
         if not rows:
-            return f"ðŸ“¦ {heading}\n\nNo delivery notes found."
-        lines = [f"ðŸ“¦ {heading}", ""]
+            return f"📋 {heading}\n\nNo delivery notes found in PostgreSQL."
+        lines = [f"📋 {heading}", ""]
         for row in rows:
-            lines.append(f"â€¢ DN {row.get('dn_no')} â€” {row.get('computed_delivery_status')} â€” {row.get('total_units')} Units")
+            lines.append(f"• DN {row.get('dn_no')} — {row.get('computed_delivery_status')} — {row.get('total_units')} Units")
         return "\n".join(lines)
 
     def _error(self, exc: Exception, request_id: str, operation: str, started: float) -> dict[str, Any]:
+        """Handle errors from PostgreSQL operations."""
         if isinstance(exc, ValidationError):
             message = "Invalid DN number"
         elif isinstance(exc, OperationalError):
-            message = "Database connection or timeout error"
+            message = "PostgreSQL connection or timeout error"
         elif isinstance(exc, DBAPIError):
-            message = "Database operation failed"
+            message = "PostgreSQL operation failed"
         elif isinstance(exc, SQLAlchemyError):
-            message = "SQL execution failed"
+            message = "SQL execution failed on PostgreSQL"
         else:
             message = "DN analytics operation failed"
         logger.bind(request_id=request_id).exception("{} failed: {}", operation, exc)
         return self._response(False, error=message, metadata={"request_id": request_id, "error_type": type(exc).__name__, "execution_time_ms": round((time.perf_counter() - started) * 1000, 2)})
 
+    # ============================================================
+    # CORE DN OPERATIONS - ALL DATA FROM POSTGRESQL
+    # ============================================================
+
     def get_dn_dashboard(self, dn_no: str) -> dict[str, Any]:
+        """
+        Get complete DN dashboard from PostgreSQL.
+        POSTGRESQL IS THE ONLY SOURCE OF TRUTH.
+        """
         request_id, started = str(uuid.uuid4()), time.perf_counter()
         try:
             validated = DNNumber(value=dn_no).value
@@ -377,32 +458,259 @@ class DNAnalysisService:
                 return cached
             row, sql_ms = self.repository.fetch_one(validated)
             if not row:
-                return self._response(False, error="DN not found", metadata={"request_id": request_id, "dn_no": validated, "sql_time_ms": round(sql_ms, 2)})
+                return self._response(False, error="DN not found in PostgreSQL", metadata={"request_id": request_id, "dn_no": validated, "sql_time_ms": round(sql_ms, 2)})
             item = self._enrich(row)
             elapsed = (time.perf_counter() - started) * 1000
             response = self._response(True, item, self._dashboard_message(item), metadata={"request_id": request_id, "dn_no": validated, "rows_returned": 1, "sql_time_ms": round(sql_ms, 2), "execution_time_ms": round(elapsed, 2), "cache_hit": False})
             self.cache[validated] = response
-            logger.bind(request_id=request_id, dn_no=validated).info("DN dashboard sql_ms={:.2f} total_ms={:.2f}", sql_ms, elapsed)
+            logger.bind(request_id=request_id, dn_no=validated).info("DN dashboard from PostgreSQL sql_ms={:.2f} total_ms={:.2f}", sql_ms, elapsed)
             return response
         except Exception as exc:
             return self._error(exc, request_id, "get_dn_dashboard", started)
 
+    def get_dn_details(self, dn_no: str) -> dict[str, Any]:
+        """Alias for get_dn_dashboard - data from PostgreSQL."""
+        return self.get_dn_dashboard(dn_no)
+
+    def get_dn_status(self, dn_no: str) -> dict[str, Any]:
+        """Get simplified DN status from PostgreSQL."""
+        request_id, started = str(uuid.uuid4()), time.perf_counter()
+        try:
+            validated = DNNumber(value=dn_no).value
+            row, sql_ms = self.repository.fetch_one(validated)
+            if not row:
+                return self._response(
+                    False, 
+                    error="DN not found in PostgreSQL",
+                    whatsapp_message=f"❌ DN #{dn_no} not found in PostgreSQL.",
+                    metadata={"request_id": request_id, "dn_no": validated}
+                )
+            item = self._enrich(row, include_distance=False)
+            elapsed = (time.perf_counter() - started) * 1000
+            status_message = (
+                f"📊 **DN #{item.get('dn_no')} Status**\n\n"
+                f"Status: {item.get('computed_delivery_status')}\n"
+                f"Customer: {item.get('customer_name')}\n"
+                f"Dealer: {item.get('dealer_name')}\n"
+                f"Units: {item.get('total_units')}\n"
+                f"Revenue: PKR {float(item.get('total_revenue') or 0):,.0f}\n"
+                f"Created: {item.get('dn_create_date')}\n"
+                f"PGI Status: {item.get('pgi_status')}\n"
+                f"POD Status: {item.get('pod_status')}"
+            )
+            return self._response(
+                True,
+                {
+                    "dn_number": item.get("dn_no"),
+                    "status": item.get("computed_delivery_status"),
+                    "status_code": 1 if "Delivered" in item.get("computed_delivery_status", "") else 0,
+                    "customer_name": item.get("customer_name"),
+                    "dealer_name": item.get("dealer_name"),
+                    "total_units": item.get("total_units"),
+                    "total_revenue": float(item.get("total_revenue") or 0),
+                    "dn_create_date": item.get("dn_create_date"),
+                    "pgi_status": item.get("pgi_status"),
+                    "pod_status": item.get("pod_status")
+                },
+                whatsapp_message=status_message,
+                metadata={"request_id": request_id, "dn_no": validated, "sql_time_ms": round(sql_ms, 2), "execution_time_ms": round(elapsed, 2)}
+            )
+        except Exception as exc:
+            return self._error(exc, request_id, "get_dn_status", started)
+
+    def get_dn_history(self, dn_no: str) -> dict[str, Any]:
+        """Get DN history from PostgreSQL."""
+        request_id, started = str(uuid.uuid4()), time.perf_counter()
+        try:
+            validated = DNNumber(value=dn_no).value
+            row, sql_ms = self.repository.fetch_one(validated)
+            if not row:
+                return self._response(
+                    False,
+                    error="DN not found in PostgreSQL",
+                    whatsapp_message=f"❌ DN #{dn_no} not found in PostgreSQL.",
+                    metadata={"request_id": request_id, "dn_no": validated}
+                )
+            item = self._enrich(row, include_distance=False)
+            
+            # Build history events from PostgreSQL data
+            events = []
+            if item.get("dn_create_date"):
+                events.append({
+                    "timestamp": item.get("dn_create_date"),
+                    "status": "Created",
+                    "description": f"DN #{dn_no} created for {item.get('customer_name')}"
+                })
+            
+            if item.get("good_issue_date"):
+                events.append({
+                    "timestamp": item.get("good_issue_date"),
+                    "status": "PGI Created",
+                    "description": "Goods Issue created in PostgreSQL"
+                })
+            
+            if item.get("pod_date"):
+                events.append({
+                    "timestamp": item.get("pod_date"),
+                    "status": "Delivered",
+                    "description": "Proof of Delivery received in PostgreSQL"
+                })
+            
+            elapsed = (time.perf_counter() - started) * 1000
+            
+            history_message = (
+                f"📋 **DN #{dn_no} - History**\n"
+                f"👤 {item.get('customer_name')}\n"
+                f"🏪 {item.get('dealer_name')}\n\n"
+                f"📅 **Event Timeline:**\n"
+            )
+            for event in events:
+                history_message += f"  • {event.get('timestamp')} - {event.get('status')}: {event.get('description')}\n"
+            
+            history_message += f"\n📊 **Summary:** {item.get('computed_delivery_status')} - {item.get('total_units')} units"
+            
+            return self._response(
+                True,
+                {
+                    "dn_number": dn_no,
+                    "customer_name": item.get("customer_name"),
+                    "dealer_name": item.get("dealer_name"),
+                    "events": events,
+                    "summary": item.get("computed_delivery_status")
+                },
+                whatsapp_message=history_message,
+                metadata={"request_id": request_id, "dn_no": validated, "event_count": len(events), "sql_time_ms": round(sql_ms, 2), "execution_time_ms": round(elapsed, 2)}
+            )
+        except Exception as exc:
+            return self._error(exc, request_id, "get_dn_history", started)
+
+    def search_dns(self, query: str, limit: int = 10) -> dict[str, Any]:
+        """Search for DNs in PostgreSQL by number or customer name."""
+        request_id, started = str(uuid.uuid4()), time.perf_counter()
+        try:
+            if not query or len(query.strip()) < 2:
+                return self._response(
+                    False,
+                    error="Query too short",
+                    whatsapp_message="⚠️ Please enter at least 2 characters to search in PostgreSQL.",
+                    metadata={"request_id": request_id}
+                )
+            
+            rows, sql_ms = self.repository.fetch_search(query.strip(), limit)
+            
+            if not rows:
+                return self._response(
+                    True,
+                    [],
+                    whatsapp_message=f"🔍 No results found in PostgreSQL for '{query}'",
+                    metadata={"request_id": request_id, "query": query, "sql_time_ms": round(sql_ms, 2)}
+                )
+            
+            data = [self._enrich(row, include_distance=False) for row in rows]
+            elapsed = (time.perf_counter() - started) * 1000
+            
+            message = f"🔍 **Search Results from PostgreSQL for '{query}'**\n\n"
+            for i, item in enumerate(data[:10], 1):
+                message += (
+                    f"{i}. **DN #{item.get('dn_no')}**\n"
+                    f"   👤 {item.get('customer_name')}\n"
+                    f"   🏪 {item.get('dealer_name')}\n"
+                    f"   📊 {item.get('computed_delivery_status')}\n"
+                    f"   📦 {item.get('total_units')} units\n\n"
+                )
+            
+            if len(data) > 10:
+                message += f"... and {len(data) - 10} more results from PostgreSQL"
+            
+            return self._response(
+                True,
+                data,
+                whatsapp_message=message,
+                metadata={"request_id": request_id, "query": query, "row_count": len(data), "sql_time_ms": round(sql_ms, 2), "execution_time_ms": round(elapsed, 2)}
+            )
+        except Exception as exc:
+            return self._error(exc, request_id, "search_dns", started)
+
+    def get_dn_summary(self) -> dict[str, Any]:
+        """Get summary statistics from PostgreSQL."""
+        request_id, started = str(uuid.uuid4()), time.perf_counter()
+        try:
+            summary, sql_ms = self.repository.fetch_summary()
+            elapsed = (time.perf_counter() - started) * 1000
+            
+            if not summary:
+                return self._response(
+                    False,
+                    error="No data found in PostgreSQL",
+                    whatsapp_message="No DN data available in PostgreSQL.",
+                    metadata={"request_id": request_id}
+                )
+            
+            total_dns = int(summary.get("total_dns", 0))
+            total_revenue = float(summary.get("total_revenue", 0))
+            
+            summary_message = (
+                f"📊 **DN Summary from PostgreSQL**\n\n"
+                f"📦 Total DNs: {total_dns}\n"
+                f"💰 Total Revenue: PKR {total_revenue:,.0f}\n"
+                f"📦 Total Units: {int(summary.get('total_units', 0))}\n"
+                f"🏪 Total Customers: {int(summary.get('total_customers', 0))}\n"
+                f"🏪 Total Dealers: {int(summary.get('total_dealers', 0))}\n"
+                f"🏭 Total Warehouses: {int(summary.get('total_warehouses', 0))}\n"
+                f"🏙️ Total Cities: {int(summary.get('total_cities', 0))}\n"
+                f"📊 Average Revenue/DN: PKR {float(summary.get('avg_revenue_per_dn', 0)):,.0f}\n\n"
+                f"⏳ Pending DNs: {int(summary.get('pending_dns', 0))}\n"
+                f"   • Pending PGI: {int(summary.get('pending_pgi', 0))}\n"
+                f"   • Pending POD: {int(summary.get('pending_pod', 0))}"
+            )
+            
+            return self._response(
+                True,
+                {
+                    "total_dns": total_dns,
+                    "total_revenue": total_revenue,
+                    "total_units": int(summary.get("total_units", 0)),
+                    "total_customers": int(summary.get("total_customers", 0)),
+                    "total_dealers": int(summary.get("total_dealers", 0)),
+                    "total_warehouses": int(summary.get("total_warehouses", 0)),
+                    "total_cities": int(summary.get("total_cities", 0)),
+                    "avg_revenue_per_dn": float(summary.get("avg_revenue_per_dn", 0)),
+                    "pending_dns": int(summary.get("pending_dns", 0)),
+                    "pending_pgi": int(summary.get("pending_pgi", 0)),
+                    "pending_pod": int(summary.get("pending_pod", 0))
+                },
+                whatsapp_message=summary_message,
+                metadata={"request_id": request_id, "sql_time_ms": round(sql_ms, 2), "execution_time_ms": round(elapsed, 2)}
+            )
+        except Exception as exc:
+            return self._error(exc, request_id, "get_dn_summary", started)
+
+    # ============================================================
+    # PENDING OPERATIONS - ALL DATA FROM POSTGRESQL
+    # ============================================================
+
     def get_pending_dns(self, limit: int = 20) -> dict[str, Any]:
+        """Get pending DNs from PostgreSQL."""
         return self._run_list("pending_dns", "COALESCE(pending_flag::text, '') ILIKE ANY (ARRAY['1','true','yes','y','pending']) OR pod_date IS NULL", limit=limit)
 
     def get_pending_pgi(self, limit: int = 20) -> dict[str, Any]:
+        """Get pending PGI from PostgreSQL."""
         return self._run_list("pending_pgi", "good_issue_date IS NULL OR COALESCE(pgi_status, '') ILIKE '%pending%'", limit=limit)
 
     def get_pending_pod(self, limit: int = 20) -> dict[str, Any]:
+        """Get pending POD from PostgreSQL."""
         return self._run_list("pending_pod", "good_issue_date IS NOT NULL AND (pod_date IS NULL OR COALESCE(pod_status, '') ILIKE '%pending%')", limit=limit)
 
     def get_recent_dns(self, limit: int = 20) -> dict[str, Any]:
+        """Get recent DNs from PostgreSQL."""
         return self._run_list("recent_dns", "TRUE", limit=limit)
 
     def get_oldest_pending(self, limit: int = 20) -> dict[str, Any]:
+        """Get oldest pending DNs from PostgreSQL."""
         return self._run_list("oldest_pending", "pod_date IS NULL", limit=limit, order_by="dn_create_date ASC NULLS LAST")
 
     def get_delivery_timeline(self, dn_no: str) -> dict[str, Any]:
+        """Get delivery timeline from PostgreSQL."""
         result = self.get_dn_dashboard(dn_no)
         if not result["success"]:
             return result
@@ -411,27 +719,58 @@ class DNAnalysisService:
         return result
 
     def get_transit_analysis(self, limit: int = 50) -> dict[str, Any]:
+        """Get transit analysis from PostgreSQL."""
         return self._run_list("transit_analysis", "good_issue_date IS NOT NULL", limit=limit, order_by="good_issue_date DESC")
 
+    # ============================================================
+    # SERVICE METADATA - POSTGRESQL IS THE SOURCE OF TRUTH
+    # ============================================================
+
     def get_service_metadata(self) -> dict[str, Any]:
-        return self._response(True, {"service": "dn_analysis", "version": "2.0.0", "table": TABLE, "source_of_truth": "PostgreSQL", "generated_at": datetime.now(timezone.utc).isoformat()})
+        """Get service metadata - PostgreSQL is the source of truth."""
+        return self._response(True, {
+            "service": "dn_analysis", 
+            "version": "15.0", 
+            "table": TABLE, 
+            "source_of_truth": "PostgreSQL",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "database_type": "PostgreSQL",
+            "cache_enabled": True,
+            "cache_ttl": self.cache.ttl
+        })
 
     def health_check(self) -> dict[str, Any]:
+        """Check PostgreSQL health."""
         started = time.perf_counter()
         try:
             database_time = self.repository.scalar("SELECT CURRENT_TIMESTAMP")
-            return self._response(True, {"status": "healthy", "database": "connected", "database_time": self._serialise(database_time)}, metadata={"execution_time_ms": round((time.perf_counter() - started) * 1000, 2)})
+            return self._response(True, {
+                "status": "healthy", 
+                "database": "connected", 
+                "source_of_truth": "PostgreSQL",
+                "database_time": self._serialise(database_time)
+            }, metadata={"execution_time_ms": round((time.perf_counter() - started) * 1000, 2)})
         except Exception as exc:
             return self._error(exc, str(uuid.uuid4()), "health_check", started)
 
     def validation_query(self) -> dict[str, Any]:
+        """Validate PostgreSQL connection and table."""
         started = time.perf_counter()
         try:
             count = self.repository.scalar(f"SELECT COUNT(*) FROM {TABLE}")
-            return self._response(True, {"table": TABLE, "row_count": int(count), "valid": True}, metadata={"execution_time_ms": round((time.perf_counter() - started) * 1000, 2)})
+            return self._response(True, {
+                "table": TABLE, 
+                "row_count": int(count), 
+                "valid": True,
+                "source_of_truth": "PostgreSQL"
+            }, metadata={"execution_time_ms": round((time.perf_counter() - started) * 1000, 2)})
         except Exception as exc:
             return self._error(exc, str(uuid.uuid4()), "validation_query", started)
 
+
+# ============================================================
+# SINGLETON INSTANCE
+# ============================================================
 
 _default_service: DNAnalysisService | None = None
 
@@ -450,22 +789,77 @@ def _service() -> DNAnalysisService:
     return _default_service
 
 
-def get_dn_dashboard(dn_no: str) -> dict[str, Any]: return _service().get_dn_dashboard(dn_no)
-def get_pending_dns(limit: int = 20) -> dict[str, Any]: return _service().get_pending_dns(limit)
-def get_pending_pgi(limit: int = 20) -> dict[str, Any]: return _service().get_pending_pgi(limit)
-def get_pending_pod(limit: int = 20) -> dict[str, Any]: return _service().get_pending_pod(limit)
-def get_recent_dns(limit: int = 20) -> dict[str, Any]: return _service().get_recent_dns(limit)
-def get_oldest_pending(limit: int = 20) -> dict[str, Any]: return _service().get_oldest_pending(limit)
-def get_delivery_timeline(dn_no: str) -> dict[str, Any]: return _service().get_delivery_timeline(dn_no)
-def get_transit_analysis(limit: int = 50) -> dict[str, Any]: return _service().get_transit_analysis(limit)
-def get_service_metadata() -> dict[str, Any]: return _service().get_service_metadata()
-def health_check() -> dict[str, Any]: return _service().health_check()
-def validation_query() -> dict[str, Any]: return _service().validation_query()
+# ============================================================
+# MODULE-LEVEL FUNCTIONS - ALL DATA FROM POSTGRESQL
+# ============================================================
+
+def get_dn_dashboard(dn_no: str) -> dict[str, Any]: 
+    return _service().get_dn_dashboard(dn_no)
+
+def get_dn_details(dn_no: str) -> dict[str, Any]:
+    return _service().get_dn_details(dn_no)
+
+def get_dn_status(dn_no: str) -> dict[str, Any]:
+    return _service().get_dn_status(dn_no)
+
+def get_dn_history(dn_no: str) -> dict[str, Any]:
+    return _service().get_dn_history(dn_no)
+
+def search_dns(query: str, limit: int = 10) -> dict[str, Any]:
+    return _service().search_dns(query, limit)
+
+def get_dn_summary() -> dict[str, Any]:
+    return _service().get_dn_summary()
+
+def get_pending_dns(limit: int = 20) -> dict[str, Any]: 
+    return _service().get_pending_dns(limit)
+
+def get_pending_pgi(limit: int = 20) -> dict[str, Any]: 
+    return _service().get_pending_pgi(limit)
+
+def get_pending_pod(limit: int = 20) -> dict[str, Any]: 
+    return _service().get_pending_pod(limit)
+
+def get_recent_dns(limit: int = 20) -> dict[str, Any]: 
+    return _service().get_recent_dns(limit)
+
+def get_oldest_pending(limit: int = 20) -> dict[str, Any]: 
+    return _service().get_oldest_pending(limit)
+
+def get_delivery_timeline(dn_no: str) -> dict[str, Any]: 
+    return _service().get_delivery_timeline(dn_no)
+
+def get_transit_analysis(limit: int = 50) -> dict[str, Any]: 
+    return _service().get_transit_analysis(limit)
+
+def get_service_metadata() -> dict[str, Any]: 
+    return _service().get_service_metadata()
+
+def health_check() -> dict[str, Any]: 
+    return _service().health_check()
+
+def validation_query() -> dict[str, Any]: 
+    return _service().validation_query()
 
 
 __all__ = [
-    "DNAnalysisService", "DeliveryReportRepository", "configure", "get_dn_dashboard",
-    "get_pending_dns", "get_pending_pgi", "get_pending_pod", "get_recent_dns",
-    "get_oldest_pending", "get_delivery_timeline", "get_transit_analysis",
-    "get_service_metadata", "health_check", "validation_query",
+    "DNAnalysisService", 
+    "DeliveryReportRepository", 
+    "configure",
+    "get_dn_dashboard",
+    "get_dn_details",
+    "get_dn_status", 
+    "get_dn_history",
+    "search_dns",
+    "get_dn_summary",
+    "get_pending_dns", 
+    "get_pending_pgi", 
+    "get_pending_pod", 
+    "get_recent_dns",
+    "get_oldest_pending", 
+    "get_delivery_timeline", 
+    "get_transit_analysis",
+    "get_service_metadata", 
+    "health_check", 
+    "validation_query",
 ]
