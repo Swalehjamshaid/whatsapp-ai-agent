@@ -1,30 +1,30 @@
-"""Enterprise orchestration entry point for WhatsApp AI requests.
+"""Enterprise AI Provider Service implementation for WhatsApp AI Agents.
 
-The module coordinates intent detection, business-service dispatch, optional AI
-enhancement, and response validation.  It intentionally contains no SQL,
-analytics, KPI calculation, dashboard construction, or domain business rules.
+Handles multi-LLM orchestration (Groq, DeepSeek, OpenAI) with automated fallback
+chains, strict token/character budget enforcement for Meta's 4096 WhatsApp limit,
+structured schema validation, database analytics synchronization, and connection pooling.
 """
 
 from __future__ import annotations
 
 import asyncio
-import importlib
-import inspect
+import json
+import os
 import re
+import sys
 import time
-import uuid
-from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import asdict, dataclass, is_dataclass
+import traceback
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from functools import partial
-from typing import Any, Final, Protocol
+from typing import Any, Final, AsyncGenerator
 
+import httpx
 import orjson
-from cachetools import TTLCache
-from dependency_injector import containers, providers
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import sessionmaker, declarative_base
 from tenacity import (
     AsyncRetrying,
     retry_if_exception_type,
@@ -32,764 +32,442 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
+# -------------------------------------------------------------------------
+# CONSTANTS & METRIC BOUNDS
+# -------------------------------------------------------------------------
+MAX_WHATSAPP_MESSAGE_LENGTH: Final[int] = 4096
+DEFAULT_REQUEST_TIMEOUT: Final[float] = 25.0
+MAX_DB_RETRIES: Final[int] = 3
 
-class OrchestrationError(RuntimeError):
-    """Base class for safe orchestration failures."""
+# -------------------------------------------------------------------------
+# EXCEPTIONS
+# -------------------------------------------------------------------------
+class AIProviderException(RuntimeError):
+    """Base exception for all execution faults within the provider domain."""
 
+class ProviderTimeoutException(AIProviderException):
+    """Raised when an active LLM provider upstream exceeds SLA allocations."""
 
-class ConfigurationError(OrchestrationError):
-    pass
+class ProviderCircuitBreakerException(AIProviderException):
+    """Raised when an upstream provider endpoint is short-circuited."""
 
+class DatabaseQueryException(AIProviderException):
+    """Encapsulates downstream PostgreSQL execution or extraction failures."""
 
-class ServiceUnavailableError(OrchestrationError):
-    pass
-
-
-class MethodNotFoundError(OrchestrationError):
-    pass
-
-
-class DatabaseConnectionError(OrchestrationError):
-    """Compatibility exception for domain services that wrap DB failures."""
-
-
-class RoutingError(OrchestrationError):
-    pass
-
-
-class GroqError(OrchestrationError):
-    pass
-
-
-class ServiceRequest(BaseModel):
-    """Validated request context passed through the orchestration pipeline."""
-
-    model_config = ConfigDict(str_strip_whitespace=True)
+# -------------------------------------------------------------------------
+# REUSABLE CONTEXT & SCHEMAS
+# -------------------------------------------------------------------------
+class ProviderMetrics(BaseModel):
+    """Validatable data object for tracking engine performance indicators."""
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     request_id: str
-    message: str = Field(min_length=1, max_length=16_000)
-    sender: str | None = Field(default=None, max_length=255)
-    intent: str | None = None
-    entity: Any = None
-    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    selected_provider: str
+    fallback_provider: str | None = None
+    database_query_time_ms: float = 0.0
+    llm_execution_time_ms: float = 0.0
+    total_execution_time_ms: float = 0.0
+    errors_encountered: list[str] = Field(default_factory=list)
 
-    @field_validator("message")
+# -------------------------------------------------------------------------
+# HTTP CLIENT POOL MANAGEMENT
+# -------------------------------------------------------------------------
+class AsyncHttpClientManager:
+    """Manages thread-safe global async HTTP clients with optimized pooling properties."""
+    _client: httpx.AsyncClient | None = None
+    _lock: asyncio.Lock = asyncio.Lock()
+
     @classmethod
-    def reject_control_only_input(cls, value: str) -> str:
-        normalized = " ".join(value.split())
-        if not normalized:
-            raise ValueError("Message cannot be empty")
-        return normalized
+    async def get_client(cls) -> httpx.AsyncClient:
+        """Retrieves or spins up the shared AsyncClient engine under lock isolation."""
+        if cls._client is None or cls._client.is_closed:
+            async with cls._lock:
+                if cls._client is None or cls._client.is_closed:
+                    limits = httpx.Limits(
+                        max_connections=100,
+                        max_keepalive_connections=50,
+                        keepalive_expiry=30.0
+                    )
+                    cls._client = httpx.AsyncClient(
+                        limits=limits,
+                        timeout=httpx.Timeout(DEFAULT_REQUEST_TIMEOUT, connect=5.0)
+                    )
+        return cls._client
 
+    @classmethod
+    async def shutdown(cls) -> None:
+        """Gracefully flushes keepalive arrays and terminates connections."""
+        if cls._client and not cls._client.is_closed:
+            async with cls._lock:
+                if cls._client and not cls._client.is_closed:
+                    await cls._client.aclose()
+                    cls._client = None
 
-# Preserve imports used by integrations built against the preceding name.
-RequestInput = ServiceRequest
+# -------------------------------------------------------------------------
+# POSTGRESQL ENGINE POOL RESILIENCY LAYER
+# -------------------------------------------------------------------------
+class DatabaseEnginePool:
+    """Provides resilient connection pooling for analytics capture and dashboard verification."""
+    _engine: Any = None
+    _session_factory: Any = None
+    _lock: asyncio.Lock = asyncio.Lock()
 
+    @classmethod
+    def _initialize(cls) -> None:
+        """Extracts variables securely and provisions the SQLAlchemy engine infrastructure."""
+        db_url = os.getenv("DATABASE_URL")
+        if not db_url:
+            # Fallback string construction if component keys are injected discretely
+            user = os.getenv("POSTGRES_USER", "postgres")
+            password = os.getenv("POSTGRES_PASSWORD", "")
+            host = os.getenv("POSTGRES_HOST", "localhost")
+            port = os.getenv("POSTGRES_PORT", "5432")
+            db_name = os.getenv("POSTGRES_DB", "postgres")
+            db_url = f"postgresql://{user}:{password}@{host}:{port}/{db_name}"
 
-class ServiceResponse(BaseModel):
-    """Canonical boundary shared by all orchestrated services."""
+        # Cleans up system variables mismatching blueprint parameters
+        if db_url.startswith("postgresql+psycopg2://"):
+            pass
+        elif db_url.startswith("postgres://"):
+            db_url = db_url.replace("postgres://", "postgresql://", 1)
 
-    model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
+        pool_size = int(os.getenv("POSTGRES_POOL_SIZE", "10"))
+        max_overflow = int(os.getenv("POSTGRES_MAX_OVERFLOW", "20"))
+        pool_timeout = float(os.getenv("POSTGRES_POOL_TIMEOUT", "30.0"))
 
-    success: bool
-    data: Any = Field(default_factory=dict)
-    whatsapp_message: str = ""
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    error: str = ""
-    request_id: str = ""
-    processing_time: float = Field(default=0.0, ge=0.0)
-
-
-class RoutingDecisionView(BaseModel):
-    """Read-only validated view; the intent engine's object is never mutated."""
-
-    model_config = ConfigDict(extra="allow", frozen=True)
-
-    intent: str
-    service_key: str | None = None
-    method: str | None = None
-    entity: Any = None
-    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
-    requires_ai: bool = False
-    reason: str = ""
-
-
-@dataclass(frozen=True, slots=True)
-class RouteTarget:
-    provider_name: str
-    method: str
-
-
-@dataclass(frozen=True, slots=True)
-class RequestContext:
-    request_id: str
-    message: str
-    sender: str | None
-    started_at: float
-
-
-class ProviderResolver(Protocol):
-    def __call__(self, name: str) -> Any: ...
-
-
-ROUTES: Final[dict[str, RouteTarget]] = {
-    "dn_lookup": RouteTarget("dn_service", "get_dn_dashboard"),
-    "dn_dashboard": RouteTarget("dn_service", "get_dn_dashboard"),
-    "pending_dn": RouteTarget("dn_service", "get_pending_dns"),
-    "pending_dns": RouteTarget("dn_service", "get_pending_dns"),
-    "pending_pgi": RouteTarget("dn_service", "get_pending_pgi"),
-    "pending_pod": RouteTarget("dn_service", "get_pending_pod"),
-    "recent_dns": RouteTarget("dn_service", "get_recent_dns"),
-    "oldest_pending": RouteTarget("dn_service", "get_oldest_pending"),
-    "delivery_timeline": RouteTarget("dn_service", "get_delivery_timeline"),
-    "transit_analysis": RouteTarget("dn_service", "get_transit_analysis"),
-    "dealer_dashboard": RouteTarget("dealer_service", "get_dealer_dashboard"),
-    "dealer_comparison": RouteTarget("dealer_service", "compare_dealers"),
-    "top_dealers": RouteTarget("dealer_service", "get_top_dealers"),
-    "warehouse_dashboard": RouteTarget("warehouse_service", "get_warehouse_dashboard"),
-    "city_dashboard": RouteTarget("city_service", "get_city_dashboard"),
-    "product_dashboard": RouteTarget("product_service", "get_product_dashboard"),
-    "national_kpi": RouteTarget("kpi_service", "get_national_kpi_dashboard"),
-    "national_kpi_dashboard": RouteTarget("kpi_service", "get_national_kpi_dashboard"),
-    "general_ai": RouteTarget("groq_service", "process_query"),
-}
-
-
-_SYMBOLS: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
-    "dn_service": ("app.services.dn_analysis", ("DNAnalysisService", "DNService")),
-    "dealer_service": (
-        "app.services.dealer_analytics_service",
-        "DealerAnalyticsService", "DealerService",
-    ),
-    "warehouse_service": ("app.services.warehouse_service", ("WarehouseService",)),
-    "city_service": ("app.services.city_service", ("CityService",)),
-    "product_service": ("app.services.product_service", ("ProductService",)),
-    "kpi_service": (
-        "app.services.kpi_service",
-        ("KPIService", "KpiService", "NationalKPIService"),
-    ),
-    "groq_service": ("app.services.groq_service", ("GroqService",)),
-    "intent_engine": (
-        "app.services.ai_provider_service_intents",
-        ("IntentDetectionEngine", "IntentEngine"),
-    ),
-}
-
-
-def _load_component(key: str) -> Any:
-    """Load one configured singleton lazily, preserving fast module import."""
-    try:
-        module_name, candidates = _SYMBOLS[key]
-    except KeyError as exc:
-        raise ConfigurationError(f"Unknown component: {key}") from exc
-    try:
-        module = importlib.import_module(module_name)
-    except ImportError as exc:
-        raise ConfigurationError(f"Cannot import {module_name}") from exc
-    # Function-oriented service modules are already fully configured by their
-    # owning module. Prefer that public interface to constructing a second,
-    # potentially unconfigured service instance (notably for database-backed
-    # DN analytics).
-    routed_methods = {
-        target.method
-        for target in ROUTES.values()
-        if target.provider_name == key
-    }
-    if routed_methods and any(
-        callable(getattr(module, method, None)) for method in routed_methods
-    ):
-        return module
-    for symbol in candidates:
-        component = getattr(module, symbol, None)
-        if component is not None:
-            try:
-                return component()
-            except TypeError as exc:
-                raise ConfigurationError(
-                    f"{module_name}.{symbol} requires dependencies; override its container provider"
-                ) from exc
-    # Function-oriented modules are valid service implementations.
-    if key != "intent_engine":
-        return module
-    raise ConfigurationError(f"No supported component found in {module_name}")
-
-
-class ApplicationContainer(containers.DeclarativeContainer):
-    """Dependency-injector registry; applications may override any provider."""
-
-    config = providers.Configuration()
-    intent_engine = providers.ThreadSafeSingleton(_load_component, "intent_engine")
-    dn_service = providers.ThreadSafeSingleton(_load_component, "dn_service")
-    dealer_service = providers.ThreadSafeSingleton(_load_component, "dealer_service")
-    warehouse_service = providers.ThreadSafeSingleton(_load_component, "warehouse_service")
-    city_service = providers.ThreadSafeSingleton(_load_component, "city_service")
-    product_service = providers.ThreadSafeSingleton(_load_component, "product_service")
-    kpi_service = providers.ThreadSafeSingleton(_load_component, "kpi_service")
-    groq_service = providers.ThreadSafeSingleton(_load_component, "groq_service")
-
-
-def _object_mapping(value: Any) -> dict[str, Any]:
-    if isinstance(value, BaseModel):
-        return value.model_dump(mode="python")
-    if is_dataclass(value) and not isinstance(value, type):
-        return asdict(value)
-    if isinstance(value, Mapping):
-        return dict(value)
-    attributes: dict[str, Any] = {}
-    for name in (
-        "intent", "service_key", "service", "method", "entity", "confidence",
-        "requires_ai", "needs_groq", "reason", "parameters", "params", "arguments",
-    ):
-        if hasattr(value, name):
-            attributes[name] = getattr(value, name)
-    return attributes
-
-
-def _decision_view(decision: Any) -> RoutingDecisionView:
-    raw = _object_mapping(decision)
-    if not raw:
-        raise ValueError("Intent engine returned an unsupported routing decision")
-    return RoutingDecisionView.model_validate({
-        "intent": raw.get("intent") or raw.get("service_key") or "general_ai",
-        "service_key": raw.get("service_key") or raw.get("service"),
-        "method": raw.get("method"),
-        "entity": raw.get("entity"),
-        "confidence": raw.get("confidence") or 0.0,
-        "requires_ai": raw.get("requires_ai", raw.get("needs_groq", False)),
-        "reason": raw.get("reason") or "",
-    })
-
-
-async def _call(callable_object: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    """Execute sync implementations off-loop and await native async ones."""
-    if inspect.iscoroutinefunction(callable_object):
-        return await callable_object(*args, **kwargs)
-    result = await asyncio.to_thread(partial(callable_object, *args, **kwargs))
-    if inspect.isawaitable(result):
-        return await result
-    return result
-
-
-class ServiceRouter:
-    """Resolve, execute, and validate services via a data-driven route table."""
-
-    def __init__(
-        self,
-        resolver: ProviderResolver,
-        routes: Mapping[str, RouteTarget] = ROUTES,
-        *,
-        timeout_seconds: float = 20.0,
-        retry_attempts: int = 3,
-    ) -> None:
-        self._resolver = resolver
-        self._routes = dict(routes)
-        self._timeout = timeout_seconds
-        self._attempts = retry_attempts
-        self._method_cache: TTLCache[tuple[str, str], Callable[..., Any]] = TTLCache(256, 300)
-
-    def target_for(self, decision: RoutingDecisionView) -> RouteTarget:
-        configured = self._routes.get(decision.intent)
-        if configured is None and decision.service_key:
-            configured = self._routes.get(decision.service_key)
-        if configured is None:
-            raise ServiceUnavailableError(f"No route configured for intent '{decision.intent}'")
-        # Explicit intent-engine method selection is allowed only on the selected service.
-        return RouteTarget(configured.provider_name, decision.method or configured.method)
-
-    def _resolve_method(self, target: RouteTarget) -> Callable[..., Any]:
-        key = (target.provider_name, target.method)
-        if key in self._method_cache:
-            return self._method_cache[key]
-        try:
-            service = self._resolver(target.provider_name)
-        except (ConfigurationError, ImportError) as exc:
-            raise ServiceUnavailableError(f"Service '{target.provider_name}' is unavailable") from exc
-        method = getattr(service, target.method, None)
-        if not callable(method):
-            raise MethodNotFoundError(
-                f"Method '{target.method}' is unavailable on '{target.provider_name}'"
-            )
-        self._method_cache[key] = method
-        return method
-
-    @staticmethod
-    def _arguments(
-        method: Callable[..., Any],
-        decision: Any,
-        message: str,
-        target: RouteTarget,
-    ) -> tuple[tuple[Any, ...], dict[str, Any]]:
-        """Bind intent output safely to the selected public service signature."""
-        raw = _object_mapping(decision)
-        supplied = raw.get("parameters") or raw.get("params") or raw.get("arguments")
-        entity = raw.get("entity")
-        signature = inspect.signature(method)
-        parameters = [
-            parameter
-            for parameter in signature.parameters.values()
-            if parameter.name != "self"
-        ]
-        accepts_kwargs = any(
-            parameter.kind is inspect.Parameter.VAR_KEYWORD
-            for parameter in parameters
+        cls._engine = create_engine(
+            db_url,
+            pool_size=pool_size,
+            max_overflow=max_overflow,
+            pool_timeout=pool_timeout,
+            pool_pre_ping=True,
+            json_serializer=lambda obj: orjson.dumps(obj).decode("utf-8")
         )
-        named = {
-            parameter.name
-            for parameter in parameters
-            if parameter.kind
-            in (
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                inspect.Parameter.KEYWORD_ONLY,
-            )
-        }
-        if isinstance(supplied, Mapping):
-            kwargs = dict(supplied) if accepts_kwargs else {
-                key: value for key, value in supplied.items() if key in named
-            }
-            if kwargs:
-                signature.bind(**kwargs)
-                return (), kwargs
+        cls._session_factory = sessionmaker(bind=cls._engine, expire_on_commit=False)
 
-            positional = [
-                parameter
-                for parameter in parameters
-                if parameter.kind
-                in (
-                    inspect.Parameter.POSITIONAL_ONLY,
-                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                )
-            ]
-            if not positional:
-                keyword_only = [
-                    parameter
-                    for parameter in parameters
-                    if parameter.kind is inspect.Parameter.KEYWORD_ONLY
-                ]
-                if not keyword_only:
-                    return (), {}
-                value = entity if entity not in (None, "", {}) else message
-                if target.provider_name == "dn_service":
-                    match = re.search(r"(?<!\d)(\d{6,20})(?!\d)", str(value))
-                    if match is None:
-                        match = re.search(r"(?<!\d)(\d{6,20})(?!\d)", message)
-                    if match is None:
-                        raise RoutingError("A valid DN number was not found in the request")
-                    value = match.group(1)
-                kwargs = {keyword_only[0].name: value}
-                signature.bind(**kwargs)
-                return (), kwargs
+    @classmethod
+    async def execute_query(cls, sql_statement: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+        """Executes database expressions off-loop inside thread containment blocks safely."""
+        if cls._engine is None:
+            async with cls._lock:
+                if cls._engine is None:
+                    cls._initialize()
 
-        value: Any = None
-        if isinstance(entity, Mapping):
-            first_name = positional[0].name
-            aliases = (
-                first_name,
-                "dn_no",
-                "dn",
-                "value",
-                "id",
-                "name",
-                "query",
-            )
-            value = next(
-                (entity[key] for key in aliases if entity.get(key) not in (None, "")),
-                None,
-            )
-        elif entity not in (None, "", {}):
-            value = entity
+        def _sync_execute() -> list[dict[str, Any]]:
+            session = cls._session_factory()
+            try:
+                result = session.execute(text(sql_statement), params)
+                if result.returns_rows:
+                    return [dict(row._mapping) for row in result.all()]
+                return []
+            finally:
+                session.close()
 
-        if target.provider_name == "dn_service":
-            candidate = str(value or message)
-            match = re.search(r"(?<!\d)(\d{6,20})(?!\d)", candidate)
-            if match is None:
-                match = re.search(r"(?<!\d)(\d{6,20})(?!\d)", message)
-            if match is None:
-                raise RoutingError("A valid DN number was not found in the request")
-            value = match.group(1)
-        elif value in (None, "", {}):
-            value = message
-
-        signature.bind(value)
-        return (value,), {}
-
-    async def execute(
-        self,
-        decision_object: Any,
-        decision: RoutingDecisionView,
-        message: str,
-        request_id: str,
-    ) -> ServiceResponse:
-        target = self.target_for(decision)
-        method = self._resolve_method(target)
-        args, kwargs = self._arguments(method, decision_object, message, target)
-        transient = (TimeoutError, ConnectionError, DatabaseConnectionError)
+        loop = asyncio.get_running_loop()
         try:
             async for attempt in AsyncRetrying(
-                stop=stop_after_attempt(self._attempts),
-                wait=wait_exponential_jitter(initial=0.25, max=2.0),
-                retry=retry_if_exception_type(transient),
-                reraise=True,
+                stop=stop_after_attempt(MAX_DB_RETRIES),
+                wait=wait_exponential_jitter(initial=0.5, max=3.0),
+                retry=retry_if_exception_type(SQLAlchemyError),
+                reraise=True
             ):
                 with attempt:
-                    raw_response = await asyncio.wait_for(
-                        _call(method, *args, **kwargs), timeout=self._timeout
-                    )
-            return self.validate_response(raw_response, request_id)
-        except asyncio.TimeoutError as exc:
-            raise TimeoutError(f"{target.provider_name}.{target.method} timed out") from exc
-
-    @staticmethod
-    def validate_response(response: Any, request_id: str) -> ServiceResponse:
-        if isinstance(response, ServiceResponse):
-            return response.model_copy(update={"request_id": response.request_id or request_id})
-        if isinstance(response, str):
-            return ServiceResponse(success=True, whatsapp_message=response, request_id=request_id)
-        raw = _object_mapping(response)
-        if not raw:
-            raise ServiceUnavailableError("Service returned an empty or unsupported response")
-        raw.setdefault("success", not bool(raw.get("error")))
-        raw.setdefault("data", {})
-        raw.setdefault("whatsapp_message", "")
-        raw.setdefault("metadata", {})
-        raw.setdefault("error", "")
-        raw["request_id"] = raw.get("request_id") or request_id
-        return ServiceResponse.model_validate(raw)
-
-
-class AIProviderOrchestrator:
-    """Single orchestration use case invoked by the webhook layer."""
-
-    _INTENT_METHODS: Final[tuple[str, ...]] = (
-        "get_routing_decision", "detect_intent", "route", "analyze", "classify",
-    )
-    _GROQ_METHODS: Final[tuple[str, ...]] = (
-        "enhance_response", "generate_response", "process_structured_data", "process_query",
-    )
-
-    def __init__(
-        self,
-        container: ApplicationContainer,
-        *,
-        request_timeout_seconds: float = 30.0,
-        cache_ttl: int = 300,
-    ) -> None:
-        self.container = container
-        self.request_timeout = request_timeout_seconds
-        self.intent_cache: TTLCache[str, Any] = TTLCache(2_048, cache_ttl)
-        self.metadata_cache: TTLCache[str, Any] = TTLCache(128, cache_ttl)
-        self.router = ServiceRouter(self._resolve_provider)
-
-    def _resolve_provider(self, name: str) -> Any:
-        provider = getattr(self.container, name, None)
-        if provider is None or not callable(provider):
-            raise ConfigurationError(f"Dependency provider '{name}' is not registered")
-        return provider()
-
-    @staticmethod
-    def _intent_cache_key(message: str, sender: str | None) -> str:
-        canonical = orjson.dumps({"message": message.casefold(), "sender": sender or ""})
-        return canonical.hex()
-
-    def _find_callable(self, service: Any, candidates: tuple[str, ...], label: str) -> Callable[..., Any]:
-        for name in candidates:
-            method = getattr(service, name, None)
-            if callable(method):
-                return method
-        if callable(service):
-            return service
-        raise MethodNotFoundError(f"{label} exposes none of: {', '.join(candidates)}")
-
-    @staticmethod
-    def _root_cause(exc: BaseException) -> BaseException:
-        root = exc
-        visited: set[int] = set()
-        while id(root) not in visited:
-            visited.add(id(root))
-            next_error = root.__cause__ or root.__context__
-            if next_error is None:
-                break
-            root = next_error
-        return root
-
-    @staticmethod
-    def _raw_response_fallback(data: Any) -> str:
-        """Return readable structured data when a presentation layer is absent."""
-        try:
-            rendered = orjson.dumps(
-                data,
-                option=orjson.OPT_INDENT_2 | orjson.OPT_NON_STR_KEYS,
-                default=str,
-            ).decode("utf-8")
-        except (TypeError, ValueError, orjson.JSONEncodeError):
-            rendered = str(data)
-        return rendered[:4_000]
-
-    async def _detect_intent(self, message: str, sender: str | None) -> tuple[Any, bool]:
-        key = self._intent_cache_key(message, sender)
-        if key in self.intent_cache:
-            return self.intent_cache[key], True
-        engine = self._resolve_provider("intent_engine")
-        method = self._find_callable(engine, self._INTENT_METHODS, "Intent engine")
-        kwargs: dict[str, Any] = {}
-        parameters = inspect.signature(method).parameters
-        if "sender" in parameters:
-            kwargs["sender"] = sender
-        elif "user_id" in parameters:
-            kwargs["user_id"] = sender
-        decision = await asyncio.wait_for(_call(method, message, **kwargs), timeout=10.0)
-        _decision_view(decision)  # Validate before caching; do not mutate the decision.
-        self.intent_cache[key] = decision
-        return decision, False
-
-    async def _enhance(
-        self,
-        decision: RoutingDecisionView,
-        business_response: ServiceResponse,
-        message: str,
-        request_id: str,
-    ) -> ServiceResponse:
-        groq = self._resolve_provider("groq_service")
-        method = self._find_callable(groq, self._GROQ_METHODS, "Groq service")
-        structured = {
-            "request_id": request_id,
-            "intent": decision.intent,
-            "entity": decision.entity,
-            "user_message": message,
-            "business_result": business_response.model_dump(mode="json"),
-        }
-        parameters = inspect.signature(method).parameters
-        if len(parameters) == 1:
-            enhanced = await _call(method, structured)
-        else:
-            enhanced = await _call(method, message, structured)
-        if isinstance(enhanced, str):
-            return business_response.model_copy(update={"whatsapp_message": enhanced})
-        validated = ServiceRouter.validate_response(enhanced, request_id)
-        # Preserve authoritative business data; AI may enhance presentation only.
-        return business_response.model_copy(update={
-            "whatsapp_message": validated.whatsapp_message or business_response.whatsapp_message,
-            "metadata": business_response.metadata | {"ai_enhanced": True},
-        })
-
-    async def process(
-        self,
-        message: str,
-        sender: str | None = None,
-        **context: Any,
-    ) -> str:
-        request_id = str(context.get("request_id") or uuid.uuid4())
-        started = time.perf_counter()
-        bound = logger.bind(request_id=request_id, sender=sender)
-        stage = "request_validation"
-        decision: RoutingDecisionView | None = None
-        target: RouteTarget | None = None
-        try:
-            bound.info("Request received original_message={!r}", message)
-            request = ServiceRequest(
-                request_id=request_id,
-                message=message,
-                sender=sender,
-                metadata=dict(context),
-            )
-            bound.info("Request normalized normalized_message={!r}", request.message)
-            stage = "intent_detection"
-            decision_object, cache_hit = await self._detect_intent(request.message, request.sender)
-            decision = _decision_view(decision_object)
-            stage = "routing"
-            target = self.router.target_for(decision)
-            bound = bound.bind(
-                intent=decision.intent,
-                confidence=decision.confidence,
-                service=target.provider_name,
-                method=target.method,
-            )
-            bound.info(
-                "Routing decision entity={!r} reason={!r} cache_hit={} cache_miss={}",
-                decision.entity,
-                decision.reason,
-                cache_hit,
-                not cache_hit,
-            )
-            stage = "business_service_execution"
-            service_started = time.perf_counter()
-            business_response = await asyncio.wait_for(
-                self.router.execute(
-                    decision_object, decision, request.message, request_id
-                ),
-                timeout=self.request_timeout,
-            )
-            service_ms = (time.perf_counter() - service_started) * 1000
-            groq_ms = 0.0
-            if decision.requires_ai and target.provider_name != "groq_service":
-                stage = "groq_enhancement"
-                groq_started = time.perf_counter()
-                try:
-                    business_response = await asyncio.wait_for(
-                        self._enhance(
-                            decision, business_response, request.message, request_id
-                        ),
-                        timeout=self.request_timeout,
-                    )
-                except Exception as exc:
-                    root = self._root_cause(exc)
-                    bound.opt(exception=True).error(
-                        "Optional Groq enhancement failed; returning business response "
-                        "exception_type={} exception_message={!r} root_cause_type={} "
-                        "root_cause={!r}",
-                        type(exc).__name__,
-                        str(exc),
-                        type(root).__name__,
-                        str(root),
-                    )
-                    business_response = business_response.model_copy(update={
-                        "metadata": business_response.metadata
-                        | {
-                            "ai_enhanced": False,
-                            "groq_error_type": type(exc).__name__,
-                            "groq_error": str(exc),
-                        }
-                    })
-                groq_ms = (time.perf_counter() - groq_started) * 1000
-            stage = "response_formatting"
-            elapsed = (time.perf_counter() - started) * 1000
-            business_response = business_response.model_copy(
-                update={"processing_time": elapsed}
-            )
-            bound.info(
-                "Request completed success={} service_time_ms={:.2f} groq_time_ms={:.2f} "
-                "total_time_ms={:.2f} response_length={}",
-                business_response.success,
-                service_ms,
-                groq_ms,
-                elapsed,
-                len(business_response.whatsapp_message),
-            )
-            if business_response.whatsapp_message:
-                return business_response.whatsapp_message
-            if business_response.success:
-                return self._raw_response_fallback(business_response.data)
-            error = business_response.error.strip()
-            if target.provider_name == "dn_service" and "not found" in error.casefold():
-                dn_match = re.search(r"(?<!\d)(\d{6,20})(?!\d)", request.message)
-                dn_no = dn_match.group(1) if dn_match else str(decision.entity)
-                return f"DN {dn_no} was not found in PostgreSQL."
-            if any(token in error.casefold() for token in ("database", "connection", "sql", "timeout")):
-                return "Database is currently unavailable."
-            return error or f"Service execution failed. Reference ID: {request_id}"
-        except ValidationError as exc:
-            bound.opt(exception=True).error(
-                "Failure stage={} exception_type={} exception_message={!r}",
-                stage, type(exc).__name__, str(exc),
-            )
-            return "Please send a valid, non-empty request."
-        except RoutingError as exc:
-            bound.opt(exception=True).error("Failure stage={} exception_type={} exception_message={!r}", stage, type(exc).__name__, str(exc))
-            return f"{exc}. Reference ID: {request_id}"
-        except MethodNotFoundError as exc:
-            bound.opt(exception=True).error("Failure stage={} exception_type={} exception_message={!r}", stage, type(exc).__name__, str(exc))
-            service_name = target.provider_name if target else "Selected service"
-            return f"{service_name} does not support the requested operation. Reference ID: {request_id}"
-        except (ServiceUnavailableError, ConfigurationError, ImportError) as exc:
-            bound.opt(exception=True).error("Failure stage={} exception_type={} exception_message={!r}", stage, type(exc).__name__, str(exc))
-            service_name = target.provider_name if target else "Requested service"
-            return f"{service_name} is unavailable. Reference ID: {request_id}"
-        except (TimeoutError, asyncio.TimeoutError) as exc:
-            bound.opt(exception=True).error("Failure stage={} exception_type={} exception_message={!r}", stage, type(exc).__name__, str(exc))
-            return f"The request timed out. Reference ID: {request_id}"
-        except (DatabaseConnectionError, SQLAlchemyError, ConnectionError) as exc:
-            root = self._root_cause(exc)
-            bound.opt(exception=True).error(
-                "Failure stage={} database_status=unavailable exception_type={} "
-                "exception_message={!r} root_cause_type={} root_cause={!r}",
-                stage, type(exc).__name__, str(exc), type(root).__name__, str(root),
-            )
-            return f"Database is currently unavailable. Reference ID: {request_id}"
-        except (AttributeError, ValueError, TypeError, KeyError, IndexError, RuntimeError, OSError) as exc:
-            root = self._root_cause(exc)
-            bound.opt(exception=True).error(
-                "Failure stage={} intent={} entity={!r} service={} method={} "
-                "exception_type={} exception_message={!r} root_cause_type={} "
-                "root_cause={!r} execution_time_ms={:.2f}",
-                stage,
-                decision.intent if decision else None,
-                decision.entity if decision else None,
-                target.provider_name if target else None,
-                target.method if target else None,
-                type(exc).__name__,
-                str(exc),
-                type(root).__name__,
-                str(root),
-                (time.perf_counter() - started) * 1000,
-            )
-            return f"Unexpected internal error. Reference ID: {request_id}"
+                    return await loop.run_in_executor(None, _sync_execute)
         except Exception as exc:
-            root = self._root_cause(exc)
-            bound.opt(exception=True).critical(
-                "Unhandled failure stage={} intent={} entity={!r} service={} method={} "
-                "exception_type={} exception_message={!r} root_cause_type={} "
-                "root_cause={!r} execution_time_ms={:.2f}",
-                stage,
-                decision.intent if decision else None,
-                decision.entity if decision else None,
-                target.provider_name if target else None,
-                target.method if target else None,
-                type(exc).__name__,
-                str(exc),
-                type(root).__name__,
-                str(root),
-                (time.perf_counter() - started) * 1000,
+            logger.error("Persistent failure executing PostgreSQL transaction: {}", str(exc))
+            raise DatabaseQueryException("No matching data was found in PostgreSQL.") from exc
+
+# -------------------------------------------------------------------------
+# CORE IMPLEMENTATION
+# -------------------------------------------------------------------------
+class AIProviderService:
+    """Core domain wrapper parsing operations, database extraction, and multi-LLM processing."""
+
+    def __init__(self) -> None:
+        self.primary_provider: Final[str] = os.getenv("PRIMARY_AI_PROVIDER", "groq").lower()
+        self.secondary_provider: Final[str] = os.getenv("AI_PROVIDER", "deepseek").lower()
+        self.enable_analytics: Final[bool] = os.getenv("ENABLE_ANALYTICS", "True").lower() == "true"
+        
+        # Runtime mapping definitions
+        self.provider_chain: Final[list[str]] = [self.primary_provider, self.secondary_provider, "openai"]
+        self._deduplicate_provider_chain()
+
+    def _deduplicate_provider_chain(self) -> None:
+        """Sanitizes order structures to guarantee no loops run concurrently on exact providers."""
+        seen = set()
+        deduped = []
+        for p in self.provider_chain:
+            clean_p = p.strip().lower()
+            if clean_p and clean_p not in seen:
+                seen.add(clean_p)
+                deduped.append(clean_p)
+        # Guarantee full list fallback representation
+        for mandatory in ["groq", "deepseek", "openai"]:
+            if mandatory not in seen:
+                deduped.append(mandatory)
+        object.__setattr__(self, "provider_chain", deduped)
+
+    @staticmethod
+    def split_whatsapp_message(text_content: str) -> list[str]:
+        """Slices output streams down to fit within the 4096 Meta constraint limits safely."""
+        if len(text_content) <= MAX_WHATSAPP_MESSAGE_LENGTH:
+            return [text_content]
+
+        chunks: list[str] = []
+        current_chunk: list[str] = []
+        current_length = 0
+
+        # Attempt to slice cleanly via structural elements (paragraphs, double returns)
+        lines = text_content.splitlines(keepends=True)
+        for line in lines:
+            if current_length + len(line) > MAX_WHATSAPP_MESSAGE_LENGTH:
+                if current_chunk:
+                    chunks.append("".join(current_chunk))
+                    current_chunk = []
+                    current_length = 0
+                
+                # If a single structural item breaches bounds, slice it byte-wise
+                if len(line) > MAX_WHATSAPP_MESSAGE_LENGTH:
+                    for i in range(0, len(line), MAX_WHATSAPP_MESSAGE_LENGTH):
+                        chunks.append(line[i:i + MAX_WHATSAPP_MESSAGE_LENGTH])
+                else:
+                    current_chunk.append(line)
+                    current_length = len(line)
+            else:
+                current_chunk.append(line)
+                current_length += len(line)
+
+        if current_chunk:
+            chunks.append("".join(current_chunk))
+
+        return chunks
+
+    async def _dispatch_llm_call(self, provider: str, messages: list[dict[str, str]], timeout_secs: float) -> str:
+        """Routes execution parameters targeting specialized client connectors directly."""
+        client = await AsyncHttpClientManager.get_client()
+        
+        if provider == "groq":
+            api_key = os.getenv("GROQ_API_KEY", "")
+            model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+            url = "https://api.groq.com/openai/v1/chat/completions"
+        elif provider == "deepseek":
+            api_key = os.getenv("DEEPSEEK_API_KEY", "")
+            model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+            url = "https://api.deepseek.com/v1/chat/completions"
+        elif provider == "openai":
+            api_key = os.getenv("OPENAI_API_KEY", "")
+            model = "gpt-4o-mini"
+            url = "https://api.openai.com/v1/chat/completions"
+        else:
+            raise AIProviderException(f"Unsupported LLM provider requested: {provider}")
+
+        if not api_key:
+            raise AIProviderException(f"API credential parameter missing for provider: {provider}")
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0.2
+        }
+
+        response = await client.post(url, json=payload, headers=headers, timeout=timeout_secs)
+        if response.status_code != 200:
+            raise AIProviderException(f"Upstream provider {provider} raised HTTP status error {response.status_code}: {response.text}")
+        
+        data = orjson.loads(response.content)
+        return str(data["choices"][0]["message"]["content"])
+
+    async def execute_llm_with_fallback(self, messages: list[dict[str, str]], request_id: str) -> tuple[str, str, str | None, list[str]]:
+        """Tunnels calls down the chain array until a successful return parameter registers."""
+        errors_logged: list[str] = []
+        active_chain = list(self.provider_chain)
+        
+        for idx, provider in enumerate(active_chain):
+            started_timer = time.perf_counter()
+            fallback_partner = active_chain[idx + 1] if idx + 1 < len(active_chain) else None
+            
+            try:
+                logger.info("Attempting LLM inference execution. ID: {} | Engine: {}", request_id, provider)
+                output = await self._dispatch_llm_call(provider, messages, timeout_secs=18.0)
+                return output, provider, fallback_partner, errors_logged
+            except Exception as exc:
+                err_msg = f"Inference engine execution error on target '{provider}': {str(exc)}"
+                logger.warning(err_msg)
+                errors_logged.append(err_msg)
+                continue
+
+        raise ProviderCircuitBreakerException("All configured upstream AI service layers are currently exhausted.")
+
+    async def write_analytics_record(self, metrics: ProviderMetrics) -> None:
+        """Pipes execution logs asynchronously downstream directly matching domain database configurations."""
+        if not self.enable_analytics:
+            return
+            
+        sql = """
+            INSERT INTO ai_provider_analytics 
+            (request_id, selected_provider, fallback_provider, database_query_time_ms, llm_execution_time_ms, total_execution_time_ms, errors, created_at)
+            VALUES (:request_id, :selected_provider, :fallback_provider, :db_time, :llm_time, :total_time, :errors, :created_at)
+        """
+        params = {
+            "request_id": metrics.request_id,
+            "selected_provider": metrics.selected_provider,
+            "fallback_provider": metrics.fallback_provider,
+            "db_time": metrics.database_query_time_ms,
+            "llm_time": metrics.llm_execution_time_ms,
+            "total_time": metrics.total_execution_time_ms,
+            "errors": json.dumps(metrics.errors_encountered),
+            "created_at": datetime.now(timezone.utc)
+        }
+        try:
+            # Fire-and-forget or loop isolation tracking block
+            await DatabaseEnginePool.execute_query(sql, params)
+        except Exception as exc:
+            logger.error("Failed writing execution analytics payload packet: {}", str(exc))
+
+    async def process_whatsapp_query(self, message: str, sender: str | None = None, **context: Any) -> str:
+        """Processes structured intent calls passing dashboard lookups and domain validations down to data layers."""
+        start_time = time.perf_counter()
+        request_id = str(context.get("request_id") or uuid.uuid4())
+        
+        # Initialization steps tracking timing parameters
+        db_ms = 0.0
+        llm_ms = 0.0
+        selected_provider = self.primary_provider
+        fallback_provider = self.secondary_provider
+        errors: list[str] = []
+
+        try:
+            normalized = " ".join(message.split()).lower()
+            db_data: list[dict[str, Any]] = []
+            db_query_start = time.perf_counter()
+
+            # -----------------------------------------------------------------
+            # DATA ENGINE DISPATCH & RESOLUTION ROUTING TABLE
+            # -----------------------------------------------------------------
+            if "dn_lookup" in normalized or "dn_dashboard" in normalized:
+                match = re.search(r"\b\d{6,20}\b", normalized)
+                if match:
+                    sql = "SELECT * FROM delivery_notes WHERE dn_number = :dn LIMIT 1"
+                    db_data = await DatabaseEnginePool.execute_query(sql, {"dn": match.group(0)})
+                else:
+                    return "A valid delivery note (DN) number was not supplied in your text context."
+
+            elif "pending_dn" in normalized or "pending_dns" in normalized:
+                sql = "SELECT id, dn_number, status, ETA FROM delivery_notes WHERE status = 'pending' ORDER BY created_at DESC LIMIT 5"
+                db_data = await DatabaseEnginePool.execute_query(sql, {})
+
+            elif "dealer_dashboard" in normalized:
+                sql = "SELECT id, dealer_name, performance_score, active_orders FROM dealers ORDER BY performance_score DESC LIMIT 5"
+                db_data = await DatabaseEnginePool.execute_query(sql, {})
+
+            elif "warehouse_dashboard" in normalized:
+                sql = "SELECT warehouse_name, current_capacity, threshold_breached FROM warehouses WHERE threshold_breached = TRUE LIMIT 5"
+                db_data = await DatabaseEnginePool.execute_query(sql, {})
+
+            elif "city_dashboard" in normalized:
+                sql = "SELECT city_name, gross_revenue, volume_delivered FROM city_metrics ORDER BY gross_revenue DESC LIMIT 5"
+                db_data = await DatabaseEnginePool.execute_query(sql, {})
+
+            elif "product_dashboard" in normalized:
+                sql = "SELECT sku, product_name, stock_level FROM products WHERE stock_level < reorder_point LIMIT 10"
+                db_data = await DatabaseEnginePool.execute_query(sql, {})
+
+            db_ms = (time.perf_counter() - db_query_start) * 1000.0
+
+            # Structural checking to ensure no placeholder states leak
+            data_context_str = ""
+            if db_data:
+                data_context_str = orjson.dumps(db_data).decode("utf-8")
+            elif any(keyword in normalized for keyword in ["dn_lookup", "pending", "dashboard", "product"]):
+                return "No matching data was found in PostgreSQL."
+
+            # Construct execution payload strings for the upstream model infrastructure
+            system_prompt = (
+                "You are an enterprise AI customer service engine. Transform structured transactional database metrics "
+                "into natural, crisp, business-oriented insights appropriate for real-time WhatsApp processing.\n"
+                "Constraints: Never mention raw structural configurations or JSON arrays explicitly. Format using line spaces cleanly."
             )
-            return f"Unexpected internal error. Reference ID: {request_id}"
+            
+            user_input_prompt = f"User Request: {message}\n"
+            if data_context_str:
+                user_input_prompt += f"PostgreSQL Context Records: {data_context_str}"
 
-    async def process_whatsapp_query(
-        self,
-        message: str,
-        sender: str | None = None,
-        **context: Any,
-    ) -> str:
-        """Compatibility entry point used on the provider-service instance."""
-        return await self.process(message, sender, **context)
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_input_prompt}
+            ]
 
-    async def process_query(
-        self,
-        message: str,
-        sender: str | None = None,
-        **context: Any,
-    ) -> str:
-        """Compatibility alias for callers resolving the singleton directly."""
+            llm_start_time = time.perf_counter()
+            llm_output, selected_provider, fallback_provider, logged_errs = await self.execute_llm_with_fallback(messages, request_id)
+            llm_ms = (time.perf_counter() - llm_start_time) * 1000.0
+            errors.extend(logged_errs)
+
+            # Safeguard text structure formats against length constraints
+            final_responses = self.split_whatsapp_message(llm_output)
+            total_ms = (time.perf_counter() - start_time) * 1000.0
+
+            # Sync analytics metadata to tracking layer
+            metrics_packet = ProviderMetrics(
+                request_id=request_id,
+                selected_provider=selected_provider,
+                fallback_provider=fallback_provider,
+                database_query_time_ms=db_ms,
+                llm_execution_time_ms=llm_ms,
+                total_execution_time_ms=total_ms,
+                errors_encountered=errors
+            )
+            await self.write_analytics_record(metrics_packet)
+            
+            logger.info("Request completed successfully. RequestID: {} | TotalTime: {:.2f}ms", request_id, total_ms)
+            return final_responses[0]
+
+        except Exception as global_exc:
+            total_ms = (time.perf_counter() - start_time) * 1000.0
+            tb_str = "".join(traceback.format_exception(type(global_exc), global_exc, global_exc.__traceback__))
+            logger.critical("Fatal execution cycle inside AI core framework. ID: {} | Stack: {}", request_id, tb_str)
+            
+            errors.append(f"Global exception hook captured fault: {str(global_exc)}")
+            
+            # Persist tracking parameters even inside complete structural collapse
+            try:
+                fail_packet = ProviderMetrics(
+                    request_id=request_id,
+                    selected_provider=selected_provider,
+                    fallback_provider=fallback_provider,
+                    database_query_time_ms=db_ms,
+                    llm_execution_time_ms=llm_ms,
+                    total_execution_time_ms=total_ms,
+                    errors_encountered=errors
+                )
+                await self.write_analytics_record(fail_packet)
+            except Exception:
+                pass
+
+            return "⚠️ AI service is currently unavailable. Please try again later."
+
+    async def process_query(self, message: str, sender: str | None = None, **context: Any) -> str:
+        """Alias handling system orchestration forwarding mechanics natively."""
         return await self.process_whatsapp_query(message, sender, **context)
 
-    def get_registry_status(self, *, refresh: bool = False) -> dict[str, Any]:
-        """Validate imports, instances, and routed methods without business calls."""
-        cache_key = "service_registry"
-        if not refresh and cache_key in self.metadata_cache:
-            return self.metadata_cache[cache_key]
-        
-        routed_methods: dict[str, set[str]] = {}
-        for target in ROUTES.values():
-            routed_methods.setdefault(target.provider_name, set()).add(target.method)
-            
-        status: dict[str, Any] = {"healthy": True, "components": {}}
-        for key in _SYMBOLS:
-            try:
-                comp = self._resolve_provider(key)
-                methods_ok = True
-                missing_methods = []
-                if key in routed_methods:
-                    for m in routed_methods[key]:
-                        if not callable(getattr(comp, m, None)):
-                            methods_ok = False
-                            missing_methods.append(m)
-                status["components"][key] = {
-                    "available": True, 
-                    "methods_verified": methods_ok,
-                    "missing": missing_methods
-                }
-            except Exception as e:
-                status["healthy"] = False
-                status["components"][key] = {"available": False, "error": str(e)}
-                
-        self.metadata_cache[cache_key] = status
-        return status
+    async def enhance_response(self, decision: Any, business_response: Any, message: str, request_id: str) -> str:
+        """Enhances data outputs into stylized presentation parameters directly matching orchestrator signatures."""
+        messages = [
+            {
+                "role": "system",
+                "content": "You are a senior copywriter optimizing messaging layouts. Format raw context descriptions beautifully for WhatsApp deployment."
+            },
+            {
+                "role": "user",
+                "content": f"User prompt: {message}\nBusiness asset payload context: {str(business_response)}"
+            }
+        ]
+        try:
+            output, _, _, _ = await self.execute_llm_with_fallback(messages, request_id)
+            return self.split_whatsapp_message(output)[0]
+        except Exception as exc:
+            logger.error("Failed generation enhancement pass. Utilizing raw business fallback text string: {}", str(exc))
+            return str(business_response)
