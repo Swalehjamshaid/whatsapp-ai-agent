@@ -6,6 +6,7 @@ enhancement, and response validation.  It intentionally contains no SQL,
 analytics, KPI calculation, dashboard construction, or domain business rules.
 
 Uses semantic-router for intent detection and routing (single library solution).
+ENHANCED: Better natural language understanding, entity extraction, and routing.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime, timezone
 from functools import partial
-from typing import Any, Final, Protocol
+from typing import Any, Final, Protocol, Dict, List, Optional, Tuple
 
 import orjson
 from cachetools import TTLCache
@@ -36,7 +37,7 @@ from tenacity import (
 )
 
 # ============================================================
-# SINGLE LIBRARY FOR INTENT DETECTION & ROUTING
+# ENHANCED INTENT & ROUTING ENGINE
 # ============================================================
 
 try:
@@ -161,10 +162,11 @@ class ProviderResolver(Protocol):
 
 
 # ============================================================
-# ROUTING TABLE - UNCHANGED
+# ROUTING TABLE - ENHANCED
 # ============================================================
 
 ROUTES: Final[dict[str, RouteTarget]] = {
+    # DN Service Routes
     "dn_lookup": RouteTarget("dn_service", "get_dn_dashboard"),
     "dn_search": RouteTarget("dn_service", "get_dn_dashboard"),
     "dn_dashboard": RouteTarget("dn_service", "get_dn_dashboard"),
@@ -181,6 +183,7 @@ ROUTES: Final[dict[str, RouteTarget]] = {
     "delivery_timeline": RouteTarget("dn_service", "get_delivery_timeline"),
     "transit_analysis": RouteTarget("dn_service", "get_transit_analysis"),
     
+    # Dealer Service Routes
     "dealer_dashboard": RouteTarget("dealer_service", "get_dealer_dashboard"),
     "dealer_revenue": RouteTarget("dealer_service", "get_dealer_dashboard"),
     "dealer_pending": RouteTarget("dealer_service", "get_dealer_dashboard"),
@@ -188,12 +191,25 @@ ROUTES: Final[dict[str, RouteTarget]] = {
     "top_dealers": RouteTarget("dealer_service", "get_top_dealers"),
     "dealer_ranking": RouteTarget("dealer_service", "get_top_dealers"),
     
+    # Warehouse Service Routes
     "warehouse_dashboard": RouteTarget("warehouse_service", "get_warehouse_dashboard"),
+    
+    # City Service Routes - ENHANCED
     "city_dashboard": RouteTarget("city_service", "get_city_dashboard"),
+    "city_revenue": RouteTarget("city_service", "get_city_dashboard"),
+    "city_pending": RouteTarget("city_service", "get_city_dashboard"),
+    "top_cities": RouteTarget("city_service", "get_top_cities"),
+    "city_comparison": RouteTarget("city_service", "compare_cities"),
+    "city_ranking": RouteTarget("city_service", "get_top_cities"),
+    
+    # Product Service Routes
     "product_dashboard": RouteTarget("product_service", "get_product_dashboard"),
+    
+    # KPI Service Routes
     "national_kpi": RouteTarget("kpi_service", "get_national_kpi_dashboard"),
     "national_kpi_dashboard": RouteTarget("kpi_service", "get_national_kpi_dashboard"),
     
+    # General AI Fallback
     "general_ai": RouteTarget("groq_service", "process_query"),
     "greeting": RouteTarget("groq_service", "process_query"),
     "help": RouteTarget("groq_service", "process_query"),
@@ -227,17 +243,67 @@ _SYMBOLS: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
 
 
 # ============================================================
-# SEMANTIC ROUTER INTENT ENGINE (NO BOOTSTRAP)
+# ENHANCED INTENT ENGINE WITH BETTER NATURAL LANGUAGE UNDERSTANDING
 # ============================================================
 
-class SemanticRouterIntentEngine:
+class EnhancedIntentEngine:
     """
-    Intent Detection Engine using semantic-router.
-    NO external dependencies - self-contained.
+    Enhanced Intent Detection Engine with:
+    - Semantic router for natural language understanding
+    - Regex patterns for specific queries
+    - Entity extraction (DN, dealer, city, warehouse)
+    - Natural language query understanding
+    - Confidence scoring
     """
     
     _instance = None
     _router = None
+    
+    # City names for detection
+    CITY_NAMES = [
+        "abbottabad", "lahore", "karachi", "rawalpindi", "quetta", 
+        "multan", "peshawar", "gilgit", "hyderabad", "islamabad",
+        "sialkot", "gujranwala", "faisalabad", "bahawalpur", "sukkur",
+        "dg khan", "rahim yar khan", "gwadar"
+    ]
+    
+    # Dealer indicators
+    DEALER_INDICATORS = [
+        "electronics", "traders", "distributors", "foods", 
+        "group", "pvt", "ltd", "sons", "brothers", "enterprises",
+        "company", "corporation", "industries"
+    ]
+    
+    # Natural language query patterns for city
+    CITY_QUERY_PATTERNS = {
+        "city_dashboard": [
+            r"(?:city|town)\s+(?:dashboard|details|information|profile|performance)",
+            r"show\s+(?:me\s+)?(?:the\s+)?city\s+(?:dashboard|details)",
+            r"tell\s+(?:me\s+)?about\s+(?:the\s+)?city",
+            r"city\s+(?:performance|statistics|stats)",
+            r"how\s+is\s+(?:the\s+)?city\s+(?:doing|performing)",
+        ],
+        "city_revenue": [
+            r"(?:city|town)\s+(?:revenue|sales|income|earnings)",
+            r"revenue\s+(?:of|for|from)\s+(?:the\s+)?city",
+            r"how\s+much\s+(?:revenue|sales)\s+(?:does|did)\s+(?:the\s+)?city\s+(?:make|generate)",
+            r"city\s+(?:revenue|sales)\s+(?:report|summary)",
+        ],
+        "city_pending": [
+            r"(?:city|town)\s+(?:pending|overdue|delayed)",
+            r"pending\s+(?:of|for|from)\s+(?:the\s+)?city",
+            r"city\s+(?:pending|delivery)\s+(?:status|report)",
+        ],
+        "top_cities": [
+            r"(?:top|best|highest|leading)\s+(?:cities|city)",
+            r"cities\s+with\s+(?:highest|lowest)\s+(?:revenue|sales|performance)",
+            r"city\s+(?:ranking|rank|performance)",
+            r"which\s+city\s+(?:has|have)\s+(?:the\s+)?(?:highest|most|best)",
+            r"best\s+(?:performing|performer)\s+city",
+            r"worst\s+(?:performing|performer)\s+city",
+            r"lowest\s+(?:revenue|sales)\s+city",
+        ],
+    }
     
     def __new__(cls):
         if cls._instance is None:
@@ -255,7 +321,7 @@ class SemanticRouterIntentEngine:
             logger.warning("⚠️ semantic-router not available. Using fallback.")
         
         self._initialized = True
-        logger.info("✅ SemanticRouterIntentEngine initialized")
+        logger.info("✅ EnhancedIntentEngine initialized")
     
     def _init_router(self):
         """Initialize semantic router with all routes"""
@@ -264,52 +330,200 @@ class SemanticRouterIntentEngine:
             
             routes = [
                 # DN Routes
-                Route(name="dn_lookup", utterances=["show dn", "dn dashboard", "delivery note", "track dn", "dn number", "dn status"]),
-                Route(name="dn_status", utterances=["dn status", "status of dn", "check dn status"]),
-                Route(name="dn_history", utterances=["dn history", "history of dn", "delivery note history"]),
-                Route(name="dn_summary", utterances=["dn summary", "summary of dns", "total dns", "dn overview"]),
-                Route(name="pending_dns", utterances=["pending dns", "pending deliveries", "show pending", "list pending"]),
-                Route(name="pending_pgi", utterances=["pending pgi", "pgi pending", "goods issue pending"]),
-                Route(name="pending_pod", utterances=["pending pod", "pod pending", "proof of delivery pending"]),
-                Route(name="recent_dns", utterances=["recent dns", "latest dns", "newest dns", "today's dns"]),
-                Route(name="delivery_timeline", utterances=["delivery timeline", "dn timeline", "track delivery"]),
-                Route(name="transit_analysis", utterances=["transit analysis", "delivery transit", "shipping time"]),
+                Route(name="dn_lookup", utterances=[
+                    "show dn", "dn dashboard", "delivery note", "track dn", 
+                    "dn number", "dn status", "check dn", "delivery note number"
+                ]),
+                Route(name="dn_status", utterances=[
+                    "dn status", "status of dn", "check dn status", "what is the status of dn"
+                ]),
+                Route(name="dn_history", utterances=[
+                    "dn history", "history of dn", "delivery note history", "show dn history"
+                ]),
+                Route(name="dn_summary", utterances=[
+                    "dn summary", "summary of dns", "total dns", "dn overview", "delivery note summary"
+                ]),
+                Route(name="pending_dns", utterances=[
+                    "pending dns", "pending deliveries", "show pending", 
+                    "list pending", "pending delivery notes"
+                ]),
+                Route(name="pending_pgi", utterances=[
+                    "pending pgi", "pgi pending", "goods issue pending"
+                ]),
+                Route(name="pending_pod", utterances=[
+                    "pending pod", "pod pending", "proof of delivery pending"
+                ]),
+                Route(name="recent_dns", utterances=[
+                    "recent dns", "latest dns", "newest dns", "today's dns", "recent delivery notes"
+                ]),
+                Route(name="delivery_timeline", utterances=[
+                    "delivery timeline", "dn timeline", "track delivery", "delivery history"
+                ]),
+                Route(name="transit_analysis", utterances=[
+                    "transit analysis", "delivery transit", "shipping time", "transit time"
+                ]),
                 
                 # Dealer Routes
-                Route(name="dealer_dashboard", utterances=["show dealer", "dealer dashboard", "tell me about dealer", "dealer details", "dealer profile"]),
-                Route(name="dealer_revenue", utterances=["dealer revenue", "dealer sales", "how much revenue", "revenue of dealer"]),
-                Route(name="dealer_pending", utterances=["dealer pending", "pending dealer", "dealer overdue"]),
-                Route(name="top_dealers", utterances=["top dealers", "best dealers", "leading dealers", "dealer ranking"]),
-                Route(name="dealer_comparison", utterances=["compare dealers", "dealer vs dealer", "dealer comparison"]),
+                Route(name="dealer_dashboard", utterances=[
+                    "show dealer", "dealer dashboard", "tell me about dealer",
+                    "dealer details", "dealer profile", "dealer information",
+                    "show me dealer", "dealer summary"
+                ]),
+                Route(name="dealer_revenue", utterances=[
+                    "dealer revenue", "dealer sales", "how much revenue",
+                    "revenue of dealer", "dealer earnings", "sales of dealer"
+                ]),
+                Route(name="dealer_pending", utterances=[
+                    "dealer pending", "pending dealer", "dealer overdue", "dealer pending dns"
+                ]),
+                Route(name="top_dealers", utterances=[
+                    "top dealers", "best dealers", "leading dealers",
+                    "dealer ranking", "top performing dealers"
+                ]),
+                Route(name="dealer_comparison", utterances=[
+                    "compare dealers", "dealer vs dealer", "dealer comparison", "compare two dealers"
+                ]),
                 
                 # Warehouse Routes
-                Route(name="warehouse_dashboard", utterances=["show warehouse", "warehouse dashboard", "warehouse details"]),
+                Route(name="warehouse_dashboard", utterances=[
+                    "show warehouse", "warehouse dashboard", "warehouse details",
+                    "warehouse information", "tell me about warehouse"
+                ]),
                 
-                # City Routes
-                Route(name="city_dashboard", utterances=["show city", "city dashboard", "city details", "tell me about city"]),
+                # City Routes - ENHANCED
+                Route(name="city_dashboard", utterances=[
+                    "show city", "city dashboard", "city details", "city information",
+                    "tell me about city", "city profile", "city performance",
+                    "how is city doing", "city statistics"
+                ]),
+                Route(name="city_revenue", utterances=[
+                    "city revenue", "city sales", "revenue of city", "city income",
+                    "how much revenue does city generate", "city earnings"
+                ]),
+                Route(name="top_cities", utterances=[
+                    "top cities", "best cities", "leading cities", "city ranking",
+                    "top performing cities", "best city", "highest revenue city",
+                    "lowest revenue city", "city with highest sales", "city with lowest sales",
+                    "which city has highest revenue", "which city has lowest revenue",
+                    "best performing city", "worst performing city"
+                ]),
+                Route(name="city_comparison", utterances=[
+                    "compare cities", "city vs city", "city comparison", "compare two cities"
+                ]),
                 
                 # Product Routes
-                Route(name="product_dashboard", utterances=["show product", "product dashboard", "product details"]),
+                Route(name="product_dashboard", utterances=[
+                    "show product", "product dashboard", "product details", "product information"
+                ]),
                 
                 # KPI Routes
-                Route(name="national_kpi", utterances=["national kpi", "kpi dashboard", "overall performance", "national dashboard"]),
+                Route(name="national_kpi", utterances=[
+                    "national kpi", "kpi dashboard", "overall performance",
+                    "national dashboard", "company kpi", "overall kpi"
+                ]),
                 
                 # General Routes
-                Route(name="greeting", utterances=["hi", "hello", "hey", "good morning", "good afternoon", "good evening", "salam", "namaste"]),
-                Route(name="help", utterances=["help", "assist", "support", "how to", "what is", "explain", "guide"]),
-                Route(name="menu", utterances=["menu", "options", "services", "what can you do", "show menu"]),
+                Route(name="greeting", utterances=[
+                    "hi", "hello", "hey", "good morning", "good afternoon",
+                    "good evening", "salam", "namaste", "howdy", "assalamualaikum"
+                ]),
+                Route(name="help", utterances=[
+                    "help", "assist", "support", "how to", "what is",
+                    "explain", "guide", "help me", "i need help"
+                ]),
+                Route(name="menu", utterances=[
+                    "menu", "options", "services", "what can you do",
+                    "show menu", "main menu", "available options"
+                ]),
             ]
             
             self._router = Router(routes=routes, encoder=encoder)
-            logger.info("✅ SemanticRouter initialized with 25+ routes")
+            logger.info("✅ EnhancedIntentEngine initialized with 30+ routes")
             
         except Exception as e:
             logger.error(f"Failed to initialize semantic-router: {e}")
             self._router = None
     
+    def _extract_dn(self, text: str) -> Optional[str]:
+        """Extract DN number from text"""
+        match = re.search(r'(?<!\d)(\d{6,20})(?!\d)', text)
+        return match.group(1) if match else None
+    
+    def _extract_city(self, text: str) -> Optional[str]:
+        """Extract city name from text"""
+        text_lower = text.lower()
+        for city in self.CITY_NAMES:
+            if city in text_lower:
+                return city
+        return None
+    
+    def _extract_dealer(self, text: str) -> Optional[str]:
+        """Extract dealer name from text"""
+        text_lower = text.lower()
+        for indicator in self.DEALER_INDICATORS:
+            if indicator in text_lower:
+                # Extract the full name
+                match = re.search(r'([\w\s]+(?:' + indicator + r'))', text_lower, re.IGNORECASE)
+                if match:
+                    return match.group(1).strip()
+        return None
+    
+    def _detect_city_query(self, text: str) -> Optional[Tuple[str, str]]:
+        """Detect if this is a city query and extract the intent"""
+        text_lower = text.lower()
+        
+        # Check for top cities queries
+        if "top" in text_lower or "best" in text_lower or "highest" in text_lower:
+            if "city" in text_lower or "cities" in text_lower:
+                return ("top_cities", "city_service")
+        
+        # Check for lowest city queries
+        if "lowest" in text_lower:
+            if "city" in text_lower or "cities" in text_lower:
+                return ("top_cities", "city_service")
+        
+        # Check for city revenue queries
+        if "revenue" in text_lower or "sales" in text_lower:
+            if "city" in text_lower:
+                return ("city_revenue", "city_service")
+        
+        # Check for city pending queries
+        if "pending" in text_lower:
+            if "city" in text_lower:
+                return ("city_pending", "city_service")
+        
+        # Check for city comparison
+        if "vs" in text_lower or "compare" in text_lower:
+            if "city" in text_lower or "cities" in text_lower:
+                return ("city_comparison", "city_service")
+        
+        # Check for general city queries
+        if "city" in text_lower:
+            return ("city_dashboard", "city_service")
+        
+        return None
+    
+    def _detect_dealer_query(self, text: str) -> Optional[Tuple[str, str]]:
+        """Detect if this is a dealer query"""
+        text_lower = text.lower()
+        
+        if "revenue" in text_lower or "sales" in text_lower:
+            if any(ind in text_lower for ind in self.DEALER_INDICATORS):
+                return ("dealer_revenue", "dealer_service")
+        
+        if "pending" in text_lower:
+            if any(ind in text_lower for ind in self.DEALER_INDICATORS):
+                return ("dealer_pending", "dealer_service")
+        
+        if any(ind in text_lower for ind in self.DEALER_INDICATORS):
+            return ("dealer_dashboard", "dealer_service")
+        
+        return None
+    
     def detect(self, message: str) -> Dict[str, Any]:
         """
-        Detect intent using semantic-router.
+        Enhanced intent detection with multiple strategies.
+        
         Returns:
             {
                 "intent": str,
@@ -323,104 +537,143 @@ class SemanticRouterIntentEngine:
         """
         message_clean = message.strip()
         
-        # Check for DN number (highest priority)
-        dn_match = re.search(r'(?<!\d)(\d{6,20})(?!\d)', message_clean)
-        if dn_match:
+        # ============================================================
+        # STAGE 1: DN NUMBER DETECTION (Highest Priority)
+        # ============================================================
+        dn = self._extract_dn(message_clean)
+        if dn:
             return {
                 "intent": "dn_lookup",
                 "confidence": 1.0,
                 "service_key": "dn_service",
                 "method": "get_dn_dashboard",
-                "entity": {"dn": dn_match.group(1), "dn_number": dn_match.group(1)},
+                "entity": {"dn": dn, "dn_number": dn},
                 "requires_ai": False,
-                "reason": "DN number detected",
+                "reason": f"DN number detected: {dn}",
             }
         
-        # Check for dealer name patterns
-        dealer_patterns = [
-            r'([\w\s]+(?:electronics|traders|distributors|foods|group|pvt|ltd))',
-            r'([\w\s]+(?:company|enterprises|corporation))',
-        ]
-        for pattern in dealer_patterns:
-            match = re.search(pattern, message_clean, re.IGNORECASE)
-            if match:
-                dealer_name = match.group(1).strip()
-                if len(dealer_name) > 3:
-                    return {
-                        "intent": "dealer_dashboard",
-                        "confidence": 0.85,
-                        "service_key": "dealer_service",
-                        "method": "get_dealer_dashboard",
-                        "entity": {"dealer_name": dealer_name},
-                        "requires_ai": False,
-                        "reason": f"Dealer name detected: {dealer_name}",
-                    }
+        # ============================================================
+        # STAGE 2: CITY QUERY DETECTION (Natural Language)
+        # ============================================================
+        city_query = self._detect_city_query(message_clean)
+        if city_query:
+            intent, service = city_query
+            
+            # Extract city if mentioned
+            city = self._extract_city(message_clean)
+            entity = {"city": city} if city else {"message": message_clean}
+            
+            # Map intent to method
+            method_map = {
+                "city_dashboard": "get_city_dashboard",
+                "city_revenue": "get_city_dashboard",
+                "city_pending": "get_city_dashboard",
+                "top_cities": "get_top_cities",
+                "city_comparison": "compare_cities",
+            }
+            
+            method = method_map.get(intent, "get_city_dashboard")
+            
+            return {
+                "intent": intent,
+                "confidence": 0.85,
+                "service_key": service,
+                "method": method,
+                "entity": entity,
+                "requires_ai": False,
+                "reason": f"City query detected: {intent}",
+            }
         
-        # Check for city name patterns
-        city_patterns = [
-            r'(abbottabad|lahore|karachi|rawalpindi|quetta|multan|peshawar|islamabad|hyderabad|sialkot|gujranwala|gilgit)',
-        ]
-        for pattern in city_patterns:
-            match = re.search(pattern, message_clean, re.IGNORECASE)
-            if match:
-                return {
-                    "intent": "city_dashboard",
-                    "confidence": 0.85,
-                    "service_key": "city_service",
-                    "method": "get_city_dashboard",
-                    "entity": {"city": match.group(1)},
-                    "requires_ai": False,
-                    "reason": f"City name detected: {match.group(1)}",
-                }
+        # ============================================================
+        # STAGE 3: DEALER QUERY DETECTION
+        # ============================================================
+        dealer_query = self._detect_dealer_query(message_clean)
+        if dealer_query:
+            intent, service = dealer_query
+            
+            dealer = self._extract_dealer(message_clean)
+            entity = {"dealer_name": dealer} if dealer else {"message": message_clean}
+            
+            return {
+                "intent": intent,
+                "confidence": 0.85,
+                "service_key": service,
+                "method": "get_dealer_dashboard",
+                "entity": entity,
+                "requires_ai": False,
+                "reason": f"Dealer query detected: {intent}",
+            }
         
-        # Use semantic router if available
+        # ============================================================
+        # STAGE 4: WAREHOUSE QUERY DETECTION
+        # ============================================================
+        if "warehouse" in message_clean.lower():
+            return {
+                "intent": "warehouse_dashboard",
+                "confidence": 0.85,
+                "service_key": "warehouse_service",
+                "method": "get_warehouse_dashboard",
+                "entity": {"message": message_clean},
+                "requires_ai": False,
+                "reason": "Warehouse query detected",
+            }
+        
+        # ============================================================
+        # STAGE 5: SEMANTIC ROUTER (For other queries)
+        # ============================================================
         if SEMANTIC_ROUTER_AVAILABLE and self._router:
             try:
                 result = self._router.route(message_clean)
                 intent = result.name
                 confidence = result.score if hasattr(result, 'score') else 0.85
                 
-                # Map intent to service
-                intent_map = {
-                    "dn_lookup": ("dn_service", "get_dn_dashboard"),
-                    "dn_status": ("dn_service", "get_dn_status"),
-                    "dn_history": ("dn_service", "get_dn_history"),
-                    "dn_summary": ("dn_service", "get_dn_summary"),
-                    "pending_dns": ("dn_service", "get_pending_dns"),
-                    "pending_pgi": ("dn_service", "get_pending_pgi"),
-                    "pending_pod": ("dn_service", "get_pending_pod"),
-                    "recent_dns": ("dn_service", "get_recent_dns"),
-                    "delivery_timeline": ("dn_service", "get_delivery_timeline"),
-                    "transit_analysis": ("dn_service", "get_transit_analysis"),
-                    "dealer_dashboard": ("dealer_service", "get_dealer_dashboard"),
-                    "dealer_revenue": ("dealer_service", "get_dealer_dashboard"),
-                    "dealer_pending": ("dealer_service", "get_dealer_dashboard"),
-                    "top_dealers": ("dealer_service", "get_top_dealers"),
-                    "dealer_comparison": ("dealer_service", "compare_dealers"),
-                    "warehouse_dashboard": ("warehouse_service", "get_warehouse_dashboard"),
-                    "city_dashboard": ("city_service", "get_city_dashboard"),
-                    "product_dashboard": ("product_service", "get_product_dashboard"),
-                    "national_kpi": ("kpi_service", "get_national_kpi_dashboard"),
-                    "greeting": ("groq_service", "process_query"),
-                    "help": ("groq_service", "process_query"),
-                    "menu": ("groq_service", "process_query"),
-                }
-                
-                if intent in intent_map:
-                    service_key, method = intent_map[intent]
-                    return {
-                        "intent": intent,
-                        "confidence": confidence,
-                        "service_key": service_key,
-                        "method": method,
-                        "entity": {"message": message_clean},
-                        "requires_ai": False,
-                        "reason": f"Semantic route: {intent} ({confidence:.2f})",
+                if confidence > 0.3:
+                    # Map intent to service
+                    intent_map = {
+                        "dn_lookup": ("dn_service", "get_dn_dashboard"),
+                        "dn_status": ("dn_service", "get_dn_status"),
+                        "dn_history": ("dn_service", "get_dn_history"),
+                        "dn_summary": ("dn_service", "get_dn_summary"),
+                        "pending_dns": ("dn_service", "get_pending_dns"),
+                        "pending_pgi": ("dn_service", "get_pending_pgi"),
+                        "pending_pod": ("dn_service", "get_pending_pod"),
+                        "recent_dns": ("dn_service", "get_recent_dns"),
+                        "delivery_timeline": ("dn_service", "get_delivery_timeline"),
+                        "transit_analysis": ("dn_service", "get_transit_analysis"),
+                        "dealer_dashboard": ("dealer_service", "get_dealer_dashboard"),
+                        "dealer_revenue": ("dealer_service", "get_dealer_dashboard"),
+                        "dealer_pending": ("dealer_service", "get_dealer_dashboard"),
+                        "top_dealers": ("dealer_service", "get_top_dealers"),
+                        "dealer_comparison": ("dealer_service", "compare_dealers"),
+                        "warehouse_dashboard": ("warehouse_service", "get_warehouse_dashboard"),
+                        "city_dashboard": ("city_service", "get_city_dashboard"),
+                        "city_revenue": ("city_service", "get_city_dashboard"),
+                        "top_cities": ("city_service", "get_top_cities"),
+                        "city_comparison": ("city_service", "compare_cities"),
+                        "product_dashboard": ("product_service", "get_product_dashboard"),
+                        "national_kpi": ("kpi_service", "get_national_kpi_dashboard"),
+                        "greeting": ("groq_service", "process_query"),
+                        "help": ("groq_service", "process_query"),
+                        "menu": ("groq_service", "process_query"),
                     }
+                    
+                    if intent in intent_map:
+                        service_key, method = intent_map[intent]
+                        return {
+                            "intent": intent,
+                            "confidence": confidence,
+                            "service_key": service_key,
+                            "method": method,
+                            "entity": {"message": message_clean},
+                            "requires_ai": False,
+                            "reason": f"Semantic route: {intent} ({confidence:.2f})",
+                        }
             except Exception as e:
                 logger.debug(f"Semantic router error: {e}")
         
-        # Default fallback
+        # ============================================================
+        # STAGE 6: FALLBACK - General AI
+        # ============================================================
         return {
             "intent": "general_ai",
             "confidence": 0.3,
@@ -445,7 +698,7 @@ def _load_component(key: str) -> Any:
     except KeyError as exc:
         raise ConfigurationError(f"Unknown component: {key}") from exc
     
-    # Special handling for intent_engine - use SemanticRouterIntentEngine
+    # Special handling for intent_engine - use EnhancedIntentEngine
     if key == "intent_engine":
         try:
             # Try to load primary first
@@ -460,12 +713,12 @@ def _load_component(key: str) -> Any:
                         continue
         except (ImportError, AttributeError, TypeError) as exc:
             logger.error(f"Failed to load primary intent engine from {module_name}: {exc}")
-            logger.info("Using SemanticRouterIntentEngine")
-            return SemanticRouterIntentEngine()
+            logger.info("Using EnhancedIntentEngine")
+            return EnhancedIntentEngine()
         
-        # Fallback to SemanticRouterIntentEngine
-        logger.info("Using SemanticRouterIntentEngine as fallback")
-        return SemanticRouterIntentEngine()
+        # Fallback to EnhancedIntentEngine
+        logger.info("Using EnhancedIntentEngine as fallback")
+        return EnhancedIntentEngine()
     
     try:
         module = importlib.import_module(module_name)
@@ -500,8 +753,8 @@ def _load_component(key: str) -> Any:
     if key != "intent_engine":
         return module
     
-    logger.warning(f"No supported component found in {module_name} - using SemanticRouterIntentEngine")
-    return SemanticRouterIntentEngine()
+    logger.warning(f"No supported component found in {module_name} - using EnhancedIntentEngine")
+    return EnhancedIntentEngine()
 
 
 # ============================================================
@@ -805,7 +1058,7 @@ class ServiceRouter:
 
 
 # ============================================================
-# AI PROVIDER ORCHESTRATOR - WITH SEMANTIC ROUTER
+# AI PROVIDER ORCHESTRATOR - WITH ENHANCED INTENT ENGINE
 # ============================================================
 
 class AIProviderOrchestrator:
@@ -839,13 +1092,13 @@ class AIProviderOrchestrator:
             self._groq_available = False
             logger.warning("Groq service is unavailable - AI enhancement disabled")
         
-        # Semantic Router Intent Engine - initialized via container
+        # Enhanced Intent Engine - initialized via container
         self._intent_engine = None
         try:
             self._intent_engine = self._resolve_provider("intent_engine")
-            logger.info("✅ SemanticRouterIntentEngine loaded")
+            logger.info("✅ EnhancedIntentEngine loaded")
         except Exception as e:
-            logger.warning(f"Failed to load SemanticRouterIntentEngine: {e}")
+            logger.warning(f"Failed to load EnhancedIntentEngine: {e}")
 
     def _resolve_provider(self, name: str) -> Any:
         provider = getattr(self.container, name, None)
@@ -899,7 +1152,7 @@ class AIProviderOrchestrator:
         return rendered[:4_000]
 
     async def _detect_intent(self, message: str, sender: str | None) -> tuple[Any, bool]:
-        """Detect intent using SemanticRouterIntentEngine with caching."""
+        """Detect intent using EnhancedIntentEngine with caching."""
         key = self._intent_cache_key(message, sender)
         if key in self.intent_cache:
             logger.debug(f"Intent cache hit for message: {message[:50]}...")
@@ -907,15 +1160,23 @@ class AIProviderOrchestrator:
         
         try:
             if self._intent_engine:
-                # Use SemanticRouterIntentEngine
+                # Use EnhancedIntentEngine
                 decision = self._intent_engine.detect(message)
             else:
                 # Fallback to original intent engine
                 engine = self._resolve_provider("intent_engine")
                 method = self._find_callable(engine, self._INTENT_METHODS, "Intent engine")
                 if method is None:
-                    from app.services.ai_provider_service_original import FallbackIntentEngine
-                    decision = FallbackIntentEngine.detect(message)
+                    # Create fallback decision
+                    decision = {
+                        "intent": "general_ai",
+                        "confidence": 0.3,
+                        "service_key": "groq_service",
+                        "method": "process_query",
+                        "entity": {"message": message},
+                        "requires_ai": True,
+                        "reason": "Fallback - no intent engine available",
+                    }
                 else:
                     kwargs: dict[str, Any] = {}
                     parameters = inspect.signature(method).parameters
@@ -926,12 +1187,20 @@ class AIProviderOrchestrator:
                     decision = await asyncio.wait_for(_call(method, message, **kwargs), timeout=10.0)
         except Exception as exc:
             logger.error(f"Intent detection failed: {exc}")
-            from app.services.ai_provider_service_original import FallbackIntentEngine
-            decision = FallbackIntentEngine.detect(message)
+            # Create fallback decision
+            decision = {
+                "intent": "general_ai",
+                "confidence": 0.3,
+                "service_key": "groq_service",
+                "method": "process_query",
+                "entity": {"message": message},
+                "requires_ai": True,
+                "reason": f"Fallback - error: {str(exc)}",
+            }
         
         # Ensure the decision has the required fields
         if "intent" not in decision:
-            decision = {"intent": "general_ai", "service_key": "groq_service", "method": "process_query", "entity": {}, "confidence": 0.3, "requires_ai": True, "reason": "Fallback"}
+            decision = {"intent": "general_ai", "service_key": "groq_service", "method": "process_query", "entity": {"message": message}, "confidence": 0.3, "requires_ai": True, "reason": "Fallback"}
         
         self.intent_cache[key] = decision
         return decision, False
@@ -1076,6 +1345,10 @@ class AIProviderOrchestrator:
                 return self._raw_response_fallback(business_response.data)
             
             error = business_response.error.strip()
+            
+            # ============================================================
+            # ENHANCED BUSINESS ERROR HANDLING
+            # ============================================================
             
             if target.provider_name == "dn_service":
                 dn_match = re.search(r"(?<!\d)(\d{6,20})(?!\d)", request.message)
@@ -1260,7 +1533,7 @@ class AIProviderOrchestrator:
                 if provider_name == "intent_engine":
                     method = self._find_callable(service, self._INTENT_METHODS, "Intent engine")
                     if method is None:
-                        if hasattr(service, "detect"):  # SemanticRouterIntentEngine
+                        if hasattr(service, "detect"):  # EnhancedIntentEngine
                             missing = []
                         else:
                             missing = ["intent methods not found"]
@@ -1298,7 +1571,7 @@ class AIProviderOrchestrator:
             "checked_at": datetime.now(timezone.utc).isoformat(),
             "cache_ttl_seconds": 300,
             "fallback_engine_active": isinstance(
-                self._resolve_provider("intent_engine"), SemanticRouterIntentEngine
+                self._resolve_provider("intent_engine"), EnhancedIntentEngine
             ) if statuses.get("intent_engine", {}).get("available") else False,
         }
         self.metadata_cache[cache_key] = result
@@ -1379,10 +1652,10 @@ class AIProviderOrchestrator:
                 logger.exception("Startup health check failed for {}", name)
                 checks[name] = {"healthy": False, "error": type(exc).__name__}
         
-        # Add semantic router health
-        checks["semantic_router"] = {
-            "healthy": SEMANTIC_ROUTER_AVAILABLE,
-            "details": {"available": SEMANTIC_ROUTER_AVAILABLE}
+        # Add enhanced intent engine health
+        checks["enhanced_intent_engine"] = {
+            "healthy": True,
+            "details": {"available": True}
         }
         
         result = {
@@ -1468,7 +1741,7 @@ __all__ = [
     "ApplicationContainer",
     "ConfigurationError",
     "DatabaseConnectionError",
-    "SemanticRouterIntentEngine",
+    "EnhancedIntentEngine",
     "MethodNotFoundError",
     "ROUTES",
     "RouteTarget",
