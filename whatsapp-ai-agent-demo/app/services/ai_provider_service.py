@@ -658,29 +658,83 @@ ROUTES: Final[dict[str, RouteTarget]] = {
 # ============================================================
 # BLOCK 10: SERVICE SYMBOL RESOLUTION
 # ============================================================
+# ============================================================
+# BLOCK 10: SERVICE SYMBOL RESOLUTION (UPDATED)
+# ============================================================
 
+# Define an explicit symbol map using actual module paths or container attributes.
+# If using dependency-injector, map these directly to your providers.
 _SYMBOLS: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
-    "dn_service": ("app.services.dn_analysis", ("DNAnalysisService", "DNService")),
+    "dn_service": (
+        "app.services.dn_analysis", 
+        ("DNAnalysisService", "DNService")
+    ),
     "dealer_service": (
         "app.services.dealer_analytics_service",
         ("DealerAnalyticsService", "DealerService"),
     ),
-    "warehouse_service": ("app.services.warehouse_service", ("WarehouseService",)),
-    "city_service": ("app.services.city_service", ("CityAnalyticsService", "CityService")),
-    "product_service": ("app.services.product_service", ("ProductService",)),
+    "warehouse_service": (
+        "app.services.warehouse_service", 
+        ("WarehouseService",)
+    ),
+    "city_service": (
+        "app.services.city_service", 
+        ("CityAnalyticsService", "CityService")
+    ),
+    "product_service": (
+        "app.services.product_service", 
+        ("ProductService",)
+    ),
     "kpi_service": (
         "app.services.kpi_service",
         ("KPIService", "KpiService", "NationalKPIService"),
     ),
-    "groq_service": ("app.services.groq_service", ("GroqService",)),
-    "menu_service": ("app.services.ai_provider_service", ("MenuService",)),
+    "groq_service": (
+        "app.services.groq_service", 
+        ("GroqService",)
+    ),
+    "menu_service": (
+        "app.services.ai_provider_service", 
+        ("MenuService",)
+    ),
     "intent_engine": (
         "app.services.ai_provider_service_intents",
         ("IntentDetectionEngine", "IntentEngine"),
     ),
 }
 
+def resolve_orchestrated_service(service_key: str, container: Optional[Any] = None) -> Any:
+    """
+    Safely resolves and retrieves the service instance from the symbol table 
+    or dependency injection container to prevent 'Service unavailable' failures.
+    """
+    # 1. Primary check: Attempt resolution via dependency injection container if provided
+    if container and hasattr(container, service_key):
+        provider = getattr(container, service_key)
+        # Handles dependency_injector providers dynamically
+        return provider() if callable(provider) else provider
 
+    # 2. Fallback check: Dynamic importlib resolution based on the strict symbol map
+    if service_key not in _SYMBOLS:
+        raise MethodNotFoundError(f"Service key '{service_key}' is completely missing from the orchestration registry.")
+        
+    module_path, class_names = _SYMBOLS[service_key]
+    try:
+        module = importlib.import_module(module_path)
+        for class_name in class_names:
+            if hasattr(module, class_name):
+                target_class = getattr(module, class_name)
+                # Instantiate the class (assumes a standard parameterless init or singleton)
+                return target_class()
+        
+        raise MethodNotFoundError(f"None of the target classes {class_names} were found in '{module_path}'.")
+        
+    except ImportError as ie:
+        logger.error(f"Critical import failure during dynamic resolution of '{service_key}': {str(ie)}")
+        raise ServiceUnavailableError(f"Module underlying '{service_key}' could not be imported.", target=service_key)
+    except Exception as e:
+        logger.error(f"Unexpected error resolving symbol '{service_key}': {str(e)}")
+        raise OrchestrationError(f"Failed to cleanly initialize execution symbol: {str(e)}")
 # ============================================================
 # BLOCK 11: FALLBACK INTENT ENGINE
 # ============================================================
