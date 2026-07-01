@@ -12,6 +12,8 @@ Supports:
 - Multi-stage Intent Detection
 - Entity Extraction & Resolution
 - Bootstrap Integration for Cached Resources
+- Comprehensive Failure Diagnostics
+- Multi-stage Recovery System
 """
 
 from __future__ import annotations
@@ -21,12 +23,13 @@ import importlib
 import inspect
 import re
 import time
+import traceback
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict, dataclass, is_dataclass, field
 from datetime import datetime, timezone, timedelta
 from functools import partial
-from typing import Any, Final, Protocol, Optional, Dict, List
+from typing import Any, Final, Protocol, Optional, Dict, List, Tuple
 
 import orjson
 from cachetools import TTLCache
@@ -42,13 +45,13 @@ from tenacity import (
 )
 
 # ============================================================
-# CRITICAL: IMPORT BOOTSTRAP SERVICE FOR CACHED RESOURCES
+# BLOCK 1: STARTUP VALIDATION
 # ============================================================
 
 from app.services.ai_bootstrap_service import get_ai_bootstrap_service
 
 # ============================================================
-# OPTIONAL LIBRARIES WITH SAFE FALLBACKS
+# BLOCK 2: OPTIONAL LIBRARIES WITH SAFE FALLBACKS
 # ============================================================
 
 # Advanced NLP & ML - Now loaded via Bootstrap
@@ -147,11 +150,15 @@ except ImportError:
 
 
 # ============================================================
-# CUSTOM EXCEPTIONS
+# BLOCK 3: CUSTOM EXCEPTIONS WITH DIAGNOSTICS
 # ============================================================
 
 class OrchestrationError(RuntimeError):
     """Base class for safe orchestration failures."""
+    def __init__(self, message: str, request_id: str = "", **kwargs):
+        self.request_id = request_id
+        self.diagnostics = kwargs
+        super().__init__(message)
 
 
 class ConfigurationError(OrchestrationError):
@@ -195,7 +202,7 @@ class ConversationStateError(OrchestrationError):
 
 
 # ============================================================
-# PYDANTIC MODELS
+# BLOCK 4: PYDANTIC MODELS
 # ============================================================
 
 class ServiceRequest(BaseModel):
@@ -265,6 +272,12 @@ class RequestContext:
     message: str
     sender: str | None
     started_at: float
+    stage: str = "init"
+    intent: str = ""
+    entity: Any = None
+    service: str = ""
+    method: str = ""
+    trace: list[dict[str, Any]] = field(default_factory=list)
 
 
 class ProviderResolver(Protocol):
@@ -272,7 +285,7 @@ class ProviderResolver(Protocol):
 
 
 # ============================================================
-# CONVERSATION STATE MODELS
+# BLOCK 5: CONVERSATION STATE MODELS
 # ============================================================
 
 class MenuOption:
@@ -294,13 +307,20 @@ class ConversationState:
         self.previous_menu: str = ""
         self.selected_intent: str = ""
         self.selected_entity: str = ""
+        self.selected_dealer: str = ""
+        self.selected_city: str = ""
+        self.selected_warehouse: str = ""
         self.waiting_for_input: bool = False
         self.expected_input_type: str = ""  # dealer_name, city_name, warehouse_name, dn_number
         self.last_message: str = ""
         self.last_response: str = ""
+        self.last_intent: str = ""
+        self.last_entity: str = ""
         self.context: dict[str, Any] = field(default_factory=dict)
         self.updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
         self.history: list[dict[str, Any]] = field(default_factory=list)
+        self.back_stack: list[str] = field(default_factory=list)
+        self.current_flow: str = ""
     
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -309,13 +329,20 @@ class ConversationState:
             "previous_menu": self.previous_menu,
             "selected_intent": self.selected_intent,
             "selected_entity": self.selected_entity,
+            "selected_dealer": self.selected_dealer,
+            "selected_city": self.selected_city,
+            "selected_warehouse": self.selected_warehouse,
             "waiting_for_input": self.waiting_for_input,
             "expected_input_type": self.expected_input_type,
             "last_message": self.last_message,
             "last_response": self.last_response,
+            "last_intent": self.last_intent,
+            "last_entity": self.last_entity,
             "context": self.context,
             "updated_at": self.updated_at.isoformat(),
-            "history": self.history[-10:]  # Keep last 10 history items
+            "history": self.history[-10:],
+            "back_stack": self.back_stack[-5:],
+            "current_flow": self.current_flow,
         }
     
     @classmethod
@@ -325,10 +352,15 @@ class ConversationState:
         state.previous_menu = data.get("previous_menu", "")
         state.selected_intent = data.get("selected_intent", "")
         state.selected_entity = data.get("selected_entity", "")
+        state.selected_dealer = data.get("selected_dealer", "")
+        state.selected_city = data.get("selected_city", "")
+        state.selected_warehouse = data.get("selected_warehouse", "")
         state.waiting_for_input = data.get("waiting_for_input", False)
         state.expected_input_type = data.get("expected_input_type", "")
         state.last_message = data.get("last_message", "")
         state.last_response = data.get("last_response", "")
+        state.last_intent = data.get("last_intent", "")
+        state.last_entity = data.get("last_entity", "")
         state.context = data.get("context", {})
         if data.get("updated_at"):
             try:
@@ -336,11 +368,23 @@ class ConversationState:
             except:
                 state.updated_at = datetime.now(timezone.utc)
         state.history = data.get("history", [])
+        state.back_stack = data.get("back_stack", [])
+        state.current_flow = data.get("current_flow", "")
         return state
+    
+    def push_back(self, menu: str) -> None:
+        self.back_stack.append(menu)
+        if len(self.back_stack) > 5:
+            self.back_stack = self.back_stack[-5:]
+    
+    def pop_back(self) -> Optional[str]:
+        if self.back_stack:
+            return self.back_stack.pop()
+        return None
 
 
 # ============================================================
-# MENU DEFINITIONS
+# BLOCK 6: MENU DEFINITIONS
 # ============================================================
 
 class MenuService:
@@ -458,7 +502,7 @@ class MenuService:
 
 
 # ============================================================
-# CONVERSATION MANAGER
+# BLOCK 7: CONVERSATION MANAGER
 # ============================================================
 
 class ConversationManager:
@@ -514,16 +558,30 @@ class ConversationManager:
         state.history.append({
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "message": message,
-            "response": response[:200],  # Truncate for storage
+            "response": response[:200],
         })
         if len(state.history) > 20:
             state.history = state.history[-20:]
         
         await self.set_state(state)
+    
+    async def push_back(self, sender: str, menu: str) -> None:
+        """Push to back stack"""
+        state = await self.get_state(sender)
+        if state:
+            state.push_back(menu)
+            await self.set_state(state)
+    
+    async def pop_back(self, sender: str) -> Optional[str]:
+        """Pop from back stack"""
+        state = await self.get_state(sender)
+        if state:
+            return state.pop_back()
+        return None
 
 
 # ============================================================
-# ROUTING TABLE - ALL BUSINESS INTENTS
+# BLOCK 8: ROUTING TABLE - ALL BUSINESS INTENTS
 # ============================================================
 
 ROUTES: Final[dict[str, RouteTarget]] = {
@@ -589,7 +647,7 @@ ROUTES: Final[dict[str, RouteTarget]] = {
 
 
 # ============================================================
-# SERVICE SYMBOL RESOLUTION
+# BLOCK 9: SERVICE SYMBOL RESOLUTION
 # ============================================================
 
 _SYMBOLS: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
@@ -615,7 +673,7 @@ _SYMBOLS: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
 
 
 # ============================================================
-# ENHANCED FALLBACK INTENT ENGINE WITH NLP SUPPORT
+# BLOCK 10: ENHANCED FALLBACK INTENT ENGINE
 # ============================================================
 
 class FallbackIntentEngine:
@@ -1053,7 +1111,7 @@ class FallbackIntentEngine:
 
 
 # ============================================================
-# NLP INTENT DETECTOR (OPTIONAL - USING BOOTSTRAP)
+# BLOCK 11: NLP INTENT DETECTOR (USING BOOTSTRAP)
 # ============================================================
 
 class NLPIntentDetector:
@@ -1087,12 +1145,14 @@ class NLPIntentDetector:
     def __init__(self):
         self._initialized = False
         self._bootstrap = get_ai_bootstrap_service()
+        self._load_errors: dict[str, str] = {}
         
         try:
             # Load resources from bootstrap (CACHED FOREVER)
             self._encoder = self._bootstrap.get_embeddings()
             self._nlp = self._bootstrap.get_spacy()
             self._nltk = self._bootstrap.get_nltk()
+            self._flashrank = self._bootstrap.get_flashrank()
             
             if self._encoder or self._nlp:
                 self._initialized = True
@@ -1100,6 +1160,7 @@ class NLPIntentDetector:
             else:
                 logger.warning("⚠️ NLPIntentDetector initialized with no NLP resources")
         except Exception as e:
+            self._load_errors["init"] = str(e)
             logger.warning(f"⚠️ NLPIntentDetector init failed: {e}")
     
     def detect(self, message: str) -> dict[str, Any] | None:
@@ -1109,79 +1170,84 @@ class NLPIntentDetector:
         
         try:
             message_lower = message.lower().strip()
+            confidence_scores = []
             
-            # Use spacy for NER if available
+            # Stage 1: spacy NER
             if self._nlp:
-                doc = self._nlp(message)
-                entities = [ent.text for ent in doc.ents if ent.label_ in ["ORG", "GPE", "LOC", "MONEY"]]
-                if entities:
-                    # Check if entity is a dealer
-                    for entity in entities:
-                        if any(ind in entity.lower() for ind in ["electronics", "traders", "foods", "group"]):
-                            return {
-                                "intent": "dealer_dashboard",
-                                "service_key": "dealer_service",
-                                "method": "get_dealer_dashboard",
-                                "entity": entity,
-                                "confidence": 0.85,
-                                "requires_ai": False,
-                                "reason": "NLP entity detection (dealer)",
-                            }
-                        # Check if entity is a city
-                        city_names = ["Abbottabad", "Lahore", "Karachi", "Rawalpindi", "Quetta", "Multan", "Peshawar", "Islamabad"]
-                        if entity in city_names:
-                            return {
-                                "intent": "city_dashboard",
-                                "service_key": "city_service",
-                                "method": "get_city_dashboard",
-                                "entity": entity,
-                                "confidence": 0.85,
-                                "requires_ai": False,
-                                "reason": "NLP city detection",
-                            }
+                try:
+                    doc = self._nlp(message)
+                    entities = [ent.text for ent in doc.ents if ent.label_ in ["ORG", "GPE", "LOC", "MONEY"]]
+                    if entities:
+                        for entity in entities:
+                            if any(ind in entity.lower() for ind in ["electronics", "traders", "foods", "group"]):
+                                return {
+                                    "intent": "dealer_dashboard",
+                                    "service_key": "dealer_service",
+                                    "method": "get_dealer_dashboard",
+                                    "entity": entity,
+                                    "confidence": 0.85,
+                                    "requires_ai": False,
+                                    "reason": "NLP entity detection (dealer)",
+                                }
+                            city_names = ["Abbottabad", "Lahore", "Karachi", "Rawalpindi", "Quetta", "Multan", "Peshawar", "Islamabad"]
+                            if entity in city_names:
+                                return {
+                                    "intent": "city_dashboard",
+                                    "service_key": "city_service",
+                                    "method": "get_city_dashboard",
+                                    "entity": entity,
+                                    "confidence": 0.85,
+                                    "requires_ai": False,
+                                    "reason": "NLP city detection",
+                                }
+                except Exception as e:
+                    logger.debug(f"spacy NER failed: {e}")
             
-            # Use sentence embeddings for similarity
+            # Stage 2: Sentence embeddings
             if self._encoder:
-                query_embedding = self._encoder.encode(message, convert_to_numpy=True)
-                
-                best_intent = "general_ai"
-                best_score = 0.0
-                best_entity = message
-                
-                for intent, templates in self._intent_templates.items():
-                    template_embeddings = self._encoder.encode(templates, convert_to_numpy=True)
-                    similarities = np.dot(template_embeddings, query_embedding) / (
-                        np.linalg.norm(template_embeddings, axis=1) * np.linalg.norm(query_embedding) + 1e-8
-                    )
-                    max_sim = float(np.max(similarities))
-                    if max_sim > best_score and max_sim > 0.5:
-                        best_score = max_sim
-                        best_intent = intent
-                
-                if best_score > 0.6:
-                    intent_map = {
-                        "dealer_dashboard": ("dealer_service", "get_dealer_dashboard"),
-                        "dealer_revenue": ("dealer_service", "get_dealer_dashboard"),
-                        "dealer_pending": ("dealer_service", "get_dealer_dashboard"),
-                        "city_dashboard": ("city_service", "get_city_dashboard"),
-                        "city_revenue": ("city_service", "get_city_dashboard"),
-                        "dn_lookup": ("dn_service", "get_dn_dashboard"),
-                        "pending_dns": ("dn_service", "get_pending_dns"),
-                        "top_dealers": ("dealer_service", "get_top_dealers"),
-                        "top_cities": ("city_service", "get_top_cities"),
-                        "dn_summary": ("dn_service", "get_dn_summary"),
-                    }
-                    if best_intent in intent_map:
-                        service, method = intent_map[best_intent]
-                        return {
-                            "intent": best_intent,
-                            "service_key": service,
-                            "method": method,
-                            "entity": best_entity,
-                            "confidence": best_score,
-                            "requires_ai": False,
-                            "reason": f"NLP similarity ({best_score:.2f})",
+                try:
+                    query_embedding = self._encoder.encode(message, convert_to_numpy=True)
+                    
+                    best_intent = "general_ai"
+                    best_score = 0.0
+                    best_entity = message
+                    
+                    for intent, templates in self._intent_templates.items():
+                        template_embeddings = self._encoder.encode(templates, convert_to_numpy=True)
+                        similarities = np.dot(template_embeddings, query_embedding) / (
+                            np.linalg.norm(template_embeddings, axis=1) * np.linalg.norm(query_embedding) + 1e-8
+                        )
+                        max_sim = float(np.max(similarities))
+                        if max_sim > best_score and max_sim > 0.5:
+                            best_score = max_sim
+                            best_intent = intent
+                    
+                    if best_score > 0.6:
+                        intent_map = {
+                            "dealer_dashboard": ("dealer_service", "get_dealer_dashboard"),
+                            "dealer_revenue": ("dealer_service", "get_dealer_dashboard"),
+                            "dealer_pending": ("dealer_service", "get_dealer_dashboard"),
+                            "city_dashboard": ("city_service", "get_city_dashboard"),
+                            "city_revenue": ("city_service", "get_city_dashboard"),
+                            "dn_lookup": ("dn_service", "get_dn_dashboard"),
+                            "pending_dns": ("dn_service", "get_pending_dns"),
+                            "top_dealers": ("dealer_service", "get_top_dealers"),
+                            "top_cities": ("city_service", "get_top_cities"),
+                            "dn_summary": ("dn_service", "get_dn_summary"),
                         }
+                        if best_intent in intent_map:
+                            service, method = intent_map[best_intent]
+                            return {
+                                "intent": best_intent,
+                                "service_key": service,
+                                "method": method,
+                                "entity": best_entity,
+                                "confidence": best_score,
+                                "requires_ai": False,
+                                "reason": f"NLP similarity ({best_score:.2f})",
+                            }
+                except Exception as e:
+                    logger.debug(f"Embedding similarity failed: {e}")
             
             return None
         except Exception as e:
@@ -1190,7 +1256,7 @@ class NLPIntentDetector:
 
 
 # ============================================================
-# COMPONENT LOADER WITH FALLBACK
+# BLOCK 12: COMPONENT LOADER WITH DIAGNOSTICS
 # ============================================================
 
 def _load_component(key: str) -> Any:
@@ -1272,7 +1338,7 @@ def _load_component(key: str) -> Any:
 
 
 # ============================================================
-# DEPENDENCY CONTAINER
+# BLOCK 13: DEPENDENCY CONTAINER
 # ============================================================
 
 class ApplicationContainer(containers.DeclarativeContainer):
@@ -1291,7 +1357,7 @@ class ApplicationContainer(containers.DeclarativeContainer):
 
 
 # ============================================================
-# UTILITY FUNCTIONS
+# BLOCK 14: UTILITY FUNCTIONS
 # ============================================================
 
 def _object_mapping(value: Any) -> dict[str, Any]:
@@ -1341,7 +1407,7 @@ async def _call(callable_object: Callable[..., Any], *args: Any, **kwargs: Any) 
 
 
 # ============================================================
-# SERVICE ROUTER
+# BLOCK 15: SERVICE ROUTER WITH VALIDATION
 # ============================================================
 
 class ServiceRouter:
@@ -1584,7 +1650,7 @@ class ServiceRouter:
 
 
 # ============================================================
-# AI PROVIDER ORCHESTRATOR
+# BLOCK 16: AI PROVIDER ORCHESTRATOR WITH DIAGNOSTICS
 # ============================================================
 
 class AIProviderOrchestrator:
@@ -1641,7 +1707,36 @@ class AIProviderOrchestrator:
         except Exception as e:
             logger.warning(f"⚠️ NLPIntentDetector initialization failed: {e}")
         
+        # Startup validation
+        self._startup_validation()
+        
         logger.info("✅ AIProviderOrchestrator initialized with menu, conversation, and bootstrap support")
+
+    def _startup_validation(self) -> None:
+        """Validate all services at startup."""
+        logger.info("🔍 Running startup validation...")
+        statuses = {}
+        
+        services = [
+            "intent_engine", "dn_service", "dealer_service", "warehouse_service",
+            "city_service", "product_service", "kpi_service", "groq_service",
+            "menu_service"
+        ]
+        
+        for name in services:
+            try:
+                service = self._resolve_provider(name)
+                if service is not None:
+                    statuses[name] = "✅ PASS"
+                else:
+                    statuses[name] = "⚠️ PASS (None returned)"
+            except Exception as e:
+                statuses[name] = f"❌ FAIL: {type(e).__name__}: {str(e)[:50]}"
+                logger.error(f"Startup validation failed for {name}: {e}")
+        
+        logger.info("📊 Startup Validation Results:")
+        for name, status in statuses.items():
+            logger.info(f"  {name}: {status}")
 
     def _resolve_provider(self, name: str) -> Any:
         provider = getattr(self.container, name, None)
@@ -1687,6 +1782,22 @@ class AIProviderOrchestrator:
         return root
 
     @staticmethod
+    def _format_error_diagnostics(exc: Exception, request_id: str, stage: str = "unknown") -> str:
+        """Format detailed error diagnostics for logging."""
+        root = AIProviderOrchestrator._root_cause(exc)
+        trace = traceback.format_exc()
+        
+        return (
+            f"🔴 ERROR - Request: {request_id} | Stage: {stage}\n"
+            f"  Exception: {type(exc).__name__}\n"
+            f"  Message: {str(exc)}\n"
+            f"  Root Cause: {type(root).__name__}: {str(root)}\n"
+            f"  File: {exc.__traceback__.tb_frame.f_code.co_filename if exc.__traceback__ else 'unknown'}\n"
+            f"  Line: {exc.__traceback__.tb_lineno if exc.__traceback__ else 'unknown'}\n"
+            f"  Trace: {trace[:500]}..."
+        )
+
+    @staticmethod
     def _raw_response_fallback(data: Any) -> str:
         """Return readable structured data when a presentation layer is absent."""
         try:
@@ -1707,177 +1818,195 @@ class AIProviderOrchestrator:
             return self.intent_cache[key], True
         
         decision = None
+        stage = "conversation_state"
         
-        # Check conversation state first
-        if sender:
-            state = await self.conversation_manager.get_state(sender)
-            if state and state.waiting_for_input:
-                if state.expected_input_type in ["dealer_name", "city_name", "warehouse_name", "dn_number"]:
-                    decision = {
-                        "intent": state.selected_intent,
-                        "service_key": self._get_service_for_intent(state.selected_intent),
-                        "method": self._get_method_for_intent(state.selected_intent),
-                        "entity": message.strip(),
-                        "confidence": 1.0,
-                        "requires_ai": False,
-                        "reason": f"Menu input: {state.expected_input_type}",
-                    }
-                    state.waiting_for_input = False
-                    state.expected_input_type = ""
-                    await self.conversation_manager.set_state(state)
-                    self.intent_cache[key] = decision
-                    return decision, False
-        
-        # Try NLP detection first (if available)
-        if self._nlp_detector:
-            try:
-                nlp_decision = self._nlp_detector.detect(message)
-                if nlp_decision and nlp_decision.get("confidence", 0) > 0.6:
-                    decision = nlp_decision
-                    logger.debug(f"NLP intent detected: {nlp_decision.get('intent')} with confidence {nlp_decision.get('confidence')}")
-            except Exception as e:
-                logger.debug(f"NLP detection error: {e}")
-        
-        # Fallback to primary intent engine if NLP didn't find anything
-        if decision is None:
-            try:
-                engine = self._resolve_provider("intent_engine")
-                method = self._find_callable(engine, self._INTENT_METHODS, "Intent engine")
-                
-                if method is None:
-                    logger.warning("Intent engine methods not found - using fallback")
-                    decision = FallbackIntentEngine.detect(message)
-                else:
-                    kwargs: dict[str, Any] = {}
-                    parameters = inspect.signature(method).parameters
-                    if "sender" in parameters:
-                        kwargs["sender"] = sender
-                    elif "user_id" in parameters:
-                        kwargs["user_id"] = sender
-                    
-                    decision = await asyncio.wait_for(_call(method, message, **kwargs), timeout=10.0)
-                    
-            except (ImportError, ConfigurationError, TimeoutError, asyncio.TimeoutError, AttributeError) as exc:
-                logger.error(f"Intent detection failed: {exc} - using fallback")
-                decision = FallbackIntentEngine.detect(message)
-            except Exception as exc:
-                logger.exception(f"Unexpected intent detection error: {exc} - using fallback")
-                decision = FallbackIntentEngine.detect(message)
-        
-        # Validate the decision before caching
         try:
-            _decision_view(decision)
-        except (ValueError, ValidationError) as exc:
-            logger.error(f"Invalid routing decision: {exc} - using fallback")
+            # Check conversation state first
+            if sender:
+                state = await self.conversation_manager.get_state(sender)
+                if state and state.waiting_for_input:
+                    if state.expected_input_type in ["dealer_name", "city_name", "warehouse_name", "dn_number"]:
+                        decision = {
+                            "intent": state.selected_intent,
+                            "service_key": self._get_service_for_intent(state.selected_intent),
+                            "method": self._get_method_for_intent(state.selected_intent),
+                            "entity": message.strip(),
+                            "confidence": 1.0,
+                            "requires_ai": False,
+                            "reason": f"Menu input: {state.expected_input_type}",
+                        }
+                        state.waiting_for_input = False
+                        state.expected_input_type = ""
+                        await self.conversation_manager.set_state(state)
+                        self.intent_cache[key] = decision
+                        return decision, False
+            
+            # Try NLP detection first (if available)
+            stage = "nlp_detection"
+            if self._nlp_detector:
+                try:
+                    nlp_decision = self._nlp_detector.detect(message)
+                    if nlp_decision and nlp_decision.get("confidence", 0) > 0.6:
+                        decision = nlp_decision
+                        logger.debug(f"NLP intent detected: {nlp_decision.get('intent')} with confidence {nlp_decision.get('confidence')}")
+                except Exception as e:
+                    logger.debug(f"NLP detection error: {e}")
+            
+            # Fallback to primary intent engine if NLP didn't find anything
+            stage = "primary_intent_engine"
+            if decision is None:
+                try:
+                    engine = self._resolve_provider("intent_engine")
+                    method = self._find_callable(engine, self._INTENT_METHODS, "Intent engine")
+                    
+                    if method is None:
+                        logger.warning("Intent engine methods not found - using fallback")
+                        decision = FallbackIntentEngine.detect(message)
+                    else:
+                        kwargs: dict[str, Any] = {}
+                        parameters = inspect.signature(method).parameters
+                        if "sender" in parameters:
+                            kwargs["sender"] = sender
+                        elif "user_id" in parameters:
+                            kwargs["user_id"] = sender
+                        
+                        decision = await asyncio.wait_for(_call(method, message, **kwargs), timeout=10.0)
+                        
+                except (ImportError, ConfigurationError, TimeoutError, asyncio.TimeoutError, AttributeError) as exc:
+                    logger.error(f"Intent detection failed: {exc} - using fallback")
+                    decision = FallbackIntentEngine.detect(message)
+                except Exception as exc:
+                    logger.exception(f"Unexpected intent detection error: {exc} - using fallback")
+                    decision = FallbackIntentEngine.detect(message)
+            
+            # Validate the decision before caching
+            stage = "validation"
+            try:
+                _decision_view(decision)
+            except (ValueError, ValidationError) as exc:
+                logger.error(f"Invalid routing decision: {exc} - using fallback")
+                decision = FallbackIntentEngine.detect(message)
+            
+            # If decision is general_ai, check if it might be a dealer or city
+            stage = "dealer_city_override"
+            if decision.get("intent") == "general_ai":
+                msg_lower = message.lower()
+                
+                dealer_indicators = ["electronics", "traders", "distributors", "foods", "group", "pvt", "ltd", "sons", "brothers"]
+                dealer_names = ["umar", "taj", "haroon", "commercial", "national", "mian", "mgc", "arco", "shah", "haji"]
+                city_names = ["abbottabad", "lahore", "karachi", "rawalpindi", "quetta", "multan", "peshawar", "gilgit", "hyderabad", "islamabad", "sialkot", "gujranwala"]
+                
+                has_dealer = any(indicator in msg_lower for indicator in dealer_indicators) or any(name in msg_lower for name in dealer_names)
+                has_city = any(city in msg_lower for city in city_names)
+                word_count = len(msg_lower.split())
+                
+                if (has_dealer or has_city) and word_count <= 6:
+                    if has_dealer and not has_city:
+                        decision = {
+                            "intent": "dealer_dashboard",
+                            "service_key": "dealer_service",
+                            "method": "get_dealer_dashboard",
+                            "entity": message.strip(),
+                            "confidence": 0.8,
+                            "requires_ai": False,
+                            "reason": "Dealer detected (fallback - general_ai override)",
+                        }
+                    elif has_city and not has_dealer:
+                        decision = {
+                            "intent": "city_dashboard",
+                            "service_key": "city_service",
+                            "method": "get_city_dashboard",
+                            "entity": message.strip(),
+                            "confidence": 0.8,
+                            "requires_ai": False,
+                            "reason": "City detected (fallback - general_ai override)",
+                        }
+            
+            # Update conversation state
+            stage = "conversation_update"
+            if sender and decision:
+                intent = decision.get("intent", "unknown")
+                state = await self.conversation_manager.get_state(sender)
+                if not state:
+                    state = ConversationState(sender)
+                
+                if intent in ["main_menu", "dealer_menu", "city_menu", "dn_menu", "reports_menu"]:
+                    state.current_menu = intent.replace("_menu", "")
+                    state.previous_menu = state.current_menu
+                    state.waiting_for_input = False
+                    state.expected_input_type = ""
+                    await self.conversation_manager.set_state(state)
+                
+                elif intent in ["dealer_dashboard", "dealer_revenue", "dealer_pending", "dealer_pgi", "dealer_pod", "dealer_units", "dealer_performance"]:
+                    if not decision.get("entity") or len(str(decision.get("entity"))) < 2:
+                        state.selected_intent = intent
+                        state.waiting_for_input = True
+                        state.expected_input_type = "dealer_name"
+                        await self.conversation_manager.set_state(state)
+                        decision = {
+                            "intent": "ask_for_dealer",
+                            "service_key": "menu_service",
+                            "method": "ask_for_dealer_name",
+                            "entity": None,
+                            "confidence": 1.0,
+                            "requires_ai": False,
+                            "reason": "Asking for dealer name",
+                        }
+                    else:
+                        state.waiting_for_input = False
+                        state.expected_input_type = ""
+                        state.last_intent = intent
+                        state.last_entity = decision.get("entity")
+                        await self.conversation_manager.set_state(state)
+                
+                elif intent in ["city_dashboard", "city_revenue", "city_pending"]:
+                    if not decision.get("entity") or len(str(decision.get("entity"))) < 2:
+                        state.selected_intent = intent
+                        state.waiting_for_input = True
+                        state.expected_input_type = "city_name"
+                        await self.conversation_manager.set_state(state)
+                        decision = {
+                            "intent": "ask_for_city",
+                            "service_key": "menu_service",
+                            "method": "ask_for_city_name",
+                            "entity": None,
+                            "confidence": 1.0,
+                            "requires_ai": False,
+                            "reason": "Asking for city name",
+                        }
+                    else:
+                        state.waiting_for_input = False
+                        state.expected_input_type = ""
+                        state.last_intent = intent
+                        state.last_entity = decision.get("entity")
+                        await self.conversation_manager.set_state(state)
+                
+                elif intent in ["dn_lookup", "dn_status", "dn_history", "delivery_timeline"]:
+                    if not decision.get("entity") or len(str(decision.get("entity"))) < 6:
+                        state.selected_intent = intent
+                        state.waiting_for_input = True
+                        state.expected_input_type = "dn_number"
+                        await self.conversation_manager.set_state(state)
+                        decision = {
+                            "intent": "ask_for_dn",
+                            "service_key": "menu_service",
+                            "method": "ask_for_dn_number",
+                            "entity": None,
+                            "confidence": 1.0,
+                            "requires_ai": False,
+                            "reason": "Asking for DN number",
+                        }
+                    else:
+                        state.waiting_for_input = False
+                        state.expected_input_type = ""
+                        state.last_intent = intent
+                        state.last_entity = decision.get("entity")
+                        await self.conversation_manager.set_state(state)
+        
+        except Exception as e:
+            logger.error(self._format_error_diagnostics(e, sender or "unknown", stage))
+            # Fallback to regex detection
             decision = FallbackIntentEngine.detect(message)
-        
-        # If decision is general_ai, check if it might be a dealer or city
-        if decision.get("intent") == "general_ai":
-            msg_lower = message.lower()
-            
-            dealer_indicators = ["electronics", "traders", "distributors", "foods", "group", "pvt", "ltd", "sons", "brothers"]
-            dealer_names = ["umar", "taj", "haroon", "commercial", "national", "mian", "mgc", "arco", "shah", "haji"]
-            city_names = ["abbottabad", "lahore", "karachi", "rawalpindi", "quetta", "multan", "peshawar", "gilgit", "hyderabad", "islamabad", "sialkot", "gujranwala"]
-            
-            has_dealer = any(indicator in msg_lower for indicator in dealer_indicators) or any(name in msg_lower for name in dealer_names)
-            has_city = any(city in msg_lower for city in city_names)
-            word_count = len(msg_lower.split())
-            
-            if (has_dealer or has_city) and word_count <= 6:
-                if has_dealer and not has_city:
-                    decision = {
-                        "intent": "dealer_dashboard",
-                        "service_key": "dealer_service",
-                        "method": "get_dealer_dashboard",
-                        "entity": message.strip(),
-                        "confidence": 0.8,
-                        "requires_ai": False,
-                        "reason": "Dealer detected (fallback - general_ai override)",
-                    }
-                elif has_city and not has_dealer:
-                    decision = {
-                        "intent": "city_dashboard",
-                        "service_key": "city_service",
-                        "method": "get_city_dashboard",
-                        "entity": message.strip(),
-                        "confidence": 0.8,
-                        "requires_ai": False,
-                        "reason": "City detected (fallback - general_ai override)",
-                    }
-        
-        # Update conversation state
-        if sender and decision:
-            intent = decision.get("intent", "unknown")
-            state = await self.conversation_manager.get_state(sender)
-            if not state:
-                state = ConversationState(sender)
-            
-            if intent in ["main_menu", "dealer_menu", "city_menu", "dn_menu", "reports_menu"]:
-                state.current_menu = intent.replace("_menu", "")
-                state.previous_menu = state.current_menu
-                state.waiting_for_input = False
-                state.expected_input_type = ""
-                await self.conversation_manager.set_state(state)
-            
-            elif intent in ["dealer_dashboard", "dealer_revenue", "dealer_pending", "dealer_pgi", "dealer_pod", "dealer_units", "dealer_performance"]:
-                if not decision.get("entity") or len(str(decision.get("entity"))) < 2:
-                    state.selected_intent = intent
-                    state.waiting_for_input = True
-                    state.expected_input_type = "dealer_name"
-                    await self.conversation_manager.set_state(state)
-                    decision = {
-                        "intent": "ask_for_dealer",
-                        "service_key": "menu_service",
-                        "method": "ask_for_dealer_name",
-                        "entity": None,
-                        "confidence": 1.0,
-                        "requires_ai": False,
-                        "reason": "Asking for dealer name",
-                    }
-                else:
-                    state.waiting_for_input = False
-                    state.expected_input_type = ""
-                    await self.conversation_manager.set_state(state)
-            
-            elif intent in ["city_dashboard", "city_revenue", "city_pending"]:
-                if not decision.get("entity") or len(str(decision.get("entity"))) < 2:
-                    state.selected_intent = intent
-                    state.waiting_for_input = True
-                    state.expected_input_type = "city_name"
-                    await self.conversation_manager.set_state(state)
-                    decision = {
-                        "intent": "ask_for_city",
-                        "service_key": "menu_service",
-                        "method": "ask_for_city_name",
-                        "entity": None,
-                        "confidence": 1.0,
-                        "requires_ai": False,
-                        "reason": "Asking for city name",
-                    }
-                else:
-                    state.waiting_for_input = False
-                    state.expected_input_type = ""
-                    await self.conversation_manager.set_state(state)
-            
-            elif intent in ["dn_lookup", "dn_status", "dn_history", "delivery_timeline"]:
-                if not decision.get("entity") or len(str(decision.get("entity"))) < 6:
-                    state.selected_intent = intent
-                    state.waiting_for_input = True
-                    state.expected_input_type = "dn_number"
-                    await self.conversation_manager.set_state(state)
-                    decision = {
-                        "intent": "ask_for_dn",
-                        "service_key": "menu_service",
-                        "method": "ask_for_dn_number",
-                        "entity": None,
-                        "confidence": 1.0,
-                        "requires_ai": False,
-                        "reason": "Asking for DN number",
-                    }
-                else:
-                    state.waiting_for_input = False
-                    state.expected_input_type = ""
-                    await self.conversation_manager.set_state(state)
         
         self.intent_cache[key] = decision
         return decision, False
@@ -2035,15 +2164,8 @@ class AIProviderOrchestrator:
             })
         except Exception as exc:
             root = self._root_cause(exc)
-            logger.opt(exception=True).error(
-                "Optional Groq enhancement failed; returning business response "
-                "exception_type={} exception_message={!r} root_cause_type={} "
-                "root_cause={!r}",
-                type(exc).__name__,
-                str(exc),
-                type(root).__name__,
-                str(root),
-            )
+            logger.error(self._format_error_diagnostics(exc, request_id, "groq_enhancement"))
+            logger.warning(f"Groq enhancement failed: {str(root)[:100]}")
             return business_response.model_copy(update={
                 "metadata": business_response.metadata
                 | {
@@ -2170,96 +2292,55 @@ class AIProviderOrchestrator:
             error = business_response.error.strip()
             if target.provider_name == "dn_service" and "not found" in error.casefold():
                 dn_match = re.search(r"(?<!\d)(\d{6,20})(?!\d)", request.message)
-                dn_no = dn_match.group(1) if dn_match else str(decision.entity)
+                dn_no = dn_match.group(1) if dn_match else str(decision.entity) if decision else "unknown"
                 return f"DN {dn_no} was not found in PostgreSQL."
             
-            if any(token in error.casefold() for token in ("database", "connection", "sql", "timeout")):
-                return "Database is currently unavailable."
+            if target.provider_name == "dealer_service" and "not found" in error.casefold():
+                return f"Dealer '{str(decision.entity) if decision else 'unknown'}' was not found in PostgreSQL."
             
+            if any(token in error.casefold() for token in ("database", "connection", "sql", "timeout")):
+                return "Database is currently unavailable. Please try again later."
+            
+            # Log detailed error before returning
+            logger.error(f"Service execution error: {error} | Request ID: {request_id}")
             return error or f"Service execution failed. Reference ID: {request_id}"
             
         except ValidationError as exc:
-            bound.opt(exception=True).error(
-                "Failure stage={} exception_type={} exception_message={!r}",
-                stage, type(exc).__name__, str(exc),
-            )
+            bound.error(f"Validation error: {exc}")
             return "Please send a valid, non-empty request."
             
         except RoutingError as exc:
-            bound.opt(exception=True).error(
-                "Failure stage={} exception_type={} exception_message={!r}",
-                stage, type(exc).__name__, str(exc)
-            )
+            bound.error(f"Routing error: {exc}")
             return f"{exc}. Reference ID: {request_id}"
             
         except MethodNotFoundError as exc:
-            bound.opt(exception=True).error(
-                "Failure stage={} exception_type={} exception_message={!r}",
-                stage, type(exc).__name__, str(exc)
-            )
+            bound.error(f"Method not found: {exc}")
             service_name = target.provider_name if target else "Selected service"
             return f"{service_name} does not support the requested operation. Reference ID: {request_id}"
             
         except (ServiceUnavailableError, ConfigurationError, ImportError) as exc:
-            bound.opt(exception=True).error(
-                "Failure stage={} exception_type={} exception_message={!r}",
-                stage, type(exc).__name__, str(exc)
-            )
+            bound.error(f"Service unavailable: {exc}")
             service_name = target.provider_name if target else "Requested service"
             return f"{service_name} is unavailable. Reference ID: {request_id}"
             
         except (TimeoutError, asyncio.TimeoutError) as exc:
-            bound.opt(exception=True).error(
-                "Failure stage={} exception_type={} exception_message={!r}",
-                stage, type(exc).__name__, str(exc)
-            )
+            bound.error(f"Timeout: {exc}")
             return f"The request timed out. Reference ID: {request_id}"
             
         except (DatabaseConnectionError, SQLAlchemyError, ConnectionError) as exc:
             root = self._root_cause(exc)
-            bound.opt(exception=True).error(
-                "Failure stage={} database_status=unavailable exception_type={} "
-                "exception_message={!r} root_cause_type={} root_cause={!r}",
-                stage, type(exc).__name__, str(exc), type(root).__name__, str(root),
-            )
+            bound.error(f"Database error: {root}")
             return f"Database is currently unavailable. Reference ID: {request_id}"
             
         except (AttributeError, ValueError, TypeError, KeyError, IndexError, RuntimeError, OSError) as exc:
-            root = self._root_cause(exc)
-            bound.opt(exception=True).error(
-                "Failure stage={} intent={} entity={!r} service={} method={} "
-                "exception_type={} exception_message={!r} root_cause_type={} "
-                "root_cause={!r} execution_time_ms={:.2f}",
-                stage,
-                decision.intent if decision else None,
-                decision.entity if decision else None,
-                target.provider_name if target else None,
-                target.method if target else None,
-                type(exc).__name__,
-                str(exc),
-                type(root).__name__,
-                str(root),
-                (time.perf_counter() - started) * 1000,
-            )
+            diagnostics = self._format_error_diagnostics(exc, request_id, stage)
+            logger.error(diagnostics)
             return f"Unexpected internal error. Reference ID: {request_id}"
             
         except Exception as exc:
             root = self._root_cause(exc)
-            bound.opt(exception=True).critical(
-                "Unhandled failure stage={} intent={} entity={!r} service={} method={} "
-                "exception_type={} exception_message={!r} root_cause_type={} "
-                "root_cause={!r} execution_time_ms={:.2f}",
-                stage,
-                decision.intent if decision else None,
-                decision.entity if decision else None,
-                target.provider_name if target else None,
-                target.method if target else None,
-                type(exc).__name__,
-                str(exc),
-                type(root).__name__,
-                str(root),
-                (time.perf_counter() - started) * 1000,
-            )
+            diagnostics = self._format_error_diagnostics(exc, request_id, stage)
+            logger.critical(diagnostics)
             return f"Unexpected internal error. Reference ID: {request_id}"
 
     async def process_whatsapp_query(
@@ -2307,15 +2388,7 @@ class AIProviderOrchestrator:
                 or self._raw_response_fallback(business_response.data)
             )
         except Exception as exc:
-            root = self._root_cause(exc)
-            logger.bind(request_id=request_id).opt(exception=True).error(
-                "Response enhancement failed exception_type={} exception_message={!r} "
-                "root_cause_type={} root_cause={!r}; returning business response",
-                type(exc).__name__,
-                str(exc),
-                type(root).__name__,
-                str(root),
-            )
+            logger.error(self._format_error_diagnostics(exc, request_id, "enhance_response"))
             return (
                 business_response.whatsapp_message
                 or self._raw_response_fallback(business_response.data)
@@ -2458,6 +2531,13 @@ class AIProviderOrchestrator:
                 logger.exception("Startup health check failed for {}", name)
                 checks[name] = {"healthy": False, "error": type(exc).__name__}
         
+        # Add bootstrap health
+        try:
+            bootstrap = get_ai_bootstrap_service()
+            checks["bootstrap"] = {"healthy": True, "details": bootstrap.health()}
+        except Exception as e:
+            checks["bootstrap"] = {"healthy": False, "error": str(e)}
+        
         result = {
             "healthy": all(item["healthy"] for item in checks.values()),
             "services": checks,
@@ -2468,7 +2548,7 @@ class AIProviderOrchestrator:
 
 
 # ============================================================
-# SINGLETON INSTANCES
+# BLOCK 17: SINGLETON INSTANCES
 # ============================================================
 
 container = ApplicationContainer()
@@ -2478,7 +2558,7 @@ WhatsAppProviderService = AIProviderOrchestrator
 
 
 # ============================================================
-# MODULE-LEVEL FUNCTIONS - BACKWARD COMPATIBLE
+# BLOCK 18: MODULE-LEVEL FUNCTIONS - BACKWARD COMPATIBLE
 # ============================================================
 
 async def process_whatsapp_query(
