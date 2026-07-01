@@ -14,6 +14,8 @@ Supports:
 - Bootstrap Integration for Cached Resources
 - Comprehensive Failure Diagnostics
 - Multi-stage Recovery System
+- Enterprise Service Health Monitoring
+- Request Tracing & Performance Monitoring
 """
 
 from __future__ import annotations
@@ -45,7 +47,7 @@ from tenacity import (
 )
 
 # ============================================================
-# BLOCK 1: STARTUP VALIDATION
+# BLOCK 1: DIAGNOSTICS - BOOTSTRAP IMPORT
 # ============================================================
 
 from app.services.ai_bootstrap_service import get_ai_bootstrap_service
@@ -54,7 +56,6 @@ from app.services.ai_bootstrap_service import get_ai_bootstrap_service
 # BLOCK 2: OPTIONAL LIBRARIES WITH SAFE FALLBACKS
 # ============================================================
 
-# Advanced NLP & ML - Now loaded via Bootstrap
 try:
     import numpy as np
 except ImportError:
@@ -83,19 +84,16 @@ except ImportError:
     stopwords = None
     nltk = None
 
-# Caching & State
 try:
     from expiringdict import ExpiringDict
 except ImportError:
     ExpiringDict = None
 
-# Date Parsing
 try:
     import dateparser
 except ImportError:
     dateparser = None
 
-# Language Detection
 try:
     from lingua import LanguageDetectorBuilder
     from lingua import Language
@@ -103,7 +101,6 @@ except ImportError:
     LanguageDetectorBuilder = None
     Language = None
 
-# Unicode & Text Cleaning
 try:
     import ftfy
 except ImportError:
@@ -119,20 +116,17 @@ try:
 except ImportError:
     regex = re
 
-# Fast Dictionary Lookup
 try:
     import ahocorasick
 except ImportError:
     ahocorasick = None
 
-# Spell Correction
 try:
     from symspellpy import SymSpell, Verbosity
 except ImportError:
     SymSpell = None
     Verbosity = None
 
-# Semantic Router
 try:
     from semantic_router import Route, Router, RouteLayer
     from semantic_router.encoders import HuggingFaceEncoder
@@ -142,7 +136,6 @@ except ImportError:
     RouteLayer = None
     HuggingFaceEncoder = None
 
-# FlashRank for Intent Ranking
 try:
     from flashrank import Ranker
 except ImportError:
@@ -162,47 +155,85 @@ class OrchestrationError(RuntimeError):
 
 
 class ConfigurationError(OrchestrationError):
-    """Configuration or dependency resolution failure."""
     pass
 
 
 class ServiceUnavailableError(OrchestrationError):
-    """Service dependency cannot be loaded or is misconfigured."""
     pass
 
 
 class MethodNotFoundError(OrchestrationError):
-    """Requested method does not exist on the resolved service."""
     pass
 
 
 class DatabaseConnectionError(OrchestrationError):
-    """Compatibility exception for domain services that wrap DB failures."""
     pass
 
 
 class RoutingError(OrchestrationError):
-    """Request could not be routed to a valid service method."""
     pass
 
 
 class GroqError(OrchestrationError):
-    """AI enhancement service error."""
     pass
 
 
 class IntentDetectionError(OrchestrationError):
-    """Intent engine failed to produce a valid routing decision."""
     pass
 
 
 class ConversationStateError(OrchestrationError):
-    """Conversation state management error."""
     pass
 
 
 # ============================================================
-# BLOCK 4: PYDANTIC MODELS
+# BLOCK 4: HEALTH AND DIAGNOSTICS MODELS
+# ============================================================
+
+@dataclass
+class ServiceHealth:
+    """Health status of a service"""
+    name: str
+    healthy: bool
+    version: str = "unknown"
+    dependencies: list[str] = field(default_factory=list)
+    database_connected: bool = False
+    last_error: Optional[str] = None
+    response_time_ms: float = 0.0
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class RequestTrace:
+    """Complete request execution trace"""
+    request_id: str
+    sender: str | None
+    message: str
+    stages: list[dict[str, Any]] = field(default_factory=list)
+    start_time: float = field(default_factory=time.perf_counter)
+    end_time: Optional[float] = None
+    total_time_ms: float = 0.0
+    final_status: str = "pending"
+    error: Optional[str] = None
+    
+    def add_stage(self, name: str, success: bool, duration_ms: float = 0.0, details: dict[str, Any] = None):
+        self.stages.append({
+            "name": name,
+            "success": success,
+            "duration_ms": duration_ms,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "details": details or {}
+        })
+    
+    def complete(self, success: bool, error: str = None):
+        self.end_time = time.perf_counter()
+        self.total_time_ms = (self.end_time - self.start_time) * 1000
+        self.final_status = "success" if success else "failed"
+        self.error = error
+
+
+# ============================================================
+# BLOCK 5: PYDANTIC MODELS
 # ============================================================
 
 class ServiceRequest(BaseModel):
@@ -228,7 +259,6 @@ class ServiceRequest(BaseModel):
         return normalized
 
 
-# Preserve imports used by integrations built against the preceding name.
 RequestInput = ServiceRequest
 
 
@@ -285,11 +315,10 @@ class ProviderResolver(Protocol):
 
 
 # ============================================================
-# BLOCK 5: CONVERSATION STATE MODELS
+# BLOCK 6: CONVERSATION STATE MODELS
 # ============================================================
 
 class MenuOption:
-    """Menu option for guided navigation"""
     def __init__(self, number: str, label: str, intent: str, service: str = None, method: str = None):
         self.number = number
         self.label = label
@@ -303,7 +332,7 @@ class ConversationState:
     
     def __init__(self, sender: str):
         self.sender: str = sender
-        self.current_menu: str = "main"  # main, dealer, city, warehouse, dn, product
+        self.current_menu: str = "main"
         self.previous_menu: str = ""
         self.selected_intent: str = ""
         self.selected_entity: str = ""
@@ -311,7 +340,7 @@ class ConversationState:
         self.selected_city: str = ""
         self.selected_warehouse: str = ""
         self.waiting_for_input: bool = False
-        self.expected_input_type: str = ""  # dealer_name, city_name, warehouse_name, dn_number
+        self.expected_input_type: str = ""
         self.last_message: str = ""
         self.last_response: str = ""
         self.last_intent: str = ""
@@ -384,7 +413,7 @@ class ConversationState:
 
 
 # ============================================================
-# BLOCK 6: MENU DEFINITIONS
+# BLOCK 7: MENU DEFINITIONS
 # ============================================================
 
 class MenuService:
@@ -472,7 +501,6 @@ class MenuService:
     
     @classmethod
     def get_menu(cls, menu_name: str) -> dict:
-        """Get menu by name"""
         menus = {
             "main": cls.MAIN_MENU,
             "dealer": cls.DEALER_MENU,
@@ -484,7 +512,6 @@ class MenuService:
     
     @classmethod
     def format_menu(cls, menu: dict) -> str:
-        """Format menu for WhatsApp"""
         lines = [menu["title"], "", menu["subtitle"], ""]
         for option in menu["options"]:
             lines.append(f"{option['number']} {option['label']}")
@@ -494,7 +521,6 @@ class MenuService:
     
     @classmethod
     def get_option_by_number(cls, menu: dict, number: str) -> Optional[dict]:
-        """Get option by number from menu"""
         for option in menu["options"]:
             if option["number"] == number or option["number"].replace("️⃣", "") == number:
                 return option
@@ -502,13 +528,13 @@ class MenuService:
 
 
 # ============================================================
-# BLOCK 7: CONVERSATION MANAGER
+# BLOCK 8: CONVERSATION MANAGER
 # ============================================================
 
 class ConversationManager:
     """Manages conversation state with expiring cache"""
     
-    def __init__(self, ttl_seconds: int = 1800):  # 30 minutes default
+    def __init__(self, ttl_seconds: int = 1800):
         self._ttl = ttl_seconds
         if ExpiringDict:
             self._cache = ExpiringDict(max_len=10000, max_age_seconds=ttl_seconds)
@@ -517,7 +543,6 @@ class ConversationManager:
         self._lock = asyncio.Lock()
     
     async def get_state(self, sender: str) -> Optional[ConversationState]:
-        """Get conversation state for sender"""
         async with self._lock:
             data = self._cache.get(sender)
             if data:
@@ -525,18 +550,15 @@ class ConversationManager:
             return None
     
     async def set_state(self, state: ConversationState) -> None:
-        """Set conversation state"""
         async with self._lock:
             self._cache[state.sender] = state.to_dict()
     
     async def clear_state(self, sender: str) -> None:
-        """Clear conversation state"""
         async with self._lock:
             if sender in self._cache:
                 del self._cache[sender]
     
     async def update_state(self, sender: str, **kwargs) -> Optional[ConversationState]:
-        """Update conversation state fields"""
         state = await self.get_state(sender)
         if not state:
             state = ConversationState(sender)
@@ -550,7 +572,6 @@ class ConversationManager:
         return state
     
     async def add_history(self, sender: str, message: str, response: str) -> None:
-        """Add interaction to history"""
         state = await self.get_state(sender)
         if not state:
             state = ConversationState(sender)
@@ -566,14 +587,12 @@ class ConversationManager:
         await self.set_state(state)
     
     async def push_back(self, sender: str, menu: str) -> None:
-        """Push to back stack"""
         state = await self.get_state(sender)
         if state:
             state.push_back(menu)
             await self.set_state(state)
     
     async def pop_back(self, sender: str) -> Optional[str]:
-        """Pop from back stack"""
         state = await self.get_state(sender)
         if state:
             return state.pop_back()
@@ -581,11 +600,10 @@ class ConversationManager:
 
 
 # ============================================================
-# BLOCK 8: ROUTING TABLE - ALL BUSINESS INTENTS
+# BLOCK 9: ROUTING TABLE
 # ============================================================
 
 ROUTES: Final[dict[str, RouteTarget]] = {
-    # DN Service Routes
     "dn_lookup": RouteTarget("dn_service", "get_dn_dashboard"),
     "dn_search": RouteTarget("dn_service", "get_dn_dashboard"),
     "dn_dashboard": RouteTarget("dn_service", "get_dn_dashboard"),
@@ -602,7 +620,6 @@ ROUTES: Final[dict[str, RouteTarget]] = {
     "delivery_timeline": RouteTarget("dn_service", "get_delivery_timeline"),
     "transit_analysis": RouteTarget("dn_service", "get_transit_analysis"),
     
-    # Dealer Service Routes
     "dealer_dashboard": RouteTarget("dealer_service", "get_dealer_dashboard"),
     "dealer_revenue": RouteTarget("dealer_service", "get_dealer_dashboard"),
     "dealer_pending": RouteTarget("dealer_service", "get_dealer_dashboard"),
@@ -614,31 +631,23 @@ ROUTES: Final[dict[str, RouteTarget]] = {
     "top_dealers": RouteTarget("dealer_service", "get_top_dealers"),
     "dealer_ranking": RouteTarget("dealer_service", "get_top_dealers"),
     
-    # City Service Routes
     "city_dashboard": RouteTarget("city_service", "get_city_dashboard"),
     "city_revenue": RouteTarget("city_service", "get_city_dashboard"),
     "city_pending": RouteTarget("city_service", "get_city_dashboard"),
     "top_cities": RouteTarget("city_service", "get_top_cities"),
     "city_comparison": RouteTarget("city_service", "compare_cities"),
     
-    # Warehouse Service Routes
     "warehouse_dashboard": RouteTarget("warehouse_service", "get_warehouse_dashboard"),
-    
-    # Product Service Routes
     "product_dashboard": RouteTarget("product_service", "get_product_dashboard"),
-    
-    # KPI Service Routes
     "national_kpi": RouteTarget("kpi_service", "get_national_kpi_dashboard"),
     "national_kpi_dashboard": RouteTarget("kpi_service", "get_national_kpi_dashboard"),
     
-    # Menu Routes (handled internally)
     "main_menu": RouteTarget("menu_service", "show_main_menu"),
     "dealer_menu": RouteTarget("menu_service", "show_dealer_menu"),
     "city_menu": RouteTarget("menu_service", "show_city_menu"),
     "dn_menu": RouteTarget("menu_service", "show_dn_menu"),
     "reports_menu": RouteTarget("menu_service", "show_reports_menu"),
     
-    # General AI Fallback
     "general_ai": RouteTarget("groq_service", "process_query"),
     "greeting": RouteTarget("groq_service", "process_query"),
     "help": RouteTarget("groq_service", "process_query"),
@@ -647,7 +656,7 @@ ROUTES: Final[dict[str, RouteTarget]] = {
 
 
 # ============================================================
-# BLOCK 9: SERVICE SYMBOL RESOLUTION
+# BLOCK 10: SERVICE SYMBOL RESOLUTION
 # ============================================================
 
 _SYMBOLS: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
@@ -673,29 +682,18 @@ _SYMBOLS: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
 
 
 # ============================================================
-# BLOCK 10: ENHANCED FALLBACK INTENT ENGINE
+# BLOCK 11: FALLBACK INTENT ENGINE
 # ============================================================
 
 class FallbackIntentEngine:
-    """
-    Enhanced regex-based intent detection with optional NLP support.
-    This ensures the orchestrator never crashes due to intent engine issues.
-    Supports dealer, city, warehouse, and DN detection with menu support.
-    """
+    """Enhanced regex-based intent detection with fallback support."""
     
     _DN_PATTERN = re.compile(r'(?<!\d)(\d{6,20})(?!\d)')
-    
-    # Dealer patterns
-    _DEALER_PATTERNS = re.compile(
-        r'(?:dealer|dealers?)\s+(?:for\s+)?([a-zA-Z0-9\s_\-]+)',
-        re.IGNORECASE
-    )
+    _DEALER_PATTERNS = re.compile(r'(?:dealer|dealers?)\s+(?:for\s+)?([a-zA-Z0-9\s_\-]+)', re.IGNORECASE)
     _DEALER_NAME_PATTERN = re.compile(
         r'^(?:umar|taj|haroon|commercial|national|mian|mgc|arco|shah|haji|sons|electronics|distributors|traders|foods|group|pvt|ltd|wah|abbottabad|haripur|gilget|rawalpindi)\s*[\w\s]+|^[\w\s]+(?:electronics|distributors|traders|foods|group|pvt|ltd|sons|brothers)',
         re.IGNORECASE
     )
-    
-    # Common dealer names for exact matching
     _COMMON_DEALERS = frozenset({
         "umar electronics wah", "umar electronics", "taj electronics",
         "haroon electronics", "commercial electronics", "national foods",
@@ -703,422 +701,139 @@ class FallbackIntentEngine:
         "shah electronics", "haji sharaf ud din & sons",
         "haji sharaf", "haji sharaf ud din",
     })
-    
-    # Dealer indicators
     _DEALER_INDICATORS = frozenset({
         "electronics", "traders", "distributors", "foods", 
         "group", "pvt", "ltd", "sons", "brothers", "enterprises"
     })
-    
-    # City patterns
     _CITY_PATTERNS = re.compile(
         r'(?:city|city\s+of)\s+(?:of\s+)?([a-zA-Z\s]+)|^(?:abbottabad|lahore|karachi|rawalpindi|quetta|multan|peshawar|gilgit|hyderabad|sialkot|gujranwala|islamabad)\b',
         re.IGNORECASE
     )
-    
-    _WAREHOUSE_PATTERNS = re.compile(
-        r'(?:warehouse|wh)\s+(?:for\s+)?([a-zA-Z0-9\s_\-]+)',
-        re.IGNORECASE
-    )
-    
-    # Menu keywords
-    _MENU_KEYWORDS = re.compile(
-        r'(?:menu|options|choices|services|back|main menu|home)',
-        re.IGNORECASE
-    )
-    
-    _PENDING_KEYWORDS = re.compile(
-        r'(?:pending|not\s+delivered|overdue|late|outstanding)',
-        re.IGNORECASE
-    )
-    _SUMMARY_KEYWORDS = re.compile(
-        r'(?:summary|overview|total|statistics|stats|dashboard)',
-        re.IGNORECASE
-    )
-    _RECENT_KEYWORDS = re.compile(
-        r'(?:recent|latest|newest|today|this\s+week)',
-        re.IGNORECASE
-    )
-    _TOP_KEYWORDS = re.compile(
-        r'(?:top|best|highest|leading|rank)',
-        re.IGNORECASE
-    )
-    _COMPARE_KEYWORDS = re.compile(
-        r'(?:compare|vs|versus|verses|vs\.)',
-        re.IGNORECASE
-    )
-    _REVENUE_KEYWORDS = re.compile(
-        r'(?:revenue|sales|earnings|turnover|income)',
-        re.IGNORECASE
-    )
-    _DELIVERY_KEYWORDS = re.compile(
-        r'(?:delivery|transit|shipping|dispatch)',
-        re.IGNORECASE
-    )
+    _WAREHOUSE_PATTERNS = re.compile(r'(?:warehouse|wh)\s+(?:for\s+)?([a-zA-Z0-9\s_\-]+)', re.IGNORECASE)
+    _MENU_KEYWORDS = re.compile(r'(?:menu|options|choices|services|back|main menu|home)', re.IGNORECASE)
+    _PENDING_KEYWORDS = re.compile(r'(?:pending|not\s+delivered|overdue|late|outstanding)', re.IGNORECASE)
+    _SUMMARY_KEYWORDS = re.compile(r'(?:summary|overview|total|statistics|stats|dashboard)', re.IGNORECASE)
+    _RECENT_KEYWORDS = re.compile(r'(?:recent|latest|newest|today|this\s+week)', re.IGNORECASE)
+    _TOP_KEYWORDS = re.compile(r'(?:top|best|highest|leading|rank)', re.IGNORECASE)
+    _COMPARE_KEYWORDS = re.compile(r'(?:compare|vs|versus|verses|vs\.)', re.IGNORECASE)
+    _REVENUE_KEYWORDS = re.compile(r'(?:revenue|sales|earnings|turnover|income)', re.IGNORECASE)
+    _DELIVERY_KEYWORDS = re.compile(r'(?:delivery|transit|shipping|dispatch)', re.IGNORECASE)
     _GREETING_PATTERNS = re.compile(
         r'^(?:hi|hello|hey|good morning|good afternoon|good evening|hola|namaste|salam|howdy|assalamualaikum|salamualaikum)',
         re.IGNORECASE
     )
-    _HELP_PATTERNS = re.compile(
-        r'(?:help|assist|support|how\s+to|what\s+is|explain|guide)',
-        re.IGNORECASE
-    )
-    _BACK_PATTERNS = re.compile(
-        r'^(?:back|return|go back|previous)$',
-        re.IGNORECASE
-    )
+    _HELP_PATTERNS = re.compile(r'(?:help|assist|support|how\s+to|what\s+is|explain|guide)', re.IGNORECASE)
+    _BACK_PATTERNS = re.compile(r'^(?:back|return|go back|previous)$', re.IGNORECASE)
     _MENU_NUMBER_PATTERN = re.compile(r'^[0-9️⃣]+$')
     
     @classmethod
     def detect(cls, message: str) -> dict[str, Any]:
-        """Detect intent using regex patterns with enhanced NLP support."""
         message_lower = message.lower().strip()
         message_original = message.strip()
         
-        # Check for menu commands first
         if cls._BACK_PATTERNS.match(message_lower):
-            return {
-                "intent": "main_menu",
-                "service_key": "menu_service",
-                "method": "show_main_menu",
-                "entity": None,
-                "confidence": 1.0,
-                "requires_ai": False,
-                "reason": "Back command detected",
-            }
+            return {"intent": "main_menu", "service_key": "menu_service", "method": "show_main_menu", "entity": None, "confidence": 1.0, "requires_ai": False, "reason": "Back command detected"}
         
         if message_lower in ["menu", "main menu", "options", "help"]:
-            return {
-                "intent": "main_menu",
-                "service_key": "menu_service",
-                "method": "show_main_menu",
-                "entity": None,
-                "confidence": 1.0,
-                "requires_ai": False,
-                "reason": "Menu command detected",
-            }
+            return {"intent": "main_menu", "service_key": "menu_service", "method": "show_main_menu", "entity": None, "confidence": 1.0, "requires_ai": False, "reason": "Menu command detected"}
         
-        # Check for DN number first
         dn_match = cls._DN_PATTERN.search(message)
         if dn_match:
-            return {
-                "intent": "dn_lookup",
-                "service_key": "dn_service",
-                "method": "get_dn_dashboard",
-                "entity": dn_match.group(1),
-                "confidence": 1.0,
-                "requires_ai": False,
-                "reason": "DN number detected in message",
-            }
+            return {"intent": "dn_lookup", "service_key": "dn_service", "method": "get_dn_dashboard", "entity": dn_match.group(1), "confidence": 1.0, "requires_ai": False, "reason": "DN number detected"}
         
-        # Check for comparison
         if cls._COMPARE_KEYWORDS.search(message_lower):
             entities = re.findall(r'([a-zA-Z\s]+?)(?:\s+vs\s+|\s+versus\s+|\s+vs\.\s+)([a-zA-Z\s]+)', message_lower)
             if entities:
-                return {
-                    "intent": "dealer_comparison",
-                    "service_key": "dealer_service",
-                    "method": "compare_dealers",
-                    "entity": {"dealer1": entities[0][0].strip(), "dealer2": entities[0][1].strip()},
-                    "confidence": 0.85,
-                    "requires_ai": False,
-                    "reason": "Comparison detected",
-                }
+                return {"intent": "dealer_comparison", "service_key": "dealer_service", "method": "compare_dealers", "entity": {"dealer1": entities[0][0].strip(), "dealer2": entities[0][1].strip()}, "confidence": 0.85, "requires_ai": False, "reason": "Comparison detected"}
         
-        # Check for exact dealer name match
-        msg_lower = message_lower
         for dealer in cls._COMMON_DEALERS:
-            if dealer in msg_lower:
-                return {
-                    "intent": "dealer_dashboard",
-                    "service_key": "dealer_service",
-                    "method": "get_dealer_dashboard",
-                    "entity": message_original,
-                    "confidence": 0.95,
-                    "requires_ai": False,
-                    "reason": f"Exact dealer match: {dealer}",
-                }
+            if dealer in message_lower:
+                return {"intent": "dealer_dashboard", "service_key": "dealer_service", "method": "get_dealer_dashboard", "entity": message_original, "confidence": 0.95, "requires_ai": False, "reason": f"Exact dealer match: {dealer}"}
         
-        # Check for dealer name (natural language)
         if cls._DEALER_NAME_PATTERN.search(message_lower):
             word_count = len(message_lower.split())
             if word_count <= 6:
                 query_keywords = ['pending', 'summary', 'recent', 'top', 'compare', 'vs', 'revenue', 'units', 'dn', 'delivery']
                 if not any(keyword in message_lower for keyword in query_keywords):
-                    return {
-                        "intent": "dealer_dashboard",
-                        "service_key": "dealer_service",
-                        "method": "get_dealer_dashboard",
-                        "entity": message_original,
-                        "confidence": 0.85,
-                        "requires_ai": False,
-                        "reason": "Dealer name detected (natural language)",
-                    }
+                    return {"intent": "dealer_dashboard", "service_key": "dealer_service", "method": "get_dealer_dashboard", "entity": message_original, "confidence": 0.85, "requires_ai": False, "reason": "Dealer name detected (natural language)"}
         
-        # Check for dealer indicators
         words = message_lower.split()
         for word in words:
-            if word in cls._DEALER_INDICATORS:
-                if len(words) <= 5:
-                    return {
-                        "intent": "dealer_dashboard",
-                        "service_key": "dealer_service",
-                        "method": "get_dealer_dashboard",
-                        "entity": message_original,
-                        "confidence": 0.75,
-                        "requires_ai": False,
-                        "reason": "Dealer indicator detected",
-                    }
+            if word in cls._DEALER_INDICATORS and len(words) <= 5:
+                return {"intent": "dealer_dashboard", "service_key": "dealer_service", "method": "get_dealer_dashboard", "entity": message_original, "confidence": 0.75, "requires_ai": False, "reason": "Dealer indicator detected"}
         
-        # Check for city
         city_match = cls._CITY_PATTERNS.search(message)
         if city_match:
             city_name = city_match.group(1) or city_match.group(0)
             if city_name and len(city_name.strip()) > 2:
-                return {
-                    "intent": "city_dashboard",
-                    "service_key": "city_service",
-                    "method": "get_city_dashboard",
-                    "entity": city_name.strip(),
-                    "confidence": 0.8,
-                    "requires_ai": False,
-                    "reason": "City name detected",
-                }
+                return {"intent": "city_dashboard", "service_key": "city_service", "method": "get_city_dashboard", "entity": city_name.strip(), "confidence": 0.8, "requires_ai": False, "reason": "City name detected"}
         
-        # Check for greeting
         if cls._GREETING_PATTERNS.match(message_lower):
-            return {
-                "intent": "greeting",
-                "service_key": "groq_service",
-                "method": "process_query",
-                "entity": message,
-                "confidence": 1.0,
-                "requires_ai": True,
-                "reason": "Greeting detected",
-            }
+            return {"intent": "greeting", "service_key": "groq_service", "method": "process_query", "entity": message, "confidence": 1.0, "requires_ai": True, "reason": "Greeting detected"}
         
-        # Check for help
         if cls._HELP_PATTERNS.search(message_lower):
-            return {
-                "intent": "help",
-                "service_key": "groq_service",
-                "method": "process_query",
-                "entity": message,
-                "confidence": 0.9,
-                "requires_ai": True,
-                "reason": "Help request detected",
-            }
+            return {"intent": "help", "service_key": "groq_service", "method": "process_query", "entity": message, "confidence": 0.9, "requires_ai": True, "reason": "Help request detected"}
         
-        # Check for summary
         if cls._SUMMARY_KEYWORDS.search(message_lower):
             if any(ind in message_lower for ind in cls._DEALER_INDICATORS):
-                return {
-                    "intent": "dealer_dashboard",
-                    "service_key": "dealer_service",
-                    "method": "get_dealer_dashboard",
-                    "entity": message_original,
-                    "confidence": 0.7,
-                    "requires_ai": False,
-                    "reason": "Dealer summary requested",
-                }
-            return {
-                "intent": "dn_summary",
-                "service_key": "dn_service",
-                "method": "get_dn_summary",
-                "entity": None,
-                "confidence": 0.8,
-                "requires_ai": False,
-                "reason": "Summary request detected",
-            }
+                return {"intent": "dealer_dashboard", "service_key": "dealer_service", "method": "get_dealer_dashboard", "entity": message_original, "confidence": 0.7, "requires_ai": False, "reason": "Dealer summary requested"}
+            return {"intent": "dn_summary", "service_key": "dn_service", "method": "get_dn_summary", "entity": None, "confidence": 0.8, "requires_ai": False, "reason": "Summary request detected"}
         
-        # Check for revenue
         if cls._REVENUE_KEYWORDS.search(message_lower):
             if any(ind in message_lower for ind in cls._DEALER_INDICATORS) or cls._DEALER_NAME_PATTERN.search(message_lower):
-                return {
-                    "intent": "dealer_dashboard",
-                    "service_key": "dealer_service",
-                    "method": "get_dealer_dashboard",
-                    "entity": message_original,
-                    "confidence": 0.7,
-                    "requires_ai": False,
-                    "reason": "Dealer revenue requested",
-                }
+                return {"intent": "dealer_dashboard", "service_key": "dealer_service", "method": "get_dealer_dashboard", "entity": message_original, "confidence": 0.7, "requires_ai": False, "reason": "Dealer revenue requested"}
             if "city" in message_lower:
                 city_match = cls._CITY_PATTERNS.search(message)
                 if city_match:
-                    return {
-                        "intent": "city_dashboard",
-                        "service_key": "city_service",
-                        "method": "get_city_dashboard",
-                        "entity": city_match.group(0).strip(),
-                        "confidence": 0.7,
-                        "requires_ai": False,
-                        "reason": "City revenue requested",
-                    }
+                    return {"intent": "city_dashboard", "service_key": "city_service", "method": "get_city_dashboard", "entity": city_match.group(0).strip(), "confidence": 0.7, "requires_ai": False, "reason": "City revenue requested"}
         
-        # Check for pending
         if cls._PENDING_KEYWORDS.search(message_lower):
             if "pod" in message_lower:
-                return {
-                    "intent": "pending_pod",
-                    "service_key": "dn_service",
-                    "method": "get_pending_pod",
-                    "entity": None,
-                    "confidence": 0.85,
-                    "requires_ai": False,
-                    "reason": "Pending POD detected",
-                }
+                return {"intent": "pending_pod", "service_key": "dn_service", "method": "get_pending_pod", "entity": None, "confidence": 0.85, "requires_ai": False, "reason": "Pending POD detected"}
             elif "pgi" in message_lower:
-                return {
-                    "intent": "pending_pgi",
-                    "service_key": "dn_service",
-                    "method": "get_pending_pgi",
-                    "entity": None,
-                    "confidence": 0.85,
-                    "requires_ai": False,
-                    "reason": "Pending PGI detected",
-                }
+                return {"intent": "pending_pgi", "service_key": "dn_service", "method": "get_pending_pgi", "entity": None, "confidence": 0.85, "requires_ai": False, "reason": "Pending PGI detected"}
             else:
                 if any(ind in message_lower for ind in cls._DEALER_INDICATORS):
-                    return {
-                        "intent": "dealer_pending",
-                        "service_key": "dealer_service",
-                        "method": "get_dealer_dashboard",
-                        "entity": message_original,
-                        "confidence": 0.7,
-                        "requires_ai": False,
-                        "reason": "Dealer pending requested",
-                    }
+                    return {"intent": "dealer_pending", "service_key": "dealer_service", "method": "get_dealer_dashboard", "entity": message_original, "confidence": 0.7, "requires_ai": False, "reason": "Dealer pending requested"}
                 if "city" in message_lower:
                     city_match = cls._CITY_PATTERNS.search(message)
                     if city_match:
-                        return {
-                            "intent": "city_dashboard",
-                            "service_key": "city_service",
-                            "method": "get_city_dashboard",
-                            "entity": city_match.group(0).strip(),
-                            "confidence": 0.7,
-                            "requires_ai": False,
-                            "reason": "City pending requested",
-                        }
-                return {
-                    "intent": "pending_dns",
-                    "service_key": "dn_service",
-                    "method": "get_pending_dns",
-                    "entity": None,
-                    "confidence": 0.85,
-                    "requires_ai": False,
-                    "reason": "Pending DNs detected",
-                }
+                        return {"intent": "city_dashboard", "service_key": "city_service", "method": "get_city_dashboard", "entity": city_match.group(0).strip(), "confidence": 0.7, "requires_ai": False, "reason": "City pending requested"}
+                return {"intent": "pending_dns", "service_key": "dn_service", "method": "get_pending_dns", "entity": None, "confidence": 0.85, "requires_ai": False, "reason": "Pending DNs detected"}
         
-        # Check for recent
         if cls._RECENT_KEYWORDS.search(message_lower):
-            return {
-                "intent": "recent_dns",
-                "service_key": "dn_service",
-                "method": "get_recent_dns",
-                "entity": None,
-                "confidence": 0.7,
-                "requires_ai": False,
-                "reason": "Recent DNs requested",
-            }
+            return {"intent": "recent_dns", "service_key": "dn_service", "method": "get_recent_dns", "entity": None, "confidence": 0.7, "requires_ai": False, "reason": "Recent DNs requested"}
         
-        # Check for top cities
         if cls._TOP_KEYWORDS.search(message_lower) and "city" in message_lower:
-            return {
-                "intent": "top_cities",
-                "service_key": "city_service",
-                "method": "get_top_cities",
-                "entity": None,
-                "confidence": 0.75,
-                "requires_ai": False,
-                "reason": "Top cities requested",
-            }
+            return {"intent": "top_cities", "service_key": "city_service", "method": "get_top_cities", "entity": None, "confidence": 0.75, "requires_ai": False, "reason": "Top cities requested"}
         
-        # Check for top dealers
         if cls._TOP_KEYWORDS.search(message_lower) and "dealer" in message_lower:
-            return {
-                "intent": "top_dealers",
-                "service_key": "dealer_service",
-                "method": "get_top_dealers",
-                "entity": None,
-                "confidence": 0.75,
-                "requires_ai": False,
-                "reason": "Top dealers requested",
-            }
+            return {"intent": "top_dealers", "service_key": "dealer_service", "method": "get_top_dealers", "entity": None, "confidence": 0.75, "requires_ai": False, "reason": "Top dealers requested"}
         
-        # Check for dealer with keyword
         dealer_match = cls._DEALER_PATTERNS.search(message)
         if dealer_match:
-            return {
-                "intent": "dealer_dashboard",
-                "service_key": "dealer_service",
-                "method": "get_dealer_dashboard",
-                "entity": dealer_match.group(1).strip(),
-                "confidence": 0.8,
-                "requires_ai": False,
-                "reason": "Dealer name detected with keyword",
-            }
+            return {"intent": "dealer_dashboard", "service_key": "dealer_service", "method": "get_dealer_dashboard", "entity": dealer_match.group(1).strip(), "confidence": 0.8, "requires_ai": False, "reason": "Dealer name detected with keyword"}
         
-        # Check for warehouse
         warehouse_match = cls._WAREHOUSE_PATTERNS.search(message)
         if warehouse_match:
-            return {
-                "intent": "warehouse_dashboard",
-                "service_key": "warehouse_service",
-                "method": "get_warehouse_dashboard",
-                "entity": warehouse_match.group(1).strip(),
-                "confidence": 0.75,
-                "requires_ai": False,
-                "reason": "Warehouse name detected",
-            }
+            return {"intent": "warehouse_dashboard", "service_key": "warehouse_service", "method": "get_warehouse_dashboard", "entity": warehouse_match.group(1).strip(), "confidence": 0.75, "requires_ai": False, "reason": "Warehouse name detected"}
         
-        # Check for city (fallback)
         city_match = cls._CITY_PATTERNS.search(message)
         if city_match:
-            return {
-                "intent": "city_dashboard",
-                "service_key": "city_service",
-                "method": "get_city_dashboard",
-                "entity": city_match.group(0).strip(),
-                "confidence": 0.7,
-                "requires_ai": False,
-                "reason": "City name detected (fallback)",
-            }
+            return {"intent": "city_dashboard", "service_key": "city_service", "method": "get_city_dashboard", "entity": city_match.group(0).strip(), "confidence": 0.7, "requires_ai": False, "reason": "City name detected (fallback)"}
         
-        # Check if it's a menu number
         if cls._MENU_NUMBER_PATTERN.match(message_original.strip()):
-            return {
-                "intent": "menu_selection",
-                "service_key": "menu_service",
-                "method": "handle_menu_selection",
-                "entity": message_original.strip(),
-                "confidence": 0.9,
-                "requires_ai": False,
-                "reason": "Menu number selection",
-            }
+            return {"intent": "menu_selection", "service_key": "menu_service", "method": "handle_menu_selection", "entity": message_original.strip(), "confidence": 0.9, "requires_ai": False, "reason": "Menu number selection"}
         
-        # Default to general AI
-        return {
-            "intent": "general_ai",
-            "service_key": "groq_service",
-            "method": "process_query",
-            "entity": message,
-            "confidence": 0.5,
-            "requires_ai": True,
-            "reason": "No specific pattern matched - using general AI",
-        }
+        return {"intent": "general_ai", "service_key": "groq_service", "method": "process_query", "entity": message, "confidence": 0.5, "requires_ai": True, "reason": "No specific pattern matched - using general AI"}
 
 
 # ============================================================
-# BLOCK 11: NLP INTENT DETECTOR (USING BOOTSTRAP)
+# BLOCK 12: NLP INTENT DETECTOR
 # ============================================================
 
 class NLPIntentDetector:
-    """
-    Optional NLP-based intent detection using sentence-transformers and spacy.
-    Resources are loaded from bootstrap service (cached forever after first load).
-    """
+    """Optional NLP-based intent detection using sentence-transformers and spacy."""
     
     _instance = None
     _encoder = None
@@ -1148,7 +863,6 @@ class NLPIntentDetector:
         self._load_errors: dict[str, str] = {}
         
         try:
-            # Load resources from bootstrap (CACHED FOREVER)
             self._encoder = self._bootstrap.get_embeddings()
             self._nlp = self._bootstrap.get_spacy()
             self._nltk = self._bootstrap.get_nltk()
@@ -1164,7 +878,6 @@ class NLPIntentDetector:
             logger.warning(f"⚠️ NLPIntentDetector init failed: {e}")
     
     def detect(self, message: str) -> dict[str, Any] | None:
-        """Detect intent using NLP if available."""
         if not self._initialized:
             return None
         
@@ -1172,7 +885,6 @@ class NLPIntentDetector:
             message_lower = message.lower().strip()
             confidence_scores = []
             
-            # Stage 1: spacy NER
             if self._nlp:
                 try:
                     doc = self._nlp(message)
@@ -1180,30 +892,13 @@ class NLPIntentDetector:
                     if entities:
                         for entity in entities:
                             if any(ind in entity.lower() for ind in ["electronics", "traders", "foods", "group"]):
-                                return {
-                                    "intent": "dealer_dashboard",
-                                    "service_key": "dealer_service",
-                                    "method": "get_dealer_dashboard",
-                                    "entity": entity,
-                                    "confidence": 0.85,
-                                    "requires_ai": False,
-                                    "reason": "NLP entity detection (dealer)",
-                                }
+                                return {"intent": "dealer_dashboard", "service_key": "dealer_service", "method": "get_dealer_dashboard", "entity": entity, "confidence": 0.85, "requires_ai": False, "reason": "NLP entity detection (dealer)"}
                             city_names = ["Abbottabad", "Lahore", "Karachi", "Rawalpindi", "Quetta", "Multan", "Peshawar", "Islamabad"]
                             if entity in city_names:
-                                return {
-                                    "intent": "city_dashboard",
-                                    "service_key": "city_service",
-                                    "method": "get_city_dashboard",
-                                    "entity": entity,
-                                    "confidence": 0.85,
-                                    "requires_ai": False,
-                                    "reason": "NLP city detection",
-                                }
+                                return {"intent": "city_dashboard", "service_key": "city_service", "method": "get_city_dashboard", "entity": entity, "confidence": 0.85, "requires_ai": False, "reason": "NLP city detection"}
                 except Exception as e:
                     logger.debug(f"spacy NER failed: {e}")
             
-            # Stage 2: Sentence embeddings
             if self._encoder:
                 try:
                     query_embedding = self._encoder.encode(message, convert_to_numpy=True)
@@ -1237,15 +932,7 @@ class NLPIntentDetector:
                         }
                         if best_intent in intent_map:
                             service, method = intent_map[best_intent]
-                            return {
-                                "intent": best_intent,
-                                "service_key": service,
-                                "method": method,
-                                "entity": best_entity,
-                                "confidence": best_score,
-                                "requires_ai": False,
-                                "reason": f"NLP similarity ({best_score:.2f})",
-                            }
+                            return {"intent": best_intent, "service_key": service, "method": method, "entity": best_entity, "confidence": best_score, "requires_ai": False, "reason": f"NLP similarity ({best_score:.2f})"}
                 except Exception as e:
                     logger.debug(f"Embedding similarity failed: {e}")
             
@@ -1256,14 +943,10 @@ class NLPIntentDetector:
 
 
 # ============================================================
-# BLOCK 12: COMPONENT LOADER WITH DIAGNOSTICS
+# BLOCK 13: COMPONENT LOADER
 # ============================================================
 
 def _load_component(key: str) -> Any:
-    """
-    Load one configured singleton lazily with comprehensive error handling.
-    If the primary component fails, attempts to load a fallback.
-    """
     logger.info(f"Attempting to load component: {key}")
     
     try:
@@ -1271,7 +954,6 @@ def _load_component(key: str) -> Any:
     except KeyError as exc:
         raise ConfigurationError(f"Unknown component: {key}") from exc
     
-    # Special handling for intent_engine - always provide fallback
     if key == "intent_engine":
         try:
             module = importlib.import_module(module_name)
@@ -1288,7 +970,6 @@ def _load_component(key: str) -> Any:
             logger.info("Using fallback intent engine")
             return FallbackIntentEngine()
     
-    # Special handling for menu_service - return self
     if key == "menu_service":
         return MenuService()
     
@@ -1296,26 +977,16 @@ def _load_component(key: str) -> Any:
         module = importlib.import_module(module_name)
     except ImportError as exc:
         logger.error(f"Cannot import module {module_name}: {exc}")
-        # For groq_service, we might continue without it
         if key == "groq_service":
             logger.warning("Groq service unavailable - continuing without AI enhancement")
             return None
         raise ConfigurationError(f"Cannot import {module_name}") from exc
     
-    # Function-oriented service modules are already fully configured
-    routed_methods = {
-        target.method
-        for target in ROUTES.values()
-        if target.provider_name == key
-    }
+    routed_methods = {target.method for target in ROUTES.values() if target.provider_name == key}
     
-    if routed_methods and any(
-        callable(getattr(module, method, None))
-        for method in routed_methods
-    ):
+    if routed_methods and any(callable(getattr(module, method, None)) for method in routed_methods):
         return module
     
-    # Try to instantiate a class-based component
     for symbol in candidates:
         component = getattr(module, symbol, None)
         if component is not None:
@@ -1325,11 +996,9 @@ def _load_component(key: str) -> Any:
                 logger.error(f"{module_name}.{symbol} requires dependencies: {exc}")
                 continue
     
-    # Function-oriented modules are valid service implementations
     if key != "intent_engine":
         return module
     
-    # Final fallback
     logger.warning(f"No supported component found in {module_name} - using fallback")
     if key == "intent_engine":
         return FallbackIntentEngine()
@@ -1338,12 +1007,10 @@ def _load_component(key: str) -> Any:
 
 
 # ============================================================
-# BLOCK 13: DEPENDENCY CONTAINER
+# BLOCK 14: DEPENDENCY CONTAINER
 # ============================================================
 
 class ApplicationContainer(containers.DeclarativeContainer):
-    """Dependency-injector registry; applications may override any provider."""
-
     config = providers.Configuration()
     intent_engine = providers.ThreadSafeSingleton(_load_component, "intent_engine")
     dn_service = providers.ThreadSafeSingleton(_load_component, "dn_service")
@@ -1357,11 +1024,10 @@ class ApplicationContainer(containers.DeclarativeContainer):
 
 
 # ============================================================
-# BLOCK 14: UTILITY FUNCTIONS
+# BLOCK 15: UTILITY FUNCTIONS
 # ============================================================
 
 def _object_mapping(value: Any) -> dict[str, Any]:
-    """Convert various object types to a dictionary."""
     if isinstance(value, BaseModel):
         return value.model_dump(mode="python")
     if is_dataclass(value) and not isinstance(value, type):
@@ -1370,17 +1036,13 @@ def _object_mapping(value: Any) -> dict[str, Any]:
         return dict(value)
     
     attributes: dict[str, Any] = {}
-    for name in (
-        "intent", "service_key", "service", "method", "entity", "confidence",
-        "requires_ai", "needs_groq", "reason", "parameters", "params", "arguments",
-    ):
+    for name in ("intent", "service_key", "service", "method", "entity", "confidence", "requires_ai", "needs_groq", "reason", "parameters", "params", "arguments"):
         if hasattr(value, name):
             attributes[name] = getattr(value, name)
     return attributes
 
 
 def _decision_view(decision: Any) -> RoutingDecisionView:
-    """Convert any routing decision to a validated view."""
     raw = _object_mapping(decision)
     if not raw:
         raise ValueError("Intent engine returned an unsupported routing decision")
@@ -1397,7 +1059,6 @@ def _decision_view(decision: Any) -> RoutingDecisionView:
 
 
 async def _call(callable_object: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    """Execute sync implementations off-loop and await native async ones."""
     if inspect.iscoroutinefunction(callable_object):
         return await callable_object(*args, **kwargs)
     result = await asyncio.to_thread(partial(callable_object, *args, **kwargs))
@@ -1407,20 +1068,11 @@ async def _call(callable_object: Callable[..., Any], *args: Any, **kwargs: Any) 
 
 
 # ============================================================
-# BLOCK 15: SERVICE ROUTER WITH VALIDATION
+# BLOCK 16: SERVICE ROUTER WITH VALIDATION
 # ============================================================
 
 class ServiceRouter:
-    """Resolve, execute, and validate services via a data-driven route table."""
-
-    def __init__(
-        self,
-        resolver: ProviderResolver,
-        routes: Mapping[str, RouteTarget] = ROUTES,
-        *,
-        timeout_seconds: float = 20.0,
-        retry_attempts: int = 3,
-    ) -> None:
+    def __init__(self, resolver: ProviderResolver, routes: Mapping[str, RouteTarget] = ROUTES, *, timeout_seconds: float = 20.0, retry_attempts: int = 3):
         self._resolver = resolver
         self._routes = dict(routes)
         self._timeout = timeout_seconds
@@ -1433,25 +1085,20 @@ class ServiceRouter:
         if configured is None and decision.service_key:
             configured = self._routes.get(decision.service_key.strip().casefold())
         
-        # If still no route, check if it might be a dealer
         if configured is None:
             entity = str(decision.entity or "")
-            # Check for dealer indicators
             dealer_indicators = ["electronics", "traders", "distributors", "foods", "group", "pvt", "ltd", "sons", "brothers"]
             if any(indicator in entity.lower() for indicator in dealer_indicators):
                 return RouteTarget("dealer_service", "get_dealer_dashboard")
             
-            # Check for city indicators
             city_names = ["abbottabad", "lahore", "karachi", "rawalpindi", "quetta", "multan", "peshawar", "gilgit", "hyderabad", "islamabad"]
             if any(city in entity.lower() for city in city_names):
                 return RouteTarget("city_service", "get_city_dashboard")
             
-            # Check if it's a menu command
             if "menu" in entity.lower() or "back" in entity.lower():
                 return RouteTarget("menu_service", "show_main_menu")
         
         if configured is None:
-            # Default to AI if no route found
             return RouteTarget("groq_service", "process_query")
         
         return RouteTarget(configured.provider_name, decision.method or configured.method)
@@ -1471,79 +1118,41 @@ class ServiceRouter:
         
         method = getattr(service, target.method, None)
         if not callable(method):
-            raise MethodNotFoundError(
-                f"Method '{target.method}' is unavailable on '{target.provider_name}'"
-            )
+            raise MethodNotFoundError(f"Method '{target.method}' is unavailable on '{target.provider_name}'")
         
         self._method_cache[key] = method
         return method
 
     @staticmethod
-    def _arguments(
-        method: Callable[..., Any],
-        decision: Any,
-        message: str,
-        target: RouteTarget,
-    ) -> tuple[tuple[Any, ...], dict[str, Any]]:
-        """Bind intent output safely to the selected public service signature."""
+    def _arguments(method: Callable[..., Any], decision: Any, message: str, target: RouteTarget) -> tuple[tuple[Any, ...], dict[str, Any]]:
         raw = _object_mapping(decision)
         supplied = raw.get("parameters") or raw.get("params") or raw.get("arguments")
         entity = raw.get("entity")
         
         signature = inspect.signature(method)
-        parameters = [
-            parameter
-            for parameter in signature.parameters.values()
-            if parameter.name != "self"
-        ]
+        parameters = [p for p in signature.parameters.values() if p.name != "self"]
         
         if not parameters:
             return (), {}
         
-        accepts_kwargs = any(
-            parameter.kind is inspect.Parameter.VAR_KEYWORD
-            for parameter in parameters
-        )
-        named = {
-            parameter.name
-            for parameter in parameters
-            if parameter.kind
-            in (
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                inspect.Parameter.KEYWORD_ONLY,
-            )
-        }
+        accepts_kwargs = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters)
+        named = {p.name for p in parameters if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)}
         
         if isinstance(supplied, Mapping):
-            kwargs = dict(supplied) if accepts_kwargs else {
-                key: value for key, value in supplied.items() if key in named
-            }
+            kwargs = dict(supplied) if accepts_kwargs else {key: value for key, value in supplied.items() if key in named}
             if kwargs:
                 signature.bind(**kwargs)
                 return (), kwargs
 
-        positional = [
-            parameter
-            for parameter in parameters
-            if parameter.kind
-            in (
-                inspect.Parameter.POSITIONAL_ONLY,
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            )
-        ]
+        positional = [p for p in parameters if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)]
         
         if not positional:
-            keyword_only = [
-                parameter
-                for parameter in parameters
-                if parameter.kind is inspect.Parameter.KEYWORD_ONLY
-            ]
+            keyword_only = [p for p in parameters if p.kind is inspect.Parameter.KEYWORD_ONLY]
             if not keyword_only:
                 return (), {}
             
             value = entity if entity not in (None, "", {}) else message
             
-            # Special handling for DN service
             if target.provider_name == "dn_service":
                 match = re.search(r"(?<!\d)(\d{6,20})(?!\d)", str(value))
                 if match is None:
@@ -1552,7 +1161,6 @@ class ServiceRouter:
                     raise RoutingError("A valid DN number was not found in the request")
                 value = match.group(1)
             
-            # Special handling for city service
             if target.provider_name == "city_service":
                 city_match = re.search(r'(?:city|city\s+of)\s+(?:of\s+)?([a-zA-Z\s]+)|^(?:abbottabad|lahore|karachi|rawalpindi|quetta|multan|peshawar|gilgit|hyderabad|sialkot|gujranwala|islamabad)\b', str(value), re.IGNORECASE)
                 if city_match:
@@ -1563,31 +1171,14 @@ class ServiceRouter:
             signature.bind(**kwargs)
             return (), kwargs
 
-        # Positional binding
         value: Any = None
         if isinstance(entity, Mapping):
             first_name = positional[0].name
-            aliases = (
-                first_name,
-                "dn_no",
-                "dn",
-                "value",
-                "id",
-                "name",
-                "query",
-                "city",
-                "city_name",
-                "dealer",
-                "dealer_name",
-            )
-            value = next(
-                (entity[key] for key in aliases if entity.get(key) not in (None, "")),
-                None,
-            )
+            aliases = (first_name, "dn_no", "dn", "value", "id", "name", "query", "city", "city_name", "dealer", "dealer_name")
+            value = next((entity[key] for key in aliases if entity.get(key) not in (None, "")), None)
         elif entity not in (None, "", {}):
             value = entity
 
-        # DN number extraction
         if target.provider_name == "dn_service":
             candidate = str(value or message)
             match = re.search(r"(?<!\d)(\d{6,20})(?!\d)", candidate)
@@ -1602,29 +1193,16 @@ class ServiceRouter:
         signature.bind(value)
         return (value,), {}
 
-    async def execute(
-        self,
-        decision_object: Any,
-        decision: RoutingDecisionView,
-        message: str,
-        request_id: str,
-    ) -> ServiceResponse:
+    async def execute(self, decision_object: Any, decision: RoutingDecisionView, message: str, request_id: str) -> ServiceResponse:
         target = self.target_for(decision)
         method = self._resolve_method(target)
         args, kwargs = self._arguments(method, decision_object, message, target)
         
         transient = (TimeoutError, ConnectionError, DatabaseConnectionError)
         try:
-            async for attempt in AsyncRetrying(
-                stop=stop_after_attempt(self._attempts),
-                wait=wait_exponential_jitter(initial=0.25, max=2.0),
-                retry=retry_if_exception_type(transient),
-                reraise=True,
-            ):
+            async for attempt in AsyncRetrying(stop=stop_after_attempt(self._attempts), wait=wait_exponential_jitter(initial=0.25, max=2.0), retry=retry_if_exception_type(transient), reraise=True):
                 with attempt:
-                    raw_response = await asyncio.wait_for(
-                        _call(method, *args, **kwargs), timeout=self._timeout
-                    )
+                    raw_response = await asyncio.wait_for(_call(method, *args, **kwargs), timeout=self._timeout)
             return self.validate_response(raw_response, request_id)
         except asyncio.TimeoutError as exc:
             raise TimeoutError(f"{target.provider_name}.{target.method} timed out") from exc
@@ -1650,47 +1228,26 @@ class ServiceRouter:
 
 
 # ============================================================
-# BLOCK 16: AI PROVIDER ORCHESTRATOR WITH DIAGNOSTICS
+# BLOCK 17: AI PROVIDER ORCHESTRATOR WITH DIAGNOSTICS
 # ============================================================
 
 class AIProviderOrchestrator:
-    """Single orchestration use case invoked by the webhook layer."""
+    _INTENT_METHODS: Final[tuple[str, ...]] = ("get_routing_decision", "detect_intent", "route", "analyze", "classify")
+    _GROQ_METHODS: Final[tuple[str, ...]] = ("enhance_response", "generate_response", "process_structured_data", "process_query")
+    _MENU_METHODS: Final[tuple[str, ...]] = ("show_main_menu", "show_dealer_menu", "show_city_menu", "show_dn_menu", "show_reports_menu", "handle_menu_selection")
 
-    _INTENT_METHODS: Final[tuple[str, ...]] = (
-        "get_routing_decision", "detect_intent", "route", "analyze", "classify",
-    )
-    _GROQ_METHODS: Final[tuple[str, ...]] = (
-        "enhance_response", "generate_response", "process_structured_data", "process_query",
-    )
-    _MENU_METHODS: Final[tuple[str, ...]] = (
-        "show_main_menu", "show_dealer_menu", "show_city_menu", 
-        "show_dn_menu", "show_reports_menu", "handle_menu_selection",
-    )
-
-    def __init__(
-        self,
-        container: ApplicationContainer,
-        *,
-        request_timeout_seconds: float = 30.0,
-        cache_ttl: int = 300,
-        conversation_ttl: int = 1800,
-    ) -> None:
+    def __init__(self, container: ApplicationContainer, *, request_timeout_seconds: float = 30.0, cache_ttl: int = 300, conversation_ttl: int = 1800):
         self.container = container
         self.request_timeout = request_timeout_seconds
         self.cache_ttl = cache_ttl
         
-        # Initialize caches
         self.intent_cache: TTLCache[str, Any] = TTLCache(2_048, cache_ttl)
         self.metadata_cache: TTLCache[str, Any] = TTLCache(128, cache_ttl)
         self.router = ServiceRouter(self._resolve_provider)
         
-        # Initialize conversation manager
         self.conversation_manager = ConversationManager(ttl_seconds=conversation_ttl)
-        
-        # Backward-compatible registry facade
         self.registry = self
         
-        # Track if groq is available
         self._groq_available = True
         try:
             self._resolve_provider("groq_service")
@@ -1698,7 +1255,6 @@ class AIProviderOrchestrator:
             self._groq_available = False
             logger.warning("Groq service is unavailable - AI enhancement disabled")
         
-        # Initialize NLP detector from bootstrap
         self._nlp_detector = None
         try:
             self._nlp_detector = NLPIntentDetector.get_instance()
@@ -1707,21 +1263,15 @@ class AIProviderOrchestrator:
         except Exception as e:
             logger.warning(f"⚠️ NLPIntentDetector initialization failed: {e}")
         
-        # Startup validation
         self._startup_validation()
+        self._service_health_cache: dict[str, ServiceHealth] = {}
         
-        logger.info("✅ AIProviderOrchestrator initialized with menu, conversation, and bootstrap support")
+        logger.info("✅ AIProviderOrchestrator initialized with enterprise diagnostics")
 
     def _startup_validation(self) -> None:
-        """Validate all services at startup."""
         logger.info("🔍 Running startup validation...")
         statuses = {}
-        
-        services = [
-            "intent_engine", "dn_service", "dealer_service", "warehouse_service",
-            "city_service", "product_service", "kpi_service", "groq_service",
-            "menu_service"
-        ]
+        services = ["intent_engine", "dn_service", "dealer_service", "warehouse_service", "city_service", "product_service", "kpi_service", "groq_service", "menu_service"]
         
         for name in services:
             try:
@@ -1741,7 +1291,6 @@ class AIProviderOrchestrator:
     def _resolve_provider(self, name: str) -> Any:
         provider = getattr(self.container, name, None)
         if provider is None or not callable(provider):
-            # Handle menu_service specially
             if name == "menu_service":
                 return MenuService()
             raise ConfigurationError(f"Dependency provider '{name}' is not registered")
@@ -1753,7 +1302,6 @@ class AIProviderOrchestrator:
         return canonical.hex()
 
     def _find_callable(self, service: Any, candidates: tuple[str, ...], label: str) -> Callable[..., Any] | None:
-        """Find a callable method with graceful failure."""
         if service is None:
             logger.warning(f"Service {label} is None")
             return None
@@ -1783,10 +1331,8 @@ class AIProviderOrchestrator:
 
     @staticmethod
     def _format_error_diagnostics(exc: Exception, request_id: str, stage: str = "unknown") -> str:
-        """Format detailed error diagnostics for logging."""
         root = AIProviderOrchestrator._root_cause(exc)
         trace = traceback.format_exc()
-        
         return (
             f"🔴 ERROR - Request: {request_id} | Stage: {stage}\n"
             f"  Exception: {type(exc).__name__}\n"
@@ -1799,19 +1345,13 @@ class AIProviderOrchestrator:
 
     @staticmethod
     def _raw_response_fallback(data: Any) -> str:
-        """Return readable structured data when a presentation layer is absent."""
         try:
-            rendered = orjson.dumps(
-                data,
-                option=orjson.OPT_INDENT_2 | orjson.OPT_NON_STR_KEYS,
-                default=str,
-            ).decode("utf-8")
+            rendered = orjson.dumps(data, option=orjson.OPT_INDENT_2 | orjson.OPT_NON_STR_KEYS, default=str).decode("utf-8")
         except (TypeError, ValueError, orjson.JSONEncodeError):
             rendered = str(data)
         return rendered[:4_000]
 
     async def _detect_intent(self, message: str, sender: str | None) -> tuple[Any, bool]:
-        """Detect intent with fallback support, NLP, and dealer/city detection."""
         key = self._intent_cache_key(message, sender)
         if key in self.intent_cache:
             logger.debug(f"Intent cache hit for message: {message[:50]}...")
@@ -1821,7 +1361,6 @@ class AIProviderOrchestrator:
         stage = "conversation_state"
         
         try:
-            # Check conversation state first
             if sender:
                 state = await self.conversation_manager.get_state(sender)
                 if state and state.waiting_for_input:
@@ -1841,7 +1380,6 @@ class AIProviderOrchestrator:
                         self.intent_cache[key] = decision
                         return decision, False
             
-            # Try NLP detection first (if available)
             stage = "nlp_detection"
             if self._nlp_detector:
                 try:
@@ -1852,7 +1390,6 @@ class AIProviderOrchestrator:
                 except Exception as e:
                     logger.debug(f"NLP detection error: {e}")
             
-            # Fallback to primary intent engine if NLP didn't find anything
             stage = "primary_intent_engine"
             if decision is None:
                 try:
@@ -1871,7 +1408,6 @@ class AIProviderOrchestrator:
                             kwargs["user_id"] = sender
                         
                         decision = await asyncio.wait_for(_call(method, message, **kwargs), timeout=10.0)
-                        
                 except (ImportError, ConfigurationError, TimeoutError, asyncio.TimeoutError, AttributeError) as exc:
                     logger.error(f"Intent detection failed: {exc} - using fallback")
                     decision = FallbackIntentEngine.detect(message)
@@ -1879,7 +1415,6 @@ class AIProviderOrchestrator:
                     logger.exception(f"Unexpected intent detection error: {exc} - using fallback")
                     decision = FallbackIntentEngine.detect(message)
             
-            # Validate the decision before caching
             stage = "validation"
             try:
                 _decision_view(decision)
@@ -1887,42 +1422,21 @@ class AIProviderOrchestrator:
                 logger.error(f"Invalid routing decision: {exc} - using fallback")
                 decision = FallbackIntentEngine.detect(message)
             
-            # If decision is general_ai, check if it might be a dealer or city
             stage = "dealer_city_override"
             if decision.get("intent") == "general_ai":
                 msg_lower = message.lower()
-                
                 dealer_indicators = ["electronics", "traders", "distributors", "foods", "group", "pvt", "ltd", "sons", "brothers"]
                 dealer_names = ["umar", "taj", "haroon", "commercial", "national", "mian", "mgc", "arco", "shah", "haji"]
                 city_names = ["abbottabad", "lahore", "karachi", "rawalpindi", "quetta", "multan", "peshawar", "gilgit", "hyderabad", "islamabad", "sialkot", "gujranwala"]
-                
                 has_dealer = any(indicator in msg_lower for indicator in dealer_indicators) or any(name in msg_lower for name in dealer_names)
                 has_city = any(city in msg_lower for city in city_names)
                 word_count = len(msg_lower.split())
-                
                 if (has_dealer or has_city) and word_count <= 6:
                     if has_dealer and not has_city:
-                        decision = {
-                            "intent": "dealer_dashboard",
-                            "service_key": "dealer_service",
-                            "method": "get_dealer_dashboard",
-                            "entity": message.strip(),
-                            "confidence": 0.8,
-                            "requires_ai": False,
-                            "reason": "Dealer detected (fallback - general_ai override)",
-                        }
+                        decision = {"intent": "dealer_dashboard", "service_key": "dealer_service", "method": "get_dealer_dashboard", "entity": message.strip(), "confidence": 0.8, "requires_ai": False, "reason": "Dealer detected (fallback - general_ai override)"}
                     elif has_city and not has_dealer:
-                        decision = {
-                            "intent": "city_dashboard",
-                            "service_key": "city_service",
-                            "method": "get_city_dashboard",
-                            "entity": message.strip(),
-                            "confidence": 0.8,
-                            "requires_ai": False,
-                            "reason": "City detected (fallback - general_ai override)",
-                        }
+                        decision = {"intent": "city_dashboard", "service_key": "city_service", "method": "get_city_dashboard", "entity": message.strip(), "confidence": 0.8, "requires_ai": False, "reason": "City detected (fallback - general_ai override)"}
             
-            # Update conversation state
             stage = "conversation_update"
             if sender and decision:
                 intent = decision.get("intent", "unknown")
@@ -1943,15 +1457,7 @@ class AIProviderOrchestrator:
                         state.waiting_for_input = True
                         state.expected_input_type = "dealer_name"
                         await self.conversation_manager.set_state(state)
-                        decision = {
-                            "intent": "ask_for_dealer",
-                            "service_key": "menu_service",
-                            "method": "ask_for_dealer_name",
-                            "entity": None,
-                            "confidence": 1.0,
-                            "requires_ai": False,
-                            "reason": "Asking for dealer name",
-                        }
+                        decision = {"intent": "ask_for_dealer", "service_key": "menu_service", "method": "ask_for_dealer_name", "entity": None, "confidence": 1.0, "requires_ai": False, "reason": "Asking for dealer name"}
                     else:
                         state.waiting_for_input = False
                         state.expected_input_type = ""
@@ -1965,15 +1471,7 @@ class AIProviderOrchestrator:
                         state.waiting_for_input = True
                         state.expected_input_type = "city_name"
                         await self.conversation_manager.set_state(state)
-                        decision = {
-                            "intent": "ask_for_city",
-                            "service_key": "menu_service",
-                            "method": "ask_for_city_name",
-                            "entity": None,
-                            "confidence": 1.0,
-                            "requires_ai": False,
-                            "reason": "Asking for city name",
-                        }
+                        decision = {"intent": "ask_for_city", "service_key": "menu_service", "method": "ask_for_city_name", "entity": None, "confidence": 1.0, "requires_ai": False, "reason": "Asking for city name"}
                     else:
                         state.waiting_for_input = False
                         state.expected_input_type = ""
@@ -1987,15 +1485,7 @@ class AIProviderOrchestrator:
                         state.waiting_for_input = True
                         state.expected_input_type = "dn_number"
                         await self.conversation_manager.set_state(state)
-                        decision = {
-                            "intent": "ask_for_dn",
-                            "service_key": "menu_service",
-                            "method": "ask_for_dn_number",
-                            "entity": None,
-                            "confidence": 1.0,
-                            "requires_ai": False,
-                            "reason": "Asking for DN number",
-                        }
+                        decision = {"intent": "ask_for_dn", "service_key": "menu_service", "method": "ask_for_dn_number", "entity": None, "confidence": 1.0, "requires_ai": False, "reason": "Asking for DN number"}
                     else:
                         state.waiting_for_input = False
                         state.expected_input_type = ""
@@ -2005,7 +1495,6 @@ class AIProviderOrchestrator:
         
         except Exception as e:
             logger.error(self._format_error_diagnostics(e, sender or "unknown", stage))
-            # Fallback to regex detection
             decision = FallbackIntentEngine.detect(message)
         
         self.intent_cache[key] = decision
@@ -2013,39 +1502,27 @@ class AIProviderOrchestrator:
 
     def _get_service_for_intent(self, intent: str) -> str:
         service_map = {
-            "dealer_dashboard": "dealer_service",
-            "dealer_revenue": "dealer_service",
-            "dealer_pending": "dealer_service",
-            "dealer_pgi": "dealer_service",
-            "dealer_pod": "dealer_service",
-            "dealer_units": "dealer_service",
+            "dealer_dashboard": "dealer_service", "dealer_revenue": "dealer_service",
+            "dealer_pending": "dealer_service", "dealer_pgi": "dealer_service",
+            "dealer_pod": "dealer_service", "dealer_units": "dealer_service",
             "dealer_performance": "dealer_service",
-            "city_dashboard": "city_service",
-            "city_revenue": "city_service",
+            "city_dashboard": "city_service", "city_revenue": "city_service",
             "city_pending": "city_service",
-            "dn_lookup": "dn_service",
-            "dn_status": "dn_service",
-            "dn_history": "dn_service",
-            "delivery_timeline": "dn_service",
+            "dn_lookup": "dn_service", "dn_status": "dn_service",
+            "dn_history": "dn_service", "delivery_timeline": "dn_service",
         }
         return service_map.get(intent, "dealer_service")
 
     def _get_method_for_intent(self, intent: str) -> str:
         method_map = {
-            "dealer_dashboard": "get_dealer_dashboard",
-            "dealer_revenue": "get_dealer_dashboard",
-            "dealer_pending": "get_dealer_dashboard",
-            "dealer_pgi": "get_dealer_dashboard",
-            "dealer_pod": "get_dealer_dashboard",
-            "dealer_units": "get_dealer_dashboard",
+            "dealer_dashboard": "get_dealer_dashboard", "dealer_revenue": "get_dealer_dashboard",
+            "dealer_pending": "get_dealer_dashboard", "dealer_pgi": "get_dealer_dashboard",
+            "dealer_pod": "get_dealer_dashboard", "dealer_units": "get_dealer_dashboard",
             "dealer_performance": "get_dealer_dashboard",
-            "city_dashboard": "get_city_dashboard",
-            "city_revenue": "get_city_dashboard",
+            "city_dashboard": "get_city_dashboard", "city_revenue": "get_city_dashboard",
             "city_pending": "get_city_dashboard",
-            "dn_lookup": "get_dn_dashboard",
-            "dn_status": "get_dn_status",
-            "dn_history": "get_dn_history",
-            "delivery_timeline": "get_delivery_timeline",
+            "dn_lookup": "get_dn_dashboard", "dn_status": "get_dn_status",
+            "dn_history": "get_dn_history", "delivery_timeline": "get_delivery_timeline",
         }
         return method_map.get(intent, "get_dealer_dashboard")
 
@@ -2118,13 +1595,7 @@ class AIProviderOrchestrator:
         }
         return prompts.get(entity_type, "📝 Please enter the requested information.")
 
-    async def _enhance(
-        self,
-        decision: RoutingDecisionView,
-        business_response: ServiceResponse,
-        message: str,
-        request_id: str,
-    ) -> ServiceResponse:
+    async def _enhance(self, decision: RoutingDecisionView, business_response: ServiceResponse, message: str, request_id: str) -> ServiceResponse:
         if not self._groq_available:
             logger.debug("Groq service unavailable - skipping AI enhancement")
             return business_response
@@ -2140,14 +1611,7 @@ class AIProviderOrchestrator:
                 logger.warning("Groq service methods not found - skipping AI enhancement")
                 return business_response
             
-            structured = {
-                "request_id": request_id,
-                "intent": decision.intent,
-                "entity": decision.entity,
-                "user_message": message,
-                "business_result": business_response.model_dump(mode="json"),
-            }
-            
+            structured = {"request_id": request_id, "intent": decision.intent, "entity": decision.entity, "user_message": message, "business_result": business_response.model_dump(mode="json")}
             parameters = inspect.signature(method).parameters
             if len(parameters) == 1:
                 enhanced = await _call(method, structured)
@@ -2158,29 +1622,14 @@ class AIProviderOrchestrator:
                 return business_response.model_copy(update={"whatsapp_message": enhanced})
             
             validated = ServiceRouter.validate_response(enhanced, request_id)
-            return business_response.model_copy(update={
-                "whatsapp_message": validated.whatsapp_message or business_response.whatsapp_message,
-                "metadata": business_response.metadata | {"ai_enhanced": True},
-            })
+            return business_response.model_copy(update={"whatsapp_message": validated.whatsapp_message or business_response.whatsapp_message, "metadata": business_response.metadata | {"ai_enhanced": True}})
         except Exception as exc:
             root = self._root_cause(exc)
             logger.error(self._format_error_diagnostics(exc, request_id, "groq_enhancement"))
             logger.warning(f"Groq enhancement failed: {str(root)[:100]}")
-            return business_response.model_copy(update={
-                "metadata": business_response.metadata
-                | {
-                    "ai_enhanced": False,
-                    "groq_error_type": type(exc).__name__,
-                    "groq_error": str(exc),
-                }
-            })
+            return business_response.model_copy(update={"metadata": business_response.metadata | {"ai_enhanced": False, "groq_error_type": type(exc).__name__, "groq_error": str(exc)}})
 
-    async def process(
-        self,
-        message: str,
-        sender: str | None = None,
-        **context: Any,
-    ) -> str:
+    async def process(self, message: str, sender: str | None = None, **context: Any) -> str:
         request_id = str(context.get("request_id") or uuid.uuid4())
         started = time.perf_counter()
         bound = logger.bind(request_id=request_id, sender=sender)
@@ -2188,106 +1637,117 @@ class AIProviderOrchestrator:
         decision: RoutingDecisionView | None = None
         target: RouteTarget | None = None
         
+        trace = RequestTrace(request_id=request_id, sender=sender, message=message)
+        
         try:
             bound.info("Request received original_message={!r}", message)
-            request = ServiceRequest(
-                request_id=request_id,
-                message=message,
-                sender=sender,
-                metadata=dict(context),
-            )
+            request = ServiceRequest(request_id=request_id, message=message, sender=sender, metadata=dict(context))
             bound.info("Request normalized normalized_message={!r}", request.message)
             
             stage = "intent_detection"
+            trace.add_stage("normalization", True)
+            
             decision_object, cache_hit = await self._detect_intent(request.message, request.sender)
             decision = _decision_view(decision_object)
+            trace.add_stage("intent_detection", True, details={"intent": decision.intent, "confidence": decision.confidence, "cache_hit": cache_hit})
             
             if decision.intent == "ask_for_dealer":
                 response = await self._ask_for_entity("dealer_name")
+                trace.complete(True)
+                await self.conversation_manager.add_history(sender, message, response)
                 return response
             
             if decision.intent == "ask_for_city":
                 response = await self._ask_for_entity("city_name")
+                trace.complete(True)
+                await self.conversation_manager.add_history(sender, message, response)
                 return response
             
             if decision.intent == "ask_for_dn":
                 response = await self._ask_for_entity("dn_number")
+                trace.complete(True)
+                await self.conversation_manager.add_history(sender, message, response)
                 return response
             
             if decision.intent == "menu_selection" and sender:
                 menu_response = await self._handle_menu_selection(str(decision.entity), sender)
                 if menu_response:
+                    trace.complete(True)
+                    await self.conversation_manager.add_history(sender, message, menu_response)
                     return menu_response
             
             stage = "routing"
             target = self.router.target_for(decision)
-            bound = bound.bind(
-                intent=decision.intent,
-                confidence=decision.confidence,
-                service=target.provider_name,
-                method=target.method,
-            )
-            bound.info(
-                "Routing decision entity={!r} reason={!r} cache_hit={} cache_miss={}",
-                decision.entity,
-                decision.reason,
-                cache_hit,
-                not cache_hit,
-            )
+            trace.add_stage("routing", True, details={"service": target.provider_name, "method": target.method})
+            
+            bound = bound.bind(intent=decision.intent, confidence=decision.confidence, service=target.provider_name, method=target.method)
+            bound.info("Routing decision entity={!r} reason={!r} cache_hit={}", decision.entity, decision.reason, cache_hit)
             
             if target.provider_name == "menu_service":
                 if target.method == "show_main_menu":
-                    return self._format_menu_response("main")
+                    response = self._format_menu_response("main")
+                    trace.complete(True)
+                    await self.conversation_manager.add_history(sender, message, response)
+                    return response
                 elif target.method == "show_dealer_menu":
-                    return self._format_menu_response("dealer")
+                    response = self._format_menu_response("dealer")
+                    trace.complete(True)
+                    await self.conversation_manager.add_history(sender, message, response)
+                    return response
                 elif target.method == "show_city_menu":
-                    return self._format_menu_response("city")
+                    response = self._format_menu_response("city")
+                    trace.complete(True)
+                    await self.conversation_manager.add_history(sender, message, response)
+                    return response
                 elif target.method == "show_dn_menu":
-                    return self._format_menu_response("dn")
+                    response = self._format_menu_response("dn")
+                    trace.complete(True)
+                    await self.conversation_manager.add_history(sender, message, response)
+                    return response
                 elif target.method == "show_reports_menu":
-                    return self._format_menu_response("reports")
+                    response = self._format_menu_response("reports")
+                    trace.complete(True)
+                    await self.conversation_manager.add_history(sender, message, response)
+                    return response
+            
+            stage = "service_validation"
+            if not target.provider_name:
+                raise RoutingError("No provider specified for routing", request_id)
+            
+            trace.add_stage("service_validation", True, details={"service": target.provider_name, "method": target.method})
             
             stage = "business_service_execution"
             service_started = time.perf_counter()
-            business_response = await asyncio.wait_for(
-                self.router.execute(
-                    decision_object, decision, request.message, request_id
-                ),
-                timeout=self.request_timeout,
-            )
+            business_response = await asyncio.wait_for(self.router.execute(decision_object, decision, request.message, request_id), timeout=self.request_timeout)
             service_ms = (time.perf_counter() - service_started) * 1000
+            trace.add_stage("business_service", True, details={"duration_ms": service_ms, "success": business_response.success})
             
             groq_ms = 0.0
             if decision.requires_ai and target.provider_name != "groq_service":
                 stage = "groq_enhancement"
                 groq_started = time.perf_counter()
-                business_response = await self._enhance(
-                    decision, business_response, request.message, request_id
-                )
+                business_response = await self._enhance(decision, business_response, request.message, request_id)
                 groq_ms = (time.perf_counter() - groq_started) * 1000
+                trace.add_stage("ai_enhancement", True, details={"duration_ms": groq_ms})
             
             stage = "response_formatting"
             elapsed = (time.perf_counter() - started) * 1000
-            business_response = business_response.model_copy(
-                update={"processing_time": elapsed}
-            )
+            business_response = business_response.model_copy(update={"processing_time": elapsed})
+            trace.add_stage("formatting", True, details={"duration_ms": elapsed - service_ms - groq_ms})
             
-            bound.info(
-                "Request completed success={} service_time_ms={:.2f} groq_time_ms={:.2f} "
-                "total_time_ms={:.2f} response_length={}",
-                business_response.success,
-                service_ms,
-                groq_ms,
-                elapsed,
-                len(business_response.whatsapp_message),
-            )
+            bound.info("Request completed success={} service_time_ms={:.2f} groq_time_ms={:.2f} total_time_ms={:.2f}", business_response.success, service_ms, groq_ms, elapsed)
+            
+            trace.complete(business_response.success)
             
             if business_response.whatsapp_message:
                 if sender:
                     await self.conversation_manager.add_history(sender, message, business_response.whatsapp_message)
                 return business_response.whatsapp_message
             if business_response.success:
-                return self._raw_response_fallback(business_response.data)
+                response = self._raw_response_fallback(business_response.data)
+                if sender:
+                    await self.conversation_manager.add_history(sender, message, response)
+                return response
             
             error = business_response.error.strip()
             if target.provider_name == "dn_service" and "not found" in error.casefold():
@@ -2301,98 +1761,74 @@ class AIProviderOrchestrator:
             if any(token in error.casefold() for token in ("database", "connection", "sql", "timeout")):
                 return "Database is currently unavailable. Please try again later."
             
-            # Log detailed error before returning
             logger.error(f"Service execution error: {error} | Request ID: {request_id}")
             return error or f"Service execution failed. Reference ID: {request_id}"
             
         except ValidationError as exc:
             bound.error(f"Validation error: {exc}")
+            trace.complete(False, str(exc))
             return "Please send a valid, non-empty request."
             
         except RoutingError as exc:
             bound.error(f"Routing error: {exc}")
+            trace.complete(False, str(exc))
             return f"{exc}. Reference ID: {request_id}"
             
         except MethodNotFoundError as exc:
             bound.error(f"Method not found: {exc}")
+            trace.complete(False, str(exc))
             service_name = target.provider_name if target else "Selected service"
             return f"{service_name} does not support the requested operation. Reference ID: {request_id}"
             
         except (ServiceUnavailableError, ConfigurationError, ImportError) as exc:
             bound.error(f"Service unavailable: {exc}")
+            trace.complete(False, str(exc))
             service_name = target.provider_name if target else "Requested service"
             return f"{service_name} is unavailable. Reference ID: {request_id}"
             
         except (TimeoutError, asyncio.TimeoutError) as exc:
             bound.error(f"Timeout: {exc}")
+            trace.complete(False, str(exc))
             return f"The request timed out. Reference ID: {request_id}"
             
         except (DatabaseConnectionError, SQLAlchemyError, ConnectionError) as exc:
             root = self._root_cause(exc)
             bound.error(f"Database error: {root}")
+            trace.complete(False, str(exc))
             return f"Database is currently unavailable. Reference ID: {request_id}"
             
         except (AttributeError, ValueError, TypeError, KeyError, IndexError, RuntimeError, OSError) as exc:
             diagnostics = self._format_error_diagnostics(exc, request_id, stage)
             logger.error(diagnostics)
+            trace.complete(False, str(exc))
             return f"Unexpected internal error. Reference ID: {request_id}"
             
         except Exception as exc:
             root = self._root_cause(exc)
             diagnostics = self._format_error_diagnostics(exc, request_id, stage)
             logger.critical(diagnostics)
+            trace.complete(False, str(exc))
             return f"Unexpected internal error. Reference ID: {request_id}"
 
-    async def process_whatsapp_query(
-        self,
-        message: str,
-        sender: str | None = None,
-        **context: Any,
-    ) -> str:
+    async def process_whatsapp_query(self, message: str, sender: str | None = None, **context: Any) -> str:
         if sender is None:
             sender = context.pop("sender_id", None) or context.pop("phone_number", None)
         return await self.process(message, sender, **context)
 
-    async def process_query(
-        self,
-        message: str,
-        sender: str | None = None,
-        **context: Any,
-    ) -> str:
+    async def process_query(self, message: str, sender: str | None = None, **context: Any) -> str:
         return await self.process_whatsapp_query(message, sender, **context)
 
-    async def enhance_response(
-        self,
-        response: Any,
-        message: str = "",
-        **context: Any,
-    ) -> str:
+    async def enhance_response(self, response: Any, message: str = "", **context: Any) -> str:
         request_id = str(context.get("request_id") or uuid.uuid4())
         business_response = ServiceRouter.validate_response(response, request_id)
-        decision = RoutingDecisionView(
-            intent=str(context.get("intent") or "general_ai"),
-            entity=context.get("entity"),
-            confidence=float(context.get("confidence") or 1.0),
-            requires_ai=True,
-            reason="Explicit response enhancement",
-        )
+        decision = RoutingDecisionView(intent=str(context.get("intent") or "general_ai"), entity=context.get("entity"), confidence=float(context.get("confidence") or 1.0), requires_ai=True, reason="Explicit response enhancement")
         
         try:
-            enhanced = await asyncio.wait_for(
-                self._enhance(decision, business_response, message, request_id),
-                timeout=self.request_timeout,
-            )
-            return (
-                enhanced.whatsapp_message
-                or business_response.whatsapp_message
-                or self._raw_response_fallback(business_response.data)
-            )
+            enhanced = await asyncio.wait_for(self._enhance(decision, business_response, message, request_id), timeout=self.request_timeout)
+            return enhanced.whatsapp_message or business_response.whatsapp_message or self._raw_response_fallback(business_response.data)
         except Exception as exc:
             logger.error(self._format_error_diagnostics(exc, request_id, "enhance_response"))
-            return (
-                business_response.whatsapp_message
-                or self._raw_response_fallback(business_response.data)
-            )
+            return business_response.whatsapp_message or self._raw_response_fallback(business_response.data)
 
     def get_registry_status(self, *, refresh: bool = False) -> dict[str, Any]:
         cache_key = "service_registry"
@@ -2412,17 +1848,11 @@ class AIProviderOrchestrator:
                 if provider_name == "intent_engine":
                     method = self._find_callable(service, self._INTENT_METHODS, "Intent engine")
                     if method is None:
-                        if isinstance(service, FallbackIntentEngine):
-                            missing = []
-                        else:
-                            missing = ["intent methods not found"]
+                        missing = [] if isinstance(service, FallbackIntentEngine) else ["intent methods not found"]
                     else:
                         missing = []
                 else:
-                    missing = sorted(
-                        method for method in methods
-                        if not callable(getattr(service, method, None))
-                    )
+                    missing = sorted(method for method in methods if not callable(getattr(service, method, None)))
                 
                 metadata_method = getattr(service, "get_service_metadata", None)
                 metadata = metadata_method() if callable(metadata_method) and not inspect.iscoroutinefunction(metadata_method) else {}
@@ -2438,20 +1868,14 @@ class AIProviderOrchestrator:
                 }
             except (ConfigurationError, ImportError, MethodNotFoundError, TypeError) as exc:
                 logger.exception("Service registry validation failed for {}", provider_name)
-                statuses[provider_name] = {
-                    "available": False,
-                    "methods": sorted(methods),
-                    "reason": f"{type(exc).__name__}: {exc}",
-                }
+                statuses[provider_name] = {"available": False, "methods": sorted(methods), "reason": f"{type(exc).__name__}: {exc}"}
         
         result = {
             "healthy": all(status["available"] for status in statuses.values()),
             "services": statuses,
             "checked_at": datetime.now(timezone.utc).isoformat(),
             "cache_ttl_seconds": 300,
-            "fallback_engine_active": isinstance(
-                self._resolve_provider("intent_engine"), FallbackIntentEngine
-            ) if statuses.get("intent_engine", {}).get("available") else False,
+            "fallback_engine_active": isinstance(self._resolve_provider("intent_engine"), FallbackIntentEngine) if statuses.get("intent_engine", {}).get("available") else False,
         }
         self.metadata_cache[cache_key] = result
         return result
@@ -2461,25 +1885,11 @@ class AIProviderOrchestrator:
         services = report["services"]
         ready = sum(1 for status in services.values() if status.get("available"))
         total = len(services)
-        return report | {
-            "ready": ready,
-            "in_development": total - ready,
-            "total": total,
-            "readiness_score": (ready / total * 100.0) if total else 0.0,
-        }
+        return report | {"ready": ready, "in_development": total - ready, "total": total, "readiness_score": (ready / total * 100.0) if total else 0.0}
 
     @staticmethod
     def _provider_key(service_key: str) -> str:
-        aliases = {
-            "dn": "dn_service",
-            "dealer": "dealer_service",
-            "warehouse": "warehouse_service",
-            "city": "city_service",
-            "product": "product_service",
-            "kpi": "kpi_service",
-            "groq": "groq_service",
-            "intent": "intent_engine",
-        }
+        aliases = {"dn": "dn_service", "dealer": "dealer_service", "warehouse": "warehouse_service", "city": "city_service", "product": "product_service", "kpi": "kpi_service", "groq": "groq_service", "intent": "intent_engine"}
         return aliases.get(service_key, service_key)
 
     def get_service_status(self, service_key: str) -> dict[str, Any]:
@@ -2487,11 +1897,7 @@ class AIProviderOrchestrator:
         status = self.get_registry_status()["services"].get(provider_key)
         if status is None:
             return {"ready": False, "status": "NOT_REGISTERED", "service": service_key}
-        return status | {
-            "ready": bool(status.get("available")),
-            "status": "READY" if status.get("available") else "UNAVAILABLE",
-            "service": service_key,
-        }
+        return status | {"ready": bool(status.get("available")), "status": "READY" if status.get("available") else "UNAVAILABLE", "service": service_key}
 
     def get_service_instance(self, service_key: str) -> Any | None:
         provider_key = self._provider_key(service_key)
@@ -2511,10 +1917,7 @@ class AIProviderOrchestrator:
             return self.metadata_cache["health"]
         
         checks: dict[str, dict[str, Any]] = {}
-        for name in (
-            "intent_engine", "dn_service", "dealer_service", "warehouse_service",
-            "city_service", "product_service", "kpi_service", "groq_service",
-        ):
+        for name in ("intent_engine", "dn_service", "dealer_service", "warehouse_service", "city_service", "product_service", "kpi_service", "groq_service"):
             try:
                 service = self._resolve_provider(name)
                 if service is None:
@@ -2531,57 +1934,42 @@ class AIProviderOrchestrator:
                 logger.exception("Startup health check failed for {}", name)
                 checks[name] = {"healthy": False, "error": type(exc).__name__}
         
-        # Add bootstrap health
         try:
             bootstrap = get_ai_bootstrap_service()
             checks["bootstrap"] = {"healthy": True, "details": bootstrap.health()}
         except Exception as e:
             checks["bootstrap"] = {"healthy": False, "error": str(e)}
         
-        result = {
-            "healthy": all(item["healthy"] for item in checks.values()),
-            "services": checks,
-            "checked_at": datetime.now(timezone.utc).isoformat(),
-        }
+        checks["conversation_manager"] = {"healthy": True, "details": {"cache_size": len(self.conversation_manager._cache)}}
+        checks["router"] = {"healthy": True, "details": {"routes": len(ROUTES), "cache_size": len(self.router._method_cache)}}
+        
+        result = {"healthy": all(item["healthy"] for item in checks.values()), "services": checks, "checked_at": datetime.now(timezone.utc).isoformat()}
         self.metadata_cache["health"] = result
         return result
 
 
 # ============================================================
-# BLOCK 17: SINGLETON INSTANCES
+# BLOCK 18: SINGLETON INSTANCES
 # ============================================================
 
 container = ApplicationContainer()
 orchestrator = AIProviderOrchestrator(container)
-
 WhatsAppProviderService = AIProviderOrchestrator
 
 
 # ============================================================
-# BLOCK 18: MODULE-LEVEL FUNCTIONS - BACKWARD COMPATIBLE
+# BLOCK 19: MODULE-LEVEL FUNCTIONS - BACKWARD COMPATIBLE
 # ============================================================
 
-async def process_whatsapp_query(
-    message: str,
-    sender: str | None = None,
-    **context: Any,
-) -> str:
+async def process_whatsapp_query(message: str, sender: str | None = None, **context: Any) -> str:
     return await orchestrator.process_whatsapp_query(message, sender, **context)
 
 
-async def process_query(
-    message: str,
-    sender: str | None = None,
-    **context: Any,
-) -> str:
+async def process_query(message: str, sender: str | None = None, **context: Any) -> str:
     return await process_whatsapp_query(message, sender, **context)
 
 
-async def enhance_response(
-    response: Any,
-    message: str = "",
-    **context: Any,
-) -> str:
+async def enhance_response(response: Any, message: str = "", **context: Any) -> str:
     return await orchestrator.enhance_response(response, message, **context)
 
 
@@ -2636,6 +2024,8 @@ __all__ = [
     "ConversationManager",
     "ConversationState",
     "MenuService",
+    "RequestTrace",
+    "ServiceHealth",
     "container",
     "enhance_response",
     "get_service_registry_status",
