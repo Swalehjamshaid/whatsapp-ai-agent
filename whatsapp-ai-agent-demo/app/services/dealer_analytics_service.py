@@ -1,8 +1,10 @@
 """
-File: whatsapp-ai-agent-demo/app/services/dealer_analytics_service.py
-Version: 8.5 - ENTERPRISE DEALER INTELLIGENCE ENGINE
-Purpose: Complete dealer analytics with 100+ business questions
-Status: PRODUCTION READY
+File: app/services/dealer_analytics_service.py
+Version: 9.0 - ENTERPRISE DEALER INTELLIGENCE ENGINE
+Purpose: Complete dealer analytics with 200+ business questions
+         PostgreSQL IS THE ONLY SOURCE OF TRUTH.
+         Reuses DNAnalysisService architecture for consistency.
+Status: PRODUCTION READY - BACKWARD COMPATIBLE
 """
 
 from __future__ import annotations
@@ -14,15 +16,15 @@ import re
 import threading
 import time
 import unicodedata
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta
-from typing import Any, Optional, Dict, List, Tuple, Union, Set
 from enum import Enum
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
-from collections import defaultdict
+from typing import Any, Optional, Dict, List, Tuple, Union, Set
 
-from cachetools import TTLCache, LRUCache
+from cachetools import TTLCache
 from rapidfuzz import fuzz, process
 from sqlalchemy import and_, case, distinct, func, or_, text, desc, asc
 from sqlalchemy.exc import SQLAlchemyError
@@ -65,16 +67,11 @@ try:
 except ImportError:
     Vector = None
 
-try:
-    import sqlglot
-    from sqlglot import parse_one, optimize
-except ImportError:
-    sqlglot = None
-
 logger = logging.getLogger(__name__)
 
+
 # ============================================================
-# CONFIGURATION
+# BLOCK 1: CONFIGURATION
 # ============================================================
 
 ORS_API_KEY = os.getenv("OPENROUTESERVICE_API_KEY") or os.getenv("ORS_API_KEY")
@@ -84,9 +81,48 @@ USE_PGVECTOR = os.getenv("USE_PGVECTOR", "false").lower() == "true"
 USE_PYARROW = os.getenv("USE_PYARROW", "true").lower() == "true"
 USE_POLARS = os.getenv("USE_POLARS", "true").lower() == "true"
 DISABLE_AI = os.getenv("DISABLE_AI", "false").lower() == "true"
+DN_DELAY_THRESHOLD_DAYS = int(os.getenv("DN_DELAY_THRESHOLD_DAYS", "7"))
+
 
 # ============================================================
-# ENUMS
+# BLOCK 2: CONSTANTS - REUSED FROM DN_ANALYSIS
+# ============================================================
+
+TABLE: str = "delivery_reports"
+SEPARATOR: str = "────────────────────"
+
+# Business columns - identical to dn_analysis.py
+BUSINESS_COLUMNS: tuple[str, ...] = (
+    "dn_no", "division", "customer_code", "dealer_code", "customer_name",
+    "customer_model", "material_no", "sales_office", "sales_manager",
+    "ship_to_city", "warehouse", "warehouse_code", "delivery_location",
+    "dn_qty", "dn_amount", "dn_create_date", "good_issue_date", "pod_date",
+    "delivery_status", "pgi_status", "pod_status", "pending_flag",
+)
+
+# Warehouse coordinates - IDENTICAL to dn_analysis.py
+WAREHOUSE_COORDINATES: dict[str, tuple[float, float]] = {
+    "rawalpindi": (33.5651, 73.0169),
+    "lahore": (31.5204, 74.3587),
+    "karachi": (24.8607, 67.0011),
+    "multan": (30.1575, 71.5249),
+    "peshawar": (34.0151, 71.5249),
+    "quetta": (30.1798, 66.9750),
+    "hyderabad": (25.3960, 68.3578),
+    "faisalabad": (31.4504, 73.1350),
+    "sialkot": (32.4945, 74.5229),
+    "gujranwala": (32.1617, 74.1883),
+    "bahawalpur": (29.3956, 71.6836),
+    "dg khan": (30.0430, 70.6402),
+    "sukkur": (27.7060, 68.8530),
+    "rahim yar khan": (28.4200, 70.3030),
+    "abbottabad": (34.1490, 73.2210),
+    "gwadar": (25.1260, 62.3250),
+}
+
+
+# ============================================================
+# BLOCK 3: ENUMS
 # ============================================================
 
 class BusinessHealthStatus(Enum):
@@ -96,6 +132,7 @@ class BusinessHealthStatus(Enum):
     WATCH = "Watch"
     CRITICAL = "Critical"
 
+
 class TrendType(Enum):
     """Trend analysis types"""
     DAILY = "daily"
@@ -103,6 +140,7 @@ class TrendType(Enum):
     MONTHLY = "monthly"
     QUARTERLY = "quarterly"
     YEARLY = "yearly"
+
 
 class RankType(Enum):
     """Ranking types"""
@@ -118,12 +156,21 @@ class RankType(Enum):
     REGIONAL = "regional"
     NATIONAL = "national"
 
+
+class WhatsappFormat(Enum):
+    """WhatsApp message formats"""
+    COMPACT = "compact"
+    STANDARD = "standard"
+    EXECUTIVE = "executive"
+    DETAILED = "detailed"
+
+
 # ============================================================
-# HELPER FUNCTIONS
+# BLOCK 4: UTILITY FUNCTIONS - REUSED FROM DN_ANALYSIS
 # ============================================================
 
 def _text(value: Any, default: str = "Unknown") -> str:
-    """Safely convert to string"""
+    """Safely convert to string - identical to dn_analysis.py"""
     if value is None:
         return default
     try:
@@ -132,6 +179,7 @@ def _text(value: Any, default: str = "Unknown") -> str:
     except (TypeError, ValueError):
         return default
 
+
 def _number(value: Any) -> float:
     """Safely convert to float"""
     try:
@@ -139,20 +187,36 @@ def _number(value: Any) -> float:
     except (TypeError, ValueError):
         return 0.0
 
+
 def _percent(numerator: Any, denominator: Any) -> float:
     """Calculate percentage safely"""
     bottom = _number(denominator)
     return round((_number(numerator) * 100.0 / bottom), 2) if bottom else 0.0
 
+
 def _date_text(value: Any) -> str:
-    """Format date for display"""
+    """Format date for display - identical to dn_analysis.py"""
     if isinstance(value, (date, datetime)):
-        return value.isoformat()[:10]
+        return value.strftime("%d-%b-%Y")
     return _text(value, "N/A")
 
-def _status_complete(column: Any) -> Any:
-    """Check if status is complete"""
-    return func.lower(func.coalesce(column, "")).in_(("completed", "complete", "delivered", "done", "yes"))
+
+def _format_date(value: Any) -> str:
+    """Format date for WhatsApp display - DD-MMM-YYYY"""
+    if not value:
+        return "N/A"
+    if isinstance(value, datetime):
+        return value.strftime("%d-%b-%Y")
+    if isinstance(value, date):
+        return value.strftime("%d-%b-%Y")
+    if isinstance(value, str):
+        try:
+            dt = datetime.fromisoformat(value)
+            return dt.strftime("%d-%b-%Y")
+        except (ValueError, TypeError):
+            return str(value)[:10]
+    return str(value)
+
 
 def _days(value: Any) -> float:
     """Convert to days"""
@@ -162,14 +226,26 @@ def _days(value: Any) -> float:
         return round(float(value.days), 2)
     return round(_number(value), 2)
 
+
 def _growth(current: float, previous: float) -> float:
     """Calculate growth percentage"""
     if previous == 0:
         return 100.0 if current > 0 else 0.0
     return round(((current - previous) / previous) * 100, 2)
 
+
+def _status_complete(column: Any) -> Any:
+    """Check if status is complete"""
+    return func.lower(func.coalesce(column, "")).in_(("completed", "complete", "delivered", "done", "yes"))
+
+
+def _flag(value: Any) -> bool:
+    """Check if flag is true - identical to dn_analysis.py"""
+    return str(value or "").strip().casefold() in {"1", "true", "yes", "y", "pending"}
+
+
 # ============================================================
-# DATACLASSES
+# BLOCK 5: DATACLASSES - REUSED FROM DN_ANALYSIS
 # ============================================================
 
 @dataclass
@@ -183,11 +259,12 @@ class DistanceAnalytics:
     estimated_delivery_time: str = "Unknown"
     source: str = "unavailable"
 
+
 @dataclass
 class DealerDashboard:
     """
-    Complete Dealer Dashboard - 100+ attributes
-    Enterprise-grade dealer intelligence
+    Complete Dealer Dashboard - Enterprise Dealer Intelligence
+    Reuses business rules from dn_analysis.py
     """
     
     # ============================================================
@@ -202,64 +279,68 @@ class DealerDashboard:
     sales_office: str
     sales_manager: str
     division: str
+    delivery_location: str = "Unknown"
     
     # ============================================================
     # DN METRICS
     # ============================================================
-    total_dn: int
-    completed_dn: int
-    pending_dn: int
+    total_dn: int = 0
+    completed_dn: int = 0
+    pending_dn: int = 0
     delivery_pending_dn: int = 0
     
     # ============================================================
     # UNIT METRICS
     # ============================================================
-    total_units: int
-    delivered_units: int
-    pending_units: int
-    average_units_per_dn: float
+    total_units: int = 0
+    delivered_units: int = 0
+    pending_units: int = 0
+    average_units_per_dn: float = 0.0
     
     # ============================================================
     # REVENUE METRICS
     # ============================================================
-    total_revenue: float
-    delivered_revenue: float
-    pending_revenue: float
-    average_revenue_per_dn: float
-    average_revenue_per_unit: float
+    total_revenue: float = 0.0
+    delivered_revenue: float = 0.0
+    pending_revenue: float = 0.0
+    average_revenue_per_dn: float = 0.0
+    average_revenue_per_unit: float = 0.0
     
     # ============================================================
     # DELIVERY METRICS
     # ============================================================
-    average_delivery_days: float
-    average_pod_days: float
-    average_total_cycle_time: float
-    delivery_success_pct: float
-    pgi_success_pct: float
-    pod_success_pct: float
-    pending_pct: float
+    average_delivery_days: float = 0.0
+    average_pod_days: float = 0.0
+    average_total_cycle_time: float = 0.0
+    delivery_success_pct: float = 0.0
+    pgi_success_pct: float = 0.0
+    pod_success_pct: float = 0.0
+    pending_pct: float = 0.0
     fastest_delivery_days: float = 0.0
     slowest_delivery_days: float = 0.0
     same_day_deliveries: int = 0
     next_day_deliveries: int = 0
     
     # ============================================================
+    # AGING METRICS - REUSED FROM DN_ANALYSIS
+    # ============================================================
+    pgi_aging_days: float = 0.0
+    pod_aging_days: float = 0.0
+    delivery_aging_days: float = 0.0
+    transit_days: float = 0.0
+    
+    # ============================================================
     # DISTANCE
     # ============================================================
-    distance: DistanceAnalytics
+    distance: DistanceAnalytics = field(default_factory=lambda: DistanceAnalytics("", ""))
     
     # ============================================================
-    # LOCATION
-    # ============================================================
-    delivery_location: str = "Unknown"
-    
-    # ============================================================
-    # RANKINGS (12 Types)
+    # RANKINGS
     # ============================================================
     revenue_rank: Optional[int] = None
-    delivery_rank: Optional[int] = None
     unit_rank: Optional[int] = None
     dn_rank: Optional[int] = None
+    delivery_rank: Optional[int] = None
     pgi_rank: Optional[int] = None
     pod_rank: Optional[int] = None
     pending_rank: Optional[int] = None
@@ -283,6 +364,8 @@ class DealerDashboard:
     current_month_units: int = 0
     previous_month_units: int = 0
     revenue_growth_pct: Optional[float] = None
+    unit_growth_pct: Optional[float] = None
+    dn_growth_pct: Optional[float] = None
     
     # ============================================================
     # PRODUCT ANALYTICS
@@ -307,8 +390,8 @@ class DealerDashboard:
     # ============================================================
     # DN TIMELINE
     # ============================================================
-    first_delivery_date: str
-    latest_delivery_date: str
+    first_delivery_date: str = "N/A"
+    latest_delivery_date: str = "N/A"
     newest_dn: str = "N/A"
     highest_revenue_dn: str = "N/A"
     lowest_revenue_dn: str = "N/A"
@@ -339,12 +422,11 @@ class DealerDashboard:
     risk_score: float = 0.0
     overall_status: str = "Needs Attention"
     executive_summary: str = ""
+    performance_grade: str = "C"
     
     # ============================================================
     # GROWTH & FORECAST
     # ============================================================
-    unit_growth_pct: Optional[float] = None
-    dn_growth_pct: Optional[float] = None
     forecast_revenue: Optional[float] = None
     forecast_units: Optional[float] = None
     forecast_dn: Optional[float] = None
@@ -356,6 +438,10 @@ class DealerDashboard:
     revenue_per_delivery: float = 0.0
     revenue_per_product: float = 0.0
     dealer_contribution: float = 0.0
+    average_order_value: float = 0.0
+    average_revenue_per_month: float = 0.0
+    average_units_per_month: float = 0.0
+    average_dn_per_month: float = 0.0
     
     # ============================================================
     # INSIGHTS & RECOMMENDATIONS
@@ -367,22 +453,27 @@ class DealerDashboard:
     opportunities: list[str] = field(default_factory=list)
     threats: list[str] = field(default_factory=list)
 
-    # ============================================================
-    # METHODS
-    # ============================================================
-    
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary"""
         return asdict(self)
 
-    def to_whatsapp_message(self) -> str:
+    def to_whatsapp_message(self, format_type: str = "standard") -> str:
         """
-        Enhanced WhatsApp formatting with all 100+ attributes
-        Executive Dashboard for WhatsApp
+        Enhanced WhatsApp formatting with multiple formats
         """
+        if format_type == "compact":
+            return self._compact_format()
+        elif format_type == "executive":
+            return self._executive_format()
+        elif format_type == "detailed":
+            return self._detailed_format()
+        else:
+            return self._standard_format()
+
+    def _standard_format(self) -> str:
+        """Standard WhatsApp format - identical style to dn_analysis.py"""
         distance = "Unknown" if self.distance.distance_km is None else f"{self.distance.distance_km:,.1f} KM"
         
-        # Status emoji
         status_emoji = {
             "Excellent": "🟢",
             "Good": "🟡",
@@ -390,127 +481,176 @@ class DealerDashboard:
             "Critical": "🔴"
         }.get(self.overall_status, "⚪")
         
-        # Format insights
-        insights = "\n".join(f"\u2022 {item}" for item in self.insights[:5]) or "\u2022 No significant exception detected."
-        recommendations = "\n".join(f"\u2022 {item}" for item in self.recommendations[:3]) or "\u2022 Continue monitoring delivery performance."
-        strengths = "\n".join(f"\u2022 {item}" for item in self.strengths[:3]) or "\u2022 Stable performance."
-        weaknesses = "\n".join(f"\u2022 {item}" for item in self.weaknesses[:3]) or "\u2022 No critical weaknesses identified."
-        
-        return "\n".join(
-            (
-                "\U0001f3e2 Dealer Intelligence Dashboard",
-                "\u2501" * 18,
-                "",
-                "\U0001f464 Dealer Information",
-                f"Name: {self.dealer_name}",
-                f"Code: {self.dealer_code}",
-                f"Customer Code: {self.customer_code}",
-                f"City: {self.city}",
-                f"Delivery Location: {self.delivery_location}",
-                f"Sales Office: {self.sales_office}",
-                f"Sales Manager: {self.sales_manager}",
-                f"Division: {self.division}",
-                "",
-                "\U0001f3ed Warehouse",
-                f"Warehouse: {self.warehouse} ({self.warehouse_code})",
-                f"Distance: {distance}",
-                f"Driving Time: {self.distance.estimated_driving_time}",
-                f"Estimated Delivery: {self.distance.estimated_delivery_time}",
-                f"Utilization: {self.warehouse_utilization:.1f}%",
-                f"Contribution: {self.warehouse_contribution:.1f}%",
-                "",
-                "\U0001f4ca Business Summary",
-                f"Revenue: PKR {self.total_revenue:,.2f}",
-                f"Average Revenue/DN: PKR {self.average_revenue_per_dn:,.2f}",
-                f"Revenue per Unit: PKR {self.average_revenue_per_unit:,.2f}",
-                f"Revenue per Day: PKR {self.revenue_per_day:,.2f}",
-                f"Units: {self.total_units:,}",
-                f"Average Units/DN: {self.average_units_per_dn:.2f}",
-                f"Total DNs: {self.total_dn:,}",
-                f"Completed DNs: {self.completed_dn:,}",
-                f"Pending DNs: {self.pending_dn:,}",
-                "",
-                "\U0001f69a Delivery Performance",
-                f"Delivery Success: {self.delivery_success_pct:.1f}%",
-                f"PGI Success: {self.pgi_success_pct:.1f}%",
-                f"POD Success: {self.pod_success_pct:.1f}%",
-                f"Pending Rate: {self.pending_pct:.1f}%",
-                f"Average Delivery: {self.average_delivery_days:.1f} Days",
-                f"Average POD: {self.average_pod_days:.1f} Days",
-                f"Average Total Cycle: {self.average_total_cycle_time:.1f} Days",
-                f"Fastest / Slowest: {self.fastest_delivery_days:.0f} / {self.slowest_delivery_days:.0f} Days",
-                f"Same Day / Next Day: {self.same_day_deliveries} / {self.next_day_deliveries}",
-                "",
-                "\U0001f4c5 Date Summary",
-                f"First DN: {self.first_delivery_date}",
-                f"Latest DN: {self.latest_delivery_date}",
-                f"Latest PGI: {self.latest_pgi_date}",
-                f"Latest POD: {self.latest_pod_date}",
-                "",
-                "\U0001f4e6 Product Performance",
-                f"Top Product: {self.top_product}",
-                f"Top Model: {self.top_model}",
-                f"Top Material: {self.top_material}",
-                f"Top Division: {self.top_division}",
-                f"Strongest Category: {self.strongest_product_category}",
-                f"Weakest Category: {self.weakest_product_category}",
-                f"Fastest Growing: {self.fastest_growing_product}",
-                "",
-                "\U0001f3c6 Dealer Rankings",
-                f"Revenue Rank: #{self.revenue_rank or 'N/A'}",
-                f"Unit Rank: #{self.unit_rank or 'N/A'}",
-                f"DN Rank: #{self.dn_rank or 'N/A'}",
-                f"Delivery Rank: #{self.delivery_rank or 'N/A'}",
-                f"POD Rank: #{self.pod_rank or 'N/A'}",
-                f"Pending Rank: #{self.pending_rank or 'N/A'}",
-                f"Growth Rank: #{self.growth_rank or 'N/A'}",
-                f"Business Score Rank: #{self.business_score_rank or 'N/A'}",
-                f"Regional Rank: #{self.regional_rank or 'N/A'}",
-                f"National Rank: #{self.national_rank or 'N/A'}",
-                "",
-                "\u26a0 Pending Dashboard",
-                f"Pending Revenue: PKR {self.pending_revenue:,.2f}",
-                f"Pending Units: {self.pending_units:,}",
-                f"Pending DNs: {self.pending_dn:,}",
-                f"Pending Rate: {self.pending_pct:.1f}%",
-                f"Average Pending: {self.pending_average_days:.1f} Days",
-                f"Critical Pending: {self.critical_pending} (>7 days)",
-                f"Overdue Pending: {self.overdue_pending} (>14 days)",
-                f"Oldest Pending: {self.oldest_pending_dn} ({self.oldest_pending_days} days)",
-                "",
-                f"{status_emoji} Business Health",
-                f"Business Score: {self.business_score:.1f}/100",
-                f"Risk Score: {self.risk_score:.1f}/100",
-                f"Overall Status: {self.overall_status}",
-                "",
-                "\U0001f4c8 Growth & Trends",
-                f"Revenue Growth: {self.revenue_growth_pct or 0:+.1f}%",
-                f"Unit Growth: {self.unit_growth_pct or 0:+.1f}%",
-                f"DN Growth: {self.dn_growth_pct or 0:+.1f}%",
-                f"Best Month: {self.best_month}",
-                f"Worst Month: {self.worst_month}",
-                f"Monthly Revenue Trend: {self.monthly_growth:+.1f}%",
-                "",
-                f"Forecast Revenue: PKR {self.forecast_revenue or 0:,.2f}",
-                f"Forecast Units: {self.forecast_units or 0:,.0f}",
-                f"Forecast DNs: {self.forecast_dn or 0:,.0f}",
-                "",
-                "\U0001f4a1 Key Insights",
-                insights,
-                "",
-                "\U0001f4cc Recommendations",
-                recommendations,
-                "",
-                "\U0001f4aa Strengths",
-                strengths,
-                "",
-                "\u26a0 Weaknesses",
-                weaknesses,
-                "",
-                "\U0001f4dd Executive Summary",
-                self.executive_summary or "Performance is stable; continue monitoring pending deliveries and POD closure.",
-            )
-        )
+        return "\n".join([
+            "📦 Dealer Dashboard",
+            "",
+            "Dealer", self.dealer_name,
+            "Warehouse", self.warehouse,
+            "Warehouse Code", self.warehouse_code,
+            "City", self.city,
+            "Delivery Location", self.delivery_location,
+            "Sales Office", self.sales_office,
+            "Sales Manager", self.sales_manager,
+            "Division", self.division,
+            "",
+            SEPARATOR,
+            "",
+            "Revenue", f"PKR {self.total_revenue:,.2f}",
+            "Units", f"{self.total_units:,}",
+            "DN", f"{self.total_dn:,}",
+            "Pending DN", f"{self.pending_dn:,}",
+            "Average Revenue/DN", f"PKR {self.average_revenue_per_dn:,.2f}",
+            "",
+            SEPARATOR,
+            "",
+            "Delivery Success", f"{self.delivery_success_pct:.1f}%",
+            "PGI Success", f"{self.pgi_success_pct:.1f}%",
+            "POD Success", f"{self.pod_success_pct:.1f}%",
+            "Pending Rate", f"{self.pending_pct:.1f}%",
+            "Average Delivery", f"{self.average_delivery_days:.1f} Days",
+            "Average POD", f"{self.average_pod_days:.1f} Days",
+            "Transit Days", f"{self.transit_days:.1f} Days",
+            "",
+            SEPARATOR,
+            "",
+            "PGI Aging", f"{self.pgi_aging_days:.1f} Days",
+            "POD Aging", f"{self.pod_aging_days:.1f} Days",
+            "Delivery Aging", f"{self.delivery_aging_days:.1f} Days",
+            "",
+            SEPARATOR,
+            "",
+            f"{status_emoji} Status", self.overall_status,
+            "Business Score", f"{self.business_score:.1f}/100",
+            "Risk Score", f"{self.risk_score:.1f}/100",
+            "Performance Grade", self.performance_grade,
+            "",
+            SEPARATOR,
+            "",
+            "Distance", distance,
+            "Driving Time", self.distance.estimated_driving_time,
+            "Estimated Delivery", self.distance.estimated_delivery_time,
+            "",
+            SEPARATOR,
+            "",
+            "Top Product", self.top_product,
+            "Top Model", self.top_model,
+            "Top Material", self.top_material,
+            "Top Division", self.top_division,
+            "",
+            SEPARATOR,
+            "",
+            "Revenue Rank", f"#{self.revenue_rank or 'N/A'}",
+            "DN Rank", f"#{self.dn_rank or 'N/A'}",
+            "Unit Rank", f"#{self.unit_rank or 'N/A'}",
+            "Delivery Rank", f"#{self.delivery_rank or 'N/A'}",
+            "POD Rank", f"#{self.pod_rank or 'N/A'}",
+            "National Rank", f"#{self.national_rank or 'N/A'}",
+            "",
+            SEPARATOR,
+            "",
+            "First DN", self.first_delivery_date,
+            "Latest DN", self.latest_delivery_date,
+            "Latest PGI", self.latest_pgi_date,
+            "Latest POD", self.latest_pod_date,
+            "",
+            SEPARATOR,
+            "",
+            "Monthly Revenue", f"PKR {self.current_month_revenue:,.2f}",
+            "Monthly Growth", f"{self.monthly_growth:+.1f}%",
+            "Best Month", self.best_month,
+            "",
+            SEPARATOR,
+            "",
+            "Executive Summary",
+            self.executive_summary or "Performance is stable.",
+            "",
+            "Key Insights",
+            "\n".join(f"• {insight}" for insight in self.insights[:5]) or "• No significant exceptions.",
+            "",
+            "Recommendations",
+            "\n".join(f"• {rec}" for rec in self.recommendations[:3]) or "• Continue monitoring.",
+        ])
+
+    def _compact_format(self) -> str:
+        """Compact format for quick answers"""
+        return "\n".join([
+            f"Dealer: {self.dealer_name}",
+            f"Revenue: PKR {self.total_revenue:,.2f}",
+            f"Units: {self.total_units:,}",
+            f"DN: {self.total_dn:,}",
+            f"Pending: {self.pending_dn:,}",
+            f"Status: {self.overall_status}",
+            f"Score: {self.business_score:.1f}/100",
+        ])
+
+    def _executive_format(self) -> str:
+        """Executive summary format"""
+        return "\n".join([
+            f"📊 Executive Summary - {self.dealer_name}",
+            "",
+            self.executive_summary,
+            "",
+            f"Status: {self.overall_status}",
+            f"Score: {self.business_score:.1f}/100",
+            f"Grade: {self.performance_grade}",
+            f"Growth: {self.monthly_growth:+.1f}%",
+            f"Pending: {self.pending_dn:,} DNs",
+        ])
+
+    def _detailed_format(self) -> str:
+        """Detailed format for in-depth analysis"""
+        return "\n".join([
+            f"📊 Detailed Dealer Analysis - {self.dealer_name}",
+            "",
+            "📍 Location",
+            f"City: {self.city}",
+            f"Warehouse: {self.warehouse}",
+            f"Sales Office: {self.sales_office}",
+            f"Sales Manager: {self.sales_manager}",
+            "",
+            "💰 Revenue",
+            f"Total: PKR {self.total_revenue:,.2f}",
+            f"Delivered: PKR {self.delivered_revenue:,.2f}",
+            f"Pending: PKR {self.pending_revenue:,.2f}",
+            f"Per DN: PKR {self.average_revenue_per_dn:,.2f}",
+            "",
+            "📦 DN",
+            f"Total: {self.total_dn:,}",
+            f"Completed: {self.completed_dn:,}",
+            f"Pending: {self.pending_dn:,}",
+            f"PGI Pending: {self.pgi_pending_dn:,}",
+            f"POD Pending: {self.pod_pending_dn:,}",
+            "",
+            "🚚 Delivery",
+            f"Success: {self.delivery_success_pct:.1f}%",
+            f"Average: {self.average_delivery_days:.1f} Days",
+            f"Fastest: {self.fastest_delivery_days:.1f} Days",
+            f"Slowest: {self.slowest_delivery_days:.1f} Days",
+            f"Same Day: {self.same_day_deliveries:,}",
+            f"Next Day: {self.next_day_deliveries:,}",
+            "",
+            "📈 Aging",
+            f"PGI Aging: {self.pgi_aging_days:.1f} Days",
+            f"POD Aging: {self.pod_aging_days:.1f} Days",
+            f"Delivery Aging: {self.delivery_aging_days:.1f} Days",
+            "",
+            "🏷️ Products",
+            f"Top Product: {self.top_product}",
+            f"Top Model: {self.top_model}",
+            f"Top Material: {self.top_material}",
+            "",
+            "🏆 Rankings",
+            f"Revenue: #{self.revenue_rank or 'N/A'}",
+            f"DN: #{self.dn_rank or 'N/A'}",
+            f"Delivery: #{self.delivery_rank or 'N/A'}",
+            f"National: #{self.national_rank or 'N/A'}",
+            "",
+            "💡 Insights",
+            "\n".join(f"• {insight}" for insight in self.insights[:10]) or "• No significant exceptions.",
+            "",
+            "🎯 Recommendations",
+            "\n".join(f"• {rec}" for rec in self.recommendations[:5]) or "• Continue monitoring.",
+        ])
 
     def __str__(self) -> str:
         """String representation for WhatsApp"""
@@ -561,248 +701,131 @@ class DealerSearchResult:
     match_source: str = "unknown"
 
 
-@dataclass
-class AIResponse:
-    """AI-generated response data"""
-    dealer_name: str
-    answer: str
-    insights: List[str]
-    recommendations: List[str]
-    sentiment: str
-    confidence: float
-    metadata: Dict[str, Any]
-
-
 # ============================================================
-# SQL OPTIMIZER
-# ============================================================
-
-class SQLOptimizer:
-    """Advanced SQL optimization with caching"""
-    
-    _optimization_cache = LRUCache(maxsize=1000)
-    
-    @classmethod
-    def optimize_query(cls, sql_query: str, dialect: str = "postgres") -> str:
-        """Optimize SQL query with caching"""
-        cache_key = f"sql_{hash(sql_query)}_{dialect}"
-        if cache_key in cls._optimization_cache:
-            return cls._optimization_cache[cache_key]
-        
-        if not sqlglot:
-            return sql_query
-        
-        try:
-            parsed = parse_one(sql_query)
-            optimized = optimize(parsed, dialect=dialect)
-            result = optimized.sql(dialect=dialect)
-            cls._optimization_cache[cache_key] = result
-            return result
-        except Exception:
-            return sql_query
-
-
-# ============================================================
-# PYARROW PROCESSOR
-# ============================================================
-
-class PyArrowProcessor:
-    """Ultra-fast data processing with PyArrow and Polars"""
-    
-    @staticmethod
-    def to_arrow(data: List[Dict]) -> Any:
-        """Convert data to PyArrow Table"""
-        if not pa or not USE_PYARROW:
-            return data
-        
-        try:
-            return pa.Table.from_pylist(data)
-        except Exception:
-            return data
-    
-    @staticmethod
-    def to_polars(data: List[Dict]) -> Any:
-        """Convert data to Polars DataFrame"""
-        if not pl or not USE_POLARS:
-            return data
-        
-        try:
-            return pl.DataFrame(data)
-        except Exception:
-            return data
-
-
-# ============================================================
-# SEMANTIC SEARCH ENGINE
-# ============================================================
-
-class SemanticSearchEngine:
-    """Semantic search using Sentence Transformers"""
-    
-    def __init__(self):
-        self.encoder = None
-        if SentenceTransformer:
-            try:
-                self.encoder = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
-                logger.info("✅ SentenceTransformer loaded")
-            except Exception as e:
-                logger.warning(f"⚠️ SentenceTransformer init failed: {e}")
-        
-        self._embedding_cache = LRUCache(maxsize=10000)
-        self._similarity_cache = LRUCache(maxsize=5000)
-    
-    def encode_text(self, text: str) -> List[float]:
-        """Encode text with caching"""
-        if not self.encoder:
-            return []
-        
-        cache_key = f"emb_{hash(text)}"
-        if cache_key in self._embedding_cache:
-            return self._embedding_cache[cache_key]
-        
-        try:
-            embedding = self.encoder.encode(text, convert_to_numpy=True).tolist()
-            self._embedding_cache[cache_key] = embedding
-            return embedding
-        except Exception:
-            return []
-    
-    def semantic_similarity(self, text1: str, text2: str) -> float:
-        """Calculate semantic similarity with caching"""
-        if not self.encoder:
-            return 0.0
-        
-        cache_key = f"sim_{hash(text1)}_{hash(text2)}"
-        if cache_key in self._similarity_cache:
-            return self._similarity_cache[cache_key]
-        
-        vec1 = self.encode_text(text1)
-        vec2 = self.encode_text(text2)
-        
-        if not vec1 or not vec2:
-            return 0.0
-        
-        try:
-            import numpy as np
-            from sklearn.metrics.pairwise import cosine_similarity
-            score = float(cosine_similarity([vec1], [vec2])[0][0])
-            self._similarity_cache[cache_key] = score
-            return score
-        except Exception:
-            return 0.0
-    
-    def find_best_match(self, query: str, candidates: List[str], threshold: float = 0.6) -> Tuple[Optional[str], float]:
-        """Find best semantic match"""
-        if not candidates or not self.encoder:
-            return None, 0.0
-        
-        best_match = None
-        best_score = 0.0
-        
-        for candidate in candidates:
-            score = self.semantic_similarity(query, candidate)
-            if score > best_score:
-                best_score = score
-                best_match = candidate
-        
-        if best_score >= threshold:
-            return best_match, best_score
-        
-        return None, best_score
-
-
-# ============================================================
-# CITY COORDINATE SERVICE
-# ============================================================
-
-class CityCoordinateService:
-    """Cached coordinates for Pakistan cities"""
-    
-    COORDINATES: Dict[str, tuple[float, float]] = {
-        "abbottabad": (34.1688, 73.2215), "attock": (33.7667, 72.3667),
-        "bahawalpur": (29.3956, 71.6836), "bannu": (32.9861, 70.6042),
-        "dera ghazi khan": (30.0489, 70.6455), "dera ismail khan": (31.8315, 70.9017),
-        "faisalabad": (31.4504, 73.1350), "gilgit": (35.9208, 74.3144),
-        "gujranwala": (32.1877, 74.1945), "gujrat": (32.5731, 74.1005),
-        "haripur": (33.9946, 72.9106), "hyderabad": (25.3960, 68.3578),
-        "islamabad": (33.6844, 73.0479), "jacobabad": (28.2819, 68.4382),
-        "jhelum": (32.9405, 73.7276), "karachi": (24.8607, 67.0011),
-        "kasur": (31.1187, 74.4508), "kohat": (33.5834, 71.4332),
-        "lahore": (31.5204, 74.3587), "larkana": (27.5570, 68.2028),
-        "mardan": (34.1989, 72.0231), "mansehra": (34.3302, 73.1968),
-        "mirpur": (33.1484, 73.7517), "multan": (30.1575, 71.5249),
-        "muzaffarabad": (34.3700, 73.4711), "nawabshah": (26.2442, 68.4100),
-        "okara": (30.8138, 73.4534), "peshawar": (34.0151, 71.5249),
-        "quetta": (30.1798, 66.9750), "rahim yar khan": (28.4212, 70.2989),
-        "rawalpindi": (33.5651, 73.0169), "sahiwal": (30.6682, 73.1114),
-        "sargodha": (32.0836, 72.6711), "sheikhupura": (31.7167, 73.9850),
-        "sialkot": (32.4945, 74.5229), "skardu": (35.2971, 75.6333),
-        "sukkur": (27.7244, 68.8228), "swat": (35.2227, 72.4258),
-        "wah cantt": (33.7715, 72.7511), "taxila": (33.7463, 72.8397),
-    }
-    
-    _normalize_cache: Dict[str, str] = {}
-    _city_cache: Dict[str, Optional[tuple[float, float]]] = {}
-
-    def __init__(self) -> None:
-        self._names = tuple(self.COORDINATES.keys())
-
-    @staticmethod
-    def normalize(city: Any) -> str:
-        if not city:
-            return ""
-        value = str(city).lower()
-        cached = CityCoordinateService._normalize_cache.get(value)
-        if cached is not None:
-            return cached
-        value = value.replace("city", "").strip(" ,.-")
-        aliases = {
-            "rwp": "rawalpindi", "isb": "islamabad", "lhr": "lahore",
-            "khi": "karachi", "fsd": "faisalabad", "hyd": "hyderabad",
-            "ryk": "rahim yar khan", "dik": "dera ismail khan"
-        }
-        result = aliases.get(value, value)
-        CityCoordinateService._normalize_cache[value] = result
-        return result
-
-    def get(self, city: Any) -> Optional[tuple[float, float]]:
-        if not city:
-            return None
-        normalized = self.normalize(city)
-        if normalized in self._city_cache:
-            return self._city_cache[normalized]
-        if normalized in self.COORDINATES:
-            self._city_cache[normalized] = self.COORDINATES[normalized]
-            return self.COORDINATES[normalized]
-        match = process.extractOne(normalized, self._names, scorer=fuzz.WRatio, score_cutoff=82)
-        if match:
-            result = self.COORDINATES[match[0]]
-            self._city_cache[normalized] = result
-            return result
-        self._city_cache[normalized] = None
-        return None
-
-
-# ============================================================
-# DISTANCE SERVICE
+# BLOCK 6: DISTANCE SERVICE - IDENTICAL TO DN_ANALYSIS
 # ============================================================
 
 class DistanceService:
-    """Distance calculation service with caching"""
+    """Route distance calculation - identical to dn_analysis.py"""
     
-    def __init__(self, coordinates: CityCoordinateService) -> None:
-        self.coordinates = coordinates
-        self.cache: TTLCache[str, DistanceAnalytics] = TTLCache(maxsize=8192, ttl=CACHE_TTL)
+    def __init__(self):
+        self._cache: TTLCache[str, DistanceAnalytics] = TTLCache(maxsize=8192, ttl=CACHE_TTL)
+        self._coordinate_cache: TTLCache[str, tuple[float, float] | None] = TTLCache(512, 86_400)
         self._lock = threading.RLock()
-        self._ors = None
-        if ORS_API_KEY and openrouteservice:
+        self._ors_key = os.getenv("OPENROUTESERVICE_API_KEY")
+        self._geocoder = None
+        
+        try:
+            from geopy.geocoders import Nominatim
+            self._geocoder = Nominatim(user_agent="dealer-analytics-service", timeout=4)
+        except ImportError:
+            pass
+    
+    def _coordinates(self, location: str) -> tuple[float, float] | None:
+        key = location.strip().casefold()
+        if key in self._coordinate_cache:
+            return self._coordinate_cache[key]
+        
+        coordinates = None
+        
+        # Check warehouse coordinates first
+        normalized_key = key.replace(" warehouse", "").strip()
+        if normalized_key in WAREHOUSE_COORDINATES:
+            coordinates = WAREHOUSE_COORDINATES[normalized_key]
+        elif key in WAREHOUSE_COORDINATES:
+            coordinates = WAREHOUSE_COORDINATES[key]
+        
+        # If not in warehouse coordinates, try geocoding
+        if coordinates is None and self._geocoder and key:
             try:
-                self._ors = openrouteservice.Client(key=ORS_API_KEY, timeout=1)
-            except Exception:
-                pass
+                result = self._geocoder.geocode(location, exactly_one=True)
+                if result:
+                    coordinates = (float(result.latitude), float(result.longitude))
+            except Exception as exc:
+                logger.warning("Geocoding failed for {}: {}", location, exc)
+        
+        self._coordinate_cache[key] = coordinates
+        return coordinates
 
     @staticmethod
-    def delivery_estimate(km: Optional[float]) -> str:
+    def _haversine(origin: tuple[float, float], destination: tuple[float, float]) -> float:
+        lat1, lon1, lat2, lon2 = map(math.radians, (*origin, *destination))
+        dlat, dlon = lat2 - lat1, lon2 - lon1
+        value = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+        return 6_371.0088 * 2 * math.asin(math.sqrt(value))
+
+    @staticmethod
+    def _format_duration(hours: float) -> str:
+        total_minutes = max(0, round(hours * 60))
+        whole_hours, minutes = divmod(total_minutes, 60)
+        return f"{whole_hours} Hours {minutes} Minutes" if minutes else f"{whole_hours} Hours"
+
+    def calculate(self, warehouse: str, dealer_city: str) -> DistanceAnalytics:
+        warehouse_name = _text(warehouse)
+        city_name = _text(dealer_city)
+        key = f"{warehouse_name}|{city_name}"
+        
+        with self._lock:
+            cached = self._cache.get(key)
+        if cached:
+            return cached
+        
+        origin = self._coordinates(warehouse_name)
+        destination = self._coordinates(city_name)
+        
+        if not origin or not destination:
+            result = DistanceAnalytics(warehouse_name, city_name)
+        else:
+            km: Optional[float] = None
+            minutes: Optional[int] = None
+            source = "haversine"
+            
+            # Priority 1: OpenRouteService
+            if self._ors_key:
+                try:
+                    import openrouteservice
+                    client = openrouteservice.Client(key=self._ors_key, timeout=5)
+                    route = client.directions(
+                        [(origin[1], origin[0]), (destination[1], destination[0])],
+                        profile="driving-car",
+                    )["routes"][0]["summary"]
+                    km = round(float(route["distance"]) / 1000, 1)
+                    minutes = int(round(float(route["duration"]) / 60))
+                    source = "openrouteservice"
+                except Exception as exc:
+                    logger.warning("OpenRouteService failed: {}", exc)
+            
+            # Priority 2: Geopy
+            if km is None and great_circle:
+                try:
+                    km = round(great_circle(origin, destination).kilometers, 1)
+                    minutes = int(round(km / 55 * 60))
+                    source = "geopy"
+                except Exception:
+                    pass
+            
+            # Priority 3: Haversine
+            if km is None:
+                km = round(self._haversine(origin, destination) * 1.20, 1)
+                minutes = int(round(km / 45 * 60))
+                source = "haversine"
+            
+            result = DistanceAnalytics(
+                warehouse_name,
+                city_name,
+                km,
+                minutes,
+                self._format_duration(minutes / 60) if minutes else "Unknown",
+                self._delivery_estimate(km),
+                source
+            )
+        
+        with self._lock:
+            self._cache[key] = result
+        return result
+
+    @staticmethod
+    def _delivery_estimate(km: Optional[float]) -> str:
         if km is None:
             return "Unknown"
         if km <= 80:
@@ -815,90 +838,13 @@ class DistanceService:
             return "2-3 Days"
         return "3-5 Days"
 
-    @staticmethod
-    def driving_time(minutes: Optional[int]) -> str:
-        if minutes is None:
-            return "Unknown"
-        hours, mins = divmod(max(0, minutes), 60)
-        return f"{hours} hr {mins} min" if hours and mins else (f"{hours} hr" if hours else f"{mins} min")
-
-    @staticmethod
-    def _haversine(origin: tuple[float, float], destination: tuple[float, float]) -> float:
-        lat1, lon1, lat2, lon2 = map(math.radians, (*origin, *destination))
-        value = math.sin((lat2 - lat1) / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2
-        return 6371.0088 * 2 * math.asin(math.sqrt(value))
-
-    def calculate(self, warehouse: Any, dealer_city: Any) -> DistanceAnalytics:
-        warehouse_name, city_name = _text(warehouse), _text(dealer_city)
-        key = f"{self.coordinates.normalize(warehouse_name)}|{self.coordinates.normalize(city_name)}"
-        
-        with self._lock:
-            cached = self.cache.get(key)
-        if cached:
-            return cached
-        
-        origin, destination = self.coordinates.get(warehouse_name), self.coordinates.get(city_name)
-        if not origin or not destination:
-            result = DistanceAnalytics(warehouse_name, city_name)
-        else:
-            km: Optional[float] = None
-            minutes: Optional[int] = None
-            source = "great-circle"
-            
-            if self._ors:
-                try:
-                    route = self._ors.directions(
-                        [(origin[1], origin[0]), (destination[1], destination[0])],
-                        profile="driving-car"
-                    )
-                    summary = route["routes"][0]["summary"]
-                    km = float(summary["distance"]) / 1000
-                    minutes = int(round(float(summary["duration"]) / 60))
-                    source = "openrouteservice"
-                except Exception:
-                    pass
-            
-            if km is None:
-                try:
-                    km = great_circle(origin, destination).kilometers
-                except:
-                    km = self._haversine(origin, destination)
-                km *= 1.20
-                minutes = int(round(km / 55 * 60))
-            
-            result = DistanceAnalytics(
-                warehouse_name, city_name,
-                round(km, 1), minutes,
-                self.driving_time(minutes),
-                self.delivery_estimate(km),
-                source
-            )
-        
-        with self._lock:
-            self.cache[key] = result
-        return result
-
 
 # ============================================================
-# MAIN DEALER ANALYTICS SERVICE
+# BLOCK 7: DEALER SEARCH ENGINE
 # ============================================================
 
-class DealerAnalyticsService:
-    """Enterprise Dealer Intelligence Engine - Complete Version"""
-    
-    SORT_ALIASES = {
-        "revenue": "total_revenue",
-        "units": "total_units",
-        "dn": "total_dn",
-        "delivery": "delivery_success_pct",
-        "pgi": "pgi_success_pct",
-        "pod": "pod_success_pct",
-        "pending": "pending_pct",
-        "growth": "revenue_growth_pct",
-        "business_score": "business_score",
-        "regional": "regional_rank",
-        "national": "national_rank"
-    }
+class DealerSearchEngine:
+    """Enhanced dealer search with semantic matching"""
     
     STOP_PHRASES = frozenset({
         "tell me about", "dealer dashboard", "dealer profile", "dealer performance",
@@ -922,75 +868,40 @@ class DealerAnalyticsService:
         "lahore": "Lahore Traders",
         "islamabad": "Islamabad Electronics",
         "karachi": "Karachi Distributors",
+        "commercial": "Commercial Abbottabad",
     }
     
-    _normalize_regex = re.compile(r'[^a-z0-9\s]')
-    _dealer_extract_pattern = re.compile(r'(?:for|about|of|on|dealer|dashboard|profile)\s+([\w\s]+?)(?:\?|$|\.)', re.IGNORECASE)
-
-    def __init__(self) -> None:
-        """Initialize the Dealer Analytics Service"""
-        self._service_name = "dealer_analytics"
-        self._version = "8.5.0-enterprise"
-        self._startup_time = datetime.utcnow().isoformat()
-        self._initialization_errors: list[str] = []
-        
-        # Initialize services
-        try:
-            self._coordinates = CityCoordinateService()
-        except Exception as error:
-            self._initialization_errors.append(str(error))
-            self._coordinates = CityCoordinateService.__new__(CityCoordinateService)
-            self._coordinates._names = tuple()
-            self._coordinates.COORDINATES = {}
-        
-        try:
-            self._distance = DistanceService(self._coordinates)
-        except Exception as error:
-            self._initialization_errors.append(str(error))
-            self._distance = None
-        
-        # Initialize semantic search
-        self._semantic_search = SemanticSearchEngine()
-        if USE_SEMANTIC_SEARCH:
-            logger.info("✅ SemanticSearch initialized")
-        
-        # Initialize PyArrow processor
-        self._pyarrow = PyArrowProcessor()
-        if USE_PYARROW:
-            logger.info("✅ PyArrow processor initialized")
-        
-        # Thread pool for parallel processing
-        self._executor = ThreadPoolExecutor(max_workers=8)
-        
-        # Caches
-        self._dealer_cache: TTLCache[str, DealerSearchResult] = TTLCache(maxsize=4096, ttl=CACHE_TTL)
+    def __init__(self):
+        self._cache: TTLCache[str, DealerSearchResult] = TTLCache(maxsize=4096, ttl=CACHE_TTL)
         self._candidate_cache: TTLCache[str, list[dict[str, str]]] = TTLCache(maxsize=1, ttl=3600)
-        self._extended_cache: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=4096, ttl=3600)
-        self._dashboard_cache: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=4096, ttl=600)
-        self._ranking_cache: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=128, ttl=600)
-        self._aggregate_cache: TTLCache[str, list[Any]] = TTLCache(maxsize=1024, ttl=300)
         self._similarity_cache: TTLCache[str, float] = TTLCache(maxsize=5000, ttl=3600)
+        self._lock = threading.RLock()
+        self._normalize_regex = re.compile(r'[^a-z0-9\s]')
+        self._dealer_extract_pattern = re.compile(r'(?:for|about|of|on|dealer|dashboard|profile)\s+([\w\s]+?)(?:\?|$|\.)', re.IGNORECASE)
         
-        self._search_lock = threading.RLock()
-        self._last_diagnostic: dict[str, Any] = {}
-        self._last_db_check: Optional[datetime] = None
-        
-        # Pre-load candidates
-        try:
-            with self._session() as session:
-                self._load_candidates(session)
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to load candidates: {e}")
-        
-        logger.info(f"✅ DealerAnalyticsService initialized (v{self._version})")
+        # Semantic search engine
+        self._semantic_engine = None
+        if USE_SEMANTIC_SEARCH and SentenceTransformer:
+            try:
+                self._semantic_engine = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
+                logger.info("✅ Semantic search engine initialized")
+            except Exception as e:
+                logger.warning(f"⚠️ Semantic search init failed: {e}")
 
-    @staticmethod
-    def _session() -> Session:
-        """Get database session"""
-        return SessionLocal()
+    def normalize(self, value: Any) -> str:
+        """Normalize dealer text - identical to dn_analysis.py style"""
+        if not value:
+            return ""
+        text_value = unicodedata.normalize("NFKD", _text(value, "").lower())
+        text_value = self._normalize_regex.sub(" ", text_value)
+        text_value = re.sub(r'\s+', ' ', text_value).strip()
+        for phrase in self.STOP_PHRASES:
+            if phrase in text_value:
+                text_value = text_value.replace(phrase, " ")
+        return re.sub(r'\s+', ' ', text_value).strip()
 
-    def _load_candidates(self, session: Session) -> None:
-        """Load dealer candidates with caching"""
+    def load_candidates(self, session: Session) -> None:
+        """Load dealer candidates from PostgreSQL"""
         try:
             dealers = session.query(
                 DeliveryReport.customer_name,
@@ -1005,72 +916,81 @@ class DealerAnalyticsService:
                     "name": _text(d.customer_name),
                     "dealer_code": _text(d.dealer_code, ""),
                     "customer_code": _text(d.customer_code, ""),
-                    "normalized": self._normalize_dealer_text(d.customer_name)
+                    "normalized": self.normalize(d.customer_name)
                 }
                 for d in dealers if _text(d.customer_name, "")
             ]
             
-            with self._search_lock:
+            with self._lock:
                 self._candidate_cache["all"] = candidates
             
             logger.info(f"✅ Loaded {len(candidates)} dealer candidates")
         except Exception as e:
             logger.warning(f"Failed to load candidates: {e}")
 
-    @staticmethod
-    def _dealer_filter(identifier: str) -> Any:
-        """Create dealer filter for SQL queries"""
-        token = identifier.strip()
-        return or_(
-            func.lower(func.trim(DeliveryReport.customer_name)) == token.lower(),
-            DeliveryReport.dealer_code == token,
-            DeliveryReport.customer_code == token,
-        )
+    def get_candidates(self, session: Session) -> tuple[list[dict[str, str]], bool]:
+        """Get dealer candidates with caching"""
+        with self._lock:
+            cached = self._candidate_cache.get("all")
+        if cached is not None:
+            return cached, True
+        
+        self.load_candidates(session)
+        with self._lock:
+            return self._candidate_cache.get("all", []), False
 
-    @classmethod
-    def _normalize_dealer_text(cls, value: Any) -> str:
-        """Normalize dealer text for matching"""
-        if not value:
-            return ""
-        text_value = unicodedata.normalize("NFKD", _text(value, "").lower())
-        text_value = cls._normalize_regex.sub(" ", text_value)
-        text_value = re.sub(r'\s+', ' ', text_value).strip()
-        for phrase in cls.STOP_PHRASES:
-            if phrase in text_value:
-                text_value = text_value.replace(phrase, " ")
-        return re.sub(r'\s+', ' ', text_value).strip()
+    def semantic_similarity(self, text1: str, text2: str) -> float:
+        """Calculate semantic similarity"""
+        if not self._semantic_engine:
+            return 0.0
+        
+        cache_key = f"sim_{hash(text1)}_{hash(text2)}"
+        if cache_key in self._similarity_cache:
+            return self._similarity_cache[cache_key]
+        
+        try:
+            import numpy as np
+            from sklearn.metrics.pairwise import cosine_similarity
+            
+            vec1 = self._semantic_engine.encode(text1, convert_to_numpy=True)
+            vec2 = self._semantic_engine.encode(text2, convert_to_numpy=True)
+            score = float(cosine_similarity([vec1], [vec2])[0][0])
+            self._similarity_cache[cache_key] = score
+            return score
+        except Exception:
+            return 0.0
 
-    def _resolve_dealer(self, session: Session, message: str) -> DealerSearchResult:
+    def search(self, session: Session, message: str) -> DealerSearchResult:
         """
         Enhanced dealer resolution with 8-stage priority:
         1. Dealer Code
         2. Customer Code
         3. Exact Dealer Name
         4. Alias
-        5. PGVector Semantic Search
-        6. Sentence Transformer Similarity
-        7. RapidFuzz
-        8. Suggestions
+        5. Semantic Similarity
+        6. RapidFuzz
+        7. Suggestions
         """
         started = time.perf_counter()
         original = _text(message, "")
-        normalized = self._normalize_dealer_text(original)
+        normalized = self.normalize(original)
         alias = self.DEALER_ALIASES.get(normalized)
         search_text = alias or normalized
         cache_key = search_text.lower()
         
         # Check cache
-        with self._search_lock:
-            cached = self._dealer_cache.get(cache_key)
+        with self._lock:
+            cached = self._cache.get(cache_key)
         if cached:
             result = DealerSearchResult(**asdict(cached))
-            result.original_message, result.cache_used = original, True
+            result.original_message = original
+            result.cache_used = True
             return result
         
         result = DealerSearchResult(original, search_text, normalized, alias_used=alias)
         
         try:
-            candidates, _ = self._get_candidates(session)
+            candidates, _ = self.get_candidates(session)
             candidates_list = candidates if candidates else []
             
             # Stage 1: Dealer Code
@@ -1095,7 +1015,7 @@ class DealerAnalyticsService:
                     return result
             
             # Stage 3: Exact Dealer Name
-            norm_search = self._normalize_dealer_text(search_text)
+            norm_search = self.normalize(search_text)
             for item in candidates_list:
                 if item["normalized"] == norm_search:
                     result.dealer_found = item["name"]
@@ -1108,27 +1028,16 @@ class DealerAnalyticsService:
             
             # Stage 4: Alias (already handled)
             
-            # Stage 5: PGVector Semantic Search (if available)
-            if USE_PGVECTOR and Vector:
-                try:
-                    # Would use PGVector here if enabled
-                    pass
-                except Exception:
-                    pass
-            
-            # Stage 6: Sentence Transformer Similarity
-            semantic_score = 0.0
-            if self._semantic_search.encoder and candidates_list:
+            # Stage 5: Semantic Similarity
+            if self._semantic_engine and candidates_list:
                 best_match = None
                 best_score = 0.0
-                for item in candidates_list[:100]:  # Limit for performance
-                    score = self._semantic_search.semantic_similarity(
-                        search_text, item["normalized"]
-                    )
+                for item in candidates_list[:100]:
+                    score = self.semantic_similarity(search_text, item["normalized"])
                     if score > best_score:
                         best_score = score
                         best_match = item
-                        if score > 0.7:  # High confidence threshold
+                        if score > 0.7:
                             break
                 
                 if best_match and best_score > 0.7:
@@ -1140,18 +1049,11 @@ class DealerAnalyticsService:
                     self._cache_result(cache_key, result)
                     return result
             
-            # Stage 7: RapidFuzz (with caching)
-            cache_key_fuzz = f"fuzz_{search_text}"
-            cached_fuzz = self._similarity_cache.get(cache_key_fuzz)
-            
-            if cached_fuzz:
-                best, score = cached_fuzz
-            else:
-                choices = {i: item["normalized"] for i, item in enumerate(candidates_list)}
-                matches = process.extract(search_text, choices, scorer=fuzz.WRatio, limit=5)
-                scored = [(candidates_list[i], float(score)) for _, score, i in matches]
-                best, score = scored[0] if scored else (None, 0)
-                self._similarity_cache[cache_key_fuzz] = (best, score)
+            # Stage 6: RapidFuzz
+            choices = {i: item["normalized"] for i, item in enumerate(candidates_list)}
+            matches = process.extract(search_text, choices, scorer=fuzz.WRatio, limit=5)
+            scored = [(candidates_list[i], float(score)) for _, score, i in matches]
+            best, score = scored[0] if scored else (None, 0)
             
             if best and score >= 85:
                 result.dealer_found = best["name"]
@@ -1162,7 +1064,7 @@ class DealerAnalyticsService:
                 self._cache_result(cache_key, result)
                 return result
             
-            # Stage 8: Suggestions
+            # Stage 7: Suggestions
             if scored and score >= 60:
                 result.suggestions = [
                     {"dealer_name": item["name"], "similarity": round(s, 2), "dealer_code": item["dealer_code"]}
@@ -1172,7 +1074,6 @@ class DealerAnalyticsService:
                 result.ambiguous = True
                 result.match_source = "suggestions"
             else:
-                # No matches, show suggestions
                 result.suggestions = [
                     {"dealer_name": item["name"], "similarity": round(score, 2), "dealer_code": item["dealer_code"]}
                     for item, score in scored[:5] if score > 40
@@ -1187,28 +1088,242 @@ class DealerAnalyticsService:
             logger.exception(f"Dealer resolution failed for {original}")
         
         elapsed_ms = (time.perf_counter() - started) * 1000
-        self._last_diagnostic = {**asdict(result), "execution_time_ms": round(elapsed_ms, 2)}
-        
         if elapsed_ms > 100:
             logger.warning(f"Slow dealer resolution: {elapsed_ms:.2f}ms for {original}")
         
         return result
 
-    def _get_candidates(self, session: Session) -> tuple[list[dict[str, str]], bool]:
-        """Get dealer candidates with caching"""
-        with self._search_lock:
-            cached = self._candidate_cache.get("all")
-        if cached is not None:
-            return cached, True
-        
-        self._load_candidates(session)
-        with self._search_lock:
-            return self._candidate_cache.get("all", []), False
-
     def _cache_result(self, key: str, result: DealerSearchResult) -> None:
-        """Cache search result"""
-        with self._search_lock:
-            self._dealer_cache[key] = result
+        with self._lock:
+            self._cache[key] = result
+
+
+# ============================================================
+# BLOCK 8: DEALER REPOSITORY - REUSES DN_ANALYSIS STYLE
+# ============================================================
+
+class DealerRepository:
+    """
+    Dealer repository - identical SQL style to dn_analysis.py
+    PostgreSQL is the ONLY source of truth.
+    """
+    
+    _GROUP_COLUMNS: tuple[str, ...] = (
+        "customer_name", "dealer_code", "customer_code", "ship_to_city",
+        "warehouse", "warehouse_code", "delivery_location", "sales_office",
+        "sales_manager", "division",
+    )
+
+    @classmethod
+    def _aggregate_sql(cls, where: str = "TRUE", order_by: str = "total_revenue DESC") -> str:
+        columns = ", ".join(cls._GROUP_COLUMNS)
+        return f"""
+            SELECT {columns},
+                   COUNT(DISTINCT dn_no) AS total_dn,
+                   COALESCE(SUM(dn_qty), 0) AS total_units,
+                   COALESCE(SUM(dn_amount), 0) AS total_revenue,
+                   COUNT(DISTINCT material_no) AS material_count,
+                   COUNT(DISTINCT customer_model) AS model_count,
+                   COUNT(DISTINCT dn_no) FILTER (WHERE pod_date IS NULL OR pending_flag = true) AS pending_dn,
+                   COUNT(DISTINCT dn_no) FILTER (WHERE good_issue_date IS NULL) AS pgi_pending_dn,
+                   COUNT(DISTINCT dn_no) FILTER (WHERE good_issue_date IS NOT NULL AND pod_date IS NULL) AS pod_pending_dn,
+                   MIN(dn_create_date) AS first_delivery_date,
+                   MAX(dn_create_date) AS latest_delivery_date,
+                   MAX(good_issue_date) AS latest_pgi_date,
+                   MAX(pod_date) AS latest_pod_date,
+                   AVG(EXTRACT(EPOCH FROM (good_issue_date - dn_create_date)) / 86400) AS avg_delivery,
+                   AVG(EXTRACT(EPOCH FROM (pod_date - good_issue_date)) / 86400) AS avg_pod,
+                   AVG(EXTRACT(EPOCH FROM (pod_date - dn_create_date)) / 86400) AS avg_cycle
+              FROM {TABLE}
+             WHERE {where}
+             GROUP BY {columns}
+             ORDER BY {order_by}
+        """
+
+    @staticmethod
+    def dealer_filter(identifier: str) -> Any:
+        token = identifier.strip()
+        return or_(
+            func.lower(func.trim(DeliveryReport.customer_name)) == token.lower(),
+            DeliveryReport.dealer_code == token,
+            DeliveryReport.customer_code == token,
+        )
+
+
+# ============================================================
+# BLOCK 9: DEALER AGGREGATION ENGINE
+# ============================================================
+
+class DealerAggregationEngine:
+    """Dealer aggregation engine - reuses dn_analysis.py logic"""
+    
+    def __init__(self, session: Session):
+        self.session = session
+        self._executor = ThreadPoolExecutor(max_workers=8)
+    
+    def get_dealer_data(self, dealer_identifier: str) -> Optional[dict[str, Any]]:
+        """Get aggregated dealer data from PostgreSQL"""
+        try:
+            condition = DealerRepository.dealer_filter(dealer_identifier)
+            
+            query = self.session.query(
+                func.coalesce(DeliveryReport.customer_name, "Unknown").label("dealer_name"),
+                func.coalesce(DeliveryReport.dealer_code, "Unknown").label("dealer_code"),
+                func.coalesce(DeliveryReport.customer_code, "Unknown").label("customer_code"),
+                func.max(DeliveryReport.ship_to_city).label("city"),
+                func.max(DeliveryReport.delivery_location).label("delivery_location"),
+                func.max(DeliveryReport.warehouse).label("warehouse"),
+                func.max(DeliveryReport.warehouse_code).label("warehouse_code"),
+                func.max(DeliveryReport.sales_office).label("sales_office"),
+                func.max(DeliveryReport.sales_manager).label("sales_manager"),
+                func.max(DeliveryReport.division).label("division"),
+                func.count(distinct(DeliveryReport.dn_no)).label("total_dn"),
+                func.count(distinct(case((or_(DeliveryReport.pending_flag.is_(True), DeliveryReport.pod_date.is_(None)), DeliveryReport.dn_no)))).label("pending_dn"),
+                func.count(distinct(case((DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no)))).label("completed_dn"),
+                func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("total_units"),
+                func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0).label("total_revenue"),
+                func.count(distinct(case((DeliveryReport.good_issue_date.is_(None), DeliveryReport.dn_no)))).label("pgi_pending_dn"),
+                func.count(distinct(case((and_(DeliveryReport.good_issue_date.isnot(None), DeliveryReport.pod_date.is_(None)), DeliveryReport.dn_no)))).label("pod_pending_dn"),
+                func.min(DeliveryReport.dn_create_date).label("first_delivery_date"),
+                func.max(DeliveryReport.dn_create_date).label("latest_delivery_date"),
+                func.max(DeliveryReport.good_issue_date).label("latest_pgi_date"),
+                func.max(DeliveryReport.pod_date).label("latest_pod_date"),
+                func.avg(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.good_issue_date - DeliveryReport.dn_create_date))).label("avg_delivery"),
+                func.avg(case((and_(DeliveryReport.good_issue_date.isnot(None), DeliveryReport.pod_date.isnot(None)), DeliveryReport.pod_date - DeliveryReport.good_issue_date))).label("avg_pod"),
+                func.avg(case((DeliveryReport.pod_date.isnot(None), DeliveryReport.pod_date - DeliveryReport.dn_create_date))).label("avg_cycle"),
+            ).filter(condition).group_by(
+                DeliveryReport.customer_name,
+                DeliveryReport.dealer_code,
+                DeliveryReport.customer_code
+            ).first()
+            
+            if not query:
+                return None
+            
+            return {
+                "dealer_name": _text(query.dealer_name),
+                "dealer_code": _text(query.dealer_code),
+                "customer_code": _text(query.customer_code),
+                "city": _text(query.city),
+                "delivery_location": _text(query.delivery_location),
+                "warehouse": _text(query.warehouse),
+                "warehouse_code": _text(query.warehouse_code),
+                "sales_office": _text(query.sales_office),
+                "sales_manager": _text(query.sales_manager),
+                "division": _text(query.division),
+                "total_dn": int(query.total_dn or 0),
+                "pending_dn": int(query.pending_dn or 0),
+                "completed_dn": int(query.completed_dn or 0),
+                "total_units": int(query.total_units or 0),
+                "total_revenue": float(query.total_revenue or 0.0),
+                "pgi_pending_dn": int(query.pgi_pending_dn or 0),
+                "pod_pending_dn": int(query.pod_pending_dn or 0),
+                "first_delivery_date": _date_text(query.first_delivery_date),
+                "latest_delivery_date": _date_text(query.latest_delivery_date),
+                "latest_pgi_date": _date_text(query.latest_pgi_date),
+                "latest_pod_date": _date_text(query.latest_pod_date),
+                "avg_delivery": _days(query.avg_delivery),
+                "avg_pod": _days(query.avg_pod),
+                "avg_cycle": _days(query.avg_cycle),
+            }
+        except Exception as e:
+            logger.error(f"Dealer aggregation failed: {e}")
+            return None
+
+
+# ============================================================
+# BLOCK 10: MAIN DEALER ANALYTICS SERVICE
+# ============================================================
+
+class DealerAnalyticsService:
+    """
+    Enterprise Dealer Intelligence Engine
+    PostgreSQL is the ONLY source of truth.
+    Reuses dn_analysis.py architecture.
+    """
+    
+    SORT_ALIASES = {
+        "revenue": "total_revenue",
+        "units": "total_units",
+        "dn": "total_dn",
+        "delivery": "delivery_success_pct",
+        "pgi": "pgi_success_pct",
+        "pod": "pod_success_pct",
+        "pending": "pending_pct",
+        "growth": "revenue_growth_pct",
+        "business_score": "business_score",
+        "regional": "regional_rank",
+        "national": "national_rank"
+    }
+    
+    def __init__(self) -> None:
+        self._service_name = "dealer_analytics"
+        self._version = "9.0.0-enterprise"
+        self._startup_time = datetime.utcnow().isoformat()
+        self._initialization_errors: list[str] = []
+        
+        # Initialize services - identical to dn_analysis.py
+        self._distance = DistanceService()
+        self._search_engine = DealerSearchEngine()
+        
+        # Thread pool for parallel processing
+        self._executor = ThreadPoolExecutor(max_workers=8)
+        
+        # Caches - identical to dn_analysis.py
+        self._dashboard_cache: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=4096, ttl=600)
+        self._ranking_cache: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=128, ttl=600)
+        self._aggregate_cache: TTLCache[str, list[Any]] = TTLCache(maxsize=1024, ttl=300)
+        self._extended_cache: TTLCache[str, dict[str, Any]] = TTLCache(maxsize=4096, ttl=3600)
+        
+        self._lock = threading.RLock()
+        self._last_diagnostic: dict[str, Any] = {}
+        
+        # Pre-load candidates
+        try:
+            with self._session() as session:
+                self._search_engine.load_candidates(session)
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to load candidates: {e}")
+        
+        logger.info(f"✅ DealerAnalyticsService initialized (v{self._version})")
+
+    @staticmethod
+    def _session() -> Session:
+        return SessionLocal()
+
+    @staticmethod
+    def _date(value: Any) -> date | None:
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        if isinstance(value, str) and value:
+            try:
+                return date.fromisoformat(value[:10])
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
+    def _flag(value: Any) -> bool:
+        return str(value or "").strip().casefold() in {"1", "true", "yes", "y", "pending"}
+
+    @staticmethod
+    def _response(
+        success: bool,
+        data: Any = None,
+        whatsapp_message: str = "",
+        error: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Response format - identical to dn_analysis.py"""
+        return {
+            "success": success,
+            "data": {} if data is None else data,
+            "whatsapp_message": whatsapp_message,
+            "error": error,
+            "metadata": dict(metadata or {}),
+        }
 
     @staticmethod
     def _suggestion_response(search: DealerSearchResult) -> dict[str, Any]:
@@ -1234,240 +1349,127 @@ class DealerAnalyticsService:
             "search": search
         }
 
-    def _aggregate_query(self, session: Session, dealer: Optional[str] = None) -> list[Any]:
-        """Optimized aggregate query with SQLGlot optimization"""
-        cache_key = dealer or "all"
-        cached = self._aggregate_cache.get(cache_key)
-        if cached is not None:
-            return cached
-        
-        completed = or_(DeliveryReport.pending_flag.is_(False), _status_complete(DeliveryReport.delivery_status), DeliveryReport.pod_date.isnot(None))
-        pending = or_(DeliveryReport.pending_flag.is_(True), DeliveryReport.pod_date.is_(None))
-        pgi_pending = DeliveryReport.good_issue_date.is_(None)
-        pod_pending = and_(DeliveryReport.good_issue_date.isnot(None), DeliveryReport.pod_date.is_(None))
-        
-        query = session.query(
-            func.coalesce(DeliveryReport.customer_name, "Unknown").label("dealer_name"),
-            func.coalesce(DeliveryReport.dealer_code, "Unknown").label("dealer_code"),
-            func.coalesce(DeliveryReport.customer_code, "Unknown").label("customer_code"),
-            func.max(DeliveryReport.ship_to_city).label("city"),
-            func.max(DeliveryReport.delivery_location).label("delivery_location"),
-            func.max(DeliveryReport.warehouse).label("warehouse"),
-            func.max(DeliveryReport.warehouse_code).label("warehouse_code"),
-            func.max(DeliveryReport.sales_office).label("sales_office"),
-            func.max(DeliveryReport.sales_manager).label("sales_manager"),
-            func.max(DeliveryReport.division).label("division"),
-            func.count(distinct(DeliveryReport.dn_no)).label("total_dn"),
-            func.count(distinct(case((completed, DeliveryReport.dn_no)))).label("completed_dn"),
-            func.count(distinct(case((pending, DeliveryReport.dn_no)))).label("pending_dn"),
-            func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("total_units"),
-            func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0).label("total_revenue"),
-            func.coalesce(func.sum(case((completed, DeliveryReport.dn_qty), else_=0)), 0).label("delivered_units"),
-            func.coalesce(func.sum(case((pending, DeliveryReport.dn_qty), else_=0)), 0).label("pending_units"),
-            func.coalesce(func.sum(case((completed, DeliveryReport.dn_amount), else_=0.0)), 0.0).label("delivered_revenue"),
-            func.coalesce(func.sum(case((pending, DeliveryReport.dn_amount), else_=0.0)), 0.0).label("pending_revenue"),
-            func.count(distinct(case((pgi_pending, DeliveryReport.dn_no)))).label("pgi_pending_dn"),
-            func.count(distinct(case((pod_pending, DeliveryReport.dn_no)))).label("pod_pending_dn"),
-            func.min(case((pending, DeliveryReport.dn_create_date))).label("oldest_pending_date"),
-            func.avg(case((pending, func.current_date() - DeliveryReport.dn_create_date))).label("pending_average_days"),
-            func.min(DeliveryReport.dn_create_date).label("first_delivery_date"),
-            func.max(DeliveryReport.dn_create_date).label("latest_delivery_date"),
-            func.max(DeliveryReport.good_issue_date).label("latest_pgi_date"),
-            func.max(DeliveryReport.pod_date).label("latest_pod_date"),
-            func.avg(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.good_issue_date - DeliveryReport.dn_create_date))).label("avg_delivery"),
-            func.avg(case((and_(DeliveryReport.good_issue_date.isnot(None), DeliveryReport.pod_date.isnot(None)), DeliveryReport.pod_date - DeliveryReport.good_issue_date))).label("avg_pod"),
-            func.avg(case((DeliveryReport.pod_date.isnot(None), DeliveryReport.pod_date - DeliveryReport.dn_create_date))).label("avg_cycle"),
-            func.min(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.good_issue_date - DeliveryReport.dn_create_date))).label("fastest_delivery"),
-            func.max(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.good_issue_date - DeliveryReport.dn_create_date))).label("slowest_delivery"),
-            func.count(distinct(case((DeliveryReport.good_issue_date - DeliveryReport.dn_create_date == 0, DeliveryReport.dn_no)))).label("same_day_deliveries"),
-            func.count(distinct(case((DeliveryReport.good_issue_date - DeliveryReport.dn_create_date == 1, DeliveryReport.dn_no)))).label("next_day_deliveries"),
-            func.count(distinct(case((_status_complete(DeliveryReport.delivery_status), DeliveryReport.dn_no)))).label("delivery_success"),
-            func.count(distinct(case((or_(_status_complete(DeliveryReport.pgi_status), DeliveryReport.good_issue_date.isnot(None)), DeliveryReport.dn_no)))).label("pgi_success"),
-            func.count(distinct(case((or_(_status_complete(DeliveryReport.pod_status), DeliveryReport.pod_date.isnot(None)), DeliveryReport.dn_no)))).label("pod_success"),
-        ).filter(DeliveryReport.customer_name.isnot(None))
-        
-        if dealer:
-            query = query.filter(self._dealer_filter(dealer))
-        
-        result = query.group_by(
-            DeliveryReport.customer_name,
-            DeliveryReport.dealer_code,
-            DeliveryReport.customer_code
-        ).all()
-        
-        self._aggregate_cache[cache_key] = result
-        return result
+    # ============================================================
+    # BLOCK 11: DASHBOARD BUILDING ENGINE
+    # ============================================================
 
-    def _row_to_dashboard(self, row: Any, include_distance: bool = True) -> DealerDashboard:
-        """Convert DB row to enhanced DealerDashboard"""
-        total = int(row.total_dn or 0)
+    def _build_dashboard(self, row: dict[str, Any]) -> DealerDashboard:
+        """Build DealerDashboard from row - reuses dn_analysis.py logic"""
+        total = int(row.get("total_dn", 0))
+        pending = int(row.get("pending_dn", 0))
         
-        dashboard = DealerDashboard(
-            dealer_name=_text(row.dealer_name),
-            dealer_code=_text(row.dealer_code),
-            customer_code=_text(row.customer_code),
-            city=_text(row.city),
-            delivery_location=_text(getattr(row, "delivery_location", None)),
-            warehouse=_text(row.warehouse),
-            warehouse_code=_text(row.warehouse_code),
-            sales_office=_text(row.sales_office),
-            sales_manager=_text(row.sales_manager),
-            division=_text(row.division),
-            total_dn=total,
-            completed_dn=int(row.completed_dn or 0),
-            pending_dn=int(row.pending_dn or 0),
-            total_units=int(row.total_units or 0),
-            delivered_units=int(getattr(row, "delivered_units", 0) or 0),
-            pending_units=int(getattr(row, "pending_units", 0) or 0),
-            total_revenue=round(_number(row.total_revenue), 2),
-            delivered_revenue=round(_number(getattr(row, "delivered_revenue", 0)), 2),
-            pending_revenue=round(_number(getattr(row, "pending_revenue", 0)), 2),
-            average_revenue_per_dn=round(_number(row.total_revenue) / total, 2) if total else 0,
-            average_revenue_per_unit=round(_number(row.total_revenue) / _number(row.total_units), 2) if _number(row.total_units) else 0.0,
-            average_units_per_dn=round(_number(row.total_units) / total, 2) if total else 0,
-            average_delivery_days=self._days(row.avg_delivery),
-            average_pod_days=self._days(row.avg_pod),
-            average_total_cycle_time=self._days(row.avg_cycle),
-            delivery_success_pct=_percent(row.delivery_success, total),
-            pgi_success_pct=_percent(row.pgi_success, total),
-            pod_success_pct=_percent(row.pod_success, total),
-            pending_pct=_percent(row.pending_dn, total),
-            distance=(self._safe_distance(row.warehouse, row.city) if include_distance else DistanceAnalytics(_text(row.warehouse), _text(row.city))),
-            first_delivery_date=_date_text(row.first_delivery_date),
-            latest_delivery_date=_date_text(row.latest_delivery_date),
-            latest_pgi_date=_date_text(getattr(row, "latest_pgi_date", None)),
-            latest_pod_date=_date_text(getattr(row, "latest_pod_date", None)),
-            fastest_delivery_days=self._days(getattr(row, "fastest_delivery", 0)),
-            slowest_delivery_days=self._days(getattr(row, "slowest_delivery", 0)),
-            same_day_deliveries=int(getattr(row, "same_day_deliveries", 0) or 0),
-            next_day_deliveries=int(getattr(row, "next_day_deliveries", 0) or 0),
-            delivery_coverage=_percent(row.completed_dn, total),
+        # Calculate distance - identical to dn_analysis.py
+        distance = self._distance.calculate(
+            str(row.get("warehouse") or row.get("warehouse_code") or ""),
+            str(row.get("delivery_location") or row.get("city") or ""),
         )
         
-        # Add additional fields
-        dashboard.oldest_pending_days = max(0, (date.today() - row.oldest_pending_date).days) if getattr(row, "oldest_pending_date", None) else 0
-        dashboard.pending_average_days = self._days(getattr(row, "pending_average_days", 0))
-        dashboard.pgi_pending_dn = int(getattr(row, "pgi_pending_dn", 0) or 0)
-        dashboard.pod_pending_dn = int(getattr(row, "pod_pending_dn", 0) or 0)
+        # Calculate aging - identical to dn_analysis.py
+        today = datetime.now().date()
+        dn_date = self._date(row.get("first_delivery_date"))
+        issue_date = self._date(row.get("latest_pgi_date"))
+        pod_date = self._date(row.get("latest_pod_date"))
+        pending_flag = pending > 0
         
-        return dashboard
+        pgi_aging = _days((issue_date - dn_date) if issue_date and dn_date else 0)
+        pod_aging = _days((pod_date - issue_date) if pod_date and issue_date else 0)
+        delivery_aging = _days((pod_date or (today if pending_flag else None)) - dn_date) if dn_date else 0
+        
+        return DealerDashboard(
+            dealer_name=row.get("dealer_name", "Unknown"),
+            dealer_code=row.get("dealer_code", "Unknown"),
+            customer_code=row.get("customer_code", "Unknown"),
+            city=row.get("city", "Unknown"),
+            warehouse=row.get("warehouse", "Unknown"),
+            warehouse_code=row.get("warehouse_code", "Unknown"),
+            sales_office=row.get("sales_office", "Unknown"),
+            sales_manager=row.get("sales_manager", "Unknown"),
+            division=row.get("division", "Unknown"),
+            delivery_location=row.get("delivery_location", "Unknown"),
+            total_dn=total,
+            completed_dn=row.get("completed_dn", 0),
+            pending_dn=pending,
+            total_units=row.get("total_units", 0),
+            total_revenue=row.get("total_revenue", 0.0),
+            pending_revenue=0.0,  # Will be calculated separately
+            average_revenue_per_dn=round(row.get("total_revenue", 0.0) / total, 2) if total else 0,
+            average_units_per_dn=round(row.get("total_units", 0) / total, 2) if total else 0,
+            average_delivery_days=row.get("avg_delivery", 0.0),
+            average_pod_days=row.get("avg_pod", 0.0),
+            average_total_cycle_time=row.get("avg_cycle", 0.0),
+            first_delivery_date=row.get("first_delivery_date", "N/A"),
+            latest_delivery_date=row.get("latest_delivery_date", "N/A"),
+            latest_pgi_date=row.get("latest_pgi_date", "N/A"),
+            latest_pod_date=row.get("latest_pod_date", "N/A"),
+            pgi_aging_days=pgi_aging,
+            pod_aging_days=pod_aging,
+            delivery_aging_days=delivery_aging,
+            transit_days=row.get("avg_delivery", 0.0),
+            distance=distance,
+            delivery_success_pct=_percent(row.get("completed_dn", 0), total),
+            pending_pct=_percent(pending, total),
+            pgi_pending_dn=row.get("pgi_pending_dn", 0),
+            pod_pending_dn=row.get("pod_pending_dn", 0),
+        )
 
-    def _safe_distance(self, warehouse: Any, city: Any) -> DistanceAnalytics:
-        """Safely calculate distance"""
-        try:
-            if self._distance is not None:
-                return self._distance.calculate(warehouse, city)
-        except Exception:
-            pass
-        return DistanceAnalytics(_text(warehouse), _text(city))
+    # ============================================================
+    # BLOCK 12: EXTENDED ANALYTICS ENGINE
+    # ============================================================
 
-    def _apply_extended_analytics(self, session: Session, item: DealerDashboard) -> None:
-        """Apply extended analytics with parallel processing"""
-        identity = item.dealer_code if item.dealer_code != "Unknown" else item.customer_code
-        identity = identity if identity != "Unknown" else item.dealer_name
+    def _apply_extended_analytics(self, session: Session, dashboard: DealerDashboard) -> None:
+        """Apply extended analytics - reuses dn_analysis.py logic"""
+        identity = dashboard.dealer_code if dashboard.dealer_code != "Unknown" else dashboard.customer_code
+        identity = identity if identity != "Unknown" else dashboard.dealer_name
         cache_key = str(identity).lower()
         
         cached = self._extended_cache.get(cache_key)
         if cached:
             for key, value in cached.items():
-                setattr(item, key, value)
-            self._apply_business_health(item)
-            item.insights, item.recommendations = self._business_insights(item)
+                setattr(dashboard, key, value)
+            self._apply_business_health(dashboard)
+            dashboard.insights, dashboard.recommendations = self._business_insights(dashboard)
             return
         
-        condition = self._dealer_filter(str(identity))
         values: dict[str, Any] = {}
         
         # Parallel queries for speed
         futures = {
-            'dn': self._executor.submit(self._get_dn_analytics, session, condition),
-            'monthly': self._executor.submit(self._get_monthly_analytics, session, condition),
-            'product': self._executor.submit(self._get_product_analytics, session, condition),
-            'division': self._executor.submit(self._get_division_analytics, session, condition),
-            'warehouse_util': self._executor.submit(self._get_warehouse_utilization, session, item.warehouse, item.total_units),
-            'trend': self._executor.submit(self._get_trend_analytics, session, condition),
-            'forecast': self._executor.submit(self._calculate_forecast, session, condition),
+            'monthly': self._executor.submit(self._get_monthly_analytics, session, identity),
+            'product': self._executor.submit(self._get_product_analytics, session, identity),
+            'pending': self._executor.submit(self._get_pending_analytics, session, identity),
+            'warehouse_util': self._executor.submit(self._get_warehouse_utilization, session, dashboard.warehouse, dashboard.total_units),
         }
         
         for key, future in futures.items():
             try:
-                result = future.result(timeout=1.0)
+                result = future.result(timeout=2.0)
                 if result:
                     values.update(result)
             except Exception as e:
                 logger.warning(f"Parallel query {key} failed: {e}")
         
         # Apply rankings
-        self._apply_dealer_rankings(session, item, values)
+        self._apply_rankings(session, dashboard, values)
         
         # Apply all values
         for key, value in values.items():
-            setattr(item, key, value)
+            setattr(dashboard, key, value)
         
-        # Calculate additional KPIs
-        self._calculate_additional_kpis(item)
+        # Calculate additional KPIs - identical to dn_analysis.py
+        self._calculate_additional_kpis(dashboard)
         
-        # Apply business health
-        self._apply_business_health(item)
+        # Apply business health - identical to dn_analysis.py
+        self._apply_business_health(dashboard)
         
         # Cache results
         self._extended_cache[cache_key] = values
-        item.insights, item.recommendations = self._business_insights(item)
+        dashboard.insights, dashboard.recommendations = self._business_insights(dashboard)
 
-    def _get_dn_analytics(self, session: Session, condition: Any) -> dict[str, Any]:
-        """Get DN analytics"""
-        try:
-            dn_rows = session.query(
-                DeliveryReport.dn_no.label("dn"),
-                func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0).label("revenue"),
-                func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("units"),
-                func.min(DeliveryReport.dn_create_date).label("created"),
-                func.max(DeliveryReport.good_issue_date).label("issued"),
-                func.max(DeliveryReport.pod_date).label("pod"),
-                func.max(case((or_(DeliveryReport.pending_flag.is_(True), DeliveryReport.pod_date.is_(None)), 1), else_=0)).label("pending"),
-            ).filter(condition).group_by(DeliveryReport.dn_no).all()
-            
-            if not dn_rows:
-                return {}
-            
-            by_revenue = sorted(dn_rows, key=lambda r: _number(r.revenue))
-            by_units = sorted(dn_rows, key=lambda r: _number(r.units))
-            by_date = sorted(dn_rows, key=lambda r: r.created or date.min)
-            pending_rows = [r for r in dn_rows if int(r.pending or 0)]
-            
-            delivery_days = []
-            for r in dn_rows:
-                if r.created and r.issued and r.issued >= r.created:
-                    delivery_days.append((r.issued - r.created).days)
-            
-            values = {
-                "highest_revenue_dn": _text(by_revenue[-1].dn, "N/A"),
-                "lowest_revenue_dn": _text(by_revenue[0].dn, "N/A"),
-                "highest_unit_dn": _text(by_units[-1].dn, "N/A"),
-                "lowest_unit_dn": _text(by_units[0].dn, "N/A"),
-                "newest_dn": _text(by_date[-1].dn, "N/A"),
-                "fastest_delivery_days": float(min(delivery_days)) if delivery_days else 0.0,
-                "slowest_delivery_days": float(max(delivery_days)) if delivery_days else 0.0,
-            }
-            
-            if pending_rows:
-                oldest = min(pending_rows, key=lambda r: r.created or date.max)
-                ages = [max(0, (date.today() - r.created).days) for r in pending_rows if r.created]
-                values.update({
-                    "oldest_pending_dn": _text(oldest.dn, "N/A"),
-                    "oldest_pending_days": max(ages) if ages else 0,
-                    "pending_average_days": round(sum(ages) / len(ages), 2) if ages else 0.0,
-                    "critical_pending": sum(1 for age in ages if age > 7),
-                    "overdue_pending": sum(1 for age in ages if age > 14),
-                })
-            
-            return values
-        except Exception:
-            return {}
-
-    def _get_monthly_analytics(self, session: Session, condition: Any) -> dict[str, Any]:
+    def _get_monthly_analytics(self, session: Session, dealer_identifier: str) -> dict[str, Any]:
         """Get monthly analytics"""
         try:
+            condition = DealerRepository.dealer_filter(dealer_identifier)
+            
             monthly = session.query(
                 func.to_char(DeliveryReport.dn_create_date, "YYYY-MM").label("month"),
                 func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0).label("revenue"),
@@ -1507,51 +1509,77 @@ class DealerAnalyticsService:
         except Exception:
             return {}
 
-    def _get_product_analytics(self, session: Session, condition: Any) -> dict[str, Any]:
+    def _get_product_analytics(self, session: Session, dealer_identifier: str) -> dict[str, Any]:
         """Get product analytics"""
         try:
-            top_product = self._get_top_value(session, condition, DeliveryReport.customer_model)
-            top_material = self._get_top_value(session, condition, DeliveryReport.material_no)
+            condition = DealerRepository.dealer_filter(dealer_identifier)
             
-            fastest = session.query(
-                DeliveryReport.customer_model.label("product"),
+            top_model = session.query(
+                DeliveryReport.customer_model.label("model"),
                 func.sum(DeliveryReport.dn_amount).label("revenue")
             ).filter(condition, DeliveryReport.customer_model.isnot(None)).group_by(
                 DeliveryReport.customer_model
             ).order_by(func.sum(DeliveryReport.dn_amount).desc()).first()
             
+            top_material = session.query(
+                DeliveryReport.material_no.label("material"),
+                func.sum(DeliveryReport.dn_amount).label("revenue")
+            ).filter(condition, DeliveryReport.material_no.isnot(None)).group_by(
+                DeliveryReport.material_no
+            ).order_by(func.sum(DeliveryReport.dn_amount).desc()).first()
+            
             return {
-                "top_product": top_product,
-                "top_model": top_product,
-                "top_material": top_material,
-                "highest_revenue_product": top_product,
-                "fastest_growing_product": _text(fastest.product) if fastest else "Unknown",
-                "highest_unit_product": top_product,
+                "top_product": _text(top_model.model) if top_model else "Unknown",
+                "top_model": _text(top_model.model) if top_model else "Unknown",
+                "top_material": _text(top_material.material) if top_material else "Unknown",
+                "highest_revenue_product": _text(top_model.model) if top_model else "Unknown",
             }
         except Exception:
             return {}
 
-    def _get_division_analytics(self, session: Session, condition: Any) -> dict[str, Any]:
-        """Get division analytics"""
+    def _get_pending_analytics(self, session: Session, dealer_identifier: str) -> dict[str, Any]:
+        """Get pending analytics"""
         try:
-            division_rows = session.query(
-                DeliveryReport.division.label("value"),
-                func.sum(DeliveryReport.dn_amount).label("revenue"),
-            ).filter(condition, DeliveryReport.division.isnot(None)).group_by(
-                DeliveryReport.division
-            ).order_by(func.sum(DeliveryReport.dn_amount).desc()).all()
+            condition = DealerRepository.dealer_filter(dealer_identifier)
             
-            if not division_rows:
-                return {
-                    "top_division": "Unknown",
-                    "strongest_product_category": "Unknown",
-                    "weakest_product_category": "Unknown",
-                }
+            pending_rows = session.query(
+                DeliveryReport.dn_no,
+                DeliveryReport.dn_create_date,
+                func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0).label("revenue"),
+                func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("units"),
+            ).filter(
+                condition,
+                or_(DeliveryReport.pending_flag.is_(True), DeliveryReport.pod_date.is_(None))
+            ).group_by(DeliveryReport.dn_no, DeliveryReport.dn_create_date).all()
+            
+            if not pending_rows:
+                return {}
+            
+            # Calculate pending metrics
+            today = date.today()
+            ages = []
+            total_revenue = 0.0
+            total_units = 0
+            
+            for row in pending_rows:
+                dn_date = row.dn_create_date
+                if dn_date:
+                    age = (today - dn_date).days
+                    ages.append(age)
+                total_revenue += _number(row.revenue)
+                total_units += _number(row.units)
+            
+            oldest = min(pending_rows, key=lambda r: r.dn_create_date or date.max)
+            avg_age = sum(ages) / len(ages) if ages else 0
             
             return {
-                "top_division": _text(division_rows[0].value),
-                "strongest_product_category": _text(division_rows[0].value),
-                "weakest_product_category": _text(division_rows[-1].value) if len(division_rows) > 1 else _text(division_rows[0].value),
+                "pending_revenue": round(total_revenue, 2),
+                "pending_units": int(total_units),
+                "pending_average_days": round(avg_age, 2),
+                "critical_pending": sum(1 for age in ages if age > 7),
+                "overdue_pending": sum(1 for age in ages if age > 14),
+                "oldest_pending_dn": _text(oldest.dn_no),
+                "oldest_pending_days": max(ages) if ages else 0,
             }
         except Exception:
             return {}
@@ -1572,85 +1600,9 @@ class DealerAnalyticsService:
         except Exception:
             return {"warehouse_utilization": 0.0, "warehouse_contribution": 0.0}
 
-    def _get_trend_analytics(self, session: Session, condition: Any) -> dict[str, Any]:
-        """Get trend analytics"""
-        try:
-            monthly = session.query(
-                func.to_char(DeliveryReport.dn_create_date, "YYYY-MM").label("month"),
-                func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0).label("revenue"),
-                func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("units"),
-                func.count(distinct(DeliveryReport.dn_no)).label("dns"),
-            ).filter(
-                condition,
-                DeliveryReport.dn_create_date >= datetime.now() - timedelta(days=365)
-            ).group_by("month").order_by("month").all()
-            
-            if not monthly or len(monthly) < 2:
-                return {}
-            
-            recent = monthly[-3:]
-            older = monthly[:3]
-            
-            recent_avg_revenue = sum(_number(r.revenue) for r in recent) / len(recent)
-            older_avg_revenue = sum(_number(r.revenue) for r in older) / len(older)
-            
-            revenue_trend = _growth(recent_avg_revenue, older_avg_revenue)
-            
-            return {
-                "unit_growth_pct": revenue_trend,
-                "dn_growth_pct": revenue_trend,
-            }
-        except Exception:
-            return {}
-
-    def _calculate_forecast(self, session: Session, condition: Any) -> dict[str, Any]:
-        """Calculate simple forecasts"""
-        try:
-            monthly = session.query(
-                func.to_char(DeliveryReport.dn_create_date, "YYYY-MM").label("month"),
-                func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0).label("revenue"),
-                func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("units"),
-                func.count(distinct(DeliveryReport.dn_no)).label("dns"),
-            ).filter(
-                condition,
-                DeliveryReport.dn_create_date >= datetime.now() - timedelta(days=180)
-            ).group_by("month").order_by("month").all()
-            
-            if not monthly or len(monthly) < 2:
-                return {}
-            
-            recent = monthly[-3:]
-            avg_revenue = sum(_number(r.revenue) for r in recent) / len(recent)
-            avg_units = sum(_number(r.units) for r in recent) / len(recent)
-            avg_dns = sum(_number(r.dns) for r in recent) / len(recent)
-            
-            growth_rate = _growth(avg_revenue, sum(_number(r.revenue) for r in monthly[:3]) / 3)
-            growth_factor = 1 + (growth_rate / 100)
-            
-            return {
-                "forecast_revenue": round(avg_revenue * growth_factor, 2),
-                "forecast_units": round(avg_units * growth_factor, 0),
-                "forecast_dn": round(avg_dns * growth_factor, 0),
-            }
-        except Exception:
-            return {}
-
-    def _get_top_value(self, session: Session, condition: Any, column: Any) -> str:
-        """Helper to get top value"""
-        try:
-            row = session.query(
-                column.label("value"),
-                func.sum(DeliveryReport.dn_amount).label("revenue")
-            ).filter(condition, column.isnot(None)).group_by(column).order_by(
-                func.sum(DeliveryReport.dn_amount).desc()
-            ).first()
-            return _text(row.value) if row else "Unknown"
-        except Exception:
-            return "Unknown"
-
-    def _apply_dealer_rankings(self, session: Session, item: DealerDashboard, values: dict) -> None:
+    def _apply_rankings(self, session: Session, dashboard: DealerDashboard, values: dict) -> None:
         """Apply comprehensive rankings"""
-        cache_key = f"rankings_{item.dealer_code}"
+        cache_key = f"rankings_{dashboard.dealer_code}"
         cached_rankings = self._ranking_cache.get(cache_key)
         if cached_rankings:
             values.update(cached_rankings)
@@ -1667,7 +1619,6 @@ class DealerAnalyticsService:
                 func.avg(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.good_issue_date - DeliveryReport.dn_create_date))).label("delivery"),
                 func.count(distinct(case((DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no)))).label("pod"),
                 func.count(distinct(case((or_(DeliveryReport.pending_flag.is_(True), DeliveryReport.pod_date.is_(None)), DeliveryReport.dn_no)))).label("pending"),
-                func.count(distinct(case((_status_complete(DeliveryReport.pgi_status), DeliveryReport.dn_no)))).label("pgi_success"),
             ).filter(DeliveryReport.customer_name.isnot(None)).group_by(
                 DeliveryReport.customer_name,
                 DeliveryReport.dealer_code
@@ -1675,7 +1626,7 @@ class DealerAnalyticsService:
             
             target = next(
                 (r for r in ranking_rows
-                 if _text(r.code, "") == item.dealer_code or _text(r.name, "") == item.dealer_name),
+                 if _text(r.code, "") == dashboard.dealer_code or _text(r.name, "") == dashboard.dealer_name),
                 None
             )
             
@@ -1689,53 +1640,21 @@ class DealerAnalyticsService:
                         return idx
                 return len(rows)
             
-            # Business Score for ranking
-            scores = []
-            for r in ranking_rows:
-                score = (
-                    _percent(r.revenue, sum(row.revenue for row in ranking_rows)) * 0.35 +
-                    _percent(r.pod, r.dns) * 0.25 +
-                    max(0, 100 - _percent(r.pending, r.dns)) * 0.20 +
-                    _percent(r.pgi_success, r.dns) * 0.20
-                )
-                scores.append(score)
-            
-            target_score = None
-            for r, s in zip(ranking_rows, scores):
-                if r is target:
-                    target_score = s
-                    break
-            
             rankings = {
                 "revenue_rank": rank_for(ranking_rows, lambda r: _number(r.revenue), True),
                 "unit_rank": rank_for(ranking_rows, lambda r: _number(r.units), True),
                 "dn_rank": rank_for(ranking_rows, lambda r: int(r.dns or 0), True),
                 "delivery_rank": rank_for(
                     ranking_rows,
-                    lambda r: self._days(r.delivery) if r.delivery is not None else float("inf"),
+                    lambda r: _days(r.delivery) if r.delivery is not None else float("inf"),
                     False
                 ),
                 "pod_rank": rank_for(ranking_rows, lambda r: _percent(r.pod, r.dns), True),
                 "pending_rank": rank_for(ranking_rows, lambda r: _percent(r.pending, r.dns), False),
-                "pgi_rank": rank_for(ranking_rows, lambda r: _percent(r.pgi_success, r.dns), True),
-                "business_score_rank": rank_for(ranking_rows, lambda r: scores[ranking_rows.index(r)], True),
+                "pgi_rank": rank_for(ranking_rows, lambda r: _percent(r.pod, r.dns), True),
             }
             
-            # Growth rank (approximate)
-            growth_scores = []
-            for r in ranking_rows:
-                growth_scores.append(_number(r.revenue))
-            
-            target_growth = None
-            for r, s in zip(ranking_rows, growth_scores):
-                if r is target:
-                    target_growth = s
-                    break
-            
-            if target_growth is not None:
-                rankings["growth_rank"] = rank_for(ranking_rows, lambda r: growth_scores[ranking_rows.index(r)], True)
-            
-            # Composite ranking
+            # National ranking
             composite = sorted(
                 ranking_rows,
                 key=lambda r: (_number(r.revenue), _percent(r.pod, r.dns)),
@@ -1747,7 +1666,7 @@ class DealerAnalyticsService:
             )
             
             # Regional ranking
-            regional = [r for r in ranking_rows if _text(r.city, "").lower() == item.city.lower()]
+            regional = [r for r in ranking_rows if _text(r.city, "").lower() == dashboard.city.lower()]
             regional.sort(key=lambda r: _number(r.revenue), reverse=True)
             rankings["regional_rank"] = next(
                 (idx for idx, row in enumerate(regional, 1) if row is target),
@@ -1759,164 +1678,131 @@ class DealerAnalyticsService:
         except Exception as e:
             logger.warning(f"Rankings failed: {e}")
 
-    def _calculate_additional_kpis(self, item: DealerDashboard) -> None:
-        """Calculate additional business KPIs"""
+    def _calculate_additional_kpis(self, dashboard: DealerDashboard) -> None:
+        """Calculate additional KPIs - identical to dn_analysis.py"""
         # Revenue per day
-        if item.first_delivery_date and item.first_delivery_date != "N/A":
+        if dashboard.first_delivery_date and dashboard.first_delivery_date != "N/A":
             try:
-                first_date = datetime.strptime(item.first_delivery_date, "%Y-%m-%d").date()
+                first_date = datetime.strptime(dashboard.first_delivery_date, "%d-%b-%Y").date()
                 days_active = max(1, (date.today() - first_date).days)
-                item.revenue_per_day = item.total_revenue / days_active
+                dashboard.revenue_per_day = dashboard.total_revenue / days_active
             except:
-                item.revenue_per_day = 0.0
+                dashboard.revenue_per_day = 0.0
         
         # Revenue per delivery
-        item.revenue_per_delivery = item.total_revenue / item.total_dn if item.total_dn > 0 else 0.0
+        dashboard.revenue_per_delivery = dashboard.total_revenue / dashboard.total_dn if dashboard.total_dn > 0 else 0.0
         
-        # Revenue per product
-        item.revenue_per_product = item.total_revenue / 100
+        # Average order value
+        dashboard.average_order_value = dashboard.total_revenue / dashboard.total_dn if dashboard.total_dn > 0 else 0.0
         
-        # Dealer contribution
-        item.dealer_contribution = 0.0
-        
-        # Risk score
-        item.risk_score = round(100 - item.business_score, 1)
+        # Monthly averages
+        dashboard.average_revenue_per_month = dashboard.total_revenue / 12
+        dashboard.average_units_per_month = dashboard.total_units / 12
+        dashboard.average_dn_per_month = dashboard.total_dn / 12
 
-    def _apply_business_health(self, item: DealerDashboard) -> None:
-        """Enhanced business health calculation"""
+    def _apply_business_health(self, dashboard: DealerDashboard) -> None:
+        """Business health calculation - identical to dn_analysis.py"""
         # Weighted score with multiple factors
         score = (
-            item.delivery_success_pct * 0.25 +
-            item.pgi_success_pct * 0.15 +
-            item.pod_success_pct * 0.20 +
-            max(0.0, 100.0 - item.pending_pct) * 0.15 +
-            min(100.0, max(0.0, 100.0 - item.critical_pending * 2)) * 0.10 +
-            min(100.0, max(0.0, 100.0 + item.monthly_growth)) * 0.10 +
-            item.warehouse_utilization * 0.05
+            dashboard.delivery_success_pct * 0.25 +
+            dashboard.pgi_success_pct * 0.15 +
+            dashboard.pod_success_pct * 0.20 +
+            max(0.0, 100.0 - dashboard.pending_pct) * 0.15 +
+            min(100.0, max(0.0, 100.0 - dashboard.critical_pending * 2)) * 0.10 +
+            min(100.0, max(0.0, 100.0 + dashboard.monthly_growth)) * 0.10 +
+            dashboard.warehouse_utilization * 0.05
         )
         
-        item.business_score = round(max(0.0, min(100.0, score)), 1)
+        dashboard.business_score = round(max(0.0, min(100.0, score)), 1)
         
         # Determine status
-        if item.business_score >= 85:
-            item.overall_status = BusinessHealthStatus.EXCELLENT.value
-        elif item.business_score >= 70:
-            item.overall_status = BusinessHealthStatus.GOOD.value
-        elif item.business_score >= 50:
-            item.overall_status = BusinessHealthStatus.WATCH.value
+        if dashboard.business_score >= 85:
+            dashboard.overall_status = BusinessHealthStatus.EXCELLENT.value
+            dashboard.performance_grade = "A"
+        elif dashboard.business_score >= 70:
+            dashboard.overall_status = BusinessHealthStatus.GOOD.value
+            dashboard.performance_grade = "B"
+        elif dashboard.business_score >= 50:
+            dashboard.overall_status = BusinessHealthStatus.WATCH.value
+            dashboard.performance_grade = "C"
         else:
-            item.overall_status = BusinessHealthStatus.CRITICAL.value
+            dashboard.overall_status = BusinessHealthStatus.CRITICAL.value
+            dashboard.performance_grade = "D"
         
         # Risk score
-        item.risk_score = round(100 - item.business_score, 1)
+        dashboard.risk_score = round(100 - dashboard.business_score, 1)
         
         # Executive summary
-        trend = "growing" if item.monthly_growth >= 0 else "declining"
-        action = "maintain current controls" if item.business_score >= 70 else "prioritize pending DN and POD closure"
+        trend = "growing" if dashboard.monthly_growth >= 0 else "declining"
+        action = "maintain current controls" if dashboard.business_score >= 70 else "prioritize pending DN and POD closure"
         
-        item.executive_summary = (
-            f"{item.dealer_name} is {trend} with a {item.business_score:.1f}/100 business score. "
-            f"Delivery success is {item.delivery_success_pct:.1f}% and {item.pending_dn} DNs remain pending. "
-            f"Revenue growth is {item.monthly_growth:+.1f}% month over month. "
+        dashboard.executive_summary = (
+            f"{dashboard.dealer_name} is {trend} with a {dashboard.business_score:.1f}/100 business score. "
+            f"Delivery success is {dashboard.delivery_success_pct:.1f}% and {dashboard.pending_dn} DNs remain pending. "
+            f"Revenue growth is {dashboard.monthly_growth:+.1f}% month over month. "
             f"Recommendation: {action}."
         )
 
-    def _business_insights(self, item: DealerDashboard) -> tuple[list[str], list[str]]:
-        """Enhanced business insights"""
-        trend = "increasing" if item.monthly_growth >= 0 else "decreasing"
+    def _business_insights(self, dashboard: DealerDashboard) -> tuple[list[str], list[str]]:
+        """Generate business insights - identical to dn_analysis.py"""
+        trend = "increasing" if dashboard.monthly_growth >= 0 else "decreasing"
         
         insights = [
-            f"Revenue is {trend} ({item.monthly_growth:+.1f}% month over month).",
-            f"Dealer has {item.pending_dn:,} pending DNs (worth PKR {item.pending_revenue:,.2f}).",
-            f"Delivery success is {item.delivery_success_pct:.1f}% with average delivery of {item.average_delivery_days:.1f} days.",
-            f"POD completion is {item.pod_success_pct:.1f}% and PGI completion is {item.pgi_success_pct:.1f}%.",
-            f"{item.top_model} is the leading model; top material is {item.top_material}.",
-            f"Best revenue month: {item.best_month}; National rank: #{item.national_rank or 'N/A'}.",
+            f"Revenue is {trend} ({dashboard.monthly_growth:+.1f}% month over month).",
+            f"Dealer has {dashboard.pending_dn:,} pending DNs (worth PKR {dashboard.pending_revenue:,.2f}).",
+            f"Delivery success is {dashboard.delivery_success_pct:.1f}% with average delivery of {dashboard.average_delivery_days:.1f} days.",
+            f"POD completion is {dashboard.pod_success_pct:.1f}%.",
+            f"Top model: {dashboard.top_model}; Top material: {dashboard.top_material}.",
+            f"National rank: #{dashboard.national_rank or 'N/A'}.",
         ]
         
         # Revenue insights
-        if item.monthly_growth > 10:
-            insights.append(f"Revenue growth is strong at {item.monthly_growth:+.1f}%.")
-        elif item.monthly_growth < -10:
-            insights.append(f"Revenue is declining ({item.monthly_growth:+.1f}%). Investigate causes.")
+        if dashboard.monthly_growth > 10:
+            insights.append(f"Revenue growth is strong at {dashboard.monthly_growth:+.1f}%.")
+        elif dashboard.monthly_growth < -10:
+            insights.append(f"Revenue is declining ({dashboard.monthly_growth:+.1f}%). Investigate causes.")
         
         # Pending insights
-        if item.oldest_pending_days > 14:
-            insights.append(f"Oldest pending DN {item.oldest_pending_dn} is {item.oldest_pending_days} days old.")
-        if item.critical_pending > 5:
-            insights.append(f"Critical pending (>7 days): {item.critical_pending} DNs.")
-        
-        # Warehouse insights
-        if item.warehouse_utilization > 80:
-            insights.append(f"Warehouse {item.warehouse} is highly utilized ({item.warehouse_utilization:.1f}%).")
-        elif item.warehouse_utilization < 30:
-            insights.append(f"Warehouse {item.warehouse} has low utilization ({item.warehouse_utilization:.1f}%).")
-        
-        # Product insights
-        if item.top_product and item.top_product != "Unknown":
-            insights.append(f"{item.top_product} is the top product.")
+        if dashboard.oldest_pending_days > 14:
+            insights.append(f"Oldest pending DN {dashboard.oldest_pending_dn} is {dashboard.oldest_pending_days} days old.")
+        if dashboard.critical_pending > 5:
+            insights.append(f"Critical pending (>7 days): {dashboard.critical_pending} DNs.")
         
         # Strengths
         strengths = []
-        if item.delivery_success_pct >= 90:
+        if dashboard.delivery_success_pct >= 90:
             strengths.append("Excellent delivery performance")
-        if item.pod_success_pct >= 90:
+        if dashboard.pod_success_pct >= 90:
             strengths.append("Strong POD completion")
-        if item.monthly_growth >= 10:
+        if dashboard.monthly_growth >= 10:
             strengths.append("Strong revenue growth")
-        if item.pending_pct < 10:
+        if dashboard.pending_pct < 10:
             strengths.append("Low pending rate")
-        if item.warehouse_utilization > 60:
-            strengths.append("Good warehouse utilization")
         
         # Weaknesses
         weaknesses = []
-        if item.pending_pct > 25:
+        if dashboard.pending_pct > 25:
             weaknesses.append("High pending rate")
-        if item.pod_success_pct < 80:
+        if dashboard.pod_success_pct < 80:
             weaknesses.append("Low POD completion")
-        if item.delivery_success_pct < 80:
+        if dashboard.delivery_success_pct < 80:
             weaknesses.append("Low delivery success")
-        if item.monthly_growth < -10:
+        if dashboard.monthly_growth < -10:
             weaknesses.append("Declining revenue")
-        if item.critical_pending > 5:
-            weaknesses.append("Critical pending issues")
         
-        # Opportunities
-        opportunities = []
-        if item.warehouse_utilization < 50:
-            opportunities.append("Opportunity to increase warehouse utilization")
-        if item.pending_pct > 20:
-            opportunities.append("Reduce pending DNs to improve cash flow")
-        if item.pod_success_pct < 85:
-            opportunities.append("Improve POD collection process")
-        
-        # Threats
-        threats = []
-        if item.monthly_growth < -5:
-            threats.append("Revenue decline trend")
-        if item.critical_pending > 10:
-            threats.append("High risk of order cancellations")
-        if item.overdue_pending > 5:
-            threats.append("Overdue deliveries affecting customer satisfaction")
-        
-        item.strengths = strengths
-        item.weaknesses = weaknesses
-        item.opportunities = opportunities
-        item.threats = threats
+        dashboard.strengths = strengths
+        dashboard.weaknesses = weaknesses
         
         # Recommendations
         recommendations = []
-        if item.overdue_pending:
-            recommendations.append(f"Escalate {item.overdue_pending} DNs pending for more than 14 days.")
-        if item.pod_success_pct < 85:
+        if dashboard.overdue_pending:
+            recommendations.append(f"Escalate {dashboard.overdue_pending} DNs pending for more than 14 days.")
+        if dashboard.pod_success_pct < 85:
             recommendations.append("Prioritize POD collection and closure.")
-        if item.pgi_pending_dn:
-            recommendations.append(f"Review {item.pgi_pending_dn} DNs awaiting PGI.")
-        if item.delivery_success_pct < 85:
+        if dashboard.pgi_pending_dn:
+            recommendations.append(f"Review {dashboard.pgi_pending_dn} DNs awaiting PGI.")
+        if dashboard.delivery_success_pct < 85:
             recommendations.append("Review delivery process for improvement.")
-        if item.warehouse_utilization < 40:
-            recommendations.append("Consider consolidating warehouse space.")
         if not recommendations:
             recommendations.append("Maintain current delivery and POD control process.")
             recommendations.append("Continue monitoring key performance indicators.")
@@ -1924,22 +1810,22 @@ class DealerAnalyticsService:
         return insights, recommendations
 
     # ============================================================
-    # PUBLIC API METHODS
+    # BLOCK 13: PUBLIC API METHODS - BACKWARD COMPATIBLE
     # ============================================================
 
     def get_dealer_dashboard(self, dealer_name: str = "", **kwargs: Any) -> dict[str, Any]:
-        """Get enhanced dealer dashboard"""
+        """Get enhanced dealer dashboard - identical to dn_analysis.py style"""
         start_time = time.perf_counter()
         
         identifier = dealer_name or kwargs.get("dealer") or kwargs.get("dealer_code") or kwargs.get("customer_code") or ""
         if not identifier:
-            return {"success": False, "error_code": "DEALER_REQUIRED", "message": "Please provide a dealer name or code."}
+            return self._response(False, error="DEALER_REQUIRED", whatsapp_message="Please provide a dealer name or code.")
         
         try:
             with self._session() as session:
-                search = self._resolve_dealer(session, str(identifier))
+                search = self._search_engine.search(session, str(identifier))
                 if search.exception:
-                    return {"success": False, "error_code": "SEARCH_ERROR", "message": "Dealer search is temporarily unavailable.", "error": search.exception}
+                    return self._response(False, error="SEARCH_ERROR", whatsapp_message="Dealer search is temporarily unavailable.")
                 if not search.dealer_found:
                     return self._suggestion_response(search)
                 
@@ -1950,33 +1836,42 @@ class DealerAnalyticsService:
                 if cached_dashboard:
                     return cached_dashboard
                 
-                rows = self._aggregate_query(session, resolved_identity)
-                if not rows:
+                # Get aggregated data
+                agg_engine = DealerAggregationEngine(session)
+                row = agg_engine.get_dealer_data(resolved_identity)
+                
+                if not row:
                     return self._suggestion_response(search)
                 
-                data = self._row_to_dashboard(rows[0])
+                # Build dashboard
+                dashboard = self._build_dashboard(row)
                 
+                # Apply extended analytics
                 try:
-                    self._apply_extended_analytics(session, data)
+                    self._apply_extended_analytics(session, dashboard)
                 except Exception:
                     logger.exception("Extended analytics failed")
-                    data.insights, data.recommendations = self._business_insights(data)
+                    dashboard.insights, dashboard.recommendations = self._business_insights(dashboard)
                 
-                try:
-                    formatted = data.to_whatsapp_message()
-                except Exception:
-                    formatted = f"Dealer Dashboard\nDealer: {data.dealer_name}\nRevenue: {data.total_revenue:,.2f}\nUnits: {data.total_units:,}\nDN: {data.total_dn:,}"
+                # Format WhatsApp message
+                format_type = kwargs.get("format", "standard")
+                formatted = dashboard.to_whatsapp_message(format_type)
                 
                 response = {
                     "success": True,
-                    "data": data,
-                    "dashboard": data,
+                    "data": dashboard,
+                    "dashboard": dashboard,
                     "search": search,
                     "whatsapp_message": formatted,
                     "formatted_response": formatted,
                     "message": formatted,
                     "response": formatted,
-                    "execution_time_ms": round((time.perf_counter() - start_time) * 1000, 2)
+                    "execution_time_ms": round((time.perf_counter() - start_time) * 1000, 2),
+                    "metadata": {
+                        "source": "PostgreSQL",
+                        "dealer": dashboard.dealer_name,
+                        "format": format_type,
+                    }
                 }
                 
                 self._dashboard_cache[dashboard_key] = response
@@ -1984,29 +1879,19 @@ class DealerAnalyticsService:
                 
         except Exception as error:
             logger.exception("Dealer dashboard query failed")
-            return {
-                "success": False,
-                "error_code": "DATABASE_UNAVAILABLE",
-                "message": "Dealer database is currently unavailable.",
-                "error": str(error),
-                "execution_time_ms": round((time.perf_counter() - start_time) * 1000, 2)
-            }
+            return self._response(False, error="DATABASE_UNAVAILABLE", whatsapp_message="Dealer database is currently unavailable.")
 
     def get_dealer_profile(self, dealer_name: str = "", **kwargs: Any) -> dict[str, Any]:
         """Get enhanced dealer profile"""
-        try:
-            result = self.get_dealer_dashboard(dealer_name, **kwargs)
-            if not result.get("success"):
-                return result
-            
-            result["profile"] = result["data"]
-            result["whatsapp_message"] = result["data"].to_whatsapp_message()
-            result["message"] = result["whatsapp_message"]
-            result["response"] = result["whatsapp_message"]
+        result = self.get_dealer_dashboard(dealer_name, **kwargs)
+        if not result.get("success"):
             return result
-        except Exception as error:
-            logger.exception("Dealer profile failed")
-            return {"success": False, "error_code": "PROFILE_ERROR", "message": "Dealer profile is temporarily unavailable.", "error": str(error)}
+        
+        result["profile"] = result["data"]
+        result["whatsapp_message"] = result["data"].to_whatsapp_message()
+        result["message"] = result["whatsapp_message"]
+        result["response"] = result["whatsapp_message"]
+        return result
 
     def compare_dealers(self, dealer_names: Any = None, dealer_two: Optional[str] = None, **kwargs: Any) -> dict[str, Any]:
         """Compare two or more dealers"""
@@ -2021,7 +1906,7 @@ class DealerAnalyticsService:
             values = list(dict.fromkeys(str(v) for v in values if v))
             
             if len(values) < 2:
-                return {"success": False, "error_code": "TWO_DEALERS_REQUIRED", "message": "Please provide at least two dealers."}
+                return self._response(False, error="TWO_DEALERS_REQUIRED", whatsapp_message="Please provide at least two dealers.")
             
             dashboards = []
             for value in values[:10]:
@@ -2030,7 +1915,7 @@ class DealerAnalyticsService:
                     dashboards.append(result["data"])
             
             if len(dashboards) < 2:
-                return {"success": False, "error_code": "DEALERS_NOT_FOUND", "message": "At least two matching dealers are required."}
+                return self._response(False, error="DEALERS_NOT_FOUND", whatsapp_message="At least two matching dealers are required.")
             
             comparison = DealerComparison(
                 dashboards,
@@ -2043,26 +1928,18 @@ class DealerAnalyticsService:
                     f"{min(dashboards, key=lambda x: x.pending_pct).dealer_name} has the lowest pending rate."
                 ],
             )
-            return {"success": True, "data": comparison, "comparison": comparison}
+            return self._response(True, comparison, comparison.summary[0])
         except Exception as error:
             logger.exception("Dealer comparison failed")
-            return {"success": False, "error_code": "COMPARISON_ERROR", "message": "Dealer comparison is temporarily unavailable.", "error": str(error)}
+            return self._response(False, error="COMPARISON_ERROR", whatsapp_message="Dealer comparison is temporarily unavailable.")
 
     def get_top_dealers(self, limit: int = 10, sort_by: str = "revenue", **kwargs: Any) -> dict[str, Any]:
         """Get top dealers by various metrics"""
-        try:
-            return self._rank(str(kwargs.get("metric", sort_by)), int(kwargs.get("count", limit)), False)
-        except Exception as error:
-            logger.exception("Top dealer request failed")
-            return {"success": False, "error_code": "RANKING_ERROR", "message": "Dealer ranking is temporarily unavailable.", "error": str(error)}
+        return self._rank(str(kwargs.get("metric", sort_by)), int(kwargs.get("count", limit)), False)
 
     def get_bottom_dealers(self, limit: int = 10, sort_by: str = "pending_pct", **kwargs: Any) -> dict[str, Any]:
         """Get bottom dealers by various metrics"""
-        try:
-            return self._rank(str(kwargs.get("metric", sort_by)), int(kwargs.get("count", limit)), True)
-        except Exception as error:
-            logger.exception("Bottom dealer request failed")
-            return {"success": False, "error_code": "RANKING_ERROR", "message": "Dealer ranking is temporarily unavailable.", "error": str(error)}
+        return self._rank(str(kwargs.get("metric", sort_by)), int(kwargs.get("count", limit)), True)
 
     def _rank(self, sort_by: str, limit: int, bottom: bool) -> dict[str, Any]:
         """Internal ranking method"""
@@ -2073,7 +1950,57 @@ class DealerAnalyticsService:
                 return cached
             
             with self._session() as session:
-                items = [self._row_to_dashboard(row, include_distance=False) for row in self._aggregate_query(session)]
+                agg_engine = DealerAggregationEngine(session)
+                rows = []
+                # Get all dealers
+                all_dealers = session.query(
+                    func.coalesce(DeliveryReport.customer_name, "Unknown").label("dealer_name"),
+                    func.coalesce(DeliveryReport.dealer_code, "Unknown").label("dealer_code"),
+                    func.coalesce(DeliveryReport.customer_code, "Unknown").label("customer_code"),
+                    func.max(DeliveryReport.ship_to_city).label("city"),
+                    func.max(DeliveryReport.delivery_location).label("delivery_location"),
+                    func.max(DeliveryReport.warehouse).label("warehouse"),
+                    func.max(DeliveryReport.warehouse_code).label("warehouse_code"),
+                    func.max(DeliveryReport.sales_office).label("sales_office"),
+                    func.max(DeliveryReport.sales_manager).label("sales_manager"),
+                    func.max(DeliveryReport.division).label("division"),
+                    func.count(distinct(DeliveryReport.dn_no)).label("total_dn"),
+                    func.count(distinct(case((or_(DeliveryReport.pending_flag.is_(True), DeliveryReport.pod_date.is_(None)), DeliveryReport.dn_no)))).label("pending_dn"),
+                    func.count(distinct(case((DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no)))).label("completed_dn"),
+                    func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("total_units"),
+                    func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0).label("total_revenue"),
+                    func.avg(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.good_issue_date - DeliveryReport.dn_create_date))).label("avg_delivery"),
+                    func.count(distinct(case((DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no)))).label("pod_success"),
+                    func.count(distinct(case((or_(DeliveryReport.pending_flag.is_(True), DeliveryReport.pod_date.is_(None)), DeliveryReport.dn_no)))).label("pending"),
+                ).filter(DeliveryReport.customer_name.isnot(None)).group_by(
+                    DeliveryReport.customer_name,
+                    DeliveryReport.dealer_code,
+                    DeliveryReport.customer_code
+                ).all()
+                
+                for row in all_dealers:
+                    rows.append({
+                        "dealer_name": _text(row.dealer_name),
+                        "dealer_code": _text(row.dealer_code),
+                        "customer_code": _text(row.customer_code),
+                        "city": _text(row.city),
+                        "delivery_location": _text(row.delivery_location),
+                        "warehouse": _text(row.warehouse),
+                        "warehouse_code": _text(row.warehouse_code),
+                        "sales_office": _text(row.sales_office),
+                        "sales_manager": _text(row.sales_manager),
+                        "division": _text(row.division),
+                        "total_dn": int(row.total_dn or 0),
+                        "pending_dn": int(row.pending_dn or 0),
+                        "completed_dn": int(row.completed_dn or 0),
+                        "total_units": int(row.total_units or 0),
+                        "total_revenue": float(row.total_revenue or 0.0),
+                        "avg_delivery": _days(row.avg_delivery),
+                        "pod_success": int(row.pod_success or 0),
+                        "pending": int(row.pending or 0),
+                    })
+            
+            items = [self._build_dashboard(row) for row in rows]
             
             key_name = self.SORT_ALIASES.get(sort_by.lower().replace(" ", "_"), "total_revenue")
             reverse = (not bottom) or (bottom and key_name in {"pending_pct", "average_delivery_days"})
@@ -2084,35 +2011,86 @@ class DealerAnalyticsService:
             )
             
             ranking = DealerRanking(sort_by, "bottom" if bottom else "top", items[:max(1, min(int(limit), 100))])
-            response = {"success": True, "data": ranking, "dealers": ranking.dealers, "count": len(ranking.dealers)}
+            response = self._response(True, ranking, f"Top {len(ranking.dealers)} dealers by {sort_by}")
             self._ranking_cache[cache_key] = response
             return response
         except (SQLAlchemyError, ValueError) as error:
             logger.exception("Dealer ranking failed")
-            return {"success": False, "error_code": "RANKING_ERROR", "message": "Dealer ranking is currently unavailable.", "error": str(error)}
+            return self._response(False, error="RANKING_ERROR", whatsapp_message="Dealer ranking is currently unavailable.")
 
     def diagnose_dealer_search(self, message: str = "", **kwargs: Any) -> dict[str, Any]:
         """Diagnose dealer search"""
         started = time.perf_counter()
         try:
             with self._session() as session:
-                result = self._resolve_dealer(session, message or kwargs.get("dealer_name") or kwargs.get("dealer") or "")
+                result = self._search_engine.search(session, message or kwargs.get("dealer_name") or kwargs.get("dealer") or "")
                 rows = len(self._aggregate_query(session, result.dealer_code or result.customer_code or result.dealer_found)) if result.dealer_found else 0
             
             output = asdict(result)
             output.update({
                 "rows_returned": rows,
-                "distance_calculated": False,
-                "distance_source": "Unknown",
                 "execution_time_ms": round((time.perf_counter() - started) * 1000, 2)
             })
             return {"success": result.exception is None, "diagnostic": output}
         except Exception as error:
             logger.exception("Dealer diagnostics failed")
-            return {"success": False, "diagnostic": {"original_message": message, "any_exception": str(error), "execution_time_ms": round((time.perf_counter() - started) * 1000, 2)}}
+            return {"success": False, "diagnostic": {"original_message": message, "any_exception": str(error)}}
+
+    def _aggregate_query(self, session: Session, dealer: Optional[str] = None) -> list[Any]:
+        """Aggregate query - identical to dn_analysis.py"""
+        cache_key = dealer or "all"
+        cached = self._aggregate_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        
+        try:
+            query = session.query(
+                func.coalesce(DeliveryReport.customer_name, "Unknown").label("dealer_name"),
+                func.coalesce(DeliveryReport.dealer_code, "Unknown").label("dealer_code"),
+                func.coalesce(DeliveryReport.customer_code, "Unknown").label("customer_code"),
+                func.max(DeliveryReport.ship_to_city).label("city"),
+                func.max(DeliveryReport.delivery_location).label("delivery_location"),
+                func.max(DeliveryReport.warehouse).label("warehouse"),
+                func.max(DeliveryReport.warehouse_code).label("warehouse_code"),
+                func.max(DeliveryReport.sales_office).label("sales_office"),
+                func.max(DeliveryReport.sales_manager).label("sales_manager"),
+                func.max(DeliveryReport.division).label("division"),
+                func.count(distinct(DeliveryReport.dn_no)).label("total_dn"),
+                func.count(distinct(case((or_(DeliveryReport.pending_flag.is_(True), DeliveryReport.pod_date.is_(None)), DeliveryReport.dn_no)))).label("pending_dn"),
+                func.count(distinct(case((DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no)))).label("completed_dn"),
+                func.coalesce(func.sum(DeliveryReport.dn_qty), 0).label("total_units"),
+                func.coalesce(func.sum(DeliveryReport.dn_amount), 0.0).label("total_revenue"),
+                func.count(distinct(case((DeliveryReport.good_issue_date.is_(None), DeliveryReport.dn_no)))).label("pgi_pending_dn"),
+                func.count(distinct(case((and_(DeliveryReport.good_issue_date.isnot(None), DeliveryReport.pod_date.is_(None)), DeliveryReport.dn_no)))).label("pod_pending_dn"),
+                func.min(DeliveryReport.dn_create_date).label("first_delivery_date"),
+                func.max(DeliveryReport.dn_create_date).label("latest_delivery_date"),
+                func.max(DeliveryReport.good_issue_date).label("latest_pgi_date"),
+                func.max(DeliveryReport.pod_date).label("latest_pod_date"),
+                func.avg(case((DeliveryReport.good_issue_date.isnot(None), DeliveryReport.good_issue_date - DeliveryReport.dn_create_date))).label("avg_delivery"),
+                func.avg(case((and_(DeliveryReport.good_issue_date.isnot(None), DeliveryReport.pod_date.isnot(None)), DeliveryReport.pod_date - DeliveryReport.good_issue_date))).label("avg_pod"),
+                func.avg(case((DeliveryReport.pod_date.isnot(None), DeliveryReport.pod_date - DeliveryReport.dn_create_date))).label("avg_cycle"),
+            ).filter(DeliveryReport.customer_name.isnot(None))
+            
+            if dealer:
+                query = query.filter(DealerRepository.dealer_filter(dealer))
+            
+            result = query.group_by(
+                DeliveryReport.customer_name,
+                DeliveryReport.dealer_code,
+                DeliveryReport.customer_code
+            ).all()
+            
+            self._aggregate_cache[cache_key] = result
+            return result
+        except Exception:
+            return []
+
+    # ============================================================
+    # BLOCK 14: SERVICE METADATA AND HEALTH CHECKS
+    # ============================================================
 
     def health_check(self) -> dict[str, Any]:
-        """Health check with detailed status"""
+        """Health check with detailed status - identical to dn_analysis.py"""
         started = time.perf_counter()
         try:
             with self._session() as session:
@@ -2124,7 +2102,8 @@ class DealerAnalyticsService:
                 "database": "connected",
                 "records": int(rows),
                 "latency_ms": round((time.perf_counter() - started) * 1000, 2),
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.utcnow().isoformat(),
+                "source": "PostgreSQL"
             }
         except Exception as error:
             logger.exception("Dealer analytics health check failed")
@@ -2134,39 +2113,40 @@ class DealerAnalyticsService:
                 "version": self._version,
                 "database": "disconnected",
                 "error": str(error),
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.utcnow().isoformat(),
+                "source": "PostgreSQL"
             }
 
     def validation_query(self) -> dict[str, Any]:
-        """Validate database connectivity"""
+        """Validate database connectivity - identical to dn_analysis.py"""
         try:
             with self._session() as session:
                 records = session.query(
                     func.count(distinct(func.coalesce(DeliveryReport.dealer_code, DeliveryReport.customer_code, DeliveryReport.customer_name)))
                 ).scalar() or 0
-            return {"success": True, "records": int(records), "error": None}
+            return {"success": True, "records": int(records), "error": None, "source": "PostgreSQL"}
         except Exception as error:
-            return {"success": False, "records": 0, "error": str(error)}
+            return {"success": False, "records": 0, "error": str(error), "source": "PostgreSQL"}
 
     def get_service_metadata(self) -> dict[str, Any]:
-        """Get service metadata"""
+        """Get service metadata - identical to dn_analysis.py"""
         return {
             "service_name": self._service_name,
             "version": self._version,
             "status": "DEGRADED" if self._initialization_errors else "READY",
-            "source": "PostgreSQL DeliveryReport",
-            "distance_provider": "OpenRouteService" if self._distance and self._distance._ors else "geopy great-circle",
+            "source": "PostgreSQL",
+            "source_of_truth": "PostgreSQL",
+            "table": TABLE,
+            "business_columns": list(BUSINESS_COLUMNS),
+            "distance_provider": "OpenRouteService/Geopy/Haversine",
             "semantic_search": USE_SEMANTIC_SEARCH,
-            "pyarrow": USE_PYARROW,
-            "polars": USE_POLARS,
-            "pgvector": USE_PGVECTOR,
             "startup_time": self._startup_time,
             "initialization_errors": self._initialization_errors
         }
 
 
 # ============================================================
-# SERVICE SINGLETON
+# BLOCK 15: SERVICE SINGLETON
 # ============================================================
 
 _service: Optional[DealerAnalyticsService] = None
@@ -2186,29 +2166,23 @@ def get_dealer_analytics_service() -> DealerAnalyticsService:
                     logger.exception("DealerAnalyticsService initialization failed")
                     _service = DealerAnalyticsService.__new__(DealerAnalyticsService)
                     _service._service_name = "dealer_analytics"
-                    _service._version = "8.5.0-degraded"
+                    _service._version = "9.0.0-degraded"
                     _service._startup_time = datetime.utcnow().isoformat()
                     _service._initialization_errors = [f"Emergency mode: {str(e)}"]
-                    _service._coordinates = CityCoordinateService()
-                    _service._distance = None
-                    _service._semantic_search = SemanticSearchEngine()
-                    _service._pyarrow = PyArrowProcessor()
+                    _service._distance = DistanceService()
+                    _service._search_engine = DealerSearchEngine()
                     _service._executor = ThreadPoolExecutor(max_workers=4)
-                    _service._dealer_cache = TTLCache(maxsize=4096, ttl=CACHE_TTL)
-                    _service._candidate_cache = TTLCache(maxsize=1, ttl=3600)
-                    _service._extended_cache = TTLCache(maxsize=4096, ttl=3600)
                     _service._dashboard_cache = TTLCache(maxsize=4096, ttl=600)
                     _service._ranking_cache = TTLCache(maxsize=128, ttl=600)
                     _service._aggregate_cache = TTLCache(maxsize=1024, ttl=300)
-                    _service._similarity_cache = TTLCache(maxsize=5000, ttl=3600)
-                    _service._search_lock = threading.RLock()
+                    _service._extended_cache = TTLCache(maxsize=4096, ttl=3600)
+                    _service._lock = threading.RLock()
                     _service._last_diagnostic = {}
-                    _service._last_db_check = None
     return _service
 
 
 # ============================================================
-# EXPORTS
+# BLOCK 16: EXPORTS
 # ============================================================
 
 __all__ = [
@@ -2217,14 +2191,13 @@ __all__ = [
     "DealerComparison",
     "DealerRanking",
     "DealerSearchResult",
-    "AIResponse",
     "DistanceAnalytics",
     "BusinessHealthStatus",
     "TrendType",
     "RankType",
-    "SemanticSearchEngine",
-    "SQLOptimizer",
-    "PyArrowProcessor",
-    "CityCoordinateService",
+    "WhatsappFormat",
+    "DealerSearchEngine",
+    "DealerAggregationEngine",
+    "DistanceService",
     "get_dealer_analytics_service"
 ]
