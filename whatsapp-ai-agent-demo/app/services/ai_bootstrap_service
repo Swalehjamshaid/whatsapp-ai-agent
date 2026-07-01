@@ -1,7 +1,8 @@
-"""Process-wide, lazy AI resource bootstrap for analytics services.
-   
-   CRITICAL FIX: Models are loaded ONCE at startup and CACHED forever.
-   No model loading happens during user queries after warmup.
+"""
+Process-wide, lazy AI resource bootstrap for analytics services.
+
+CRITICAL FIX: Models are loaded ONCE at startup and CACHED forever.
+No model loading happens during user queries after warmup.
 """
 
 from __future__ import annotations
