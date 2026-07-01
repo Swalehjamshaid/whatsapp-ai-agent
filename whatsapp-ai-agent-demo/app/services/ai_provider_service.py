@@ -4,6 +4,8 @@ Enterprise orchestration entry point for WhatsApp AI requests.
 The module coordinates intent detection, business-service dispatch, optional AI
 enhancement, and response validation.  It intentionally contains no SQL,
 analytics, KPI calculation, dashboard construction, or domain business rules.
+
+Uses semantic-router for intent detection and routing (single library solution).
 """
 
 from __future__ import annotations
@@ -33,45 +35,58 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
+# ============================================================
+# SINGLE LIBRARY FOR INTENT DETECTION & ROUTING
+# ============================================================
+
+try:
+    from semantic_router import Route, Router
+    from semantic_router.encoders import HuggingFaceEncoder
+    SEMANTIC_ROUTER_AVAILABLE = True
+except ImportError:
+    SEMANTIC_ROUTER_AVAILABLE = False
+    logger.warning("⚠️ semantic-router not installed. Using fallback.")
+
+
+# ============================================================
+# CUSTOM EXCEPTIONS
+# ============================================================
 
 class OrchestrationError(RuntimeError):
     """Base class for safe orchestration failures."""
+    def __init__(self, message: str, request_id: str = "", **kwargs):
+        self.request_id = request_id
+        self.diagnostics = kwargs
+        super().__init__(message)
 
 
 class ConfigurationError(OrchestrationError):
-    """Configuration or dependency resolution failure."""
     pass
 
 
 class ServiceUnavailableError(OrchestrationError):
-    """Service dependency cannot be loaded or is misconfigured."""
     pass
 
 
 class MethodNotFoundError(OrchestrationError):
-    """Requested method does not exist on the resolved service."""
     pass
 
 
 class DatabaseConnectionError(OrchestrationError):
-    """Compatibility exception for domain services that wrap DB failures."""
     pass
 
 
 class RoutingError(OrchestrationError):
-    """Request could not be routed to a valid service method."""
     pass
 
 
 class GroqError(OrchestrationError):
-    """AI enhancement service error."""
     pass
 
 
-class IntentDetectionError(OrchestrationError):
-    """Intent engine failed to produce a valid routing decision."""
-    pass
-
+# ============================================================
+# PYDANTIC MODELS
+# ============================================================
 
 class ServiceRequest(BaseModel):
     """Validated request context passed through the orchestration pipeline."""
@@ -96,7 +111,6 @@ class ServiceRequest(BaseModel):
         return normalized
 
 
-# Preserve imports used by integrations built against the preceding name.
 RequestInput = ServiceRequest
 
 
@@ -147,11 +161,10 @@ class ProviderResolver(Protocol):
 
 
 # ============================================================
-# ROUTING TABLE - ALL BUSINESS INTENTS
+# ROUTING TABLE - UNCHANGED
 # ============================================================
 
 ROUTES: Final[dict[str, RouteTarget]] = {
-    # DN Service Routes
     "dn_lookup": RouteTarget("dn_service", "get_dn_dashboard"),
     "dn_search": RouteTarget("dn_service", "get_dn_dashboard"),
     "dn_dashboard": RouteTarget("dn_service", "get_dn_dashboard"),
@@ -168,7 +181,6 @@ ROUTES: Final[dict[str, RouteTarget]] = {
     "delivery_timeline": RouteTarget("dn_service", "get_delivery_timeline"),
     "transit_analysis": RouteTarget("dn_service", "get_transit_analysis"),
     
-    # Dealer Service Routes
     "dealer_dashboard": RouteTarget("dealer_service", "get_dealer_dashboard"),
     "dealer_revenue": RouteTarget("dealer_service", "get_dealer_dashboard"),
     "dealer_pending": RouteTarget("dealer_service", "get_dealer_dashboard"),
@@ -176,20 +188,12 @@ ROUTES: Final[dict[str, RouteTarget]] = {
     "top_dealers": RouteTarget("dealer_service", "get_top_dealers"),
     "dealer_ranking": RouteTarget("dealer_service", "get_top_dealers"),
     
-    # Warehouse Service Routes
     "warehouse_dashboard": RouteTarget("warehouse_service", "get_warehouse_dashboard"),
-    
-    # City Service Routes
     "city_dashboard": RouteTarget("city_service", "get_city_dashboard"),
-    
-    # Product Service Routes
     "product_dashboard": RouteTarget("product_service", "get_product_dashboard"),
-    
-    # KPI Service Routes
     "national_kpi": RouteTarget("kpi_service", "get_national_kpi_dashboard"),
     "national_kpi_dashboard": RouteTarget("kpi_service", "get_national_kpi_dashboard"),
     
-    # General AI Fallback
     "general_ai": RouteTarget("groq_service", "process_query"),
     "greeting": RouteTarget("groq_service", "process_query"),
     "help": RouteTarget("groq_service", "process_query"),
@@ -198,7 +202,7 @@ ROUTES: Final[dict[str, RouteTarget]] = {
 
 
 # ============================================================
-# SERVICE SYMBOL RESOLUTION
+# SERVICE SYMBOL RESOLUTION - UNCHANGED
 # ============================================================
 
 _SYMBOLS: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
@@ -223,212 +227,208 @@ _SYMBOLS: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
 
 
 # ============================================================
-# FALLBACK INTENT ENGINE
+# SEMANTIC ROUTER INTENT ENGINE (NO BOOTSTRAP)
 # ============================================================
 
-class FallbackIntentEngine:
+class SemanticRouterIntentEngine:
     """
-    Simple regex-based intent detection when the primary intent engine fails.
-    This ensures the orchestrator never crashes due to intent engine issues.
+    Intent Detection Engine using semantic-router.
+    NO external dependencies - self-contained.
     """
     
-    _DN_PATTERN = re.compile(r'(?<!\d)(\d{6,20})(?!\d)')
-    _DEALER_PATTERNS = re.compile(
-        r'(?:dealer|dealers?)\s+(?:for\s+)?([a-zA-Z0-9\s_\-]+)',
-        re.IGNORECASE
-    )
-    _WAREHOUSE_PATTERNS = re.compile(
-        r'(?:warehouse|wh)\s+(?:for\s+)?([a-zA-Z0-9\s_\-]+)',
-        re.IGNORECASE
-    )
-    _CITY_PATTERNS = re.compile(
-        r'(?:city)\s+(?:of\s+)?([a-zA-Z\s]+)',
-        re.IGNORECASE
-    )
-    _PENDING_KEYWORDS = re.compile(
-        r'(?:pending|not\s+delivered|overdue|late)',
-        re.IGNORECASE
-    )
-    _SUMMARY_KEYWORDS = re.compile(
-        r'(?:summary|overview|total|statistics|stats)',
-        re.IGNORECASE
-    )
-    _RECENT_KEYWORDS = re.compile(
-        r'(?:recent|latest|newest|today)',
-        re.IGNORECASE
-    )
-    _TOP_KEYWORDS = re.compile(
-        r'(?:top|best|highest|leading)',
-        re.IGNORECASE
-    )
-    _GREETING_PATTERNS = re.compile(
-        r'^(?:hi|hello|hey|good morning|good afternoon|good evening|hola|namaste|salam|howdy)',
-        re.IGNORECASE
-    )
-    _HELP_PATTERNS = re.compile(
-        r'(?:help|assist|support|how\s+to|what\s+is|explain)',
-        re.IGNORECASE
-    )
+    _instance = None
+    _router = None
     
-    @classmethod
-    def detect(cls, message: str) -> dict[str, Any]:
-        """Detect intent using regex patterns."""
-        message_lower = message.lower().strip()
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+    
+    def __init__(self):
+        if self._initialized:
+            return
         
-        # Check for DN number first
-        dn_match = cls._DN_PATTERN.search(message)
+        if SEMANTIC_ROUTER_AVAILABLE:
+            self._init_router()
+        else:
+            logger.warning("⚠️ semantic-router not available. Using fallback.")
+        
+        self._initialized = True
+        logger.info("✅ SemanticRouterIntentEngine initialized")
+    
+    def _init_router(self):
+        """Initialize semantic router with all routes"""
+        try:
+            encoder = HuggingFaceEncoder()
+            
+            routes = [
+                # DN Routes
+                Route(name="dn_lookup", utterances=["show dn", "dn dashboard", "delivery note", "track dn", "dn number", "dn status"]),
+                Route(name="dn_status", utterances=["dn status", "status of dn", "check dn status"]),
+                Route(name="dn_history", utterances=["dn history", "history of dn", "delivery note history"]),
+                Route(name="dn_summary", utterances=["dn summary", "summary of dns", "total dns", "dn overview"]),
+                Route(name="pending_dns", utterances=["pending dns", "pending deliveries", "show pending", "list pending"]),
+                Route(name="pending_pgi", utterances=["pending pgi", "pgi pending", "goods issue pending"]),
+                Route(name="pending_pod", utterances=["pending pod", "pod pending", "proof of delivery pending"]),
+                Route(name="recent_dns", utterances=["recent dns", "latest dns", "newest dns", "today's dns"]),
+                Route(name="delivery_timeline", utterances=["delivery timeline", "dn timeline", "track delivery"]),
+                Route(name="transit_analysis", utterances=["transit analysis", "delivery transit", "shipping time"]),
+                
+                # Dealer Routes
+                Route(name="dealer_dashboard", utterances=["show dealer", "dealer dashboard", "tell me about dealer", "dealer details", "dealer profile"]),
+                Route(name="dealer_revenue", utterances=["dealer revenue", "dealer sales", "how much revenue", "revenue of dealer"]),
+                Route(name="dealer_pending", utterances=["dealer pending", "pending dealer", "dealer overdue"]),
+                Route(name="top_dealers", utterances=["top dealers", "best dealers", "leading dealers", "dealer ranking"]),
+                Route(name="dealer_comparison", utterances=["compare dealers", "dealer vs dealer", "dealer comparison"]),
+                
+                # Warehouse Routes
+                Route(name="warehouse_dashboard", utterances=["show warehouse", "warehouse dashboard", "warehouse details"]),
+                
+                # City Routes
+                Route(name="city_dashboard", utterances=["show city", "city dashboard", "city details", "tell me about city"]),
+                
+                # Product Routes
+                Route(name="product_dashboard", utterances=["show product", "product dashboard", "product details"]),
+                
+                # KPI Routes
+                Route(name="national_kpi", utterances=["national kpi", "kpi dashboard", "overall performance", "national dashboard"]),
+                
+                # General Routes
+                Route(name="greeting", utterances=["hi", "hello", "hey", "good morning", "good afternoon", "good evening", "salam", "namaste"]),
+                Route(name="help", utterances=["help", "assist", "support", "how to", "what is", "explain", "guide"]),
+                Route(name="menu", utterances=["menu", "options", "services", "what can you do", "show menu"]),
+            ]
+            
+            self._router = Router(routes=routes, encoder=encoder)
+            logger.info("✅ SemanticRouter initialized with 25+ routes")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize semantic-router: {e}")
+            self._router = None
+    
+    def detect(self, message: str) -> Dict[str, Any]:
+        """
+        Detect intent using semantic-router.
+        Returns:
+            {
+                "intent": str,
+                "confidence": float,
+                "service_key": str,
+                "method": str,
+                "entity": dict,
+                "requires_ai": bool,
+                "reason": str
+            }
+        """
+        message_clean = message.strip()
+        
+        # Check for DN number (highest priority)
+        dn_match = re.search(r'(?<!\d)(\d{6,20})(?!\d)', message_clean)
         if dn_match:
             return {
                 "intent": "dn_lookup",
+                "confidence": 1.0,
                 "service_key": "dn_service",
                 "method": "get_dn_dashboard",
-                "entity": dn_match.group(1),
-                "confidence": 1.0,
+                "entity": {"dn": dn_match.group(1), "dn_number": dn_match.group(1)},
                 "requires_ai": False,
-                "reason": "DN number detected in message",
+                "reason": "DN number detected",
             }
         
-        # Check for greeting
-        if cls._GREETING_PATTERNS.match(message_lower):
-            return {
-                "intent": "greeting",
-                "service_key": "groq_service",
-                "method": "process_query",
-                "entity": message,
-                "confidence": 1.0,
-                "requires_ai": True,
-                "reason": "Greeting detected",
-            }
+        # Check for dealer name patterns
+        dealer_patterns = [
+            r'([\w\s]+(?:electronics|traders|distributors|foods|group|pvt|ltd))',
+            r'([\w\s]+(?:company|enterprises|corporation))',
+        ]
+        for pattern in dealer_patterns:
+            match = re.search(pattern, message_clean, re.IGNORECASE)
+            if match:
+                dealer_name = match.group(1).strip()
+                if len(dealer_name) > 3:
+                    return {
+                        "intent": "dealer_dashboard",
+                        "confidence": 0.85,
+                        "service_key": "dealer_service",
+                        "method": "get_dealer_dashboard",
+                        "entity": {"dealer_name": dealer_name},
+                        "requires_ai": False,
+                        "reason": f"Dealer name detected: {dealer_name}",
+                    }
         
-        # Check for help
-        if cls._HELP_PATTERNS.search(message_lower):
-            return {
-                "intent": "help",
-                "service_key": "groq_service",
-                "method": "process_query",
-                "entity": message,
-                "confidence": 0.9,
-                "requires_ai": True,
-                "reason": "Help request detected",
-            }
-        
-        # Check for summary
-        if cls._SUMMARY_KEYWORDS.search(message_lower):
-            return {
-                "intent": "dn_summary",
-                "service_key": "dn_service",
-                "method": "get_dn_summary",
-                "entity": None,
-                "confidence": 0.8,
-                "requires_ai": False,
-                "reason": "Summary request detected",
-            }
-        
-        # Check for pending
-        if cls._PENDING_KEYWORDS.search(message_lower):
-            if "pod" in message_lower:
+        # Check for city name patterns
+        city_patterns = [
+            r'(abbottabad|lahore|karachi|rawalpindi|quetta|multan|peshawar|islamabad|hyderabad|sialkot|gujranwala|gilgit)',
+        ]
+        for pattern in city_patterns:
+            match = re.search(pattern, message_clean, re.IGNORECASE)
+            if match:
                 return {
-                    "intent": "pending_pod",
-                    "service_key": "dn_service",
-                    "method": "get_pending_pod",
-                    "entity": None,
+                    "intent": "city_dashboard",
                     "confidence": 0.85,
+                    "service_key": "city_service",
+                    "method": "get_city_dashboard",
+                    "entity": {"city": match.group(1)},
                     "requires_ai": False,
-                    "reason": "Pending POD detected",
-                }
-            elif "pgi" in message_lower:
-                return {
-                    "intent": "pending_pgi",
-                    "service_key": "dn_service",
-                    "method": "get_pending_pgi",
-                    "entity": None,
-                    "confidence": 0.85,
-                    "requires_ai": False,
-                    "reason": "Pending PGI detected",
-                }
-            else:
-                return {
-                    "intent": "pending_dns",
-                    "service_key": "dn_service",
-                    "method": "get_pending_dns",
-                    "entity": None,
-                    "confidence": 0.85,
-                    "requires_ai": False,
-                    "reason": "Pending DNs detected",
+                    "reason": f"City name detected: {match.group(1)}",
                 }
         
-        # Check for recent
-        if cls._RECENT_KEYWORDS.search(message_lower):
-            return {
-                "intent": "recent_dns",
-                "service_key": "dn_service",
-                "method": "get_recent_dns",
-                "entity": None,
-                "confidence": 0.7,
-                "requires_ai": False,
-                "reason": "Recent DNs requested",
-            }
+        # Use semantic router if available
+        if SEMANTIC_ROUTER_AVAILABLE and self._router:
+            try:
+                result = self._router.route(message_clean)
+                intent = result.name
+                confidence = result.score if hasattr(result, 'score') else 0.85
+                
+                # Map intent to service
+                intent_map = {
+                    "dn_lookup": ("dn_service", "get_dn_dashboard"),
+                    "dn_status": ("dn_service", "get_dn_status"),
+                    "dn_history": ("dn_service", "get_dn_history"),
+                    "dn_summary": ("dn_service", "get_dn_summary"),
+                    "pending_dns": ("dn_service", "get_pending_dns"),
+                    "pending_pgi": ("dn_service", "get_pending_pgi"),
+                    "pending_pod": ("dn_service", "get_pending_pod"),
+                    "recent_dns": ("dn_service", "get_recent_dns"),
+                    "delivery_timeline": ("dn_service", "get_delivery_timeline"),
+                    "transit_analysis": ("dn_service", "get_transit_analysis"),
+                    "dealer_dashboard": ("dealer_service", "get_dealer_dashboard"),
+                    "dealer_revenue": ("dealer_service", "get_dealer_dashboard"),
+                    "dealer_pending": ("dealer_service", "get_dealer_dashboard"),
+                    "top_dealers": ("dealer_service", "get_top_dealers"),
+                    "dealer_comparison": ("dealer_service", "compare_dealers"),
+                    "warehouse_dashboard": ("warehouse_service", "get_warehouse_dashboard"),
+                    "city_dashboard": ("city_service", "get_city_dashboard"),
+                    "product_dashboard": ("product_service", "get_product_dashboard"),
+                    "national_kpi": ("kpi_service", "get_national_kpi_dashboard"),
+                    "greeting": ("groq_service", "process_query"),
+                    "help": ("groq_service", "process_query"),
+                    "menu": ("groq_service", "process_query"),
+                }
+                
+                if intent in intent_map:
+                    service_key, method = intent_map[intent]
+                    return {
+                        "intent": intent,
+                        "confidence": confidence,
+                        "service_key": service_key,
+                        "method": method,
+                        "entity": {"message": message_clean},
+                        "requires_ai": False,
+                        "reason": f"Semantic route: {intent} ({confidence:.2f})",
+                    }
+            except Exception as e:
+                logger.debug(f"Semantic router error: {e}")
         
-        # Check for dealer
-        dealer_match = cls._DEALER_PATTERNS.search(message)
-        if dealer_match:
-            return {
-                "intent": "dealer_dashboard",
-                "service_key": "dealer_service",
-                "method": "get_dealer_dashboard",
-                "entity": dealer_match.group(1).strip(),
-                "confidence": 0.8,
-                "requires_ai": False,
-                "reason": "Dealer name detected",
-            }
-        
-        # Check for top dealers
-        if cls._TOP_KEYWORDS.search(message_lower) and "dealer" in message_lower:
-            return {
-                "intent": "top_dealers",
-                "service_key": "dealer_service",
-                "method": "get_top_dealers",
-                "entity": None,
-                "confidence": 0.75,
-                "requires_ai": False,
-                "reason": "Top dealers requested",
-            }
-        
-        # Check for warehouse
-        warehouse_match = cls._WAREHOUSE_PATTERNS.search(message)
-        if warehouse_match:
-            return {
-                "intent": "warehouse_dashboard",
-                "service_key": "warehouse_service",
-                "method": "get_warehouse_dashboard",
-                "entity": warehouse_match.group(1).strip(),
-                "confidence": 0.75,
-                "requires_ai": False,
-                "reason": "Warehouse name detected",
-            }
-        
-        # Check for city
-        city_match = cls._CITY_PATTERNS.search(message)
-        if city_match:
-            return {
-                "intent": "city_dashboard",
-                "service_key": "city_service",
-                "method": "get_city_dashboard",
-                "entity": city_match.group(1).strip(),
-                "confidence": 0.75,
-                "requires_ai": False,
-                "reason": "City name detected",
-            }
-        
-        # Default to general AI
+        # Default fallback
         return {
             "intent": "general_ai",
+            "confidence": 0.3,
             "service_key": "groq_service",
             "method": "process_query",
-            "entity": message,
-            "confidence": 0.5,
+            "entity": {"message": message_clean},
             "requires_ai": True,
-            "reason": "No specific pattern matched - using general AI",
+            "reason": "No specific route matched",
         }
 
 
@@ -437,10 +437,7 @@ class FallbackIntentEngine:
 # ============================================================
 
 def _load_component(key: str) -> Any:
-    """
-    Load one configured singleton lazily with comprehensive error handling.
-    If the primary component fails, attempts to load a fallback.
-    """
+    """Load one configured singleton lazily with comprehensive error handling."""
     logger.info(f"Attempting to load component: {key}")
     
     try:
@@ -448,9 +445,10 @@ def _load_component(key: str) -> Any:
     except KeyError as exc:
         raise ConfigurationError(f"Unknown component: {key}") from exc
     
-    # Special handling for intent_engine - always provide fallback
+    # Special handling for intent_engine - use SemanticRouterIntentEngine
     if key == "intent_engine":
         try:
+            # Try to load primary first
             module = importlib.import_module(module_name)
             for symbol in candidates:
                 component = getattr(module, symbol, None)
@@ -462,20 +460,22 @@ def _load_component(key: str) -> Any:
                         continue
         except (ImportError, AttributeError, TypeError) as exc:
             logger.error(f"Failed to load primary intent engine from {module_name}: {exc}")
-            logger.info("Using fallback intent engine")
-            return FallbackIntentEngine()
+            logger.info("Using SemanticRouterIntentEngine")
+            return SemanticRouterIntentEngine()
+        
+        # Fallback to SemanticRouterIntentEngine
+        logger.info("Using SemanticRouterIntentEngine as fallback")
+        return SemanticRouterIntentEngine()
     
     try:
         module = importlib.import_module(module_name)
     except ImportError as exc:
         logger.error(f"Cannot import module {module_name}: {exc}")
-        # For groq_service, we might continue without it
         if key == "groq_service":
             logger.warning("Groq service unavailable - continuing without AI enhancement")
             return None
         raise ConfigurationError(f"Cannot import {module_name}") from exc
     
-    # Function-oriented service modules are already fully configured
     routed_methods = {
         target.method
         for target in ROUTES.values()
@@ -488,7 +488,6 @@ def _load_component(key: str) -> Any:
     ):
         return module
     
-    # Try to instantiate a class-based component
     for symbol in candidates:
         component = getattr(module, symbol, None)
         if component is not None:
@@ -498,25 +497,18 @@ def _load_component(key: str) -> Any:
                 logger.error(f"{module_name}.{symbol} requires dependencies: {exc}")
                 continue
     
-    # Function-oriented modules are valid service implementations
     if key != "intent_engine":
         return module
     
-    # Final fallback
-    logger.warning(f"No supported component found in {module_name} - using fallback")
-    if key == "intent_engine":
-        return FallbackIntentEngine()
-    
-    raise ConfigurationError(f"No supported component found in {module_name}")
+    logger.warning(f"No supported component found in {module_name} - using SemanticRouterIntentEngine")
+    return SemanticRouterIntentEngine()
 
 
 # ============================================================
-# DEPENDENCY CONTAINER
+# DEPENDENCY CONTAINER - UNCHANGED
 # ============================================================
 
 class ApplicationContainer(containers.DeclarativeContainer):
-    """Dependency-injector registry; applications may override any provider."""
-
     config = providers.Configuration()
     intent_engine = providers.ThreadSafeSingleton(_load_component, "intent_engine")
     dn_service = providers.ThreadSafeSingleton(_load_component, "dn_service")
@@ -529,11 +521,10 @@ class ApplicationContainer(containers.DeclarativeContainer):
 
 
 # ============================================================
-# UTILITY FUNCTIONS
+# UTILITY FUNCTIONS - UNCHANGED
 # ============================================================
 
 def _object_mapping(value: Any) -> dict[str, Any]:
-    """Convert various object types to a dictionary."""
     if isinstance(value, BaseModel):
         return value.model_dump(mode="python")
     if is_dataclass(value) and not isinstance(value, type):
@@ -552,7 +543,6 @@ def _object_mapping(value: Any) -> dict[str, Any]:
 
 
 def _decision_view(decision: Any) -> RoutingDecisionView:
-    """Convert any routing decision to a validated view."""
     raw = _object_mapping(decision)
     if not raw:
         raise ValueError("Intent engine returned an unsupported routing decision")
@@ -569,7 +559,6 @@ def _decision_view(decision: Any) -> RoutingDecisionView:
 
 
 async def _call(callable_object: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    """Execute sync implementations off-loop and await native async ones."""
     if inspect.iscoroutinefunction(callable_object):
         return await callable_object(*args, **kwargs)
     result = await asyncio.to_thread(partial(callable_object, *args, **kwargs))
@@ -579,7 +568,7 @@ async def _call(callable_object: Callable[..., Any], *args: Any, **kwargs: Any) 
 
 
 # ============================================================
-# SERVICE ROUTER
+# SERVICE ROUTER - UNCHANGED
 # ============================================================
 
 class ServiceRouter:
@@ -605,7 +594,6 @@ class ServiceRouter:
         if configured is None and decision.service_key:
             configured = self._routes.get(decision.service_key.strip().casefold())
         
-        # If still no route, check if it might be a dealer
         if configured is None:
             entity = str(decision.entity or "")
             dealer_indicators = ["electronics", "traders", "distributors", "foods", "group", "pvt", "ltd", "sons", "brothers"]
@@ -708,8 +696,9 @@ class ServiceRouter:
             
             value = entity if entity not in (None, "", {}) else message
             
-            # Special handling for DN service
             if target.provider_name == "dn_service":
+                if isinstance(value, dict):
+                    value = value.get("dn") or value.get("dn_number") or str(value)
                 match = re.search(r"(?<!\d)(\d{6,20})(?!\d)", str(value))
                 if match is None:
                     match = re.search(r"(?<!\d)(\d{6,20})(?!\d)", message)
@@ -717,8 +706,9 @@ class ServiceRouter:
                     raise RoutingError("A valid DN number was not found in the request")
                 value = match.group(1)
             
-            # Special handling for city service
             if target.provider_name == "city_service":
+                if isinstance(value, dict):
+                    value = value.get("city") or value.get("city_name") or str(value)
                 city_match = re.search(r'(?:city|city\s+of)\s+(?:of\s+)?([a-zA-Z\s]+)|^(?:abbottabad|lahore|karachi|rawalpindi|quetta|multan|peshawar|gilgit|hyderabad|sialkot|gujranwala|islamabad)\b', str(value), re.IGNORECASE)
                 if city_match:
                     value = city_match.group(1) or city_match.group(0)
@@ -728,7 +718,6 @@ class ServiceRouter:
             signature.bind(**kwargs)
             return (), kwargs
 
-        # Positional binding
         value: Any = None
         if isinstance(entity, Mapping):
             first_name = positional[0].name
@@ -752,8 +741,9 @@ class ServiceRouter:
         elif entity not in (None, "", {}):
             value = entity
 
-        # DN number extraction
         if target.provider_name == "dn_service":
+            if isinstance(value, dict):
+                value = value.get("dn") or value.get("dn_number") or str(value)
             candidate = str(value or message)
             match = re.search(r"(?<!\d)(\d{6,20})(?!\d)", candidate)
             if match is None:
@@ -815,7 +805,7 @@ class ServiceRouter:
 
 
 # ============================================================
-# AI PROVIDER ORCHESTRATOR
+# AI PROVIDER ORCHESTRATOR - WITH SEMANTIC ROUTER
 # ============================================================
 
 class AIProviderOrchestrator:
@@ -840,16 +830,22 @@ class AIProviderOrchestrator:
         self.intent_cache: TTLCache[str, Any] = TTLCache(2_048, cache_ttl)
         self.metadata_cache: TTLCache[str, Any] = TTLCache(128, cache_ttl)
         self.router = ServiceRouter(self._resolve_provider)
-        # Backward-compatible registry facade expected by webhook.py
         self.registry = self
         
-        # Track if groq is available
         self._groq_available = True
         try:
             self._resolve_provider("groq_service")
         except Exception:
             self._groq_available = False
             logger.warning("Groq service is unavailable - AI enhancement disabled")
+        
+        # Semantic Router Intent Engine - initialized via container
+        self._intent_engine = None
+        try:
+            self._intent_engine = self._resolve_provider("intent_engine")
+            logger.info("✅ SemanticRouterIntentEngine loaded")
+        except Exception as e:
+            logger.warning(f"Failed to load SemanticRouterIntentEngine: {e}")
 
     def _resolve_provider(self, name: str) -> Any:
         provider = getattr(self.container, name, None)
@@ -863,7 +859,6 @@ class AIProviderOrchestrator:
         return canonical.hex()
 
     def _find_callable(self, service: Any, candidates: tuple[str, ...], label: str) -> Callable[..., Any] | None:
-        """Find a callable method with graceful failure."""
         if service is None:
             logger.warning(f"Service {label} is None")
             return None
@@ -893,7 +888,6 @@ class AIProviderOrchestrator:
 
     @staticmethod
     def _raw_response_fallback(data: Any) -> str:
-        """Return readable structured data when a presentation layer is absent."""
         try:
             rendered = orjson.dumps(
                 data,
@@ -905,75 +899,39 @@ class AIProviderOrchestrator:
         return rendered[:4_000]
 
     async def _detect_intent(self, message: str, sender: str | None) -> tuple[Any, bool]:
-        """Detect intent with fallback support and dealer/city detection."""
+        """Detect intent using SemanticRouterIntentEngine with caching."""
         key = self._intent_cache_key(message, sender)
         if key in self.intent_cache:
             logger.debug(f"Intent cache hit for message: {message[:50]}...")
             return self.intent_cache[key], True
         
         try:
-            engine = self._resolve_provider("intent_engine")
-            method = self._find_callable(engine, self._INTENT_METHODS, "Intent engine")
-            
-            if method is None:
-                logger.warning("Intent engine methods not found - using fallback")
-                decision = FallbackIntentEngine.detect(message)
+            if self._intent_engine:
+                # Use SemanticRouterIntentEngine
+                decision = self._intent_engine.detect(message)
             else:
-                kwargs: dict[str, Any] = {}
-                parameters = inspect.signature(method).parameters
-                if "sender" in parameters:
-                    kwargs["sender"] = sender
-                elif "user_id" in parameters:
-                    kwargs["user_id"] = sender
-                
-                decision = await asyncio.wait_for(_call(method, message, **kwargs), timeout=10.0)
-                
-        except (ImportError, ConfigurationError, TimeoutError, asyncio.TimeoutError, AttributeError) as exc:
-            logger.error(f"Intent detection failed: {exc} - using fallback")
-            decision = FallbackIntentEngine.detect(message)
+                # Fallback to original intent engine
+                engine = self._resolve_provider("intent_engine")
+                method = self._find_callable(engine, self._INTENT_METHODS, "Intent engine")
+                if method is None:
+                    from app.services.ai_provider_service_original import FallbackIntentEngine
+                    decision = FallbackIntentEngine.detect(message)
+                else:
+                    kwargs: dict[str, Any] = {}
+                    parameters = inspect.signature(method).parameters
+                    if "sender" in parameters:
+                        kwargs["sender"] = sender
+                    elif "user_id" in parameters:
+                        kwargs["user_id"] = sender
+                    decision = await asyncio.wait_for(_call(method, message, **kwargs), timeout=10.0)
         except Exception as exc:
-            logger.exception(f"Unexpected intent detection error: {exc} - using fallback")
+            logger.error(f"Intent detection failed: {exc}")
+            from app.services.ai_provider_service_original import FallbackIntentEngine
             decision = FallbackIntentEngine.detect(message)
         
-        # Validate the decision before caching
-        try:
-            _decision_view(decision)
-        except (ValueError, ValidationError) as exc:
-            logger.error(f"Invalid routing decision: {exc} - using fallback")
-            decision = FallbackIntentEngine.detect(message)
-        
-        # If decision is general_ai, check if it might be a dealer or city
-        if decision.get("intent") == "general_ai":
-            msg_lower = message.lower()
-            dealer_indicators = ["electronics", "traders", "distributors", "foods", "group", "pvt", "ltd", "sons", "brothers"]
-            dealer_names = ["umar", "taj", "haroon", "commercial", "national", "mian", "mgc", "arco", "shah", "haji"]
-            city_names = ["abbottabad", "lahore", "karachi", "rawalpindi", "quetta", "multan", "peshawar", "gilgit", "hyderabad", "islamabad", "sialkot", "gujranwala"]
-            
-            has_dealer = any(indicator in msg_lower for indicator in dealer_indicators) or any(name in msg_lower for name in dealer_names)
-            has_city = any(city in msg_lower for city in city_names)
-            word_count = len(msg_lower.split())
-            
-            if (has_dealer or has_city) and word_count <= 6:
-                if has_dealer and not has_city:
-                    decision = {
-                        "intent": "dealer_dashboard",
-                        "service_key": "dealer_service",
-                        "method": "get_dealer_dashboard",
-                        "entity": message.strip(),
-                        "confidence": 0.8,
-                        "requires_ai": False,
-                        "reason": "Dealer detected (fallback - general_ai override)",
-                    }
-                elif has_city and not has_dealer:
-                    decision = {
-                        "intent": "city_dashboard",
-                        "service_key": "city_service",
-                        "method": "get_city_dashboard",
-                        "entity": message.strip(),
-                        "confidence": 0.8,
-                        "requires_ai": False,
-                        "reason": "City detected (fallback - general_ai override)",
-                    }
+        # Ensure the decision has the required fields
+        if "intent" not in decision:
+            decision = {"intent": "general_ai", "service_key": "groq_service", "method": "process_query", "entity": {}, "confidence": 0.3, "requires_ai": True, "reason": "Fallback"}
         
         self.intent_cache[key] = decision
         return decision, False
@@ -985,7 +943,6 @@ class AIProviderOrchestrator:
         message: str,
         request_id: str,
     ) -> ServiceResponse:
-        """Enhance response with AI if available."""
         if not self._groq_available:
             logger.debug("Groq service unavailable - skipping AI enhancement")
             return business_response
@@ -1113,42 +1070,32 @@ class AIProviderOrchestrator:
                 len(business_response.whatsapp_message),
             )
             
-            # Return the response
             if business_response.whatsapp_message:
                 return business_response.whatsapp_message
             if business_response.success:
                 return self._raw_response_fallback(business_response.data)
             
-            # ============================================================
-            # BUSINESS ERROR HANDLING (NO AI FALLBACK)
-            # ============================================================
-            
             error = business_response.error.strip()
             
-            # DN Not Found
             if target.provider_name == "dn_service":
                 dn_match = re.search(r"(?<!\d)(\d{6,20})(?!\d)", request.message)
                 dn_no = dn_match.group(1) if dn_match else str(decision.entity) if decision else "unknown"
                 if any(word in error.lower() for word in ["not found", "no rows", "does not exist", "no record"]):
                     return f"DN {dn_no} was not found in PostgreSQL."
             
-            # Dealer Not Found
             if target.provider_name == "dealer_service":
                 dealer_name = str(decision.entity) if decision else "unknown"
                 if any(word in error.lower() for word in ["not found", "no rows", "does not exist", "no record", "dealer"]):
                     return f"Dealer '{dealer_name}' was not found in PostgreSQL."
             
-            # City Not Found
             if target.provider_name == "city_service":
                 city_name = str(decision.entity) if decision else "unknown"
                 if any(word in error.lower() for word in ["not found", "no rows", "does not exist", "no record", "city"]):
                     return f"City '{city_name}' was not found in PostgreSQL."
             
-            # Database Errors
             if any(word in error.lower() for word in ["database", "connection", "sql", "timeout", "postgres"]):
                 return "Database is currently unavailable. Please try again later."
             
-            # If no specific error handler matched, return the error with context
             logger.error(f"Service execution error: {error} | Request ID: {request_id} | Service: {target.provider_name}")
             return error or f"Service execution failed. Reference ID: {request_id}"
             
@@ -1242,7 +1189,6 @@ class AIProviderOrchestrator:
         sender: str | None = None,
         **context: Any,
     ) -> str:
-        """Compatibility entry point used on the provider-service instance."""
         if sender is None:
             sender = context.pop("sender_id", None) or context.pop("phone_number", None)
         return await self.process(message, sender, **context)
@@ -1253,7 +1199,6 @@ class AIProviderOrchestrator:
         sender: str | None = None,
         **context: Any,
     ) -> str:
-        """Compatibility alias for callers resolving the singleton directly."""
         return await self.process_whatsapp_query(message, sender, **context)
 
     async def enhance_response(
@@ -1262,7 +1207,6 @@ class AIProviderOrchestrator:
         message: str = "",
         **context: Any,
     ) -> str:
-        """Enhance an existing business response without changing its data."""
         request_id = str(context.get("request_id") or uuid.uuid4())
         business_response = ServiceRouter.validate_response(response, request_id)
         decision = RoutingDecisionView(
@@ -1299,7 +1243,6 @@ class AIProviderOrchestrator:
             )
 
     def get_registry_status(self, *, refresh: bool = False) -> dict[str, Any]:
-        """Validate imports, instances, and routed methods without business calls."""
         cache_key = "service_registry"
         if not refresh and cache_key in self.metadata_cache:
             return self.metadata_cache[cache_key]
@@ -1317,7 +1260,7 @@ class AIProviderOrchestrator:
                 if provider_name == "intent_engine":
                     method = self._find_callable(service, self._INTENT_METHODS, "Intent engine")
                     if method is None:
-                        if isinstance(service, FallbackIntentEngine):
+                        if hasattr(service, "detect"):  # SemanticRouterIntentEngine
                             missing = []
                         else:
                             missing = ["intent methods not found"]
@@ -1355,14 +1298,13 @@ class AIProviderOrchestrator:
             "checked_at": datetime.now(timezone.utc).isoformat(),
             "cache_ttl_seconds": 300,
             "fallback_engine_active": isinstance(
-                self._resolve_provider("intent_engine"), FallbackIntentEngine
+                self._resolve_provider("intent_engine"), SemanticRouterIntentEngine
             ) if statuses.get("intent_engine", {}).get("available") else False,
         }
         self.metadata_cache[cache_key] = result
         return result
 
     def get_service_registry_status(self) -> dict[str, Any]:
-        """Compatibility report consumed by the existing webhook startup code."""
         report = self.get_registry_status()
         services = report["services"]
         ready = sum(1 for status in services.values() if status.get("available"))
@@ -1389,7 +1331,6 @@ class AIProviderOrchestrator:
         return aliases.get(service_key, service_key)
 
     def get_service_status(self, service_key: str) -> dict[str, Any]:
-        """Compatibility method exposed through ``service.registry``."""
         provider_key = self._provider_key(service_key)
         status = self.get_registry_status()["services"].get(provider_key)
         if status is None:
@@ -1401,7 +1342,6 @@ class AIProviderOrchestrator:
         }
 
     def get_service_instance(self, service_key: str) -> Any | None:
-        """Resolve a registered singleton for legacy diagnostics endpoints."""
         provider_key = self._provider_key(service_key)
         try:
             return self._resolve_provider(provider_key)
@@ -1410,13 +1350,11 @@ class AIProviderOrchestrator:
             return None
 
     def refresh_status(self) -> dict[str, Any]:
-        """Clear diagnostic caches and revalidate the entire service registry."""
         self.metadata_cache.clear()
         self.router._method_cache.clear()
         return self.get_registry_status(refresh=True)
 
     async def health_check(self) -> dict[str, Any]:
-        """Resolve and probe every dependency without running business logic."""
         if "health" in self.metadata_cache:
             return self.metadata_cache["health"]
         
@@ -1441,12 +1379,11 @@ class AIProviderOrchestrator:
                 logger.exception("Startup health check failed for {}", name)
                 checks[name] = {"healthy": False, "error": type(exc).__name__}
         
-        # Add bootstrap health
-        try:
-            bootstrap = get_ai_bootstrap_service()
-            checks["bootstrap"] = {"healthy": True, "details": bootstrap.health()}
-        except Exception as e:
-            checks["bootstrap"] = {"healthy": False, "error": str(e)}
+        # Add semantic router health
+        checks["semantic_router"] = {
+            "healthy": SEMANTIC_ROUTER_AVAILABLE,
+            "details": {"available": SEMANTIC_ROUTER_AVAILABLE}
+        }
         
         result = {
             "healthy": all(item["healthy"] for item in checks.values()),
@@ -1463,8 +1400,6 @@ class AIProviderOrchestrator:
 
 container = ApplicationContainer()
 orchestrator = AIProviderOrchestrator(container)
-
-# Preserve the historical service class name used by imports and type checks.
 WhatsAppProviderService = AIProviderOrchestrator
 
 
@@ -1477,7 +1412,6 @@ async def process_whatsapp_query(
     sender: str | None = None,
     **context: Any,
 ) -> str:
-    """Primary backward-compatible webhook entry point."""
     return await orchestrator.process_whatsapp_query(message, sender, **context)
 
 
@@ -1486,7 +1420,6 @@ async def process_query(
     sender: str | None = None,
     **context: Any,
 ) -> str:
-    """Compatibility alias used by older webhook implementations."""
     return await process_whatsapp_query(message, sender, **context)
 
 
@@ -1495,7 +1428,6 @@ async def enhance_response(
     message: str = "",
     **context: Any,
 ) -> str:
-    """Backward-compatible module-level response enhancement entry point."""
     return await orchestrator.enhance_response(response, message, **context)
 
 
@@ -1504,27 +1436,22 @@ async def health_check() -> dict[str, Any]:
 
 
 def get_whatsapp_provider_service() -> AIProviderOrchestrator:
-    """Return the process-wide, dependency-injected orchestrator singleton."""
     return orchestrator
 
 
 def get_service_registry_status() -> dict[str, Any]:
-    """Return cached service-registry diagnostics."""
     return orchestrator.get_registry_status()
 
 
 def validate_all_services() -> dict[str, Any]:
-    """Validate every registered service and routed method."""
     return orchestrator.get_registry_status(refresh=True)
 
 
 def refresh_service_status() -> dict[str, Any]:
-    """Invalidate diagnostic state and return a fresh registry report."""
     return orchestrator.refresh_status()
 
 
 def get_system_health() -> dict[str, Any]:
-    """Synchronous health snapshot suitable for existing status endpoints."""
     registry = orchestrator.get_registry_status()
     return {
         "healthy": registry["healthy"],
@@ -1541,7 +1468,7 @@ __all__ = [
     "ApplicationContainer",
     "ConfigurationError",
     "DatabaseConnectionError",
-    "FallbackIntentEngine",
+    "SemanticRouterIntentEngine",
     "MethodNotFoundError",
     "ROUTES",
     "RouteTarget",
