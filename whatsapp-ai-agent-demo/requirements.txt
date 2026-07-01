@@ -186,3 +186,50 @@ flashrank>=0.2.10
 
 dependency-injector>=4.41.0
 semantic-router>=0.0.70
+
+# ==========================================================
+# ENTERPRISE NLP & INTENT (SAFE ADDITIONS)
+# Compatible with your current requirements
+# ==========================================================
+
+# Language Detection
+lingua-language-detector>=2.0.2
+
+# Fast Business Dictionary Matching
+pyahocorasick>=2.1.0
+
+# Natural Language Date Parsing
+dateparser>=1.2.0
+
+# Structured Entity Recognition
+presidio-analyzer>=2.2.357
+
+# Number Word Conversion
+word2number>=1.1
+
+# English Word Normalization
+inflect>=7.3.1
+
+# High-performance Spell Correction
+symspellpy>=6.7.8
+
+# Better Unicode Handling
+ftfy>=6.2.3
+
+# Transliteration
+Unidecode>=1.3.8
+
+# Better Regex Engine
+regex>=2024.5.15
+
+# JSON Schema Validation
+jsonschema>=4.23.0
+
+# Parallel Processing
+joblib>=1.4.2
+
+# Lightweight Expiring Cache
+expiringdict>=1.2.2
+
+# Async File Operations
+aiofiles>=24.1.0
