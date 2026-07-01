@@ -11,6 +11,7 @@ Supports:
 - Conversation State Management
 - Multi-stage Intent Detection
 - Entity Extraction & Resolution
+- Bootstrap Integration for Cached Resources
 """
 
 from __future__ import annotations
@@ -41,10 +42,16 @@ from tenacity import (
 )
 
 # ============================================================
+# CRITICAL: IMPORT BOOTSTRAP SERVICE FOR CACHED RESOURCES
+# ============================================================
+
+from app.services.ai_bootstrap_service import get_ai_bootstrap_service
+
+# ============================================================
 # OPTIONAL LIBRARIES WITH SAFE FALLBACKS
 # ============================================================
 
-# Advanced NLP & ML
+# Advanced NLP & ML - Now loaded via Bootstrap
 try:
     import numpy as np
 except ImportError:
@@ -55,11 +62,6 @@ try:
 except ImportError:
     fuzz = None
     process = None
-
-try:
-    from sentence_transformers import SentenceTransformer
-except ImportError:
-    SentenceTransformer = None
 
 try:
     import spacy
@@ -74,7 +76,6 @@ except ImportError:
 try:
     from nltk.corpus import stopwords
     import nltk
-    nltk.download('stopwords', quiet=True)
 except ImportError:
     stopwords = None
     nltk = None
@@ -1052,13 +1053,13 @@ class FallbackIntentEngine:
 
 
 # ============================================================
-# NLP INTENT DETECTOR (OPTIONAL)
+# NLP INTENT DETECTOR (OPTIONAL - USING BOOTSTRAP)
 # ============================================================
 
 class NLPIntentDetector:
     """
     Optional NLP-based intent detection using sentence-transformers and spacy.
-    Used as a secondary layer when available.
+    Resources are loaded from bootstrap service (cached forever after first load).
     """
     
     _instance = None
@@ -1085,22 +1086,21 @@ class NLPIntentDetector:
     
     def __init__(self):
         self._initialized = False
+        self._bootstrap = get_ai_bootstrap_service()
+        
         try:
-            if SentenceTransformer:
-                self._encoder = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
-            if spacy:
-                try:
-                    self._nlp = spacy.load('en_core_web_sm')
-                except OSError:
-                    try:
-                        # Try to download if not available
-                        spacy.cli.download('en_core_web_sm')
-                        self._nlp = spacy.load('en_core_web_sm')
-                    except:
-                        pass
-            self._initialized = True
-        except Exception:
-            pass
+            # Load resources from bootstrap (CACHED FOREVER)
+            self._encoder = self._bootstrap.get_embeddings()
+            self._nlp = self._bootstrap.get_spacy()
+            self._nltk = self._bootstrap.get_nltk()
+            
+            if self._encoder or self._nlp:
+                self._initialized = True
+                logger.info("✅ NLPIntentDetector initialized with bootstrap resources")
+            else:
+                logger.warning("⚠️ NLPIntentDetector initialized with no NLP resources")
+        except Exception as e:
+            logger.warning(f"⚠️ NLPIntentDetector init failed: {e}")
     
     def detect(self, message: str) -> dict[str, Any] | None:
         """Detect intent using NLP if available."""
@@ -1159,7 +1159,6 @@ class NLPIntentDetector:
                         best_intent = intent
                 
                 if best_score > 0.6:
-                    # Map to route
                     intent_map = {
                         "dealer_dashboard": ("dealer_service", "get_dealer_dashboard"),
                         "dealer_revenue": ("dealer_service", "get_dealer_dashboard"),
@@ -1185,7 +1184,8 @@ class NLPIntentDetector:
                         }
             
             return None
-        except Exception:
+        except Exception as e:
+            logger.debug(f"NLP detection failed: {e}")
             return None
 
 
@@ -1632,14 +1632,16 @@ class AIProviderOrchestrator:
             self._groq_available = False
             logger.warning("Groq service is unavailable - AI enhancement disabled")
         
-        # Initialize NLP detector if available
+        # Initialize NLP detector from bootstrap
         self._nlp_detector = None
         try:
             self._nlp_detector = NLPIntentDetector.get_instance()
-        except Exception:
-            pass
+            if self._nlp_detector:
+                logger.info("✅ NLPIntentDetector initialized from bootstrap")
+        except Exception as e:
+            logger.warning(f"⚠️ NLPIntentDetector initialization failed: {e}")
         
-        logger.info("✅ AIProviderOrchestrator initialized with menu and conversation support")
+        logger.info("✅ AIProviderOrchestrator initialized with menu, conversation, and bootstrap support")
 
     def _resolve_provider(self, name: str) -> Any:
         provider = getattr(self.container, name, None)
@@ -1710,7 +1712,6 @@ class AIProviderOrchestrator:
         if sender:
             state = await self.conversation_manager.get_state(sender)
             if state and state.waiting_for_input:
-                # User is in a menu flow, handle accordingly
                 if state.expected_input_type in ["dealer_name", "city_name", "warehouse_name", "dn_number"]:
                     decision = {
                         "intent": state.selected_intent,
@@ -1721,7 +1722,6 @@ class AIProviderOrchestrator:
                         "requires_ai": False,
                         "reason": f"Menu input: {state.expected_input_type}",
                     }
-                    # Clear waiting state
                     state.waiting_for_input = False
                     state.expected_input_type = ""
                     await self.conversation_manager.set_state(state)
@@ -1735,8 +1735,8 @@ class AIProviderOrchestrator:
                 if nlp_decision and nlp_decision.get("confidence", 0) > 0.6:
                     decision = nlp_decision
                     logger.debug(f"NLP intent detected: {nlp_decision.get('intent')} with confidence {nlp_decision.get('confidence')}")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"NLP detection error: {e}")
         
         # Fallback to primary intent engine if NLP didn't find anything
         if decision is None:
@@ -1775,16 +1775,12 @@ class AIProviderOrchestrator:
         if decision.get("intent") == "general_ai":
             msg_lower = message.lower()
             
-            # Check for dealer indicators
             dealer_indicators = ["electronics", "traders", "distributors", "foods", "group", "pvt", "ltd", "sons", "brothers"]
             dealer_names = ["umar", "taj", "haroon", "commercial", "national", "mian", "mgc", "arco", "shah", "haji"]
-            
-            # Check for city indicators
             city_names = ["abbottabad", "lahore", "karachi", "rawalpindi", "quetta", "multan", "peshawar", "gilgit", "hyderabad", "islamabad", "sialkot", "gujranwala"]
             
             has_dealer = any(indicator in msg_lower for indicator in dealer_indicators) or any(name in msg_lower for name in dealer_names)
             has_city = any(city in msg_lower for city in city_names)
-            
             word_count = len(msg_lower.split())
             
             if (has_dealer or has_city) and word_count <= 6:
@@ -1816,7 +1812,6 @@ class AIProviderOrchestrator:
             if not state:
                 state = ConversationState(sender)
             
-            # If it's a menu intent, update state
             if intent in ["main_menu", "dealer_menu", "city_menu", "dn_menu", "reports_menu"]:
                 state.current_menu = intent.replace("_menu", "")
                 state.previous_menu = state.current_menu
@@ -1824,15 +1819,12 @@ class AIProviderOrchestrator:
                 state.expected_input_type = ""
                 await self.conversation_manager.set_state(state)
             
-            # If it's a service intent that needs entity input
             elif intent in ["dealer_dashboard", "dealer_revenue", "dealer_pending", "dealer_pgi", "dealer_pod", "dealer_units", "dealer_performance"]:
                 if not decision.get("entity") or len(str(decision.get("entity"))) < 2:
-                    # Need to ask for dealer name
                     state.selected_intent = intent
                     state.waiting_for_input = True
                     state.expected_input_type = "dealer_name"
                     await self.conversation_manager.set_state(state)
-                    # Return a special response asking for dealer name
                     decision = {
                         "intent": "ask_for_dealer",
                         "service_key": "menu_service",
@@ -1843,7 +1835,6 @@ class AIProviderOrchestrator:
                         "reason": "Asking for dealer name",
                     }
                 else:
-                    # Clear waiting state
                     state.waiting_for_input = False
                     state.expected_input_type = ""
                     await self.conversation_manager.set_state(state)
@@ -1892,7 +1883,6 @@ class AIProviderOrchestrator:
         return decision, False
 
     def _get_service_for_intent(self, intent: str) -> str:
-        """Get service for intent"""
         service_map = {
             "dealer_dashboard": "dealer_service",
             "dealer_revenue": "dealer_service",
@@ -1912,7 +1902,6 @@ class AIProviderOrchestrator:
         return service_map.get(intent, "dealer_service")
 
     def _get_method_for_intent(self, intent: str) -> str:
-        """Get method for intent"""
         method_map = {
             "dealer_dashboard": "get_dealer_dashboard",
             "dealer_revenue": "get_dealer_dashboard",
@@ -1932,12 +1921,10 @@ class AIProviderOrchestrator:
         return method_map.get(intent, "get_dealer_dashboard")
 
     def _format_menu_response(self, menu_name: str) -> str:
-        """Format menu response"""
         menu = MenuService.get_menu(menu_name)
         return MenuService.format_menu(menu)
 
     async def _handle_menu_selection(self, selection: str, sender: str) -> str:
-        """Handle menu selection from user"""
         state = await self.conversation_manager.get_state(sender)
         if not state:
             state = ConversationState(sender)
@@ -1951,7 +1938,6 @@ class AIProviderOrchestrator:
         intent = option.get("intent")
         
         if intent in ["main_menu", "dealer_menu", "city_menu", "dn_menu", "reports_menu"]:
-            # Show the selected menu
             menu = MenuService.get_menu(intent.replace("_menu", ""))
             state.current_menu = intent.replace("_menu", "")
             state.previous_menu = state.current_menu
@@ -1960,7 +1946,6 @@ class AIProviderOrchestrator:
             return MenuService.format_menu(menu)
         
         elif intent in ["dealer_dashboard", "dealer_revenue", "dealer_pending", "dealer_pgi", "dealer_pod", "dealer_units", "dealer_performance"]:
-            # Ask for dealer name
             state.selected_intent = intent
             state.waiting_for_input = True
             state.expected_input_type = "dealer_name"
@@ -1968,7 +1953,6 @@ class AIProviderOrchestrator:
             return "📝 Please enter the Dealer Name.\n\nExample:\nCommercial Electronics Abbottabad\nNew Central Electronics\nSuper Trading"
         
         elif intent in ["city_dashboard", "city_revenue", "city_pending"]:
-            # Ask for city name
             state.selected_intent = intent
             state.waiting_for_input = True
             state.expected_input_type = "city_name"
@@ -1976,7 +1960,6 @@ class AIProviderOrchestrator:
             return "📝 Please enter the City Name.\n\nExample:\nAbbottabad\nLahore\nKarachi"
         
         elif intent in ["dn_lookup", "dn_status", "dn_history", "delivery_timeline"]:
-            # Ask for DN number
             state.selected_intent = intent
             state.waiting_for_input = True
             state.expected_input_type = "dn_number"
@@ -1991,15 +1974,12 @@ class AIProviderOrchestrator:
             return "📝 Please enter two dealer names to compare.\n\nFormat:\nDealer A vs Dealer B\n\nExample:\nTaj Electronics vs Umar Electronics"
         
         else:
-            # For direct intents, process immediately
-            # We'll let the main orchestrator handle this
             state.selected_intent = intent
             state.waiting_for_input = False
             await self.conversation_manager.set_state(state)
-            return None  # Signal to process normally
-    
+            return None
+
     async def _ask_for_entity(self, entity_type: str) -> str:
-        """Ask for entity input"""
         prompts = {
             "dealer_name": "📝 Please enter the Dealer Name.\n\nExample:\nCommercial Electronics Abbottabad\nNew Central Electronics\nSuper Trading",
             "city_name": "📝 Please enter the City Name.\n\nExample:\nAbbottabad\nLahore\nKarachi",
@@ -2016,7 +1996,6 @@ class AIProviderOrchestrator:
         message: str,
         request_id: str,
     ) -> ServiceResponse:
-        """Enhance response with AI if available."""
         if not self._groq_available:
             logger.debug("Groq service unavailable - skipping AI enhancement")
             return business_response
@@ -2101,27 +2080,21 @@ class AIProviderOrchestrator:
             decision_object, cache_hit = await self._detect_intent(request.message, request.sender)
             decision = _decision_view(decision_object)
             
-            # Check if we need to ask for entity
             if decision.intent == "ask_for_dealer":
                 response = await self._ask_for_entity("dealer_name")
-                elapsed = (time.perf_counter() - started) * 1000
                 return response
             
             if decision.intent == "ask_for_city":
                 response = await self._ask_for_entity("city_name")
-                elapsed = (time.perf_counter() - started) * 1000
                 return response
             
             if decision.intent == "ask_for_dn":
                 response = await self._ask_for_entity("dn_number")
-                elapsed = (time.perf_counter() - started) * 1000
                 return response
             
-            # Handle menu selection
             if decision.intent == "menu_selection" and sender:
                 menu_response = await self._handle_menu_selection(str(decision.entity), sender)
                 if menu_response:
-                    elapsed = (time.perf_counter() - started) * 1000
                     return menu_response
             
             stage = "routing"
@@ -2140,28 +2113,17 @@ class AIProviderOrchestrator:
                 not cache_hit,
             )
             
-            # Check if it's a menu service
             if target.provider_name == "menu_service":
                 if target.method == "show_main_menu":
-                    response = self._format_menu_response("main")
-                    elapsed = (time.perf_counter() - started) * 1000
-                    return response
+                    return self._format_menu_response("main")
                 elif target.method == "show_dealer_menu":
-                    response = self._format_menu_response("dealer")
-                    elapsed = (time.perf_counter() - started) * 1000
-                    return response
+                    return self._format_menu_response("dealer")
                 elif target.method == "show_city_menu":
-                    response = self._format_menu_response("city")
-                    elapsed = (time.perf_counter() - started) * 1000
-                    return response
+                    return self._format_menu_response("city")
                 elif target.method == "show_dn_menu":
-                    response = self._format_menu_response("dn")
-                    elapsed = (time.perf_counter() - started) * 1000
-                    return response
+                    return self._format_menu_response("dn")
                 elif target.method == "show_reports_menu":
-                    response = self._format_menu_response("reports")
-                    elapsed = (time.perf_counter() - started) * 1000
-                    return response
+                    return self._format_menu_response("reports")
             
             stage = "business_service_execution"
             service_started = time.perf_counter()
@@ -2198,9 +2160,7 @@ class AIProviderOrchestrator:
                 len(business_response.whatsapp_message),
             )
             
-            # Return the response
             if business_response.whatsapp_message:
-                # Save conversation history
                 if sender:
                     await self.conversation_manager.add_history(sender, message, business_response.whatsapp_message)
                 return business_response.whatsapp_message
@@ -2308,7 +2268,6 @@ class AIProviderOrchestrator:
         sender: str | None = None,
         **context: Any,
     ) -> str:
-        """Compatibility entry point used on the provider-service instance."""
         if sender is None:
             sender = context.pop("sender_id", None) or context.pop("phone_number", None)
         return await self.process(message, sender, **context)
@@ -2319,7 +2278,6 @@ class AIProviderOrchestrator:
         sender: str | None = None,
         **context: Any,
     ) -> str:
-        """Compatibility alias for callers resolving the singleton directly."""
         return await self.process_whatsapp_query(message, sender, **context)
 
     async def enhance_response(
@@ -2328,7 +2286,6 @@ class AIProviderOrchestrator:
         message: str = "",
         **context: Any,
     ) -> str:
-        """Enhance an existing business response without changing its data."""
         request_id = str(context.get("request_id") or uuid.uuid4())
         business_response = ServiceRouter.validate_response(response, request_id)
         decision = RoutingDecisionView(
@@ -2365,7 +2322,6 @@ class AIProviderOrchestrator:
             )
 
     def get_registry_status(self, *, refresh: bool = False) -> dict[str, Any]:
-        """Validate imports, instances, and routed methods without business calls."""
         cache_key = "service_registry"
         if not refresh and cache_key in self.metadata_cache:
             return self.metadata_cache[cache_key]
@@ -2428,7 +2384,6 @@ class AIProviderOrchestrator:
         return result
 
     def get_service_registry_status(self) -> dict[str, Any]:
-        """Compatibility report consumed by the existing webhook startup code."""
         report = self.get_registry_status()
         services = report["services"]
         ready = sum(1 for status in services.values() if status.get("available"))
@@ -2455,7 +2410,6 @@ class AIProviderOrchestrator:
         return aliases.get(service_key, service_key)
 
     def get_service_status(self, service_key: str) -> dict[str, Any]:
-        """Compatibility method exposed through ``service.registry``."""
         provider_key = self._provider_key(service_key)
         status = self.get_registry_status()["services"].get(provider_key)
         if status is None:
@@ -2467,7 +2421,6 @@ class AIProviderOrchestrator:
         }
 
     def get_service_instance(self, service_key: str) -> Any | None:
-        """Resolve a registered singleton for legacy diagnostics endpoints."""
         provider_key = self._provider_key(service_key)
         try:
             return self._resolve_provider(provider_key)
@@ -2476,13 +2429,11 @@ class AIProviderOrchestrator:
             return None
 
     def refresh_status(self) -> dict[str, Any]:
-        """Clear diagnostic caches and revalidate the entire service registry."""
         self.metadata_cache.clear()
         self.router._method_cache.clear()
         return self.get_registry_status(refresh=True)
 
     async def health_check(self) -> dict[str, Any]:
-        """Resolve and probe every dependency without running business logic."""
         if "health" in self.metadata_cache:
             return self.metadata_cache["health"]
         
@@ -2523,7 +2474,6 @@ class AIProviderOrchestrator:
 container = ApplicationContainer()
 orchestrator = AIProviderOrchestrator(container)
 
-# Preserve the historical service class name used by imports and type checks.
 WhatsAppProviderService = AIProviderOrchestrator
 
 
@@ -2536,7 +2486,6 @@ async def process_whatsapp_query(
     sender: str | None = None,
     **context: Any,
 ) -> str:
-    """Primary backward-compatible webhook entry point."""
     return await orchestrator.process_whatsapp_query(message, sender, **context)
 
 
@@ -2545,7 +2494,6 @@ async def process_query(
     sender: str | None = None,
     **context: Any,
 ) -> str:
-    """Compatibility alias used by older webhook implementations."""
     return await process_whatsapp_query(message, sender, **context)
 
 
@@ -2554,7 +2502,6 @@ async def enhance_response(
     message: str = "",
     **context: Any,
 ) -> str:
-    """Backward-compatible module-level response enhancement entry point."""
     return await orchestrator.enhance_response(response, message, **context)
 
 
@@ -2563,27 +2510,22 @@ async def health_check() -> dict[str, Any]:
 
 
 def get_whatsapp_provider_service() -> AIProviderOrchestrator:
-    """Return the process-wide, dependency-injected orchestrator singleton."""
     return orchestrator
 
 
 def get_service_registry_status() -> dict[str, Any]:
-    """Return cached service-registry diagnostics."""
     return orchestrator.get_registry_status()
 
 
 def validate_all_services() -> dict[str, Any]:
-    """Validate every registered service and routed method."""
     return orchestrator.get_registry_status(refresh=True)
 
 
 def refresh_service_status() -> dict[str, Any]:
-    """Invalidate diagnostic state and return a fresh registry report."""
     return orchestrator.refresh_status()
 
 
 def get_system_health() -> dict[str, Any]:
-    """Synchronous health snapshot suitable for existing status endpoints."""
     registry = orchestrator.get_registry_status()
     return {
         "healthy": registry["healthy"],
