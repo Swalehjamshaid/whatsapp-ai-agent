@@ -13,12 +13,13 @@ import importlib
 import inspect
 import re
 import time
+import traceback
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime, timezone
 from functools import partial
-from typing import Any, Final, Protocol
+from typing import Any, Final, Protocol, Optional
 
 import orjson
 from cachetools import TTLCache
@@ -33,23 +34,34 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
+# ============================================================
+# BOOTSTRAP IMPORT
+# ============================================================
+
+from app.services.ai_bootstrap_service import get_ai_bootstrap_service
+
+
+# ============================================================
+# CUSTOM EXCEPTIONS
+# ============================================================
 
 class OrchestrationError(RuntimeError):
     """Base class for safe orchestration failures."""
+    def __init__(self, message: str, request_id: str = "", **kwargs):
+        self.request_id = request_id
+        self.diagnostics = kwargs
+        super().__init__(message)
 
 
 class ConfigurationError(OrchestrationError):
-    """Configuration or dependency resolution failure."""
     pass
 
 
 class ServiceUnavailableError(OrchestrationError):
-    """Service dependency cannot be loaded or is misconfigured."""
     pass
 
 
 class MethodNotFoundError(OrchestrationError):
-    """Requested method does not exist on the resolved service."""
     pass
 
 
@@ -59,19 +71,20 @@ class DatabaseConnectionError(OrchestrationError):
 
 
 class RoutingError(OrchestrationError):
-    """Request could not be routed to a valid service method."""
     pass
 
 
 class GroqError(OrchestrationError):
-    """AI enhancement service error."""
     pass
 
 
 class IntentDetectionError(OrchestrationError):
-    """Intent engine failed to produce a valid routing decision."""
     pass
 
+
+# ============================================================
+# PYDANTIC MODELS
+# ============================================================
 
 class ServiceRequest(BaseModel):
     """Validated request context passed through the orchestration pipeline."""
@@ -179,8 +192,12 @@ ROUTES: Final[dict[str, RouteTarget]] = {
     # Warehouse Service Routes
     "warehouse_dashboard": RouteTarget("warehouse_service", "get_warehouse_dashboard"),
     
-    # City Service Routes
+    # City Service Routes - NEW
     "city_dashboard": RouteTarget("city_service", "get_city_dashboard"),
+    "city_revenue": RouteTarget("city_service", "get_city_dashboard"),
+    "city_pending": RouteTarget("city_service", "get_city_dashboard"),
+    "top_cities": RouteTarget("city_service", "get_top_cities"),
+    "city_comparison": RouteTarget("city_service", "compare_cities"),
     
     # Product Service Routes
     "product_dashboard": RouteTarget("product_service", "get_product_dashboard"),
@@ -223,13 +240,14 @@ _SYMBOLS: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
 
 
 # ============================================================
-# FALLBACK INTENT ENGINE
+# FALLBACK INTENT ENGINE - ENHANCED WITH CITY SUPPORT
 # ============================================================
 
 class FallbackIntentEngine:
     """
     Simple regex-based intent detection when the primary intent engine fails.
     This ensures the orchestrator never crashes due to intent engine issues.
+    Enhanced with city detection support.
     """
     
     _DN_PATTERN = re.compile(r'(?<!\d)(\d{6,20})(?!\d)')
@@ -242,7 +260,7 @@ class FallbackIntentEngine:
         re.IGNORECASE
     )
     _CITY_PATTERNS = re.compile(
-        r'(?:city)\s+(?:of\s+)?([a-zA-Z\s]+)',
+        r'(?:city|city\s+of)\s+(?:of\s+)?([a-zA-Z\s]+)|^(?:abbottabad|lahore|karachi|rawalpindi|quetta|multan|peshawar|gilgit|hyderabad|sialkot|gujranwala|islamabad)\b',
         re.IGNORECASE
     )
     _PENDING_KEYWORDS = re.compile(
@@ -261,6 +279,10 @@ class FallbackIntentEngine:
         r'(?:top|best|highest|leading)',
         re.IGNORECASE
     )
+    _REVENUE_KEYWORDS = re.compile(
+        r'(?:revenue|sales|earnings)',
+        re.IGNORECASE
+    )
     _GREETING_PATTERNS = re.compile(
         r'^(?:hi|hello|hey|good morning|good afternoon|good evening|hola|namaste|salam|howdy)',
         re.IGNORECASE
@@ -272,8 +294,9 @@ class FallbackIntentEngine:
     
     @classmethod
     def detect(cls, message: str) -> dict[str, Any]:
-        """Detect intent using regex patterns."""
+        """Detect intent using regex patterns with enhanced city support."""
         message_lower = message.lower().strip()
+        message_original = message.strip()
         
         # Check for DN number first
         dn_match = cls._DN_PATTERN.search(message)
@@ -287,6 +310,22 @@ class FallbackIntentEngine:
                 "requires_ai": False,
                 "reason": "DN number detected in message",
             }
+        
+        # Check for city (BEFORE dealer to catch city names first)
+        city_match = cls._CITY_PATTERNS.search(message)
+        if city_match:
+            city_name = city_match.group(1) or city_match.group(0)
+            if city_name and len(city_name.strip()) > 2:
+                # Check if it's a city query
+                return {
+                    "intent": "city_dashboard",
+                    "service_key": "city_service",
+                    "method": "get_city_dashboard",
+                    "entity": city_name.strip(),
+                    "confidence": 0.85,
+                    "requires_ai": False,
+                    "reason": "City name detected",
+                }
         
         # Check for greeting
         if cls._GREETING_PATTERNS.match(message_lower):
@@ -314,6 +353,19 @@ class FallbackIntentEngine:
         
         # Check for summary
         if cls._SUMMARY_KEYWORDS.search(message_lower):
+            # Check if it's about a city
+            if "city" in message_lower:
+                city_match = cls._CITY_PATTERNS.search(message)
+                if city_match:
+                    return {
+                        "intent": "city_dashboard",
+                        "service_key": "city_service",
+                        "method": "get_city_dashboard",
+                        "entity": city_match.group(0).strip(),
+                        "confidence": 0.75,
+                        "requires_ai": False,
+                        "reason": "City summary requested",
+                    }
             return {
                 "intent": "dn_summary",
                 "service_key": "dn_service",
@@ -324,8 +376,45 @@ class FallbackIntentEngine:
                 "reason": "Summary request detected",
             }
         
+        # Check for revenue
+        if cls._REVENUE_KEYWORDS.search(message_lower):
+            if "city" in message_lower:
+                city_match = cls._CITY_PATTERNS.search(message)
+                if city_match:
+                    return {
+                        "intent": "city_revenue",
+                        "service_key": "city_service",
+                        "method": "get_city_dashboard",
+                        "entity": city_match.group(0).strip(),
+                        "confidence": 0.75,
+                        "requires_ai": False,
+                        "reason": "City revenue requested",
+                    }
+            if any(ind in message_lower for ind in ["electronics", "traders", "distributors"]):
+                return {
+                    "intent": "dealer_dashboard",
+                    "service_key": "dealer_service",
+                    "method": "get_dealer_dashboard",
+                    "entity": message_original,
+                    "confidence": 0.7,
+                    "requires_ai": False,
+                    "reason": "Dealer revenue requested",
+                }
+        
         # Check for pending
         if cls._PENDING_KEYWORDS.search(message_lower):
+            if "city" in message_lower:
+                city_match = cls._CITY_PATTERNS.search(message)
+                if city_match:
+                    return {
+                        "intent": "city_pending",
+                        "service_key": "city_service",
+                        "method": "get_city_dashboard",
+                        "entity": city_match.group(0).strip(),
+                        "confidence": 0.75,
+                        "requires_ai": False,
+                        "reason": "City pending requested",
+                    }
             if "pod" in message_lower:
                 return {
                     "intent": "pending_pod",
@@ -347,6 +436,16 @@ class FallbackIntentEngine:
                     "reason": "Pending PGI detected",
                 }
             else:
+                if any(ind in message_lower for ind in ["electronics", "traders", "distributors"]):
+                    return {
+                        "intent": "dealer_pending",
+                        "service_key": "dealer_service",
+                        "method": "get_dealer_dashboard",
+                        "entity": message_original,
+                        "confidence": 0.7,
+                        "requires_ai": False,
+                        "reason": "Dealer pending requested",
+                    }
                 return {
                     "intent": "pending_dns",
                     "service_key": "dn_service",
@@ -369,17 +468,16 @@ class FallbackIntentEngine:
                 "reason": "Recent DNs requested",
             }
         
-        # Check for dealer
-        dealer_match = cls._DEALER_PATTERNS.search(message)
-        if dealer_match:
+        # Check for top cities
+        if cls._TOP_KEYWORDS.search(message_lower) and "city" in message_lower:
             return {
-                "intent": "dealer_dashboard",
-                "service_key": "dealer_service",
-                "method": "get_dealer_dashboard",
-                "entity": dealer_match.group(1).strip(),
-                "confidence": 0.8,
+                "intent": "top_cities",
+                "service_key": "city_service",
+                "method": "get_top_cities",
+                "entity": None,
+                "confidence": 0.75,
                 "requires_ai": False,
-                "reason": "Dealer name detected",
+                "reason": "Top cities requested",
             }
         
         # Check for top dealers
@@ -392,6 +490,19 @@ class FallbackIntentEngine:
                 "confidence": 0.75,
                 "requires_ai": False,
                 "reason": "Top dealers requested",
+            }
+        
+        # Check for dealer
+        dealer_match = cls._DEALER_PATTERNS.search(message)
+        if dealer_match:
+            return {
+                "intent": "dealer_dashboard",
+                "service_key": "dealer_service",
+                "method": "get_dealer_dashboard",
+                "entity": dealer_match.group(1).strip(),
+                "confidence": 0.8,
+                "requires_ai": False,
+                "reason": "Dealer name detected",
             }
         
         # Check for warehouse
@@ -407,18 +518,20 @@ class FallbackIntentEngine:
                 "reason": "Warehouse name detected",
             }
         
-        # Check for city
+        # Check for city (fallback - generic city name)
         city_match = cls._CITY_PATTERNS.search(message)
         if city_match:
-            return {
-                "intent": "city_dashboard",
-                "service_key": "city_service",
-                "method": "get_city_dashboard",
-                "entity": city_match.group(1).strip(),
-                "confidence": 0.75,
-                "requires_ai": False,
-                "reason": "City name detected",
-            }
+            city_name = city_match.group(1) or city_match.group(0)
+            if city_name and len(city_name.strip()) > 2:
+                return {
+                    "intent": "city_dashboard",
+                    "service_key": "city_service",
+                    "method": "get_city_dashboard",
+                    "entity": city_name.strip(),
+                    "confidence": 0.7,
+                    "requires_ai": False,
+                    "reason": "City name detected (fallback)",
+                }
         
         # Default to general AI
         return {
@@ -437,10 +550,7 @@ class FallbackIntentEngine:
 # ============================================================
 
 def _load_component(key: str) -> Any:
-    """
-    Load one configured singleton lazily with comprehensive error handling.
-    If the primary component fails, attempts to load a fallback.
-    """
+    """Load one configured singleton lazily with comprehensive error handling."""
     logger.info(f"Attempting to load component: {key}")
     
     try:
@@ -469,7 +579,6 @@ def _load_component(key: str) -> Any:
         module = importlib.import_module(module_name)
     except ImportError as exc:
         logger.error(f"Cannot import module {module_name}: {exc}")
-        # For groq_service, we might continue without it
         if key == "groq_service":
             logger.warning("Groq service unavailable - continuing without AI enhancement")
             return None
@@ -533,7 +642,6 @@ class ApplicationContainer(containers.DeclarativeContainer):
 # ============================================================
 
 def _object_mapping(value: Any) -> dict[str, Any]:
-    """Convert various object types to a dictionary."""
     if isinstance(value, BaseModel):
         return value.model_dump(mode="python")
     if is_dataclass(value) and not isinstance(value, type):
@@ -552,7 +660,6 @@ def _object_mapping(value: Any) -> dict[str, Any]:
 
 
 def _decision_view(decision: Any) -> RoutingDecisionView:
-    """Convert any routing decision to a validated view."""
     raw = _object_mapping(decision)
     if not raw:
         raise ValueError("Intent engine returned an unsupported routing decision")
@@ -569,7 +676,6 @@ def _decision_view(decision: Any) -> RoutingDecisionView:
 
 
 async def _call(callable_object: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    """Execute sync implementations off-loop and await native async ones."""
     if inspect.iscoroutinefunction(callable_object):
         return await callable_object(*args, **kwargs)
     result = await asyncio.to_thread(partial(callable_object, *args, **kwargs))
@@ -579,7 +685,7 @@ async def _call(callable_object: Callable[..., Any], *args: Any, **kwargs: Any) 
 
 
 # ============================================================
-# SERVICE ROUTER
+# SERVICE ROUTER WITH CITY SUPPORT
 # ============================================================
 
 class ServiceRouter:
@@ -605,16 +711,19 @@ class ServiceRouter:
         if configured is None and decision.service_key:
             configured = self._routes.get(decision.service_key.strip().casefold())
         
-        # If still no route, check if it might be a dealer
+        # If still no route, check if it might be a dealer or city
         if configured is None:
             entity = str(decision.entity or "")
+            
+            # Check for city indicators
+            city_names = ["abbottabad", "lahore", "karachi", "rawalpindi", "quetta", "multan", "peshawar", "gilgit", "hyderabad", "islamabad", "sialkot", "gujranwala"]
+            if any(city in entity.lower() for city in city_names):
+                return RouteTarget("city_service", "get_city_dashboard")
+            
+            # Check for dealer indicators
             dealer_indicators = ["electronics", "traders", "distributors", "foods", "group", "pvt", "ltd", "sons", "brothers"]
             if any(indicator in entity.lower() for indicator in dealer_indicators):
                 return RouteTarget("dealer_service", "get_dealer_dashboard")
-            
-            city_names = ["abbottabad", "lahore", "karachi", "rawalpindi", "quetta", "multan", "peshawar", "gilgit", "hyderabad", "islamabad"]
-            if any(city in entity.lower() for city in city_names):
-                return RouteTarget("city_service", "get_city_dashboard")
         
         if configured is None:
             raise ServiceUnavailableError(f"No route configured for intent '{decision.intent}'")
@@ -717,8 +826,10 @@ class ServiceRouter:
                     raise RoutingError("A valid DN number was not found in the request")
                 value = match.group(1)
             
-            # Special handling for city service
+            # Special handling for city service - extract city name
             if target.provider_name == "city_service":
+                if isinstance(value, dict):
+                    value = value.get("city") or value.get("city_name") or str(value)
                 city_match = re.search(r'(?:city|city\s+of)\s+(?:of\s+)?([a-zA-Z\s]+)|^(?:abbottabad|lahore|karachi|rawalpindi|quetta|multan|peshawar|gilgit|hyderabad|sialkot|gujranwala|islamabad)\b', str(value), re.IGNORECASE)
                 if city_match:
                     value = city_match.group(1) or city_match.group(0)
@@ -957,38 +1068,56 @@ class AIProviderOrchestrator:
             logger.error(f"Invalid routing decision: {exc} - using fallback")
             decision = FallbackIntentEngine.detect(message)
         
-        # If decision is general_ai, check if it might be a dealer or city
+        # If decision is general_ai, check if it might be a dealer, city, or DN
         if decision.get("intent") == "general_ai":
             msg_lower = message.lower()
+            
+            # Check for dealer indicators
             dealer_indicators = ["electronics", "traders", "distributors", "foods", "group", "pvt", "ltd", "sons", "brothers"]
             dealer_names = ["umar", "taj", "haroon", "commercial", "national", "mian", "mgc", "arco", "shah", "haji"]
+            
+            # Check for city indicators
             city_names = ["abbottabad", "lahore", "karachi", "rawalpindi", "quetta", "multan", "peshawar", "gilgit", "hyderabad", "islamabad", "sialkot", "gujranwala"]
+            
+            # Check for DN number
+            dn_match = re.search(r"(?<!\d)(\d{6,20})(?!\d)", message)
             
             has_dealer = any(indicator in msg_lower for indicator in dealer_indicators) or any(name in msg_lower for name in dealer_names)
             has_city = any(city in msg_lower for city in city_names)
+            has_dn = dn_match is not None
+            
             word_count = len(msg_lower.split())
             
-            if (has_dealer or has_city) and word_count <= 6:
-                if has_dealer and not has_city:
-                    decision = {
-                        "intent": "dealer_dashboard",
-                        "service_key": "dealer_service",
-                        "method": "get_dealer_dashboard",
-                        "entity": message.strip(),
-                        "confidence": 0.8,
-                        "requires_ai": False,
-                        "reason": "Dealer detected (fallback - general_ai override)",
-                    }
-                elif has_city and not has_dealer:
-                    decision = {
-                        "intent": "city_dashboard",
-                        "service_key": "city_service",
-                        "method": "get_city_dashboard",
-                        "entity": message.strip(),
-                        "confidence": 0.8,
-                        "requires_ai": False,
-                        "reason": "City detected (fallback - general_ai override)",
-                    }
+            if has_dn:
+                decision = {
+                    "intent": "dn_lookup",
+                    "service_key": "dn_service",
+                    "method": "get_dn_dashboard",
+                    "entity": dn_match.group(1),
+                    "confidence": 0.9,
+                    "requires_ai": False,
+                    "reason": "DN number detected (fallback - general_ai override)",
+                }
+            elif has_city and not has_dealer and word_count <= 6:
+                decision = {
+                    "intent": "city_dashboard",
+                    "service_key": "city_service",
+                    "method": "get_city_dashboard",
+                    "entity": message.strip(),
+                    "confidence": 0.8,
+                    "requires_ai": False,
+                    "reason": "City detected (fallback - general_ai override)",
+                }
+            elif has_dealer and not has_city and word_count <= 6:
+                decision = {
+                    "intent": "dealer_dashboard",
+                    "service_key": "dealer_service",
+                    "method": "get_dealer_dashboard",
+                    "entity": message.strip(),
+                    "confidence": 0.8,
+                    "requires_ai": False,
+                    "reason": "Dealer detected (fallback - general_ai override)",
+                }
         
         self.intent_cache[key] = decision
         return decision, False
@@ -1154,7 +1283,7 @@ class AIProviderOrchestrator:
                 if any(word in error.lower() for word in ["not found", "no rows", "does not exist", "no record", "dealer"]):
                     return f"Dealer '{dealer_name}' was not found in PostgreSQL."
             
-            # City Not Found
+            # City Not Found - NEW
             if target.provider_name == "city_service":
                 city_name = str(decision.entity) if decision else "unknown"
                 if any(word in error.lower() for word in ["not found", "no rows", "does not exist", "no record", "city"]):
