@@ -223,13 +223,14 @@ _SYMBOLS: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
 
 
 # ============================================================
-# FALLBACK INTENT ENGINE
+# FALLBACK INTENT ENGINE - UPDATED WITH DEALER DETECTION
 # ============================================================
 
 class FallbackIntentEngine:
     """
     Simple regex-based intent detection when the primary intent engine fails.
     This ensures the orchestrator never crashes due to intent engine issues.
+    Updated to detect dealer names naturally without requiring "dealer" keyword.
     """
     
     _DN_PATTERN = re.compile(r'(?<!\d)(\d{6,20})(?!\d)')
@@ -237,6 +238,36 @@ class FallbackIntentEngine:
         r'(?:dealer|dealers?)\s+(?:for\s+)?([a-zA-Z0-9\s_\-]+)',
         re.IGNORECASE
     )
+    
+    # Dealer name detection without requiring "dealer" keyword
+    _DEALER_NAME_PATTERN = re.compile(
+        r'^(?:umar|taj|haroon|commercial|national|mian|mgc|arco|shah|haji|sons|electronics|distributors|traders|foods|group|pvt|ltd|wah|abbottabad|haripur|gilget|rawalpindi)\s*[\w\s]+|^[\w\s]+(?:electronics|distributors|traders|foods|group|pvt|ltd|sons|brothers)',
+        re.IGNORECASE
+    )
+    
+    # Common dealer names for exact matching
+    _COMMON_DEALERS = frozenset({
+        "umar electronics wah",
+        "umar electronics",
+        "taj electronics",
+        "haroon electronics", 
+        "commercial electronics",
+        "national foods",
+        "mian group chakwal",
+        "mian group",
+        "arco electronics",
+        "shah electronics",
+        "haji sharaf ud din & sons",
+        "haji sharaf",
+        "haji sharaf ud din",
+    })
+    
+    # Dealer indicators - words that suggest a message is about a dealer
+    _DEALER_INDICATORS = frozenset({
+        "electronics", "traders", "distributors", "foods", 
+        "group", "pvt", "ltd", "sons", "brothers", "enterprises"
+    })
+    
     _WAREHOUSE_PATTERNS = re.compile(
         r'(?:warehouse|wh)\s+(?:for\s+)?([a-zA-Z0-9\s_\-]+)',
         re.IGNORECASE
@@ -272,8 +303,9 @@ class FallbackIntentEngine:
     
     @classmethod
     def detect(cls, message: str) -> dict[str, Any]:
-        """Detect intent using regex patterns."""
+        """Detect intent using regex patterns with enhanced dealer detection."""
         message_lower = message.lower().strip()
+        message_original = message.strip()
         
         # Check for DN number first
         dn_match = cls._DN_PATTERN.search(message)
@@ -287,6 +319,54 @@ class FallbackIntentEngine:
                 "requires_ai": False,
                 "reason": "DN number detected in message",
             }
+        
+        # Check for exact dealer name match
+        msg_lower = message_lower
+        for dealer in cls._COMMON_DEALERS:
+            if dealer in msg_lower:
+                return {
+                    "intent": "dealer_dashboard",
+                    "service_key": "dealer_service",
+                    "method": "get_dealer_dashboard",
+                    "entity": message_original,
+                    "confidence": 0.95,
+                    "requires_ai": False,
+                    "reason": f"Exact dealer match: {dealer}",
+                }
+        
+        # Check if message looks like a dealer name (natural language)
+        if cls._DEALER_NAME_PATTERN.search(message_lower):
+            # Additional check: if message is short (2-5 words) and doesn't contain query keywords
+            word_count = len(message_lower.split())
+            if word_count <= 6:
+                # Check if it's a query about something else
+                query_keywords = ['pending', 'summary', 'recent', 'top', 'compare', 'vs', 'versus', 'revenue', 'units', 'dn', 'delivery']
+                if not any(keyword in message_lower for keyword in query_keywords):
+                    return {
+                        "intent": "dealer_dashboard",
+                        "service_key": "dealer_service",
+                        "method": "get_dealer_dashboard",
+                        "entity": message_original,
+                        "confidence": 0.85,
+                        "requires_ai": False,
+                        "reason": "Dealer name detected (natural language)",
+                    }
+        
+        # Check if message contains dealer indicators
+        words = message_lower.split()
+        for word in words:
+            if word in cls._DEALER_INDICATORS:
+                # Check if the message is likely a dealer name
+                if len(words) <= 5:
+                    return {
+                        "intent": "dealer_dashboard",
+                        "service_key": "dealer_service",
+                        "method": "get_dealer_dashboard",
+                        "entity": message_original,
+                        "confidence": 0.75,
+                        "requires_ai": False,
+                        "reason": "Dealer indicator detected",
+                    }
         
         # Check for greeting
         if cls._GREETING_PATTERNS.match(message_lower):
@@ -369,7 +449,7 @@ class FallbackIntentEngine:
                 "reason": "Recent DNs requested",
             }
         
-        # Check for dealer
+        # Check for dealer with "dealer" keyword
         dealer_match = cls._DEALER_PATTERNS.search(message)
         if dealer_match:
             return {
@@ -379,7 +459,7 @@ class FallbackIntentEngine:
                 "entity": dealer_match.group(1).strip(),
                 "confidence": 0.8,
                 "requires_ai": False,
-                "reason": "Dealer name detected",
+                "reason": "Dealer name detected with keyword",
             }
         
         # Check for top dealers
@@ -604,6 +684,15 @@ class ServiceRouter:
         configured = self._routes.get(intent_key)
         if configured is None and decision.service_key:
             configured = self._routes.get(decision.service_key.strip().casefold())
+        
+        # If still no route, check if it might be a dealer
+        if configured is None:
+            entity = str(decision.entity or "")
+            # Check for dealer indicators
+            dealer_indicators = ["electronics", "traders", "distributors", "foods", "group", "pvt", "ltd", "sons", "brothers"]
+            if any(indicator in entity.lower() for indicator in dealer_indicators):
+                return RouteTarget("dealer_service", "get_dealer_dashboard")
+        
         if configured is None:
             raise ServiceUnavailableError(f"No route configured for intent '{decision.intent}'")
         return RouteTarget(configured.provider_name, decision.method or configured.method)
@@ -881,7 +970,7 @@ class AIProviderOrchestrator:
         return rendered[:4_000]
 
     async def _detect_intent(self, message: str, sender: str | None) -> tuple[Any, bool]:
-        """Detect intent with fallback support."""
+        """Detect intent with fallback support and dealer detection."""
         key = self._intent_cache_key(message, sender)
         if key in self.intent_cache:
             logger.debug(f"Intent cache hit for message: {message[:50]}...")
@@ -917,6 +1006,29 @@ class AIProviderOrchestrator:
         except (ValueError, ValidationError) as exc:
             logger.error(f"Invalid routing decision: {exc} - using fallback")
             decision = FallbackIntentEngine.detect(message)
+        
+        # If decision is general_ai, check if it might be a dealer
+        if decision.get("intent") == "general_ai":
+            msg_lower = message.lower()
+            dealer_indicators = ["electronics", "traders", "distributors", "foods", "group", "pvt", "ltd", "sons", "brothers"]
+            dealer_names = ["umar", "taj", "haroon", "commercial", "national", "mian", "mgc", "arco", "shah", "haji"]
+            
+            # Check if message contains dealer indicators or common dealer names
+            has_indicator = any(indicator in msg_lower for indicator in dealer_indicators)
+            has_dealer_name = any(name in msg_lower for name in dealer_names)
+            
+            # If it has dealer indicators and is short (2-5 words), treat as dealer
+            word_count = len(msg_lower.split())
+            if (has_indicator or has_dealer_name) and word_count <= 6:
+                decision = {
+                    "intent": "dealer_dashboard",
+                    "service_key": "dealer_service",
+                    "method": "get_dealer_dashboard",
+                    "entity": message.strip(),
+                    "confidence": 0.8,
+                    "requires_ai": False,
+                    "reason": "Dealer detected (fallback - general_ai override)",
+                }
         
         self.intent_cache[key] = decision
         return decision, False
