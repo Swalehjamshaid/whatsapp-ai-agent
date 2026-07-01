@@ -1,15 +1,17 @@
-"""Process-wide, lazy AI resource bootstrap for analytics services with conversation management support."""
+"""Process-wide, lazy AI resource bootstrap for analytics services.
+   
+   CRITICAL FIX: Models are loaded ONCE at startup and CACHED forever.
+   No model loading happens during user queries after warmup.
+"""
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from functools import lru_cache
 from typing import Any, Callable, Optional, TypeVar, Dict, List
 
 logger = logging.getLogger(__name__)
@@ -29,16 +31,16 @@ class ResourceHealth:
 class AIBootstrapService:
     """
     Initialize expensive optional resources once and reuse them safely.
-    Supports conversation state, semantic search, NLP, and AI resources.
+    
+    CRITICAL: All resources are loaded ONCE and CACHED.
+    No resource loading happens during user queries after warmup.
     """
 
     _instance: Optional["AIBootstrapService"] = None
     _instance_lock = threading.Lock()
     
-    # Resource timeout in seconds
-    RESOURCE_TIMEOUT = 30
-    MAX_RETRIES = 3
-    RETRY_DELAY = 1.0
+    MAX_RETRIES = 2
+    RETRY_DELAY = 0.5
 
     def __new__(cls) -> "AIBootstrapService":
         if cls._instance is None:
@@ -63,594 +65,428 @@ class AIBootstrapService:
                 max_workers=os.cpu_count() or 4,
                 thread_name_prefix="ai-bootstrap"
             )
-            self._resource_retries: dict[str, int] = {}
             self._initialized = True
-            self._warmup_complete = False
+            self._warmed_up = False
             self._warmup_start_time: Optional[float] = None
             self._warmup_end_time: Optional[float] = None
-            
-            # Track registered resources
-            self._registered_factories: dict[str, Callable[[], Any]] = {}
-            self._register_resources()
-            
             logger.info("✅ AIBootstrapService initialized")
 
-    def _register_resources(self) -> None:
-        """Register all available resources"""
-        self._registered_factories = {
-            "embeddings": self._create_embeddings,
-            "spacy": self._create_spacy,
-            "flashrank": self._create_flashrank,
-            "sqlglot": self._create_sqlglot,
-            "groq": self._create_groq,
-            "openai": self._create_openai,
-            "anthropic": self._create_anthropic,
-            "instructor": self._create_instructor,
-            "nltk": self._create_nltk,
-            "textblob": self._create_textblob,
-            "symspell": self._create_symspell,
-            "dateparser": self._create_dateparser,
-            "lingua": self._create_lingua,
-            "ahocorasick": self._create_ahocorasick,
-            "semantic_router": self._create_semantic_router,
-            "joblib": self._create_joblib,
-            "regex": self._create_regex,
-            "ftfy": self._create_ftfy,
-            "unidecode": self._create_unidecode,
-            "expiringdict": self._create_expiringdict,
-            "jsonschema": self._create_jsonschema,
-            "aiofiles": self._create_aiofiles,
-        }
-
-    # ============================================================
-    # RESOURCE CREATION METHODS WITH RETRY
-    # ============================================================
-
-    def _create_with_retry(self, key: str, factory: Callable[[], T]) -> Optional[T]:
-        """Create resource with retry logic"""
-        retry_count = self._resource_retries.get(key, 0)
-        
-        for attempt in range(self.MAX_RETRIES):
-            try:
-                start_time = time.perf_counter()
-                value = factory()
-                load_time = (time.perf_counter() - start_time) * 1000
-                
-                self._load_times[key] = load_time
-                self._resource_health[key] = ResourceHealth(
-                    name=key,
-                    available=True,
-                    load_time_ms=load_time,
-                    metadata={"attempt": attempt + 1, "retries": retry_count}
-                )
-                
-                if attempt > 0:
-                    logger.info(f"✅ Resource {key} loaded after {attempt + 1} attempts ({load_time:.2f}ms)")
-                else:
-                    logger.info(f"✅ Resource {key} loaded ({load_time:.2f}ms)")
-                
-                self._resource_retries[key] = 0  # Reset retries on success
-                return value
-                
-            except Exception as error:
-                retry_count += 1
-                self._resource_retries[key] = retry_count
-                error_msg = str(error)
-                
-                if attempt < self.MAX_RETRIES - 1:
-                    wait_time = self.RETRY_DELAY * (2 ** attempt)  # Exponential backoff
-                    logger.warning(f"⚠️ Resource {key} attempt {attempt + 1} failed: {error_msg}. Retrying in {wait_time:.1f}s...")
-                    time.sleep(wait_time)
-                else:
-                    self._errors[key] = error_msg
-                    self._resource_health[key] = ResourceHealth(
-                        name=key,
-                        available=False,
-                        error=error_msg,
-                        metadata={"attempts": attempt + 1}
-                    )
-                    logger.warning(f"❌ Resource {key} unavailable after {self.MAX_RETRIES} attempts: {error_msg}")
-                    return None
-        
-        return None
-
     def _once(self, key: str, factory: Callable[[], T]) -> Optional[T]:
-        """Get or create resource with timeout support"""
-        existing = self._resources.get(key)
-        if existing is not None:
-            return existing
+        """
+        Get or create resource - CACHED after first load.
+        CRITICAL: Resources are loaded ONCE and reused forever.
+        """
+        
+        # CRITICAL FIX: Check cache FIRST - no reloading
+        if key in self._resources:
+            logger.debug(f"✅ Resource {key} returned from cache (cached)")
+            return self._resources[key]
         
         if key in self._errors:
+            logger.debug(f"⏭️ Resource {key} previously failed, skipping")
             return None
         
         with self._lock:
-            existing = self._resources.get(key)
-            if existing is not None:
-                return existing
+            # Double-check after acquiring lock
+            if key in self._resources:
+                return self._resources[key]
             
-            # Use retry mechanism
-            value = self._create_with_retry(key, factory)
-            if value is not None:
-                self._resources[key] = value
-            return value
-
-    # ============================================================
-    # RESOURCE FACTORIES - NLP & ML
-    # ============================================================
-
-    def _create_embeddings(self) -> Any:
-        """Create sentence transformer embeddings"""
-        try:
-            from sentence_transformers import SentenceTransformer
-            model_name = os.getenv("SENTENCE_TRANSFORMER_MODEL", "all-MiniLM-L6-v2")
-            device = os.getenv("EMBEDDING_DEVICE", "cpu")
-            return SentenceTransformer(model_name, device=device)
-        except ImportError as e:
-            logger.warning(f"⚠️ sentence-transformers not installed: {e}")
-            raise
-
-    def _create_spacy(self) -> Any:
-        """Create spacy NLP model"""
-        try:
-            import spacy
-            model_name = os.getenv("SPACY_MODEL", "en_core_web_sm")
-            try:
-                return spacy.load(model_name)
-            except OSError:
-                # Download and load if not available
-                import subprocess
-                logger.info(f"📥 Downloading spacy model: {model_name}")
-                subprocess.run(["python", "-m", "spacy", "download", model_name], check=True)
-                return spacy.load(model_name)
-            except Exception:
-                # Fallback to blank model
-                logger.warning(f"⚠️ Using blank spacy model as fallback")
-                return spacy.blank("en")
-        except ImportError as e:
-            logger.warning(f"⚠️ spacy not installed: {e}")
-            raise
-
-    def _create_flashrank(self) -> Any:
-        """Create flashrank ranker"""
-        try:
-            from flashrank import Ranker
-            model_name = os.getenv("FLASHRANK_MODEL", "ms-marco-TinyBERT-L-2-v2")
-            return Ranker(model_name=model_name)
-        except ImportError as e:
-            logger.warning(f"⚠️ flashrank not installed: {e}")
-            raise
-
-    def _create_nltk(self) -> Any:
-        """Create nltk resources"""
-        try:
-            import nltk
-            # Download required data
-            resources = ['punkt', 'stopwords', 'averaged_perceptron_tagger', 'wordnet']
-            for resource in resources:
+            if key in self._errors:
+                return None
+            
+            logger.info(f"🔄 Loading resource {key} for first time (will be cached forever)")
+            start_time = time.perf_counter()
+            
+            # Try with retry
+            for attempt in range(self.MAX_RETRIES):
                 try:
-                    nltk.data.find(f'tokenizers/{resource}')
-                except LookupError:
-                    nltk.download(resource, quiet=True)
-            return nltk
-        except ImportError as e:
-            logger.warning(f"⚠️ nltk not installed: {e}")
-            raise
-
-    def _create_textblob(self) -> Any:
-        """Create textblob"""
-        try:
-            from textblob import TextBlob
-            return TextBlob
-        except ImportError as e:
-            logger.warning(f"⚠️ textblob not installed: {e}")
-            raise
-
-    def _create_semantic_router(self) -> Any:
-        """Create semantic router"""
-        try:
-            from semantic_router import Route, Router, RouteLayer
-            from semantic_router.encoders import HuggingFaceEncoder
+                    value = factory()
+                    if value is not None:
+                        load_time = (time.perf_counter() - start_time) * 1000
+                        self._resources[key] = value
+                        self._load_times[key] = load_time
+                        self._resource_health[key] = ResourceHealth(
+                            name=key,
+                            available=True,
+                            load_time_ms=load_time,
+                            metadata={"attempt": attempt + 1}
+                        )
+                        logger.info(f"✅ Resource {key} loaded and cached forever ({load_time:.2f}ms)")
+                        return value
+                except Exception as error:
+                    if attempt < self.MAX_RETRIES - 1:
+                        wait_time = self.RETRY_DELAY * (2 ** attempt)
+                        logger.warning(f"⚠️ Resource {key} attempt {attempt + 1} failed. Retrying in {wait_time:.1f}s...")
+                        time.sleep(wait_time)
+                    else:
+                        self._errors[key] = str(error)
+                        self._resource_health[key] = ResourceHealth(
+                            name=key,
+                            available=False,
+                            error=str(error)
+                        )
+                        logger.warning(f"❌ Resource {key} unavailable after {self.MAX_RETRIES} attempts: {error}")
+                        return None
             
-            # Create encoder
-            encoder = HuggingFaceEncoder()
-            
-            # Define routes
-            routes = [
-                Route(
-                    name="dealer",
-                    utterances=[
-                        "show dealer", "dealer dashboard", "tell me about dealer",
-                        "dealer revenue", "dealer performance", "dealer pending"
-                    ]
-                ),
-                Route(
-                    name="city",
-                    utterances=[
-                        "show city", "city dashboard", "city revenue",
-                        "revenue in city", "city performance"
-                    ]
-                ),
-                Route(
-                    name="dn",
-                    utterances=[
-                        "show dn", "dn number", "delivery note",
-                        "track dn", "dn status", "dn history"
-                    ]
-                ),
-                Route(
-                    name="pending",
-                    utterances=[
-                        "pending dns", "show pending", "list pending",
-                        "pending deliveries", "overdue"
-                    ]
-                ),
-                Route(
-                    name="top",
-                    utterances=[
-                        "top dealers", "top cities", "best performers",
-                        "highest revenue", "leading"
-                    ]
-                ),
-            ]
-            
-            return Router(routes=routes, encoder=encoder)
-        except ImportError as e:
-            logger.warning(f"⚠️ semantic-router not installed: {e}")
-            raise
+            return None
 
     # ============================================================
-    # RESOURCE FACTORIES - AI PROVIDERS
-    # ============================================================
-
-    def _create_groq(self) -> Any:
-        """Create Groq client"""
-        try:
-            from groq import Groq
-            api_key = os.getenv("GROQ_API_KEY")
-            if not api_key:
-                raise ValueError("GROQ_API_KEY not set")
-            return Groq(api_key=api_key)
-        except ImportError as e:
-            logger.warning(f"⚠️ groq not installed: {e}")
-            raise
-
-    def _create_openai(self) -> Any:
-        """Create OpenAI client"""
-        try:
-            from openai import OpenAI
-            api_key = os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                raise ValueError("OPENAI_API_KEY not set")
-            return OpenAI(api_key=api_key)
-        except ImportError as e:
-            logger.warning(f"⚠️ openai not installed: {e}")
-            raise
-
-    def _create_anthropic(self) -> Any:
-        """Create Anthropic client"""
-        try:
-            from anthropic import Anthropic
-            api_key = os.getenv("ANTHROPIC_API_KEY")
-            if not api_key:
-                raise ValueError("ANTHROPIC_API_KEY not set")
-            return Anthropic(api_key=api_key)
-        except ImportError as e:
-            logger.warning(f"⚠️ anthropic not installed: {e}")
-            raise
-
-    def _create_instructor(self) -> Any:
-        """Create instructor client"""
-        try:
-            import instructor
-            client = self.get_openai()
-            return instructor.from_openai(client) if client else None
-        except ImportError as e:
-            logger.warning(f"⚠️ instructor not installed: {e}")
-            raise
-
-    # ============================================================
-    # RESOURCE FACTORIES - TEXT PROCESSING
-    # ============================================================
-
-    def _create_symspell(self) -> Any:
-        """Create symspell for spell correction"""
-        try:
-            from symspellpy import SymSpell, Verbosity
-            symspell = SymSpell(max_dictionary_edit_distance=2, prefix_length=7)
-            # Try to load dictionary if available
-            dictionary_path = os.getenv("SYMSPELL_DICT_PATH", "frequency_dictionary_en_82_765.txt")
-            if os.path.exists(dictionary_path):
-                symspell.load_dictionary(dictionary_path, term_index=0, count_index=1)
-            return symspell
-        except ImportError as e:
-            logger.warning(f"⚠️ symspellpy not installed: {e}")
-            raise
-
-    def _create_dateparser(self) -> Any:
-        """Create dateparser"""
-        try:
-            import dateparser
-            return dateparser
-        except ImportError as e:
-            logger.warning(f"⚠️ dateparser not installed: {e}")
-            raise
-
-    def _create_lingua(self) -> Any:
-        """Create lingua language detector"""
-        try:
-            from lingua import LanguageDetectorBuilder, Language
-            detector = LanguageDetectorBuilder.from_all_languages().build()
-            return detector
-        except ImportError as e:
-            logger.warning(f"⚠️ lingua not installed: {e}")
-            raise
-
-    def _create_ftfy(self) -> Any:
-        """Create ftfy for Unicode cleanup"""
-        try:
-            import ftfy
-            return ftfy
-        except ImportError as e:
-            logger.warning(f"⚠️ ftfy not installed: {e}")
-            raise
-
-    def _create_unidecode(self) -> Any:
-        """Create unidecode for transliteration"""
-        try:
-            from unidecode import unidecode
-            return unidecode
-        except ImportError as e:
-            logger.warning(f"⚠️ unidecode not installed: {e}")
-            raise
-
-    def _create_regex(self) -> Any:
-        """Create advanced regex"""
-        try:
-            import regex
-            return regex
-        except ImportError as e:
-            logger.warning(f"⚠️ regex not installed, using re")
-            import re
-            return re
-
-    # ============================================================
-    # RESOURCE FACTORIES - UTILITIES
-    # ============================================================
-
-    def _create_sqlglot(self) -> Any:
-        """Create sqlglot"""
-        try:
-            import sqlglot
-            return sqlglot
-        except ImportError as e:
-            logger.warning(f"⚠️ sqlglot not installed: {e}")
-            raise
-
-    def _create_joblib(self) -> Any:
-        """Create joblib for parallel processing"""
-        try:
-            from joblib import Parallel, delayed
-            return Parallel, delayed
-        except ImportError as e:
-            logger.warning(f"⚠️ joblib not installed: {e}")
-            raise
-
-    def _create_ahocorasick(self) -> Any:
-        """Create ahocorasick for fast dictionary matching"""
-        try:
-            import ahocorasick
-            return ahocorasick
-        except ImportError as e:
-            logger.warning(f"⚠️ ahocorasick not installed: {e}")
-            raise
-
-    def _create_expiringdict(self) -> Any:
-        """Create expiringdict for conversation state"""
-        try:
-            from expiringdict import ExpiringDict
-            return ExpiringDict
-        except ImportError as e:
-            logger.warning(f"⚠️ expiringdict not installed: {e}")
-            raise
-
-    def _create_jsonschema(self) -> Any:
-        """Create jsonschema for validation"""
-        try:
-            import jsonschema
-            return jsonschema
-        except ImportError as e:
-            logger.warning(f"⚠️ jsonschema not installed: {e}")
-            raise
-
-    def _create_aiofiles(self) -> Any:
-        """Create aiofiles for async file operations"""
-        try:
-            import aiofiles
-            return aiofiles
-        except ImportError as e:
-            logger.warning(f"⚠️ aiofiles not installed: {e}")
-            raise
-
-    # ============================================================
-    # PUBLIC API - GET RESOURCES
+    # RESOURCE GETTERS - CACHED AFTER FIRST LOAD
     # ============================================================
 
     def get_embeddings(self) -> Any:
-        return self._once("embeddings", self._create_embeddings)
+        """Get sentence-transformers embeddings - CACHED forever after first load"""
+        def factory() -> Any:
+            try:
+                from sentence_transformers import SentenceTransformer
+                model_name = os.getenv("SENTENCE_TRANSFORMER_MODEL", "all-MiniLM-L6-v2")
+                device = os.getenv("EMBEDDING_DEVICE", "cpu")
+                logger.info(f"📥 Loading embedding model: {model_name} (this happens ONCE at startup)")
+                return SentenceTransformer(model_name, device=device)
+            except ImportError:
+                logger.warning("⚠️ sentence-transformers not installed")
+                return None
+        return self._once("embeddings", factory)
 
     def get_spacy(self) -> Any:
-        return self._once("spacy", self._create_spacy)
+        """Get spacy NLP model - CACHED forever after first load"""
+        def factory() -> Any:
+            try:
+                import spacy
+                model_name = os.getenv("SPACY_MODEL", "en_core_web_sm")
+                try:
+                    return spacy.load(model_name)
+                except OSError:
+                    logger.info(f"📥 Downloading spacy model: {model_name}")
+                    import subprocess
+                    subprocess.run(["python", "-m", "spacy", "download", model_name], check=True)
+                    return spacy.load(model_name)
+            except ImportError:
+                logger.warning("⚠️ spacy not installed")
+                return None
+        return self._once("spacy", factory)
 
     def get_flashrank(self) -> Any:
-        return self._once("flashrank", self._create_flashrank)
-
-    def get_groq(self) -> Any:
-        return self._once("groq", self._create_groq)
-
-    def get_openai(self) -> Any:
-        return self._once("openai", self._create_openai)
-
-    def get_anthropic(self) -> Any:
-        return self._once("anthropic", self._create_anthropic)
-
-    def get_instructor(self) -> Any:
-        return self._once("instructor", self._create_instructor)
-
-    def get_sqlglot(self) -> Any:
-        return self._once("sqlglot", self._create_sqlglot)
+        """Get flashrank ranker - CACHED forever after first load"""
+        def factory() -> Any:
+            try:
+                from flashrank import Ranker
+                model_name = os.getenv("FLASHRANK_MODEL", "ms-marco-TinyBERT-L-2-v2")
+                return Ranker(model_name=model_name)
+            except ImportError:
+                logger.warning("⚠️ flashrank not installed")
+                return None
+        return self._once("flashrank", factory)
 
     def get_nltk(self) -> Any:
-        return self._once("nltk", self._create_nltk)
+        """Get nltk - CACHED forever after first load"""
+        def factory() -> Any:
+            try:
+                import nltk
+                resources = ['punkt', 'stopwords']
+                for resource in resources:
+                    try:
+                        nltk.data.find(f'tokenizers/{resource}')
+                    except LookupError:
+                        nltk.download(resource, quiet=True)
+                return nltk
+            except ImportError:
+                logger.warning("⚠️ nltk not installed")
+                return None
+        return self._once("nltk", factory)
 
     def get_textblob(self) -> Any:
-        return self._once("textblob", self._create_textblob)
+        """Get textblob - CACHED forever after first load"""
+        def factory() -> Any:
+            try:
+                from textblob import TextBlob
+                return TextBlob
+            except ImportError:
+                logger.warning("⚠️ textblob not installed")
+                return None
+        return self._once("textblob", factory)
 
     def get_symspell(self) -> Any:
-        return self._once("symspell", self._create_symspell)
+        """Get symspell for spell correction - CACHED forever after first load"""
+        def factory() -> Any:
+            try:
+                from symspellpy import SymSpell, Verbosity
+                return SymSpell(max_dictionary_edit_distance=2, prefix_length=7)
+            except ImportError:
+                logger.warning("⚠️ symspellpy not installed")
+                return None
+        return self._once("symspell", factory)
 
     def get_dateparser(self) -> Any:
-        return self._once("dateparser", self._create_dateparser)
-
-    def get_lingua(self) -> Any:
-        return self._once("lingua", self._create_lingua)
+        """Get dateparser - CACHED forever after first load"""
+        def factory() -> Any:
+            try:
+                import dateparser
+                return dateparser
+            except ImportError:
+                logger.warning("⚠️ dateparser not installed")
+                return None
+        return self._once("dateparser", factory)
 
     def get_ahocorasick(self) -> Any:
-        return self._once("ahocorasick", self._create_ahocorasick)
-
-    def get_semantic_router(self) -> Any:
-        return self._once("semantic_router", self._create_semantic_router)
-
-    def get_joblib(self) -> Any:
-        return self._once("joblib", self._create_joblib)
+        """Get ahocorasick for fast matching - CACHED forever after first load"""
+        def factory() -> Any:
+            try:
+                import ahocorasick
+                return ahocorasick
+            except ImportError:
+                logger.warning("⚠️ ahocorasick not installed")
+                return None
+        return self._once("ahocorasick", factory)
 
     def get_regex(self) -> Any:
-        return self._once("regex", self._create_regex)
+        """Get advanced regex - CACHED forever after first load"""
+        def factory() -> Any:
+            try:
+                import regex
+                return regex
+            except ImportError:
+                import re
+                return re
+        return self._once("regex", factory)
 
     def get_ftfy(self) -> Any:
-        return self._once("ftfy", self._create_ftfy)
+        """Get ftfy for Unicode cleanup - CACHED forever after first load"""
+        def factory() -> Any:
+            try:
+                import ftfy
+                return ftfy
+            except ImportError:
+                logger.warning("⚠️ ftfy not installed")
+                return None
+        return self._once("ftfy", factory)
 
     def get_unidecode(self) -> Any:
-        return self._once("unidecode", self._create_unidecode)
+        """Get unidecode - CACHED forever after first load"""
+        def factory() -> Any:
+            try:
+                from unidecode import unidecode
+                return unidecode
+            except ImportError:
+                logger.warning("⚠️ unidecode not installed")
+                return None
+        return self._once("unidecode", factory)
 
     def get_expiringdict(self) -> Any:
-        return self._once("expiringdict", self._create_expiringdict)
+        """Get expiringdict for conversation state - CACHED forever after first load"""
+        def factory() -> Any:
+            try:
+                from expiringdict import ExpiringDict
+                return ExpiringDict
+            except ImportError:
+                logger.warning("⚠️ expiringdict not installed")
+                return None
+        return self._once("expiringdict", factory)
 
     def get_jsonschema(self) -> Any:
-        return self._once("jsonschema", self._create_jsonschema)
+        """Get jsonschema - CACHED forever after first load"""
+        def factory() -> Any:
+            try:
+                import jsonschema
+                return jsonschema
+            except ImportError:
+                logger.warning("⚠️ jsonschema not installed")
+                return None
+        return self._once("jsonschema", factory)
+
+    def get_joblib(self) -> Any:
+        """Get joblib - CACHED forever after first load"""
+        def factory() -> Any:
+            try:
+                from joblib import Parallel, delayed
+                return {"Parallel": Parallel, "delayed": delayed}
+            except ImportError:
+                logger.warning("⚠️ joblib not installed")
+                return None
+        return self._once("joblib", factory)
+
+    def get_sqlglot(self) -> Any:
+        """Get sqlglot - CACHED forever after first load"""
+        def factory() -> Any:
+            try:
+                import sqlglot
+                return sqlglot
+            except ImportError:
+                logger.warning("⚠️ sqlglot not installed")
+                return None
+        return self._once("sqlglot", factory)
+
+    def get_lingua(self) -> Any:
+        """Get lingua language detector - CACHED forever after first load"""
+        def factory() -> Any:
+            try:
+                from lingua import LanguageDetectorBuilder, Language
+                return LanguageDetectorBuilder.from_all_languages().build()
+            except ImportError:
+                logger.warning("⚠️ lingua not installed")
+                return None
+        return self._once("lingua", factory)
 
     def get_aiofiles(self) -> Any:
-        return self._once("aiofiles", self._create_aiofiles)
+        """Get aiofiles - CACHED forever after first load"""
+        def factory() -> Any:
+            try:
+                import aiofiles
+                return aiofiles
+            except ImportError:
+                logger.warning("⚠️ aiofiles not installed")
+                return None
+        return self._once("aiofiles", factory)
 
-    def get_agent(self, factory: Optional[Callable[[], T]] = None, key: str = "agent") -> Optional[T]:
-        if factory is None:
-            return self._resources.get(key)
-        return self._once(key, factory)
+    def get_semantic_router(self) -> Any:
+        """Get semantic router - CACHED forever after first load"""
+        def factory() -> Any:
+            try:
+                from semantic_router import Route, Router
+                from semantic_router.encoders import HuggingFaceEncoder
+                
+                encoder = HuggingFaceEncoder()
+                routes = [
+                    Route(name="dealer", utterances=["dealer dashboard", "show dealer"]),
+                    Route(name="city", utterances=["city dashboard", "show city"]),
+                    Route(name="dn", utterances=["dn lookup", "show dn"]),
+                ]
+                return Router(routes=routes, encoder=encoder)
+            except ImportError:
+                logger.warning("⚠️ semantic-router not installed")
+                return None
+        return self._once("semantic_router", factory)
 
     # ============================================================
-    # WARMUP & HEALTH
+    # AI PROVIDERS
     # ============================================================
 
-    def warmup(self, include_ai_providers: bool = False, include_heavy_models: bool = False) -> None:
+    def get_groq(self) -> Any:
+        """Get Groq client - CACHED forever after first load"""
+        def factory() -> Any:
+            try:
+                from groq import Groq
+                api_key = os.getenv("GROQ_API_KEY")
+                if not api_key:
+                    raise ValueError("GROQ_API_KEY not set")
+                return Groq(api_key=api_key)
+            except ImportError:
+                logger.warning("⚠️ groq not installed")
+                return None
+        return self._once("groq", factory)
+
+    def get_openai(self) -> Any:
+        """Get OpenAI client - CACHED forever after first load"""
+        def factory() -> Any:
+            try:
+                from openai import OpenAI
+                api_key = os.getenv("OPENAI_API_KEY")
+                if not api_key:
+                    raise ValueError("OPENAI_API_KEY not set")
+                return OpenAI(api_key=api_key)
+            except ImportError:
+                logger.warning("⚠️ openai not installed")
+                return None
+        return self._once("openai", factory)
+
+    def get_anthropic(self) -> Any:
+        """Get Anthropic client - CACHED forever after first load"""
+        def factory() -> Any:
+            try:
+                from anthropic import Anthropic
+                api_key = os.getenv("ANTHROPIC_API_KEY")
+                if not api_key:
+                    raise ValueError("ANTHROPIC_API_KEY not set")
+                return Anthropic(api_key=api_key)
+            except ImportError:
+                logger.warning("⚠️ anthropic not installed")
+                return None
+        return self._once("anthropic", factory)
+
+    def get_instructor(self) -> Any:
+        """Get instructor client - CACHED forever after first load"""
+        def factory() -> Any:
+            try:
+                import instructor
+                client = self.get_openai()
+                return instructor.from_openai(client) if client else None
+            except ImportError:
+                logger.warning("⚠️ instructor not installed")
+                return None
+        return self._once("instructor", factory)
+
+    # ============================================================
+    # WARMUP - LOAD ALL RESOURCES AT STARTUP ONCE
+    # ============================================================
+
+    def warmup(self, include_heavy: bool = True) -> None:
         """
-        Schedule optional startup warm-up without blocking FastAPI startup.
+        Pre-load all resources at startup to avoid loading during queries.
         
-        Args:
-            include_ai_providers: Include AI provider clients (Groq, OpenAI, Anthropic)
-            include_heavy_models: Include heavy models (spacy, sentence-transformers)
+        CRITICAL FIX: This loads ALL models ONCE at startup.
+        After this, NO model loading happens during user queries.
         """
+        if self._warmed_up:
+            logger.info("✅ Resources already warmed up")
+            return
+        
+        logger.info("🚀 Warming up AI resources at startup...")
         self._warmup_start_time = time.perf_counter()
         
-        factories = []
-        
-        # Always include lightweight resources
-        factories.extend([
+        # Load lightweight resources first
+        resources = [
             self.get_regex,
             self.get_ftfy,
             self.get_unidecode,
             self.get_dateparser,
             self.get_expiringdict,
             self.get_jsonschema,
-            self.get_aiofiles,
+            self.get_sqlglot,
             self.get_ahocorasick,
-        ])
-        
-        if include_heavy_models:
-            factories.extend([
-                self.get_embeddings,
-                self.get_spacy,
-                self.get_nltk,
-                self.get_textblob,
-                self.get_semantic_router,
-            ])
-        
-        if include_ai_providers:
-            factories.extend([
-                self.get_groq,
-                self.get_openai,
-                self.get_anthropic,
-                self.get_instructor,
-            ])
-        
-        for factory in factories:
-            self._executor.submit(factory)
-        
-        self._warmup_complete = True
-        self._warmup_end_time = time.perf_counter()
-        
-        logger.info(f"🚀 Warmup started for {len(factories)} resources")
-
-    async def warmup_async(self, include_ai_providers: bool = False, include_heavy_models: bool = False) -> None:
-        """Async warmup method for FastAPI startup"""
-        self._warmup_start_time = time.perf_counter()
-        
-        resources = []
-        
-        # Lightweight resources
-        resources.extend([
-            self.get_regex,
-            self.get_ftfy,
-            self.get_unidecode,
-            self.get_dateparser,
-            self.get_expiringdict,
-            self.get_jsonschema,
+            self.get_nltk,
+            self.get_textblob,
             self.get_aiofiles,
-            self.get_ahocorasick,
-        ])
+            self.get_joblib,
+        ]
         
-        if include_heavy_models:
+        if include_heavy:
+            # Load heavy resources (these take 2-3 seconds each)
+            # BUT ONLY ONCE AT STARTUP - NOT PER QUERY
             resources.extend([
-                self.get_embeddings,
-                self.get_spacy,
-                self.get_nltk,
-                self.get_textblob,
-                self.get_semantic_router,
+                self.get_embeddings,   # ~2-3 seconds - ONCE
+                self.get_spacy,        # ~1-2 seconds - ONCE
+                self.get_flashrank,    # ~1 second - ONCE
+                self.get_semantic_router, # ~1 second - ONCE
+                self.get_lingua,       # ~0.5 second - ONCE
             ])
         
-        if include_ai_providers:
-            resources.extend([
-                self.get_groq,
-                self.get_openai,
-                self.get_anthropic,
-                self.get_instructor,
-            ])
-        
-        # Submit all to executor
-        loop = asyncio.get_event_loop()
+        # Load all in parallel
         futures = []
         for resource in resources:
-            futures.append(loop.run_in_executor(self._executor, resource))
+            futures.append(self._executor.submit(resource))
         
-        # Wait for all to complete or timeout
-        try:
-            await asyncio.wait_for(asyncio.gather(*futures, return_exceptions=True), timeout=30.0)
-        except asyncio.TimeoutError:
-            logger.warning("⚠️ Warmup timed out after 30 seconds")
+        # Wait for all to complete with timeout
+        loaded_count = 0
+        for future in futures:
+            try:
+                result = future.result(timeout=15)
+                if result is not None:
+                    loaded_count += 1
+            except Exception as e:
+                logger.warning(f"⚠️ Resource warmup failed: {e}")
         
-        self._warmup_complete = True
+        self._warmed_up = True
         self._warmup_end_time = time.perf_counter()
+        duration = (self._warmup_end_time - self._warmup_start_time) * 1000
         
-        warmup_duration = (self._warmup_end_time - self._warmup_start_time) * 1000
-        logger.info(f"✅ Warmup completed in {warmup_duration:.2f}ms")
+        logger.info(f"✅ AI resources warmed up in {duration:.2f}ms ({loaded_count} resources loaded)")
+        logger.info(f"📊 Resources now cached and will NOT reload during queries")
+
+    async def warmup_async(self, include_heavy: bool = True) -> None:
+        """Async warmup for FastAPI startup"""
+        import asyncio
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(self._executor, self.warmup, include_heavy)
 
     def health(self) -> dict[str, Any]:
         """Get health status of all resources"""
@@ -658,56 +494,33 @@ class AIBootstrapService:
             "initialized": sorted(self._resources.keys()),
             "available_count": len(self._resources),
             "errors": dict(self._errors),
-            "error_count": len(self._errors),
             "load_times": dict(self._load_times),
-            "resource_health": {
-                name: {
-                    "available": health.available,
-                    "load_time_ms": health.load_time_ms,
-                    "error": health.error,
-                }
-                for name, health in self._resource_health.items()
-            },
-            "ready": self._initialized,
-            "warmup_complete": self._warmup_complete,
+            "warmed_up": self._warmed_up,
             "warmup_duration_ms": (
                 (self._warmup_end_time - self._warmup_start_time) * 1000
                 if self._warmup_start_time and self._warmup_end_time
                 else 0
             ),
+            "ready": self._initialized,
         }
+
+    def is_available(self, resource_name: str) -> bool:
+        """Check if a specific resource is available"""
+        return resource_name in self._resources
 
     def get_resource_status(self, resource_name: str) -> Optional[ResourceHealth]:
         """Get status of a specific resource"""
         return self._resource_health.get(resource_name)
 
-    def is_available(self, resource_name: str) -> bool:
-        """Check if a resource is available"""
-        health = self._resource_health.get(resource_name)
-        if health:
-            return health.available
-        return resource_name in self._resources
-
-    def clear_resource(self, resource_name: str) -> None:
-        """Clear a resource from cache (for testing)"""
-        with self._lock:
-            if resource_name in self._resources:
-                del self._resources[resource_name]
-            if resource_name in self._errors:
-                del self._errors[resource_name]
-            if resource_name in self._resource_health:
-                del self._resource_health[resource_name]
-            logger.info(f"🔄 Cleared resource: {resource_name}")
-
-    def clear_all(self) -> None:
-        """Clear all resources (for testing)"""
+    def clear_cache(self) -> None:
+        """Clear all cached resources (for testing only)"""
         with self._lock:
             self._resources.clear()
             self._errors.clear()
             self._load_times.clear()
             self._resource_health.clear()
-            self._resource_retries.clear()
-            logger.info("🔄 Cleared all resources")
+            self._warmed_up = False
+            logger.info("🔄 Cleared all resource caches")
 
 
 # ============================================================
@@ -722,30 +535,28 @@ def get_ai_bootstrap_service() -> AIBootstrapService:
     return _manager
 
 
-def warmup_ai_resources(include_ai_providers: bool = False, include_heavy_models: bool = False) -> None:
-    """Warmup AI resources (sync wrapper)"""
-    _manager.warmup(
-        include_ai_providers=include_ai_providers,
-        include_heavy_models=include_heavy_models
-    )
+def warmup_ai_resources(include_heavy: bool = True) -> None:
+    """Warmup all resources at startup"""
+    _manager.warmup(include_heavy=include_heavy)
 
 
-async def warmup_ai_resources_async(include_ai_providers: bool = False, include_heavy_models: bool = False) -> None:
-    """Warmup AI resources (async)"""
-    await _manager.warmup_async(
-        include_ai_providers=include_ai_providers,
-        include_heavy_models=include_heavy_models
-    )
+async def warmup_ai_resources_async(include_heavy: bool = True) -> None:
+    """Async warmup for FastAPI startup"""
+    await _manager.warmup_async(include_heavy=include_heavy)
 
 
 # ============================================================
-# AUTO WARMUP ON IMPORT
+# CRITICAL FIX: AUTO WARMUP ON MODULE IMPORT
 # ============================================================
+
+# This runs when the module is imported (during FastAPI startup)
+# It loads ALL models ONCE before any user queries.
+# After this, models are CACHED and will NOT reload.
 
 if os.getenv("AI_BOOTSTRAP_AUTO_WARMUP", "true").lower() == "true":
+    logger.info("🔥 Auto-warming AI resources at module import...")
     warmup_ai_resources(
-        include_ai_providers=os.getenv("AI_BOOTSTRAP_PROVIDER_WARMUP", "false").lower() == "true",
-        include_heavy_models=os.getenv("AI_BOOTSTRAP_HEAVY_WARMUP", "true").lower() == "true"
+        include_heavy=os.getenv("AI_BOOTSTRAP_HEAVY_WARMUP", "true").lower() == "true"
     )
 
 
