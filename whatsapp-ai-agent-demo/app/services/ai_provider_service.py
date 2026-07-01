@@ -13,13 +13,12 @@ import importlib
 import inspect
 import re
 import time
-import traceback
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime, timezone
 from functools import partial
-from typing import Any, Final, Protocol, Optional
+from typing import Any, Final, Protocol
 
 import orjson
 from cachetools import TTLCache
@@ -34,34 +33,23 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
-# ============================================================
-# BOOTSTRAP IMPORT
-# ============================================================
-
-from app.services.ai_bootstrap_service import get_ai_bootstrap_service
-
-
-# ============================================================
-# CUSTOM EXCEPTIONS
-# ============================================================
 
 class OrchestrationError(RuntimeError):
     """Base class for safe orchestration failures."""
-    def __init__(self, message: str, request_id: str = "", **kwargs):
-        self.request_id = request_id
-        self.diagnostics = kwargs
-        super().__init__(message)
 
 
 class ConfigurationError(OrchestrationError):
+    """Configuration or dependency resolution failure."""
     pass
 
 
 class ServiceUnavailableError(OrchestrationError):
+    """Service dependency cannot be loaded or is misconfigured."""
     pass
 
 
 class MethodNotFoundError(OrchestrationError):
+    """Requested method does not exist on the resolved service."""
     pass
 
 
@@ -71,20 +59,19 @@ class DatabaseConnectionError(OrchestrationError):
 
 
 class RoutingError(OrchestrationError):
+    """Request could not be routed to a valid service method."""
     pass
 
 
 class GroqError(OrchestrationError):
+    """AI enhancement service error."""
     pass
 
 
 class IntentDetectionError(OrchestrationError):
+    """Intent engine failed to produce a valid routing decision."""
     pass
 
-
-# ============================================================
-# PYDANTIC MODELS
-# ============================================================
 
 class ServiceRequest(BaseModel):
     """Validated request context passed through the orchestration pipeline."""
@@ -204,6 +191,9 @@ ROUTES: Final[dict[str, RouteTarget]] = {
     
     # General AI Fallback
     "general_ai": RouteTarget("groq_service", "process_query"),
+    "greeting": RouteTarget("groq_service", "process_query"),
+    "help": RouteTarget("groq_service", "process_query"),
+    "unknown": RouteTarget("groq_service", "process_query"),
 }
 
 
@@ -447,7 +437,10 @@ class FallbackIntentEngine:
 # ============================================================
 
 def _load_component(key: str) -> Any:
-    """Load one configured singleton lazily with comprehensive error handling."""
+    """
+    Load one configured singleton lazily with comprehensive error handling.
+    If the primary component fails, attempts to load a fallback.
+    """
     logger.info(f"Attempting to load component: {key}")
     
     try:
@@ -490,7 +483,8 @@ def _load_component(key: str) -> Any:
     }
     
     if routed_methods and any(
-        callable(getattr(module, method, None)) for method in routed_methods
+        callable(getattr(module, method, None))
+        for method in routed_methods
     ):
         return module
     
@@ -539,6 +533,7 @@ class ApplicationContainer(containers.DeclarativeContainer):
 # ============================================================
 
 def _object_mapping(value: Any) -> dict[str, Any]:
+    """Convert various object types to a dictionary."""
     if isinstance(value, BaseModel):
         return value.model_dump(mode="python")
     if is_dataclass(value) and not isinstance(value, type):
@@ -557,6 +552,7 @@ def _object_mapping(value: Any) -> dict[str, Any]:
 
 
 def _decision_view(decision: Any) -> RoutingDecisionView:
+    """Convert any routing decision to a validated view."""
     raw = _object_mapping(decision)
     if not raw:
         raise ValueError("Intent engine returned an unsupported routing decision")
