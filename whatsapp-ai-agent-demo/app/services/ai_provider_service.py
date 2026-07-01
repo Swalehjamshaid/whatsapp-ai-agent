@@ -161,7 +161,7 @@ _SYMBOLS: Final[dict[str, tuple[str, tuple[str, ...]]]] = {
     "dn_service": ("app.services.dn_analysis", ("DNAnalysisService", "DNService")),
     "dealer_service": (
         "app.services.dealer_analytics_service",
-        ("DealerAnalyticsService", "DealerService"),
+        "DealerAnalyticsService", "DealerService",
     ),
     "warehouse_service": ("app.services.warehouse_service", ("WarehouseService",)),
     "city_service": ("app.services.city_service", ("CityService",)),
@@ -352,34 +352,34 @@ class ServiceRouter:
                 signature.bind(**kwargs)
                 return (), kwargs
 
-        positional = [
-            parameter
-            for parameter in parameters
-            if parameter.kind
-            in (
-                inspect.Parameter.POSITIONAL_ONLY,
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            )
-        ]
-        if not positional:
-            keyword_only = [
+            positional = [
                 parameter
                 for parameter in parameters
-                if parameter.kind is inspect.Parameter.KEYWORD_ONLY
+                if parameter.kind
+                in (
+                    inspect.Parameter.POSITIONAL_ONLY,
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                )
             ]
-            if not keyword_only:
-                return (), {}
-            value = entity if entity not in (None, "", {}) else message
-            if target.provider_name == "dn_service":
-                match = re.search(r"(?<!\d)(\d{6,20})(?!\d)", str(value))
-                if match is None:
-                    match = re.search(r"(?<!\d)(\d{6,20})(?!\d)", message)
-                if match is None:
-                    raise RoutingError("A valid DN number was not found in the request")
-                value = match.group(1)
-            kwargs = {keyword_only[0].name: value}
-            signature.bind(**kwargs)
-            return (), kwargs
+            if not positional:
+                keyword_only = [
+                    parameter
+                    for parameter in parameters
+                    if parameter.kind is inspect.Parameter.KEYWORD_ONLY
+                ]
+                if not keyword_only:
+                    return (), {}
+                value = entity if entity not in (None, "", {}) else message
+                if target.provider_name == "dn_service":
+                    match = re.search(r"(?<!\d)(\d{6,20})(?!\d)", str(value))
+                    if match is None:
+                        match = re.search(r"(?<!\d)(\d{6,20})(?!\d)", message)
+                    if match is None:
+                        raise RoutingError("A valid DN number was not found in the request")
+                    value = match.group(1)
+                kwargs = {keyword_only[0].name: value}
+                signature.bind(**kwargs)
+                return (), kwargs
 
         value: Any = None
         if isinstance(entity, Mapping):
@@ -724,24 +724,6 @@ class AIProviderOrchestrator:
                 (time.perf_counter() - started) * 1000,
             )
             return f"Unexpected internal error. Reference ID: {request_id}"
-
-    async def process_whatsapp_query(
-        self,
-        message: str,
-        sender: str | None = None,
-        **context: Any,
-    ) -> str:
-        """Compatibility entry point used on the provider-service instance."""
-        return await self.process(message, sender, **context)
-
-    async def process_query(
-        self,
-        message: str,
-        sender: str | None = None,
-        **context: Any,
-    ) -> str:
-        """Compatibility alias for callers resolving the singleton directly."""
-        return await self.process_whatsapp_query(message, sender, **context)
         except Exception as exc:
             root = self._root_cause(exc)
             bound.opt(exception=True).critical(
@@ -761,163 +743,53 @@ class AIProviderOrchestrator:
             )
             return f"Unexpected internal error. Reference ID: {request_id}"
 
+    async def process_whatsapp_query(
+        self,
+        message: str,
+        sender: str | None = None,
+        **context: Any,
+    ) -> str:
+        """Compatibility entry point used on the provider-service instance."""
+        return await self.process(message, sender, **context)
+
+    async def process_query(
+        self,
+        message: str,
+        sender: str | None = None,
+        **context: Any,
+    ) -> str:
+        """Compatibility alias for callers resolving the singleton directly."""
+        return await self.process_whatsapp_query(message, sender, **context)
+
     def get_registry_status(self, *, refresh: bool = False) -> dict[str, Any]:
         """Validate imports, instances, and routed methods without business calls."""
         cache_key = "service_registry"
         if not refresh and cache_key in self.metadata_cache:
             return self.metadata_cache[cache_key]
+        
         routed_methods: dict[str, set[str]] = {}
         for target in ROUTES.values():
             routed_methods.setdefault(target.provider_name, set()).add(target.method)
-        routed_methods["intent_engine"] = set()
-        statuses: dict[str, dict[str, Any]] = {}
-        for provider_name, methods in routed_methods.items():
+            
+        status: dict[str, Any] = {"healthy": True, "components": {}}
+        for key in _SYMBOLS:
             try:
-                service = self._resolve_provider(provider_name)
-                if provider_name == "intent_engine":
-                    self._find_callable(service, self._INTENT_METHODS, "Intent engine")
-                missing = sorted(
-                    method for method in methods
-                    if not callable(getattr(service, method, None))
-                )
-                metadata_method = getattr(service, "get_service_metadata", None)
-                metadata = metadata_method() if callable(metadata_method) and not inspect.iscoroutinefunction(metadata_method) else {}
-                statuses[provider_name] = {
-                    "available": not missing,
-                    "class": type(service).__name__,
-                    "module": getattr(service, "__name__", type(service).__module__),
-                    "methods": sorted(methods),
-                    "missing_methods": missing,
-                    "metadata": metadata if isinstance(metadata, Mapping) else {},
-                    "reason": "" if not missing else f"Missing methods: {', '.join(missing)}",
+                comp = self._resolve_provider(key)
+                methods_ok = True
+                missing_methods = []
+                if key in routed_methods:
+                    for m in routed_methods[key]:
+                        if not callable(getattr(comp, m, None)):
+                            methods_ok = False
+                            missing_methods.append(m)
+                status["components"][key] = {
+                    "available": True, 
+                    "methods_verified": methods_ok,
+                    "missing": missing_methods
                 }
-            except (ConfigurationError, ImportError, MethodNotFoundError, TypeError) as exc:
-                logger.exception("Service registry validation failed for {}", provider_name)
-                statuses[provider_name] = {
-                    "available": False,
-                    "methods": sorted(methods),
-                    "reason": f"{type(exc).__name__}: {exc}",
-                }
-        result = {
-            "healthy": all(status["available"] for status in statuses.values()),
-            "services": statuses,
-            "checked_at": datetime.now(timezone.utc).isoformat(),
-            "cache_ttl_seconds": 300,
-        }
-        self.metadata_cache[cache_key] = result
-        return result
-
-    def refresh_status(self) -> dict[str, Any]:
-        """Clear diagnostic caches and revalidate the entire service registry."""
-        self.metadata_cache.clear()
-        self.router._method_cache.clear()
-        return self.get_registry_status(refresh=True)
-
-    async def health_check(self) -> dict[str, Any]:
-        """Resolve and probe every dependency without running business logic."""
-        if "health" in self.metadata_cache:
-            return self.metadata_cache["health"]
-        checks: dict[str, dict[str, Any]] = {}
-        for name in (
-            "intent_engine", "dn_service", "dealer_service", "warehouse_service",
-            "city_service", "product_service", "kpi_service", "groq_service",
-        ):
-            try:
-                service = self._resolve_provider(name)
-                health = getattr(service, "health_check", None)
-                result = await asyncio.wait_for(_call(health), 5.0) if callable(health) else {"resolved": True}
-                checks[name] = {"healthy": True, "details": result}
-            except (ConfigurationError, ImportError, TimeoutError, asyncio.TimeoutError) as exc:
-                logger.exception("Startup health check failed for {}", name)
-                checks[name] = {"healthy": False, "error": type(exc).__name__}
-        result = {"healthy": all(item["healthy"] for item in checks.values()), "services": checks}
-        self.metadata_cache["health"] = result
-        return result
-
-
-container = ApplicationContainer()
-orchestrator = AIProviderOrchestrator(container)
-
-# Preserve the historical service class name used by imports and type checks.
-WhatsAppProviderService = AIProviderOrchestrator
-
-
-async def process_whatsapp_query(
-    message: str,
-    sender: str | None = None,
-    **context: Any,
-) -> str:
-    """Primary backward-compatible webhook entry point."""
-    return await orchestrator.process_whatsapp_query(message, sender, **context)
-
-
-async def process_query(
-    message: str,
-    sender: str | None = None,
-    **context: Any,
-) -> str:
-    """Compatibility alias used by older webhook implementations."""
-    return await process_whatsapp_query(message, sender, **context)
-
-
-async def health_check() -> dict[str, Any]:
-    return await orchestrator.health_check()
-
-
-def get_whatsapp_provider_service() -> AIProviderOrchestrator:
-    """Return the process-wide, dependency-injected orchestrator singleton."""
-    return orchestrator
-
-
-def get_service_registry_status() -> dict[str, Any]:
-    """Return cached service-registry diagnostics."""
-    return orchestrator.get_registry_status()
-
-
-def validate_all_services() -> dict[str, Any]:
-    """Validate every registered service and routed method."""
-    return orchestrator.get_registry_status(refresh=True)
-
-
-def refresh_service_status() -> dict[str, Any]:
-    """Invalidate diagnostic state and return a fresh registry report."""
-    return orchestrator.refresh_status()
-
-
-def get_system_health() -> dict[str, Any]:
-    """Synchronous health snapshot suitable for existing status endpoints."""
-    registry = orchestrator.get_registry_status()
-    return {
-        "healthy": registry["healthy"],
-        "status": "healthy" if registry["healthy"] else "unhealthy",
-        "reason": "" if registry["healthy"] else "One or more services failed validation",
-        "services": registry["services"],
-        "checked_at": registry["checked_at"],
-    }
-
-
-__all__ = [
-    "AIProviderOrchestrator",
-    "ApplicationContainer",
-    "ConfigurationError",
-    "DatabaseConnectionError",
-    "MethodNotFoundError",
-    "ROUTES",
-    "RouteTarget",
-    "RequestInput",
-    "ServiceRequest",
-    "ServiceResponse",
-    "ServiceRouter",
-    "ServiceUnavailableError",
-    "WhatsAppProviderService",
-    "container",
-    "get_service_registry_status",
-    "get_system_health",
-    "get_whatsapp_provider_service",
-    "health_check",
-    "orchestrator",
-    "process_query",
-    "process_whatsapp_query",
-    "refresh_service_status",
-    "validate_all_services",
-]
+            except Exception as e:
+                status["healthy"] = False
+                status["components"][key] = {"available": False, "error": str(e)}
+                
+        self.metadata_cache[cache_key] = status
+        return status
