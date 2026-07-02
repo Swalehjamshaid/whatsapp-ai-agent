@@ -1,15 +1,10 @@
 """
 File: app/services/ai_provider_service.py
-Version: 18.0 - ENTERPRISE AI ORCHESTRATOR WITH FIXED IMPORTS
+Version: 15.0 - resilient semantic routing (NO SENDING)
+
 Single entry point for the WhatsApp AI agent. Deterministic requests (menu,
 menu numbers, DN numbers and obvious entities) never depend on an AI provider.
 Semantic Router and Groq are optional enhancements and cannot prevent startup.
-
-FIXES:
-- Fixed all import issues causing webhook registration failure
-- Added proper error handling for all optional dependencies
-- Preserved ALL original attributes and methods
-- Ensures webhook routes register properly
 """
 
 from __future__ import annotations
@@ -20,15 +15,13 @@ import re
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 
-# =====================================================================================================================
-# SEMANTIC ROUTER - OPTIONAL DEPENDENCY (NEVER FAILS STARTUP)
-# =====================================================================================================================
-
+# Semantic Router has changed its public class names across releases. Support
+# current and older installations, but never make the whole application fail.
 Route = None
 SemanticRouter = None
 HuggingFaceEncoder = None
@@ -39,7 +32,7 @@ try:
     from semantic_router import Route as _Route
     try:
         from semantic_router import SemanticRouter as _SemanticRouter
-    except ImportError:
+    except ImportError:  # compatibility with older semantic-router releases
         try:
             from semantic_router import Router as _SemanticRouter
         except ImportError:
@@ -50,14 +43,10 @@ try:
     SemanticRouter = _SemanticRouter
     HuggingFaceEncoder = _HuggingFaceEncoder
     SEMANTIC_ROUTER_AVAILABLE = True
-except Exception as exc:
+except Exception as exc:  # optional dependency
     SEMANTIC_ROUTER_IMPORT_ERROR = exc
     logger.warning("Semantic Router unavailable; rules and AI fallback remain active: %s", exc)
 
-
-# =====================================================================================================================
-# DATACLASSES
-# =====================================================================================================================
 
 @dataclass
 class RoutingDecision:
@@ -87,95 +76,76 @@ class RoutingDecision:
         }
 
 
-# =====================================================================================================================
-# SERVICE IMPORTS WITH SAFE FALLBACKS (NEVER FAILS STARTUP)
-# =====================================================================================================================
-
-# DN Analysis Service
+# Service imports deliberately degrade independently. One broken analytics
+# module must not disable every WhatsApp command.
 try:
     from app.services.dn_analysis import DNAnalysisService
-    DN_ANALYSIS_AVAILABLE = True
 except Exception as exc:
     logger.exception("Unable to import DNAnalysisService: %s", exc)
-    DN_ANALYSIS_AVAILABLE = False
 
     class DNAnalysisService:  # type: ignore[no-redef]
-        async def get_dn_dashboard(self, entities: Dict[str, Any]) -> Union[str, Dict[str, Any]]:
-            return {"whatsapp_message": "⚠️ DN service is temporarily unavailable.", "success": False}
+        async def get_dn_dashboard(self, entities: Dict[str, Any]) -> str:
+            return "⚠️ DN service is temporarily unavailable."
 
-        async def get_warehouse_dashboard(self, entities: Dict[str, Any]) -> Union[str, Dict[str, Any]]:
-            return {"whatsapp_message": "⚠️ Warehouse service is temporarily unavailable.", "success": False}
+        async def get_warehouse_dashboard(self, entities: Dict[str, Any]) -> str:
+            return "⚠️ Warehouse service is temporarily unavailable."
 
-        async def get_pending_dns(self, entities: Dict[str, Any]) -> Union[str, Dict[str, Any]]:
-            return {"whatsapp_message": "⚠️ Pending DN service is temporarily unavailable.", "success": False}
+        async def get_pending_dns(self, entities: Dict[str, Any]) -> str:
+            return "⚠️ Pending DN service is temporarily unavailable."
 
-        async def get_top_performers(self, entities: Dict[str, Any]) -> Union[str, Dict[str, Any]]:
-            return {"whatsapp_message": "⚠️ Performance service is temporarily unavailable.", "success": False}
+        async def get_top_performers(self, entities: Dict[str, Any]) -> str:
+            return "⚠️ Performance service is temporarily unavailable."
 
-# Dealer Analytics Service
+
 try:
     from app.services.dealer_analytics_service import DealerAnalyticsService
-    DEALER_ANALYTICS_AVAILABLE = True
 except Exception as exc:
     logger.exception("Unable to import DealerAnalyticsService: %s", exc)
-    DEALER_ANALYTICS_AVAILABLE = False
 
     class DealerAnalyticsService:  # type: ignore[no-redef]
-        async def get_dealer_dashboard(self, entities: Dict[str, Any]) -> Union[str, Dict[str, Any]]:
-            return {"whatsapp_message": "⚠️ Dealer service is temporarily unavailable.", "success": False}
+        async def get_dealer_dashboard(self, entities: Dict[str, Any]) -> str:
+            return "⚠️ Dealer service is temporarily unavailable."
 
-# City Service
+
 try:
     from app.services.city_service import CityService
-    CITY_SERVICE_AVAILABLE = True
 except Exception as exc:
     logger.exception("Unable to import CityService: %s", exc)
-    CITY_SERVICE_AVAILABLE = False
 
     class CityService:  # type: ignore[no-redef]
-        async def get_city_dashboard(self, entities: Dict[str, Any]) -> Union[str, Dict[str, Any]]:
-            return {"whatsapp_message": "⚠️ City service is temporarily unavailable.", "success": False}
+        async def get_city_dashboard(self, entities: Dict[str, Any]) -> str:
+            return "⚠️ City service is temporarily unavailable."
 
-# Product Service
+
 try:
     from app.services.product_service import ProductService
-    PRODUCT_SERVICE_AVAILABLE = True
 except Exception as exc:
     logger.exception("Unable to import ProductService: %s", exc)
-    PRODUCT_SERVICE_AVAILABLE = False
 
     class ProductService:  # type: ignore[no-redef]
-        async def get_product_dashboard(self, entities: Dict[str, Any]) -> Union[str, Dict[str, Any]]:
-            return {"whatsapp_message": "⚠️ Product service is temporarily unavailable.", "success": False}
+        async def get_product_dashboard(self, entities: Dict[str, Any]) -> str:
+            return "⚠️ Product service is temporarily unavailable."
 
-# National KPI Service
+
 try:
     from app.services.national_kpi_service import NationalKPIService
-    NATIONAL_KPI_AVAILABLE = True
 except Exception as exc:
     logger.exception("Unable to import NationalKPIService: %s", exc)
-    NATIONAL_KPI_AVAILABLE = False
 
     class NationalKPIService:  # type: ignore[no-redef]
-        async def get_national_kpi(self, entities: Dict[str, Any]) -> Union[str, Dict[str, Any]]:
-            return {"whatsapp_message": "⚠️ National KPI service is temporarily unavailable.", "success": False}
+        async def get_national_kpi(self, entities: Dict[str, Any]) -> str:
+            return "⚠️ National KPI service is temporarily unavailable."
 
-# Groq Service
+
 try:
     from app.services.groq_service import GroqService
-    GROQ_SERVICE_AVAILABLE = True
 except Exception as exc:
     logger.exception("Unable to import GroqService: %s", exc)
-    GROQ_SERVICE_AVAILABLE = False
 
     class GroqService:  # type: ignore[no-redef]
         async def process_query(self, message: str, entities: Dict[str, Any]) -> str:
             return get_main_menu()
 
-
-# =====================================================================================================================
-# MENU OPTIONS
-# =====================================================================================================================
 
 MENU_OPTIONS: Dict[str, Dict[str, Any]] = {
     "0": {"name": "Main Menu", "service_key": "menu_service", "service_file": "ai_provider_service.py", "method": "show_main_menu", "requires_ai": False},
@@ -241,10 +211,6 @@ CITY_NAMES = (
 )
 
 
-# =====================================================================================================================
-# MAIN MENU FUNCTIONS
-# =====================================================================================================================
-
 def get_main_menu() -> str:
     return (
         "📋 *AI LOGISTICS MENU*\n\n"
@@ -263,91 +229,6 @@ async def _resolve(value: Any) -> Any:
     return await value if inspect.isawaitable(value) else value
 
 
-# =====================================================================================================================
-# RESPONSE EXTRACTOR - CRITICAL FIX FOR WHATSAPP RESPONSES
-# =====================================================================================================================
-
-def _extract_whatsapp_message(result: Any) -> str:
-    """
-    Extract WhatsApp message from service result with multiple fallback formats.
-    This ensures we always return a valid WhatsApp message.
-    
-    Priority order:
-    1. whatsapp_message field
-    2. formatted_response field
-    3. message field
-    4. response field
-    5. data.to_whatsapp_message()
-    6. data.__str__()
-    7. Convert dict to readable format
-    8. str(result)
-    9. Fallback message
-    """
-    if result is None:
-        return "No response from service. Please try again."
-    
-    # If result is already a string, return it
-    if isinstance(result, str):
-        return result if result.strip() else "No response from service. Please try again."
-    
-    # If result is a dict, try multiple extraction methods
-    if isinstance(result, dict):
-        # Priority 1: whatsapp_message
-        if "whatsapp_message" in result and result["whatsapp_message"]:
-            msg = result["whatsapp_message"]
-            if isinstance(msg, str):
-                return msg
-            elif isinstance(msg, dict):
-                return str(msg) if msg else "No response from service."
-        
-        # Priority 2: formatted_response
-        if "formatted_response" in result and result["formatted_response"]:
-            return str(result["formatted_response"])
-        
-        # Priority 3: message
-        if "message" in result and result["message"]:
-            return str(result["message"])
-        
-        # Priority 4: response
-        if "response" in result and result["response"]:
-            return str(result["response"])
-        
-        # Priority 5: data with to_whatsapp_message method
-        if "data" in result and result["data"]:
-            data = result["data"]
-            if hasattr(data, "to_whatsapp_message"):
-                try:
-                    msg = data.to_whatsapp_message()
-                    if msg:
-                        return str(msg)
-                except Exception as e:
-                    logger.warning(f"Failed to call to_whatsapp_message: {e}")
-            elif hasattr(data, "__str__"):
-                return str(data)
-        
-        # Priority 6: Convert dict to readable format (exclude meta fields)
-        lines = []
-        for key, value in result.items():
-            if key not in ["whatsapp_message", "formatted_response", "message", "response", "data", "metadata"]:
-                if value is not None and not key.startswith("_"):
-                    try:
-                        lines.append(f"{key}: {value}")
-                    except Exception:
-                        lines.append(f"{key}: [Unable to display]")
-        if lines:
-            return "\n".join(lines)
-    
-    # Last resort: convert to string with error handling
-    try:
-        return str(result) if result else "No response from service. Please try again."
-    except Exception:
-        return "No response from service. Please try again."
-
-
-# =====================================================================================================================
-# MAIN AI PROVIDER SERVICE
-# =====================================================================================================================
-
 class AIProviderService:
     _instance: Optional["AIProviderService"] = None
     _instance_lock = threading.Lock()
@@ -363,7 +244,7 @@ class AIProviderService:
         if getattr(self, "_initialized", False):
             return
 
-        # Initialize all services with safe fallbacks
+        # Only mark initialized after all mandatory state exists.
         self.dn_service = DNAnalysisService()
         self.dealer_service = DealerAnalyticsService()
         self.city_service = CityService()
@@ -376,17 +257,7 @@ class AIProviderService:
         self._cache: Dict[str, tuple[float, RoutingDecision]] = {}
         self._cache_ttl = 300.0
         self._initialized = True
-        
-        logger.info("=" * 60)
-        logger.info("AIProviderService initialized successfully")
-        logger.info(f"  DN Analysis: {'✅' if DN_ANALYSIS_AVAILABLE else '❌'}")
-        logger.info(f"  Dealer Analytics: {'✅' if DEALER_ANALYTICS_AVAILABLE else '❌'}")
-        logger.info(f"  City Service: {'✅' if CITY_SERVICE_AVAILABLE else '❌'}")
-        logger.info(f"  Product Service: {'✅' if PRODUCT_SERVICE_AVAILABLE else '❌'}")
-        logger.info(f"  National KPI: {'✅' if NATIONAL_KPI_AVAILABLE else '❌'}")
-        logger.info(f"  Groq Service: {'✅' if GROQ_SERVICE_AVAILABLE else '❌'}")
-        logger.info(f"  Semantic Router: {'✅' if SEMANTIC_ROUTER_AVAILABLE else '❌'}")
-        logger.info("=" * 60)
+        logger.info("AIProviderService initialized; semantic router will load lazily")
 
     def _ensure_semantic_router(self) -> None:
         if self._router is not None or self._router_init_attempted:
@@ -526,6 +397,7 @@ class AIProviderService:
             decision = self._decision_for_menu(number, message, reason="Menu number selected")
         else:
             entities = self._extract_entities(normalized)
+            # Explicit entities are safer and faster than embedding inference.
             if "dealer" in entities:
                 decision = self._decision_for_menu("2", message, entities, "dealer_dashboard", reason="Dealer entity detected")
             elif "city" in entities:
@@ -550,18 +422,6 @@ class AIProviderService:
             self._cache.clear()
         return decision
 
-    # =====================================================================================================================
-    # SHOW MAIN MENU - METHOD USED BY MENU OPTION 0
-    # =====================================================================================================================
-
-    def show_main_menu(self) -> str:
-        """Show main menu - used by menu option 0"""
-        return get_main_menu()
-
-    # =====================================================================================================================
-    # PROCESS WHATSAPP QUERY - MAIN ENTRY POINT
-    # =====================================================================================================================
-
     async def process_whatsapp_query(
         self,
         message: str,
@@ -569,27 +429,18 @@ class AIProviderService:
         sender_id: Optional[str] = None,
         **_: Any,
     ) -> str:
-        """
-        Process WhatsApp query and return formatted response.
-        Ensures a valid WhatsApp message is always returned.
-        """
+        # ``sender_id`` is retained for compatibility with webhook v28.2.
         sender = sender or sender_id
-        
         if not message or not message.strip():
-            logger.info("Empty message received, returning menu")
             return get_main_menu()
 
         logger.info("Processing WhatsApp message from %s", sender or "unknown")
         decision = self._make_routing_decision(message)
         logger.info("Route: %s -> %s.%s (%s)", decision.intent, decision.service_file, decision.method, decision.reason)
 
-        # Handle menu service
         if decision.service_key == "menu_service":
-            response = get_main_menu()
-            logger.info(f"Returning menu response: {len(response)} chars")
-            return response
+            return get_main_menu()
 
-        # Get service instance
         services = {
             "dn_analysis": self.dn_service,
             "dealer_analytics": self.dealer_service,
@@ -604,42 +455,18 @@ class AIProviderService:
             return get_invalid_selection_message()
 
         try:
-            # Execute service method
             method = getattr(service, decision.method)
-            
-            # Handle different service types
             if decision.service_key == "groq_service":
                 result = await _resolve(method(message, decision.entity))
             else:
                 result = await _resolve(method(decision.entity))
-            
-            # Extract WhatsApp message from result using enterprise extractor
-            whatsapp_message = _extract_whatsapp_message(result)
-            
-            # Validate message
-            if not whatsapp_message or not whatsapp_message.strip():
-                logger.warning("Service returned empty response, using fallback")
-                whatsapp_message = "⚠️ No response was returned. Please try again."
-            
-            # Log response preview
-            logger.info(f"Returning WhatsApp response: {len(whatsapp_message)} chars, preview: {whatsapp_message[:100]}...")
-            
-            return whatsapp_message
-            
-        except Exception as exc:
+            return str(result) if result is not None else "⚠️ No response was returned. Please try again."
+        except Exception:
             logger.exception("Service call failed: %s.%s", decision.service_key, decision.method)
-            
-            # Return appropriate error message
             if decision.service_key == "groq_service":
                 return "⚠️ AI service is temporarily unavailable. Reply *menu* to use logistics services."
-            else:
-                service_name = MENU_OPTIONS[decision.menu_option or '0']['name']
-                return f"⚠️ {service_name} is temporarily unavailable. Please try again later."
+            return f"⚠️ {MENU_OPTIONS[decision.menu_option or '0']['name']} is temporarily unavailable. Please try again."
 
-
-# =====================================================================================================================
-# SINGLETON INSTANCE
-# =====================================================================================================================
 
 _ai_service: Optional[AIProviderService] = None
 _service_lock = threading.Lock()
@@ -650,26 +477,7 @@ def get_ai_provider_service() -> AIProviderService:
     if _ai_service is None:
         with _service_lock:
             if _ai_service is None:
-                try:
-                    _ai_service = AIProviderService()
-                except Exception as exc:
-                    logger.error(f"Failed to create AIProviderService: {exc}")
-                    # Create minimal instance that can still show menu
-                    _ai_service = AIProviderService.__new__(AIProviderService)
-                    _ai_service._initialized = False
-                    _ai_service.dn_service = DNAnalysisService()
-                    _ai_service.dealer_service = DealerAnalyticsService()
-                    _ai_service.city_service = CityService()
-                    _ai_service.product_service = ProductService()
-                    _ai_service.national_kpi_service = NationalKPIService()
-                    _ai_service.groq_service = GroqService()
-                    _ai_service._router = None
-                    _ai_service._router_init_attempted = True
-                    _ai_service._router_lock = threading.Lock()
-                    _ai_service._cache = {}
-                    _ai_service._cache_ttl = 300.0
-                    _ai_service._initialized = True
-                    logger.warning("AIProviderService running with fallback services")
+                _ai_service = AIProviderService()
     return _ai_service
 
 
@@ -678,20 +486,12 @@ def get_whatsapp_provider_service() -> AIProviderService:
     return get_ai_provider_service()
 
 
-# =====================================================================================================================
-# MODULE-LEVEL FUNCTION - BACKWARD COMPATIBLE
-# =====================================================================================================================
-
 async def process_whatsapp_query(
     message: str,
     sender: Optional[str] = None,
     sender_id: Optional[str] = None,
     **kwargs: Any,
 ) -> str:
-    """
-    Module-level function for backward compatibility.
-    Always returns a valid WhatsApp message string.
-    """
     try:
         return await get_ai_provider_service().process_whatsapp_query(
             message=message,
@@ -699,16 +499,13 @@ async def process_whatsapp_query(
             sender_id=sender_id,
             **kwargs,
         )
-    except Exception as exc:
-        logger.exception("Unexpected AI provider failure: %s", exc)
+    except Exception:
+        logger.exception("Unexpected AI provider failure")
+        # Keep WhatsApp responsive even for an unforeseen initialization bug.
         if message and message.strip().casefold() in {"menu", "main menu", "help", "start", "0"}:
             return get_main_menu()
         return "⚠️ Service is temporarily unavailable. Reply *menu* to try again."
 
-
-# =====================================================================================================================
-# EXPORTS
-# =====================================================================================================================
 
 __all__ = [
     "process_whatsapp_query",
@@ -718,5 +515,4 @@ __all__ = [
     "RoutingDecision",
     "MENU_OPTIONS",
     "INTENT_TO_MENU",
-    "AIProviderService",
 ]
