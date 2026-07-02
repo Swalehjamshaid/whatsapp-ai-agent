@@ -1,8 +1,6 @@
 """
 File: app/services/ai_provider_service.py
-Version: 21.0 - ENTERPRISE ORCHESTRATION LAYER
-Complete WhatsApp AI service orchestrator with enterprise-grade routing,
-signature-aware invocation, response normalization, and comprehensive error handling.
+Version: 21.1 - DIAGNOSTIC VERSION WITH FULL DEBUG LOGGING
 """
 
 from __future__ import annotations
@@ -38,7 +36,6 @@ MENU_NUMBER_PATTERN = re.compile(r'^\s*([0-9])(?:[.)])\s*$')
 # =====================================================================================================================
 
 class Intent(Enum):
-    """Supported intents"""
     MENU = "menu"
     DN_LOOKUP = "dn_lookup"
     DN_DASHBOARD = "dn_dashboard"
@@ -65,7 +62,6 @@ class Intent(Enum):
 
 
 class ServiceStatus(Enum):
-    """Service health status"""
     HEALTHY = "healthy"
     DEGRADED = "degraded"
     UNHEALTHY = "unhealthy"
@@ -78,7 +74,6 @@ class ServiceStatus(Enum):
 
 @dataclass
 class ServiceRegistryEntry:
-    """Service registry entry with method validation"""
     menu_number: str
     menu_name: str
     intent: Intent
@@ -102,7 +97,6 @@ class ServiceRegistryEntry:
 
 @dataclass
 class EntityExtraction:
-    """Extracted entities from user message"""
     dn_number: Optional[str] = None
     dealer_name: Optional[str] = None
     dealer_code: Optional[str] = None
@@ -121,7 +115,6 @@ class EntityExtraction:
 
 @dataclass
 class RoutingDecision:
-    """Complete routing decision with all context"""
     intent: Intent
     confidence: float
     service_entry: ServiceRegistryEntry
@@ -131,24 +124,10 @@ class RoutingDecision:
     reason: str = ""
     original_message: str = ""
     menu_option: Optional[str] = None
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "intent": self.intent.value,
-            "confidence": self.confidence,
-            "service_key": self.service_entry.service_key,
-            "method": self.method,
-            "entity": {k: v for k, v in self.entity.__dict__.items() if v is not None},
-            "requires_ai": self.requires_ai,
-            "reason": self.reason,
-            "original_message": self.original_message[:100],
-            "menu_option": self.menu_option,
-        }
 
 
 @dataclass
 class RequestContext:
-    """Complete request context for logging"""
     request_id: str
     sender: Optional[str]
     message: str
@@ -169,26 +148,6 @@ class RequestContext:
     
     def elapsed_ms(self) -> float:
         return (time.time() - self.start_time) * 1000
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "request_id": self.request_id,
-            "sender": self.sender,
-            "message": self.message[:100],
-            "normalized": self.normalized_message[:100],
-            "intent": self.intent.value if self.intent else None,
-            "confidence": self.confidence,
-            "entities": {k: v for k, v in self.entities.__dict__.items() if v is not None} if self.entities else {},
-            "service": self.service_key,
-            "method": self.method,
-            "db_time_ms": round(self.database_time_ms, 2),
-            "formatting_ms": round(self.formatting_time_ms, 2),
-            "total_ms": round(self.total_time_ms, 2),
-            "ai_used": self.ai_used,
-            "response_size": self.response_size,
-            "success": self.success,
-            "error": self.error[:100] if self.error else None,
-        }
 
 
 # =====================================================================================================================
@@ -222,41 +181,35 @@ except Exception as exc:
 
 
 # =====================================================================================================================
-# SERVICE IMPORTS
+# SERVICE IMPORTS WITH FULL DEBUGGING
 # =====================================================================================================================
 
 SERVICE_IMPORT_STATUS: Dict[str, bool] = {}
 SERVICE_IMPORT_ERRORS: Dict[str, str] = {}
 
-def _import_service(service_name: str, import_path: str, class_name: str) -> Optional[Any]:
-    """Import a service with proper error handling"""
-    try:
-        module = __import__(import_path, fromlist=[class_name])
-        service_class = getattr(module, class_name)
-        SERVICE_IMPORT_STATUS[service_name] = True
-        return service_class
-    except Exception as exc:
-        SERVICE_IMPORT_STATUS[service_name] = False
-        SERVICE_IMPORT_ERRORS[service_name] = str(exc)
-        logger.warning(f"⚠️ Failed to import {service_name}: {exc}")
-        return None
-
 def _import_service_instance(service_name: str, import_path: str, class_name: str, factory_method: Optional[str] = None) -> Optional[Any]:
-    """Import and instantiate a service with proper error handling"""
+    """Import and instantiate a service with full debug logging"""
     try:
+        logger.info(f"🔍 Attempting to import {service_name} from {import_path}")
         module = __import__(import_path, fromlist=[class_name])
+        
         if factory_method:
+            logger.info(f"🔍 Using factory method: {factory_method}")
             factory = getattr(module, factory_method)
             instance = factory()
         else:
+            logger.info(f"🔍 Instantiating class: {class_name}")
             service_class = getattr(module, class_name)
             instance = service_class()
+        
         SERVICE_IMPORT_STATUS[service_name] = True
+        logger.info(f"✅ {service_name} imported and instantiated successfully: {instance}")
         return instance
     except Exception as exc:
         SERVICE_IMPORT_STATUS[service_name] = False
         SERVICE_IMPORT_ERRORS[service_name] = str(exc)
-        logger.warning(f"⚠️ Failed to initialize {service_name}: {exc}")
+        logger.error(f"❌ Failed to initialize {service_name}: {exc}")
+        logger.error(traceback.format_exc())
         return None
 
 # DN Analysis
@@ -345,7 +298,6 @@ except Exception as exc:
 # =====================================================================================================================
 
 def get_main_menu() -> str:
-    """Return the main menu"""
     return """🤖 *HPK Logistics AI Assistant*
 
 0️⃣ Main Menu
@@ -367,8 +319,6 @@ def get_main_menu() -> str:
 # =====================================================================================================================
 
 class ServiceRegistry:
-    """Enterprise service registry with method validation and signature detection"""
-    
     def __init__(self):
         self._entries: Dict[Intent, ServiceRegistryEntry] = {}
         self._method_cache: Dict[str, Callable] = {}
@@ -377,7 +327,6 @@ class ServiceRegistry:
         self._initialize_registry()
     
     def _initialize_registry(self) -> None:
-        """Initialize the service registry with all services"""
         self._entries = {
             Intent.MENU: ServiceRegistryEntry(
                 menu_number="0",
@@ -408,55 +357,7 @@ class ServiceRegistry:
                 parameter_mapping={"dn_number": "dn_no", "dn": "dn_no"},
                 requires_ai=False,
                 description="Look up delivery note details",
-                example_queries=["Track DN 6243698820", "6243698820", "DN 6243698820 status"]
-            ),
-            
-            Intent.DN_DASHBOARD: ServiceRegistryEntry(
-                menu_number="1",
-                menu_name="DN Dashboard",
-                intent=Intent.DN_DASHBOARD,
-                service_key="dn_analysis",
-                service_file="app.services.dn_analysis",
-                service_class="DNAnalysisService",
-                preferred_method="get_dn_dashboard",
-                compatible_methods=["get_dn_details", "get_dn_status"],
-                required_entities=["dn_number"],
-                parameter_mapping={"dn_number": "dn_no", "dn": "dn_no"},
-                requires_ai=False,
-                description="View DN analytics dashboard",
-                example_queries=["Show DN dashboard", "DN 6243698820 stats"]
-            ),
-            
-            Intent.DN_HISTORY: ServiceRegistryEntry(
-                menu_number="1",
-                menu_name="DN History",
-                intent=Intent.DN_HISTORY,
-                service_key="dn_analysis",
-                service_file="app.services.dn_analysis",
-                service_class="DNAnalysisService",
-                preferred_method="get_dn_history",
-                compatible_methods=["get_dn_history"],
-                required_entities=["dn_number"],
-                parameter_mapping={"dn_number": "dn_no", "dn": "dn_no"},
-                requires_ai=False,
-                description="View DN history timeline",
-                example_queries=["DN 6243698820 history", "Delivery history for 6243698820"]
-            ),
-            
-            Intent.DEALER_DASHBOARD: ServiceRegistryEntry(
-                menu_number="2",
-                menu_name="Dealer Dashboard",
-                intent=Intent.DEALER_DASHBOARD,
-                service_key="dealer_analytics",
-                service_file="app.services.dealer_analytics_service",
-                service_class="DealerAnalyticsService",
-                preferred_method="get_dealer_dashboard",
-                compatible_methods=["get_dealer_dashboard", "get_dealer_profile"],
-                required_entities=["dealer_name"],
-                parameter_mapping={"dealer_name": "dealer_name", "dealer": "dealer_name"},
-                requires_ai=False,
-                description="View dealer analytics dashboard",
-                example_queries=["Show dealer Taj Electronics", "Dealer Taj Electronics dashboard"]
+                example_queries=["Track DN 6243698820", "6243698820"]
             ),
             
             Intent.CITY_DASHBOARD: ServiceRegistryEntry(
@@ -472,55 +373,23 @@ class ServiceRegistry:
                 parameter_mapping={"city": "city_name", "city_name": "city_name"},
                 requires_ai=False,
                 description="View city analytics dashboard",
-                example_queries=["Show Lahore dashboard", "Karachi city stats", "Lahore"]
+                example_queries=["Show Lahore dashboard", "Lahore"]
             ),
             
-            Intent.WAREHOUSE_DASHBOARD: ServiceRegistryEntry(
-                menu_number="4",
-                menu_name="Warehouse Dashboard",
-                intent=Intent.WAREHOUSE_DASHBOARD,
-                service_key="dn_analysis",
-                service_file="app.services.dn_analysis",
-                service_class="DNAnalysisService",
-                preferred_method="get_warehouse_dashboard",
-                compatible_methods=["get_warehouse_dashboard"],
-                required_entities=["warehouse"],
-                parameter_mapping={"warehouse": "warehouse", "warehouse_code": "warehouse"},
+            Intent.DEALER_DASHBOARD: ServiceRegistryEntry(
+                menu_number="2",
+                menu_name="Dealer Dashboard",
+                intent=Intent.DEALER_DASHBOARD,
+                service_key="dealer_analytics",
+                service_file="app.services.dealer_analytics_service",
+                service_class="DealerAnalyticsService",
+                preferred_method="get_dealer_dashboard",
+                compatible_methods=["get_dealer_dashboard", "get_dealer_profile"],
+                required_entities=["dealer_name"],
+                parameter_mapping={"dealer_name": "dealer_name", "dealer": "dealer_name"},
                 requires_ai=False,
-                description="View warehouse analytics dashboard",
-                example_queries=["Warehouse dashboard", "LHE warehouse stats"]
-            ),
-            
-            Intent.PRODUCT_DASHBOARD: ServiceRegistryEntry(
-                menu_number="5",
-                menu_name="Product Dashboard",
-                intent=Intent.PRODUCT_DASHBOARD,
-                service_key="product",
-                service_file="app.services.product_service",
-                service_class="ProductService",
-                preferred_method="get_product_dashboard",
-                compatible_methods=["get_product_dashboard"],
-                required_entities=["product"],
-                parameter_mapping={"product": "product", "material": "product"},
-                requires_ai=False,
-                description="View product analytics dashboard",
-                example_queries=["Product dashboard", "HMW-20MPS stats"]
-            ),
-            
-            Intent.NATIONAL_KPI: ServiceRegistryEntry(
-                menu_number="6",
-                menu_name="National KPI",
-                intent=Intent.NATIONAL_KPI,
-                service_key="national_kpi",
-                service_file="app.services.national_kpi_service",
-                service_class="NationalKPIService",
-                preferred_method="get_national_kpi",
-                compatible_methods=["get_national_kpi_dashboard", "get_kpi", "get_dashboard"],
-                required_entities=[],
-                parameter_mapping={},
-                requires_ai=False,
-                description="View national KPI dashboard",
-                example_queries=["National KPI", "Company performance", "Overall KPIs"]
+                description="View dealer analytics dashboard",
+                example_queries=["Show dealer Taj Electronics"]
             ),
             
             Intent.PENDING_DNS: ServiceRegistryEntry(
@@ -536,23 +405,7 @@ class ServiceRegistry:
                 parameter_mapping={},
                 requires_ai=False,
                 description="View pending delivery notes",
-                example_queries=["Pending DNs", "Pending deliveries", "Undelivered DNs"]
-            ),
-            
-            Intent.TOP_PERFORMERS: ServiceRegistryEntry(
-                menu_number="8",
-                menu_name="Top Performers",
-                intent=Intent.TOP_PERFORMERS,
-                service_key="dn_analysis",
-                service_file="app.services.dn_analysis",
-                service_class="DNAnalysisService",
-                preferred_method="get_top_performers",
-                compatible_methods=["get_top_performers"],
-                required_entities=[],
-                parameter_mapping={},
-                requires_ai=False,
-                description="View top performers ranking",
-                example_queries=["Top performers", "Best dealers", "Performance ranking"]
+                example_queries=["Pending DNs"]
             ),
             
             Intent.GENERAL_AI: ServiceRegistryEntry(
@@ -563,12 +416,12 @@ class ServiceRegistry:
                 service_file="app.services.groq_service",
                 service_class="GroqService",
                 preferred_method="process_query",
-                compatible_methods=["process_query", "ask_ai", "get_ai_response"],
+                compatible_methods=["process_query", "ask_ai"],
                 required_entities=[],
                 parameter_mapping={"message": "message"},
                 requires_ai=True,
                 description="General AI assistant",
-                example_queries=["What's the issue", "Explain this"]
+                example_queries=["What's the issue"]
             ),
         }
         
@@ -577,7 +430,6 @@ class ServiceRegistry:
             self._attach_service_instance(entry)
     
     def _attach_service_instance(self, entry: ServiceRegistryEntry) -> None:
-        """Attach service instance to registry entry"""
         if entry.service_key == "menu_service":
             entry.service_instance = self
             entry.health_status = ServiceStatus.HEALTHY
@@ -601,88 +453,54 @@ class ServiceRegistry:
             entry.health_status = ServiceStatus.HEALTHY if GROQ_AVAILABLE else ServiceStatus.UNHEALTHY
     
     def get_entry(self, intent: Intent) -> Optional[ServiceRegistryEntry]:
-        """Get registry entry by intent"""
         return self._entries.get(intent)
     
     def get_entry_by_menu(self, menu_number: str) -> Optional[ServiceRegistryEntry]:
-        """Get registry entry by menu number"""
         for entry in self._entries.values():
             if entry.menu_number == menu_number:
                 return entry
         return None
     
     def get_method(self, entry: ServiceRegistryEntry, method_name: str) -> Optional[Callable]:
-        """Get method from service instance with signature validation"""
         if not entry.service_instance:
+            logger.error(f"❌ Service instance is None for {entry.service_key}")
             return None
         
         cache_key = f"{entry.service_key}_{method_name}"
         
-        # Check cache
         if cache_key in self._method_cache:
             return self._method_cache[cache_key]
         
-        # Try preferred method
+        # Check if method exists
+        logger.info(f"🔍 Looking for method '{method_name}' on {entry.service_key}")
+        
         if hasattr(entry.service_instance, method_name):
             method = getattr(entry.service_instance, method_name)
             if callable(method):
+                logger.info(f"✅ Found method '{method_name}' on {entry.service_key}")
                 self._method_cache[cache_key] = method
                 self._signature_cache[cache_key] = inspect.signature(method)
                 return method
+            else:
+                logger.error(f"❌ '{method_name}' exists but is not callable on {entry.service_key}")
+        else:
+            logger.error(f"❌ Method '{method_name}' not found on {entry.service_key}")
+            # List available methods for debugging
+            available = [m for m in dir(entry.service_instance) if not m.startswith('_') and callable(getattr(entry.service_instance, m))]
+            logger.info(f"📋 Available methods on {entry.service_key}: {available[:10]}")
         
         # Try compatible methods
         for compatible_method in entry.compatible_methods:
             if hasattr(entry.service_instance, compatible_method):
                 method = getattr(entry.service_instance, compatible_method)
                 if callable(method):
+                    logger.info(f"✅ Using compatible method '{compatible_method}' instead")
                     self._method_cache[cache_key] = method
                     self._signature_cache[cache_key] = inspect.signature(method)
                     return method
         
+        logger.error(f"❌ No compatible method found for {method_name} on {entry.service_key}")
         return None
-    
-    def get_signature(self, cache_key: str) -> Optional[inspect.Signature]:
-        """Get method signature from cache"""
-        return self._signature_cache.get(cache_key)
-    
-    def get_service_status(self) -> Dict[str, Any]:
-        """Get health status of all services"""
-        status = {}
-        for intent, entry in self._entries.items():
-            status[intent.value] = {
-                "status": entry.health_status.value,
-                "available": entry.service_instance is not None,
-                "methods": [entry.preferred_method] + entry.compatible_methods,
-            }
-        return status
-    
-    def health_check(self) -> Dict[str, Any]:
-        """Perform comprehensive health check"""
-        results = {
-            "overall": "healthy",
-            "services": {},
-            "errors": [],
-            "timestamp": datetime.utcnow().isoformat(),
-        }
-        
-        for intent, entry in self._entries.items():
-            service_status = {
-                "status": entry.health_status.value,
-                "instance_exists": entry.service_instance is not None,
-                "method_available": bool(self.get_method(entry, entry.preferred_method)),
-                "compatible_methods": len(entry.compatible_methods),
-            }
-            
-            if entry.service_instance is None:
-                results["errors"].append(f"Service {entry.service_key} instance missing")
-                results["overall"] = "degraded"
-            elif not self.get_method(entry, entry.preferred_method):
-                results["errors"].append(f"Service {entry.service_key} method {entry.preferred_method} missing")
-                results["overall"] = "degraded"
-            
-            results["services"][entry.service_key] = service_status
-        
-        return results
 
 
 # =====================================================================================================================
@@ -690,14 +508,11 @@ class ServiceRegistry:
 # =====================================================================================================================
 
 class EntityExtractionEngine:
-    """Entity extraction with compiled regex patterns"""
-    
     def __init__(self):
         self._patterns = self._compile_patterns()
         self._city_names = self._load_city_names()
     
     def _compile_patterns(self) -> Dict[str, re.Pattern]:
-        """Compile regex patterns once at startup"""
         return {
             "dn": DN_PATTERN,
             "dn_spaced": DN_PATTERN_WITH_SPACES,
@@ -716,7 +531,6 @@ class EntityExtractionEngine:
         }
     
     def _load_city_names(self) -> Set[str]:
-        """Load city names for detection"""
         return {
             "abbottabad", "lahore", "karachi", "rawalpindi", "quetta", "multan",
             "peshawar", "gilgit", "hyderabad", "islamabad", "sialkot", "gujranwala",
@@ -725,7 +539,6 @@ class EntityExtractionEngine:
         }
     
     def extract(self, message: str) -> EntityExtraction:
-        """Extract all entities from message"""
         entities = EntityExtraction()
         message_lower = message.lower()
         
@@ -749,54 +562,20 @@ class EntityExtractionEngine:
             if dealer_match:
                 entities.dealer_name = dealer_match.group(1).strip()
         
-        # Extract Dealer Code
-        dealer_code_match = self._patterns["dealer_code"].search(message)
-        if dealer_code_match:
-            entities.dealer_code = dealer_code_match.group(1)
-        
-        # Extract Customer Code
-        customer_code_match = self._patterns["customer_code"].search(message)
-        if customer_code_match:
-            entities.customer_code = customer_code_match.group(1)
+        # Extract City
+        city_match = self._patterns["city"].search(message)
+        if city_match:
+            entities.city = city_match.group(1).capitalize()
         
         # Extract Warehouse
         warehouse_match = self._patterns["warehouse"].search(message)
         if warehouse_match:
             entities.warehouse = warehouse_match.group(1).strip()
         
-        warehouse_code_match = self._patterns["warehouse_code"].search(message)
-        if warehouse_code_match:
-            entities.warehouse_code = warehouse_code_match.group(1)
-        
-        # Extract City
-        city_match = self._patterns["city"].search(message)
-        if city_match:
-            entities.city = city_match.group(1).capitalize()
-        
         # Extract Product
         product_match = self._patterns["product"].search(message)
         if product_match:
             entities.product = product_match.group(1).strip()
-        
-        # Extract Material
-        material_match = self._patterns["material"].search(message)
-        if material_match:
-            entities.material_number = material_match.group(1)
-        
-        # Extract Sales Office
-        sales_office_match = self._patterns["sales_office"].search(message)
-        if sales_office_match:
-            entities.sales_office = sales_office_match.group(1).strip()
-        
-        # Extract Sales Manager
-        sales_manager_match = self._patterns["sales_manager"].search(message)
-        if sales_manager_match:
-            entities.sales_manager = sales_manager_match.group(1).strip()
-        
-        # Extract Division
-        division_match = self._patterns["division"].search(message)
-        if division_match:
-            entities.division = division_match.group(1).strip()
         
         return entities
 
@@ -814,134 +593,36 @@ CITY_NAMES = (
 # =====================================================================================================================
 
 class IntentDetectionEngine:
-    """Deterministic intent detection with rule-based and semantic routing"""
-    
     def __init__(self, registry: ServiceRegistry):
         self.registry = registry
         self.entity_extractor = EntityExtractionEngine()
         self._router = None
         self._router_initialized = False
         self._router_lock = threading.Lock()
-        self._menu_triggers = {
-            "menu", "main menu", "options", "start", "back", "home", "help",
-            "0", "hello", "hi", "hey", "salam"
-        }
-        
-        # Rule-based intent patterns
-        self._intent_rules = [
-            (re.compile(r'\b(?:pending\s+pod|proof of delivery pending)\b', re.IGNORECASE), Intent.PENDING_POD),
-            (re.compile(r'\b(?:pending\s+pgi|goods issue pending)\b', re.IGNORECASE), Intent.PENDING_PGI),
-            (re.compile(r'\b(?:pending\s+dn|pending deliveries|undelivered)\b', re.IGNORECASE), Intent.PENDING_DNS),
-            (re.compile(r'\b(?:top|best)\s+performers?\b|\bleaderboard\b', re.IGNORECASE), Intent.TOP_PERFORMERS),
-            (re.compile(r'\b(?:dn|delivery note)\s+(?:service|services|dashboard|status|details?)\b', re.IGNORECASE), Intent.DN_DASHBOARD),
-            (re.compile(r'\bdealer\s+(?:service|services|dashboard|analytics|performance)\b', re.IGNORECASE), Intent.DEALER_DASHBOARD),
-            (re.compile(r'\bcit(?:y|ies)\s+(?:service|services|dashboard|analytics|performance)\b', re.IGNORECASE), Intent.CITY_DASHBOARD),
-            (re.compile(r'\bwarehouse\s+(?:service|services|dashboard|analytics|performance)\b', re.IGNORECASE), Intent.WAREHOUSE_DASHBOARD),
-            (re.compile(r'\bproduct\s+(?:service|services|dashboard|analytics|performance)\b', re.IGNORECASE), Intent.PRODUCT_DASHBOARD),
-            (re.compile(r'\b(?:national kpi|overall performance|executive dashboard)\b', re.IGNORECASE), Intent.NATIONAL_KPI),
-            (re.compile(r'\b(?:dealer|distributor)\s+(?:revenue|sales)\b', re.IGNORECASE), Intent.DEALER_REVENUE),
-            (re.compile(r'\bcit(?:y|ies)\s+(?:revenue|sales)\b', re.IGNORECASE), Intent.CITY_REVENUE),
-            (re.compile(r'\b(?:dn|delivery)\s+history\b', re.IGNORECASE), Intent.DN_HISTORY),
-            (re.compile(r'\b(?:top|best)\s+products?\b', re.IGNORECASE), Intent.TOP_PRODUCTS),
-        ]
-    
-    def _initialize_semantic_router(self) -> None:
-        """Lazy initialize semantic router"""
-        if self._router_initialized:
-            return
-        
-        with self._router_lock:
-            if self._router_initialized:
-                return
-            
-            self._router_initialized = True
-            
-            if not SEMANTIC_ROUTER_AVAILABLE:
-                return
-            
-            try:
-                # Build routes from registry
-                routes = []
-                for intent, entry in self.registry._entries.items():
-                    if entry.example_queries:
-                        routes.append(Route(
-                            name=intent.value,
-                            utterances=entry.example_queries + [
-                                f"{entry.menu_name.lower()} dashboard",
-                                f"show {entry.menu_name.lower()}",
-                            ]
-                        ))
-                
-                if routes:
-                    encoder = HuggingFaceEncoder()
-                    try:
-                        self._router = SemanticRouter(encoder=encoder, routes=routes, auto_sync="local")
-                    except TypeError:
-                        self._router = SemanticRouter(encoder=encoder, routes=routes)
-                    logger.info(f"✅ Semantic Router initialized with {len(routes)} routes")
-            except Exception as exc:
-                logger.warning(f"⚠️ Semantic Router initialization failed: {exc}")
-                self._router = None
+        self._menu_triggers = {"menu", "main menu", "options", "start", "back", "home", "help", "0"}
     
     def detect_intent(self, message: str, entities: EntityExtraction) -> Tuple[Intent, float]:
-        """Detect intent using deterministic pipeline"""
         message_lower = message.lower().strip()
         
-        # 1. Check for menu
         if message_lower in self._menu_triggers:
             return Intent.MENU, 1.0
         
-        # 2. Check for menu number
-        if MENU_NUMBER_PATTERN.match(message):
-            return Intent.MENU, 1.0
-        
-        # 3. Check for DN
         if entities.dn_number:
             return Intent.DN_LOOKUP, 0.95
         
-        # 4. Check rule-based intents
-        for pattern, intent in self._intent_rules:
-            if pattern.search(message):
-                return intent, 0.9
-        
-        # 5. Check entity-based intents
-        if entities.dealer_name or entities.dealer_code:
+        if entities.dealer_name:
             return Intent.DEALER_DASHBOARD, 0.85
         
         if entities.city:
             return Intent.CITY_DASHBOARD, 0.85
         
-        if entities.warehouse or entities.warehouse_code:
+        if entities.warehouse:
             return Intent.WAREHOUSE_DASHBOARD, 0.85
         
-        if entities.product or entities.material_number:
+        if entities.product:
             return Intent.PRODUCT_DASHBOARD, 0.85
         
-        # 6. Semantic Router
-        semantic_intent, confidence = self._semantic_intent(message)
-        if semantic_intent and confidence >= 0.3:
-            try:
-                return Intent(semantic_intent), confidence
-            except ValueError:
-                pass
-        
-        # 7. Default to AI
         return Intent.GENERAL_AI, 0.3
-    
-    def _semantic_intent(self, message: str) -> Tuple[Optional[str], float]:
-        """Get intent from semantic router"""
-        self._initialize_semantic_router()
-        if self._router is None:
-            return None, 0.0
-        
-        try:
-            result = self._router(message) if callable(self._router) else self._router.route(message)
-            if result is None:
-                return None, 0.0
-            return getattr(result, "name", None), float(getattr(result, "score", 1.0) or 0.0)
-        except Exception:
-            logger.exception("Semantic routing failed")
-            return None, 0.0
 
 
 # =====================================================================================================================
@@ -949,94 +630,49 @@ class IntentDetectionEngine:
 # =====================================================================================================================
 
 class ResponseNormalizer:
-    """Unified response normalizer for all service return types"""
-    
-    def __init__(self):
-        self._formatters: List[Callable] = [
-            self._extract_whatsapp_message,
-            self._extract_formatted_response,
-            self._extract_message,
-            self._extract_response,
-            self._extract_data_to_whatsapp_message,
-            self._extract_str_data,
-            self._fallback_formatter,
-        ]
-    
     def normalize(self, result: Any) -> str:
-        """Normalize any service return type to WhatsApp-safe string"""
         if result is None:
-            return "No response from service. Please try again."
-        
-        for formatter in self._formatters:
-            try:
-                formatted = formatter(result)
-                if formatted and isinstance(formatted, str) and formatted.strip():
-                    return self._clean_response(formatted)
-            except Exception:
-                continue
-        
-        return str(result) if result else "No response from service. Please try again."
-    
-    def _extract_whatsapp_message(self, result: Any) -> Optional[str]:
-        """Extract whatsapp_message field"""
-        if isinstance(result, dict) and "whatsapp_message" in result:
-            return result["whatsapp_message"]
-        return None
-    
-    def _extract_formatted_response(self, result: Any) -> Optional[str]:
-        """Extract formatted_response field"""
-        if isinstance(result, dict) and "formatted_response" in result:
-            return result["formatted_response"]
-        return None
-    
-    def _extract_message(self, result: Any) -> Optional[str]:
-        """Extract message field"""
-        if isinstance(result, dict) and "message" in result:
-            return result["message"]
-        return None
-    
-    def _extract_response(self, result: Any) -> Optional[str]:
-        """Extract response field"""
-        if isinstance(result, dict) and "response" in result:
-            return result["response"]
-        return None
-    
-    def _extract_data_to_whatsapp_message(self, result: Any) -> Optional[str]:
-        """Extract data and call to_whatsapp_message"""
-        if isinstance(result, dict):
-            data = result.get("data")
-            if data and hasattr(data, "to_whatsapp_message"):
-                return data.to_whatsapp_message()
-        return None
-    
-    def _extract_str_data(self, result: Any) -> Optional[str]:
-        """Extract data and convert to string"""
-        if isinstance(result, dict):
-            data = result.get("data")
-            if data and hasattr(data, "__str__"):
-                return str(data)
-        return None
-    
-    def _fallback_formatter(self, result: Any) -> Optional[str]:
-        """Fallback formatter for any type"""
-        if hasattr(result, "__str__"):
-            return str(result)
-        return None
-    
-    def _clean_response(self, response: str) -> str:
-        """Clean and validate response for WhatsApp"""
-        if not response:
             return "No response from service."
         
-        # Remove excessive whitespace
-        response = re.sub(r'\s+', ' ', response).strip()
+        # Try different extraction methods
+        if isinstance(result, dict):
+            # Check for whatsapp_message
+            if "whatsapp_message" in result and result["whatsapp_message"]:
+                return result["whatsapp_message"]
+            
+            # Check for message
+            if "message" in result and result["message"]:
+                return result["message"]
+            
+            # Check for response
+            if "response" in result and result["response"]:
+                return result["response"]
+            
+            # Check for formatted_response
+            if "formatted_response" in result and result["formatted_response"]:
+                return result["formatted_response"]
+            
+            # Check data object
+            if "data" in result and result["data"]:
+                data = result["data"]
+                if hasattr(data, "to_whatsapp_message"):
+                    return data.to_whatsapp_message()
+                elif hasattr(data, "__str__"):
+                    return str(data)
+                elif isinstance(data, dict):
+                    # Try to format the dict nicely
+                    lines = []
+                    for key, value in data.items():
+                        if not key.startswith('_') and value is not None:
+                            lines.append(f"{key}: {value}")
+                    if lines:
+                        return "\n".join(lines)
         
-        # Ensure it's within WhatsApp limits
-        if len(response) > WHATSAPP_MAX_MESSAGE_LENGTH:
-            # Split into multiple messages if needed
-            response = response[:WHATSAPP_MAX_MESSAGE_LENGTH - 100] + "\n\n... (message truncated)"
+        # Fallback to string
+        if hasattr(result, "__str__"):
+            return str(result)
         
-        return response
+        return "No response from service."
 
 
 # =====================================================================================================================
@@ -1044,13 +680,10 @@ class ResponseNormalizer:
 # =====================================================================================================================
 
 class WhatsAppValidator:
-    """WhatsApp message validator with size limits and formatting"""
-    
     MAX_MESSAGE_LENGTH = 4096
     
     @classmethod
     def validate(cls, message: str) -> bool:
-        """Validate message for WhatsApp"""
         if message is None:
             return False
         if not isinstance(message, str):
@@ -1064,14 +697,11 @@ class WhatsAppValidator:
     
     @classmethod
     def prepare(cls, message: str) -> str:
-        """Prepare message for WhatsApp"""
         if not message:
             return "No response from service."
         
-        # Clean the message
         cleaned = re.sub(r'\s+', ' ', message).strip()
         
-        # Truncate if needed
         if len(cleaned) > cls.MAX_MESSAGE_LENGTH:
             cleaned = cleaned[:cls.MAX_MESSAGE_LENGTH - 100] + "\n\n... (message truncated)"
         
@@ -1079,12 +709,10 @@ class WhatsAppValidator:
 
 
 # =====================================================================================================================
-# MAIN AI PROVIDER SERVICE
+# MAIN AI PROVIDER SERVICE WITH FULL DEBUGGING
 # =====================================================================================================================
 
 class AIProviderService:
-    """Enterprise AI orchestration service"""
-    
     _instance: Optional["AIProviderService"] = None
     _instance_lock = threading.Lock()
     
@@ -1106,381 +734,51 @@ class AIProviderService:
         self._initialized = False
         self._initialization_errors: List[str] = []
         
-        # Initialize components
+        logger.info("=" * 80)
+        logger.info("🔧 Initializing AIProviderService...")
+        
         self.registry = ServiceRegistry()
         self.intent_detector = IntentDetectionEngine(self.registry)
         self.response_normalizer = ResponseNormalizer()
         self.validator = WhatsAppValidator()
         
-        # Perform startup validation
-        self._validate_startup()
+        # Log service status
+        logger.info("📊 Service Status:")
+        for intent, entry in self.registry._entries.items():
+            status = "✅" if entry.service_instance else "❌"
+            logger.info(f"  {status} {entry.service_key}: {entry.menu_name}")
+            if entry.service_instance:
+                logger.info(f"     Methods available: {[m for m in dir(entry.service_instance) if not m.startswith('_') and callable(getattr(entry.service_instance, m))][:5]}")
         
         self._initialized = True
-        self._log_status()
-    
-    def _validate_startup(self) -> None:
-        """Perform comprehensive startup validation"""
+        logger.info("✅ AIProviderService initialized")
         logger.info("=" * 80)
-        logger.info("🔍 Starting AI Provider Service Validation...")
-        
-        # 1. Validate service imports
-        logger.info("📦 Validating service imports...")
-        for service_name, available in SERVICE_IMPORT_STATUS.items():
-            status = "✅" if available else "❌"
-            logger.info(f"  {status} {service_name}: {'Available' if available else 'Unavailable'}")
-            if not available and service_name in SERVICE_IMPORT_ERRORS:
-                self._initialization_errors.append(f"{service_name}: {SERVICE_IMPORT_ERRORS[service_name]}")
-        
-        # 2. Validate service instances
-        logger.info("🔧 Validating service instances...")
-        health = self.registry.health_check()
-        for service_key, status in health["services"].items():
-            status_icon = "✅" if status["instance_exists"] else "❌"
-            method_icon = "✅" if status["method_available"] else "❌"
-            logger.info(f"  {status_icon} {service_key}: Instance={status['instance_exists']}, Method={method_icon}")
-            if not status["instance_exists"]:
-                self._initialization_errors.append(f"{service_key}: Instance not available")
-            if not status["method_available"]:
-                self._initialization_errors.append(f"{service_key}: Method not available")
-        
-        # 3. Validate Semantic Router
-        logger.info(f"🧠 Semantic Router: {'✅' if SEMANTIC_ROUTER_AVAILABLE else '❌'}")
-        if not SEMANTIC_ROUTER_AVAILABLE and SEMANTIC_ROUTER_IMPORT_ERROR:
-            self._initialization_errors.append(f"Semantic Router: {SEMANTIC_ROUTER_IMPORT_ERROR}")
-        
-        # 4. Validate Groq Service
-        logger.info(f"🤖 Groq Service: {'✅' if GROQ_AVAILABLE else '❌'}")
-        if not GROQ_AVAILABLE:
-            self._initialization_errors.append("Groq Service: Not available")
-        
-        # 5. Summarize
-        if self._initialization_errors:
-            logger.warning(f"⚠️ Validation completed with {len(self._initialization_errors)} issues:")
-            for error in self._initialization_errors:
-                logger.warning(f"  - {error}")
-            logger.warning("Service will run in degraded mode")
-        else:
-            logger.info("✅ Validation completed successfully - All services available")
-        
-        logger.info("=" * 80)
-    
-    def _log_status(self) -> None:
-        """Log service initialization status"""
-        logger.info("=" * 80)
-        logger.info("🤖 AIProviderService Initialized Successfully")
-        logger.info(f"  Status: {'✅ Healthy' if not self._initialization_errors else '⚠️ Degraded'}")
-        logger.info(f"  Errors: {len(self._initialization_errors)}")
-        logger.info(f"  Cache TTL: {self._cache_ttl}s")
-        logger.info("=" * 80)
-    
-    def health_check(self) -> Dict[str, Any]:
-        """Get comprehensive health check"""
-        return {
-            "initialized": self._initialized,
-            "healthy": len(self._initialization_errors) == 0,
-            "errors": self._initialization_errors,
-            "request_count": self._request_count,
-            "error_count": self._error_count,
-            "cache_size": len(self._cache),
-            "services": self.registry.get_service_status(),
-            "semantic_router": SEMANTIC_ROUTER_AVAILABLE,
-            "groq": GROQ_AVAILABLE,
-            "timestamp": datetime.utcnow().isoformat(),
-        }
-    
-    def _normalize_message(self, message: str) -> str:
-        """Normalize incoming message"""
-        return ' '.join(message.split()).strip()
-    
-    def _is_menu_request(self, message: str) -> bool:
-        """Check if message is a menu request"""
-        return message.lower() in {"menu", "main menu", "options", "start", "back", "home", "help", "0"}
-    
-    def _get_decision_from_entities(self, entities: EntityExtraction) -> Optional[RoutingDecision]:
-        """Get routing decision based on entities"""
-        # Dealer
-        if entities.dealer_name or entities.dealer_code:
-            entry = self.registry.get_entry(Intent.DEALER_DASHBOARD)
-            if entry and entry.service_instance:
-                return RoutingDecision(
-                    intent=Intent.DEALER_DASHBOARD,
-                    confidence=0.85,
-                    service_entry=entry,
-                    entity=entities,
-                    method=entry.preferred_method,
-                    requires_ai=False,
-                    reason="Dealer entity detected"
-                )
-        
-        # City
-        if entities.city:
-            entry = self.registry.get_entry(Intent.CITY_DASHBOARD)
-            if entry and entry.service_instance:
-                return RoutingDecision(
-                    intent=Intent.CITY_DASHBOARD,
-                    confidence=0.85,
-                    service_entry=entry,
-                    entity=entities,
-                    method=entry.preferred_method,
-                    requires_ai=False,
-                    reason="City entity detected"
-                )
-        
-        # Warehouse
-        if entities.warehouse or entities.warehouse_code:
-            entry = self.registry.get_entry(Intent.WAREHOUSE_DASHBOARD)
-            if entry and entry.service_instance:
-                return RoutingDecision(
-                    intent=Intent.WAREHOUSE_DASHBOARD,
-                    confidence=0.85,
-                    service_entry=entry,
-                    entity=entities,
-                    method=entry.preferred_method,
-                    requires_ai=False,
-                    reason="Warehouse entity detected"
-                )
-        
-        # Product
-        if entities.product or entities.material_number:
-            entry = self.registry.get_entry(Intent.PRODUCT_DASHBOARD)
-            if entry and entry.service_instance:
-                return RoutingDecision(
-                    intent=Intent.PRODUCT_DASHBOARD,
-                    confidence=0.85,
-                    service_entry=entry,
-                    entity=entities,
-                    method=entry.preferred_method,
-                    requires_ai=False,
-                    reason="Product entity detected"
-                )
-        
-        return None
     
     def _get_parameters_for_method(self, method: Callable, entities: EntityExtraction) -> Dict[str, Any]:
-        """Get parameters for method based on signature"""
+        """Get parameters with full debugging"""
         sig = inspect.signature(method)
         params = {}
-        
-        # Get entity mapping
-        entry = None
-        for e in self.registry._entries.values():
-            if e.service_instance and hasattr(e.service_instance, method.__name__):
-                entry = e
-                break
-        
-        # Build parameter mapping
         entity_dict = {k: v for k, v in entities.__dict__.items() if v is not None}
         
+        logger.info(f"🔍 Method signature: {sig}")
+        logger.info(f"🔍 Available entities: {entity_dict}")
+        
         for param_name, param in sig.parameters.items():
-            # Skip self and cls
             if param_name in ("self", "cls"):
                 continue
             
-            # Skip **kwargs (VAR_KEYWORD) and *args (VAR_POSITIONAL)
             if param.kind in (inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL):
                 continue
             
-            # Check direct match
             if param_name in entity_dict:
                 params[param_name] = entity_dict[param_name]
-                continue
-            
-            # Check mapping
-            if entry and param_name in entry.parameter_mapping:
-                mapped_key = entry.parameter_mapping[param_name]
-                if mapped_key in entity_dict:
-                    params[param_name] = entity_dict[mapped_key]
-                    continue
-            
-            # Check if it's a required parameter with no default
-            if param.default == inspect.Parameter.empty:
-                logger.debug(f"Required parameter '{param_name}' not found in entities")
-                # Don't add the parameter - let the method handle the missing value
-                # or use its default if available
+                logger.info(f"  ✅ Using {param_name}={entity_dict[param_name]}")
+            elif param.default != inspect.Parameter.empty:
+                logger.info(f"  ℹ️ Using default for {param_name}")
+            else:
+                logger.warning(f"  ⚠️ Required parameter '{param_name}' not found in entities")
         
         return params
-    
-    def _make_routing_decision(self, message: str, entities: EntityExtraction) -> RoutingDecision:
-        """Make routing decision using deterministic pipeline"""
-        normalized = self._normalize_message(message)
-        cache_key = normalized.lower()
-        
-        # Check cache
-        cached = self._cache.get(cache_key)
-        if cached and time.monotonic() - cached[0] < self._cache_ttl:
-            return cached[1]
-        
-        # 1. Check for menu
-        if self._is_menu_request(normalized):
-            entry = self.registry.get_entry(Intent.MENU)
-            decision = RoutingDecision(
-                intent=Intent.MENU,
-                confidence=1.0,
-                service_entry=entry,
-                entity=entities,
-                method="show_main_menu",
-                requires_ai=False,
-                reason="Menu request detected",
-                original_message=message,
-                menu_option="0"
-            )
-            self._cache[cache_key] = (time.monotonic(), decision)
-            return decision
-        
-        # 2. Check for DN
-        if entities.dn_number:
-            entry = self.registry.get_entry(Intent.DN_LOOKUP)
-            if entry and entry.service_instance:
-                decision = RoutingDecision(
-                    intent=Intent.DN_LOOKUP,
-                    confidence=0.95,
-                    service_entry=entry,
-                    entity=entities,
-                    method=entry.preferred_method,
-                    requires_ai=False,
-                    reason="DN number detected",
-                    original_message=message,
-                    menu_option=entry.menu_number
-                )
-                self._cache[cache_key] = (time.monotonic(), decision)
-                return decision
-        
-        # 3. Check for menu number
-        menu_match = MENU_NUMBER_PATTERN.match(normalized)
-        if menu_match:
-            menu_number = menu_match.group(1)
-            entry = self.registry.get_entry_by_menu(menu_number)
-            if entry:
-                decision = RoutingDecision(
-                    intent=entry.intent,
-                    confidence=1.0,
-                    service_entry=entry,
-                    entity=entities,
-                    method=entry.preferred_method,
-                    requires_ai=entry.requires_ai,
-                    reason=f"Menu number {menu_number} selected",
-                    original_message=message,
-                    menu_option=menu_number
-                )
-                self._cache[cache_key] = (time.monotonic(), decision)
-                return decision
-        
-        # 4. Check entity-based routing
-        entity_decision = self._get_decision_from_entities(entities)
-        if entity_decision:
-            self._cache[cache_key] = (time.monotonic(), entity_decision)
-            return entity_decision
-        
-        # 5. Detect intent
-        intent, confidence = self.intent_detector.detect_intent(message, entities)
-        entry = self.registry.get_entry(intent)
-        
-        if entry and entry.service_instance and confidence >= 0.3:
-            decision = RoutingDecision(
-                intent=intent,
-                confidence=confidence,
-                service_entry=entry,
-                entity=entities,
-                method=entry.preferred_method,
-                requires_ai=entry.requires_ai,
-                reason=f"Intent detected: {intent.value}",
-                original_message=message,
-                menu_option=entry.menu_number
-            )
-            self._cache[cache_key] = (time.monotonic(), decision)
-            return decision
-        
-        # 6. Fallback to AI
-        ai_entry = self.registry.get_entry(Intent.GENERAL_AI)
-        decision = RoutingDecision(
-            intent=Intent.GENERAL_AI,
-            confidence=0.3,
-            service_entry=ai_entry,
-            entity=entities,
-            method=ai_entry.preferred_method,
-            requires_ai=True,
-            reason="Fallback to AI",
-            original_message=message,
-            menu_option=ai_entry.menu_number
-        )
-        self._cache[cache_key] = (time.monotonic(), decision)
-        return decision
-    
-    def _execute_service(self, decision: RoutingDecision, context: RequestContext) -> str:
-        """Execute service with signature-aware invocation"""
-        entry = decision.service_entry
-        
-        # Menu service
-        if entry.service_key == "menu_service":
-            return get_main_menu()
-        
-        # Check service availability
-        if not entry.service_instance:
-            context.error = f"Service {entry.service_key} unavailable"
-            return f"⚠️ {entry.menu_name} service is temporarily unavailable. Please try again later."
-        
-        # Get method
-        method = self.registry.get_method(entry, decision.method)
-        if not method:
-            context.error = f"Method {decision.method} not found"
-            return f"⚠️ Service method {decision.method} is temporarily unavailable. Please try again later."
-        
-        # Prepare parameters
-        params = self._get_parameters_for_method(method, decision.entity)
-        
-        try:
-            start_time = time.time()
-            
-            # Check if method is async
-            if inspect.iscoroutinefunction(method):
-                # Run async method
-                result = asyncio.run(method(**params))
-            else:
-                # Run sync method
-                result = method(**params)
-            
-            context.database_time_ms = (time.time() - start_time) * 1000
-            
-            # Normalize response
-            normalize_start = time.time()
-            normalized_response = self.response_normalizer.normalize(result)
-            context.formatting_time_ms = (time.time() - normalize_start) * 1000
-            
-            # Validate response
-            if not self.validator.validate(normalized_response):
-                context.error = "Invalid response format"
-                return "⚠️ Service returned an invalid response. Please try again."
-            
-            context.success = True
-            context.response_size = len(normalized_response)
-            
-            return normalized_response
-            
-        except Exception as exc:
-            context.error = str(exc)
-            context.success = False
-            logger.error(f"Service execution failed: {exc}")
-            logger.error(traceback.format_exc())
-            
-            # Try compatible method if available
-            for compatible in entry.compatible_methods:
-                if compatible != decision.method:
-                    try:
-                        method = self.registry.get_method(entry, compatible)
-                        if method:
-                            params = self._get_parameters_for_method(method, decision.entity)
-                            if inspect.iscoroutinefunction(method):
-                                result = asyncio.run(method(**params))
-                            else:
-                                result = method(**params)
-                            normalized_response = self.response_normalizer.normalize(result)
-                            if self.validator.validate(normalized_response):
-                                context.success = True
-                                return normalized_response
-                    except Exception:
-                        continue
-            
-            return f"⚠️ Service error: {str(exc)[:100]}\n\nPlease try again or type 'menu' for options."
     
     async def process_whatsapp_query(
         self,
@@ -1489,86 +787,98 @@ class AIProviderService:
         sender_id: Optional[str] = None,
         **kwargs: Any,
     ) -> str:
-        """Process WhatsApp message and return response"""
         sender = sender or sender_id
-        context = RequestContext(
-            request_id=str(uuid.uuid4())[:8],
-            sender=sender,
-            message=message,
-            normalized_message=self._normalize_message(message),
-            start_time=time.time()
-        )
+        request_id = str(uuid.uuid4())[:8]
         
         self._request_count += 1
         
         if not message or not message.strip():
             return get_main_menu()
         
+        logger.info("=" * 60)
+        logger.info(f"[{request_id}] 📨 Processing request #{self._request_count}")
+        logger.info(f"[{request_id}] Sender: {sender or 'unknown'}")
+        logger.info(f"[{request_id}] Message: {message[:100]}")
+        
         try:
-            logger.info(f"[{context.request_id}] Processing request #{self._request_count} from {sender or 'unknown'}")
-            
             # Extract entities
             entities = self.intent_detector.entity_extractor.extract(message)
-            context.entities = entities
+            entity_dict = {k: v for k, v in entities.__dict__.items() if v is not None}
+            logger.info(f"[{request_id}] 🔍 Extracted entities: {entity_dict}")
             
             # Make routing decision
-            decision = self._make_routing_decision(message, entities)
-            context.intent = decision.intent
-            context.confidence = decision.confidence
-            context.service_key = decision.service_entry.service_key
-            context.method = decision.method
-            context.ai_used = decision.requires_ai
+            intent, confidence = self.intent_detector.detect_intent(message, entities)
+            logger.info(f"[{request_id}] 🎯 Intent: {intent.value} (confidence: {confidence:.2f})")
             
-            logger.info(f"[{context.request_id}] Route: {decision.intent.value} -> {decision.service_entry.service_key}.{decision.method} ({decision.reason})")
+            entry = self.registry.get_entry(intent)
+            if not entry:
+                logger.error(f"[{request_id}] ❌ No service entry for intent: {intent}")
+                return f"⚠️ Service not found for intent: {intent.value}"
             
-            # Execute service
-            response = self._execute_service(decision, context)
+            logger.info(f"[{request_id}] 📦 Service: {entry.service_key} -> {entry.preferred_method}")
             
-            # Prepare for WhatsApp
-            final_response = self.validator.prepare(response)
-            context.total_time_ms = context.elapsed_ms()
+            # Get method
+            method = self.registry.get_method(entry, entry.preferred_method)
+            if not method:
+                logger.error(f"[{request_id}] ❌ Method {entry.preferred_method} not found")
+                return f"⚠️ Service method {entry.preferred_method} is temporarily unavailable."
             
-            # Log success
-            logger.info(
-                f"[{context.request_id}] ✅ Response sent successfully "
-                f"(total: {context.total_time_ms:.2f}ms, "
-                f"db: {context.database_time_ms:.2f}ms, "
-                f"format: {context.formatting_time_ms:.2f}ms)"
-            )
-            logger.debug(f"[{context.request_id}] Response size: {len(final_response)} chars")
+            # Prepare parameters
+            params = self._get_parameters_for_method(method, entities)
+            logger.info(f"[{request_id}] 📝 Calling with params: {params}")
             
-            return final_response
+            # Execute method
+            try:
+                start_time = time.time()
+                
+                if inspect.iscoroutinefunction(method):
+                    logger.info(f"[{request_id}] 🔄 Calling async method")
+                    result = await method(**params)
+                else:
+                    logger.info(f"[{request_id}] 🔄 Calling sync method")
+                    result = method(**params)
+                
+                execution_time = (time.time() - start_time) * 1000
+                logger.info(f"[{request_id}] ⏱️ Execution time: {execution_time:.2f}ms")
+                logger.info(f"[{request_id}] 📤 Result type: {type(result)}")
+                logger.info(f"[{request_id}] 📤 Result preview: {str(result)[:200]}")
+                
+                # Normalize response
+                normalized = self.response_normalizer.normalize(result)
+                logger.info(f"[{request_id}] 📝 Normalized response: {normalized[:200]}")
+                
+                # Validate
+                if not self.validator.validate(normalized):
+                    logger.error(f"[{request_id}] ❌ Invalid response")
+                    return "⚠️ Service returned an invalid response. Please try again."
+                
+                # Prepare for WhatsApp
+                final_response = self.validator.prepare(normalized)
+                
+                logger.info(f"[{request_id}] ✅ Response size: {len(final_response)} chars")
+                logger.info(f"[{request_id}] ✅ Request completed successfully")
+                logger.info("=" * 60)
+                
+                return final_response
+                
+            except Exception as exc:
+                logger.error(f"[{request_id}] ❌ Method execution failed: {exc}")
+                logger.error(traceback.format_exc())
+                return f"⚠️ Service error: {str(exc)[:100]}\n\nPlease try again or type 'menu'."
             
         except Exception as exc:
-            context.error = str(exc)
-            context.success = False
-            context.total_time_ms = context.elapsed_ms()
             self._error_count += 1
-            
-            logger.error(f"[{context.request_id}] ❌ Processing failed: {exc}")
+            logger.error(f"[{request_id}] ❌ Processing failed: {exc}")
             logger.error(traceback.format_exc())
+            logger.info("=" * 60)
             
-            # Return menu for menu requests
-            if context.normalized_message in {"menu", "main menu", "help", "start", "0"}:
+            if message.lower() in {"menu", "main menu", "help", "start", "0"}:
                 return get_main_menu()
             
             return "⚠️ Service is temporarily unavailable. Reply *menu* to try again."
     
     def show_main_menu(self) -> str:
-        """Show main menu"""
         return get_main_menu()
-    
-    def get_status(self) -> Dict[str, Any]:
-        """Get service status"""
-        return {
-            "initialized": self._initialized,
-            "healthy": len(self._initialization_errors) == 0,
-            "request_count": self._request_count,
-            "error_count": self._error_count,
-            "error_rate": self._error_count / max(1, self._request_count),
-            "cache_size": len(self._cache),
-            "errors": self._initialization_errors,
-        }
 
 
 # =====================================================================================================================
@@ -1580,7 +890,6 @@ _service_lock = threading.Lock()
 
 
 def get_ai_provider_service() -> AIProviderService:
-    """Get singleton instance of AIProviderService"""
     global _ai_service
     if _ai_service is None:
         with _service_lock:
@@ -1590,29 +899,25 @@ def get_ai_provider_service() -> AIProviderService:
                 except Exception as exc:
                     logger.error(f"❌ Failed to create AIProviderService: {exc}")
                     logger.error(traceback.format_exc())
-                    # Create minimal instance that can at least show menu
                     _ai_service = AIProviderService.__new__(AIProviderService)
                     _ai_service._initialized = False
-                    _ai_service._initialization_errors = [str(exc)]
-                    _ai_service._request_count = 0
-                    _ai_service._error_count = 0
-                    _ai_service._cache = {}
-                    _ai_service._cache_ttl = CACHE_TTL_SECONDS
                     _ai_service.registry = ServiceRegistry()
                     _ai_service.intent_detector = IntentDetectionEngine(_ai_service.registry)
                     _ai_service.response_normalizer = ResponseNormalizer()
                     _ai_service.validator = WhatsAppValidator()
-                    logger.warning("⚠️ AIProviderService running in minimal mode - only menu will work")
+                    _ai_service._cache = {}
+                    _ai_service._cache_ttl = CACHE_TTL_SECONDS
+                    _ai_service._request_count = 0
+                    _ai_service._error_count = 0
     return _ai_service
 
 
 def get_whatsapp_provider_service() -> AIProviderService:
-    """Backward-compatible factory for webhook"""
     return get_ai_provider_service()
 
 
 # =====================================================================================================================
-# MODULE-LEVEL FUNCTION - BACKWARD COMPATIBLE
+# MODULE-LEVEL FUNCTION
 # =====================================================================================================================
 
 async def process_whatsapp_query(
@@ -1621,7 +926,6 @@ async def process_whatsapp_query(
     sender_id: Optional[str] = None,
     **kwargs: Any,
 ) -> str:
-    """Module-level function for backward compatibility"""
     try:
         service = get_ai_provider_service()
         return await service.process_whatsapp_query(
@@ -1631,7 +935,7 @@ async def process_whatsapp_query(
             **kwargs,
         )
     except Exception as exc:
-        logger.error(f"Unexpected failure in process_whatsapp_query: {exc}")
+        logger.error(f"Unexpected failure: {exc}")
         logger.error(traceback.format_exc())
         if message and message.strip().lower() in {"menu", "main menu", "help", "start", "0"}:
             return get_main_menu()
@@ -1647,10 +951,4 @@ __all__ = [
     "get_main_menu",
     "get_ai_provider_service",
     "get_whatsapp_provider_service",
-    "AIProviderService",
-    "ServiceRegistry",
-    "Intent",
-    "ServiceStatus",
-    "RoutingDecision",
-    "EntityExtraction",
 ]
