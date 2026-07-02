@@ -1,17 +1,24 @@
 """
 File: app/services/ai_provider_service.py
-Version: 18.0 - PROPER DN ANALYSIS INTEGRATION
+Version: 19.0 - COMPLETE SERVICE INTEGRATION
 
 Single entry point for the WhatsApp AI agent. Deterministic requests (menu,
 menu numbers, DN numbers and obvious entities) never depend on an AI provider.
 Semantic Router and Groq are optional enhancements and cannot prevent startup.
 
+INTEGRATED SERVICES:
+- dn_analysis.py: get_dn_dashboard(dn_no: str)
+- dealer_analytics_service.py: get_dealer_dashboard(dealer_name: str)
+- city_service.py: get_city_dashboard(city_name: str, **kwargs)
+- product_service.py: get_product_dashboard(product: str)
+- national_kpi_service.py: get_national_kpi()
+- groq_service.py: process_query(message: str, entities: Dict)
+
 FIXES:
-- Proper integration with dn_analysis.py (passes dn_no parameter correctly)
-- Enhanced DN validation (8-12 digits)
+- Proper parameter passing to all services
 - Enhanced entity extraction for dealer names (Ruba Digital Wah)
-- Fixed city service handling (Haripur)
-- Proper DN validation and error messages
+- Enhanced city name extraction (Haripur)
+- Proper DN validation (8-12 digits)
 - Integrated with AI Bootstrap Service
 - ALWAYS returns string responses
 """
@@ -130,6 +137,7 @@ except Exception as exc:
 try:
     from app.services.dealer_analytics_service import DealerAnalyticsService
     DEALER_ANALYTICS_AVAILABLE = True
+    logger.info("✅ DealerAnalyticsService imported successfully")
 except Exception as exc:
     logger.exception("Unable to import DealerAnalyticsService: %s", exc)
     DEALER_ANALYTICS_AVAILABLE = False
@@ -141,14 +149,15 @@ except Exception as exc:
 
 # City Service
 try:
-    from app.services.city_service import CityService
+    from app.services.city_service import CityAnalyticsService
     CITY_SERVICE_AVAILABLE = True
+    logger.info("✅ CityAnalyticsService imported successfully")
 except Exception as exc:
-    logger.exception("Unable to import CityService: %s", exc)
+    logger.exception("Unable to import CityAnalyticsService: %s", exc)
     CITY_SERVICE_AVAILABLE = False
 
-    class CityService:  # type: ignore[no-redef]
-        async def get_city_dashboard(self, city_name: str) -> Dict[str, Any]:
+    class CityAnalyticsService:  # type: ignore[no-redef]
+        def get_city_dashboard(self, city_name: str = "", **kwargs: Any) -> Dict[str, Any]:
             return {"success": False, "whatsapp_message": "⚠️ City service is temporarily unavailable.", "error": "City service unavailable"}
 
 
@@ -156,6 +165,7 @@ except Exception as exc:
 try:
     from app.services.product_service import ProductService
     PRODUCT_SERVICE_AVAILABLE = True
+    logger.info("✅ ProductService imported successfully")
 except Exception as exc:
     logger.exception("Unable to import ProductService: %s", exc)
     PRODUCT_SERVICE_AVAILABLE = False
@@ -169,6 +179,7 @@ except Exception as exc:
 try:
     from app.services.national_kpi_service import NationalKPIService
     NATIONAL_KPI_AVAILABLE = True
+    logger.info("✅ NationalKPIService imported successfully")
 except Exception as exc:
     logger.exception("Unable to import NationalKPIService: %s", exc)
     NATIONAL_KPI_AVAILABLE = False
@@ -182,6 +193,7 @@ except Exception as exc:
 try:
     from app.services.groq_service import GroqService
     GROQ_SERVICE_AVAILABLE = True
+    logger.info("✅ GroqService imported successfully")
 except Exception as exc:
     logger.exception("Unable to import GroqService: %s", exc)
     GROQ_SERVICE_AVAILABLE = False
@@ -255,7 +267,7 @@ CITY_NAMES = (
     "abbottabad", "lahore", "karachi", "rawalpindi", "quetta", "multan",
     "peshawar", "gilgit", "hyderabad", "islamabad", "sialkot", "gujranwala",
     "faisalabad", "bahawalpur", "sukkur", "mansehra", "haripur", "dg khan",
-    "dera ghazi khan",
+    "dera ghazi khan", "gwadar", "rahim yar khan"
 )
 
 # =====================================================================================================================
@@ -478,7 +490,7 @@ class AIProviderService:
         # Only mark initialized after all mandatory state exists.
         self.dn_service = DNAnalysisService()
         self.dealer_service = DealerAnalyticsService()
-        self.city_service = CityService()
+        self.city_service = CityAnalyticsService()
         self.product_service = ProductService()
         self.national_kpi_service = NationalKPIService()
         self.groq_service = GroqService()
@@ -737,7 +749,7 @@ class AIProviderService:
             method = getattr(service, decision.method)
             
             # =====================================================================================================================
-            # CRITICAL FIX: Call methods with correct parameters for each service
+            # PROPER PARAMETER PASSING FOR EACH SERVICE
             # =====================================================================================================================
             
             if decision.service_key == "dn_analysis":
@@ -779,11 +791,13 @@ class AIProviderService:
                 result = await _resolve(method(dealer_name))
             
             elif decision.service_key == "city_service":
-                # City Service expects city_name
+                # City Service expects city_name (string) and optional kwargs
                 city_name = decision.entity.get("city_name") or decision.entity.get("city")
                 if not city_name:
-                    return "⚠️ Please provide a city name."
-                result = await _resolve(method(city_name))
+                    return "⚠️ Please provide a city name.\n\nExample: Lahore, Karachi, Haripur"
+                
+                # Call with proper parameters - city_name is a string, not a dict
+                result = method(city_name)
             
             elif decision.service_key == "product_service":
                 # Product Service expects product
