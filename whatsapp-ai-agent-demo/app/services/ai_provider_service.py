@@ -15,6 +15,8 @@ import asyncio
 import inspect
 import uuid
 import time
+import json
+import os
 from typing import Dict, Any, Optional, List, Tuple, Union, Callable
 from datetime import datetime
 from dataclasses import dataclass, field
@@ -22,9 +24,11 @@ from enum import Enum
 from functools import lru_cache
 from contextlib import asynccontextmanager
 
-from fastapi import HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
-from loguru import logger
+try:
+    from loguru import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger(__name__)
 
 # =====================================================================================================================
 # CONSTANTS & CONFIGURATION
@@ -116,6 +120,8 @@ class EntityExtraction:
     comparison: Optional[str] = None
     growth: Optional[float] = None
     trend: Optional[str] = None
+    query_type: Optional[str] = None
+    search_term: Optional[str] = None
 
 # =====================================================================================================================
 # MAIN MENU
@@ -137,17 +143,53 @@ MAIN_MENU = """🤖 HPK Logistics AI Assistant
 Reply with menu number."""
 
 # =====================================================================================================================
+# LOGGING UTILITIES
+# =====================================================================================================================
+
+class LoggingContext:
+    """Context manager for structured logging"""
+    
+    def __init__(self, request_id: str, whatsapp_number: Optional[str] = None):
+        self.request_id = request_id
+        self.whatsapp_number = whatsapp_number
+        self.context = {
+            "request_id": request_id,
+            "whatsapp_number": whatsapp_number,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    
+    def info(self, message: str, **kwargs):
+        """Log info with context"""
+        log_data = {**self.context, **kwargs}
+        logger.info(f"[{self.request_id}] {message}", extra=log_data)
+    
+    def error(self, message: str, **kwargs):
+        """Log error with context"""
+        log_data = {**self.context, **kwargs}
+        logger.error(f"[{self.request_id}] {message}", extra=log_data)
+    
+    def debug(self, message: str, **kwargs):
+        """Log debug with context"""
+        log_data = {**self.context, **kwargs}
+        logger.debug(f"[{self.request_id}] {message}", extra=log_data)
+    
+    def warning(self, message: str, **kwargs):
+        """Log warning with context"""
+        log_data = {**self.context, **kwargs}
+        logger.warning(f"[{self.request_id}] {message}", extra=log_data)
+
+# =====================================================================================================================
 # COMPILED REGEX PATTERNS
 # =====================================================================================================================
 
 class RegexPatterns:
     """Compiled regex patterns for entity extraction"""
     DN_NUMBER = re.compile(r'\b(\d{10})\b')
-    DEALER_NAME = re.compile(r'(?:dealer|show)\s+(.+?)(?:\s+in|\s+city|$)', re.IGNORECASE)
+    DEALER_NAME = re.compile(r'(?:dealer|show|get|view)\s+(.+?)(?:\s+in|\s+city|$)', re.IGNORECASE)
     DEALER_CODE = re.compile(r'(?:code|id)[\s:]+([A-Z0-9]{3,})', re.IGNORECASE)
     WAREHOUSE = re.compile(r'(?:warehouse|wh)[\s:]+([A-Za-z\s]+)', re.IGNORECASE)
     WAREHOUSE_CODE = re.compile(r'(?:warehouse code|wh code)[\s:]+([A-Z0-9]{3})', re.IGNORECASE)
-    CITY = re.compile(r'\b(lahore|karachi|islamabad|rawalpindi|faisalabad|multan|hyderabad|peshawar|quetta)\b', re.IGNORECASE)
+    CITY = re.compile(r'\b(lahore|karachi|islamabad|rawalpindi|faisalabad|multan|hyderabad|peshawar|quetta|gujranwala|sialkot)\b', re.IGNORECASE)
     DIVISION = re.compile(r'(?:division|div)[\s:]+([A-Za-z\s]+)', re.IGNORECASE)
     SALES_OFFICE = re.compile(r'(?:sales office|office)[\s:]+([A-Za-z\s]+)', re.IGNORECASE)
     SALES_MANAGER = re.compile(r'(?:sales manager|manager)[\s:]+([A-Za-z\s]+)', re.IGNORECASE)
@@ -167,6 +209,8 @@ class RegexPatterns:
     COMPARISON = re.compile(r'(?:compare|comparison)[\s:]+([A-Za-z\s]+)', re.IGNORECASE)
     GROWTH = re.compile(r'(?:growth)[\s:]+([\d.]+)%', re.IGNORECASE)
     TREND = re.compile(r'(?:trend)[\s:]+([A-Za-z\s]+)', re.IGNORECASE)
+    QUERY_TYPE = re.compile(r'(?:what|how|why|when|where|who)[\s:]+(.+)', re.IGNORECASE)
+    SEARCH_TERM = re.compile(r'(?:search|find|look for)[\s:]+(.+)', re.IGNORECASE)
 
     @classmethod
     def get_all_patterns(cls) -> Dict[str, re.Pattern]:
@@ -183,8 +227,9 @@ class IntentDetectionEngine:
     
     def __init__(self):
         self.intent_patterns = self._build_intent_patterns()
-        self.menu_trigger = re.compile(r'^(menu|0|main menu|help|home|start|back|hello|hi)$', re.IGNORECASE)
-        
+        self.menu_trigger = re.compile(r'^(menu|0|main menu|help|home|start|back|hello|hi|hey)$', re.IGNORECASE)
+        self.number_pattern = re.compile(r'^\d+$')
+    
     def _build_intent_patterns(self) -> Dict[Intent, List[re.Pattern]]:
         """Build intent pattern mappings"""
         patterns = {
@@ -198,60 +243,61 @@ class IntentDetectionEngine:
                 re.compile(r'(?:track|check|lookup|find|get)\s+(?:dn|delivery|order)\s*[#:]?\s*(\d{10})', re.IGNORECASE)
             ],
             Intent.DN_DASHBOARD: [
-                re.compile(r'(?:dn|delivery).*(?:dashboard|stats|status|summary)', re.IGNORECASE),
+                re.compile(r'(?:dn|delivery).*(?:dashboard|stats|status|summary|analytics)', re.IGNORECASE),
                 re.compile(r'(?:show|get|view)\s+(?:dn|delivery).*(?:dashboard|stats)', re.IGNORECASE)
             ],
             Intent.DN_HISTORY: [
-                re.compile(r'(?:dn|delivery).*(?:history|past|previous|old)', re.IGNORECASE)
+                re.compile(r'(?:dn|delivery).*(?:history|past|previous|old|recent)', re.IGNORECASE)
             ],
             Intent.DEALER_DASHBOARD: [
-                re.compile(r'(?:dealer).*(?:dashboard|stats|status|summary)', re.IGNORECASE),
-                re.compile(r'(?:show|get|view)\s+(?:dealer).*(?:dashboard|stats)', re.IGNORECASE)
+                re.compile(r'(?:dealer|distributor).*(?:dashboard|stats|status|summary|analytics)', re.IGNORECASE),
+                re.compile(r'(?:show|get|view)\s+(?:dealer|distributor).*(?:dashboard|stats)', re.IGNORECASE)
             ],
             Intent.DEALER_REVENUE: [
-                re.compile(r'(?:dealer).*(?:revenue|sales|income|earnings)', re.IGNORECASE)
+                re.compile(r'(?:dealer|distributor).*(?:revenue|sales|income|earnings|performance)', re.IGNORECASE)
             ],
             Intent.DEALER_PENDING: [
-                re.compile(r'(?:dealer).*(?:pending|delay|overdue|missed)', re.IGNORECASE)
+                re.compile(r'(?:dealer|distributor).*(?:pending|delay|overdue|missed|outstanding)', re.IGNORECASE)
             ],
             Intent.CITY_DASHBOARD: [
-                re.compile(r'(?:city).*(?:dashboard|stats|status|summary)', re.IGNORECASE),
-                re.compile(r'(?:show|get|view)\s+(?:city).*(?:dashboard|stats)', re.IGNORECASE)
+                re.compile(r'(?:city|town).*(?:dashboard|stats|status|summary|analytics)', re.IGNORECASE),
+                re.compile(r'(?:show|get|view)\s+(?:city|town).*(?:dashboard|stats)', re.IGNORECASE)
             ],
             Intent.CITY_REVENUE: [
-                re.compile(r'(?:city).*(?:revenue|sales|income|earnings)', re.IGNORECASE)
+                re.compile(r'(?:city|town).*(?:revenue|sales|income|earnings|performance)', re.IGNORECASE)
             ],
             Intent.CITY_PENDING: [
-                re.compile(r'(?:city).*(?:pending|delay|overdue|missed)', re.IGNORECASE)
+                re.compile(r'(?:city|town).*(?:pending|delay|overdue|missed|outstanding)', re.IGNORECASE)
             ],
             Intent.WAREHOUSE_DASHBOARD: [
-                re.compile(r'(?:warehouse|wh).*(?:dashboard|stats|status|summary)', re.IGNORECASE),
+                re.compile(r'(?:warehouse|wh).*(?:dashboard|stats|status|summary|analytics)', re.IGNORECASE),
                 re.compile(r'(?:show|get|view)\s+(?:warehouse|wh).*(?:dashboard|stats)', re.IGNORECASE)
             ],
             Intent.WAREHOUSE_PENDING: [
-                re.compile(r'(?:warehouse|wh).*(?:pending|delay|overdue|missed)', re.IGNORECASE)
+                re.compile(r'(?:warehouse|wh).*(?:pending|delay|overdue|missed|outstanding)', re.IGNORECASE)
             ],
             Intent.WAREHOUSE_REVENUE: [
-                re.compile(r'(?:warehouse|wh).*(?:revenue|sales|income|earnings)', re.IGNORECASE)
+                re.compile(r'(?:warehouse|wh).*(?:revenue|sales|income|earnings|performance)', re.IGNORECASE)
             ],
             Intent.PRODUCT_DASHBOARD: [
-                re.compile(r'(?:product|prod).*(?:dashboard|stats|status|summary)', re.IGNORECASE),
-                re.compile(r'(?:show|get|view)\s+(?:product|prod).*(?:dashboard|stats)', re.IGNORECASE)
+                re.compile(r'(?:product|prod|material|item).*(?:dashboard|stats|status|summary|analytics)', re.IGNORECASE),
+                re.compile(r'(?:show|get|view)\s+(?:product|prod|material).*(?:dashboard|stats)', re.IGNORECASE)
             ],
             Intent.TOP_PRODUCTS: [
-                re.compile(r'(?:top|best).*(?:products|items|materials)', re.IGNORECASE)
+                re.compile(r'(?:top|best|highest).*(?:products|items|materials|sku)', re.IGNORECASE),
+                re.compile(r'(?:product|item).*(?:top|best|rank)', re.IGNORECASE)
             ],
             Intent.NATIONAL_KPI: [
-                re.compile(r'(?:national|overall|company).*(?:kpi|metric|performance|dashboard)', re.IGNORECASE)
+                re.compile(r'(?:national|overall|company|enterprise).*(?:kpi|metric|performance|dashboard)', re.IGNORECASE)
             ],
             Intent.NATIONAL_REVENUE: [
-                re.compile(r'(?:national|overall|company).*(?:revenue|sales|income|earnings)', re.IGNORECASE)
+                re.compile(r'(?:national|overall|company).*(?:revenue|sales|income|earnings|total)', re.IGNORECASE)
             ],
             Intent.NATIONAL_UNITS: [
-                re.compile(r'(?:national|overall|company).*(?:units|qty|volume)', re.IGNORECASE)
+                re.compile(r'(?:national|overall|company).*(?:units|qty|volume|quantity)', re.IGNORECASE)
             ],
             Intent.PENDING_DNS: [
-                re.compile(r'(?:pending|delay|overdue|missed).*(?:dn|delivery|order)', re.IGNORECASE)
+                re.compile(r'(?:pending|delay|overdue|missed|outstanding).*(?:dn|delivery|order|shipment)', re.IGNORECASE)
             ],
             Intent.PENDING_PGI: [
                 re.compile(r'(?:pending|delay|overdue).*pgi', re.IGNORECASE)
@@ -260,16 +306,16 @@ class IntentDetectionEngine:
                 re.compile(r'(?:pending|delay|overdue).*pod', re.IGNORECASE)
             ],
             Intent.TOP_PERFORMERS: [
-                re.compile(r'(?:top|best).*(?:performers|performance)', re.IGNORECASE)
+                re.compile(r'(?:top|best|highest).*(?:performers|performance|achievers)', re.IGNORECASE)
             ],
             Intent.TOP_DEALERS: [
-                re.compile(r'(?:top|best).*(?:dealers|distributors)', re.IGNORECASE)
+                re.compile(r'(?:top|best|highest).*(?:dealers|distributors|partners)', re.IGNORECASE)
             ],
             Intent.TOP_CITIES: [
-                re.compile(r'(?:top|best).*(?:cities|cities)', re.IGNORECASE)
+                re.compile(r'(?:top|best|highest).*(?:cities|towns|locations)', re.IGNORECASE)
             ],
             Intent.HELP: [
-                re.compile(r'^(help|support|assist|guide)$', re.IGNORECASE)
+                re.compile(r'^(help|support|assist|guide|how to)$', re.IGNORECASE)
             ]
         }
         return patterns
@@ -282,6 +328,10 @@ class IntentDetectionEngine:
         if self.menu_trigger.match(message_lower):
             return Intent.MENU, 1.0
         
+        # Check if it's a pure number (DN lookup)
+        if self.number_pattern.match(message_lower):
+            return Intent.DN_LOOKUP, 0.95
+        
         # Check all intent patterns
         for intent, patterns in self.intent_patterns.items():
             for pattern in patterns:
@@ -292,17 +342,21 @@ class IntentDetectionEngine:
         if re.search(r'\b\d{10}\b', message):
             return Intent.DN_LOOKUP, 0.9
         
-        if re.search(r'(?:dealer|distributor)', message_lower):
+        if re.search(r'(?:dealer|distributor|partner)', message_lower):
             return Intent.DEALER_DASHBOARD, 0.7
         
-        if re.search(r'(?:city|town)', message_lower):
+        if re.search(r'(?:city|town|location)', message_lower):
             return Intent.CITY_DASHBOARD, 0.7
         
-        if re.search(r'(?:warehouse|wh)', message_lower):
+        if re.search(r'(?:warehouse|wh|storage)', message_lower):
             return Intent.WAREHOUSE_DASHBOARD, 0.7
         
-        if re.search(r'(?:product|material|item)', message_lower):
+        if re.search(r'(?:product|material|item|sku)', message_lower):
             return Intent.PRODUCT_DASHBOARD, 0.7
+        
+        # Check for comparison words
+        if re.search(r'(?:compare|versus|vs|against)', message_lower):
+            return Intent.GENERAL_AI, 0.6
         
         # Default to general AI
         return Intent.GENERAL_AI, 0.3
@@ -345,6 +399,8 @@ class EntityExtractionEngine:
         self.comparison_pattern = RegexPatterns.COMPARISON
         self.growth_pattern = RegexPatterns.GROWTH
         self.trend_pattern = RegexPatterns.TREND
+        self.query_type_pattern = RegexPatterns.QUERY_TYPE
+        self.search_term_pattern = RegexPatterns.SEARCH_TERM
     
     def extract_entities(self, message: str) -> EntityExtraction:
         """Extract all entities from message"""
@@ -504,6 +560,16 @@ class EntityExtractionEngine:
         if trend_match:
             entities.trend = trend_match.group(1).strip()
         
+        # Extract Query Type
+        query_type_match = self.query_type_pattern.search(message)
+        if query_type_match:
+            entities.query_type = query_type_match.group(1).strip()
+        
+        # Extract Search Term
+        search_term_match = self.search_term_pattern.search(message)
+        if search_term_match:
+            entities.search_term = search_term_match.group(1).strip()
+        
         return entities
 
 # =====================================================================================================================
@@ -529,9 +595,9 @@ class ServiceRegistry:
                 service_file="app.services.dn_analysis",
                 service_class="DNAnalysisService",
                 preferred_method="get_dn_details",
-                compatible_methods=["get_dn_details", "get_dn_status", "get_dn_info"],
+                compatible_methods=["get_dn_details", "get_dn_status", "get_dn_info", "track_dn"],
                 supported_entities=["dn_number"],
-                keywords=["track", "check", "lookup", "find", "get"],
+                keywords=["track", "check", "lookup", "find", "get", "search"],
                 description="Look up delivery note details",
                 example_queries=["Track DN 6243698820", "Check delivery 6243698749"]
             ),
@@ -542,9 +608,9 @@ class ServiceRegistry:
                 service_file="app.services.dn_analysis",
                 service_class="DNAnalysisService",
                 preferred_method="get_dn_dashboard",
-                compatible_methods=["get_dn_dashboard", "get_dashboard", "get_summary"],
+                compatible_methods=["get_dn_dashboard", "get_dashboard", "get_summary", "get_analytics"],
                 supported_entities=["dn_number", "date_range"],
-                keywords=["dashboard", "stats", "status", "summary"],
+                keywords=["dashboard", "stats", "status", "summary", "analytics"],
                 description="View DN analytics dashboard",
                 example_queries=["Show DN dashboard", "DN stats"]
             ),
@@ -557,7 +623,7 @@ class ServiceRegistry:
                 preferred_method="get_dn_history",
                 compatible_methods=["get_dn_history", "get_history", "get_previous_dns"],
                 supported_entities=["dn_number", "date_range"],
-                keywords=["history", "past", "previous", "old"],
+                keywords=["history", "past", "previous", "old", "recent"],
                 description="View DN history",
                 example_queries=["DN history", "Previous deliveries"]
             ),
@@ -568,9 +634,9 @@ class ServiceRegistry:
                 service_file="app.services.dealer_analytics_service",
                 service_class="DealerAnalyticsService",
                 preferred_method="get_dealer_dashboard",
-                compatible_methods=["get_dealer_dashboard", "get_dashboard", "get_dealer_analytics"],
+                compatible_methods=["get_dealer_dashboard", "get_dashboard", "get_dealer_analytics", "get_analytics"],
                 supported_entities=["dealer_name", "dealer_code"],
-                keywords=["dealer", "distributor", "partner"],
+                keywords=["dealer", "distributor", "partner", "retailer"],
                 description="View dealer analytics dashboard",
                 example_queries=["Show dealer Taj Electronics", "Dealer dashboard"]
             ),
@@ -583,7 +649,7 @@ class ServiceRegistry:
                 preferred_method="get_city_dashboard",
                 compatible_methods=["get_city_dashboard", "get_dashboard", "get_city_analytics"],
                 supported_entities=["city"],
-                keywords=["city", "town", "urban", "municipal"],
+                keywords=["city", "town", "urban", "municipal", "location"],
                 description="View city analytics dashboard",
                 example_queries=["Show Lahore dashboard", "Karachi city stats"]
             ),
@@ -596,7 +662,7 @@ class ServiceRegistry:
                 preferred_method="get_warehouse_dashboard",
                 compatible_methods=["get_warehouse_dashboard", "get_dashboard", "get_warehouse_analytics"],
                 supported_entities=["warehouse", "warehouse_code"],
-                keywords=["warehouse", "wh", "storage", "facility"],
+                keywords=["warehouse", "wh", "storage", "facility", "distribution"],
                 description="View warehouse analytics dashboard",
                 example_queries=["Warehouse dashboard", "LHE warehouse stats"]
             ),
@@ -609,7 +675,7 @@ class ServiceRegistry:
                 preferred_method="get_product_dashboard",
                 compatible_methods=["get_product_dashboard", "get_dashboard", "get_product_analytics"],
                 supported_entities=["product", "material_number", "material_code"],
-                keywords=["product", "material", "item", "sku"],
+                keywords=["product", "material", "item", "sku", "inventory"],
                 description="View product analytics dashboard",
                 example_queries=["Product dashboard", "HMW-20MPS stats"]
             ),
@@ -622,7 +688,7 @@ class ServiceRegistry:
                 preferred_method="get_national_kpi_dashboard",
                 compatible_methods=["get_national_kpi_dashboard", "get_national_kpi", "get_kpi", "get_dashboard"],
                 supported_entities=["date_range"],
-                keywords=["national", "overall", "company", "enterprise"],
+                keywords=["national", "overall", "company", "enterprise", "corporate"],
                 description="View national KPI dashboard",
                 example_queries=["National KPI", "Company performance"]
             ),
@@ -633,9 +699,9 @@ class ServiceRegistry:
                 service_file="app.services.dn_analysis",
                 service_class="DNAnalysisService",
                 preferred_method="get_pending_dns",
-                compatible_methods=["get_pending_dns", "get_pending", "get_delayed_dns"],
+                compatible_methods=["get_pending_dns", "get_pending", "get_delayed_dns", "get_outstanding"],
                 supported_entities=["city", "warehouse", "dealer"],
-                keywords=["pending", "delay", "overdue", "missed"],
+                keywords=["pending", "delay", "overdue", "missed", "outstanding"],
                 description="View pending DN list",
                 example_queries=["Pending DNs", "Delayed deliveries"]
             ),
@@ -646,9 +712,9 @@ class ServiceRegistry:
                 service_file="app.services.dn_analysis",
                 service_class="DNAnalysisService",
                 preferred_method="get_top_performers",
-                compatible_methods=["get_top_performers", "get_top", "get_performers"],
+                compatible_methods=["get_top_performers", "get_top", "get_performers", "get_ranking"],
                 supported_entities=["top", "bottom", "ranking"],
-                keywords=["top", "best", "performers", "ranking"],
+                keywords=["top", "best", "performers", "ranking", "achievers"],
                 description="View top performers",
                 example_queries=["Top performers", "Best dealers"]
             ),
@@ -659,9 +725,9 @@ class ServiceRegistry:
                 service_file="app.services.groq_service",
                 service_class="GroqService",
                 preferred_method="process_query",
-                compatible_methods=["process_query", "ask_ai", "get_ai_response"],
+                compatible_methods=["process_query", "ask_ai", "get_ai_response", "query_ai"],
                 supported_entities=[],
-                keywords=["ai", "ask", "query"],
+                keywords=["ai", "ask", "query", "analyze", "explain"],
                 description="General AI assistance",
                 requires_ai=True,
                 example_queries=["What's the issue", "Explain this"]
@@ -687,6 +753,9 @@ class ServiceRegistry:
     
     def get_service_instance(self, entry: ServiceRegistryEntry) -> Any:
         """Get or create service instance"""
+        if not entry.service_file or not entry.service_class:
+            return None
+            
         cache_key = f"{entry.service_file}_{entry.service_class}"
         
         if cache_key in self._instance_cache:
@@ -709,6 +778,9 @@ class ServiceRegistry:
     
     def get_method(self, instance: Any, method_name: str) -> Optional[Callable]:
         """Get method from instance with fallback to compatible methods"""
+        if instance is None:
+            return None
+            
         cache_key = f"{id(instance)}_{method_name}"
         
         if cache_key in self._method_cache:
@@ -760,65 +832,106 @@ class RoutingEngine:
     async def route_request(
         self, 
         message: str, 
+        whatsapp_number: Optional[str] = None,
         db_session: Optional[AsyncSession] = None
     ) -> Dict[str, Any]:
         """Route request through the complete pipeline"""
         start_time = time.time()
         request_id = str(uuid.uuid4())[:8]
         
+        # Initialize logging context
+        log_context = LoggingContext(request_id, whatsapp_number)
+        
         try:
             # Normalize message
             normalized = self._normalize_message(message)
             
             # Log incoming
-            logger.info(f"[{request_id}] Incoming: {message}")
-            logger.info(f"[{request_id}] Normalized: {normalized}")
+            log_context.info(
+                "Received WhatsApp message",
+                message=message,
+                normalized=normalized,
+                whatsapp_number=whatsapp_number
+            )
             
             # Step 1: Check for menu
             if self._is_menu_request(normalized):
-                return await self._handle_menu(request_id, start_time)
+                return await self._handle_menu(request_id, start_time, log_context)
             
             # Step 2: Detect intent
             intent, confidence = self.intent_engine.detect_intent(normalized)
-            logger.info(f"[{request_id}] Detected Intent: {intent.value} (confidence: {confidence:.2f})")
+            log_context.info(
+                "Intent detected",
+                intent=intent.value,
+                confidence=confidence
+            )
             
             # Step 3: Extract entities
             entities = self.entity_engine.extract_entities(normalized)
-            logger.info(f"[{request_id}] Extracted Entities: {self._filter_empty_entities(entities)}")
+            extracted = self._filter_empty_entities(entities)
+            log_context.info(
+                "Entities extracted",
+                entities=extracted
+            )
             
             # Step 4: Get service entry
             service_entry = self.registry.get_service(intent)
             if not service_entry:
+                log_context.warning(
+                    "Service not found for intent",
+                    intent=intent.value
+                )
                 return self._create_error_response(
                     request_id, 
                     "Service not found for intent", 
-                    start_time
+                    start_time,
+                    log_context
                 )
             
             # Step 5: Get service instance
             service_instance = self.registry.get_service_instance(service_entry)
             if not service_instance:
+                log_context.error(
+                    "Service instance unavailable",
+                    service_file=service_entry.service_file,
+                    service_class=service_entry.service_class
+                )
                 return self._create_error_response(
                     request_id, 
                     f"Service {service_entry.service_file} unavailable", 
-                    start_time
+                    start_time,
+                    log_context
                 )
             
             # Step 6: Get method
             method = self.registry.get_method(service_instance, service_entry.preferred_method)
             if not method:
+                log_context.error(
+                    "Method unavailable",
+                    method=service_entry.preferred_method,
+                    compatible_methods=service_entry.compatible_methods
+                )
                 return self._create_error_response(
                     request_id, 
                     f"Method {service_entry.preferred_method} unavailable", 
-                    start_time
+                    start_time,
+                    log_context
                 )
             
             # Step 7: Execute service
+            log_context.info(
+                "Executing service",
+                service=service_entry.service_file,
+                method=service_entry.preferred_method,
+                requires_ai=service_entry.requires_ai
+            )
+            
             result = await self._execute_method(
                 method, 
                 entities, 
                 db_session,
-                request_id
+                request_id,
+                log_context
             )
             
             # Step 8: Format response
@@ -826,23 +939,32 @@ class RoutingEngine:
             
             # Step 9: Log success
             elapsed = time.time() - start_time
-            logger.info(f"[{request_id}] Response sent in {elapsed:.2f}s")
+            log_context.info(
+                "Request processed successfully",
+                execution_time=elapsed,
+                response_length=len(response),
+                intent=intent.value
+            )
             
             return {
                 "success": True,
                 "request_id": request_id,
                 "response": response,
                 "intent": intent.value,
-                "entities": self._filter_empty_entities(entities),
+                "entities": extracted,
                 "execution_time": elapsed,
                 "service": service_entry.service_file,
                 "method": service_entry.preferred_method
             }
             
         except Exception as e:
-            logger.error(f"[{request_id}] Error routing request: {str(e)}")
+            log_context.error(
+                "Error routing request",
+                error=str(e),
+                error_type=type(e).__name__
+            )
             elapsed = time.time() - start_time
-            return self._create_error_response(request_id, str(e), elapsed)
+            return self._create_error_response(request_id, str(e), elapsed, log_context)
     
     def _normalize_message(self, message: str) -> str:
         """Normalize incoming message"""
@@ -853,13 +975,18 @@ class RoutingEngine:
     
     def _is_menu_request(self, message: str) -> bool:
         """Check if message is a menu request"""
-        menu_triggers = ['menu', 'main menu', 'help', 'home', 'start', 'back', 'hello', 'hi', 'hey']
-        return message.strip() in menu_triggers or message.strip() == '0'
+        menu_triggers = ['menu', 'main menu', 'help', 'home', 'start', 'back', 'hello', 'hi', 'hey', '0']
+        return message.strip() in menu_triggers
     
-    async def _handle_menu(self, request_id: str, start_time: float) -> Dict[str, Any]:
+    async def _handle_menu(
+        self, 
+        request_id: str, 
+        start_time: float,
+        log_context: LoggingContext
+    ) -> Dict[str, Any]:
         """Handle menu request"""
         elapsed = time.time() - start_time
-        logger.info(f"[{request_id}] Showing main menu")
+        log_context.info("Showing main menu")
         
         return {
             "success": True,
@@ -877,7 +1004,8 @@ class RoutingEngine:
         method: Callable, 
         entities: EntityExtraction,
         db_session: Optional[AsyncSession],
-        request_id: str
+        request_id: str,
+        log_context: LoggingContext
     ) -> Any:
         """Execute method with proper async/sync handling"""
         # Prepare arguments
@@ -891,7 +1019,12 @@ class RoutingEngine:
                 # Run sync method in thread pool
                 return await asyncio.to_thread(method, **kwargs)
         except Exception as e:
-            logger.error(f"[{request_id}] Method execution failed: {str(e)}")
+            log_context.error(
+                "Method execution failed",
+                error=str(e),
+                error_type=type(e).__name__,
+                method_name=method.__name__
+            )
             raise
     
     def _prepare_arguments(self, entities: EntityExtraction, db_session: Optional[AsyncSession]) -> Dict[str, Any]:
@@ -922,6 +1055,10 @@ class RoutingEngine:
             # Check for message
             if 'message' in result:
                 return result['message']
+            
+            # Check for data
+            if 'data' in result:
+                return self._dict_to_string(result['data'])
             
             # Convert dict to readable format
             return self._dict_to_string(result)
@@ -959,9 +1096,22 @@ class RoutingEngine:
         """Filter out None values from entities"""
         return {k: v for k, v in entities.__dict__.items() if v is not None}
     
-    def _create_error_response(self, request_id: str, error: str, start_time: float) -> Dict[str, Any]:
+    def _create_error_response(
+        self, 
+        request_id: str, 
+        error: str, 
+        start_time: float,
+        log_context: Optional[LoggingContext] = None
+    ) -> Dict[str, Any]:
         """Create error response"""
         elapsed = time.time() - start_time
+        
+        if log_context:
+            log_context.error(
+                "Creating error response",
+                error=error,
+                execution_time=elapsed
+            )
         
         return {
             "success": False,
@@ -1028,6 +1178,7 @@ class AIProviderService:
     async def process_whatsapp_query(
         self, 
         message: str, 
+        whatsapp_number: Optional[str] = None,
         db_session: Optional[AsyncSession] = None
     ) -> Dict[str, Any]:
         """
@@ -1035,16 +1186,22 @@ class AIProviderService:
         
         Args:
             message: Incoming WhatsApp message
+            whatsapp_number: Sender's WhatsApp number
             db_session: Optional database session
             
         Returns:
             Dict with response data
         """
-        return await self.routing_engine.route_request(message, db_session)
+        return await self.routing_engine.route_request(
+            message, 
+            whatsapp_number, 
+            db_session
+        )
     
     async def process_whatsapp_query_sync(
         self, 
         message: str, 
+        whatsapp_number: Optional[str] = None,
         db_session: Optional[AsyncSession] = None
     ) -> str:
         """
@@ -1052,12 +1209,13 @@ class AIProviderService:
         
         Args:
             message: Incoming WhatsApp message
+            whatsapp_number: Sender's WhatsApp number
             db_session: Optional database session
             
         Returns:
             Response string for WhatsApp
         """
-        result = await self.process_whatsapp_query(message, db_session)
+        result = await self.process_whatsapp_query(message, whatsapp_number, db_session)
         return result.get("response", "⚠️ Service error. Please try again.")
     
     def get_menu(self) -> str:
@@ -1106,7 +1264,8 @@ __all__ = [
     'Intent',
     'ServiceStatus',
     'ServiceRegistryEntry',
-    'EntityExtraction'
+    'EntityExtraction',
+    'MAIN_MENU'
 ]
 
 # =====================================================================================================================
