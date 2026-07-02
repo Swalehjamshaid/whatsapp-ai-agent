@@ -1,7 +1,7 @@
 """
 File: app/services/ai_provider_service.py
-Version: 16.0 - ENTERPRISE ORCHESTRATOR WITH PROPER SERVICE INTEGRATION
-Single entry point for the WhatsApp AI agent with proper service routing
+Version: 17.0 - ENTERPRISE ORCHESTRATOR WITH FIXED SERVICE INTEGRATION
+Complete WhatsApp AI service orchestrator with proper error handling
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import re
 import threading
 import time
 import uuid
+import traceback
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Callable, Awaitable
 
@@ -51,86 +52,65 @@ except Exception as exc:
 # =====================================================================================================================
 
 # DN Analysis Service
+DN_ANALYSIS_AVAILABLE = False
 try:
-    from app.services.dn_analysis import DNAnalysisService, get_dn_dashboard, get_pending_dns, get_warehouse_dashboard, get_top_performers
+    from app.services.dn_analysis import DNAnalysisService
     DN_ANALYSIS_AVAILABLE = True
+    logger.info("✅ DN Analysis Service imported successfully")
 except Exception as exc:
-    logger.exception("Unable to import DNAnalysisService: %s", exc)
-    DN_ANALYSIS_AVAILABLE = False
-    
-    async def get_dn_dashboard(dn_no: str) -> Dict[str, Any]:
-        return {"success": False, "error": "DN service unavailable", "whatsapp_message": "⚠️ DN service is temporarily unavailable."}
-    
-    async def get_pending_dns(limit: int = 20) -> Dict[str, Any]:
-        return {"success": False, "error": "DN service unavailable", "whatsapp_message": "⚠️ Pending DN service is temporarily unavailable."}
-    
-    async def get_warehouse_dashboard(warehouse: str) -> Dict[str, Any]:
-        return {"success": False, "error": "DN service unavailable", "whatsapp_message": "⚠️ Warehouse service is temporarily unavailable."}
-    
-    async def get_top_performers(limit: int = 10) -> Dict[str, Any]:
-        return {"success": False, "error": "DN service unavailable", "whatsapp_message": "⚠️ Performance service is temporarily unavailable."}
+    logger.warning("⚠️ DN Analysis Service import failed: %s", exc)
 
 # Dealer Analytics Service
+DEALER_ANALYTICS_AVAILABLE = False
 try:
-    from app.services.dealer_analytics_service import DealerAnalyticsService, get_dealer_analytics_service
+    from app.services.dealer_analytics_service import get_dealer_analytics_service
     DEALER_ANALYTICS_AVAILABLE = True
+    logger.info("✅ Dealer Analytics Service imported successfully")
 except Exception as exc:
-    logger.exception("Unable to import DealerAnalyticsService: %s", exc)
-    DEALER_ANALYTICS_AVAILABLE = False
-    
-    async def get_dealer_dashboard(dealer_name: str) -> Dict[str, Any]:
-        return {"success": False, "error": "Dealer service unavailable", "whatsapp_message": "⚠️ Dealer service is temporarily unavailable."}
+    logger.warning("⚠️ Dealer Analytics Service import failed: %s", exc)
 
 # City Service
+CITY_SERVICE_AVAILABLE = False
 try:
-    from app.services.city_service import CityAnalyticsService, get_city_analytics_service
+    from app.services.city_service import get_city_analytics_service
     CITY_SERVICE_AVAILABLE = True
+    logger.info("✅ City Analytics Service imported successfully")
 except Exception as exc:
-    logger.exception("Unable to import CityService: %s", exc)
-    CITY_SERVICE_AVAILABLE = False
-    
-    async def get_city_dashboard(city_name: str) -> Dict[str, Any]:
-        return {"success": False, "error": "City service unavailable", "whatsapp_message": "⚠️ City service is temporarily unavailable."}
+    logger.warning("⚠️ City Analytics Service import failed: %s", exc)
 
 # Product Service
+PRODUCT_SERVICE_AVAILABLE = False
 try:
     from app.services.product_service import ProductService
     PRODUCT_SERVICE_AVAILABLE = True
+    logger.info("✅ Product Service imported successfully")
 except Exception as exc:
-    logger.exception("Unable to import ProductService: %s", exc)
-    PRODUCT_SERVICE_AVAILABLE = False
-    
-    async def get_product_dashboard(product: str) -> Dict[str, Any]:
-        return {"success": False, "error": "Product service unavailable", "whatsapp_message": "⚠️ Product service is temporarily unavailable."}
+    logger.warning("⚠️ Product Service import failed: %s", exc)
 
 # National KPI Service
+NATIONAL_KPI_AVAILABLE = False
 try:
     from app.services.national_kpi_service import NationalKPIService
     NATIONAL_KPI_AVAILABLE = True
+    logger.info("✅ National KPI Service imported successfully")
 except Exception as exc:
-    logger.exception("Unable to import NationalKPIService: %s", exc)
-    NATIONAL_KPI_AVAILABLE = False
-    
-    async def get_national_kpi() -> Dict[str, Any]:
-        return {"success": False, "error": "National KPI service unavailable", "whatsapp_message": "⚠️ National KPI service is temporarily unavailable."}
+    logger.warning("⚠️ National KPI Service import failed: %s", exc)
 
 # Groq Service
+GROQ_SERVICE_AVAILABLE = False
 try:
     from app.services.groq_service import GroqService
     GROQ_SERVICE_AVAILABLE = True
+    logger.info("✅ Groq Service imported successfully")
 except Exception as exc:
-    logger.exception("Unable to import GroqService: %s", exc)
-    GROQ_SERVICE_AVAILABLE = False
-    
-    async def process_ai_query(message: str) -> str:
-        return get_main_menu()
+    logger.warning("⚠️ Groq Service import failed: %s", exc)
 
 # =====================================================================================================================
 # MAIN MENU
 # =====================================================================================================================
 
 def get_main_menu() -> str:
-    return """🤖 HPK Logistics AI Assistant
+    return """🤖 *HPK Logistics AI Assistant*
 
 0️⃣ Main Menu
 1️⃣ DN Delivery Menu
@@ -143,14 +123,14 @@ def get_main_menu() -> str:
 8️⃣ Top Performers Menu
 9️⃣ AI Query Menu
 
-Reply with menu number."""
+*Reply with menu number.*"""
 
 # =====================================================================================================================
 # MENU CONFIGURATION
 # =====================================================================================================================
 
 MENU_OPTIONS: Dict[str, Dict[str, Any]] = {
-    "0": {"name": "Main Menu", "service_key": "menu_service", "method": "show_main_menu"},
+    "0": {"name": "Main Menu", "service_key": "menu_service"},
     "1": {"name": "DN Delivery", "service_key": "dn_analysis", "method": "get_dn_dashboard"},
     "2": {"name": "Dealer Analytics", "service_key": "dealer_analytics", "method": "get_dealer_dashboard"},
     "3": {"name": "City Analytics", "service_key": "city_service", "method": "get_city_dashboard"},
@@ -159,7 +139,7 @@ MENU_OPTIONS: Dict[str, Dict[str, Any]] = {
     "6": {"name": "National KPI", "service_key": "national_kpi", "method": "get_national_kpi"},
     "7": {"name": "Pending DN", "service_key": "dn_analysis", "method": "get_pending_dns"},
     "8": {"name": "Top Performers", "service_key": "dn_analysis", "method": "get_top_performers"},
-    "9": {"name": "AI Query", "service_key": "groq_service", "method": "process_ai_query"},
+    "9": {"name": "AI Query", "service_key": "groq_service", "method": "process_query"},
 }
 
 INTENT_TO_MENU = {
@@ -173,10 +153,6 @@ INTENT_TO_MENU = {
     "top_performers": "8",
     "help": "0", "menu": "0", "greeting": "0",
 }
-
-# =====================================================================================================================
-# ROUTING UTTERANCES
-# =====================================================================================================================
 
 ROUTE_UTTERANCES: Dict[str, List[str]] = {
     "dn_lookup": ["show dn", "track dn", "delivery note", "dn status", "check delivery"],
@@ -239,17 +215,17 @@ async def _resolve(value: Any) -> Any:
 
 def _safe_get(data: Dict[str, Any], key: str, default: Any = None) -> Any:
     """Safely get value from dict with fallback."""
-    if data and key in data:
+    if data and isinstance(data, dict) and key in data:
         return data[key]
     return default
 
-def _extract_response_message(result: Dict[str, Any]) -> str:
+def _extract_response_message(result: Any) -> str:
     """Extract response message from service result."""
-    if not result:
+    if result is None:
         return "No response from service."
     
     if isinstance(result, dict):
-        # Check for whatsapp_message first
+        # Check for whatsapp_message first (your services use this)
         if "whatsapp_message" in result:
             return result["whatsapp_message"]
         if "message" in result:
@@ -260,6 +236,14 @@ def _extract_response_message(result: Dict[str, Any]) -> str:
             return result["response"]
         if "error" in result and result["error"]:
             return f"⚠️ {result['error']}"
+        
+        # Check if data has to_whatsapp_message method
+        if "data" in result and result["data"]:
+            data = result["data"]
+            if hasattr(data, "to_whatsapp_message"):
+                return data.to_whatsapp_message()
+            elif hasattr(data, "__str__"):
+                return str(data)
     
     return str(result)
 
@@ -287,6 +271,8 @@ class AIProviderService:
         self._router_lock = threading.Lock()
         self._cache: Dict[str, tuple[float, RoutingDecision]] = {}
         self._cache_ttl = 300.0
+        self._request_count = 0
+        self._error_count = 0
         
         # Service instances
         self.dn_service = None
@@ -296,58 +282,79 @@ class AIProviderService:
         self.national_service = None
         self.groq_service = None
         
-        # Initialize services if available
+        self._initialize_services()
+        
+        self._initialized = True
+        self._log_status()
+
+    def _initialize_services(self) -> None:
+        """Initialize all service instances with proper error handling."""
+        # DN Analysis
         if DN_ANALYSIS_AVAILABLE:
             try:
                 self.dn_service = DNAnalysisService()
                 logger.info("✅ DN Analysis Service initialized")
             except Exception as e:
                 logger.error(f"❌ Failed to initialize DN Analysis Service: {e}")
+                self.dn_service = None
         
+        # Dealer Analytics
         if DEALER_ANALYTICS_AVAILABLE:
             try:
                 self.dealer_service = get_dealer_analytics_service()
                 logger.info("✅ Dealer Analytics Service initialized")
             except Exception as e:
                 logger.error(f"❌ Failed to initialize Dealer Analytics Service: {e}")
+                self.dealer_service = None
         
+        # City Analytics
         if CITY_SERVICE_AVAILABLE:
             try:
                 self.city_service = get_city_analytics_service()
                 logger.info("✅ City Analytics Service initialized")
             except Exception as e:
                 logger.error(f"❌ Failed to initialize City Analytics Service: {e}")
+                self.city_service = None
         
+        # Product Service
         if PRODUCT_SERVICE_AVAILABLE:
             try:
                 self.product_service = ProductService()
                 logger.info("✅ Product Service initialized")
             except Exception as e:
                 logger.error(f"❌ Failed to initialize Product Service: {e}")
+                self.product_service = None
         
+        # National KPI
         if NATIONAL_KPI_AVAILABLE:
             try:
                 self.national_service = NationalKPIService()
                 logger.info("✅ National KPI Service initialized")
             except Exception as e:
                 logger.error(f"❌ Failed to initialize National KPI Service: {e}")
+                self.national_service = None
         
+        # Groq Service
         if GROQ_SERVICE_AVAILABLE:
             try:
                 self.groq_service = GroqService()
                 logger.info("✅ Groq Service initialized")
             except Exception as e:
                 logger.error(f"❌ Failed to initialize Groq Service: {e}")
+                self.groq_service = None
 
-        self._initialized = True
+    def _log_status(self) -> None:
+        """Log service initialization status."""
+        logger.info("=" * 80)
         logger.info("AIProviderService initialized successfully")
-        logger.info(f"  DN Analysis: {'✅' if DN_ANALYSIS_AVAILABLE else '❌'}")
-        logger.info(f"  Dealer Analytics: {'✅' if DEALER_ANALYTICS_AVAILABLE else '❌'}")
-        logger.info(f"  City Analytics: {'✅' if CITY_SERVICE_AVAILABLE else '❌'}")
-        logger.info(f"  Product Analytics: {'✅' if PRODUCT_SERVICE_AVAILABLE else '❌'}")
-        logger.info(f"  National KPI: {'✅' if NATIONAL_KPI_AVAILABLE else '❌'}")
-        logger.info(f"  Groq AI: {'✅' if GROQ_SERVICE_AVAILABLE else '❌'}")
+        logger.info(f"  DN Analysis: {'✅' if self.dn_service else '❌'}")
+        logger.info(f"  Dealer Analytics: {'✅' if self.dealer_service else '❌'}")
+        logger.info(f"  City Analytics: {'✅' if self.city_service else '❌'}")
+        logger.info(f"  Product Analytics: {'✅' if self.product_service else '❌'}")
+        logger.info(f"  National KPI: {'✅' if self.national_service else '❌'}")
+        logger.info(f"  Groq AI: {'✅' if self.groq_service else '❌'}")
         logger.info(f"  Semantic Router: {'✅' if SEMANTIC_ROUTER_AVAILABLE else '❌'}")
+        logger.info("=" * 80)
 
     def _ensure_semantic_router(self) -> None:
         if self._router is not None or self._router_init_attempted:
@@ -357,7 +364,6 @@ class AIProviderService:
                 return
             self._router_init_attempted = True
             if not SEMANTIC_ROUTER_AVAILABLE:
-                logger.warning("Semantic routing disabled: %s", SEMANTIC_ROUTER_IMPORT_ERROR)
                 return
             try:
                 encoder = HuggingFaceEncoder()
@@ -366,10 +372,10 @@ class AIProviderService:
                     self._router = SemanticRouter(encoder=encoder, routes=routes, auto_sync="local")
                 except TypeError:
                     self._router = SemanticRouter(encoder=encoder, routes=routes)
-                logger.info("Semantic Router initialized with %d routes", len(routes))
+                logger.info("✅ Semantic Router initialized with %d routes", len(routes))
             except Exception:
                 self._router = None
-                logger.exception("Semantic Router initialization failed")
+                logger.exception("❌ Semantic Router initialization failed")
 
     @staticmethod
     def _extract_dn(text: str) -> Optional[str]:
@@ -406,20 +412,22 @@ class AIProviderService:
         lowered = text.casefold()
         for city in CITY_NAMES:
             if re.search(rf"\b{re.escape(city)}\b", lowered):
-                entities["city"] = city.title()
                 entities["city_name"] = city.title()
+                entities["city"] = city.title()
                 break
 
         # Extract Dealer
-        dealer = re.search(
-            r"([\w&.'\- ]{2,}?(?:electronics|traders|distributors|foods|group|pvt|ltd|sons|brothers|enterprises|company|corporation)(?:[\w&.'\- ]*)?)",
-            text,
-            re.IGNORECASE,
-        )
-        if dealer:
-            name = dealer.group(1).strip()
-            entities["dealer_name"] = name
-            entities["dealer"] = name
+        dealer_patterns = [
+            r"(?:dealer|show|get)\s+([\w&.'\- ]{2,}?(?:electronics|traders|distributors|foods|group|pvt|ltd|sons|brothers|enterprises|company|corporation)(?:[\w&.'\- ]*)?)",
+            r"([\w&.'\- ]{2,}?(?:electronics|traders|distributors|foods|group|pvt|ltd|sons|brothers|enterprises|company|corporation)(?:[\w&.'\- ]*)?)"
+        ]
+        for pattern in dealer_patterns:
+            dealer = re.search(pattern, text, re.IGNORECASE)
+            if dealer:
+                name = dealer.group(1).strip()
+                entities["dealer_name"] = name
+                entities["dealer"] = name
+                break
 
         # Extract Warehouse
         warehouse = re.search(r"(?:warehouse|depot|\bwh\b)\s+([\w&.'\- ]{2,})", text, re.IGNORECASE)
@@ -436,11 +444,12 @@ class AIProviderService:
     def _decision_for_menu(self, menu_option: str, message: str, entities: Optional[Dict[str, Any]] = None, 
                           intent: Optional[str] = None, confidence: float = 1.0, reason: str = "") -> RoutingDecision:
         config = MENU_OPTIONS.get(menu_option, MENU_OPTIONS["0"])
+        method = config.get("method", "show_main_menu")
         return RoutingDecision(
             intent=intent or config["name"].lower().replace(" ", "_"),
             confidence=confidence,
             service_key=config["service_key"],
-            method=config["method"],
+            method=method,
             entity=entities or {},
             requires_ai=config.get("requires_ai", False),
             reason=reason,
@@ -529,93 +538,105 @@ class AIProviderService:
         service_key = decision.service_key
         method_name = decision.method
         entities = decision.entity
+        request_id = str(uuid.uuid4())[:8]
         
-        logger.info(f"Executing: {service_key}.{method_name} with entities: {entities}")
+        logger.info(f"[{request_id}] Executing: {service_key}.{method_name} with entities: {entities}")
 
         try:
+            # Menu Service
             if service_key == "menu_service":
                 return get_main_menu()
             
+            # DN Analysis Service
             elif service_key == "dn_analysis":
+                if not self.dn_service:
+                    return "⚠️ DN service is temporarily unavailable. Please try again later."
+                
                 if method_name == "get_dn_dashboard":
-                    if self.dn_service:
-                        result = await _resolve(self.dn_service.get_dn_dashboard(entities.get("dn_no", "")))
-                    else:
-                        result = await _resolve(get_dn_dashboard(entities.get("dn_no", "")))
+                    dn_no = entities.get("dn_no") or entities.get("dn") or entities.get("dn_number")
+                    if not dn_no:
+                        return "⚠️ Please provide a DN number to track."
+                    result = await _resolve(self.dn_service.get_dn_dashboard(dn_no))
+                
                 elif method_name == "get_pending_dns":
-                    if self.dn_service:
-                        result = await _resolve(self.dn_service.get_pending_dns())
-                    else:
-                        result = await _resolve(get_pending_dns())
+                    result = await _resolve(self.dn_service.get_pending_dns())
+                
                 elif method_name == "get_warehouse_dashboard":
-                    if self.dn_service:
-                        result = await _resolve(self.dn_service.get_warehouse_dashboard(entities.get("warehouse", "")))
-                    else:
-                        result = await _resolve(get_warehouse_dashboard(entities.get("warehouse", "")))
+                    warehouse = entities.get("warehouse")
+                    if not warehouse:
+                        return "⚠️ Please provide a warehouse name."
+                    result = await _resolve(self.dn_service.get_warehouse_dashboard(warehouse))
+                
                 elif method_name == "get_top_performers":
-                    if self.dn_service:
-                        result = await _resolve(self.dn_service.get_top_performers())
-                    else:
-                        result = await _resolve(get_top_performers())
+                    result = await _resolve(self.dn_service.get_top_performers())
+                
                 else:
                     return f"⚠️ Unknown DN method: {method_name}"
             
+            # Dealer Analytics Service
             elif service_key == "dealer_analytics":
-                if self.dealer_service:
-                    result = await _resolve(self.dealer_service.get_dealer_dashboard(entities.get("dealer_name", "")))
-                else:
-                    result = await _resolve(get_dealer_dashboard(entities.get("dealer_name", "")))
+                if not self.dealer_service:
+                    return "⚠️ Dealer analytics service is temporarily unavailable. Please try again later."
+                
+                dealer_name = entities.get("dealer_name") or entities.get("dealer")
+                if not dealer_name:
+                    return "⚠️ Please provide a dealer name to analyze."
+                result = await _resolve(self.dealer_service.get_dealer_dashboard(dealer_name))
             
+            # City Analytics Service
             elif service_key == "city_service":
-                if self.city_service:
-                    result = await _resolve(self.city_service.get_city_dashboard(entities.get("city_name", entities.get("city", ""))))
-                else:
-                    result = await _resolve(get_city_dashboard(entities.get("city_name", entities.get("city", ""))))
+                if not self.city_service:
+                    return "⚠️ City analytics service is temporarily unavailable. Please try again later."
+                
+                city_name = entities.get("city_name") or entities.get("city")
+                if not city_name:
+                    return "⚠️ Please provide a city name to analyze."
+                result = await _resolve(self.city_service.get_city_dashboard(city_name))
             
+            # Product Service
             elif service_key == "product_service":
-                if self.product_service:
-                    result = await _resolve(self.product_service.get_product_dashboard(entities.get("product", "")))
-                else:
-                    result = await _resolve(get_product_dashboard(entities.get("product", "")))
+                if not self.product_service:
+                    return "⚠️ Product service is temporarily unavailable. Please try again later."
+                
+                product = entities.get("product")
+                if not product:
+                    return "⚠️ Please provide a product name or code."
+                result = await _resolve(self.product_service.get_product_dashboard(product))
             
+            # National KPI Service
             elif service_key == "national_kpi":
-                if self.national_service:
-                    result = await _resolve(self.national_service.get_national_kpi())
-                else:
-                    result = await _resolve(get_national_kpi())
+                if not self.national_service:
+                    return "⚠️ National KPI service is temporarily unavailable. Please try again later."
+                result = await _resolve(self.national_service.get_national_kpi())
             
+            # Groq Service
             elif service_key == "groq_service":
-                if self.groq_service:
-                    result = await _resolve(self.groq_service.process_query(decision.original_message, entities))
-                else:
-                    result = await _resolve(process_ai_query(decision.original_message))
+                if not self.groq_service:
+                    return "⚠️ AI service is temporarily unavailable. Please try again later."
+                result = await _resolve(self.groq_service.process_query(decision.original_message, entities))
             
             else:
                 return f"⚠️ Unknown service: {service_key}"
             
-            # Extract response message
-            if isinstance(result, dict):
-                response_message = _extract_response_message(result)
-                if not response_message or response_message == str(result):
-                    # If no message field, format the result as a readable message
-                    if "data" in result and result["data"]:
-                        data = result["data"]
-                        if hasattr(data, "to_whatsapp_message"):
-                            response_message = data.to_whatsapp_message()
-                        elif hasattr(data, "__str__"):
-                            response_message = str(data)
-                        else:
-                            response_message = str(data)
-                    elif "whatsapp_message" in result:
-                        response_message = result["whatsapp_message"]
-                    else:
-                        response_message = str(result)
-                return response_message
-            else:
+            # Extract and return response message
+            response_message = _extract_response_message(result)
+            
+            # If no message was extracted, try to format the result
+            if not response_message or response_message == str(result):
+                if isinstance(result, dict) and "data" in result:
+                    data = result["data"]
+                    if hasattr(data, "to_whatsapp_message"):
+                        return data.to_whatsapp_message()
+                    elif hasattr(data, "__str__"):
+                        return str(data)
                 return str(result) if result else "No response from service."
+            
+            logger.info(f"[{request_id}] Service executed successfully")
+            return response_message
                 
         except Exception as e:
-            logger.exception(f"Service execution failed: {e}")
+            logger.error(f"[{request_id}] Service execution failed: {e}")
+            logger.error(traceback.format_exc())
             return f"⚠️ Service error: {str(e)}\n\nPlease try again or type 'menu' for options."
 
     async def process_whatsapp_query(
@@ -628,23 +649,49 @@ class AIProviderService:
         """Process WhatsApp message and return response."""
         sender = sender or sender_id
         request_id = str(uuid.uuid4())[:8]
+        self._request_count += 1
         
         if not message or not message.strip():
             return get_main_menu()
 
-        logger.info(f"[{request_id}] Processing WhatsApp message from {sender or 'unknown'}: {message}")
-        decision = self._make_routing_decision(message)
-        logger.info(f"[{request_id}] Route: {decision.intent} -> {decision.service_key}.{decision.method} ({decision.reason})")
-
+        logger.info(f"[{request_id}] Processing WhatsApp message #{self._request_count} from {sender or 'unknown'}: {message[:100]}")
+        
         try:
+            decision = self._make_routing_decision(message)
+            logger.info(f"[{request_id}] Route: {decision.intent} -> {decision.service_key}.{decision.method} ({decision.reason})")
+            
             response = await self._execute_service(decision)
             logger.info(f"[{request_id}] Response sent successfully")
             return response
+            
         except Exception as e:
-            logger.exception(f"[{request_id}] Unexpected error: {e}")
+            self._error_count += 1
+            logger.error(f"[{request_id}] Unexpected error: {e}")
+            logger.error(traceback.format_exc())
+            
+            # If it's a menu request, always show menu
             if message and message.strip().casefold() in {"menu", "main menu", "help", "start", "0"}:
                 return get_main_menu()
-            return f"⚠️ Service is temporarily unavailable. Reply *menu* to try again."
+            
+            return "⚠️ Service is temporarily unavailable. Reply *menu* to try again."
+
+    def get_status(self) -> Dict[str, Any]:
+        """Get service status."""
+        return {
+            "initialized": self._initialized,
+            "request_count": self._request_count,
+            "error_count": self._error_count,
+            "services": {
+                "dn_analysis": self.dn_service is not None,
+                "dealer_analytics": self.dealer_service is not None,
+                "city_service": self.city_service is not None,
+                "product_service": self.product_service is not None,
+                "national_kpi": self.national_service is not None,
+                "groq_service": self.groq_service is not None,
+            },
+            "semantic_router": SEMANTIC_ROUTER_AVAILABLE,
+            "cache_size": len(self._cache),
+        }
 
 
 # =====================================================================================================================
@@ -660,7 +707,23 @@ def get_ai_provider_service() -> AIProviderService:
     if _ai_service is None:
         with _service_lock:
             if _ai_service is None:
-                _ai_service = AIProviderService()
+                try:
+                    _ai_service = AIProviderService()
+                except Exception as e:
+                    logger.error(f"❌ Failed to create AIProviderService: {e}")
+                    # Create a minimal instance that can at least show the menu
+                    _ai_service = AIProviderService.__new__(AIProviderService)
+                    _ai_service._initialized = True
+                    _ai_service.dn_service = None
+                    _ai_service.dealer_service = None
+                    _ai_service.city_service = None
+                    _ai_service.product_service = None
+                    _ai_service.national_service = None
+                    _ai_service.groq_service = None
+                    _ai_service._cache = {}
+                    _ai_service._request_count = 0
+                    _ai_service._error_count = 0
+                    logger.warning("⚠️ AIProviderService running in degraded mode - only menu will work")
     return _ai_service
 
 
@@ -687,8 +750,8 @@ async def process_whatsapp_query(
             sender_id=sender_id,
             **kwargs,
         )
-    except Exception:
-        logger.exception("Unexpected AI provider failure")
+    except Exception as e:
+        logger.error(f"Unexpected AI provider failure: {e}")
         if message and message.strip().casefold() in {"menu", "main menu", "help", "start", "0"}:
             return get_main_menu()
         return "⚠️ Service is temporarily unavailable. Reply *menu* to try again."
