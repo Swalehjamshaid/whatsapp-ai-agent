@@ -234,4 +234,4 @@ expiringdict>=1.2.2
 # Async File Operations
 aiofiles>=24.1.0
 
-semantic-router>=0.0.70
+semantic-router>=0.1.15
