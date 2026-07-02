@@ -1,10 +1,16 @@
 """
 File: app/services/ai_provider_service.py
-Version: 15.0 - resilient semantic routing (NO SENDING)
+Version: 16.0 - RESILIENT WITH BOOTSTRAP INTEGRATION
 
 Single entry point for the WhatsApp AI agent. Deterministic requests (menu,
 menu numbers, DN numbers and obvious entities) never depend on an AI provider.
 Semantic Router and Groq are optional enhancements and cannot prevent startup.
+
+FIXES:
+- Always returns string responses (never dict)
+- Integrated with AI Bootstrap Service for lazy loading
+- Fixed error handling to return WhatsApp-friendly messages
+- Preserved ALL original attributes and behavior
 """
 
 from __future__ import annotations
@@ -15,9 +21,23 @@ import re
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 logger = logging.getLogger(__name__)
+
+
+# =====================================================================================================================
+# AI BOOTSTRAP SERVICE - LAZY LOADING
+# =====================================================================================================================
+
+try:
+    from app.services.ai_bootstrap_service import get_ai_bootstrap_service, warmup_ai_resources
+    BOOTSTRAP_AVAILABLE = True
+    # Warmup resources at startup (if not already done)
+    warmup_ai_resources(include_heavy=False)
+except ImportError:
+    BOOTSTRAP_AVAILABLE = False
+    logger.warning("AI Bootstrap Service not available")
 
 
 # Semantic Router has changed its public class names across releases. Support
@@ -76,76 +96,100 @@ class RoutingDecision:
         }
 
 
-# Service imports deliberately degrade independently. One broken analytics
-# module must not disable every WhatsApp command.
+# =====================================================================================================================
+# SERVICE IMPORTS WITH SAFE FALLBACKS
+# =====================================================================================================================
+
+# DN Analysis Service
 try:
     from app.services.dn_analysis import DNAnalysisService
+    DN_ANALYSIS_AVAILABLE = True
 except Exception as exc:
     logger.exception("Unable to import DNAnalysisService: %s", exc)
+    DN_ANALYSIS_AVAILABLE = False
 
     class DNAnalysisService:  # type: ignore[no-redef]
-        async def get_dn_dashboard(self, entities: Dict[str, Any]) -> str:
+        async def get_dn_dashboard(self, entities: Dict[str, Any]) -> Union[str, Dict[str, Any]]:
             return "⚠️ DN service is temporarily unavailable."
 
-        async def get_warehouse_dashboard(self, entities: Dict[str, Any]) -> str:
+        async def get_warehouse_dashboard(self, entities: Dict[str, Any]) -> Union[str, Dict[str, Any]]:
             return "⚠️ Warehouse service is temporarily unavailable."
 
-        async def get_pending_dns(self, entities: Dict[str, Any]) -> str:
+        async def get_pending_dns(self, entities: Dict[str, Any]) -> Union[str, Dict[str, Any]]:
             return "⚠️ Pending DN service is temporarily unavailable."
 
-        async def get_top_performers(self, entities: Dict[str, Any]) -> str:
+        async def get_top_performers(self, entities: Dict[str, Any]) -> Union[str, Dict[str, Any]]:
             return "⚠️ Performance service is temporarily unavailable."
 
 
+# Dealer Analytics Service
 try:
     from app.services.dealer_analytics_service import DealerAnalyticsService
+    DEALER_ANALYTICS_AVAILABLE = True
 except Exception as exc:
     logger.exception("Unable to import DealerAnalyticsService: %s", exc)
+    DEALER_ANALYTICS_AVAILABLE = False
 
     class DealerAnalyticsService:  # type: ignore[no-redef]
-        async def get_dealer_dashboard(self, entities: Dict[str, Any]) -> str:
+        async def get_dealer_dashboard(self, entities: Dict[str, Any]) -> Union[str, Dict[str, Any]]:
             return "⚠️ Dealer service is temporarily unavailable."
 
 
+# City Service
 try:
     from app.services.city_service import CityService
+    CITY_SERVICE_AVAILABLE = True
 except Exception as exc:
     logger.exception("Unable to import CityService: %s", exc)
+    CITY_SERVICE_AVAILABLE = False
 
     class CityService:  # type: ignore[no-redef]
-        async def get_city_dashboard(self, entities: Dict[str, Any]) -> str:
+        async def get_city_dashboard(self, entities: Dict[str, Any]) -> Union[str, Dict[str, Any]]:
             return "⚠️ City service is temporarily unavailable."
 
 
+# Product Service
 try:
     from app.services.product_service import ProductService
+    PRODUCT_SERVICE_AVAILABLE = True
 except Exception as exc:
     logger.exception("Unable to import ProductService: %s", exc)
+    PRODUCT_SERVICE_AVAILABLE = False
 
     class ProductService:  # type: ignore[no-redef]
-        async def get_product_dashboard(self, entities: Dict[str, Any]) -> str:
+        async def get_product_dashboard(self, entities: Dict[str, Any]) -> Union[str, Dict[str, Any]]:
             return "⚠️ Product service is temporarily unavailable."
 
 
+# National KPI Service
 try:
     from app.services.national_kpi_service import NationalKPIService
+    NATIONAL_KPI_AVAILABLE = True
 except Exception as exc:
     logger.exception("Unable to import NationalKPIService: %s", exc)
+    NATIONAL_KPI_AVAILABLE = False
 
     class NationalKPIService:  # type: ignore[no-redef]
-        async def get_national_kpi(self, entities: Dict[str, Any]) -> str:
+        async def get_national_kpi(self, entities: Dict[str, Any]) -> Union[str, Dict[str, Any]]:
             return "⚠️ National KPI service is temporarily unavailable."
 
 
+# Groq Service
 try:
     from app.services.groq_service import GroqService
+    GROQ_SERVICE_AVAILABLE = True
 except Exception as exc:
     logger.exception("Unable to import GroqService: %s", exc)
+    GROQ_SERVICE_AVAILABLE = False
 
     class GroqService:  # type: ignore[no-redef]
         async def process_query(self, message: str, entities: Dict[str, Any]) -> str:
             return get_main_menu()
 
+
+# =====================================================================================================================
+# MENU OPTIONS
+# =====================================================================================================================
 
 MENU_OPTIONS: Dict[str, Dict[str, Any]] = {
     "0": {"name": "Main Menu", "service_key": "menu_service", "service_file": "ai_provider_service.py", "method": "show_main_menu", "requires_ai": False},
@@ -211,6 +255,10 @@ CITY_NAMES = (
 )
 
 
+# =====================================================================================================================
+# MAIN MENU FUNCTIONS
+# =====================================================================================================================
+
 def get_main_menu() -> str:
     return (
         "📋 *AI LOGISTICS MENU*\n\n"
@@ -228,6 +276,88 @@ def get_invalid_selection_message() -> str:
 async def _resolve(value: Any) -> Any:
     return await value if inspect.isawaitable(value) else value
 
+
+# =====================================================================================================================
+# RESPONSE EXTRACTOR - ALWAYS RETURNS STRING
+# =====================================================================================================================
+
+def _extract_whatsapp_message(result: Any) -> str:
+    """
+    Extract WhatsApp message from service result.
+    ALWAYS returns a string - never a dict.
+    """
+    if result is None:
+        return "No response from service. Please try again."
+    
+    # If result is already a string, return it
+    if isinstance(result, str):
+        return result if result.strip() else "No response from service. Please try again."
+    
+    # If result is a dict, try multiple extraction methods
+    if isinstance(result, dict):
+        # Check for error message
+        if result.get("error"):
+            error_msg = result.get("error")
+            if isinstance(error_msg, str):
+                return f"⚠️ {error_msg}"
+            elif isinstance(error_msg, dict):
+                return f"⚠️ {error_msg.get('message', 'Service error')}"
+        
+        # Priority 1: whatsapp_message
+        if "whatsapp_message" in result and result["whatsapp_message"]:
+            msg = result["whatsapp_message"]
+            if isinstance(msg, str):
+                return msg
+            elif isinstance(msg, dict):
+                return str(msg) if msg else "No response from service."
+        
+        # Priority 2: formatted_response
+        if "formatted_response" in result and result["formatted_response"]:
+            return str(result["formatted_response"])
+        
+        # Priority 3: message
+        if "message" in result and result["message"]:
+            return str(result["message"])
+        
+        # Priority 4: response
+        if "response" in result and result["response"]:
+            return str(result["response"])
+        
+        # Priority 5: data with to_whatsapp_message method
+        if "data" in result and result["data"]:
+            data = result["data"]
+            if hasattr(data, "to_whatsapp_message"):
+                try:
+                    msg = data.to_whatsapp_message()
+                    if msg:
+                        return str(msg)
+                except Exception as e:
+                    logger.warning(f"Failed to call to_whatsapp_message: {e}")
+            elif hasattr(data, "__str__"):
+                return str(data)
+        
+        # Priority 6: Convert dict to readable format (exclude meta fields)
+        lines = []
+        for key, value in result.items():
+            if key not in ["whatsapp_message", "formatted_response", "message", "response", "data", "metadata"]:
+                if value is not None and not key.startswith("_"):
+                    try:
+                        lines.append(f"{key}: {value}")
+                    except Exception:
+                        lines.append(f"{key}: [Unable to display]")
+        if lines:
+            return "\n".join(lines)
+    
+    # Last resort: convert to string with error handling
+    try:
+        return str(result) if result else "No response from service. Please try again."
+    except Exception:
+        return "No response from service. Please try again."
+
+
+# =====================================================================================================================
+# MAIN AI PROVIDER SERVICE
+# =====================================================================================================================
 
 class AIProviderService:
     _instance: Optional["AIProviderService"] = None
@@ -257,6 +387,16 @@ class AIProviderService:
         self._cache: Dict[str, tuple[float, RoutingDecision]] = {}
         self._cache_ttl = 300.0
         self._initialized = True
+        
+        # Try to get bootstrap resources
+        self._bootstrap = None
+        if BOOTSTRAP_AVAILABLE:
+            try:
+                self._bootstrap = get_ai_bootstrap_service()
+                logger.info("✅ AI Bootstrap Service connected")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to connect to Bootstrap Service: {e}")
+        
         logger.info("AIProviderService initialized; semantic router will load lazily")
 
     def _ensure_semantic_router(self) -> None:
@@ -269,6 +409,19 @@ class AIProviderService:
             if not SEMANTIC_ROUTER_AVAILABLE:
                 logger.warning("Semantic routing disabled: %s", SEMANTIC_ROUTER_IMPORT_ERROR)
                 return
+            
+            # Try to get from bootstrap first
+            if BOOTSTRAP_AVAILABLE:
+                try:
+                    bootstrap = get_ai_bootstrap_service()
+                    self._router = bootstrap.get_semantic_router()
+                    if self._router:
+                        logger.info("Semantic Router loaded from Bootstrap")
+                        return
+                except Exception:
+                    pass
+            
+            # Fallback to manual initialization
             try:
                 encoder = HuggingFaceEncoder()
                 routes = [Route(name=name, utterances=utterances) for name, utterances in ROUTE_UTTERANCES.items()]
@@ -422,6 +575,18 @@ class AIProviderService:
             self._cache.clear()
         return decision
 
+    # =====================================================================================================================
+    # SHOW MAIN MENU
+    # =====================================================================================================================
+
+    def show_main_menu(self) -> str:
+        """Show main menu"""
+        return get_main_menu()
+
+    # =====================================================================================================================
+    # PROCESS WHATSAPP QUERY - ALWAYS RETURNS STRING
+    # =====================================================================================================================
+
     async def process_whatsapp_query(
         self,
         message: str,
@@ -429,7 +594,10 @@ class AIProviderService:
         sender_id: Optional[str] = None,
         **_: Any,
     ) -> str:
-        # ``sender_id`` is retained for compatibility with webhook v28.2.
+        """
+        Process WhatsApp query and return formatted response.
+        ALWAYS returns a string - never a dict.
+        """
         sender = sender or sender_id
         if not message or not message.strip():
             return get_main_menu()
@@ -460,13 +628,20 @@ class AIProviderService:
                 result = await _resolve(method(message, decision.entity))
             else:
                 result = await _resolve(method(decision.entity))
-            return str(result) if result is not None else "⚠️ No response was returned. Please try again."
+            
+            # Extract WhatsApp message - ALWAYS returns string
+            return _extract_whatsapp_message(result)
+            
         except Exception:
             logger.exception("Service call failed: %s.%s", decision.service_key, decision.method)
             if decision.service_key == "groq_service":
                 return "⚠️ AI service is temporarily unavailable. Reply *menu* to use logistics services."
             return f"⚠️ {MENU_OPTIONS[decision.menu_option or '0']['name']} is temporarily unavailable. Please try again."
 
+
+# =====================================================================================================================
+# SINGLETON INSTANCE
+# =====================================================================================================================
 
 _ai_service: Optional[AIProviderService] = None
 _service_lock = threading.Lock()
@@ -486,12 +661,20 @@ def get_whatsapp_provider_service() -> AIProviderService:
     return get_ai_provider_service()
 
 
+# =====================================================================================================================
+# MODULE-LEVEL FUNCTION - BACKWARD COMPATIBLE
+# =====================================================================================================================
+
 async def process_whatsapp_query(
     message: str,
     sender: Optional[str] = None,
     sender_id: Optional[str] = None,
     **kwargs: Any,
 ) -> str:
+    """
+    Module-level function for backward compatibility.
+    ALWAYS returns a string.
+    """
     try:
         return await get_ai_provider_service().process_whatsapp_query(
             message=message,
@@ -507,6 +690,10 @@ async def process_whatsapp_query(
         return "⚠️ Service is temporarily unavailable. Reply *menu* to try again."
 
 
+# =====================================================================================================================
+# EXPORTS
+# =====================================================================================================================
+
 __all__ = [
     "process_whatsapp_query",
     "get_main_menu",
@@ -515,4 +702,5 @@ __all__ = [
     "RoutingDecision",
     "MENU_OPTIONS",
     "INTENT_TO_MENU",
+    "AIProviderService",
 ]
