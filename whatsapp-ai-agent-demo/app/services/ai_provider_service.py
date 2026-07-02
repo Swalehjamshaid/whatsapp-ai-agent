@@ -1,6 +1,6 @@
 """
 File: app/services/ai_provider_service.py
-Version: 21.1 - DIAGNOSTIC VERSION WITH FULL DEBUG LOGGING
+Version: 22.0 - WITH BETTER HANDLING FOR INCOMPLETE QUERIES
 """
 
 from __future__ import annotations
@@ -181,35 +181,27 @@ except Exception as exc:
 
 
 # =====================================================================================================================
-# SERVICE IMPORTS WITH FULL DEBUGGING
+# SERVICE IMPORTS
 # =====================================================================================================================
 
 SERVICE_IMPORT_STATUS: Dict[str, bool] = {}
 SERVICE_IMPORT_ERRORS: Dict[str, str] = {}
 
 def _import_service_instance(service_name: str, import_path: str, class_name: str, factory_method: Optional[str] = None) -> Optional[Any]:
-    """Import and instantiate a service with full debug logging"""
     try:
-        logger.info(f"🔍 Attempting to import {service_name} from {import_path}")
         module = __import__(import_path, fromlist=[class_name])
-        
         if factory_method:
-            logger.info(f"🔍 Using factory method: {factory_method}")
             factory = getattr(module, factory_method)
             instance = factory()
         else:
-            logger.info(f"🔍 Instantiating class: {class_name}")
             service_class = getattr(module, class_name)
             instance = service_class()
-        
         SERVICE_IMPORT_STATUS[service_name] = True
-        logger.info(f"✅ {service_name} imported and instantiated successfully: {instance}")
         return instance
     except Exception as exc:
         SERVICE_IMPORT_STATUS[service_name] = False
         SERVICE_IMPORT_ERRORS[service_name] = str(exc)
-        logger.error(f"❌ Failed to initialize {service_name}: {exc}")
-        logger.error(traceback.format_exc())
+        logger.warning(f"⚠️ Failed to initialize {service_name}: {exc}")
         return None
 
 # DN Analysis
@@ -312,6 +304,62 @@ def get_main_menu() -> str:
 9️⃣ AI Query Menu
 
 *Reply with menu number.*"""
+
+
+# =====================================================================================================================
+# HELPER FUNCTIONS FOR COMMON QUERIES
+# =====================================================================================================================
+
+def get_help_for_incomplete_query(message: str) -> str:
+    """Provide helpful guidance for incomplete queries"""
+    message_lower = message.lower().strip()
+    
+    # DN without number
+    if message_lower in ["dn", "track dn", "dn status", "check dn"]:
+        return """📦 *How to track a DN*
+
+Please provide a DN number like:
+• 6243698820
+• Track DN 6243698820
+• DN 6243698820 status
+
+You can also type *menu* to see all available options."""
+    
+    # City without name
+    if message_lower in ["city", "show city", "city dashboard"]:
+        return """🏙️ *How to view city dashboard*
+
+Please provide a city name like:
+• Lahore
+• Karachi
+• Islamabad
+• Rawalpindi
+
+Or type *menu* to see all available options."""
+    
+    # Dealer without name
+    if "dealer" in message_lower and not any(word in message_lower for word in ["taj", "mian", "haroon", "national"]):
+        return """🏪 *How to view dealer dashboard*
+
+Please provide a dealer name like:
+• Taj Electronics
+• Mian Group
+• Haroon Electronics
+
+Or type *menu* to see all available options."""
+    
+    # Pending DNs
+    if message_lower in ["pending", "pending dn", "pending delivery"]:
+        return """⏳ *Pending DNs*
+
+To view pending DNs, type:
+• Pending DNs
+• Show pending deliveries
+• Menu 7
+
+Or type *menu* to see all available options."""
+    
+    return None
 
 
 # =====================================================================================================================
@@ -425,7 +473,6 @@ class ServiceRegistry:
             ),
         }
         
-        # Attach service instances
         for intent, entry in self._entries.items():
             self._attach_service_instance(entry)
     
@@ -471,9 +518,6 @@ class ServiceRegistry:
         if cache_key in self._method_cache:
             return self._method_cache[cache_key]
         
-        # Check if method exists
-        logger.info(f"🔍 Looking for method '{method_name}' on {entry.service_key}")
-        
         if hasattr(entry.service_instance, method_name):
             method = getattr(entry.service_instance, method_name)
             if callable(method):
@@ -483,11 +527,6 @@ class ServiceRegistry:
                 return method
             else:
                 logger.error(f"❌ '{method_name}' exists but is not callable on {entry.service_key}")
-        else:
-            logger.error(f"❌ Method '{method_name}' not found on {entry.service_key}")
-            # List available methods for debugging
-            available = [m for m in dir(entry.service_instance) if not m.startswith('_') and callable(getattr(entry.service_instance, m))]
-            logger.info(f"📋 Available methods on {entry.service_key}: {available[:10]}")
         
         # Try compatible methods
         for compatible_method in entry.compatible_methods:
@@ -499,7 +538,6 @@ class ServiceRegistry:
                     self._signature_cache[cache_key] = inspect.signature(method)
                     return method
         
-        logger.error(f"❌ No compatible method found for {method_name} on {entry.service_key}")
         return None
 
 
@@ -600,16 +638,35 @@ class IntentDetectionEngine:
         self._router_initialized = False
         self._router_lock = threading.Lock()
         self._menu_triggers = {"menu", "main menu", "options", "start", "back", "home", "help", "0"}
+        
+        # Keywords that indicate incomplete queries needing help
+        self._incomplete_query_keywords = {
+            "dn": ["dn", "track dn", "dn status", "check dn", "delivery note"],
+            "city": ["city", "show city", "city dashboard"],
+            "dealer": ["dealer", "show dealer", "dealer dashboard"],
+            "pending": ["pending", "pending dn", "pending delivery"],
+        }
     
     def detect_intent(self, message: str, entities: EntityExtraction) -> Tuple[Intent, float]:
         message_lower = message.lower().strip()
         
+        # Check for menu first
         if message_lower in self._menu_triggers:
             return Intent.MENU, 1.0
         
+        # Check for incomplete query - if no entities and message is a keyword
+        if not any(v is not None for v in entities.__dict__.values()):
+            # Check if it's an incomplete query
+            for keyword_type, keywords in self._incomplete_query_keywords.items():
+                if message_lower in keywords or message_lower in [k.split()[0] for k in keywords]:
+                    # Return HELP intent to provide guidance
+                    return Intent.HELP, 0.8
+        
+        # Check for DN
         if entities.dn_number:
             return Intent.DN_LOOKUP, 0.95
         
+        # Check for entities
         if entities.dealer_name:
             return Intent.DEALER_DASHBOARD, 0.85
         
@@ -634,41 +691,23 @@ class ResponseNormalizer:
         if result is None:
             return "No response from service."
         
-        # Try different extraction methods
         if isinstance(result, dict):
-            # Check for whatsapp_message
             if "whatsapp_message" in result and result["whatsapp_message"]:
                 return result["whatsapp_message"]
-            
-            # Check for message
             if "message" in result and result["message"]:
                 return result["message"]
-            
-            # Check for response
             if "response" in result and result["response"]:
                 return result["response"]
-            
-            # Check for formatted_response
             if "formatted_response" in result and result["formatted_response"]:
                 return result["formatted_response"]
             
-            # Check data object
             if "data" in result and result["data"]:
                 data = result["data"]
                 if hasattr(data, "to_whatsapp_message"):
                     return data.to_whatsapp_message()
                 elif hasattr(data, "__str__"):
                     return str(data)
-                elif isinstance(data, dict):
-                    # Try to format the dict nicely
-                    lines = []
-                    for key, value in data.items():
-                        if not key.startswith('_') and value is not None:
-                            lines.append(f"{key}: {value}")
-                    if lines:
-                        return "\n".join(lines)
         
-        # Fallback to string
         if hasattr(result, "__str__"):
             return str(result)
         
@@ -709,7 +748,7 @@ class WhatsAppValidator:
 
 
 # =====================================================================================================================
-# MAIN AI PROVIDER SERVICE WITH FULL DEBUGGING
+# MAIN AI PROVIDER SERVICE
 # =====================================================================================================================
 
 class AIProviderService:
@@ -747,21 +786,15 @@ class AIProviderService:
         for intent, entry in self.registry._entries.items():
             status = "✅" if entry.service_instance else "❌"
             logger.info(f"  {status} {entry.service_key}: {entry.menu_name}")
-            if entry.service_instance:
-                logger.info(f"     Methods available: {[m for m in dir(entry.service_instance) if not m.startswith('_') and callable(getattr(entry.service_instance, m))][:5]}")
         
         self._initialized = True
         logger.info("✅ AIProviderService initialized")
         logger.info("=" * 80)
     
     def _get_parameters_for_method(self, method: Callable, entities: EntityExtraction) -> Dict[str, Any]:
-        """Get parameters with full debugging"""
         sig = inspect.signature(method)
         params = {}
         entity_dict = {k: v for k, v in entities.__dict__.items() if v is not None}
-        
-        logger.info(f"🔍 Method signature: {sig}")
-        logger.info(f"🔍 Available entities: {entity_dict}")
         
         for param_name, param in sig.parameters.items():
             if param_name in ("self", "cls"):
@@ -772,11 +805,8 @@ class AIProviderService:
             
             if param_name in entity_dict:
                 params[param_name] = entity_dict[param_name]
-                logger.info(f"  ✅ Using {param_name}={entity_dict[param_name]}")
-            elif param.default != inspect.Parameter.empty:
-                logger.info(f"  ℹ️ Using default for {param_name}")
-            else:
-                logger.warning(f"  ⚠️ Required parameter '{param_name}' not found in entities")
+            elif param.default == inspect.Parameter.empty:
+                logger.warning(f"⚠️ Required parameter '{param_name}' not found in entities")
         
         return params
     
@@ -806,14 +836,28 @@ class AIProviderService:
             entity_dict = {k: v for k, v in entities.__dict__.items() if v is not None}
             logger.info(f"[{request_id}] 🔍 Extracted entities: {entity_dict}")
             
+            # Check for incomplete query and provide help
+            message_lower = message.lower().strip()
+            if not entity_dict:
+                help_message = get_help_for_incomplete_query(message)
+                if help_message:
+                    logger.info(f"[{request_id}] 💡 Providing help for incomplete query")
+                    return help_message
+            
             # Make routing decision
             intent, confidence = self.intent_detector.detect_intent(message, entities)
             logger.info(f"[{request_id}] 🎯 Intent: {intent.value} (confidence: {confidence:.2f})")
             
+            # Handle HELP intent
+            if intent == Intent.HELP:
+                help_message = get_help_for_incomplete_query(message)
+                if help_message:
+                    return help_message
+            
             entry = self.registry.get_entry(intent)
             if not entry:
                 logger.error(f"[{request_id}] ❌ No service entry for intent: {intent}")
-                return f"⚠️ Service not found for intent: {intent.value}"
+                return f"⚠️ Service not found for intent: {intent.value}\n\nType *menu* to see options."
             
             logger.info(f"[{request_id}] 📦 Service: {entry.service_key} -> {entry.preferred_method}")
             
@@ -821,7 +865,7 @@ class AIProviderService:
             method = self.registry.get_method(entry, entry.preferred_method)
             if not method:
                 logger.error(f"[{request_id}] ❌ Method {entry.preferred_method} not found")
-                return f"⚠️ Service method {entry.preferred_method} is temporarily unavailable."
+                return f"⚠️ Service method {entry.preferred_method} is temporarily unavailable.\n\nType *menu* to see options."
             
             # Prepare parameters
             params = self._get_parameters_for_method(method, entities)
@@ -840,12 +884,10 @@ class AIProviderService:
                 
                 execution_time = (time.time() - start_time) * 1000
                 logger.info(f"[{request_id}] ⏱️ Execution time: {execution_time:.2f}ms")
-                logger.info(f"[{request_id}] 📤 Result type: {type(result)}")
-                logger.info(f"[{request_id}] 📤 Result preview: {str(result)[:200]}")
                 
                 # Normalize response
                 normalized = self.response_normalizer.normalize(result)
-                logger.info(f"[{request_id}] 📝 Normalized response: {normalized[:200]}")
+                logger.info(f"[{request_id}] 📝 Normalized response: {normalized[:200]}...")
                 
                 # Validate
                 if not self.validator.validate(normalized):
