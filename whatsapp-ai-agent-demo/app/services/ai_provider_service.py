@@ -422,7 +422,15 @@ class AIProviderService:
             self._cache.clear()
         return decision
 
-    async def process_whatsapp_query(self, message: str, sender: Optional[str] = None) -> str:
+    async def process_whatsapp_query(
+        self,
+        message: str,
+        sender: Optional[str] = None,
+        sender_id: Optional[str] = None,
+        **_: Any,
+    ) -> str:
+        # ``sender_id`` is retained for compatibility with webhook v28.2.
+        sender = sender or sender_id
         if not message or not message.strip():
             return get_main_menu()
 
@@ -473,9 +481,24 @@ def get_ai_provider_service() -> AIProviderService:
     return _ai_service
 
 
-async def process_whatsapp_query(message: str, sender: Optional[str] = None) -> str:
+def get_whatsapp_provider_service() -> AIProviderService:
+    """Backward-compatible factory used by webhook v28.2 and older code."""
+    return get_ai_provider_service()
+
+
+async def process_whatsapp_query(
+    message: str,
+    sender: Optional[str] = None,
+    sender_id: Optional[str] = None,
+    **kwargs: Any,
+) -> str:
     try:
-        return await get_ai_provider_service().process_whatsapp_query(message, sender)
+        return await get_ai_provider_service().process_whatsapp_query(
+            message=message,
+            sender=sender,
+            sender_id=sender_id,
+            **kwargs,
+        )
     except Exception:
         logger.exception("Unexpected AI provider failure")
         # Keep WhatsApp responsive even for an unforeseen initialization bug.
@@ -488,6 +511,7 @@ __all__ = [
     "process_whatsapp_query",
     "get_main_menu",
     "get_ai_provider_service",
+    "get_whatsapp_provider_service",
     "RoutingDecision",
     "MENU_OPTIONS",
     "INTENT_TO_MENU",
