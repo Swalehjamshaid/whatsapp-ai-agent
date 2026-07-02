@@ -1,6 +1,6 @@
 """
 File: app/services/ai_provider_service.py
-Version: 15.0 - resilient semantic routing
+Version: 15.1 - resilient semantic routing + webhook v28.2 compatibility
 
 Single entry point for the WhatsApp AI agent. Deterministic requests (menu,
 menu numbers, DN numbers and obvious entities) never depend on an AI provider.
@@ -229,6 +229,40 @@ async def _resolve(value: Any) -> Any:
     return await value if inspect.isawaitable(value) else value
 
 
+class _ServiceRegistryAdapter:
+    """Compatibility layer for webhook v28.2 diagnostic endpoints."""
+
+    def __init__(self, owner: "AIProviderService") -> None:
+        self._owner = owner
+
+    def _services(self) -> Dict[str, Any]:
+        return {
+            "dn": self._owner.dn_service,
+            "dn_analysis": self._owner.dn_service,
+            "dealer": self._owner.dealer_service,
+            "dealer_analytics": self._owner.dealer_service,
+            "city": self._owner.city_service,
+            "city_service": self._owner.city_service,
+            "product": self._owner.product_service,
+            "product_service": self._owner.product_service,
+            "national_kpi": self._owner.national_kpi_service,
+            "national_kpi_service": self._owner.national_kpi_service,
+            "groq": self._owner.groq_service,
+            "groq_service": self._owner.groq_service,
+        }
+
+    def get_service_instance(self, name: str) -> Optional[Any]:
+        return self._services().get((name or "").casefold())
+
+    def get_service_status(self, name: str) -> Dict[str, Any]:
+        service = self.get_service_instance(name)
+        return {
+            "name": name,
+            "ready": service is not None,
+            "status": "READY" if service is not None else "UNAVAILABLE",
+        }
+
+
 class AIProviderService:
     _instance: Optional["AIProviderService"] = None
     _instance_lock = threading.Lock()
@@ -256,8 +290,29 @@ class AIProviderService:
         self._router_lock = threading.Lock()
         self._cache: Dict[str, tuple[float, RoutingDecision]] = {}
         self._cache_ttl = 300.0
+        self.registry = _ServiceRegistryAdapter(self)
         self._initialized = True
         logger.info("AIProviderService initialized; semantic router will load lazily")
+
+    def get_service_registry_status(self) -> Dict[str, Any]:
+        """Legacy health API expected by app/routes/webhook.py v28.2."""
+        unique_services = (
+            self.dn_service,
+            self.dealer_service,
+            self.city_service,
+            self.product_service,
+            self.national_kpi_service,
+            self.groq_service,
+        )
+        ready = sum(service is not None for service in unique_services)
+        total = len(unique_services)
+        return {
+            "ready": ready,
+            "in_development": total - ready,
+            "total": total,
+            "readiness_score": (ready / total * 100.0) if total else 0.0,
+            "semantic_router": "ready" if self._router is not None else "lazy",
+        }
 
     def _ensure_semantic_router(self) -> None:
         if self._router is not None or self._router_init_attempted:
