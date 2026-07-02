@@ -1,12 +1,14 @@
 """
 File: app/services/ai_provider_service.py
-Version: 17.0 - COMPLETE FIX WITH ENHANCED ENTITY EXTRACTION
+Version: 18.0 - PROPER DN ANALYSIS INTEGRATION
 
 Single entry point for the WhatsApp AI agent. Deterministic requests (menu,
 menu numbers, DN numbers and obvious entities) never depend on an AI provider.
 Semantic Router and Groq are optional enhancements and cannot prevent startup.
 
 FIXES:
+- Proper integration with dn_analysis.py (passes dn_no parameter correctly)
+- Enhanced DN validation (8-12 digits)
 - Enhanced entity extraction for dealer names (Ruba Digital Wah)
 - Fixed city service handling (Haripur)
 - Proper DN validation and error messages
@@ -105,22 +107,23 @@ class RoutingDecision:
 try:
     from app.services.dn_analysis import DNAnalysisService
     DN_ANALYSIS_AVAILABLE = True
+    logger.info("✅ DNAnalysisService imported successfully")
 except Exception as exc:
     logger.exception("Unable to import DNAnalysisService: %s", exc)
     DN_ANALYSIS_AVAILABLE = False
 
     class DNAnalysisService:  # type: ignore[no-redef]
-        async def get_dn_dashboard(self, entities: Dict[str, Any]) -> Union[str, Dict[str, Any]]:
-            return "⚠️ DN service is temporarily unavailable."
+        def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
+            return {"success": False, "whatsapp_message": "⚠️ DN service is temporarily unavailable.", "error": "DN service unavailable"}
 
-        async def get_warehouse_dashboard(self, entities: Dict[str, Any]) -> Union[str, Dict[str, Any]]:
-            return "⚠️ Warehouse service is temporarily unavailable."
+        def get_warehouse_dashboard(self, warehouse: str) -> Dict[str, Any]:
+            return {"success": False, "whatsapp_message": "⚠️ Warehouse service is temporarily unavailable.", "error": "Warehouse service unavailable"}
 
-        async def get_pending_dns(self, entities: Dict[str, Any]) -> Union[str, Dict[str, Any]]:
-            return "⚠️ Pending DN service is temporarily unavailable."
+        def get_pending_dns(self, limit: int = 20) -> Dict[str, Any]:
+            return {"success": False, "whatsapp_message": "⚠️ Pending DN service is temporarily unavailable.", "error": "Pending DN service unavailable"}
 
-        async def get_top_performers(self, entities: Dict[str, Any]) -> Union[str, Dict[str, Any]]:
-            return "⚠️ Performance service is temporarily unavailable."
+        def get_top_performers(self, limit: int = 10) -> Dict[str, Any]:
+            return {"success": False, "whatsapp_message": "⚠️ Performance service is temporarily unavailable.", "error": "Performance service unavailable"}
 
 
 # Dealer Analytics Service
@@ -132,8 +135,8 @@ except Exception as exc:
     DEALER_ANALYTICS_AVAILABLE = False
 
     class DealerAnalyticsService:  # type: ignore[no-redef]
-        async def get_dealer_dashboard(self, entities: Dict[str, Any]) -> Union[str, Dict[str, Any]]:
-            return "⚠️ Dealer service is temporarily unavailable."
+        async def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
+            return {"success": False, "whatsapp_message": "⚠️ Dealer service is temporarily unavailable.", "error": "Dealer service unavailable"}
 
 
 # City Service
@@ -145,8 +148,8 @@ except Exception as exc:
     CITY_SERVICE_AVAILABLE = False
 
     class CityService:  # type: ignore[no-redef]
-        async def get_city_dashboard(self, entities: Dict[str, Any]) -> Union[str, Dict[str, Any]]:
-            return "⚠️ City service is temporarily unavailable."
+        async def get_city_dashboard(self, city_name: str) -> Dict[str, Any]:
+            return {"success": False, "whatsapp_message": "⚠️ City service is temporarily unavailable.", "error": "City service unavailable"}
 
 
 # Product Service
@@ -158,8 +161,8 @@ except Exception as exc:
     PRODUCT_SERVICE_AVAILABLE = False
 
     class ProductService:  # type: ignore[no-redef]
-        async def get_product_dashboard(self, entities: Dict[str, Any]) -> Union[str, Dict[str, Any]]:
-            return "⚠️ Product service is temporarily unavailable."
+        async def get_product_dashboard(self, product: str) -> Dict[str, Any]:
+            return {"success": False, "whatsapp_message": "⚠️ Product service is temporarily unavailable.", "error": "Product service unavailable"}
 
 
 # National KPI Service
@@ -171,8 +174,8 @@ except Exception as exc:
     NATIONAL_KPI_AVAILABLE = False
 
     class NationalKPIService:  # type: ignore[no-redef]
-        async def get_national_kpi(self, entities: Dict[str, Any]) -> Union[str, Dict[str, Any]]:
-            return "⚠️ National KPI service is temporarily unavailable."
+        async def get_national_kpi(self) -> Dict[str, Any]:
+            return {"success": False, "whatsapp_message": "⚠️ National KPI service is temporarily unavailable.", "error": "National KPI service unavailable"}
 
 
 # Groq Service
@@ -324,6 +327,10 @@ def _extract_whatsapp_message(result: Any) -> str:
             elif isinstance(msg, dict):
                 return str(msg) if msg else "No response from service."
         
+        # Check for formatted_response
+        if "formatted_response" in result and result["formatted_response"]:
+            return str(result["formatted_response"])
+        
         # Check for message
         if "message" in result and result["message"]:
             return str(result["message"])
@@ -348,7 +355,7 @@ def _extract_whatsapp_message(result: Any) -> str:
         # Convert dict to readable format
         lines = []
         for key, value in result.items():
-            if key not in ["whatsapp_message", "message", "response", "data", "metadata", "success"]:
+            if key not in ["whatsapp_message", "formatted_response", "message", "response", "data", "metadata", "success", "error"]:
                 if value is not None and not key.startswith("_"):
                     try:
                         lines.append(f"{key}: {value}")
@@ -427,6 +434,26 @@ def _extract_city_name(text: str) -> Optional[str]:
         return match.group(1).strip().title()
     
     return None
+
+
+# =====================================================================================================================
+# VALIDATE DN NUMBER
+# =====================================================================================================================
+
+def _is_valid_dn(dn: str) -> bool:
+    """Validate DN number (8-12 digits)."""
+    if not dn:
+        return False
+    cleaned = re.sub(r'[\s-]', '', dn)
+    return cleaned.isdigit() and 8 <= len(cleaned) <= 12
+
+
+def _format_dn_message(dn: str) -> str:
+    """Format DN number for display."""
+    if not dn:
+        return "Unknown"
+    cleaned = re.sub(r'[\s-]', '', dn)
+    return cleaned
 
 
 # =====================================================================================================================
@@ -511,13 +538,16 @@ class AIProviderService:
     @staticmethod
     def _extract_dn(text: str) -> Optional[str]:
         compact = text.strip()
+        # Match 8-12 digit numbers
         match = re.search(r"(?<!\d)(\d{8,12})(?!\d)", compact)
         if match:
             return match.group(1)
+        # Match spaced numbers (e.g., 6243 7011 97)
         match = re.search(r"(?<!\d)(\d{4}[\s-]*\d{4}[\s-]*\d{0,4})(?!\d)", compact)
         if match:
             candidate = re.sub(r"[\s-]", "", match.group(1))
-            return candidate if 8 <= len(candidate) <= 12 else None
+            if 8 <= len(candidate) <= 12:
+                return candidate
         return None
 
     @staticmethod
@@ -705,10 +735,77 @@ class AIProviderService:
 
         try:
             method = getattr(service, decision.method)
-            if decision.service_key == "groq_service":
+            
+            # =====================================================================================================================
+            # CRITICAL FIX: Call methods with correct parameters for each service
+            # =====================================================================================================================
+            
+            if decision.service_key == "dn_analysis":
+                # DN Analysis methods expect specific parameters
+                if decision.method == "get_dn_dashboard":
+                    # Extract DN number from entities
+                    dn_no = decision.entity.get("dn") or decision.entity.get("dn_number") or decision.entity.get("id")
+                    if not dn_no:
+                        return "⚠️ Please provide a valid DN number (8-12 digits)."
+                    
+                    # Validate DN number
+                    if not _is_valid_dn(dn_no):
+                        return f"⚠️ Invalid DN number '{dn_no}'. Please provide a valid 8-12 digit DN number."
+                    
+                    # Call with correct parameter
+                    result = method(dn_no)
+                
+                elif decision.method == "get_warehouse_dashboard":
+                    warehouse = decision.entity.get("warehouse")
+                    if not warehouse:
+                        return "⚠️ Please provide a warehouse name."
+                    result = method(warehouse)
+                
+                elif decision.method == "get_pending_dns":
+                    result = method()
+                
+                elif decision.method == "get_top_performers":
+                    result = method()
+                
+                else:
+                    # Fallback: try calling with entities dict
+                    result = method(decision.entity)
+            
+            elif decision.service_key == "dealer_analytics":
+                # Dealer Analytics expects dealer_name
+                dealer_name = decision.entity.get("dealer_name") or decision.entity.get("dealer")
+                if not dealer_name:
+                    return "⚠️ Please provide a dealer name."
+                result = await _resolve(method(dealer_name))
+            
+            elif decision.service_key == "city_service":
+                # City Service expects city_name
+                city_name = decision.entity.get("city_name") or decision.entity.get("city")
+                if not city_name:
+                    return "⚠️ Please provide a city name."
+                result = await _resolve(method(city_name))
+            
+            elif decision.service_key == "product_service":
+                # Product Service expects product
+                product = decision.entity.get("product")
+                if not product:
+                    return "⚠️ Please provide a product name or code."
+                result = await _resolve(method(product))
+            
+            elif decision.service_key == "national_kpi_service":
+                # National KPI expects no parameters
+                result = await _resolve(method())
+            
+            elif decision.service_key == "groq_service":
+                # Groq Service expects message and entities
                 result = await _resolve(method(message, decision.entity))
+            
             else:
-                result = await _resolve(method(decision.entity))
+                # Generic fallback
+                if decision.service_key == "groq_service":
+                    result = await _resolve(method(message, decision.entity))
+                else:
+                    result = await _resolve(method(decision.entity))
             
             # Extract WhatsApp message - ALWAYS returns string
             response = _extract_whatsapp_message(result)
@@ -716,26 +813,37 @@ class AIProviderService:
             # If response is empty or just error, provide fallback
             if not response or response.strip() == "":
                 if decision.service_key == "dn_analysis":
-                    return f"⚠️ DN #{decision.entity.get('dn', message)} not found in PostgreSQL.\n\nPlease check the DN number and try again."
+                    dn_no = decision.entity.get("dn") or decision.entity.get("dn_number") or message
+                    return f"⚠️ DN #{_format_dn_message(dn_no)} not found in PostgreSQL.\n\nPlease check the DN number and try again."
                 elif decision.service_key == "dealer_analytics":
-                    return f"⚠️ Dealer '{decision.entity.get('dealer_name', message)}' not found.\n\nPlease check the dealer name and try again."
+                    dealer_name = decision.entity.get("dealer_name") or decision.entity.get("dealer") or message
+                    return f"⚠️ Dealer '{dealer_name}' not found.\n\nPlease check the dealer name and try again."
                 elif decision.service_key == "city_service":
-                    return f"⚠️ City '{decision.entity.get('city', message)}' data not available.\n\nPlease try another city."
+                    city_name = decision.entity.get("city_name") or decision.entity.get("city") or message
+                    return f"⚠️ City '{city_name}' data not available.\n\nPlease try another city."
             
             return response
             
         except Exception as e:
             logger.exception("Service call failed: %s.%s", decision.service_key, decision.method)
+            
+            # Check if it's a Pydantic validation error (Invalid DN number)
+            if "validation error" in str(e).lower() or "Invalid DN number" in str(e):
+                return f"⚠️ Invalid DN number format. Please provide a valid 8-12 digit DN number."
+            
             if decision.service_key == "groq_service":
                 return "⚠️ AI service is temporarily unavailable. Reply *menu* to use logistics services."
             
             # Provide meaningful error based on service
             if decision.service_key == "dn_analysis":
-                return f"⚠️ DN service error: {str(e)[:100]}\n\nPlease check the DN number and try again."
+                dn_no = decision.entity.get("dn") or decision.entity.get("dn_number") or message
+                return f"⚠️ DN service error for #{_format_dn_message(dn_no)}: {str(e)[:100]}\n\nPlease check the DN number and try again."
             elif decision.service_key == "dealer_analytics":
-                return f"⚠️ Dealer service error: {str(e)[:100]}\n\nPlease check the dealer name and try again."
+                dealer_name = decision.entity.get("dealer_name") or decision.entity.get("dealer") or message
+                return f"⚠️ Dealer service error for '{dealer_name}': {str(e)[:100]}\n\nPlease check the dealer name and try again."
             elif decision.service_key == "city_service":
-                return f"⚠️ City service error: {str(e)[:100]}\n\nPlease try another city."
+                city_name = decision.entity.get("city_name") or decision.entity.get("city") or message
+                return f"⚠️ City service error for '{city_name}': {str(e)[:100]}\n\nPlease try another city."
             
             return f"⚠️ {MENU_OPTIONS[decision.menu_option or '0']['name']} is temporarily unavailable. Please try again."
 
