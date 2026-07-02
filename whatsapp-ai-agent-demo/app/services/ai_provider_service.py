@@ -1,16 +1,8 @@
 """
 File: app/services/ai_provider_service.py
-Version: 20.0 - ENTERPRISE ORCHESTRATION LAYER
+Version: 21.0 - ENTERPRISE ORCHESTRATION LAYER
 Complete WhatsApp AI service orchestrator with enterprise-grade routing,
 signature-aware invocation, response normalization, and comprehensive error handling.
-
-Architecture Principles:
-- PostgreSQL is the ONLY source of truth
-- Deterministic routing before AI
-- Service registry with method validation
-- Signature-aware parameter passing
-- Unified response normalization
-- Comprehensive logging and health checks
 """
 
 from __future__ import annotations
@@ -26,7 +18,6 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from functools import lru_cache
 from typing import Any, Dict, List, Optional, Callable, Awaitable, Union, Tuple, Set
 
 logger = logging.getLogger(__name__)
@@ -653,20 +644,6 @@ class ServiceRegistry:
     def get_signature(self, cache_key: str) -> Optional[inspect.Signature]:
         """Get method signature from cache"""
         return self._signature_cache.get(cache_key)
-    
-    def validate_method_signature(self, method: Callable, parameters: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate and filter parameters based on method signature"""
-        sig = inspect.signature(method)
-        valid_params = {}
-        
-        for param_name, param in sig.parameters.items():
-            if param_name in parameters:
-                valid_params[param_name] = parameters[param_name]
-            elif param.default == inspect.Parameter.empty and param.kind not in (inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL):
-                # Required parameter with no default and no value provided
-                logger.warning(f"Missing required parameter: {param_name}")
-        
-        return valid_params
     
     def get_service_status(self) -> Dict[str, Any]:
         """Get health status of all services"""
@@ -1299,6 +1276,10 @@ class AIProviderService:
             if param_name in ("self", "cls"):
                 continue
             
+            # Skip **kwargs (VAR_KEYWORD) and *args (VAR_POSITIONAL)
+            if param.kind in (inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL):
+                continue
+            
             # Check direct match
             if param_name in entity_dict:
                 params[param_name] = entity_dict[param_name]
@@ -1313,7 +1294,9 @@ class AIProviderService:
             
             # Check if it's a required parameter with no default
             if param.default == inspect.Parameter.empty:
-                logger.warning(f"Required parameter '{param_name}' not found in entities")
+                logger.debug(f"Required parameter '{param_name}' not found in entities")
+                # Don't add the parameter - let the method handle the missing value
+                # or use its default if available
         
         return params
     
