@@ -1,6 +1,6 @@
 """
 File: app/services/ai_provider_service.py
-Version: 15.1 - resilient semantic routing + webhook v28.2 compatibility
+Version: 15.2 - resilient routing + webhook/service contract compatibility
 
 Single entry point for the WhatsApp AI agent. Deterministic requests (menu,
 menu numbers, DN numbers and obvious entities) never depend on an AI provider.
@@ -227,6 +227,21 @@ def get_invalid_selection_message() -> str:
 
 async def _resolve(value: Any) -> Any:
     return await value if inspect.isawaitable(value) else value
+
+
+def _scalar_service_argument(decision: RoutingDecision) -> Optional[str]:
+    """Return the scalar value expected by the existing analytics services."""
+    keys_by_service = {
+        "dn_analysis": ("dn", "dn_number", "id"),
+        "dealer_analytics": ("dealer", "dealer_name"),
+        "city_service": ("city", "city_name"),
+        "product_service": ("product",),
+    }
+    for key in keys_by_service.get(decision.service_key, ()):
+        value = decision.entity.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return None
 
 
 class _ServiceRegistryAdapter:
@@ -514,7 +529,27 @@ class AIProviderService:
             if decision.service_key == "groq_service":
                 result = await _resolve(method(message, decision.entity))
             else:
-                result = await _resolve(method(decision.entity))
+                # Existing analytics services validate their primary argument as
+                # a string (for example DNAnalysisService expects "6243701122"),
+                # whereas some newer implementations accept an entity dict.
+                # Prefer the scalar contract when an entity is present.
+                scalar_argument = _scalar_service_argument(decision)
+                argument: Any = scalar_argument if scalar_argument is not None else decision.entity
+                try:
+                    result = await _resolve(method(argument))
+                except Exception as first_error:
+                    # Retry only argument-validation/binding failures with the
+                    # alternate contract; do not repeat database/business errors.
+                    is_contract_error = isinstance(first_error, TypeError) or first_error.__class__.__name__ == "ValidationError"
+                    if not is_contract_error or scalar_argument is None:
+                        raise
+                    logger.warning(
+                        "Scalar argument rejected by %s.%s; retrying entity mapping: %s",
+                        decision.service_key,
+                        decision.method,
+                        first_error,
+                    )
+                    result = await _resolve(method(decision.entity))
             return str(result) if result is not None else "⚠️ No response was returned. Please try again."
         except Exception:
             logger.exception("Service call failed: %s.%s", decision.service_key, decision.method)
