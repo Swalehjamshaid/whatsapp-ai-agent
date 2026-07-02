@@ -696,13 +696,13 @@ class AIProviderService:
                 result = await _invoke_compatible(method, candidates)
             response_text = _whatsapp_text(result)
             logger.info(
-                "Request completed intent=%s service=%s method=%s ai_fallback=%s elapsed_ms=%.2f",
-                decision.intent,
-                decision.service_key,
-                selected_method,
-                decision.service_key == "groq_service",
-                (time.perf_counter() - started_at) * 1000,
-            )
+    "Request completed "
+    f"intent={decision.intent} "
+    f"service={decision.service_key} "
+    f"method={decision.method} "
+    f"ai_fallback={decision.requires_ai} "
+    f"elapsed_ms={elapsed:.2f}"
+)
             return response_text or "⚠️ No response was returned. Please try again."
         except Exception:
             logger.exception("Service call failed: %s.%s", decision.service_key, decision.method)
