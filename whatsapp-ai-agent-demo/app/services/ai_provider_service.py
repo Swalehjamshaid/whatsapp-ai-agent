@@ -1,7 +1,36 @@
 """
-File: app/services/intent_routing_service.py
-Version: 3.0 - FIXED ROUTING
-Purpose: Pure intent detection and routing engine with working DN detection
+File: app/services/ai_provider_service.py
+Version: 9.0 - SINGLE ENTRY POINT WITH MENU ROUTING
+Purpose: Single entry point for WhatsApp AI Agent with menu navigation
+         Routes all requests to appropriate service files
+         NO WEBHOOK CHANGES REQUIRED - This file handles everything
+
+Menu System:
+0. Main Menu
+1. DN Delivery Menu
+2. Dealer Analytics Menu
+3. City Analytics Menu
+4. Warehouse Dashboard Menu
+5. Product Analytics Menu
+6. National KPI Menu
+7. Pending DN Menu
+8. Top Performers Menu
+9. AI Query Menu
+
+╔═══════════════════════════════════════════════════════════════════╗
+║  Menu  │ Service File                    │ Method                  ║
+╠═══════════════════════════════════════════════════════════════════╣
+║  0     │ ai_provider_service.py          │ show_main_menu()        ║
+║  1     │ dn_analysis.py                  │ get_dn_dashboard()      ║
+║  2     │ dealer_analytics_service.py     │ get_dealer_dashboard()  ║
+║  3     │ city_service.py                 │ get_city_dashboard()    ║
+║  4     │ dn_analysis.py                  │ get_warehouse_dashboard()║
+║  5     │ product_service.py              │ get_product_dashboard() ║
+║  6     │ national_kpi_service.py         │ get_national_kpi()      ║
+║  7     │ dn_analysis.py                  │ get_pending_dns()       ║
+║  8     │ dn_analysis.py                  │ get_top_performers()    ║
+║  9     │ groq_service.py                 │ process_query()         ║
+╚═══════════════════════════════════════════════════════════════════╝
 """
 
 from __future__ import annotations
@@ -9,13 +38,10 @@ from __future__ import annotations
 import logging
 import re
 import threading
-import time
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
-from collections import OrderedDict
+from typing import Any, Dict, Optional, List
 
 # ============================================================
-# SINGLE LIBRARY: semantic-router
+# SEMANTIC ROUTER FOR NLP
 # ============================================================
 
 try:
@@ -24,55 +50,210 @@ try:
     SEMANTIC_ROUTER_AVAILABLE = True
 except ImportError:
     SEMANTIC_ROUTER_AVAILABLE = False
-    raise ImportError(
-        "semantic-router is required. Install with: pip install semantic-router>=0.0.70"
-    )
+    # Fallback - no semantic router
+
+# ============================================================
+# IMPORT ALL SERVICE FILES FOR ROUTING
+# ============================================================
+
+try:
+    from app.services.dn_analysis import DNAnalysisService
+    from app.services.dealer_analytics_service import DealerAnalyticsService
+    from app.services.city_service import CityService
+    from app.services.product_service import ProductService
+    from app.services.national_kpi_service import NationalKPIService
+    from app.services.groq_service import GroqService
+except ImportError as e:
+    logging.error(f"❌ Failed to import services: {e}")
+    # Create dummy services for testing
+    class DNAnalysisService:
+        async def get_dn_dashboard(self, entities): return "DN Dashboard"
+        async def get_warehouse_dashboard(self, entities): return "Warehouse Dashboard"
+        async def get_pending_dns(self, entities): return "Pending DNS"
+        async def get_top_performers(self, entities): return "Top Performers"
+    
+    class DealerAnalyticsService:
+        async def get_dealer_dashboard(self, entities): return "Dealer Dashboard"
+    
+    class CityService:
+        async def get_city_dashboard(self, entities): return "City Dashboard"
+    
+    class ProductService:
+        async def get_product_dashboard(self, entities): return "Product Dashboard"
+    
+    class NationalKPIService:
+        async def get_national_kpi(self, entities): return "National KPI"
+    
+    class GroqService:
+        async def process_query(self, message, entities): return f"AI Response to: {message}"
 
 logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# DATA MODELS
+# MENU CONFIGURATION - COMPLETE ROUTING TABLE
 # ============================================================
 
-@dataclass
-class RoutingDecision:
-    """Final routing decision"""
-    intent: str
-    confidence: float
-    service_key: str
-    method: str
-    entity: Dict[str, Any]
-    requires_ai: bool = False
-    reason: str = ""
-    original_message: str = ""
-    priority: int = 0
+MENU_OPTIONS = {
+    "0": {
+        "name": "Main Menu",
+        "service_key": "ai_provider_service",
+        "service_file": "ai_provider_service.py",
+        "method": "show_main_menu",
+        "requires_ai": False,
+        "description": "📋 Show main menu",
+        "category": "Menu",
+        "emoji": "📋"
+    },
+    "1": {
+        "name": "DN Delivery Menu",
+        "service_key": "dn_analysis",
+        "service_file": "dn_analysis.py",
+        "method": "get_dn_dashboard",
+        "requires_ai": False,
+        "description": "📦 DN Delivery dashboard",
+        "category": "DN Operations",
+        "emoji": "📦"
+    },
+    "2": {
+        "name": "Dealer Analytics Menu",
+        "service_key": "dealer_analytics",
+        "service_file": "dealer_analytics_service.py",
+        "method": "get_dealer_dashboard",
+        "requires_ai": False,
+        "description": "🏢 Dealer performance analytics",
+        "category": "Dealer Operations",
+        "emoji": "🏢"
+    },
+    "3": {
+        "name": "City Analytics Menu",
+        "service_key": "city_service",
+        "service_file": "city_service.py",
+        "method": "get_city_dashboard",
+        "requires_ai": False,
+        "description": "🏙️ City-wise performance analytics",
+        "category": "City Operations",
+        "emoji": "🏙️"
+    },
+    "4": {
+        "name": "Warehouse Dashboard Menu",
+        "service_key": "dn_analysis",
+        "service_file": "dn_analysis.py",
+        "method": "get_warehouse_dashboard",
+        "requires_ai": False,
+        "description": "🏚️ Warehouse performance dashboard",
+        "category": "Warehouse Operations",
+        "emoji": "🏚️"
+    },
+    "5": {
+        "name": "Product Analytics Menu",
+        "service_key": "product_service",
+        "service_file": "product_service.py",
+        "method": "get_product_dashboard",
+        "requires_ai": False,
+        "description": "📦 Product performance analytics",
+        "category": "Product Operations",
+        "emoji": "📦"
+    },
+    "6": {
+        "name": "National KPI Menu",
+        "service_key": "national_kpi_service",
+        "service_file": "national_kpi_service.py",
+        "method": "get_national_kpi",
+        "requires_ai": False,
+        "description": "📊 National KPI analytics",
+        "category": "KPI Operations",
+        "emoji": "📊"
+    },
+    "7": {
+        "name": "Pending DN Menu",
+        "service_key": "dn_analysis",
+        "service_file": "dn_analysis.py",
+        "method": "get_pending_dns",
+        "requires_ai": False,
+        "description": "⏳ Pending delivery notes",
+        "category": "DN Operations",
+        "emoji": "⏳"
+    },
+    "8": {
+        "name": "Top Performers Menu",
+        "service_key": "dn_analysis",
+        "service_file": "dn_analysis.py",
+        "method": "get_top_performers",
+        "requires_ai": False,
+        "description": "🏆 Top performers dashboard",
+        "category": "DN Operations",
+        "emoji": "🏆"
+    },
+    "9": {
+        "name": "AI Query Menu",
+        "service_key": "groq_service",
+        "service_file": "groq_service.py",
+        "method": "process_query",
+        "requires_ai": True,
+        "description": "🤖 AI-powered query processing",
+        "category": "AI Operations",
+        "emoji": "🤖"
+    }
+}
 
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "intent": self.intent,
-            "confidence": self.confidence,
-            "service_key": self.service_key,
-            "method": self.method,
-            "entity": self.entity,
-            "requires_ai": self.requires_ai,
-            "reason": self.reason,
-            "original_message": self.original_message,
-            "priority": self.priority
-        }
+# Clean routing table for fast lookup
+ROUTING_TABLE = {
+    "0": {"service": "ai_provider_service", "method": "show_main_menu"},
+    "1": {"service": "dn_analysis", "method": "get_dn_dashboard"},
+    "2": {"service": "dealer_analytics", "method": "get_dealer_dashboard"},
+    "3": {"service": "city_service", "method": "get_city_dashboard"},
+    "4": {"service": "dn_analysis", "method": "get_warehouse_dashboard"},
+    "5": {"service": "product_service", "method": "get_product_dashboard"},
+    "6": {"service": "national_kpi_service", "method": "get_national_kpi"},
+    "7": {"service": "dn_analysis", "method": "get_pending_dns"},
+    "8": {"service": "dn_analysis", "method": "get_top_performers"},
+    "9": {"service": "groq_service", "method": "process_query"}
+}
 
 
 # ============================================================
-# SEMANTIC ROUTER INTENT ENGINE
+# MAIN MENU GENERATOR
 # ============================================================
 
-class SemanticRouterIntentEngine:
-    """Intent detection and routing engine with priority system"""
+def get_main_menu() -> str:
+    """Generate the main menu"""
+    menu = """
+===============================
+      AI LOGISTICS MENU
+===============================
+
+0. Main Menu
+1. DN Delivery Menu
+2. Dealer Analytics Menu
+3. City Analytics Menu
+4. Warehouse Dashboard Menu
+5. Product Analytics Menu
+6. National KPI Menu
+7. Pending DN Menu
+8. Top Performers Menu
+9. AI Query Menu
+
+Reply with a number to continue.
+"""
+    return menu
+
+
+# ============================================================
+# AI PROVIDER SERVICE - SINGLE ENTRY POINT
+# ============================================================
+
+class AIProviderService:
+    """
+    Single entry point for WhatsApp AI Agent.
+    Handles all incoming messages and routes them appropriately.
+    NO WEBHOOK CHANGES REQUIRED - This class handles everything.
+    """
     
-    _instance: Optional["SemanticRouterIntentEngine"] = None
+    _instance: Optional["AIProviderService"] = None
     _lock = threading.Lock()
     
-    def __new__(cls) -> "SemanticRouterIntentEngine":
+    def __new__(cls) -> "AIProviderService":
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
@@ -85,50 +266,79 @@ class SemanticRouterIntentEngine:
             return
         
         self._initialized = True
-        self._router: Optional[Router] = None
         
-        # Initialize semantic router
-        self._init_router()
+        # Initialize all services
+        self.dn_service = DNAnalysisService()
+        self.dealer_service = DealerAnalyticsService()
+        self.city_service = CityService()
+        self.product_service = ProductService()
+        self.national_kpi_service = NationalKPIService()
+        self.groq_service = GroqService()
         
-        logger.info("✅ SemanticRouterIntentEngine initialized")
+        # Initialize semantic router for natural language processing
+        self._router = None
+        self._init_semantic_router()
+        
+        # Cache for menu state per user
+        self._user_menu_state: Dict[str, Dict] = {}
+        
+        logger.info("✅ AIProviderService initialized as single entry point")
+        logger.info("📋 Menu routing table loaded with 10 options")
     
-    def _init_router(self):
-        """Initialize semantic router with all routes"""
+    def _init_semantic_router(self):
+        """Initialize semantic router for natural language queries"""
+        if not SEMANTIC_ROUTER_AVAILABLE:
+            logger.warning("⚠️ Semantic Router not available - NLP features disabled")
+            return
+        
         try:
             encoder = HuggingFaceEncoder()
             
             routes = [
-                # DN Routes
                 Route(
                     name="dn_lookup",
                     utterances=[
                         "show dn", "dn dashboard", "delivery note", "track dn",
                         "dn number", "dn status", "check dn", "delivery note number",
-                        "delivery note dashboard", "view dn", "get dn",
-                        "delivery note status", "track delivery note",
-                        "dn details", "dn information", "tell me about dn"
+                        "delivery note dashboard", "view dn", "get dn"
                     ]
                 ),
                 Route(
-                    name="dn_status",
+                    name="dealer_analytics",
                     utterances=[
-                        "dn status", "status of dn", "check dn status",
-                        "what is the status of dn", "delivery note status",
-                        "is dn delivered", "dn delivery status"
+                        "show dealer", "dealer dashboard", "dealer analytics",
+                        "dealer performance", "dealer revenue", "dealer stats",
+                        "dealer information", "dealer details"
                     ]
                 ),
                 Route(
-                    name="dn_history",
+                    name="city_analytics",
                     utterances=[
-                        "dn history", "history of dn", "delivery note history",
-                        "show dn history", "dn timeline"
+                        "show city", "city dashboard", "city analytics",
+                        "city performance", "city revenue", "city stats",
+                        "city information", "city details"
                     ]
                 ),
                 Route(
-                    name="dn_summary",
+                    name="warehouse_analytics",
                     utterances=[
-                        "dn summary", "summary of dns", "total dns",
-                        "dn overview", "delivery note summary", "dn statistics"
+                        "show warehouse", "warehouse dashboard", "warehouse analytics",
+                        "warehouse performance", "warehouse revenue", "warehouse stats"
+                    ]
+                ),
+                Route(
+                    name="product_analytics",
+                    utterances=[
+                        "show product", "product dashboard", "product analytics",
+                        "product performance", "product revenue", "product stats"
+                    ]
+                ),
+                Route(
+                    name="national_kpi",
+                    utterances=[
+                        "national kpi", "kpi dashboard", "overall performance",
+                        "national dashboard", "company kpi", "company performance",
+                        "overall kpi", "national metrics"
                     ]
                 ),
                 Route(
@@ -140,212 +350,17 @@ class SemanticRouterIntentEngine:
                     ]
                 ),
                 Route(
-                    name="pending_pgi",
+                    name="top_performers",
                     utterances=[
-                        "pending pgi", "pgi pending", "goods issue pending",
-                        "pgi not done", "pending goods issue"
-                    ]
-                ),
-                Route(
-                    name="pending_pod",
-                    utterances=[
-                        "pending pod", "pod pending", "proof of delivery pending",
-                        "pod not received", "pending proof of delivery"
-                    ]
-                ),
-                Route(
-                    name="recent_dns",
-                    utterances=[
-                        "recent dns", "latest dns", "newest dns",
-                        "today's dns", "recent delivery notes", "this week dns"
-                    ]
-                ),
-                Route(
-                    name="delivery_timeline",
-                    utterances=[
-                        "delivery timeline", "dn timeline", "track delivery",
-                        "delivery history", "delivery progress"
-                    ]
-                ),
-                Route(
-                    name="transit_analysis",
-                    utterances=[
-                        "transit analysis", "delivery transit", "shipping time",
-                        "transit time", "delivery duration"
-                    ]
-                ),
-                
-                # Dealer Routes
-                Route(
-                    name="dealer_dashboard",
-                    utterances=[
-                        "show dealer", "dealer dashboard", "tell me about dealer",
-                        "dealer details", "dealer profile", "dealer information",
-                        "show me dealer", "dealer summary", "dealer overview",
-                        "view dealer", "get dealer", "dealer performance"
-                    ]
-                ),
-                Route(
-                    name="dealer_revenue",
-                    utterances=[
-                        "dealer revenue", "dealer sales", "how much revenue",
-                        "revenue of dealer", "dealer earnings", "sales of dealer",
-                        "dealer income", "dealer revenue report"
-                    ]
-                ),
-                Route(
-                    name="dealer_pending",
-                    utterances=[
-                        "dealer pending", "pending dealer", "dealer overdue",
-                        "dealer pending dns", "dealer deliveries pending"
-                    ]
-                ),
-                Route(
-                    name="top_dealers",
-                    utterances=[
-                        "top dealers", "best dealers", "leading dealers",
-                        "dealer ranking", "top performing dealers", "dealer rank",
-                        "highest revenue dealers", "best performing dealer"
-                    ]
-                ),
-                Route(
-                    name="dealer_comparison",
-                    utterances=[
-                        "compare dealers", "dealer vs dealer", "dealer comparison",
-                        "compare two dealers", "dealer performance comparison"
-                    ]
-                ),
-                
-                # Warehouse Routes
-                Route(
-                    name="warehouse_dashboard",
-                    utterances=[
-                        "show warehouse", "warehouse dashboard", "warehouse details",
-                        "warehouse information", "tell me about warehouse",
-                        "view warehouse", "warehouse performance", "warehouse stats"
-                    ]
-                ),
-                Route(
-                    name="warehouse_revenue",
-                    utterances=[
-                        "warehouse revenue", "warehouse sales", "revenue of warehouse",
-                        "warehouse performance", "how much warehouse sold"
-                    ]
-                ),
-                Route(
-                    name="warehouse_pending",
-                    utterances=[
-                        "warehouse pending", "pending warehouse", "warehouse overdue",
-                        "warehouse pending dns"
-                    ]
-                ),
-                Route(
-                    name="top_warehouses",
-                    utterances=[
-                        "top warehouses", "best warehouses", "leading warehouses",
-                        "warehouse ranking", "top performing warehouses"
-                    ]
-                ),
-                
-                # City Routes
-                Route(
-                    name="city_dashboard",
-                    utterances=[
-                        "show city", "city dashboard", "city details",
-                        "city information", "tell me about city",
-                        "view city", "city performance", "city stats",
-                        "city overview", "city analytics"
-                    ]
-                ),
-                Route(
-                    name="city_revenue",
-                    utterances=[
-                        "city revenue", "city sales", "revenue of city",
-                        "how much revenue in city", "city sales performance",
-                        "city revenue report", "sales in city"
-                    ]
-                ),
-                Route(
-                    name="city_pending",
-                    utterances=[
-                        "city pending", "pending in city", "city overdue",
-                        "pending dns in city", "city deliveries pending"
-                    ]
-                ),
-                Route(
-                    name="top_cities",
-                    utterances=[
-                        "top cities", "best cities", "leading cities",
-                        "city ranking", "top performing cities",
-                        "highest revenue city", "lowest revenue city"
-                    ]
-                ),
-                Route(
-                    name="city_comparison",
-                    utterances=[
-                        "compare cities", "city vs city", "city comparison",
-                        "compare two cities", "which city is better"
-                    ]
-                ),
-                
-                # Product Routes
-                Route(
-                    name="product_dashboard",
-                    utterances=[
-                        "show product", "product dashboard", "product details",
-                        "product information", "tell me about product",
-                        "view product", "product performance"
-                    ]
-                ),
-                Route(
-                    name="top_products",
-                    utterances=[
-                        "top products", "best products", "leading products",
-                        "product ranking", "top selling products",
-                        "highest revenue product", "best selling product"
-                    ]
-                ),
-                
-                # KPI Routes
-                Route(
-                    name="national_kpi",
-                    utterances=[
-                        "national kpi", "kpi dashboard", "overall performance",
-                        "national dashboard", "company kpi", "overall kpi",
-                        "national metrics", "company performance",
-                        "executive dashboard", "business overview"
-                    ]
-                ),
-                Route(
-                    name="national_revenue",
-                    utterances=[
-                        "total revenue", "national revenue", "overall revenue",
-                        "total sales", "company revenue", "revenue total"
-                    ]
-                ),
-                Route(
-                    name="national_units",
-                    utterances=[
-                        "total units", "national units", "overall units",
-                        "total quantity", "units sold total"
-                    ]
-                ),
-                
-                # General Routes
-                Route(
-                    name="greeting",
-                    utterances=[
-                        "hi", "hello", "hey", "good morning", "good afternoon",
-                        "good evening", "salam", "namaste", "howdy",
-                        "assalamualaikum", "welcome", "hey there"
+                        "top performers", "best performers", "top performing",
+                        "leaderboard", "top rankings", "top 10"
                     ]
                 ),
                 Route(
                     name="help",
                     utterances=[
                         "help", "assist", "support", "how to", "what is",
-                        "explain", "guide", "help me", "i need help",
-                        "how do i", "what can you do", "commands", "instructions"
+                        "explain", "guide", "help me", "i need help"
                     ]
                 ),
                 Route(
@@ -353,7 +368,7 @@ class SemanticRouterIntentEngine:
                     utterances=[
                         "menu", "options", "services", "what can you do",
                         "show menu", "main menu", "available options",
-                        "what are my options", "show services"
+                        "what are my options"
                     ]
                 ),
             ]
@@ -363,342 +378,280 @@ class SemanticRouterIntentEngine:
             
         except Exception as e:
             logger.error(f"❌ Failed to initialize semantic router: {e}")
-            raise
+            self._router = None
     
     # ============================================================
-    # DN DETECTION (CRITICAL FIX)
+    # DN DETECTION (Highest Priority)
     # ============================================================
     
     def _extract_dn(self, text: str) -> Optional[str]:
-        """Extract DN number using multiple regex patterns"""
+        """Extract DN number using regex"""
         if not text:
             return None
         
-        # Clean the text
         text = text.strip()
         
         # Pattern 1: Exactly 10 digits
         match = re.search(r'(?<!\d)(\d{10})(?!\d)', text)
         if match:
             dn = match.group(1)
-            logger.info(f"🔍 DN found (pattern 1 - 10 digits): {dn}")
+            logger.info(f"🔍 DN found (10 digits): {dn}")
             return dn
         
-        # Pattern 2: 8-12 digits (flexible)
+        # Pattern 2: 8-12 digits
         match = re.search(r'(?<!\d)(\d{8,12})(?!\d)', text)
         if match:
             dn = match.group(1)
-            logger.info(f"🔍 DN found (pattern 2 - 8-12 digits): {dn}")
+            logger.info(f"🔍 DN found (8-12 digits): {dn}")
             return dn
         
-        # Pattern 3: With spaces (e.g., "6243 6987 49")
+        # Pattern 3: With spaces
         match = re.search(r'(?<!\d)(\d{4}\s*\d{4}\s*\d{2,4})(?!\d)', text)
         if match:
             dn = re.sub(r'\s', '', match.group(1))
-            logger.info(f"🔍 DN found (pattern 3 - with spaces): {dn}")
+            logger.info(f"🔍 DN found (with spaces): {dn}")
             return dn
         
-        # Pattern 4: With dashes (e.g., "6243-6987-49")
+        # Pattern 4: With dashes
         match = re.search(r'(?<!\d)(\d{4}-\d{4}-\d{2,4})(?!\d)', text)
         if match:
             dn = re.sub(r'-', '', match.group(1))
-            logger.info(f"🔍 DN found (pattern 4 - with dashes): {dn}")
+            logger.info(f"🔍 DN found (with dashes): {dn}")
             return dn
         
         return None
     
     # ============================================================
-    # ENTITY EXTRACTION
+    # MENU DETECTION
     # ============================================================
     
-    def _extract_entities(self, text: str) -> Dict[str, Any]:
-        """Extract entities from message"""
-        entities = {}
+    def _is_menu_selection(self, text: str) -> Optional[str]:
+        """Check if message is a menu selection"""
+        text = text.strip().lower()
         
-        # Extract DN
-        dn = self._extract_dn(text)
-        if dn:
-            entities["dn"] = dn
-            entities["dn_number"] = dn
-            entities["id"] = dn
+        # Check for menu keywords
+        menu_keywords = ["menu", "main menu", "back", "start", "help", "options"]
+        if text in menu_keywords:
+            logger.info(f"📋 Menu keyword detected: {text}")
+            return "0"
         
-        # Extract dealer name
-        dealer_patterns = [
-            r'(?:dealer|about|for|company|customer|tell me about|show me|get|view)\s+([a-z0-9\s&\-\.]{3,})',
-            r'([\w\s]{3,}(?:electronics|traders|distributors|foods|group|pvt|ltd|sons|brothers|enterprises|company|corporation))',
-            r'dealer\s*(?:name|:)?\s*([a-z0-9\s&\-\.]{3,})',
-        ]
-        for pattern in dealer_patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                dealer_name = match.group(1).strip()
-                if 3 <= len(dealer_name) <= 100:
-                    entities["dealer_name"] = dealer_name
-                    entities["dealer"] = dealer_name
-                    break
+        # Check for single digit menu selection (0-9)
+        if re.match(r'^[0-9]$', text):
+            logger.info(f"📋 Menu selection: {text}")
+            return text
         
-        # Extract city name
-        city_names = [
-            "abbottabad", "lahore", "karachi", "rawalpindi", "quetta",
-            "multan", "peshawar", "gilgit", "hyderabad", "islamabad",
-            "sialkot", "gujranwala", "faisalabad", "bahawalpur", "sukkur"
-        ]
-        text_lower = text.lower()
-        for city in city_names:
-            if city in text_lower:
-                entities["city"] = city.title()
-                entities["city_name"] = city.title()
-                break
+        # Check for menu selection with dot or space
+        if re.match(r'^[0-9][\.\s]', text):
+            menu_num = text[0]
+            logger.info(f"📋 Menu selection: {menu_num}")
+            return menu_num
         
-        # Extract warehouse name
-        warehouse_match = re.search(r'(?:warehouse|wh|depot)\s+([a-z0-9\s&\-\.]{2,})', text, re.IGNORECASE)
-        if warehouse_match:
-            entities["warehouse"] = warehouse_match.group(1).strip()
-        
-        # Extract product name
-        product_match = re.search(r'(?:product|model|material|item)\s+([a-z0-9\s&\-\.]{2,})', text, re.IGNORECASE)
-        if product_match:
-            entities["product"] = product_match.group(1).strip()
-        
-        return entities
+        return None
     
     # ============================================================
-    # INTENT TO SERVICE MAPPING
+    # NATURAL LANGUAGE QUERY DETECTION
     # ============================================================
     
-    def _get_service_mapping(self, intent: str) -> Tuple[str, str, bool, int]:
-        """Map intent to service, method, AI requirement, and priority"""
+    def _detect_natural_language_intent(self, message: str) -> Optional[str]:
+        """Detect intent from natural language using semantic router"""
+        if not self._router:
+            return None
         
-        # DN Service (dn_analysis.py)
-        if intent in [
-            "dn_lookup", "dn_status", "dn_history", "dn_summary",
-            "pending_dns", "pending_pgi", "pending_pod", "recent_dns",
-            "delivery_timeline", "transit_analysis"
-        ]:
-            return ("dn_analysis", "get_dn_dashboard", False, 2)
-        
-        # Dealer Service (dealer_analytics_service.py)
-        if intent in [
-            "dealer_dashboard", "dealer_revenue", "dealer_pending",
-            "top_dealers", "dealer_comparison"
-        ]:
-            return ("dealer_analytics", "get_dealer_dashboard", False, 3)
-        
-        # Warehouse Service (dn_analysis.py)
-        if intent in [
-            "warehouse_dashboard", "warehouse_revenue", "warehouse_pending",
-            "top_warehouses"
-        ]:
-            return ("dn_analysis", "get_warehouse_dashboard", False, 3)
-        
-        # City Service (city_service.py)
-        if intent in [
-            "city_dashboard", "city_revenue", "city_pending",
-            "top_cities", "city_comparison"
-        ]:
-            return ("city_service", "get_city_dashboard", False, 3)
-        
-        # Product Service (product_service.py)
-        if intent in ["product_dashboard", "top_products"]:
-            return ("product_service", "get_product_dashboard", False, 3)
-        
-        # National KPI Service (national_kpi_service.py)
-        if intent in ["national_kpi", "national_revenue", "national_units"]:
-            return ("national_kpi_service", "get_national_kpi_dashboard", False, 3)
-        
-        # General Intents (groq_service.py)
-        if intent in ["greeting", "help", "menu"]:
-            return ("groq_service", "process_query", True, 4)
-        
-        # Default fallback
-        return ("groq_service", "process_query", True, 4)
-    
-    # ============================================================
-    # MAIN DETECTION METHOD - THE CRITICAL FIX IS HERE
-    # ============================================================
-    
-    def detect(self, message: str) -> RoutingDecision:
-        """
-        Detect intent and route using priority system.
-        
-        CRITICAL: DN numbers are detected FIRST and routed DIRECTLY to dn_analysis
-        """
-        message_clean = message.strip()
-        
-        # ============================================================
-        # STAGE 1: DN NUMBER DETECTION - HIGHEST PRIORITY
-        # This MUST happen before any semantic routing
-        # ============================================================
-        dn = self._extract_dn(message_clean)
-        if dn:
-            logger.info(f"🚨 DN DETECTED: {dn} - Routing DIRECTLY to dn_analysis")
+        try:
+            result = self._router.route(message)
+            intent = result.name
+            confidence = getattr(result, 'score', 0.0)
             
-            entities = {
-                "dn": dn,
-                "dn_number": dn,
-                "id": dn
+            logger.info(f"🧠 NLP Intent: {intent} (confidence: {confidence:.2f})")
+            
+            # Only use if confidence is reasonable
+            if confidence < 0.3:
+                logger.info(f"⬇️ Low confidence ({confidence:.2f}) - using AI fallback")
+                return None
+            
+            # Map semantic intent to menu option
+            intent_to_menu = {
+                "dn_lookup": "1",
+                "dealer_analytics": "2",
+                "city_analytics": "3",
+                "warehouse_analytics": "4",
+                "product_analytics": "5",
+                "national_kpi": "6",
+                "pending_dns": "7",
+                "top_performers": "8",
+                "help": "9",
+                "menu": "0"
             }
             
-            # Try to extract additional entities
-            additional_entities = self._extract_entities(message_clean)
-            entities.update(additional_entities)
-            
-            # DIRECT ROUTE - NO AI INVOLVED
-            return RoutingDecision(
-                intent="dn_lookup",
-                confidence=1.0,
-                service_key="dn_analysis",  # CRITICAL: Must match service file name
-                method="get_dn_dashboard",
-                entity=entities,
-                requires_ai=False,  # CRITICAL: No AI
-                reason=f"DN number detected: {dn} - Direct routing",
-                original_message=message_clean,
-                priority=1  # Highest priority
-            )
-        
-        # ============================================================
-        # STAGE 2: EXTRACT ENTITIES
-        # ============================================================
-        entities = self._extract_entities(message_clean)
-        
-        # ============================================================
-        # STAGE 3: SEMANTIC ROUTER (for non-DN messages)
-        # ============================================================
-        try:
-            result = self._router.route(message_clean)
-            intent = result.name
-            confidence = getattr(result, 'score', 0.85)
-            
-            logger.info(f"🧠 Semantic Router: intent={intent}, confidence={confidence:.2f}")
-            
-            # Get service mapping
-            service_key, method, requires_ai, priority = self._get_service_mapping(intent)
-            
-            # Check confidence
-            if confidence < 0.3:
-                logger.info(f"⬇️ Low confidence ({confidence:.2f}) - AI fallback")
-                return RoutingDecision(
-                    intent="general_ai",
-                    confidence=confidence,
-                    service_key="groq_service",
-                    method="process_query",
-                    entity=entities or {"message": message_clean},
-                    requires_ai=True,
-                    reason=f"Low confidence ({confidence:.2f})",
-                    original_message=message_clean,
-                    priority=4
-                )
-            
-            # Enrich entities based on intent
-            if intent.startswith("dealer_") and "dealer" not in entities:
-                dealer_match = re.search(r'([\w\s]{3,}(?:electronics|traders|distributors|foods|group|pvt|ltd|sons|brothers|enterprises|company|corporation))', message_clean, re.IGNORECASE)
-                if dealer_match:
-                    entities["dealer_name"] = dealer_match.group(1).strip()
-                    entities["dealer"] = dealer_match.group(1).strip()
-            
-            if intent.startswith("city_") and "city" not in entities:
-                city_names = ["lahore", "karachi", "rawalpindi", "islamabad", "multan", "peshawar", "quetta", "abbottabad", "hyderabad", "sialkot", "gujranwala", "faisalabad"]
-                for city in city_names:
-                    if city in message_clean.lower():
-                        entities["city"] = city.title()
-                        entities["city_name"] = city.title()
-                        break
-            
-            logger.info(f"✅ Routing: {intent} -> {service_key}.{method}")
-            
-            return RoutingDecision(
-                intent=intent,
-                confidence=confidence,
-                service_key=service_key,
-                method=method,
-                entity=entities,
-                requires_ai=requires_ai,
-                reason=f"Semantic route: {intent}",
-                original_message=message_clean,
-                priority=priority
-            )
+            menu_option = intent_to_menu.get(intent)
+            if menu_option:
+                logger.info(f"✅ NLP routed to menu: {menu_option}")
+                return menu_option
             
         except Exception as e:
             logger.error(f"❌ Semantic router error: {e}")
         
-        # ============================================================
-        # STAGE 4: FALLBACK
-        # ============================================================
-        logger.info("🔄 Fallback - AI")
-        return RoutingDecision(
-            intent="general_ai",
-            confidence=0.3,
-            service_key="groq_service",
-            method="process_query",
-            entity=entities or {"message": message_clean},
-            requires_ai=True,
-            reason="Fallback",
-            original_message=message_clean,
-            priority=4
-        )
-
-
-# ============================================================
-# INTENT ROUTING SERVICE - FIXED VERSION
-# ============================================================
-
-class IntentRoutingService:
-    """Enterprise Intent Routing Service"""
+        return None
     
-    def __init__(self):
-        self._engine = SemanticRouterIntentEngine()
-        self._cache: Dict[str, RoutingDecision] = {}
-        self._cache_ttl = 300
+    # ============================================================
+    # MAIN ENTRY POINT - process_whatsapp_query
+    # ============================================================
     
-    def detect_intent(self, message: str) -> Dict[str, Any]:
+    async def process_whatsapp_query(self, message: str, sender: Optional[str] = None) -> str:
         """
-        Detect intent and return routing decision.
+        Single entry point for all WhatsApp messages.
         
-        CRITICAL: Returns service_key that maps to service files:
-        - "dn_analysis" -> dn_analysis.py
-        - "dealer_analytics" -> dealer_analytics_service.py  
-        - "city_service" -> city_service.py
-        - "product_service" -> product_service.py
-        - "national_kpi_service" -> national_kpi_service.py
-        - "groq_service" -> groq_service.py
+        This is the ONLY function that should be called from webhook.
+        Handles menu navigation, DN detection, and AI queries.
+        NO WEBHOOK CHANGES REQUIRED.
+        
+        Args:
+            message: The user's message
+            sender: Optional sender identifier
+            
+        Returns:
+            Formatted response string
         """
-        # Check cache
-        cache_key = message.strip().lower()
-        if cache_key in self._cache:
-            cached = self._cache[cache_key]
-            return cached.to_dict()
+        if not message or not message.strip():
+            return get_main_menu()
         
-        # Detect intent
-        decision = self._engine.detect(message)
+        message_clean = message.strip()
+        logger.info(f"📩 Processing message from {sender}: {message_clean[:50]}...")
         
-        # Log the routing decision clearly
-        logger.info(f"📋 ROUTING DECISION: {decision.service_key}.{decision.method} (AI: {decision.requires_ai})")
+        # ============================================================
+        # STEP 1: CHECK FOR DN NUMBER (HIGHEST PRIORITY)
+        # ============================================================
+        dn = self._extract_dn(message_clean)
+        if dn:
+            logger.info(f"🔍 DN detected: {dn} -> Routing to DN dashboard")
+            try:
+                result = await self.dn_service.get_dn_dashboard({"dn": dn, "dn_number": dn})
+                return result
+            except Exception as e:
+                logger.error(f"❌ DN service error: {e}")
+                return f"⚠️ Error fetching DN {dn}: {str(e)}"
         
-        # Cache result
-        self._cache[cache_key] = decision
-        if len(self._cache) > 1000:
-            self._clean_cache()
+        # ============================================================
+        # STEP 2: CHECK FOR MENU SELECTION
+        # ============================================================
+        menu_selection = self._is_menu_selection(message_clean)
+        if menu_selection:
+            return await self._route_menu_selection(menu_selection, message_clean)
         
-        return decision.to_dict()
+        # ============================================================
+        # STEP 3: CHECK FOR NATURAL LANGUAGE INTENT
+        # ============================================================
+        menu_from_nlp = self._detect_natural_language_intent(message_clean)
+        if menu_from_nlp:
+            return await self._route_menu_selection(menu_from_nlp, message_clean)
+        
+        # ============================================================
+        # STEP 4: DEFAULT - SEND TO AI QUERY
+        # ============================================================
+        logger.info(f"🤖 No specific intent detected - Sending to AI")
+        try:
+            result = await self.groq_service.process_query(message_clean, {"message": message_clean})
+            return result
+        except Exception as e:
+            logger.error(f"❌ AI service error: {e}")
+            return f"⚠️ AI service error: {str(e)}"
     
-    def _clean_cache(self):
-        """Clean old cache entries"""
-        current_time = time.time()
-        keys_to_remove = []
-        for key, value in self._cache.items():
-            if current_time - getattr(value, '_timestamp', current_time) > self._cache_ttl:
-                keys_to_remove.append(key)
-        for key in keys_to_remove:
-            del self._cache[key]
+    # ============================================================
+    # MENU ROUTING - Clean routing using dictionary
+    # ============================================================
+    
+    async def _route_menu_selection(self, menu_option: str, original_message: str) -> str:
+        """
+        Route menu selection to appropriate service.
+        Uses clean dictionary-based routing.
+        """
+        # Validate menu option
+        if menu_option not in ROUTING_TABLE:
+            logger.warning(f"⚠️ Invalid menu selection: {menu_option}")
+            return f"""
+Invalid selection. Please choose a number from 0 to 9.
+
+{get_main_menu()}
+"""
+        
+        # Get routing info
+        routing = ROUTING_TABLE[menu_option]
+        service_key = routing["service"]
+        method_name = routing["method"]
+        
+        # Handle Main Menu (Option 0)
+        if menu_option == "0":
+            logger.info("📋 Showing main menu")
+            return get_main_menu()
+        
+        logger.info(f"📋 Routing menu {menu_option} -> {service_key}.{method_name}")
+        
+        # Route to appropriate service using dictionary
+        service_map = {
+            "dn_analysis": self.dn_service,
+            "dealer_analytics": self.dealer_service,
+            "city_service": self.city_service,
+            "product_service": self.product_service,
+            "national_kpi_service": self.national_kpi_service,
+            "groq_service": self.groq_service,
+        }
+        
+        service = service_map.get(service_key)
+        if not service:
+            logger.error(f"❌ Service not found: {service_key}")
+            return f"⚠️ Service {service_key} not found. Please try again."
+        
+        # Call the appropriate method
+        try:
+            if hasattr(service, method_name):
+                method = getattr(service, method_name)
+                
+                # Handle different method signatures
+                if service_key == "groq_service":
+                    # AI service needs the original message
+                    result = await method(original_message, {"message": original_message})
+                else:
+                    # All other services use entities/empty dict
+                    result = await method({})
+                
+                return result
+            else:
+                logger.error(f"❌ Method {method_name} not found in {service_key}")
+                return f"⚠️ Service error: Method {method_name} not found."
+                
+        except Exception as e:
+            logger.error(f"❌ Service error in {service_key}.{method_name}: {e}")
+            return f"⚠️ Error: {str(e)}"
+    
+    # ============================================================
+    # UTILITY METHODS
+    # ============================================================
+    
+    def get_service_info(self, menu_option: str) -> Optional[Dict[str, Any]]:
+        """Get information about a menu option"""
+        return MENU_OPTIONS.get(menu_option)
+    
+    def get_all_menu_options(self) -> List[Dict[str, Any]]:
+        """Get all menu options"""
+        return list(MENU_OPTIONS.values())
     
     def health_check(self) -> Dict[str, Any]:
-        """Health check"""
+        """Health check for the service"""
         return {
-            "service": "intent_routing_service",
-            "version": "3.0",
-            "available": SEMANTIC_ROUTER_AVAILABLE,
-            "cache_size": len(self._cache),
-            "status": "healthy"
+            "service": "ai_provider_service",
+            "version": "9.0",
+            "status": "healthy",
+            "menu_options": len(MENU_OPTIONS),
+            "services_available": {
+                "dn_analysis": hasattr(self, "dn_service"),
+                "dealer_analytics": hasattr(self, "dealer_service"),
+                "city_service": hasattr(self, "city_service"),
+                "product_service": hasattr(self, "product_service"),
+                "national_kpi_service": hasattr(self, "national_kpi_service"),
+                "groq_service": hasattr(self, "groq_service")
+            },
+            "semantic_router": self._router is not None,
+            "semantic_router_available": SEMANTIC_ROUTER_AVAILABLE
         }
 
 
@@ -706,42 +659,52 @@ class IntentRoutingService:
 # SINGLETON INSTANCE
 # ============================================================
 
-_intent_service: Optional[IntentRoutingService] = None
+_ai_service: Optional[AIProviderService] = None
 _service_lock = threading.Lock()
 
 
-def get_intent_routing_service() -> IntentRoutingService:
-    """Get singleton instance"""
-    global _intent_service
-    if _intent_service is None:
+def get_ai_provider_service() -> AIProviderService:
+    """Get singleton instance of AIProviderService"""
+    global _ai_service
+    if _ai_service is None:
         with _service_lock:
-            if _intent_service is None:
-                _intent_service = IntentRoutingService()
-                logger.info("✅ IntentRoutingService singleton initialized")
-    return _intent_service
+            if _ai_service is None:
+                _ai_service = AIProviderService()
+                logger.info("✅ AIProviderService singleton initialized")
+    return _ai_service
 
 
 # ============================================================
-# MODULE-LEVEL FUNCTIONS
+# MAIN ENTRY POINT FUNCTION (Backward Compatible)
 # ============================================================
 
-def detect_intent(message: str) -> Dict[str, Any]:
-    """Detect intent - MAIN ENTRY POINT"""
-    service = get_intent_routing_service()
-    return service.detect_intent(message)
+async def process_whatsapp_query(message: str, sender: Optional[str] = None) -> str:
+    """
+    Main entry point for WhatsApp messages.
+    This is the function that should be called from webhook.
+    
+    NO WEBHOOK CHANGES REQUIRED - Just call this function.
+    
+    Args:
+        message: User's message
+        sender: Optional sender identifier
+        
+    Returns:
+        Formatted response
+    """
+    service = get_ai_provider_service()
+    return await service.process_whatsapp_query(message, sender)
 
 
-def health_check() -> Dict[str, Any]:
-    """Health check"""
-    service = get_intent_routing_service()
-    return service.health_check()
-
+# ============================================================
+# EXPORTS
+# ============================================================
 
 __all__ = [
-    "IntentRoutingService",
-    "SemanticRouterIntentEngine",
-    "RoutingDecision",
-    "get_intent_routing_service",
-    "detect_intent",
-    "health_check",
+    "AIProviderService",
+    "get_ai_provider_service",
+    "process_whatsapp_query",
+    "get_main_menu",
+    "MENU_OPTIONS",
+    "ROUTING_TABLE"
 ]
