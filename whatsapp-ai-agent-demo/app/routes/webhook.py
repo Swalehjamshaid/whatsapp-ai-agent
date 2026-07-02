@@ -1,947 +1,518 @@
-# ==========================================================
-# FILE: app/routes/webhook.py (v28.2 - COMPLETE FIX)
-# ==========================================================
-# PURPOSE: WhatsApp Webhook Handler - ALWAYS Calls AI
-# VERSION: 28.2 - FULL DN FORMATTING FIX
-# ==========================================================
+"""
+File: app/services/ai_provider_service.py
+Version: 15.0 - resilient semantic routing
 
-import json
-import time
-import uuid
+Single entry point for the WhatsApp AI agent. Deterministic requests (menu,
+menu numbers, DN numbers and obvious entities) never depend on an AI provider.
+Semantic Router and Groq are optional enhancements and cannot prevent startup.
+"""
+
+from __future__ import annotations
+
+import inspect
+import logging
 import re
-import os
-import asyncio
-from datetime import datetime
-from typing import Dict, Any, Optional, List, Callable, Union
-from fastapi import APIRouter, Request, BackgroundTasks, Query, Response
-from fastapi.responses import JSONResponse, PlainTextResponse
-from loguru import logger
-from sqlalchemy.orm import Session
-from decimal import Decimal
+import threading
+import time
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
 
-# ==========================================================
-# CONFIGURATION
-# ==========================================================
+logger = logging.getLogger(__name__)
 
-from app.config import config
 
-# ==========================================================
-# DATABASE
-# ==========================================================
+# Semantic Router has changed its public class names across releases. Support
+# current and older installations, but never make the whole application fail.
+Route = None
+SemanticRouter = None
+HuggingFaceEncoder = None
+SEMANTIC_ROUTER_AVAILABLE = False
+SEMANTIC_ROUTER_IMPORT_ERROR: Optional[Exception] = None
 
 try:
-    from app.database import SessionLocal, check_database_connection
-    DATABASE_AVAILABLE = True
-    logger.info("✅ Database module loaded successfully")
-except ImportError as e:
-    DATABASE_AVAILABLE = False
-    logger.error(f"❌ Database module NOT available: {e}")
-    raise
+    from semantic_router import Route as _Route
+    try:
+        from semantic_router import SemanticRouter as _SemanticRouter
+    except ImportError:  # compatibility with older semantic-router releases
+        try:
+            from semantic_router import Router as _SemanticRouter
+        except ImportError:
+            from semantic_router.layer import RouteLayer as _SemanticRouter
+    from semantic_router.encoders import HuggingFaceEncoder as _HuggingFaceEncoder
 
-# ==========================================================
-# MODELS
-# ==========================================================
+    Route = _Route
+    SemanticRouter = _SemanticRouter
+    HuggingFaceEncoder = _HuggingFaceEncoder
+    SEMANTIC_ROUTER_AVAILABLE = True
+except Exception as exc:  # optional dependency
+    SEMANTIC_ROUTER_IMPORT_ERROR = exc
+    logger.warning("Semantic Router unavailable; rules and AI fallback remain active: %s", exc)
+
+
+@dataclass
+class RoutingDecision:
+    intent: str
+    confidence: float
+    service_key: str
+    service_file: str
+    method: str
+    entity: Dict[str, Any]
+    requires_ai: bool = False
+    reason: str = ""
+    original_message: str = ""
+    menu_option: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "intent": self.intent,
+            "confidence": self.confidence,
+            "service_key": self.service_key,
+            "service_file": self.service_file,
+            "method": self.method,
+            "entity": self.entity,
+            "requires_ai": self.requires_ai,
+            "reason": self.reason,
+            "original_message": self.original_message,
+            "menu_option": self.menu_option,
+        }
+
+
+# Service imports deliberately degrade independently. One broken analytics
+# module must not disable every WhatsApp command.
+try:
+    from app.services.dn_analysis import DNAnalysisService
+except Exception as exc:
+    logger.exception("Unable to import DNAnalysisService: %s", exc)
+
+    class DNAnalysisService:  # type: ignore[no-redef]
+        async def get_dn_dashboard(self, entities: Dict[str, Any]) -> str:
+            return "⚠️ DN service is temporarily unavailable."
+
+        async def get_warehouse_dashboard(self, entities: Dict[str, Any]) -> str:
+            return "⚠️ Warehouse service is temporarily unavailable."
+
+        async def get_pending_dns(self, entities: Dict[str, Any]) -> str:
+            return "⚠️ Pending DN service is temporarily unavailable."
+
+        async def get_top_performers(self, entities: Dict[str, Any]) -> str:
+            return "⚠️ Performance service is temporarily unavailable."
+
 
 try:
-    from app.models import DeliveryReport
-    MODELS_AVAILABLE = True
-    logger.info("✅ Models loaded successfully")
-except ImportError as e:
-    MODELS_AVAILABLE = False
-    logger.error(f"❌ Models NOT available: {e}")
+    from app.services.dealer_analytics_service import DealerAnalyticsService
+except Exception as exc:
+    logger.exception("Unable to import DealerAnalyticsService: %s", exc)
 
-# ==========================================================
-# SERVICES
-# ==========================================================
+    class DealerAnalyticsService:  # type: ignore[no-redef]
+        async def get_dealer_dashboard(self, entities: Dict[str, Any]) -> str:
+            return "⚠️ Dealer service is temporarily unavailable."
 
-_ai_provider_service = None
-_whatsapp_service = None
-_dn_analytics_service = None
 
-# ==========================================================
-# AI PROVIDER SERVICE
-# ==========================================================
+try:
+    from app.services.city_service import CityService
+except Exception as exc:
+    logger.exception("Unable to import CityService: %s", exc)
 
-def _get_ai_provider_service() -> Optional[Any]:
-    """Get the AI Provider Service."""
-    global _ai_provider_service
-    
-    if _ai_provider_service is not None:
-        return _ai_provider_service
-    
-    try:
-        logger.info("🚀 Initializing AI Provider Service v5.0...")
-        
-        from app.services.ai_provider_service import get_whatsapp_provider_service
-        
-        if not DATABASE_AVAILABLE:
-            logger.error("❌ Database not available")
-            return None
-        
-        _ai_provider_service = get_whatsapp_provider_service()
-        
-        if _ai_provider_service:
-            logger.info("✅ AI Provider Service v5.0 initialized successfully")
-            
-            try:
-                health = _ai_provider_service.get_service_registry_status()
-                logger.info(f"   ├── Services Ready: {health.get('ready', 0)}")
-                logger.info(f"   ├── In Development: {health.get('in_development', 0)}")
-                logger.info(f"   ├── Readiness Score: {health.get('readiness_score', 0):.1f}%")
-                
-                dn_status = _ai_provider_service.registry.get_service_status("dn")
-                if dn_status.get("ready", False):
-                    logger.info(f"   ├── DN Service: ✅ READY")
-                else:
-                    logger.warning(f"   ├── DN Service: 🔧 {dn_status.get('status', 'UNKNOWN')}")
-                    
-            except Exception as e:
-                logger.warning(f"⚠️ Could not get service registry status: {e}")
-        else:
-            logger.error("❌ Failed to create AI Provider Service")
-        
-        return _ai_provider_service
-        
-    except ImportError as e:
-        logger.error(f"❌ Failed to import ai_provider_service: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"❌ Failed to initialize AI Provider: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
+    class CityService:  # type: ignore[no-redef]
+        async def get_city_dashboard(self, entities: Dict[str, Any]) -> str:
+            return "⚠️ City service is temporarily unavailable."
 
-def _get_whatsapp_service():
-    """Get WhatsApp service for sending messages."""
-    global _whatsapp_service
-    
-    if _whatsapp_service is not None:
-        return _whatsapp_service
-    
-    try:
-        from app.services.whatsapp_service import get_whatsapp_service
-        _whatsapp_service = get_whatsapp_service()
-        logger.info("✅ WhatsApp Service loaded")
-        return _whatsapp_service
-    except Exception as e:
-        logger.error(f"❌ Failed to load WhatsApp Service: {e}")
-        return None
 
-def _get_dn_service():
-    """Get DN Analytics Service directly."""
-    global _dn_analytics_service
-    
-    if _dn_analytics_service is not None:
-        return _dn_analytics_service
-    
-    try:
-        from app.services.dn_analysis import get_dn_analytics_service
-        _dn_analytics_service = get_dn_analytics_service()
-        logger.info("✅ DN Analytics Service loaded")
-        return _dn_analytics_service
-    except Exception as e:
-        logger.error(f"❌ Failed to load DN Analytics Service: {e}")
-        return None
+try:
+    from app.services.product_service import ProductService
+except Exception as exc:
+    logger.exception("Unable to import ProductService: %s", exc)
 
-# ==========================================================
-# ROUTER
-# ==========================================================
+    class ProductService:  # type: ignore[no-redef]
+        async def get_product_dashboard(self, entities: Dict[str, Any]) -> str:
+            return "⚠️ Product service is temporarily unavailable."
 
-router = APIRouter(
-    prefix="/webhook",
-    tags=["webhook"],
-    include_in_schema=True
-)
 
-# ==========================================================
-# WEBHOOK STATS
-# ==========================================================
+try:
+    from app.services.national_kpi_service import NationalKPIService
+except Exception as exc:
+    logger.exception("Unable to import NationalKPIService: %s", exc)
 
-webhook_stats = {
-    "total_requests": 0,
-    "successful_requests": 0,
-    "failed_requests": 0,
-    "verification_requests": 0,
-    "message_requests": 0,
-    "status_requests": 0,
-    "errors": 0,
-    "last_request_time": None,
-    "last_error_time": None,
-    "last_error": None,
-    "total_messages_processed": 0,
-    "start_time": datetime.now().isoformat(),
-    "phone_numbers": {},
-    "avg_processing_time_ms": 0,
-    "last_100_errors": [],
-    "_processed_messages": {},
-    "ai_enabled": False,
-    "db_connected": False,
-    "architecture": "v16.0 (Built-in Intent Detection)"
+    class NationalKPIService:  # type: ignore[no-redef]
+        async def get_national_kpi(self, entities: Dict[str, Any]) -> str:
+            return "⚠️ National KPI service is temporarily unavailable."
+
+
+try:
+    from app.services.groq_service import GroqService
+except Exception as exc:
+    logger.exception("Unable to import GroqService: %s", exc)
+
+    class GroqService:  # type: ignore[no-redef]
+        async def process_query(self, message: str, entities: Dict[str, Any]) -> str:
+            return get_main_menu()
+
+
+MENU_OPTIONS: Dict[str, Dict[str, Any]] = {
+    "0": {"name": "Main Menu", "service_key": "menu_service", "service_file": "ai_provider_service.py", "method": "show_main_menu", "requires_ai": False},
+    "1": {"name": "DN Delivery", "service_key": "dn_analysis", "service_file": "dn_analysis.py", "method": "get_dn_dashboard", "requires_ai": False},
+    "2": {"name": "Dealer Analytics", "service_key": "dealer_analytics", "service_file": "dealer_analytics_service.py", "method": "get_dealer_dashboard", "requires_ai": False},
+    "3": {"name": "City Analytics", "service_key": "city_service", "service_file": "city_service.py", "method": "get_city_dashboard", "requires_ai": False},
+    "4": {"name": "Warehouse Dashboard", "service_key": "dn_analysis", "service_file": "dn_analysis.py", "method": "get_warehouse_dashboard", "requires_ai": False},
+    "5": {"name": "Product Analytics", "service_key": "product_service", "service_file": "product_service.py", "method": "get_product_dashboard", "requires_ai": False},
+    "6": {"name": "National KPI", "service_key": "national_kpi_service", "service_file": "national_kpi_service.py", "method": "get_national_kpi", "requires_ai": False},
+    "7": {"name": "Pending DN", "service_key": "dn_analysis", "service_file": "dn_analysis.py", "method": "get_pending_dns", "requires_ai": False},
+    "8": {"name": "Top Performers", "service_key": "dn_analysis", "service_file": "dn_analysis.py", "method": "get_top_performers", "requires_ai": False},
+    "9": {"name": "AI Query", "service_key": "groq_service", "service_file": "groq_service.py", "method": "process_query", "requires_ai": True},
 }
 
-def update_stats(success: bool, endpoint: str = "unknown", processing_time_ms: float = 0):
-    webhook_stats["total_requests"] += 1
-    webhook_stats["last_request_time"] = datetime.now().isoformat()
-    
-    if endpoint == "verification":
-        webhook_stats["verification_requests"] += 1
-    elif endpoint == "message":
-        webhook_stats["message_requests"] += 1
-    elif endpoint == "status":
-        webhook_stats["status_requests"] += 1
-    
-    if success:
-        webhook_stats["successful_requests"] += 1
-    else:
-        webhook_stats["failed_requests"] += 1
-        webhook_stats["last_error_time"] = datetime.now().isoformat()
-    
-    if processing_time_ms > 0:
-        old_avg = webhook_stats.get("avg_processing_time_ms", 0)
-        total = webhook_stats["total_requests"]
-        webhook_stats["avg_processing_time_ms"] = ((old_avg * (total - 1)) + processing_time_ms) / total
+INTENT_TO_MENU = {
+    "dn_lookup": "1", "dn_status": "1", "dn_history": "1", "dn_summary": "1",
+    "dealer_dashboard": "2", "dealer_revenue": "2", "dealer_pending": "2", "top_dealers": "2", "dealer_comparison": "2",
+    "city_dashboard": "3", "city_revenue": "3", "city_pending": "3", "top_cities": "3", "city_comparison": "3",
+    "warehouse_dashboard": "4", "warehouse_revenue": "4", "warehouse_pending": "4", "top_warehouses": "4",
+    "product_dashboard": "5", "top_products": "5",
+    "national_kpi": "6", "national_revenue": "6", "national_units": "6",
+    "pending_dns": "7", "pending_pgi": "7", "pending_pod": "7",
+    "top_performers": "8", "help": "0", "menu": "0", "greeting": "0",
+}
 
-def is_duplicate_message(message_id: str, phone_number: str) -> bool:
-    key = f"{phone_number}:{message_id}"
-    if key in webhook_stats["_processed_messages"]:
-        return True
-    
-    if len(webhook_stats["_processed_messages"]) > 10000:
-        keys = list(webhook_stats["_processed_messages"].keys())[:1000]
-        for k in keys:
-            del webhook_stats["_processed_messages"][k]
-    
-    webhook_stats["_processed_messages"][key] = time.time()
-    return False
+ROUTE_UTTERANCES: Dict[str, List[str]] = {
+    "dn_lookup": ["show dn", "track dn", "delivery note", "dn status", "check delivery note"],
+    "dn_history": ["dn history", "delivery history", "dn timeline", "tracking history"],
+    "dn_summary": ["dn summary", "total dns", "delivery summary", "dn statistics"],
+    "pending_dns": ["pending dns", "pending deliveries", "undelivered dns", "delivery backlog"],
+    "pending_pgi": ["pending pgi", "goods issue pending", "pgi not done"],
+    "pending_pod": ["pending pod", "proof of delivery pending", "pod missing"],
+    "dealer_dashboard": ["dealer dashboard", "dealer performance", "show dealer", "dealer details"],
+    "dealer_revenue": ["dealer revenue", "dealer sales", "dealer earnings"],
+    "dealer_pending": ["dealer pending", "dealer pending orders", "dealer pending dns"],
+    "top_dealers": ["top dealers", "best dealers", "dealer ranking"],
+    "dealer_comparison": ["compare dealers", "dealer comparison", "dealer versus dealer"],
+    "city_dashboard": ["city dashboard", "city performance", "show city", "city analytics"],
+    "city_revenue": ["city revenue", "city sales", "revenue by city"],
+    "city_pending": ["city pending", "pending deliveries by city"],
+    "top_cities": ["top cities", "best cities", "city ranking"],
+    "city_comparison": ["compare cities", "city comparison", "city versus city"],
+    "warehouse_dashboard": ["warehouse dashboard", "warehouse performance", "show warehouse"],
+    "warehouse_revenue": ["warehouse revenue", "warehouse sales"],
+    "warehouse_pending": ["warehouse pending", "pending by warehouse"],
+    "top_warehouses": ["top warehouses", "best warehouses", "warehouse ranking"],
+    "product_dashboard": ["product dashboard", "product performance", "show product"],
+    "top_products": ["top products", "best products", "top selling products"],
+    "national_kpi": ["national kpi", "overall performance", "executive dashboard"],
+    "national_revenue": ["national revenue", "total revenue", "overall sales"],
+    "national_units": ["national units", "total units", "overall quantity"],
+    "top_performers": ["top performers", "leaderboard", "best performers"],
+    "greeting": ["hello", "hi", "salam", "good morning", "good evening"],
+    "help": ["help", "how does this work", "what can you do", "instructions"],
+    "menu": ["menu", "main menu", "options", "services", "show menu"],
+}
 
-# ==========================================================
-# ✅ PROFESSIONAL WHATSAPP FORMATTER
-# ==========================================================
-
-def format_dn_response(data: Any) -> str:
-    """
-    Format DN dashboard data into professional WhatsApp message.
-    ONLY used for DN data - everything else uses str().
-    """
-    if not data:
-        return "No data available"
-    
-    if isinstance(data, str):
-        return data
-    
-    # Extract data from dict or object
-    try:
-        if hasattr(data, '__dataclass_fields__'):
-            d = {}
-            for field_name in data.__dataclass_fields__:
-                value = getattr(data, field_name)
-                if isinstance(value, Decimal):
-                    value = float(value)
-                if isinstance(value, (date, datetime)):
-                    value = value.strftime('%Y-%m-%d')
-                d[field_name] = value
-        elif isinstance(data, dict):
-            if 'data' in data:
-                return format_dn_response(data['data'])
-            d = data
-        else:
-            return str(data)
-    except Exception as e:
-        return str(data)
-    
-    # Build professional WhatsApp message
-    lines = []
-    
-    # ----- SECTION 1: Header -----
-    lines.append("📦 Delivery Note")
-    lines.append("")
-    
-    # ----- SECTION 2: Dealer -----
-    dn_no = d.get('dn_no', 'N/A')
-    lines.append(f"🆔 DN: {dn_no}")
-    lines.append("")
-    
-    dealer_name = d.get('dealer_name') or d.get('customer_name', 'Unknown')
-    lines.append(f"👤 Dealer: {dealer_name}")
-    lines.append("")
-    
-    city = d.get('city', 'Unknown')
-    if city and city != 'Unknown':
-        lines.append(f"📍 City: {city}")
-        lines.append("")
-    
-    warehouse = d.get('warehouse', 'Unknown')
-    warehouse_code = d.get('warehouse_code')
-    if warehouse_code and warehouse_code != 'None':
-        lines.append(f"🏭 Warehouse: {warehouse} ({warehouse_code})")
-    else:
-        lines.append(f"🏭 Warehouse: {warehouse}")
-    lines.append("")
-    
-    # ----- SEPARATOR -----
-    lines.append("━━━━━━━━━━━━━━━━━━")
-    lines.append("")
-    
-    # ----- SECTION 3: Summary -----
-    lines.append("📊 Summary")
-    lines.append("")
-    
-    total_units = d.get('total_units', 0)
-    lines.append(f"Units: {total_units}")
-    
-    material_count = d.get('material_count', 0)
-    lines.append(f"Products: {material_count}")
-    
-    total_revenue = d.get('total_revenue', 0)
-    if total_revenue:
-        try:
-            revenue_val = float(total_revenue)
-            lines.append(f"Revenue: PKR {revenue_val:,.2f}")
-        except:
-            lines.append(f"Revenue: PKR {total_revenue}")
-    lines.append("")
-    
-    # ----- SEPARATOR -----
-    lines.append("━━━━━━━━━━━━━━━━━━")
-    lines.append("")
-    
-    # ----- SECTION 4: Timeline -----
-    lines.append("📅 Timeline")
-    lines.append("")
-    
-    dn_create_date = d.get('dn_create_date', 'N/A')
-    lines.append(f"DN Created: {dn_create_date}")
-    
-    good_issue_date = d.get('good_issue_date', 'N/A')
-    lines.append(f"PGI: {good_issue_date}")
-    
-    pod_date = d.get('pod_date', 'N/A')
-    lines.append(f"POD: {pod_date}")
-    lines.append("")
-    
-    # ----- SEPARATOR -----
-    lines.append("━━━━━━━━━━━━━━━━━━")
-    lines.append("")
-    
-    # ----- SECTION 5: Performance -----
-    lines.append("⏱ Performance")
-    lines.append("")
-    
-    delivery_aging = d.get('delivery_aging_text', 'N/A')
-    lines.append(f"Delivery Time: {delivery_aging}")
-    
-    pod_aging = d.get('pod_aging_text', 'N/A')
-    lines.append(f"POD Time: {pod_aging}")
-    
-    total_cycle = d.get('total_cycle_text', 'N/A')
-    lines.append(f"Total Cycle: {total_cycle}")
-    lines.append("")
-    
-    # ----- SEPARATOR -----
-    lines.append("━━━━━━━━━━━━━━━━━━")
-    lines.append("")
-    
-    # ----- SECTION 6: Status (Compact) -----
-    lines.append("🚚 Status")
-    lines.append("")
-    
-    stage = d.get('calculated_stage', 'Unknown')
-    emoji = d.get('calculated_emoji', '❓')
-    
-    # Show delivery status with emoji
-    lines.append(f"{emoji} {stage}")
-    
-    # Show pending flag only if pending
-    pending_flag = d.get('pending_flag', True)
-    if pending_flag:
-        lines.append("⏰ Pending Action Required")
-    else:
-        lines.append("🟢 No Pending Action")
-    lines.append("")
-    
-    # ----- SEPARATOR -----
-    lines.append("━━━━━━━━━━━━━━━━━━")
-    lines.append("")
-    
-    # ----- SECTION 7: Products (Grouped to remove duplicates) -----
-    products = d.get('products', [])
-    if products and len(products) > 0:
-        # Group products by model
-        grouped_products = {}
-        for p in products:
-            model = p.get('model', 'Unknown')
-            if model not in grouped_products:
-                grouped_products[model] = {
-                    'model': model,
-                    'quantity': 0,
-                    'revenue': 0
-                }
-            grouped_products[model]['quantity'] += p.get('quantity', 0)
-            grouped_products[model]['revenue'] += p.get('revenue', 0)
-        
-        lines.append("📦 Products")
-        lines.append("")
-        
-        for idx, (model, product) in enumerate(grouped_products.items()[:10], 1):
-            qty = product.get('quantity', 0)
-            revenue_val = product.get('revenue', 0)
-            
-            lines.append(f"{idx}. {model}")
-            lines.append(f"   Qty: {qty}")
-            if revenue_val > 0:
-                try:
-                    lines.append(f"   Revenue: PKR {float(revenue_val):,.2f}")
-                except:
-                    pass
-            lines.append("")
-        
-        if len(grouped_products) > 10:
-            remaining = len(grouped_products) - 10
-            lines.append(f"... and {remaining} more product(s)")
-            lines.append("")
-    
-    # ----- SEPARATOR -----
-    lines.append("━━━━━━━━━━━━━━━━━━")
-    lines.append("")
-    
-    # ----- SECTION 8: AI Insight -----
-    ai_insight = d.get('ai_insight')
-    if ai_insight:
-        lines.append("💡 AI Insight")
-        lines.append("")
-        # Split into max 2 lines if needed
-        insight_lines = ai_insight.split('. ')
-        if len(insight_lines) > 2:
-            lines.append(f"{insight_lines[0]}.")
-            lines.append(f"{insight_lines[1]}.")
-        else:
-            lines.append(ai_insight)
-        lines.append("")
-    
-    # ----- FOOTER -----
-    lines.append("━━━━━━━━━━━━━━━━━━")
-    lines.append(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    lines.append("🤖 AI Logistics Assistant")
-    
-    return "\n".join(lines)
+CITY_NAMES = (
+    "abbottabad", "lahore", "karachi", "rawalpindi", "quetta", "multan",
+    "peshawar", "gilgit", "hyderabad", "islamabad", "sialkot", "gujranwala",
+    "faisalabad", "bahawalpur", "sukkur", "mansehra", "haripur", "dg khan",
+    "dera ghazi khan",
+)
 
 
-# ==========================================================
-# ✅ UPDATED: _ensure_string_response() - COMPLETE FIX
-# ==========================================================
+def get_main_menu() -> str:
+    return (
+        "📋 *AI LOGISTICS MENU*\n\n"
+        "0. Main Menu\n1. DN Delivery\n2. Dealer Analytics\n"
+        "3. City Analytics\n4. Warehouse Dashboard\n5. Product Analytics\n"
+        "6. National KPI\n7. Pending DN\n8. Top Performers\n9. AI Query\n\n"
+        "Reply with a number from 0 to 9."
+    )
 
-def _ensure_string_response(response_data: Any) -> str:
-    """
-    Ensure response is always a string for WhatsApp.
-    
-    Handles:
-    - DNDashboard objects
-    - Dict with 'response' field (AI Provider format)
-    - Dict with 'data' field
-    - Dict with 'error' field
-    - Direct DNDashboard objects
-    - Lists of items
-    - Strings
-    - Everything else → str()
-    """
-    if response_data is None:
-        return "No data available"
-    
-    # Already a string
-    if isinstance(response_data, str):
-        return response_data
-    
-    # ============================================================
-    # ✅ HANDLE AI PROVIDER RESPONSE FORMAT
-    # ============================================================
-    if isinstance(response_data, dict):
-        # Check for 'response' field (AI Provider format)
-        if 'response' in response_data:
-            inner_response = response_data['response']
-            
-            # If inner_response is a DNDashboard object
-            if hasattr(inner_response, 'dn_no'):
-                return format_dn_response(inner_response)
-            
-            # If inner_response is a dict with dn_no
-            if isinstance(inner_response, dict) and 'dn_no' in inner_response:
-                return format_dn_response(inner_response)
-            
-            # If inner_response is something else, convert to string
-            return str(inner_response)
-        
-        # Check for 'data' field
-        if 'data' in response_data:
-            return format_dn_response(response_data['data'])
-        
-        # Check for 'error' field
-        if 'error' in response_data and response_data['error']:
-            return f"⚠️ {response_data['error']}"
-        
-        # If it's a DN data dict directly
-        if 'dn_no' in response_data:
-            return format_dn_response(response_data)
-    
-    # ============================================================
-    # ✅ HANDLE DNDASHBOARD OBJECT
-    # ============================================================
-    if hasattr(response_data, 'dn_no'):
-        return format_dn_response(response_data)
-    
-    # ============================================================
-    # ✅ HANDLE LIST
-    # ============================================================
-    if isinstance(response_data, list):
-        if response_data and hasattr(response_data[0], 'dn_no'):
-            results = []
-            for item in response_data[:5]:
-                results.append(format_dn_response(item))
-            return "\n\n".join(results)
-        return str(response_data)
-    
-    # ============================================================
-    # ✅ FALLBACK: Everything else
-    # ============================================================
-    return str(response_data)
 
-# ==========================================================
-# WEBHOOK VERIFICATION (GET)
-# ==========================================================
+def get_invalid_selection_message() -> str:
+    return "Invalid selection. Please choose a number from 0 to 9.\n\n" + get_main_menu()
 
-@router.get("/")
-async def verify_webhook(
-    hub_mode: str = Query(None, alias="hub.mode"),
-    hub_verify_token: str = Query(None, alias="hub.verify_token"),
-    hub_challenge: str = Query(None, alias="hub.challenge")
-) -> Response:
-    start_time = time.time()
-    
-    logger.info(f"📥 Webhook verification request received")
-    
-    try:
-        expected_token = config.WHATSAPP_VERIFY_TOKEN
-        
-        if not expected_token:
-            logger.error("❌ WHATSAPP_VERIFY_TOKEN not configured")
-            update_stats(False, "verification", (time.time() - start_time) * 1000)
-            return JSONResponse(
-                status_code=500,
-                content={"error": "Verification token not configured"}
-            )
-        
-        if hub_mode == 'subscribe' and hub_verify_token == expected_token:
-            logger.success(f"✅ Webhook verification successful!")
-            update_stats(True, "verification", (time.time() - start_time) * 1000)
-            return PlainTextResponse(content=hub_challenge, status_code=200)
-        else:
-            logger.warning(f"❌ Verification failed - Token mismatch")
-            update_stats(False, "verification", (time.time() - start_time) * 1000)
-            return JSONResponse(
-                status_code=403,
-                content={"error": "Verification failed"}
-            )
-    except Exception as e:
-        logger.error(f"❌ Verification error: {e}")
-        update_stats(False, "verification", (time.time() - start_time) * 1000)
-        return JSONResponse(
-            status_code=500,
-            content={"error": "Internal error"}
-        )
 
-# ==========================================================
-# WEBHOOK MESSAGE HANDLER (POST)
-# ==========================================================
+async def _resolve(value: Any) -> Any:
+    return await value if inspect.isawaitable(value) else value
 
-@router.post("/")
-async def handle_webhook(
-    request: Request,
-    background_tasks: BackgroundTasks
-) -> JSONResponse:
-    start_time = time.time()
-    request_id = str(uuid.uuid4())[:8]
-    
-    raw_body = await request.body()
-    logger.info(f"[{request_id}] 📥 Webhook request received - {len(raw_body)} bytes")
-    
-    try:
-        try:
-            data = json.loads(raw_body.decode('utf-8'))
-        except json.JSONDecodeError as e:
-            logger.error(f"[{request_id}] ❌ Invalid JSON: {e}")
-            return JSONResponse(
-                status_code=200,
-                content={"status": "ok", "message": "Webhook received"}
-            )
-        
-        if data.get('object') != 'whatsapp_business_account':
-            return JSONResponse(
-                status_code=200,
-                content={"status": "ok"}
-            )
-        
-        entries = data.get('entry', [])
-        
-        for entry in entries:
-            changes = entry.get('changes', [])
-            for change in changes:
-                value = change.get('value', {})
-                
-                if 'statuses' in value:
-                    logger.debug(f"[{request_id}] Status update - ignoring")
-                    continue
-                
-                messages = value.get('messages', [])
-                if not messages:
-                    continue
-                
-                for message in messages:
-                    phone_number = message.get('from')
-                    if not phone_number:
-                        continue
-                    
-                    message_id = message.get('id')
-                    if message_id and is_duplicate_message(message_id, phone_number):
-                        logger.debug(f"[{request_id}] Duplicate message: {message_id}")
-                        continue
-                    
-                    msg_type = message.get('type')
-                    if not msg_type:
-                        continue
-                    
-                    message_text = None
-                    
-                    if msg_type == 'text':
-                        message_text = message.get('text', {}).get('body', '')
-                    elif msg_type == 'image':
-                        image = message.get('image', {})
-                        message_text = image.get('caption', '')
-                    elif msg_type == 'document':
-                        doc = message.get('document', {})
-                        message_text = doc.get('caption', '')
-                    elif msg_type == 'interactive':
-                        interactive = message.get('interactive', {})
-                        if interactive.get('type') == 'button_reply':
-                            message_text = interactive.get('button_reply', {}).get('title', '')
-                        elif interactive.get('type') == 'list_reply':
-                            message_text = interactive.get('list_reply', {}).get('title', '')
-                    
-                    if not message_text and msg_type != 'audio' and msg_type != 'location':
-                        continue
-                    
-                    webhook_stats["total_messages_processed"] += 1
-                    logger.info(f"[{request_id}] 📨 Message from {phone_number}: '{message_text[:50] if message_text else '[Media]'}'")
-                    
-                    if message_text and message_text.strip():
-                        # ✅ UNCHANGED: ALWAYS goes to AI Provider
-                        background_tasks.add_task(
-                            process_message_with_ai,
-                            message_text.strip(),
-                            phone_number,
-                            request_id
-                        )
-                    elif msg_type == 'audio':
-                        background_tasks.add_task(
-                            process_audio_message,
-                            message,
-                            phone_number,
-                            request_id
-                        )
-                    elif msg_type == 'location':
-                        background_tasks.add_task(
-                            process_location_message,
-                            message,
-                            phone_number,
-                            request_id
-                        )
-        
-        update_stats(True, "message", (time.time() - start_time) * 1000)
-        logger.info(f"[{request_id}] ✅ Webhook processed - 200 OK")
-        return JSONResponse(
-            status_code=200,
-            content={"status": "ok", "message": "Webhook received"}
-        )
-        
-    except Exception as e:
-        logger.error(f"[{request_id}] ❌ Webhook error: {e}")
-        logger.exception(e)
-        update_stats(False, "message", (time.time() - start_time) * 1000)
-        return JSONResponse(
-            status_code=200,
-            content={"status": "ok", "message": "Webhook received"}
-        )
 
-# ==========================================================
-# PROCESS MESSAGE WITH AI
-# ==========================================================
+class AIProviderService:
+    _instance: Optional["AIProviderService"] = None
+    _instance_lock = threading.Lock()
 
-async def process_message_with_ai(
-    message_text: str,
-    phone_number: str,
-    request_id: str
-) -> None:
-    """
-    ✅ ALWAYS calls the AI Orchestrator.
-    ✅ Uses the CORRECT API: process_whatsapp_query(message, sender_id)
-    ✅ FIXED: Ensures response is always a string
-    """
-    start_time = time.time()
-    
-    try:
-        logger.info(f"[{request_id}] 🧠 Processing with AI: '{message_text[:50]}'")
-        
-        ai_provider = _get_ai_provider_service()
-        
-        if not ai_provider:
-            logger.error(f"[{request_id}] ❌ AI Provider is None")
-            error_msg = "⚠️ AI service is currently unavailable. Please try again later."
-            await send_whatsapp_response(phone_number, error_msg, request_id)
+    def __new__(cls) -> "AIProviderService":
+        if cls._instance is None:
+            with cls._instance_lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __init__(self) -> None:
+        if getattr(self, "_initialized", False):
             return
-        
-        logger.info(f"[{request_id}] ✅ AI Provider available")
-        
-        try:
-            logger.info(f"[{request_id}] 📤 Calling AI Orchestrator...")
-            
-            response = await ai_provider.process_whatsapp_query(
-                message=message_text,
-                sender_id=phone_number
-            )
-            
-            logger.info(f"[{request_id}] ✅ AI response received")
-            
-            # ✅ CHANGED: _ensure_string_response() now handles all cases
-            response_text = _ensure_string_response(response)
-            
-            # Ensure it's not empty
-            if not response_text or response_text == "None" or response_text.strip() == "":
-                response_text = "⚠️ I couldn't process your request. Please try again."
-            
-            logger.info(f"[{request_id}] 📤 Response length: {len(response_text)} chars")
-            
-            await send_whatsapp_response(phone_number, response_text, request_id)
-            
-        except Exception as e:
-            logger.error(f"[{request_id}] ❌ AI processing error: {e}")
-            import traceback
-            traceback.print_exc()
-            
-            error_msg = "⚠️ I encountered an error processing your request. Please try again."
-            await send_whatsapp_response(phone_number, error_msg, request_id)
-        
-        processing_time = (time.time() - start_time) * 1000
-        logger.info(f"[{request_id}] 📊 Message processed in {processing_time:.0f}ms")
-        
-    except Exception as e:
-        logger.error(f"[{request_id}] ❌ Critical error: {e}")
-        import traceback
-        traceback.print_exc()
-        try:
-            error_response = "⚠️ I encountered a critical error. Please try again later."
-            await send_whatsapp_response(phone_number, error_response, request_id)
-        except:
-            logger.error(f"[{request_id}] ❌ Failed to send error response")
 
-# ==========================================================
-# MEDIA MESSAGE HANDLERS
-# ==========================================================
+        # Only mark initialized after all mandatory state exists.
+        self.dn_service = DNAnalysisService()
+        self.dealer_service = DealerAnalyticsService()
+        self.city_service = CityService()
+        self.product_service = ProductService()
+        self.national_kpi_service = NationalKPIService()
+        self.groq_service = GroqService()
+        self._router: Any = None
+        self._router_init_attempted = False
+        self._router_lock = threading.Lock()
+        self._cache: Dict[str, tuple[float, RoutingDecision]] = {}
+        self._cache_ttl = 300.0
+        self._initialized = True
+        logger.info("AIProviderService initialized; semantic router will load lazily")
 
-async def process_audio_message(
-    message: Dict[str, Any],
-    phone_number: str,
-    request_id: str
-) -> None:
-    try:
-        audio = message.get('audio', {})
-        audio_id = audio.get('id')
-        logger.info(f"[{request_id}] 🎵 Audio message from {phone_number} - ID: {audio_id}")
-        response = "🎵 I received your audio. Please send text for better assistance."
-        await send_whatsapp_response(phone_number, response, request_id)
-    except Exception as e:
-        logger.error(f"[{request_id}] ❌ Audio processing error: {e}")
-
-async def process_location_message(
-    message: Dict[str, Any],
-    phone_number: str,
-    request_id: str
-) -> None:
-    try:
-        location = message.get('location', {})
-        lat = location.get('latitude')
-        lon = location.get('longitude')
-        name = location.get('name', '')
-        logger.info(f"[{request_id}] 📍 Location from {phone_number}: {lat}, {lon}")
-        response = f"📍 Received location: {name}\nCoordinates: {lat}, {lon}"
-        await send_whatsapp_response(phone_number, response, request_id)
-    except Exception as e:
-        logger.error(f"[{request_id}] ❌ Location processing error: {e}")
-
-# ==========================================================
-# SEND WHATSAPP RESPONSE
-# ==========================================================
-
-async def send_whatsapp_response(
-    phone_number: str,
-    response_text: str,
-    request_id: str
-) -> bool:
-    """
-    Send WhatsApp response.
-    
-    ✅ FIXED: Ensures response_text is always a string
-    """
-    try:
-        # Ensure response_text is a string
-        if not isinstance(response_text, str):
-            response_text = _ensure_string_response(response_text)
-        
-        # Ensure it's not empty
-        if not response_text or response_text.strip() == "":
-            response_text = "No data available"
-        
-        whatsapp = _get_whatsapp_service()
-        if whatsapp:
+    def _ensure_semantic_router(self) -> None:
+        if self._router is not None or self._router_init_attempted:
+            return
+        with self._router_lock:
+            if self._router is not None or self._router_init_attempted:
+                return
+            self._router_init_attempted = True
+            if not SEMANTIC_ROUTER_AVAILABLE:
+                logger.warning("Semantic routing disabled: %s", SEMANTIC_ROUTER_IMPORT_ERROR)
+                return
             try:
-                await asyncio.to_thread(
-                    whatsapp.send_text_message,
-                    phone_number,
-                    response_text
-                )
-                logger.info(f"[{request_id}] ✅ WhatsApp response sent to {phone_number}")
-                return True
-            except Exception as e:
-                logger.error(f"[{request_id}] ❌ WhatsApp send error: {e}")
-                return False
-        else:
-            logger.warning(f"[{request_id}] ⚠️ WhatsApp service not available")
-            print(f"[{request_id}] RESPONSE TO {phone_number}: {response_text[:200]}")
-            return False
-    except Exception as e:
-        logger.error(f"[{request_id}] ❌ Send response error: {e}")
-        return False
+                encoder = HuggingFaceEncoder()
+                routes = [Route(name=name, utterances=utterances) for name, utterances in ROUTE_UTTERANCES.items()]
+                try:
+                    self._router = SemanticRouter(encoder=encoder, routes=routes, auto_sync="local")
+                except TypeError:
+                    self._router = SemanticRouter(encoder=encoder, routes=routes)
+                logger.info("Semantic Router initialized with %d routes", len(routes))
+            except Exception:
+                self._router = None
+                logger.exception("Semantic Router initialization failed; deterministic routing remains available")
 
-# ==========================================================
-# STATUS ENDPOINTS
-# ==========================================================
+    @staticmethod
+    def _extract_dn(text: str) -> Optional[str]:
+        compact = text.strip()
+        match = re.search(r"(?<!\d)(\d{8,12})(?!\d)", compact)
+        if match:
+            return match.group(1)
+        match = re.search(r"(?<!\d)(\d{4}[\s-]*\d{4}[\s-]*\d{0,4})(?!\d)", compact)
+        if match:
+            candidate = re.sub(r"[\s-]", "", match.group(1))
+            return candidate if 8 <= len(candidate) <= 12 else None
+        return None
 
-@router.get("/ping")
-async def webhook_ping() -> JSONResponse:
-    ai = _get_ai_provider_service()
-    return JSONResponse(content={
-        "ping": "pong",
-        "webhook_version": "28.2",
-        "architecture": "v16.0 (Built-in Intent Detection)",
-        "timestamp": datetime.now().isoformat(),
-        "services": {
-            "ai_provider": "healthy" if ai else "unhealthy",
-            "database": "connected" if webhook_stats.get("db_connected", False) else "disconnected"
-        },
-        "stats": {
-            "total_messages": webhook_stats["total_messages_processed"],
-            "total_requests": webhook_stats["total_requests"]
-        }
-    })
+    @staticmethod
+    def _menu_number(text: str) -> Optional[str]:
+        match = re.fullmatch(r"\s*([0-9])(?:[.)])?\s*", text)
+        return match.group(1) if match else None
 
-@router.get("/health")
-async def webhook_health() -> JSONResponse:
-    ai = _get_ai_provider_service()
-    return JSONResponse(content={
-        "status": "healthy" if ai else "degraded",
-        "webhook_version": "28.2",
-        "architecture": "v16.0 (Built-in Intent Detection)",
-        "timestamp": datetime.now().isoformat(),
-        "services": {
-            "ai_provider": "healthy" if ai else "unhealthy",
-            "database": "connected" if webhook_stats.get("db_connected", False) else "disconnected"
-        },
-        "stats": {
-            "total_requests": webhook_stats["total_requests"],
-            "messages_processed": webhook_stats["total_messages_processed"]
-        }
-    })
+    @staticmethod
+    def _extract_entities(text: str) -> Dict[str, Any]:
+        entities: Dict[str, Any] = {}
+        dn = AIProviderService._extract_dn(text)
+        if dn:
+            entities.update({"dn": dn, "dn_number": dn, "id": dn})
 
-# ==========================================================
-# DIAGNOSTIC ENDPOINT
-# ==========================================================
+        lowered = text.casefold()
+        for city in CITY_NAMES:
+            if re.search(rf"\b{re.escape(city)}\b", lowered):
+                entities.update({"city": city.title(), "city_name": city.title()})
+                break
 
-@router.get("/test-dn")
-async def test_dn_lookup(dn: str = Query(..., description="DN number to test")):
-    """Test DN lookup directly."""
-    try:
-        ai = _get_ai_provider_service()
-        if not ai:
-            return JSONResponse(
-                status_code=503,
-                content={"error": "AI Provider not available"}
-            )
-        
-        dn_service = ai.registry.get_service_instance("dn")
-        if not dn_service:
-            return JSONResponse(
-                status_code=503,
-                content={"error": "DN Service not available"}
-            )
-        
-        result = dn_service.test_dn_lookup(dn)
-        return JSONResponse(content=result)
-        
-    except Exception as e:
-        logger.error(f"❌ Test DN error: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"error": str(e)}
+        dealer = re.search(
+            r"([\w&.'\- ]{2,}?(?:electronics|traders|distributors|foods|group|pvt|ltd|sons|brothers|enterprises|company|corporation)(?:[\w&.'\- ]*)?)",
+            text,
+            re.IGNORECASE,
+        )
+        if dealer:
+            name = dealer.group(1).strip()
+            entities.update({"dealer": name, "dealer_name": name})
+
+        warehouse = re.search(r"(?:warehouse|depot|\bwh\b)\s+([\w&.'\- ]{2,})", text, re.IGNORECASE)
+        if warehouse:
+            entities["warehouse"] = warehouse.group(1).strip()
+
+        product = re.search(r"(?:product|model|material|item)\s+([\w&.'\- ]{2,})", text, re.IGNORECASE)
+        if product:
+            entities["product"] = product.group(1).strip()
+        return entities
+
+    @staticmethod
+    def _decision_for_menu(menu_option: str, message: str, entities: Optional[Dict[str, Any]] = None, intent: Optional[str] = None, confidence: float = 1.0, reason: str = "") -> RoutingDecision:
+        config = MENU_OPTIONS[menu_option]
+        return RoutingDecision(
+            intent=intent or config["name"].lower().replace(" ", "_"),
+            confidence=confidence,
+            service_key=config["service_key"],
+            service_file=config["service_file"],
+            method=config["method"],
+            entity=entities or {},
+            requires_ai=config["requires_ai"],
+            reason=reason,
+            original_message=message,
+            menu_option=menu_option,
         )
 
-# ==========================================================
-# INITIALIZATION
-# ==========================================================
+    def _semantic_intent(self, message: str) -> tuple[Optional[str], float]:
+        self._ensure_semantic_router()
+        if self._router is None:
+            return None, 0.0
+        try:
+            result = self._router(message) if callable(self._router) else self._router.route(message)
+            if result is None:
+                return None, 0.0
+            return getattr(result, "name", None), float(getattr(result, "score", 1.0) or 0.0)
+        except Exception:
+            logger.exception("Semantic routing failed for message")
+            return None, 0.0
 
-logger.info("=" * 70)
-logger.info("🌐 WEBHOOK ROUTER v28.2 - COMPLETE FIX")
-logger.info("=" * 70)
+    @staticmethod
+    def _rule_intent(message: str) -> Optional[str]:
+        """Cheap, dependable routing for common commands when embeddings are down."""
+        text = message.casefold()
+        rules = (
+            (r"\b(?:pending\s+pod|proof of delivery pending)\b", "pending_pod"),
+            (r"\b(?:pending\s+pgi|goods issue pending)\b", "pending_pgi"),
+            (r"\b(?:pending\s+dn|pending deliveries)\b", "pending_dns"),
+            (r"\b(?:top|best)\s+performers?\b|\bleaderboard\b", "top_performers"),
+            (r"\b(?:dn|delivery note)\s+(?:service|services|dashboard|status|details?)\b", "dn_lookup"),
+            (r"\bdealer\s+(?:service|services|dashboard|analytics|performance)\b", "dealer_dashboard"),
+            (r"\bcit(?:y|ies)\s+(?:service|services|dashboard|analytics|performance)\b", "city_dashboard"),
+            (r"\bwarehouse\s+(?:service|services|dashboard|analytics|performance)\b", "warehouse_dashboard"),
+            (r"\bproduct\s+(?:service|services|dashboard|analytics|performance)\b", "product_dashboard"),
+            (r"\b(?:national kpi|overall performance|executive dashboard)\b", "national_kpi"),
+        )
+        for pattern, intent in rules:
+            if re.search(pattern, text):
+                return intent
+        return None
 
-logger.info("🚀 Pre-initializing AI Provider Service...")
-ai = _get_ai_provider_service()
-if ai:
-    logger.info("✅ AI Provider Service v5.0 initialized successfully")
-    webhook_stats["ai_enabled"] = True
-else:
-    logger.error("❌ AI Provider Service initialization FAILED")
-    webhook_stats["ai_enabled"] = False
+    def _make_routing_decision(self, message: str) -> RoutingDecision:
+        normalized = message.strip()
+        cache_key = normalized.casefold()
+        cached = self._cache.get(cache_key)
+        if cached and time.monotonic() - cached[0] < self._cache_ttl:
+            return cached[1]
 
-logger.info("🚀 Pre-initializing DN Analytics Service...")
-dn = _get_dn_service()
-if dn:
-    logger.info("✅ DN Analytics Service loaded successfully")
-else:
-    logger.error("❌ DN Analytics Service initialization FAILED")
+        if not normalized:
+            decision = self._decision_for_menu("0", message, reason="Empty message")
+        elif (dn := self._extract_dn(normalized)):
+            entities = {"dn": dn, "dn_number": dn, "id": dn}
+            decision = self._decision_for_menu("1", message, entities, "dn_lookup", reason="DN number detected")
+        elif normalized.casefold() in {"menu", "main menu", "options", "start", "back", "home", "help"}:
+            decision = self._decision_for_menu("0", message, reason="Menu keyword detected")
+        elif (number := self._menu_number(normalized)) is not None:
+            decision = self._decision_for_menu(number, message, reason="Menu number selected")
+        else:
+            entities = self._extract_entities(normalized)
+            # Explicit entities are safer and faster than embedding inference.
+            if "dealer" in entities:
+                decision = self._decision_for_menu("2", message, entities, "dealer_dashboard", reason="Dealer entity detected")
+            elif "city" in entities:
+                decision = self._decision_for_menu("3", message, entities, "city_dashboard", reason="City entity detected")
+            elif "warehouse" in entities:
+                decision = self._decision_for_menu("4", message, entities, "warehouse_dashboard", reason="Warehouse entity detected")
+            elif "product" in entities:
+                decision = self._decision_for_menu("5", message, entities, "product_dashboard", reason="Product entity detected")
+            else:
+                intent = self._rule_intent(normalized)
+                confidence = 1.0 if intent else 0.0
+                if intent is None:
+                    intent, confidence = self._semantic_intent(normalized)
+                menu_option = INTENT_TO_MENU.get(intent or "")
+                if menu_option and confidence >= 0.30:
+                    decision = self._decision_for_menu(menu_option, message, entities, intent, confidence, "Semantic route matched")
+                else:
+                    decision = self._decision_for_menu("9", message, entities or {"message": message}, "general_ai", max(confidence, 0.30), "AI fallback")
 
-try:
-    if DATABASE_AVAILABLE:
-        db = SessionLocal()
-        from sqlalchemy import text
-        result = db.execute(text("SELECT 1")).scalar()
-        logger.info(f"✅ Database connection test: {result}")
-        webhook_stats["db_connected"] = True
-        
-        if MODELS_AVAILABLE:
-            count = db.query(DeliveryReport).count()
-            logger.info(f"✅ DeliveryReport records: {count}")
-            if count == 0:
-                logger.warning("⚠️ WARNING: delivery_reports table is EMPTY!")
-                logger.warning("⚠️ You need to import data to answer questions.")
-        db.close()
-except Exception as e:
-    logger.error(f"❌ Database connection test FAILED: {e}")
-    webhook_stats["db_connected"] = False
+        self._cache[cache_key] = (time.monotonic(), decision)
+        if len(self._cache) > 1000:
+            self._cache.clear()
+        return decision
 
-logger.info("")
-logger.info("   📌 ARCHITECTURE: v16.0 (Built-in Intent Detection)")
-logger.info("   📌 AI Provider: v5.0 (NO ai_query_service.py)")
-logger.info("   📌 Routing: IntentDetectionEngine (built-in)")
-logger.info("   📌 DN Formatting: ✅ Professional Formatter")
-logger.info("   📌 Response Formatting: ✅ COMPLETE FIX")
-logger.info("   📌 FLOW: ✅ EXACTLY SAME AS BEFORE")
-logger.info("")
-logger.info("=" * 70)
+    async def process_whatsapp_query(
+        self,
+        message: str,
+        sender: Optional[str] = None,
+        sender_id: Optional[str] = None,
+        **_: Any,
+    ) -> str:
+        # ``sender_id`` is retained for compatibility with webhook v28.2.
+        sender = sender or sender_id
+        if not message or not message.strip():
+            return get_main_menu()
 
-__all__ = ['router']
+        logger.info("Processing WhatsApp message from %s", sender or "unknown")
+        decision = self._make_routing_decision(message)
+        logger.info("Route: %s -> %s.%s (%s)", decision.intent, decision.service_file, decision.method, decision.reason)
+
+        if decision.service_key == "menu_service":
+            return get_main_menu()
+
+        services = {
+            "dn_analysis": self.dn_service,
+            "dealer_analytics": self.dealer_service,
+            "city_service": self.city_service,
+            "product_service": self.product_service,
+            "national_kpi_service": self.national_kpi_service,
+            "groq_service": self.groq_service,
+        }
+        service = services.get(decision.service_key)
+        if service is None:
+            logger.error("Unknown service key: %s", decision.service_key)
+            return get_invalid_selection_message()
+
+        try:
+            method = getattr(service, decision.method)
+            if decision.service_key == "groq_service":
+                result = await _resolve(method(message, decision.entity))
+            else:
+                result = await _resolve(method(decision.entity))
+            return str(result) if result is not None else "⚠️ No response was returned. Please try again."
+        except Exception:
+            logger.exception("Service call failed: %s.%s", decision.service_key, decision.method)
+            if decision.service_key == "groq_service":
+                return "⚠️ AI service is temporarily unavailable. Reply *menu* to use logistics services."
+            return f"⚠️ {MENU_OPTIONS[decision.menu_option or '0']['name']} is temporarily unavailable. Please try again."
+
+
+_ai_service: Optional[AIProviderService] = None
+_service_lock = threading.Lock()
+
+
+def get_ai_provider_service() -> AIProviderService:
+    global _ai_service
+    if _ai_service is None:
+        with _service_lock:
+            if _ai_service is None:
+                _ai_service = AIProviderService()
+    return _ai_service
+
+
+def get_whatsapp_provider_service() -> AIProviderService:
+    """Backward-compatible factory used by webhook v28.2 and older code."""
+    return get_ai_provider_service()
+
+
+async def process_whatsapp_query(
+    message: str,
+    sender: Optional[str] = None,
+    sender_id: Optional[str] = None,
+    **kwargs: Any,
+) -> str:
+    try:
+        return await get_ai_provider_service().process_whatsapp_query(
+            message=message,
+            sender=sender,
+            sender_id=sender_id,
+            **kwargs,
+        )
+    except Exception:
+        logger.exception("Unexpected AI provider failure")
+        # Keep WhatsApp responsive even for an unforeseen initialization bug.
+        if message and message.strip().casefold() in {"menu", "main menu", "help", "start", "0"}:
+            return get_main_menu()
+        return "⚠️ Service is temporarily unavailable. Reply *menu* to try again."
+
+
+__all__ = [
+    "process_whatsapp_query",
+    "get_main_menu",
+    "get_ai_provider_service",
+    "get_whatsapp_provider_service",
+    "RoutingDecision",
+    "MENU_OPTIONS",
+    "INTENT_TO_MENU",
+]
