@@ -1,6 +1,6 @@
 """
 File: app/services/ai_provider_service.py
-Version: 33.0 - ENTERPRISE AI ROUTER WITH DOMAIN MENU INTEGRATION
+Version: 34.0 - ENTERPRISE AI ROUTER WITH COMPLETE DOMAIN MENU INTEGRATION
 
 Single entry point for the WhatsApp AI agent with full domain menu support.
 Each domain service (DN, Dealer, City, Warehouse, Product, National KPI)
@@ -12,6 +12,12 @@ ROUTING FLOW:
 2. Natural Language → Intent + Entity → Route to domain service
 3. Context → Maintain session state
 4. AI Fallback → Only when needed
+
+CRITICAL: 
+- ALL DN-related queries go to dn_analysis.py
+- DN service handles its own menu, state, and responses
+- Router only delegates to DN service, never intercepts DN responses
+- "99" from DN service returns to main menu via exit_menu flag
 
 Status: ENTERPRISE READY
 """
@@ -266,6 +272,7 @@ class SessionContext:
     current_dealer: Optional[str] = None
     current_warehouse: Optional[str] = None
     current_product: Optional[str] = None
+    current_dn: Optional[str] = None
     last_intent: Optional[IntentType] = None
     last_entity: Optional[Entity] = None
     last_dashboard: Optional[str] = None
@@ -484,6 +491,10 @@ class ContextManager:
         if context.current_product:
             suggestions.append(f"Sales of {context.current_product}")
         
+        if context.current_dn:
+            suggestions.append(f"Status of {context.current_dn}")
+            suggestions.append(f"History of {context.current_dn}")
+        
         suggestions.extend([
             "Show national KPI",
             "View pending DNs",
@@ -643,6 +654,9 @@ class IntentEngine:
             elif EntityType.WAREHOUSE in entity_types and best_intent == IntentType.UNKNOWN:
                 best_intent = IntentType.DASHBOARD
                 best_score = 0.7
+            elif EntityType.DN in entity_types and best_intent == IntentType.UNKNOWN:
+                best_intent = IntentType.DASHBOARD
+                best_score = 0.7
         
         # Semantic fallback
         if best_score < 0.5:
@@ -751,10 +765,11 @@ class EntityEngine:
         message_lower = message.lower().strip()
         entities = []
         
-        # 1. DN numbers (8-12 digits)
+        # 1. DN numbers (8-12 digits) - HIGHEST PRIORITY
         dn_matches = re.findall(r'(?<!\d)(\d{8,12})(?!\d)', message)
         for dn in dn_matches:
-            entities.append(Entity(type=EntityType.DN, value=dn, confidence=0.95))
+            entities.append(Entity(type=EntityType.DN, value=dn, confidence=0.98))
+            # If DN found, still check for other entities but DN takes priority
         
         # 2. Cities
         for city in self.KNOWN_CITIES:
@@ -826,6 +841,10 @@ class EntityEngine:
                 seen.add(key)
                 unique_entities.append(entity)
         
+        # Sort: DN first, then City, Dealer, Warehouse, Product
+        priority_order = [EntityType.DN, EntityType.CITY, EntityType.DEALER, EntityType.WAREHOUSE, EntityType.PRODUCT]
+        unique_entities.sort(key=lambda e: priority_order.index(e.type) if e.type in priority_order else 999)
+        
         return unique_entities
 
 # =====================================================================================================================
@@ -836,6 +855,10 @@ class AIProviderService:
     """
     Enterprise AI Orchestrator with full domain menu integration.
     Routes to domain services and handles natural language queries.
+    
+    CRITICAL: ALL DN-related queries are delegated to dn_analysis.py
+    The DN service handles its own menu, state, and responses.
+    The router only checks the exit_menu flag to determine if user wants to go back to main menu.
     """
     
     _instance = None
@@ -872,7 +895,7 @@ class AIProviderService:
         self._menu_sessions: Dict[str, str] = {}  # session_id -> service_key
         
         logger.info("=" * 60)
-        logger.info("🚀 AI Provider Service v33.0 initialized")
+        logger.info("🚀 AI Provider Service v34.0 initialized")
         logger.info(f"📦 Services: {', '.join(self.service_registry.keys())}")
         logger.info("📊 Monitoring: Enabled" if self.metrics.is_enabled() else "📊 Monitoring: Disabled")
         logger.info("=" * 60)
@@ -881,13 +904,14 @@ class AIProviderService:
         """Initialize service registry with all domain services"""
         self.service_registry = {}
         
-        # DN Service - Menu 1, 7, 8
+        # DN Service - Menu 1, 7, 8 - ALL DN queries go here
         try:
             from app.services.dn_analysis import DNAnalysisService
             self.service_registry["dn"] = DNAnalysisService()
-            logger.info("✅ Registered DN service (Menu 1, 7, 8)")
+            logger.info("✅ Registered DN service (Menu 1, 7, 8) - ALL DN queries")
         except Exception as e:
             logger.warning(f"⚠️ Failed to register DN service: {e}")
+            self.service_registry["dn"] = None
         
         # Dealer Service - Menu 2
         try:
@@ -896,6 +920,7 @@ class AIProviderService:
             logger.info("✅ Registered Dealer service (Menu 2)")
         except Exception as e:
             logger.warning(f"⚠️ Failed to register Dealer service: {e}")
+            self.service_registry["dealer"] = None
         
         # City Service - Menu 3
         try:
@@ -904,6 +929,7 @@ class AIProviderService:
             logger.info("✅ Registered City service (Menu 3)")
         except Exception as e:
             logger.warning(f"⚠️ Failed to register City service: {e}")
+            self.service_registry["city"] = None
         
         # Warehouse Service - Menu 4
         try:
@@ -912,6 +938,7 @@ class AIProviderService:
             logger.info("✅ Registered Warehouse service (Menu 4)")
         except Exception as e:
             logger.warning(f"⚠️ Failed to register Warehouse service: {e}")
+            self.service_registry["warehouse"] = None
         
         # Product Service - Menu 5
         try:
@@ -920,6 +947,7 @@ class AIProviderService:
             logger.info("✅ Registered Product service (Menu 5)")
         except Exception as e:
             logger.warning(f"⚠️ Failed to register Product service: {e}")
+            self.service_registry["product"] = None
         
         # National KPI Service - Menu 6
         try:
@@ -928,6 +956,7 @@ class AIProviderService:
             logger.info("✅ Registered National KPI service (Menu 6)")
         except Exception as e:
             logger.warning(f"⚠️ Failed to register National KPI service: {e}")
+            self.service_registry["national"] = None
     
     # =====================================================================================================================
     # MAIN PROCESSING PIPELINE
@@ -1058,23 +1087,21 @@ class AIProviderService:
     
     def _handle_menu_command(self, sender: str) -> str:
         """Handle menu command - show main menu"""
-        # Reset any active menu session
         self._menu_sessions[sender] = "main"
         return self._get_main_menu()
     
     async def _handle_menu_number(self, sender: str, number: int) -> str:
         """Handle menu number selection (0-9)"""
-        # Map menu numbers to service keys
         menu_map = {
             0: ("main", None),
-            1: ("dn", "get_main_menu"),
+            1: ("dn", "process_whatsapp_query"),  # DN service handles its own menu
             2: ("dealer", "get_main_menu"),
             3: ("city", "get_main_menu"),
             4: ("warehouse", "get_main_menu"),
             5: ("product", "get_main_menu"),
             6: ("national", "get_main_menu"),
-            7: ("dn", "get_pending_dns"),
-            8: ("dn", "get_top_performers"),
+            7: ("dn", "process_whatsapp_query"),  # DN service handles pending
+            8: ("dn", "process_whatsapp_query"),  # DN service handles top performers
             9: ("ai", None),
         }
         
@@ -1101,13 +1128,20 @@ class AIProviderService:
         # Store active menu session
         self._menu_sessions[sender] = service_key
         
-        # Get the menu from the service
+        # DN service - pass the menu number as a message
+        if service_key == "dn":
+            # DN service handles its own menu and all DN queries
+            # Just pass the number as a message
+            result = service.process_whatsapp_query(str(number), sender)
+            # DN service returns a string directly
+            return result
+        
+        # Other services - get their main menu
         if hasattr(service, "get_main_menu"):
             return service.get_main_menu()
         elif hasattr(service, "get_menu"):
             return service.get_menu()
         else:
-            # Fallback: return a generic menu
             return f"📋 *{service_key.title()} ANALYTICS MENU*\n\nService menu is being loaded...\n\n0. Main Menu\n99. Back"
     
     # =====================================================================================================================
@@ -1124,25 +1158,43 @@ class AIProviderService:
     ) -> str:
         """Route and execute the request"""
         
-        # Check if user is in a menu session
+        # ============================================================
+        # PRIORITY 1: DN NUMBER DETECTION - ALWAYS GOES TO DN SERVICE
+        # ============================================================
+        for entity in entities:
+            if entity.type == EntityType.DN:
+                service = self.service_registry.get("dn")
+                if service:
+                    result = service.process_whatsapp_query(message, sender)
+                    return self._extract_response(result)
+        
+        # ============================================================
+        # PRIORITY 2: Check if user is in a menu session
+        # ============================================================
         active_menu = self._menu_sessions.get(sender, "main")
         
-        if active_menu != "main":
-            # User is in a menu - route to the active service
+        if active_menu == "dn":
+            # User is in DN menu - route to DN service
+            service = self.service_registry.get("dn")
+            if service:
+                result = service.process_whatsapp_query(message, sender)
+                return self._extract_response(result)
+        
+        if active_menu not in ["main", "ai"]:
+            # User is in a domain menu - route to the active service
             service = self.service_registry.get(active_menu)
             if service:
                 if hasattr(service, "process_whatsapp_query"):
                     result = service.process_whatsapp_query(message, sender)
-                    if isinstance(result, str):
-                        return result
-                    if isinstance(result, dict):
-                        return self._extract_response(result)
+                    return self._extract_response(result)
                 elif hasattr(service, "process_menu_input"):
                     result = service.process_menu_input(sender, message)
                     if isinstance(result, dict):
                         return result.get("response", "No response from service.")
         
-        # Not in a menu - use intent/entity routing
+        # ============================================================
+        # PRIORITY 3: Natural language routing
+        # ============================================================
         return await self._route_natural_language(sender, message, intent, entities, context)
     
     async def _route_natural_language(
@@ -1155,12 +1207,12 @@ class AIProviderService:
     ) -> str:
         """Route natural language queries to the appropriate service"""
         
-        # 1. Check for DN number first (highest priority)
+        # 1. DN number already handled above, but double-check
         for entity in entities:
             if entity.type == EntityType.DN:
                 service = self.service_registry.get("dn")
-                if service and hasattr(service, "get_dn_dashboard"):
-                    result = service.get_dn_dashboard(entity.value)
+                if service:
+                    result = service.process_whatsapp_query(message, sender)
                     return self._extract_response(result)
         
         # 2. Check for entity-based routing
@@ -1187,24 +1239,17 @@ class AIProviderService:
                 service = self.service_registry.get(service_key)
                 if service:
                     if hasattr(service, "process_whatsapp_query"):
-                        # Build a contextual query
                         metric = intent.metric or "dashboard"
                         query = f"{primary_entity.value} {metric}"
                         result = service.process_whatsapp_query(query, sender)
-                        if isinstance(result, str):
-                            return result
-                        if isinstance(result, dict):
-                            return self._extract_response(result)
+                        return self._extract_response(result)
         
         # 3. Check for national/executive intent
         if intent.type in [IntentType.NATIONAL, IntentType.EXECUTIVE]:
             service = self.service_registry.get("national")
             if service and hasattr(service, "process_whatsapp_query"):
                 result = service.process_whatsapp_query(message, sender)
-                if isinstance(result, str):
-                    return result
-                if isinstance(result, dict):
-                    return self._extract_response(result)
+                return self._extract_response(result)
         
         # 4. Check for ranking
         if intent.type == IntentType.RANKING:
@@ -1212,10 +1257,7 @@ class AIProviderService:
             service = self.service_registry.get(service_key)
             if service and hasattr(service, "process_whatsapp_query"):
                 result = service.process_whatsapp_query(message, sender)
-                if isinstance(result, str):
-                    return result
-                if isinstance(result, dict):
-                    return self._extract_response(result)
+                return self._extract_response(result)
         
         # 5. Check for comparison
         if intent.type == IntentType.COMPARISON:
@@ -1223,10 +1265,7 @@ class AIProviderService:
             service = self.service_registry.get(service_key)
             if service and hasattr(service, "process_whatsapp_query"):
                 result = service.process_whatsapp_query(message, sender)
-                if isinstance(result, str):
-                    return result
-                if isinstance(result, dict):
-                    return self._extract_response(result)
+                return self._extract_response(result)
         
         # 6. Check for greeting
         if intent.type == IntentType.GREETING:
@@ -1433,7 +1472,7 @@ Keep response concise and WhatsApp-friendly with emojis and bullet points."""
         """Comprehensive health check"""
         return {
             "service": "ai_provider_service",
-            "version": "33.0",
+            "version": "34.0",
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
             "components": {
