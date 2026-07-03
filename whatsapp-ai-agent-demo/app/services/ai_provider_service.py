@@ -927,6 +927,10 @@ class AIProviderService:
 # BLOCK 11A: DN SERVICE - MENU 1, 7, 8 - 100% FIXED
 # ============================================================
         
+# ============================================================
+# BLOCK 11A: DN SERVICE - MENU 1, 7, 8 - 100% FIXED
+# ============================================================
+        
 logger.info("=" * 60)
 logger.info("📦 BLOCK 11A: Loading DN Service (100% FIXED)")
 logger.info("=" * 60)
@@ -937,15 +941,9 @@ if os.path.exists(dn_file_path):
     logger.info(f"✅ dn_analysis.py found at: {dn_file_path}")
 else:
     logger.error(f"❌ dn_analysis.py NOT found at: {dn_file_path}")
-    # Try alternative path
-    alt_path = os.path.join(os.path.dirname(__file__), "..", "services", "dn_analysis.py")
-    if os.path.exists(alt_path):
-        logger.info(f"✅ dn_analysis.py found at alternate path: {alt_path}")
-    else:
-        logger.error(f"❌ dn_analysis.py NOT found at alternate path: {alt_path}")
-        self.service_registry["dn"] = self._create_dn_fallback()
-        self.service_errors["dn"] = "File not found"
-        return
+    self.service_registry["dn"] = self._create_dn_fallback()
+    self.service_errors["dn"] = "File not found"
+    return
 
 # Try importing - ONLY ABSOLUTE IMPORTS (NO RELATIVE IMPORTS)
 dn_service = None
@@ -994,7 +992,7 @@ for method in required_methods:
     else:
         logger.warning(f"   ⚠️ DN service missing method: {method}")
 
-logger.info("✅ Registered DN service (Menu 1, 7, 8) - 100% WORKING")     
+logger.info("✅ Registered DN service (Menu 1, 7, 8) - 100% WORKING")
 # ============================================================
         # BLOCK 11B: DEALER SERVICE - MENU 2
         # ============================================================
