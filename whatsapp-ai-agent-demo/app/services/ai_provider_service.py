@@ -1,14 +1,14 @@
 """
 File: app/services/ai_provider_service.py
-Version: 24.0 - COMPLETE SERVICE INTEGRATION WITH DIRECT ROUTING
+Version: 25.0 - COMPLETE SERVICE INTEGRATION WITH CITY MENU FIX
 
 Single entry point for the WhatsApp AI agent. Deterministic requests (menu,
 menu numbers, DN numbers and obvious entities) never depend on an AI provider.
 Semantic Router and Groq are optional enhancements and cannot prevent startup.
 
 ROUTING FLOW (Priority Order):
-1. DN Number (8-12 digits) → DN Analysis (dn_analysis.py)
-2. Menu Number (0-9) → Direct to specific service file
+1. Menu Number (0-9) → Direct to specific service file (HIGHEST PRIORITY)
+2. DN Number (8-12 digits) → DN Analysis (dn_analysis.py)
 3. City Name → City Dashboard (city_service.py)
 4. Dealer Name → Dealer Dashboard (dealer_analytics_service.py)
 5. Warehouse → Warehouse Dashboard (dn_analysis.py)
@@ -30,14 +30,15 @@ MENU OPTIONS:
 8 → Top Performers (dn_analysis.py)
 9 → AI Query (groq_service.py)
 
-CRITICAL FIXES:
-- Menu "3" opens FULL City Analytics Menu from city_service.py
-- Each menu option routes to its specific service file
-- Entity extraction runs BEFORE menu fallback
-- City names properly detected (Lahore, Karachi, etc.)
-- Dealer names properly detected (with suffixes)
-- DN numbers properly detected (8-12 digits)
-- ALWAYS returns string responses
+CRITICAL FIXES - APPLIED:
+1. ✅ Menu "3" now correctly routes to city_service.get_city_menu()
+2. ✅ Menu numbers checked BEFORE entity extraction
+3. ✅ "City Analytics" text detected as menu request
+4. ✅ City names validated against CITY_NAMES list
+5. ✅ Dealer names detected with suffixes
+6. ✅ DN numbers detected (8-12 digits)
+7. ✅ ALWAYS returns string responses
+8. ✅ Bootstrap integration for AI resources
 """
 
 from __future__ import annotations
@@ -60,7 +61,6 @@ logger = logging.getLogger(__name__)
 try:
     from app.services.ai_bootstrap_service import get_ai_bootstrap_service, warmup_ai_resources
     BOOTSTRAP_AVAILABLE = True
-    # Warmup resources at startup (if not already done)
     warmup_ai_resources(include_heavy=False)
     logger.info("✅ AI Bootstrap Service connected and warmed up")
 except ImportError:
@@ -68,8 +68,7 @@ except ImportError:
     logger.warning("⚠️ AI Bootstrap Service not available")
 
 
-# Semantic Router has changed its public class names across releases. Support
-# current and older installations, but never make the whole application fail.
+# Semantic Router
 Route = None
 SemanticRouter = None
 HuggingFaceEncoder = None
@@ -80,7 +79,7 @@ try:
     from semantic_router import Route as _Route
     try:
         from semantic_router import SemanticRouter as _SemanticRouter
-    except ImportError:  # compatibility with older semantic-router releases
+    except ImportError:
         try:
             from semantic_router import Router as _SemanticRouter
         except ImportError:
@@ -91,9 +90,9 @@ try:
     SemanticRouter = _SemanticRouter
     HuggingFaceEncoder = _HuggingFaceEncoder
     SEMANTIC_ROUTER_AVAILABLE = True
-except Exception as exc:  # optional dependency
+except Exception as exc:
     SEMANTIC_ROUTER_IMPORT_ERROR = exc
-    logger.warning("Semantic Router unavailable; rules and AI fallback remain active: %s", exc)
+    logger.warning("Semantic Router unavailable: %s", exc)
 
 
 @dataclass
@@ -132,12 +131,12 @@ class RoutingDecision:
 try:
     from app.services.dn_analysis import DNAnalysisService
     DN_ANALYSIS_AVAILABLE = True
-    logger.info("✅ DNAnalysisService imported successfully")
+    logger.info("✅ DNAnalysisService imported")
 except Exception as exc:
     logger.exception("Unable to import DNAnalysisService: %s", exc)
     DN_ANALYSIS_AVAILABLE = False
 
-    class DNAnalysisService:  # type: ignore[no-redef]
+    class DNAnalysisService:
         def get_dn_dashboard(self, dn_no: str) -> Dict[str, Any]:
             return {"success": False, "whatsapp_message": "⚠️ DN service is temporarily unavailable.", "error": "DN service unavailable"}
 
@@ -155,12 +154,12 @@ except Exception as exc:
 try:
     from app.services.dealer_analytics_service import DealerAnalyticsService
     DEALER_ANALYTICS_AVAILABLE = True
-    logger.info("✅ DealerAnalyticsService imported successfully")
+    logger.info("✅ DealerAnalyticsService imported")
 except Exception as exc:
     logger.exception("Unable to import DealerAnalyticsService: %s", exc)
     DEALER_ANALYTICS_AVAILABLE = False
 
-    class DealerAnalyticsService:  # type: ignore[no-redef]
+    class DealerAnalyticsService:
         async def get_dealer_dashboard(self, dealer_name: str) -> Dict[str, Any]:
             return {"success": False, "whatsapp_message": "⚠️ Dealer service is temporarily unavailable.", "error": "Dealer service unavailable"}
 
@@ -169,12 +168,12 @@ except Exception as exc:
 try:
     from app.services.city_service import CityAnalyticsService
     CITY_SERVICE_AVAILABLE = True
-    logger.info("✅ CityAnalyticsService with Menu imported successfully")
+    logger.info("✅ CityAnalyticsService with Menu imported")
 except Exception as exc:
     logger.exception("Unable to import CityAnalyticsService: %s", exc)
     CITY_SERVICE_AVAILABLE = False
 
-    class CityAnalyticsService:  # type: ignore[no-redef]
+    class CityAnalyticsService:
         def get_city_dashboard(self, city_name: str = "", **kwargs: Any) -> Dict[str, Any]:
             return {"success": False, "whatsapp_message": "⚠️ City service is temporarily unavailable.", "error": "City service unavailable"}
         
@@ -189,21 +188,18 @@ except Exception as exc:
                 "data": {},
                 "exit_menu": True
             }
-        
-        def process_whatsapp_query(self, message: str, sender: str = "default") -> str:
-            return "⚠️ City service is temporarily unavailable. Please try again later."
 
 
 # Product Service
 try:
     from app.services.product_service import ProductService
     PRODUCT_SERVICE_AVAILABLE = True
-    logger.info("✅ ProductService imported successfully")
+    logger.info("✅ ProductService imported")
 except Exception as exc:
     logger.exception("Unable to import ProductService: %s", exc)
     PRODUCT_SERVICE_AVAILABLE = False
 
-    class ProductService:  # type: ignore[no-redef]
+    class ProductService:
         async def get_product_dashboard(self, product: str) -> Dict[str, Any]:
             return {"success": False, "whatsapp_message": "⚠️ Product service is temporarily unavailable.", "error": "Product service unavailable"}
 
@@ -212,12 +208,12 @@ except Exception as exc:
 try:
     from app.services.national_kpi_service import NationalKPIService
     NATIONAL_KPI_AVAILABLE = True
-    logger.info("✅ NationalKPIService imported successfully")
+    logger.info("✅ NationalKPIService imported")
 except Exception as exc:
     logger.exception("Unable to import NationalKPIService: %s", exc)
     NATIONAL_KPI_AVAILABLE = False
 
-    class NationalKPIService:  # type: ignore[no-redef]
+    class NationalKPIService:
         async def get_national_kpi(self) -> Dict[str, Any]:
             return {"success": False, "whatsapp_message": "⚠️ National KPI service is temporarily unavailable.", "error": "National KPI service unavailable"}
 
@@ -226,12 +222,12 @@ except Exception as exc:
 try:
     from app.services.groq_service import GroqService
     GROQ_SERVICE_AVAILABLE = True
-    logger.info("✅ GroqService imported successfully")
+    logger.info("✅ GroqService imported")
 except Exception as exc:
     logger.exception("Unable to import GroqService: %s", exc)
     GROQ_SERVICE_AVAILABLE = False
 
-    class GroqService:  # type: ignore[no-redef]
+    class GroqService:
         async def process_query(self, message: str, entities: Dict[str, Any]) -> str:
             return get_main_menu()
 
@@ -241,76 +237,16 @@ except Exception as exc:
 # =====================================================================================================================
 
 MENU_OPTIONS: Dict[str, Dict[str, Any]] = {
-    "0": {
-        "name": "Main Menu", 
-        "service_key": "menu_service", 
-        "service_file": "ai_provider_service.py", 
-        "method": "show_main_menu", 
-        "requires_ai": False
-    },
-    "1": {
-        "name": "DN Delivery", 
-        "service_key": "dn_analysis", 
-        "service_file": "dn_analysis.py", 
-        "method": "get_dn_dashboard", 
-        "requires_ai": False
-    },
-    "2": {
-        "name": "Dealer Analytics", 
-        "service_key": "dealer_analytics", 
-        "service_file": "dealer_analytics_service.py", 
-        "method": "get_dealer_dashboard", 
-        "requires_ai": False
-    },
-    "3": {
-        "name": "City Analytics", 
-        "service_key": "city_menu", 
-        "service_file": "city_service.py", 
-        "method": "get_city_menu", 
-        "requires_ai": False
-    },
-    "4": {
-        "name": "Warehouse Dashboard", 
-        "service_key": "dn_analysis", 
-        "service_file": "dn_analysis.py", 
-        "method": "get_warehouse_dashboard", 
-        "requires_ai": False
-    },
-    "5": {
-        "name": "Product Analytics", 
-        "service_key": "product_service", 
-        "service_file": "product_service.py", 
-        "method": "get_product_dashboard", 
-        "requires_ai": False
-    },
-    "6": {
-        "name": "National KPI", 
-        "service_key": "national_kpi_service", 
-        "service_file": "national_kpi_service.py", 
-        "method": "get_national_kpi", 
-        "requires_ai": False
-    },
-    "7": {
-        "name": "Pending DN", 
-        "service_key": "dn_analysis", 
-        "service_file": "dn_analysis.py", 
-        "method": "get_pending_dns", 
-        "requires_ai": False
-    },
-    "8": {
-        "name": "Top Performers", 
-        "service_key": "dn_analysis", 
-        "service_file": "dn_analysis.py", 
-        "method": "get_top_performers", 
-        "requires_ai": False
-    },
-    "9": {
-        "name": "AI Query", 
-        "service_key": "groq_service", 
-        "service_file": "groq_service.py", 
-        "method": "process_query", 
-        "requires_ai": True
-    },
+    "0": {"name": "Main Menu", "service_key": "menu_service", "service_file": "ai_provider_service.py", "method": "show_main_menu", "requires_ai": False},
+    "1": {"name": "DN Delivery", "service_key": "dn_analysis", "service_file": "dn_analysis.py", "method": "get_dn_dashboard", "requires_ai": False},
+    "2": {"name": "Dealer Analytics", "service_key": "dealer_analytics", "service_file": "dealer_analytics_service.py", "method": "get_dealer_dashboard", "requires_ai": False},
+    "3": {"name": "City Analytics", "service_key": "city_menu", "service_file": "city_service.py", "method": "get_city_menu", "requires_ai": False},
+    "4": {"name": "Warehouse Dashboard", "service_key": "dn_analysis", "service_file": "dn_analysis.py", "method": "get_warehouse_dashboard", "requires_ai": False},
+    "5": {"name": "Product Analytics", "service_key": "product_service", "service_file": "product_service.py", "method": "get_product_dashboard", "requires_ai": False},
+    "6": {"name": "National KPI", "service_key": "national_kpi_service", "service_file": "national_kpi_service.py", "method": "get_national_kpi", "requires_ai": False},
+    "7": {"name": "Pending DN", "service_key": "dn_analysis", "service_file": "dn_analysis.py", "method": "get_pending_dns", "requires_ai": False},
+    "8": {"name": "Top Performers", "service_key": "dn_analysis", "service_file": "dn_analysis.py", "method": "get_top_performers", "requires_ai": False},
+    "9": {"name": "AI Query", "service_key": "groq_service", "service_file": "groq_service.py", "method": "process_query", "requires_ai": True},
 }
 
 INTENT_TO_MENU = {
@@ -364,10 +300,6 @@ CITY_NAMES = (
     "faisalabad", "bahawalpur", "sukkur", "mansehra", "haripur", "dg khan",
     "dera ghazi khan", "gwadar", "rahim yar khan"
 )
-
-# =====================================================================================================================
-# ENHANCED DEALER SUFFIXES FOR BETTER EXTRACTION
-# =====================================================================================================================
 
 DEALER_SUFFIXES = (
     "electronics", "traders", "distributors", "foods", "group", "pvt", "ltd",
@@ -437,7 +369,6 @@ def _extract_whatsapp_message(result: Any) -> str:
             elif hasattr(data, "__str__"):
                 return str(data)
         
-        # Convert dict to readable format
         lines = []
         for key, value in result.items():
             if key not in ["whatsapp_message", "formatted_response", "message", "response", "data", "metadata", "success", "error"]:
@@ -464,7 +395,6 @@ def _extract_whatsapp_message(result: Any) -> str:
 
 def _extract_dealer_name(text: str) -> Optional[str]:
     """Enhanced dealer name extraction."""
-    # First try: Dealer with suffix
     for suffix in DEALER_SUFFIXES:
         pattern = rf'([\w&.\'\- ]{{2,}}?\s*{suffix}\s*[\w&.\'\- ]*)'
         match = re.search(pattern, text, re.IGNORECASE)
@@ -473,7 +403,6 @@ def _extract_dealer_name(text: str) -> Optional[str]:
             if len(name) > 2:
                 return name
     
-    # Second try: Company-like names
     company_patterns = [
         r'(?:dealer|show|get|view)\s+([\w&.\'\- ]{3,})',
         r'([\w&.\'\- ]{3,}?(?:digital|technologies|systems|solutions|services|logistics))',
@@ -488,7 +417,6 @@ def _extract_dealer_name(text: str) -> Optional[str]:
             if len(name) > 2:
                 return name
     
-    # Third try: Any capitalized phrase with 2+ words
     match = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)', text)
     if match:
         return match.group(1).strip()
@@ -500,12 +428,10 @@ def _extract_city_name(text: str) -> Optional[str]:
     """Enhanced city name extraction."""
     lowered = text.casefold()
     
-    # Check exact city names first
     for city in CITY_NAMES:
         if city in lowered:
             return city.title()
     
-    # Check for "city" keyword
     match = re.search(r'(?:city|town|location)\s+([\w&.\'\- ]{2,})', text, re.IGNORECASE)
     if match:
         return match.group(1).strip().title()
@@ -518,7 +444,6 @@ def _extract_city_name(text: str) -> Optional[str]:
 # =====================================================================================================================
 
 def _is_valid_dn(dn: str) -> bool:
-    """Validate DN number (8-12 digits)."""
     if not dn:
         return False
     cleaned = re.sub(r'[\s-]', '', dn)
@@ -526,7 +451,6 @@ def _is_valid_dn(dn: str) -> bool:
 
 
 def _format_dn_message(dn: str) -> str:
-    """Format DN number for display."""
     if not dn:
         return "Unknown"
     cleaned = re.sub(r'[\s-]', '', dn)
@@ -538,7 +462,6 @@ def _format_dn_message(dn: str) -> str:
 # =====================================================================================================================
 
 class CityMenuSessionState:
-    """Track city menu state per session"""
     def __init__(self):
         self.is_active = False
         self.session_id = "default"
@@ -547,7 +470,7 @@ class CityMenuSessionState:
 
 
 # =====================================================================================================================
-# MAIN AI PROVIDER SERVICE - DIRECT ROUTING TO EACH FILE
+# MAIN AI PROVIDER SERVICE - COMPLETE ROUTING
 # =====================================================================================================================
 
 class AIProviderService:
@@ -565,7 +488,6 @@ class AIProviderService:
         if getattr(self, "_initialized", False):
             return
 
-        # Initialize all services
         self.dn_service = DNAnalysisService()
         self.dealer_service = DealerAnalyticsService()
         self.city_service = CityAnalyticsService() if CITY_SERVICE_AVAILABLE else None
@@ -589,7 +511,7 @@ class AIProviderService:
             except Exception as e:
                 logger.warning(f"⚠️ Failed to connect to Bootstrap Service: {e}")
         
-        logger.info("AIProviderService initialized with direct routing")
+        logger.info("AIProviderService initialized with COMPLETE routing")
         logger.info("  Menu 0 → Main Menu (ai_provider_service.py)")
         logger.info("  Menu 1 → DN Analysis (dn_analysis.py)")
         logger.info("  Menu 2 → Dealer Analytics (dealer_analytics_service.py)")
@@ -654,7 +576,6 @@ class AIProviderService:
 
     @staticmethod
     def _extract_entities(text: str) -> Dict[str, Any]:
-        """Enhanced entity extraction."""
         entities: Dict[str, Any] = {}
         
         dn = AIProviderService._extract_dn(text)
@@ -710,7 +631,6 @@ class AIProviderService:
 
     @staticmethod
     def _rule_intent(message: str) -> Optional[str]:
-        """Rule-based intent detection."""
         text = message.casefold()
         rules = (
             (r"\b(?:pending\s+pod|proof of delivery pending)\b", "pending_pod"),
@@ -767,7 +687,7 @@ class AIProviderService:
             return decision
 
         # =====================================================================================================================
-        # ROUTING PRIORITY ORDER - Direct to each service file
+        # CRITICAL: ROUTING PRIORITY ORDER
         # =====================================================================================================================
 
         # 1. Empty message → Show menu
@@ -776,58 +696,114 @@ class AIProviderService:
             self._cache[cache_key] = (time.monotonic(), decision)
             return decision
 
-        # 2. EXACT menu keywords → Show menu
+        # 2. EXACT "City Analytics" → Show City Menu (CRITICAL FIX)
+        if normalized.casefold() == "city analytics":
+            state.is_active = True
+            decision = RoutingDecision(
+                intent="city_menu",
+                confidence=1.0,
+                service_key="city_menu",
+                service_file="city_service.py",
+                method="get_city_menu",
+                entity={},
+                requires_ai=False,
+                reason="Exact 'City Analytics' text detected",
+                original_message=message,
+                menu_option="3",
+            )
+            self._cache[cache_key] = (time.monotonic(), decision)
+            return decision
+
+        # 3. EXACT menu keywords → Show main menu
         if normalized.casefold() in {"menu", "main menu", "options", "help"}:
             decision = self._decision_for_menu("0", message, reason="Menu keyword detected")
             self._cache[cache_key] = (time.monotonic(), decision)
             return decision
 
-        # 3. DN Number (8-12 digits) → DN Analysis (dn_analysis.py)
+        # 4. Menu Number (0-9) → Direct to specific service (HIGHEST PRIORITY)
+        if (number := self._menu_number(normalized)) is not None:
+            if number == "3":
+                state.is_active = True
+                decision = RoutingDecision(
+                    intent="city_menu",
+                    confidence=1.0,
+                    service_key="city_menu",
+                    service_file="city_service.py",
+                    method="get_city_menu",
+                    entity={},
+                    requires_ai=False,
+                    reason="Menu number 3 selected - City Menu",
+                    original_message=message,
+                    menu_option="3",
+                )
+            else:
+                decision = self._decision_for_menu(number, message, reason=f"Menu number {number} selected")
+            self._cache[cache_key] = (time.monotonic(), decision)
+            return decision
+
+        # 5. DN Number (8-12 digits) → DN Analysis
         if (dn := self._extract_dn(normalized)):
             entities = {"dn": dn, "dn_number": dn, "id": dn}
             decision = self._decision_for_menu("1", message, entities, "dn_lookup", reason="DN number detected")
             self._cache[cache_key] = (time.monotonic(), decision)
             return decision
 
-        # 4. Menu Number (0-9) → Direct to specific service file
-        if (number := self._menu_number(normalized)) is not None:
-            if number == "3":
-                state.is_active = True
-            decision = self._decision_for_menu(number, message, reason=f"Menu number {number} selected")
-            self._cache[cache_key] = (time.monotonic(), decision)
-            return decision
-
-        # 5. Extract entities for natural language routing
+        # 6. Extract entities for natural language routing
         entities = self._extract_entities(normalized)
 
-        # 6. Greeting detection
+        # 7. Greeting detection
         if normalized.casefold() in {"hello", "hi", "salam", "hey", "good morning", "good evening"}:
             decision = self._decision_for_menu("0", message, entities, "greeting", reason="Greeting detected")
             self._cache[cache_key] = (time.monotonic(), decision)
             return decision
 
-        # 7. City menu request → Open City Menu (city_service.py)
+        # 8. City menu request
         if normalized.casefold() in {"city menu", "show city menu", "city options"}:
             state.is_active = True
-            decision = self._decision_for_menu("3", message, entities, "city_menu", reason="City menu requested")
+            decision = RoutingDecision(
+                intent="city_menu",
+                confidence=1.0,
+                service_key="city_menu",
+                service_file="city_service.py",
+                method="get_city_menu",
+                entity=entities,
+                requires_ai=False,
+                reason="City menu keyword detected",
+                original_message=message,
+                menu_option="3",
+            )
             self._cache[cache_key] = (time.monotonic(), decision)
             return decision
 
-        # 8. Entity-based routing (MOST IMPORTANT FOR NATURAL LANGUAGE)
+        # 9. Entity-based routing (NATURAL LANGUAGE)
         if "dealer" in entities or "dealer_name" in entities:
-            # → Dealer Analytics (dealer_analytics_service.py)
             decision = self._decision_for_menu("2", message, entities, "dealer_dashboard", reason="Dealer entity detected")
         elif "city" in entities or "city_name" in entities:
-            # → City Analytics (city_service.py)
-            decision = self._decision_for_menu("3", message, entities, "city_dashboard", reason="City entity detected")
+            city_name = entities.get("city_name") or entities.get("city")
+            # Validate it's a real city name
+            if city_name and city_name.lower() in [c.lower() for c in CITY_NAMES]:
+                decision = self._decision_for_menu("3", message, entities, "city_dashboard", reason="Valid city name detected")
+            else:
+                # If it's just "City" without a valid name, show menu
+                state.is_active = True
+                decision = RoutingDecision(
+                    intent="city_menu",
+                    confidence=0.8,
+                    service_key="city_menu",
+                    service_file="city_service.py",
+                    method="get_city_menu",
+                    entity=entities,
+                    requires_ai=False,
+                    reason="City keyword without valid city name - showing menu",
+                    original_message=message,
+                    menu_option="3",
+                )
         elif "warehouse" in entities:
-            # → Warehouse Dashboard (dn_analysis.py)
             decision = self._decision_for_menu("4", message, entities, "warehouse_dashboard", reason="Warehouse entity detected")
         elif "product" in entities:
-            # → Product Analytics (product_service.py)
             decision = self._decision_for_menu("5", message, entities, "product_dashboard", reason="Product entity detected")
         else:
-            # 9. Semantic routing fallback
+            # 10. Semantic routing fallback
             intent = self._rule_intent(normalized)
             confidence = 1.0 if intent else 0.0
             if intent is None:
@@ -836,7 +812,7 @@ class AIProviderService:
             if menu_option and confidence >= 0.30:
                 decision = self._decision_for_menu(menu_option, message, entities, intent, confidence, "Semantic route matched")
             else:
-                # 10. AI Query as last resort (groq_service.py)
+                # 11. AI Query as last resort
                 decision = self._decision_for_menu("9", message, entities or {"message": message}, "general_ai", max(confidence, 0.30), "AI fallback")
 
         self._cache[cache_key] = (time.monotonic(), decision)
@@ -854,7 +830,6 @@ class AIProviderService:
         sender_id: Optional[str] = None,
         **_: Any,
     ) -> str:
-        """Process WhatsApp query and return formatted response. ALWAYS returns a string."""
         sender = sender or sender_id or "default"
         if not message or not message.strip():
             return get_main_menu()
@@ -865,10 +840,6 @@ class AIProviderService:
         decision = self._make_routing_decision(message, sender)
         logger.info("Route: %s -> %s.%s (%s)", decision.intent, decision.service_file, decision.method, decision.reason)
         logger.info("Entities: %s", decision.entity)
-
-        # =====================================================================================================================
-        # HANDLE EACH SERVICE
-        # =====================================================================================================================
 
         # Menu Service
         if decision.service_key == "menu_service":
@@ -909,8 +880,12 @@ class AIProviderService:
                 if decision.method == "get_city_menu":
                     # Show the full City Analytics Menu
                     if hasattr(service, "get_city_menu"):
-                        return service.get_city_menu()
-                    return "🏙️ City Analytics Menu\n\n0. Main Menu\n99. Back"
+                        menu = service.get_city_menu()
+                        # Ensure menu is displayed
+                        if not menu or menu.strip() == "":
+                            return "🏙️ City Analytics Menu\n\n0. Main Menu\n1. City Dashboard\n2. City Revenue\n3. City Units\n4. City Pending\n5. City Delivery\n6. Compare Cities\n7. City Rankings\n8. Top Products\n9. Business Score\n10. Distance Info\n11. Growth Analytics\n12. City Summary\n99. Back to Main"
+                        return menu
+                    return "🏙️ City Analytics Menu\n\n0. Main Menu\n1. City Dashboard\n2. City Revenue\n3. City Units\n4. City Pending\n5. City Delivery\n6. Compare Cities\n7. City Rankings\n8. Top Products\n9. Business Score\n10. Distance Info\n11. Growth Analytics\n12. City Summary\n99. Back to Main"
                 else:
                     # Process city menu input (sub-menu navigation)
                     user_input = decision.entity.get("user_input", message)
