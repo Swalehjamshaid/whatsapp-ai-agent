@@ -1,24 +1,26 @@
-
 """
 File: app/services/dn_analysis.py
-Version: 17.0 - ENTERPRISE DN DOMAIN AI EXPERT WITH FULL MENU
+Version: 18.0 - ENTERPRISE DN DOMAIN AI EXPERT WITH FULL QUESTION SUPPORT
+
 Purpose: Answer ANY DN-related business question through a single entry point
          PostgreSQL is the ONLY source of truth.
-         Full menu system with 15+ options, sub-menus, and AI-powered queries
+         
+SUPPORTS 100+ DN QUESTIONS:
+- Dashboard: Show DN, DN details, DN overview
+- Status: DN status, delivery status, PGI status, POD status
+- History: DN history, delivery history, tracking history
+- Timeline: DN timeline, chronological view
+- Transit: Transit analysis, travel time, distance
+- Pending: Pending DNs, pending PGI, pending POD
+- Delayed: Delayed DNs, overdue DNs, SLA breaches
+- Recent: Recent DNs, latest DNs
+- Search: Search DNs by number, customer, warehouse
+- Comparison: Compare DNs, DN vs DN
+- Ranking: Top DNs by revenue, units, etc.
+- Analytics: DN aging, delivery performance, trends
+- AI Insights: Recommendations, root cause analysis
 
-NEW FEATURES:
-- ✅ Complete Menu System (press 1 from main menu)
-- ✅ 15+ DN Analytics Options with sub-menus
-- ✅ DN Selection Prompts
-- ✅ Comparison Flow (2 DNs)
-- ✅ Ranking Display with Medals
-- ✅ Quick Commands Support
-- ✅ Context Memory
-- ✅ Dynamic Menu Rendering
-- ✅ WhatsApp-Optimized Formatting
-- ✅ AI-Powered Natural Language Queries
-
-Status: PRODUCTION READY
+Status: ENTERPRISE READY
 """
 
 from __future__ import annotations
@@ -95,6 +97,7 @@ CACHE_TTL = max(60, int(os.getenv("DN_ANALYTICS_CACHE_TTL", "300")))
 USE_SEMANTIC_SEARCH = os.getenv("USE_SEMANTIC_SEARCH", "true").lower() == "true"
 USE_AI_EXPLANATION = os.getenv("USE_AI_EXPLANATION", "true").lower() == "true"
 DN_DELAY_THRESHOLD_DAYS = int(os.getenv("DN_DELAY_THRESHOLD_DAYS", "7"))
+SLA_TARGET_DAYS = int(os.getenv("DN_SLA_TARGET_DAYS", "3"))
 TABLE: str = "delivery_reports"
 SEPARATOR: str = "────────────────────"
 
@@ -134,6 +137,7 @@ WAREHOUSE_COORDINATES: dict[str, tuple[float, float]] = {
 DN_ALIASES: dict[str, str] = {
     "dn": "delivery note",
     "dns": "delivery notes",
+    "delivery note": "dn",
 }
 
 # ============================================================
@@ -156,6 +160,20 @@ class IntentType(Enum):
     SEARCH = "search"
     COMPARISON = "comparison"
     RANK = "rank"
+    TREND = "trend"
+    FORECAST = "forecast"
+    INSIGHTS = "insights"
+    RECOMMENDATIONS = "recommendations"
+    ROOT_CAUSE = "root_cause"
+    SLA = "sla"
+    AGING = "aging"
+    DISTANCE = "distance"
+    REVENUE = "revenue"
+    UNITS = "units"
+    CUSTOMER = "customer"
+    WAREHOUSE = "warehouse"
+    DEALER = "dealer"
+    CITY = "city"
     MENU = "menu"
     UNKNOWN = "unknown"
 
@@ -164,6 +182,7 @@ class MenuState(Enum):
     MAIN = "main"
     DN_SELECTION = "dn_selection"
     COMPARISON_SELECTION = "comparison_selection"
+    ANALYTICS = "analytics"
     EXECUTING = "executing"
 
 class ResponseFormat(Enum):
@@ -177,6 +196,7 @@ class ResponseFormat(Enum):
     COMPARISON = "comparison"
     RANKING = "ranking"
     METRIC = "metric"
+    TIMELINE = "timeline"
 
 # ============================================================
 # BLOCK 5: DATACLASSES
@@ -195,6 +215,8 @@ class DNContext:
     comparison_dns: List[str] = field(default_factory=list)
     awaiting_dn: bool = False
     awaiting_comparison: bool = False
+    last_analytics: Optional[Dict[str, Any]] = None
+    search_results: Optional[List[Dict[str, Any]]] = None
     
     def set_dn(self, dn: str) -> None:
         self.current_dn = dn
@@ -212,6 +234,8 @@ class DNContext:
         self.comparison_dns = []
         self.awaiting_dn = False
         self.awaiting_comparison = False
+        self.last_analytics = None
+        self.search_results = None
 
 @dataclass
 class QueryPlan:
@@ -323,8 +347,33 @@ def _serialise(value: Any) -> Any:
         return str(value)
     return value
 
+def _format_duration_days(days: float) -> str:
+    """Format duration in days with proper pluralization"""
+    if days < 0:
+        return "0 Days"
+    if days == 0:
+        return "0 Days"
+    if days == 1:
+        return "1 Day"
+    return f"{int(days)} Days"
+
+def _get_status_emoji(status: str) -> str:
+    """Get emoji for status"""
+    status_map = {
+        "Delivered": "✅",
+        "Completed": "✅",
+        "In Transit": "🚚",
+        "Pending PGI": "⏳",
+        "Pending POD": "📋",
+        "Pending DN": "📦",
+        "Delayed": "⚠️",
+        "Overdue": "🚨",
+        "SLA Breach": "🚨",
+    }
+    return status_map.get(status, "📊")
+
 # ============================================================
-# BLOCK 7: MENU SYSTEM
+# BLOCK 7: ENHANCED MENU SYSTEM
 # ============================================================
 
 class DNMenuRenderer:
@@ -349,12 +398,21 @@ class DNMenuRenderer:
             "10. Recent DN",
             "11. Search DN",
             "12. Compare DN",
+            "13. DN Rankings",
+            "14. DN Insights",
+            "15. SLA Compliance",
+            "16. Aging Analysis",
+            "17. DN Trends",
+            "18. DN Forecast",
+            "19. AI Recommendations",
             "99. Back to Main",
             "",
             "📌 *Quick Commands:*",
             "• Type DN number for dashboard",
             "• Compare [DN1] [DN2]",
             "• Search [keyword]",
+            "• Status of [DN]",
+            "• Where is [DN]",
             "",
             "Reply with a number or DN number:"
         ])
@@ -389,16 +447,25 @@ class DNMenuRenderer:
     @staticmethod
     def render_dn_dashboard(dn_no: str, data: Dict[str, Any]) -> str:
         """Render DN dashboard"""
+        status = data.get('computed_delivery_status', 'Unknown')
+        status_emoji = _get_status_emoji(status)
+        
         lines = [
             f"📦 *DN Dashboard - {dn_no}*",
             "",
+            f"{status_emoji} *Status:* {status}",
+            "",
             "📊 *Key Information*",
             f"Customer: {data.get('customer_name', 'N/A')}",
-            f"Status: {data.get('computed_delivery_status', 'N/A')}",
-            f"Units: {data.get('total_units', 0):,}",
-            f"Revenue: PKR {float(data.get('total_revenue', 0)):,.2f}",
+            f"Dealer: {data.get('dealer_code', 'N/A')}",
             f"Warehouse: {data.get('warehouse', 'N/A')}",
             f"City: {data.get('ship_to_city', 'N/A')}",
+            f"Division: {data.get('division', 'N/A')}",
+            "",
+            "💰 *Financials*",
+            f"Revenue: PKR {float(data.get('total_revenue', 0)):,.2f}",
+            f"Units: {data.get('total_units', 0):,}",
+            f"Avg Price: PKR {float(data.get('total_revenue', 0)) / max(1, data.get('total_units', 0)):,.2f}",
             "",
             "📅 *Dates*",
             f"Created: {_format_date(data.get('dn_create_date'))}",
@@ -416,41 +483,52 @@ class DNMenuRenderer:
             f"Distance: {data.get('distance_km', 'N/A')} KM",
             f"Est. Time: {data.get('estimated_delivery_time', 'N/A')}",
             "",
+            "📋 *Details*",
+            f"Materials: {data.get('material_count', 0):,}",
+            f"Models: {data.get('model_count', 0):,}",
+            "",
             "━━━━━━━━━━━━━━━━━━",
             "",
             "0. Main Menu",
-            "99. Back to Main"
+            "99. Back to Main",
+            "",
+            "📌 *Try:* 'Status {dn_no}' or 'History {dn_no}'"
         ]
         return "\n".join(lines)
     
     @staticmethod
     def render_dn_status(dn_no: str, data: Dict[str, Any]) -> str:
         """Render DN status"""
-        status_emoji = {
-            "Delivered": "✅",
-            "Completed": "✅",
-            "In Transit": "🚚",
-            "Pending PGI": "⏳",
-            "Pending POD": "📋",
-            "Pending DN": "📦",
-            "Delayed": "⚠️"
-        }.get(data.get('computed_delivery_status', ''), "📊")
+        status = data.get('computed_delivery_status', 'Unknown')
+        status_emoji = _get_status_emoji(status)
         
-        return "\n".join([
+        lines = [
             f"📊 *DN {dn_no} - Status*",
             "",
-            f"{status_emoji} Status: {data.get('computed_delivery_status', 'Unknown')}",
-            f"👤 Customer: {data.get('customer_name', 'N/A')}",
-            f"📦 Units: {data.get('total_units', 0):,}",
-            f"💰 Revenue: PKR {float(data.get('total_revenue', 0)):,.2f}",
-            f"📅 Created: {_format_date(data.get('dn_create_date'))}",
+            f"{status_emoji} *{status}*",
             "",
+            "📋 *Status Details*",
+            f"Delivery Status: {data.get('delivery_status', 'N/A')}",
             f"PGI Status: {data.get('pgi_status', 'N/A')}",
             f"POD Status: {data.get('pod_status', 'N/A')}",
             "",
+            "📅 *Timeline*",
+            f"Created: {_format_date(data.get('dn_create_date'))}",
+            f"PGI: {_format_date(data.get('good_issue_date'))}",
+            f"POD: {_format_date(data.get('pod_date'))}",
+            "",
+            "⏱️ *Aging*",
+            f"DN Age: {data.get('dn_age', 0)} Days",
+            f"PGI Aging: {data.get('pgi_aging', 'N/A')} Days",
+            f"POD Aging: {data.get('pod_aging', 'N/A')} Days",
+            "",
+            f"👤 Customer: {data.get('customer_name', 'N/A')}",
+            f"🏭 Warehouse: {data.get('warehouse', 'N/A')}",
+            "",
             "0. Main Menu",
             "99. Back"
-        ])
+        ]
+        return "\n".join(lines)
     
     @staticmethod
     def render_dn_history(dn_no: str, events: List[Dict[str, Any]]) -> str:
@@ -459,32 +537,108 @@ class DNMenuRenderer:
             f"📋 *DN {dn_no} - History*",
             "",
             "📅 *Event Timeline:*",
+            "",
         ]
         
-        for event in events:
-            lines.append(f"  • {event.get('timestamp', 'N/A')} - {event.get('status', '')}: {event.get('description', '')}")
+        if not events:
+            lines.append("No history found for this DN.")
+        else:
+            for event in events:
+                timestamp = event.get('timestamp', 'N/A')
+                status = event.get('status', '')
+                description = event.get('description', '')
+                emoji = _get_status_emoji(status)
+                lines.append(f"{emoji} *{timestamp}* - {status}")
+                lines.append(f"   {description}")
+                lines.append("")
         
         lines.extend([
-            "",
             "0. Main Menu",
             "99. Back"
         ])
         return "\n".join(lines)
     
     @staticmethod
+    def render_dn_timeline(dn_no: str, events: List[Dict[str, Any]]) -> str:
+        """Render DN timeline with visual representation"""
+        lines = [
+            f"📅 *DN {dn_no} - Timeline*",
+            "",
+        ]
+        
+        if not events:
+            lines.append("No timeline found for this DN.")
+        else:
+            for i, event in enumerate(events):
+                timestamp = event.get('timestamp', 'N/A')
+                status = event.get('status', '')
+                description = event.get('description', '')
+                emoji = _get_status_emoji(status)
+                
+                # Visual timeline
+                if i == 0:
+                    prefix = "🟢 START"
+                elif i == len(events) - 1:
+                    prefix = "🏁 END"
+                else:
+                    prefix = "⬇️ STEP"
+                
+                lines.append(f"{prefix} {emoji} *{timestamp}*")
+                lines.append(f"   → {status}: {description}")
+                lines.append("")
+        
+        lines.extend([
+            "0. Main Menu",
+            "99. Back"
+        ])
+        return "\n".join(lines)
+    
+    @staticmethod
+    def render_transit_analysis(dn_no: str, data: Dict[str, Any]) -> str:
+        """Render transit analysis"""
+        lines = [
+            f"🚚 *Transit Analysis - DN {dn_no}*",
+            "",
+            "📍 *Route*",
+            f"Warehouse: {data.get('warehouse', 'N/A')}",
+            f"Delivery: {data.get('delivery_location', 'N/A')}",
+            f"City: {data.get('ship_to_city', 'N/A')}",
+            "",
+            "📏 *Distance*",
+            f"Distance: {data.get('distance_km', 'N/A')} KM",
+            f"Est. Time: {data.get('estimated_delivery_time', 'N/A')}",
+            f"Source: {data.get('distance_source', 'N/A')}",
+            "",
+            "⏱️ *Timing*",
+            f"Transit Days: {data.get('transit_days', 'N/A')}",
+            f"Delivery Days: {data.get('delivery_days', 'N/A')}",
+            "",
+            "0. Main Menu",
+            "99. Back"
+        ]
+        return "\n".join(lines)
+    
+    @staticmethod
     def render_pending_list(title: str, dns: List[Dict[str, Any]]) -> str:
         """Render pending DN list"""
         if not dns:
-            return f"📋 *{title}*\n\nNo pending DNs found."
+            return f"📋 *{title}*\n\n✅ No pending DNs found."
         
         lines = [f"📋 *{title}*", ""]
+        lines.append(f"Total: {len(dns)} pending DNs")
+        lines.append("")
+        
         for i, item in enumerate(dns[:10], 1):
             dn_no = item.get('dn_no', 'N/A')
             customer = item.get('customer_name', 'N/A')
             status = item.get('computed_delivery_status', 'N/A')
             created = _format_date(item.get('dn_create_date'))
-            lines.append(f"{i}. DN {dn_no} - {customer}")
-            lines.append(f"   Status: {status} | Created: {created}")
+            status_emoji = _get_status_emoji(status)
+            
+            lines.append(f"{i}. {status_emoji} *DN {dn_no}*")
+            lines.append(f"   Customer: {customer}")
+            lines.append(f"   Status: {status}")
+            lines.append(f"   Created: {created}")
             lines.append("")
         
         if len(dns) > 10:
@@ -522,6 +676,8 @@ class DNMenuRenderer:
         
         lines.extend([
             "",
+            "━━━━━━━━━━━━━━━━━━",
+            "",
             "0. Main Menu",
             "99. Back"
         ])
@@ -546,11 +702,15 @@ class DNMenuRenderer:
             v1 = metrics1.get(key, "N/A")
             v2 = metrics2.get(key, "N/A")
             
+            # Determine winner
             if isinstance(v1, str) and isinstance(v2, str):
                 try:
                     num1 = float(re.sub(r'[^\d.]', '', v1))
                     num2 = float(re.sub(r'[^\d.]', '', v2))
-                    winner = "✅" if num1 > num2 else "❌" if num1 < num2 else "➖"
+                    if key.lower() in ['pending', 'pending dn', 'delivery days', 'delivery days']:
+                        winner = "✅" if num1 < num2 else "❌" if num1 > num2 else "➖"
+                    else:
+                        winner = "✅" if num1 > num2 else "❌" if num1 < num2 else "➖"
                     lines.append(f"{key}: {v1} vs {v2} {winner}")
                 except:
                     lines.append(f"{key}: {v1} vs {v2}")
@@ -568,9 +728,152 @@ class DNMenuRenderer:
             "99. Back"
         ])
         return "\n".join(lines)
+    
+    @staticmethod
+    def render_sla_report(dns: List[Dict[str, Any]]) -> str:
+        """Render SLA compliance report"""
+        if not dns:
+            return "📋 *SLA Report*\n\nNo DNs found."
+        
+        total = len(dns)
+        compliant = sum(1 for dn in dns if dn.get('sla_compliant', False))
+        compliance_pct = _percent(compliant, total)
+        
+        lines = [
+            "📋 *SLA Compliance Report*",
+            "",
+            f"Total DNs: {total}",
+            f"Compliant: {compliant} ({compliance_pct:.1f}%)",
+            f"Breached: {total - compliant} ({100 - compliance_pct:.1f}%)",
+            "",
+            "📊 *Status Breakdown*",
+        ]
+        
+        # Group by status
+        status_counts = defaultdict(int)
+        for dn in dns:
+            status = dn.get('computed_delivery_status', 'Unknown')
+            status_counts[status] += 1
+        
+        for status, count in sorted(status_counts.items(), key=lambda x: x[1], reverse=True):
+            emoji = _get_status_emoji(status)
+            lines.append(f"{emoji} {status}: {count}")
+        
+        lines.extend([
+            "",
+            "0. Main Menu",
+            "99. Back"
+        ])
+        return "\n".join(lines)
+    
+    @staticmethod
+    def render_aging_report(data: Dict[str, Any]) -> str:
+        """Render aging report"""
+        lines = [
+            "📈 *DN Aging Analysis*",
+            "",
+            "📊 *Age Distribution*",
+        ]
+        
+        age_groups = data.get('age_groups', {})
+        for age_group, count in sorted(age_groups.items()):
+            lines.append(f"• {age_group}: {count}")
+        
+        lines.extend([
+            "",
+            "📋 *Summary*",
+            f"Total DNs: {data.get('total', 0)}",
+            f"Average Age: {data.get('average_age', 0):.1f} Days",
+            f"Max Age: {data.get('max_age', 0)} Days",
+            f"Min Age: {data.get('min_age', 0)} Days",
+            "",
+            "0. Main Menu",
+            "99. Back"
+        ])
+        return "\n".join(lines)
+    
+    @staticmethod
+    def render_insights(insights: List[str], recommendations: List[str]) -> str:
+        """Render insights and recommendations"""
+        lines = [
+            "💡 *DN Insights*",
+            "",
+        ]
+        
+        if insights:
+            lines.append("📊 *Key Findings*")
+            for insight in insights:
+                lines.append(f"• {insight}")
+            lines.append("")
+        
+        if recommendations:
+            lines.append("🎯 *Recommendations*")
+            for rec in recommendations:
+                lines.append(f"• {rec}")
+            lines.append("")
+        
+        lines.extend([
+            "0. Main Menu",
+            "99. Back"
+        ])
+        return "\n".join(lines)
+    
+    @staticmethod
+    def render_trends(trend_data: Dict[str, Any]) -> str:
+        """Render DN trends"""
+        lines = [
+            "📈 *DN Trends*",
+            "",
+        ]
+        
+        # Daily trends
+        daily = trend_data.get('daily', [])
+        if daily:
+            lines.append("📅 *Last 7 Days*")
+            for day in daily[:7]:
+                lines.append(f"• {day.get('date', 'N/A')}: {day.get('count', 0)} DNs, PKR {day.get('revenue', 0):,.2f}")
+            lines.append("")
+        
+        # Weekly trends
+        weekly = trend_data.get('weekly', [])
+        if weekly:
+            lines.append("📅 *Weekly Summary*")
+            for week in weekly[:4]:
+                lines.append(f"• Week {week.get('week', 'N/A')}: {week.get('count', 0)} DNs, PKR {week.get('revenue', 0):,.2f}")
+            lines.append("")
+        
+        # Growth
+        growth = trend_data.get('growth', 0)
+        lines.append(f"📈 *Growth Rate: {growth:+.1f}%*")
+        
+        lines.extend([
+            "",
+            "0. Main Menu",
+            "99. Back"
+        ])
+        return "\n".join(lines)
+    
+    @staticmethod
+    def render_forecast(forecast_data: Dict[str, Any]) -> str:
+        """Render forecast"""
+        lines = [
+            "🔮 *DN Forecast*",
+            "",
+            f"Expected DNs: {forecast_data.get('expected_count', 0):,}",
+            f"Expected Revenue: PKR {forecast_data.get('expected_revenue', 0):,.2f}",
+            f"Expected Units: {forecast_data.get('expected_units', 0):,}",
+            "",
+            "📊 *Confidence Interval*",
+            f"Lower Bound: {forecast_data.get('lower_bound', 0):,}",
+            f"Upper Bound: {forecast_data.get('upper_bound', 0):,}",
+            "",
+            "0. Main Menu",
+            "99. Back"
+        ])
+        return "\n".join(lines)
 
 # ============================================================
-# BLOCK 8: INTENT ENGINE
+# BLOCK 8: ENHANCED INTENT ENGINE
 # ============================================================
 
 class IntentEngine:
@@ -578,65 +881,154 @@ class IntentEngine:
     
     INTENT_PATTERNS = {
         IntentType.DASHBOARD: [
-            r"(?:show|display|get).*(?:dn|delivery note).*(?:dashboard|details)",
+            r"(?:show|display|get|view).*(?:dn|delivery note).*(?:dashboard|details|info)",
             r"dn\s+(\d{8,12})",
             r"delivery note\s+(\d{8,12})",
+            r"^(\d{8,12})$",
         ],
         IntentType.STATUS: [
             r"(?:status|state|current).*(?:dn|delivery note)",
             r"what.*status.*dn",
             r"dn status",
+            r"where is dn\s+(\d{8,12})",
+            r"track dn\s+(\d{8,12})",
         ],
         IntentType.HISTORY: [
-            r"(?:history|timeline|tracking).*(?:dn|delivery note)",
+            r"(?:history|tracking|timeline).*(?:dn|delivery note)",
             r"dn history",
-            r"what happened to dn",
+            r"what happened to dn\s+(\d{8,12})",
         ],
         IntentType.TIMELINE: [
             r"(?:timeline|sequence|chronology)",
             r"dn timeline",
+            r"show timeline for dn\s+(\d{8,12})",
         ],
         IntentType.TRANSIT: [
-            r"(?:transit|travel|journey).*(?:dn|delivery)",
+            r"(?:transit|travel|journey|route).*(?:dn|delivery)",
             r"transit time",
             r"travel time",
+            r"how far is dn\s+(\d{8,12})",
         ],
         IntentType.PENDING: [
             r"(?:pending|outstanding|backlog|overdue).*(?:dn|delivery)",
             r"pending dns",
-            r"undelivered",
+            r"undelivered dns",
+            r"all pending",
         ],
         IntentType.PGI: [
             r"(?:pgi|goods issue).*(?:pending|status)",
             r"pending pgi",
+            r"pgi not done",
         ],
         IntentType.POD: [
-            r"(?:pod|proof of delivery).*(?:pending|status)",
+            r"(?:pod|proof of delivery).*(?:pending|status|missing)",
             r"pending pod",
+            r"pod missing",
         ],
         IntentType.DELAYED: [
             r"(?:delayed|late|overdue|stuck).*(?:dn|delivery)",
             r"delayed dns",
+            r"overdue deliveries",
         ],
         IntentType.RECENT: [
             r"(?:recent|latest|new).*(?:dn|delivery)",
             r"recent dns",
+            r"latest dns",
         ],
         IntentType.SEARCH: [
-            r"(?:search|find|lookup).*(?:dn|delivery)",
+            r"(?:search|find|lookup).*(?:dn|delivery|customer|warehouse)",
             r"search dn",
             r"find dn",
+            r"lookup\s+([\w\s]+)",
         ],
         IntentType.COMPARISON: [
             r"compare\s+(\d+)\s+and\s+(\d+)",
-            r"vs",
+            r"dn\s+(\d+)\s+vs\s+(\d+)",
             r"comparison",
+            r"vs",
+        ],
+        IntentType.RANK: [
+            r"(?:top|best|highest).*(?:dn|delivery)",
+            r"dn ranking",
+            r"top dns",
+            r"best performing dns",
+        ],
+        IntentType.TREND: [
+            r"(?:trend|pattern|change).*(?:dn|delivery)",
+            r"dn trend",
+            r"delivery trend",
+        ],
+        IntentType.FORECAST: [
+            r"(?:forecast|predict|project).*(?:dn|delivery)",
+            r"dn forecast",
+            r"predict dns",
+        ],
+        IntentType.INSIGHTS: [
+            r"(?:insight|analytics|key findings).*(?:dn|delivery)",
+            r"dn insights",
+            r"what does dn data show",
+        ],
+        IntentType.RECOMMENDATIONS: [
+            r"(?:recommend|suggest|advice).*(?:dn|delivery)",
+            r"dn recommendations",
+            r"how to improve dns",
+        ],
+        IntentType.ROOT_CAUSE: [
+            r"why (?:is|are|was|were)\s+(\w+)\s+(?:delayed|late|pending)",
+            r"(?:reason|cause).*(?:delay|issue).*(?:dn|delivery)",
+            r"why is dn\s+(\d{8,12})\s+(?:delayed|late)",
+        ],
+        IntentType.SLA: [
+            r"(?:sla|service level).*(?:compliance|performance)",
+            r"sla compliance",
+            r"delivery sla",
+        ],
+        IntentType.AGING: [
+            r"(?:aging|age|aged).*(?:dn|delivery)",
+            r"dn aging",
+            r"oldest dns",
+            r"dn age analysis",
+        ],
+        IntentType.DISTANCE: [
+            r"(?:distance|how far).*(?:dn|delivery)",
+            r"distance from warehouse",
+        ],
+        IntentType.REVENUE: [
+            r"(?:revenue|amount).*(?:dn|delivery)",
+            r"dn revenue",
+            r"highest revenue dn",
+        ],
+        IntentType.UNITS: [
+            r"(?:units|quantity).*(?:dn|delivery)",
+            r"dn units",
+            r"highest units dn",
+        ],
+        IntentType.CUSTOMER: [
+            r"(?:customer).*(?:dn|delivery)",
+            r"dn customer",
+            r"customer dns",
+        ],
+        IntentType.WAREHOUSE: [
+            r"(?:warehouse).*(?:dn|delivery)",
+            r"dn warehouse",
+            r"warehouse dns",
+        ],
+        IntentType.DEALER: [
+            r"(?:dealer).*(?:dn|delivery)",
+            r"dn dealer",
+            r"dealer dns",
+        ],
+        IntentType.CITY: [
+            r"(?:city).*(?:dn|delivery)",
+            r"dn city",
+            r"city dns",
         ],
         IntentType.MENU: [
             r"menu",
             r"dn menu",
             r"options",
             r"help",
+            r"show menu",
         ],
     }
     
@@ -657,16 +1049,31 @@ class IntentEngine:
                         "show dn", "dn dashboard", "dn details", "delivery note"
                     ]),
                     Route(name="dn_status", utterances=[
-                        "dn status", "status of dn", "what's the status"
+                        "dn status", "status of dn", "what's the status", "where is dn"
                     ]),
                     Route(name="dn_history", utterances=[
                         "dn history", "history of dn", "track dn"
+                    ]),
+                    Route(name="dn_transit", utterances=[
+                        "transit time", "travel time", "how far", "distance"
                     ]),
                     Route(name="pending_dns", utterances=[
                         "pending dns", "pending deliveries", "overdue dns"
                     ]),
                     Route(name="dn_comparison", utterances=[
                         "compare dns", "dn vs dn", "comparison"
+                    ]),
+                    Route(name="dn_ranking", utterances=[
+                        "top dns", "dn ranking", "best dns"
+                    ]),
+                    Route(name="dn_trends", utterances=[
+                        "dn trends", "delivery trends", "patterns"
+                    ]),
+                    Route(name="dn_insights", utterances=[
+                        "dn insights", "analysis", "key findings"
+                    ]),
+                    Route(name="dn_recommendations", utterances=[
+                        "recommendations", "suggestions", "how to improve"
                     ]),
                 ]
                 self._semantic_router = Router(routes=routes, encoder=HuggingFaceEncoder())
@@ -725,11 +1132,11 @@ class IntentEngine:
                     best_intent = IntentType.PENDING
                     best_score = 0.5
                     break
-                elif keyword in ["status", "state"]:
+                elif keyword in ["status", "state", "where", "track"]:
                     best_intent = IntentType.STATUS
                     best_score = 0.5
                     break
-                elif keyword in ["history", "track"]:
+                elif keyword in ["history", "tracking", "happened"]:
                     best_intent = IntentType.HISTORY
                     best_score = 0.5
                     break
@@ -737,8 +1144,40 @@ class IntentEngine:
                     best_intent = IntentType.COMPARISON
                     best_score = 0.6
                     break
-                elif keyword in ["search", "find"]:
+                elif keyword in ["search", "find", "lookup"]:
                     best_intent = IntentType.SEARCH
+                    best_score = 0.5
+                    break
+                elif keyword in ["top", "ranking", "best"]:
+                    best_intent = IntentType.RANK
+                    best_score = 0.5
+                    break
+                elif keyword in ["transit", "travel", "distance", "far"]:
+                    best_intent = IntentType.TRANSIT
+                    best_score = 0.5
+                    break
+                elif keyword in ["trend", "pattern"]:
+                    best_intent = IntentType.TREND
+                    best_score = 0.5
+                    break
+                elif keyword in ["forecast", "predict"]:
+                    best_intent = IntentType.FORECAST
+                    best_score = 0.5
+                    break
+                elif keyword in ["insight", "analysis"]:
+                    best_intent = IntentType.INSIGHTS
+                    best_score = 0.5
+                    break
+                elif keyword in ["recommend", "suggest", "improve"]:
+                    best_intent = IntentType.RECOMMENDATIONS
+                    best_score = 0.5
+                    break
+                elif keyword in ["sla", "compliance"]:
+                    best_intent = IntentType.SLA
+                    best_score = 0.5
+                    break
+                elif keyword in ["aging", "age", "oldest"]:
+                    best_intent = IntentType.AGING
                     best_score = 0.5
                     break
         
@@ -748,7 +1187,7 @@ class IntentEngine:
         return best_intent, best_score
 
 # ============================================================
-# BLOCK 9: ENTITY EXTRACTION ENGINE
+# BLOCK 9: ENHANCED ENTITY EXTRACTION ENGINE
 # ============================================================
 
 class EntityEngine:
@@ -770,8 +1209,14 @@ class EntityEngine:
         entities = {
             "dn_numbers": [],
             "search_query": None,
+            "customer_name": None,
+            "warehouse": None,
+            "city": None,
+            "dealer": None,
             "limit": 20,
             "requires_comparison": False,
+            "requires_forecast": False,
+            "requires_trend": False,
         }
         
         # Extract DN numbers (8-12 digits)
@@ -790,6 +1235,34 @@ class EntityEngine:
         if search:
             entities["search_query"] = search
         
+        # Extract customer name
+        customer = self._extract_customer(question_lower)
+        if customer:
+            entities["customer_name"] = customer
+        
+        # Extract warehouse
+        warehouse = self._extract_warehouse(question_lower)
+        if warehouse:
+            entities["warehouse"] = warehouse
+        
+        # Extract city
+        city = self._extract_city(question_lower)
+        if city:
+            entities["city"] = city
+        
+        # Extract dealer
+        dealer = self._extract_dealer(question_lower)
+        if dealer:
+            entities["dealer"] = dealer
+        
+        # Check for forecast
+        if "forecast" in question_lower or "predict" in question_lower or "project" in question_lower:
+            entities["requires_forecast"] = True
+        
+        # Check for trend
+        if "trend" in question_lower or "pattern" in question_lower or "change" in question_lower:
+            entities["requires_trend"] = True
+        
         # Extract limit
         limit = self._extract_limit(question_lower)
         if limit:
@@ -802,15 +1275,14 @@ class EntityEngine:
     
     def _extract_dn_numbers(self, text: str) -> List[str]:
         """Extract DN numbers from text"""
-        # Match 8-12 digit numbers
         matches = re.findall(r'(?<!\d)(\d{8,12})(?!\d)', text)
         return matches
     
     def _extract_search_query(self, text: str) -> Optional[str]:
         """Extract search query from text"""
         patterns = [
-            r'(?:search|find|lookup)\s+([a-zA-Z0-9\s\-_]+)',
-            r'(?:for)\s+([a-zA-Z0-9\s\-_]+)',
+            r'(?:search|find|lookup|for)\s+([a-zA-Z0-9\s\-_]+)',
+            r'(?:customer|dealer|warehouse)\s+([a-zA-Z0-9\s\-_]+)',
         ]
         
         for pattern in patterns:
@@ -820,6 +1292,34 @@ class EntityEngine:
                 if query and len(query) > 2:
                     return query
         
+        return None
+    
+    def _extract_customer(self, text: str) -> Optional[str]:
+        """Extract customer name"""
+        match = re.search(r'(?:customer|cust)\s+([a-zA-Z0-9\s\-_]+)', text, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+        return None
+    
+    def _extract_warehouse(self, text: str) -> Optional[str]:
+        """Extract warehouse name"""
+        match = re.search(r'(?:warehouse|wh)\s+([a-zA-Z0-9\s\-_]+)', text, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+        return None
+    
+    def _extract_city(self, text: str) -> Optional[str]:
+        """Extract city name"""
+        match = re.search(r'(?:city|in)\s+([a-zA-Z\s]+)', text, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+        return None
+    
+    def _extract_dealer(self, text: str) -> Optional[str]:
+        """Extract dealer name"""
+        match = re.search(r'(?:dealer)\s+([a-zA-Z0-9\s\-_]+)', text, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
         return None
     
     def _extract_limit(self, text: str) -> Optional[int]:
@@ -922,7 +1422,7 @@ class DistanceService:
         return f"{whole_hours} Hours {minutes} Minutes" if minutes else f"{whole_hours} Hours"
 
 # ============================================================
-# BLOCK 11: DN DASHBOARD BUILDER
+# BLOCK 11: ENHANCED DN DASHBOARD BUILDER
 # ============================================================
 
 class DNDashboardBuilder:
@@ -1049,7 +1549,12 @@ class DNDashboardBuilder:
                 "dn_age": (today - dn_date).days if dn_date else None,
                 "transit_days": (pod_date - issue_date).days if issue_date and pod_date else None,
                 "delivery_days": (pod_date - dn_date).days if dn_date and pod_date else None,
+                "sla_compliant": self._check_sla_compliance(query, dn_date, issue_date, pod_date, today),
             }
+            
+            # Generate insights
+            dashboard["insights"] = self._generate_insights(dashboard)
+            dashboard["recommendations"] = self._generate_recommendations(dashboard)
             
             with self._lock:
                 self._cache[cache_key] = dashboard.copy()
@@ -1076,9 +1581,91 @@ class DNDashboardBuilder:
         if issue:
             return "In Transit"
         return "Pending DN"
+    
+    def _check_sla_compliance(self, query: Any, dn_date: date, issue: date, pod: date, today: date) -> bool:
+        """Check if DN meets SLA target"""
+        if not dn_date:
+            return True
+        if pod:
+            return (pod - dn_date).days <= SLA_TARGET_DAYS
+        if issue:
+            return (today - issue).days <= SLA_TARGET_DAYS
+        return (today - dn_date).days <= SLA_TARGET_DAYS
+    
+    def _generate_insights(self, dashboard: Dict[str, Any]) -> List[str]:
+        """Generate insights from dashboard"""
+        insights = []
+        
+        status = dashboard.get('computed_delivery_status', '')
+        dn_age = dashboard.get('dn_age', 0)
+        revenue = dashboard.get('total_revenue', 0)
+        units = dashboard.get('total_units', 0)
+        distance = dashboard.get('distance_km', 0)
+        transit = dashboard.get('transit_days', 0)
+        
+        if status == "Delivered" or status == "Completed":
+            insights.append("✅ DN is successfully delivered")
+        elif status == "Pending PGI":
+            insights.append("⏳ DN is pending PGI - needs warehouse action")
+        elif status == "Pending POD":
+            insights.append("📋 DN is pending POD - needs customer confirmation")
+        elif status == "Delayed":
+            insights.append(f"⚠️ DN is delayed by {dn_age - DN_DELAY_THRESHOLD_DAYS} days")
+        elif status == "In Transit":
+            insights.append("🚚 DN is in transit")
+        
+        if revenue > 1000000:
+            insights.append(f"💰 High value DN: PKR {revenue:,.2f}")
+        elif revenue > 500000:
+            insights.append(f"💰 Medium value DN: PKR {revenue:,.2f}")
+        
+        if units > 100:
+            insights.append(f"📦 Large order: {units} units")
+        elif units > 50:
+            insights.append(f"📦 Medium order: {units} units")
+        
+        if distance and distance > 500:
+            insights.append(f"📏 Long distance delivery: {distance} KM")
+        elif distance and distance > 200:
+            insights.append(f"📏 Medium distance delivery: {distance} KM")
+        
+        if transit and transit > 5:
+            insights.append(f"⏱️ Long transit time: {transit} days")
+        
+        return insights
+    
+    def _generate_recommendations(self, dashboard: Dict[str, Any]) -> List[str]:
+        """Generate recommendations"""
+        recommendations = []
+        
+        status = dashboard.get('computed_delivery_status', '')
+        dn_age = dashboard.get('dn_age', 0)
+        transit = dashboard.get('transit_days', 0)
+        distance = dashboard.get('distance_km', 0)
+        
+        if status == "Pending PGI":
+            recommendations.append("🏭 Fast-track PGI processing at warehouse")
+        elif status == "Pending POD":
+            recommendations.append("📋 Follow up with customer for POD submission")
+        elif status == "Delayed":
+            recommendations.append("🚨 Escalate delayed DN for priority handling")
+        elif status == "In Transit":
+            if transit and transit > 3:
+                recommendations.append("🚚 Track and expedite in-transit delivery")
+        
+        if distance and distance > 500:
+            recommendations.append("📏 Consider alternate routing for long distance")
+        
+        if dn_age and dn_age > 10:
+            recommendations.append("⚠️ Review DN aging and implement corrective actions")
+        
+        if not recommendations:
+            recommendations.append("✅ Maintain current delivery performance")
+        
+        return recommendations
 
 # ============================================================
-# BLOCK 12: RESPONSE FORMATTER
+# BLOCK 12: ENHANCED RESPONSE FORMATTER
 # ============================================================
 
 class ResponseFormatter:
@@ -1101,6 +1688,8 @@ class ResponseFormatter:
             return self._format_comparison(answer)
         elif answer.plan.format == ResponseFormat.RANKING:
             return self._format_ranking(answer)
+        elif answer.plan.format == ResponseFormat.TIMELINE:
+            return self._format_timeline(answer)
         else:
             return self._format_standard(answer)
     
@@ -1118,42 +1707,7 @@ class ResponseFormatter:
     def _format_standard(self, answer: DNAanswer) -> str:
         """Standard format"""
         dn = answer.plan.dn or "DN"
-        lines = [f"📦 *DN Dashboard - {dn}*"]
-        lines.append("")
-        lines.append(SEPARATOR)
-        lines.append("")
-        
-        for i, (metric_name, value) in enumerate(answer.metrics.items()):
-            if i > 0 and i % 5 == 0:
-                lines.append("")
-                lines.append(SEPARATOR)
-                lines.append("")
-            lines.append(f"{metric_name}: {value}")
-        
-        if answer.insights:
-            lines.append("")
-            lines.append(SEPARATOR)
-            lines.append("")
-            lines.append("💡 *Insights*")
-            for insight in answer.insights[:3]:
-                lines.append(f"• {insight}")
-        
-        if answer.recommendations:
-            lines.append("")
-            lines.append("🎯 *Recommendations*")
-            for rec in answer.recommendations[:2]:
-                lines.append(f"• {rec}")
-        
-        if answer.explanation:
-            lines.append("")
-            lines.append(SEPARATOR)
-            lines.append("")
-            lines.append(answer.explanation)
-        
-        lines.append("")
-        lines.append(f"Confidence: {answer.confidence:.0%}")
-        
-        return "\n".join(lines)
+        return self._menu_renderer.render_dn_dashboard(dn, answer.dashboard or {})
     
     def _format_executive(self, answer: DNAanswer) -> str:
         """Executive summary format"""
@@ -1168,6 +1722,18 @@ class ResponseFormatter:
         
         for metric_name, value in list(answer.metrics.items())[:5]:
             lines.append(f"• {metric_name}: {value}")
+        
+        if answer.insights:
+            lines.append("")
+            lines.append("💡 *Key Insights:*")
+            for insight in answer.insights[:2]:
+                lines.append(f"• {insight}")
+        
+        if answer.recommendations:
+            lines.append("")
+            lines.append("🎯 *Recommendations:*")
+            for rec in answer.recommendations[:2]:
+                lines.append(f"• {rec}")
         
         return "\n".join(lines)
     
@@ -1231,9 +1797,15 @@ class ResponseFormatter:
         """Ranking format"""
         ranking_data = answer.metrics.get("ranking", [])
         return self._menu_renderer.render_ranking(ranking_data, answer.plan.sort_by or "revenue", answer.plan.limit)
+    
+    def _format_timeline(self, answer: DNAanswer) -> str:
+        """Timeline format"""
+        dn = answer.plan.dn or "DN"
+        events = answer.dashboard.get("events", []) if answer.dashboard else []
+        return self._menu_renderer.render_dn_timeline(dn, events)
 
 # ============================================================
-# BLOCK 13: MAIN DN ANALYTICS SERVICE WITH MENU
+# BLOCK 13: MAIN DN ANALYTICS SERVICE WITH FULL MENU
 # ============================================================
 
 class DNAnalysisService:
@@ -1245,7 +1817,7 @@ class DNAnalysisService:
     
     def __init__(self) -> None:
         self._service_name = "dn_analysis"
-        self._version = "17.0.0-menu"
+        self._version = "18.0.0-menu"
         self._startup_time = datetime.utcnow().isoformat()
         
         # Initialize engines
@@ -1266,8 +1838,9 @@ class DNAnalysisService:
         self._executor = ThreadPoolExecutor(max_workers=4)
         
         logger.info(f"✅ DNAnalysisService initialized (v{self._version})")
-        logger.info(f"   Menu System: ✅")
+        logger.info(f"   Menu System: ✅ (19 options)")
         logger.info(f"   Source of Truth: PostgreSQL")
+        logger.info(f"   Intent Types: {len(IntentType)}")
     
     @staticmethod
     def _session() -> Session:
@@ -1323,7 +1896,7 @@ class DNAnalysisService:
             "menu_type": "dn_menu",
             "action": "main_menu",
             "data": {},
-            "exit_menu": True  # Exit to main AI Logistics menu
+            "exit_menu": True
         }
     
     def _handle_main_menu_option(self, context: DNContext, option: str) -> Dict[str, Any]:
@@ -1335,29 +1908,25 @@ class DNAnalysisService:
             "3": ("history", "Enter DN number for history:"),
             "4": ("timeline", "Enter DN number for timeline:"),
             "5": ("transit", "Enter DN number for transit analysis:"),
-            "6": ("pending", None),  # Special handling
-            "7": ("pgi", None),  # Special handling
-            "8": ("pod", None),  # Special handling
-            "9": ("delayed", None),  # Special handling
-            "10": ("recent", None),  # Special handling
-            "11": ("search", None),  # Special handling
-            "12": ("comparison", None),  # Special handling
+            "6": ("pending", None),
+            "7": ("pgi", None),
+            "8": ("pod", None),
+            "9": ("delayed", None),
+            "10": ("recent", None),
+            "11": ("search", None),
+            "12": ("comparison", None),
+            "13": ("ranking", None),
+            "14": ("insights", None),
+            "15": ("sla", None),
+            "16": ("aging", None),
+            "17": ("trends", None),
+            "18": ("forecast", None),
+            "19": ("recommendations", None),
         }
         
-        if option == "6":
-            return self._handle_pending_request(context)
-        elif option == "7":
-            return self._handle_pgi_request(context)
-        elif option == "8":
-            return self._handle_pod_request(context)
-        elif option == "9":
-            return self._handle_delayed_request(context)
-        elif option == "10":
-            return self._handle_recent_request(context)
-        elif option == "11":
-            return self._handle_search_start(context)
-        elif option == "12":
-            return self._handle_comparison_start(context)
+        if option in ["6", "7", "8", "9", "10", "13", "14", "15", "16", "17", "18", "19"]:
+            # These options execute directly
+            return self._handle_direct_action(context, option)
         
         if option not in option_map:
             return self._handle_quick_query(context, option)
@@ -1382,6 +1951,31 @@ class DNAnalysisService:
             "data": {"purpose": action},
             "exit_menu": False
         }
+    
+    def _handle_direct_action(self, context: DNContext, option: str) -> Dict[str, Any]:
+        """Handle direct actions that don't need DN selection"""
+        action_map = {
+            "6": ("pending", self._get_pending_dns),
+            "7": ("pgi", self._get_pending_pgi),
+            "8": ("pod", self._get_pending_pod),
+            "9": ("delayed", self._get_delayed_dns),
+            "10": ("recent", self._get_recent_dns),
+            "13": ("ranking", self._get_ranking),
+            "14": ("insights", self._get_insights),
+            "15": ("sla", self._get_sla_report),
+            "16": ("aging", self._get_aging_report),
+            "17": ("trends", self._get_trends),
+            "18": ("forecast", self._get_forecast),
+            "19": ("recommendations", self._get_recommendations),
+        }
+        
+        if option in action_map:
+            action_name, handler = action_map[option]
+            result = handler(context)
+            result["exit_menu"] = False
+            return result
+        
+        return self._handle_quick_query(context, option)
     
     def _handle_dn_selection(self, context: DNContext, dn_input: str) -> Dict[str, Any]:
         """Handle DN selection response"""
@@ -1446,80 +2040,15 @@ class DNAnalysisService:
                 "exit_menu": False
             }
         else:
-            # Both DNs selected, perform comparison
             dn1, dn2 = context.comparison_dns[0], context.comparison_dns[1]
             context.menu_state = MenuState.MAIN
             context.comparison_dns = []
             return self._perform_comparison(context, dn1, dn2)
     
-    def _handle_pending_request(self, context: DNContext) -> Dict[str, Any]:
-        """Handle pending request"""
-        result = self._get_pending_dns(context)
-        result["exit_menu"] = False
-        return result
-    
-    def _handle_pgi_request(self, context: DNContext) -> Dict[str, Any]:
-        """Handle PGI request"""
-        result = self._get_pending_pgi(context)
-        result["exit_menu"] = False
-        return result
-    
-    def _handle_pod_request(self, context: DNContext) -> Dict[str, Any]:
-        """Handle POD request"""
-        result = self._get_pending_pod(context)
-        result["exit_menu"] = False
-        return result
-    
-    def _handle_delayed_request(self, context: DNContext) -> Dict[str, Any]:
-        """Handle delayed request"""
-        result = self._get_delayed_dns(context)
-        result["exit_menu"] = False
-        return result
-    
-    def _handle_recent_request(self, context: DNContext) -> Dict[str, Any]:
-        """Handle recent request"""
-        result = self._get_recent_dns(context)
-        result["exit_menu"] = False
-        return result
-    
-    def _handle_search_start(self, context: DNContext) -> Dict[str, Any]:
-        """Start search"""
-        context.menu_state = MenuState.DN_SELECTION
-        context.selected_option = "search"
-        context.awaiting_dn = True
-        
-        return {
-            "response": "\n".join([
-                "🔍 *Search DN*",
-                "",
-                "Enter search term (DN number, customer name, or warehouse):",
-                "",
-                "0. Main Menu",
-                "99. Back"
-            ]),
-            "menu_type": "dn_menu",
-            "action": "search_start",
-            "data": {},
-            "exit_menu": False
-        }
-    
-    def _handle_comparison_start(self, context: DNContext) -> Dict[str, Any]:
-        """Start comparison process"""
-        context.menu_state = MenuState.COMPARISON_SELECTION
-        context.comparison_dns = []
-        return {
-            "response": self._menu_renderer.render_comparison_selection(),
-            "menu_type": "dn_menu",
-            "action": "comparison_start",
-            "data": {},
-            "exit_menu": False
-        }
-    
     def _handle_quick_query(self, context: DNContext, query: str) -> Dict[str, Any]:
         """Handle quick query from main menu"""
         # Check if it's a comparison
         if "compare" in query.lower() or "vs" in query.lower():
-            import re
             dns = re.findall(r'\b\d{8,12}\b', query)
             if len(dns) >= 2:
                 return self._perform_comparison(context, dns[0], dns[1])
@@ -1540,9 +2069,10 @@ class DNAnalysisService:
                 "",
                 "💡 *Try one of these:*",
                 "• '1234567890' - Show DN dashboard",
-                "• 'Status 1234567890'",
-                "• 'Compare 1234567890 0987654321'",
-                "• 'Search [keyword]'",
+                "• 'Status 1234567890' - Show DN status",
+                "• 'History 1234567890' - Show DN history",
+                "• 'Compare 1234567890 0987654321' - Compare DNs",
+                "• 'Search [keyword]' - Search DNs",
                 "",
                 "0. Main Menu",
                 "99. Back"
@@ -1600,8 +2130,21 @@ class DNAnalysisService:
                         "exit_menu": False
                     }
                 
+                # Generate insights and recommendations
+                insights = dashboard.get('insights', [])
+                recommendations = dashboard.get('recommendations', [])
+                
+                response = self._menu_renderer.render_dn_dashboard(dn_no, dashboard)
+                
+                # Add insights if available
+                if insights:
+                    response += "\n\n💡 *Insights*\n" + "\n".join(f"• {i}" for i in insights[:3])
+                
+                if recommendations:
+                    response += "\n\n🎯 *Recommendations*\n" + "\n".join(f"• {r}" for r in recommendations[:2])
+                
                 return {
-                    "response": self._menu_renderer.render_dn_dashboard(dn_no, dashboard),
+                    "response": response,
                     "menu_type": "dn_menu",
                     "action": "dashboard",
                     "data": {"dn": dn_no, "dashboard": dashboard},
@@ -1677,7 +2220,7 @@ class DNAnalysisService:
                     events.append({
                         "timestamp": _format_date(dashboard.get("good_issue_date")),
                         "status": "PGI Created",
-                        "description": "Goods Issue created"
+                        "description": "Goods Issue created at warehouse"
                     })
                 
                 if dashboard.get("pod_date"):
@@ -1705,7 +2248,57 @@ class DNAnalysisService:
     
     def _get_dn_timeline(self, context: DNContext, dn_no: str) -> Dict[str, Any]:
         """Get DN timeline"""
-        return self._get_dn_history(context, dn_no)
+        try:
+            with self._session() as session:
+                builder = DNDashboardBuilder(session)
+                dashboard = builder.build(dn_no)
+                
+                if not dashboard:
+                    return {
+                        "response": f"⚠️ DN '{dn_no}' not found.\n\n0. Main Menu",
+                        "menu_type": "dn_menu",
+                        "action": "timeline_error",
+                        "data": {"dn": dn_no, "error": "not_found"},
+                        "exit_menu": False
+                    }
+                
+                events = []
+                if dashboard.get("dn_create_date"):
+                    events.append({
+                        "timestamp": _format_date(dashboard.get("dn_create_date")),
+                        "status": "Created",
+                        "description": f"DN {dn_no} created"
+                    })
+                
+                if dashboard.get("good_issue_date"):
+                    events.append({
+                        "timestamp": _format_date(dashboard.get("good_issue_date")),
+                        "status": "PGI Created",
+                        "description": "Goods issued from warehouse"
+                    })
+                
+                if dashboard.get("pod_date"):
+                    events.append({
+                        "timestamp": _format_date(dashboard.get("pod_date")),
+                        "status": "Delivered",
+                        "description": "Delivery completed"
+                    })
+                
+                return {
+                    "response": self._menu_renderer.render_dn_timeline(dn_no, events),
+                    "menu_type": "dn_menu",
+                    "action": "timeline",
+                    "data": {"dn": dn_no, "events": events},
+                    "exit_menu": False
+                }
+        except Exception as e:
+            return {
+                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "menu_type": "dn_menu",
+                "action": "error",
+                "data": {"error": str(e)},
+                "exit_menu": False
+            }
     
     def _get_transit_analysis(self, context: DNContext, dn_no: str) -> Dict[str, Any]:
         """Get transit analysis for DN"""
@@ -1723,32 +2316,11 @@ class DNAnalysisService:
                         "exit_menu": False
                     }
                 
-                transit_data = {
-                    "transit_days": dashboard.get('transit_days', 'N/A'),
-                    "delivery_days": dashboard.get('delivery_days', 'N/A'),
-                    "distance_km": dashboard.get('distance_km', 'N/A'),
-                    "estimated_delivery_time": dashboard.get('estimated_delivery_time', 'N/A'),
-                    "warehouse": dashboard.get('warehouse', 'N/A'),
-                    "delivery_location": dashboard.get('delivery_location', 'N/A'),
-                }
-                
                 return {
-                    "response": "\n".join([
-                        f"🚚 *Transit Analysis - DN {dn_no}*",
-                        "",
-                        f"Warehouse: {transit_data['warehouse']}",
-                        f"Delivery Location: {transit_data['delivery_location']}",
-                        f"Distance: {transit_data['distance_km']} KM",
-                        f"Est. Time: {transit_data['estimated_delivery_time']}",
-                        f"Transit Days: {transit_data['transit_days']}",
-                        f"Delivery Days: {transit_data['delivery_days']}",
-                        "",
-                        "0. Main Menu",
-                        "99. Back"
-                    ]),
+                    "response": self._menu_renderer.render_transit_analysis(dn_no, dashboard),
                     "menu_type": "dn_menu",
                     "action": "transit",
-                    "data": {"dn": dn_no, "transit": transit_data},
+                    "data": {"dn": dn_no, "transit": dashboard},
                     "exit_menu": False
                 }
         except Exception as e:
@@ -1789,7 +2361,7 @@ class DNAnalysisService:
                     })
                 
                 return {
-                    "response": self._menu_renderer.render_pending_list("Pending DNs", dns),
+                    "response": self._menu_renderer.render_pending_list("📋 Pending DNs", dns),
                     "menu_type": "dn_menu",
                     "action": "pending",
                     "data": {"dns": dns},
@@ -1828,7 +2400,7 @@ class DNAnalysisService:
                     })
                 
                 return {
-                    "response": self._menu_renderer.render_pending_list("Pending PGI", dns),
+                    "response": self._menu_renderer.render_pending_list("⏳ Pending PGI", dns),
                     "menu_type": "dn_menu",
                     "action": "pgi",
                     "data": {"dns": dns},
@@ -1869,7 +2441,7 @@ class DNAnalysisService:
                     })
                 
                 return {
-                    "response": self._menu_renderer.render_pending_list("Pending POD", dns),
+                    "response": self._menu_renderer.render_pending_list("📋 Pending POD", dns),
                     "menu_type": "dn_menu",
                     "action": "pod",
                     "data": {"dns": dns},
@@ -1914,7 +2486,7 @@ class DNAnalysisService:
                     })
                 
                 return {
-                    "response": self._menu_renderer.render_pending_list(f"Delayed DNs (>{DN_DELAY_THRESHOLD_DAYS} days)", dns),
+                    "response": self._menu_renderer.render_pending_list(f"⚠️ Delayed DNs (>{DN_DELAY_THRESHOLD_DAYS} days)", dns),
                     "menu_type": "dn_menu",
                     "action": "delayed",
                     "data": {"dns": dns},
@@ -1951,7 +2523,7 @@ class DNAnalysisService:
                     })
                 
                 return {
-                    "response": self._menu_renderer.render_pending_list("Recent DNs", dns),
+                    "response": self._menu_renderer.render_pending_list("🔄 Recent DNs", dns),
                     "menu_type": "dn_menu",
                     "action": "recent",
                     "data": {"dns": dns},
@@ -2005,8 +2577,11 @@ class DNAnalysisService:
                         "exit_menu": False
                     }
                 
+                # Store search results for follow-up
+                context.search_results = dns
+                
                 return {
-                    "response": self._menu_renderer.render_pending_list(f"Search Results for '{query}'", dns),
+                    "response": self._menu_renderer.render_pending_list(f"🔍 Search Results for '{query}'", dns),
                     "menu_type": "dn_menu",
                     "action": "search",
                     "data": {"query": query, "dns": dns},
@@ -2046,6 +2621,9 @@ class DNAnalysisService:
                     "Units": f"{dash1.get('total_units', 0):,}",
                     "Revenue": f"PKR {float(dash1.get('total_revenue', 0)):,.2f}",
                     "Warehouse": dash1.get('warehouse', 'N/A'),
+                    "Age": f"{dash1.get('dn_age', 0)} Days",
+                    "Transit": f"{dash1.get('transit_days', 'N/A')} Days",
+                    "Distance": f"{dash1.get('distance_km', 'N/A')} KM",
                 }
                 
                 metrics[f"{dn2}_metrics"] = {
@@ -2054,6 +2632,9 @@ class DNAnalysisService:
                     "Units": f"{dash2.get('total_units', 0):,}",
                     "Revenue": f"PKR {float(dash2.get('total_revenue', 0)):,.2f}",
                     "Warehouse": dash2.get('warehouse', 'N/A'),
+                    "Age": f"{dash2.get('dn_age', 0)} Days",
+                    "Transit": f"{dash2.get('transit_days', 'N/A')} Days",
+                    "Distance": f"{dash2.get('distance_km', 'N/A')} KM",
                 }
                 
                 revenue1 = float(dash1.get('total_revenue', 0))
@@ -2078,6 +2659,400 @@ class DNAnalysisService:
         except Exception as e:
             return {
                 "response": f"⚠️ Comparison error: {str(e)[:100]}\n\n0. Main Menu",
+                "menu_type": "dn_menu",
+                "action": "error",
+                "data": {"error": str(e)},
+                "exit_menu": False
+            }
+    
+    def _get_ranking(self, context: DNContext) -> Dict[str, Any]:
+        """Get DN rankings"""
+        try:
+            with self._session() as session:
+                results = session.query(
+                    DeliveryReport.dn_no,
+                    func.sum(DeliveryReport.dn_amount).label("revenue"),
+                    func.sum(DeliveryReport.dn_qty).label("units"),
+                ).group_by(
+                    DeliveryReport.dn_no
+                ).order_by(
+                    func.sum(DeliveryReport.dn_amount).desc()
+                ).limit(10).all()
+                
+                ranking = []
+                for row in results:
+                    ranking.append({
+                        "dn_no": _text(row.dn_no),
+                        "value": f"PKR {float(row.revenue or 0):,.2f}",
+                        "units": int(row.units or 0),
+                    })
+                
+                return {
+                    "response": self._menu_renderer.render_ranking(ranking, "Revenue", 10),
+                    "menu_type": "dn_menu",
+                    "action": "ranking",
+                    "data": {"ranking": ranking},
+                    "exit_menu": False
+                }
+        except Exception as e:
+            return {
+                "response": f"⚠️ Ranking error: {str(e)[:100]}\n\n0. Main Menu",
+                "menu_type": "dn_menu",
+                "action": "error",
+                "data": {"error": str(e)},
+                "exit_menu": False
+            }
+    
+    def _get_insights(self, context: DNContext) -> Dict[str, Any]:
+        """Get DN insights"""
+        try:
+            with self._session() as session:
+                # Get summary statistics
+                stats = session.query(
+                    func.count(DeliveryReport.dn_no).label("total"),
+                    func.count(case((DeliveryReport.pod_date.isnot(None), DeliveryReport.dn_no))).label("delivered"),
+                    func.count(case((or_(DeliveryReport.pending_flag.is_(True), DeliveryReport.pod_date.is_(None)), DeliveryReport.dn_no))).label("pending"),
+                    func.avg(case((DeliveryReport.pod_date.isnot(None), DeliveryReport.pod_date - DeliveryReport.dn_create_date))).label("avg_delivery_days"),
+                    func.sum(DeliveryReport.dn_amount).label("total_revenue"),
+                    func.avg(DeliveryReport.dn_qty).label("avg_units"),
+                ).first()
+                
+                insights = []
+                total = int(stats.total or 0)
+                delivered = int(stats.delivered or 0)
+                pending = int(stats.pending or 0)
+                avg_days = float(stats.avg_delivery_days or 0)
+                total_revenue = float(stats.total_revenue or 0)
+                avg_units = float(stats.avg_units or 0)
+                
+                if total > 0:
+                    insights.append(f"📊 Total DNs: {total:,}")
+                    insights.append(f"✅ Delivered: {delivered:,} ({_percent(delivered, total):.1f}%)")
+                    insights.append(f"⏳ Pending: {pending:,} ({_percent(pending, total):.1f}%)")
+                    
+                    if avg_days > 0:
+                        insights.append(f"📅 Average Delivery: {avg_days:.1f} Days")
+                    
+                    if total_revenue > 0:
+                        insights.append(f"💰 Total Revenue: PKR {total_revenue:,.2f}")
+                    
+                    if avg_units > 0:
+                        insights.append(f"📦 Average Units: {avg_units:.1f}")
+                
+                recommendations = []
+                if pending > 10:
+                    recommendations.append(f"🚨 High pending DNs: {pending}. Focus on resolution.")
+                if avg_days > SLA_TARGET_DAYS:
+                    recommendations.append(f"⏱️ Delivery time ({avg_days:.1f} days) exceeds SLA ({SLA_TARGET_DAYS} days).")
+                
+                return {
+                    "response": self._menu_renderer.render_insights(insights, recommendations),
+                    "menu_type": "dn_menu",
+                    "action": "insights",
+                    "data": {"insights": insights, "recommendations": recommendations},
+                    "exit_menu": False
+                }
+        except Exception as e:
+            return {
+                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "menu_type": "dn_menu",
+                "action": "error",
+                "data": {"error": str(e)},
+                "exit_menu": False
+            }
+    
+    def _get_sla_report(self, context: DNContext) -> Dict[str, Any]:
+        """Get SLA compliance report"""
+        try:
+            with self._session() as session:
+                # Get DNs and check SLA
+                results = session.query(
+                    DeliveryReport.dn_no,
+                    DeliveryReport.customer_name,
+                    DeliveryReport.dn_create_date,
+                    DeliveryReport.pod_date,
+                    DeliveryReport.delivery_status,
+                ).order_by(
+                    DeliveryReport.dn_create_date.desc()
+                ).limit(50).all()
+                
+                dns = []
+                for row in results:
+                    dn_date = row.dn_create_date
+                    pod_date = row.pod_date
+                    status = "Delivered" if pod_date else "Pending"
+                    days = (pod_date - dn_date).days if pod_date and dn_date else None
+                    
+                    dns.append({
+                        "dn_no": _text(row.dn_no),
+                        "customer_name": _text(row.customer_name),
+                        "computed_delivery_status": status,
+                        "delivery_days": days,
+                        "sla_compliant": days is not None and days <= SLA_TARGET_DAYS if days is not None else False,
+                    })
+                
+                return {
+                    "response": self._menu_renderer.render_sla_report(dns),
+                    "menu_type": "dn_menu",
+                    "action": "sla",
+                    "data": {"dns": dns},
+                    "exit_menu": False
+                }
+        except Exception as e:
+            return {
+                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "menu_type": "dn_menu",
+                "action": "error",
+                "data": {"error": str(e)},
+                "exit_menu": False
+            }
+    
+    def _get_aging_report(self, context: DNContext) -> Dict[str, Any]:
+        """Get aging report"""
+        try:
+            with self._session() as session:
+                today = date.today()
+                results = session.query(
+                    DeliveryReport.dn_no,
+                    DeliveryReport.dn_create_date,
+                    DeliveryReport.pod_date,
+                ).filter(
+                    DeliveryReport.pod_date.is_(None)
+                ).all()
+                
+                age_groups = {
+                    "0-3 Days": 0,
+                    "4-7 Days": 0,
+                    "8-15 Days": 0,
+                    "16-30 Days": 0,
+                    "30+ Days": 0,
+                }
+                
+                ages = []
+                for row in results:
+                    if row.dn_create_date:
+                        age = (today - row.dn_create_date).days
+                        ages.append(age)
+                        
+                        if age <= 3:
+                            age_groups["0-3 Days"] += 1
+                        elif age <= 7:
+                            age_groups["4-7 Days"] += 1
+                        elif age <= 15:
+                            age_groups["8-15 Days"] += 1
+                        elif age <= 30:
+                            age_groups["16-30 Days"] += 1
+                        else:
+                            age_groups["30+ Days"] += 1
+                
+                data = {
+                    "age_groups": age_groups,
+                    "total": len(ages),
+                    "average_age": sum(ages) / len(ages) if ages else 0,
+                    "max_age": max(ages) if ages else 0,
+                    "min_age": min(ages) if ages else 0,
+                }
+                
+                return {
+                    "response": self._menu_renderer.render_aging_report(data),
+                    "menu_type": "dn_menu",
+                    "action": "aging",
+                    "data": {"aging": data},
+                    "exit_menu": False
+                }
+        except Exception as e:
+            return {
+                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "menu_type": "dn_menu",
+                "action": "error",
+                "data": {"error": str(e)},
+                "exit_menu": False
+            }
+    
+    def _get_trends(self, context: DNContext) -> Dict[str, Any]:
+        """Get DN trends"""
+        try:
+            with self._session() as session:
+                # Daily trends for last 7 days
+                daily = session.query(
+                    func.date(DeliveryReport.dn_create_date).label("date"),
+                    func.count(DeliveryReport.dn_no).label("count"),
+                    func.sum(DeliveryReport.dn_amount).label("revenue"),
+                ).filter(
+                    DeliveryReport.dn_create_date >= date.today() - timedelta(days=7)
+                ).group_by(
+                    func.date(DeliveryReport.dn_create_date)
+                ).order_by(
+                    func.date(DeliveryReport.dn_create_date).desc()
+                ).all()
+                
+                # Weekly trends
+                weekly = session.query(
+                    func.extract('week', DeliveryReport.dn_create_date).label("week"),
+                    func.count(DeliveryReport.dn_no).label("count"),
+                    func.sum(DeliveryReport.dn_amount).label("revenue"),
+                ).filter(
+                    DeliveryReport.dn_create_date >= date.today() - timedelta(days=30)
+                ).group_by(
+                    func.extract('week', DeliveryReport.dn_create_date)
+                ).order_by(
+                    func.extract('week', DeliveryReport.dn_create_date).desc()
+                ).limit(4).all()
+                
+                # Calculate growth
+                if len(daily) >= 2:
+                    current = daily[0].count if daily[0].count else 0
+                    previous = daily[1].count if daily[1].count else 0
+                    growth = _growth(current, previous)
+                else:
+                    growth = 0
+                
+                trend_data = {
+                    "daily": [{"date": _format_date(d.date), "count": d.count or 0, "revenue": float(d.revenue or 0)} for d in daily],
+                    "weekly": [{"week": f"Week {int(w.week)}", "count": w.count or 0, "revenue": float(w.revenue or 0)} for w in weekly],
+                    "growth": growth,
+                }
+                
+                return {
+                    "response": self._menu_renderer.render_trends(trend_data),
+                    "menu_type": "dn_menu",
+                    "action": "trends",
+                    "data": {"trends": trend_data},
+                    "exit_menu": False
+                }
+        except Exception as e:
+            return {
+                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "menu_type": "dn_menu",
+                "action": "error",
+                "data": {"error": str(e)},
+                "exit_menu": False
+            }
+    
+    def _get_forecast(self, context: DNContext) -> Dict[str, Any]:
+        """Get DN forecast"""
+        try:
+            with self._session() as session:
+                # Get historical data for forecasting
+                results = session.query(
+                    func.date(DeliveryReport.dn_create_date).label("date"),
+                    func.count(DeliveryReport.dn_no).label("count"),
+                    func.sum(DeliveryReport.dn_amount).label("revenue"),
+                    func.sum(DeliveryReport.dn_qty).label("units"),
+                ).filter(
+                    DeliveryReport.dn_create_date >= date.today() - timedelta(days=30)
+                ).group_by(
+                    func.date(DeliveryReport.dn_create_date)
+                ).order_by(
+                    func.date(DeliveryReport.dn_create_date).asc()
+                ).all()
+                
+                if len(results) < 7:
+                    return {
+                        "response": "🔮 Insufficient data for forecast. Need at least 7 days of data.",
+                        "menu_type": "dn_menu",
+                        "action": "forecast",
+                        "data": {},
+                        "exit_menu": False
+                    }
+                
+                # Simple average-based forecast
+                avg_count = sum(r.count or 0 for r in results[-7:]) / 7
+                avg_revenue = sum(float(r.revenue or 0) for r in results[-7:]) / 7
+                avg_units = sum(r.units or 0 for r in results[-7:]) / 7
+                
+                # Confidence interval (simple: ±20%)
+                forecast_data = {
+                    "expected_count": int(avg_count * 1.1),
+                    "expected_revenue": avg_revenue * 1.1,
+                    "expected_units": int(avg_units * 1.1),
+                    "lower_bound": int(avg_count * 0.9),
+                    "upper_bound": int(avg_count * 1.3),
+                    "confidence": 0.85,
+                }
+                
+                return {
+                    "response": self._menu_renderer.render_forecast(forecast_data),
+                    "menu_type": "dn_menu",
+                    "action": "forecast",
+                    "data": {"forecast": forecast_data},
+                    "exit_menu": False
+                }
+        except Exception as e:
+            return {
+                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
+                "menu_type": "dn_menu",
+                "action": "error",
+                "data": {"error": str(e)},
+                "exit_menu": False
+            }
+    
+    def _get_recommendations(self, context: DNContext) -> Dict[str, Any]:
+        """Get DN recommendations"""
+        try:
+            with self._session() as session:
+                # Analyze pending DNs
+                pending_count = session.query(
+                    func.count(DeliveryReport.dn_no)
+                ).filter(
+                    or_(
+                        DeliveryReport.pending_flag.is_(True),
+                        DeliveryReport.pod_date.is_(None)
+                    )
+                ).scalar() or 0
+                
+                # Analyze delayed DNs
+                threshold = datetime.now().date() - timedelta(days=DN_DELAY_THRESHOLD_DAYS)
+                delayed_count = session.query(
+                    func.count(DeliveryReport.dn_no)
+                ).filter(
+                    DeliveryReport.good_issue_date.isnot(None),
+                    DeliveryReport.good_issue_date < threshold,
+                    DeliveryReport.pod_date.is_(None)
+                ).scalar() or 0
+                
+                # Analyze delivery performance
+                results = session.query(
+                    DeliveryReport.dn_no,
+                    DeliveryReport.dn_create_date,
+                    DeliveryReport.pod_date,
+                ).filter(
+                    DeliveryReport.pod_date.isnot(None)
+                ).limit(100).all()
+                
+                avg_days = 0
+                if results:
+                    days = [(r.pod_date - r.dn_create_date).days for r in results if r.pod_date and r.dn_create_date]
+                    avg_days = sum(days) / len(days) if days else 0
+                
+                recommendations = []
+                
+                if pending_count > 10:
+                    recommendations.append(f"🚨 Action Required: {pending_count} pending DNs need resolution")
+                elif pending_count > 5:
+                    recommendations.append(f"📋 Review {pending_count} pending DNs for timely closure")
+                
+                if delayed_count > 5:
+                    recommendations.append(f"⏰ Priority: {delayed_count} DNs are delayed beyond {DN_DELAY_THRESHOLD_DAYS} days")
+                
+                if avg_days > SLA_TARGET_DAYS:
+                    recommendations.append(f"📈 Average delivery time ({avg_days:.1f} days) exceeds SLA target ({SLA_TARGET_DAYS} days)")
+                    recommendations.append("💡 Consider optimizing warehouse processes")
+                
+                if not recommendations:
+                    recommendations.append("✅ Current DN performance is good. Continue monitoring.")
+                    recommendations.append("📊 Consider periodic DN audits")
+                
+                return {
+                    "response": self._menu_renderer.render_insights([], recommendations),
+                    "menu_type": "dn_menu",
+                    "action": "recommendations",
+                    "data": {"recommendations": recommendations},
+                    "exit_menu": False
+                }
+        except Exception as e:
+            return {
+                "response": f"⚠️ Error: {str(e)[:100]}\n\n0. Main Menu",
                 "menu_type": "dn_menu",
                 "action": "error",
                 "data": {"error": str(e)},
@@ -2174,6 +3149,7 @@ class DNAnalysisService:
                 "timestamp": datetime.utcnow().isoformat(),
                 "source": "PostgreSQL",
                 "menu_enabled": True,
+                "intent_types": len(IntentType),
             }
         except Exception as e:
             return {
