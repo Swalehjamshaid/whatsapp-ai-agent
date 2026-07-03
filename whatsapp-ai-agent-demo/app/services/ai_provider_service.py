@@ -1,6 +1,6 @@
 """
 File: app/services/ai_provider_service.py
-Version: 26.0 - COMPLETE SERVICE INTEGRATION WITH NATIONAL KPI MENU
+Version: 27.0 - ENTERPRISE AI ROUTER WITH CITY-FIRST ROUTING
 
 Single entry point for the WhatsApp AI agent. Deterministic requests (menu,
 menu numbers, DN numbers and obvious entities) never depend on an AI provider.
@@ -9,7 +9,7 @@ Semantic Router and Groq are optional enhancements and cannot prevent startup.
 ROUTING FLOW (Priority Order):
 1. Menu Number (0-9) → Direct to specific service file (HIGHEST PRIORITY)
 2. DN Number (8-12 digits) → DN Analysis (dn_analysis.py)
-3. City Name → City Dashboard (city_service.py)
+3. CITY NAME → City Dashboard (city_service.py) - PRIORITY OVER DEALER
 4. Dealer Name → Dealer Dashboard (dealer_analytics_service.py)
 5. Warehouse → Warehouse Dashboard (warehouse_service.py)
 6. Product → Product Dashboard (product_service.py)
@@ -18,28 +18,17 @@ ROUTING FLOW (Priority Order):
 9. Pending DN → Pending DN (dn_analysis.py)
 10. AI Query → Groq AI (groq_service.py)
 
-MENU OPTIONS:
-0 → Main Menu (ai_provider_service.py)
-1 → DN Delivery (dn_analysis.py)
-2 → Dealer Analytics (dealer_analytics_service.py)
-3 → City Analytics (city_service.py - Full Menu System)
-4 → Warehouse Analytics (warehouse_service.py - Full Menu System)
-5 → Product Analytics (product_service.py - Full Menu System)
-6 → National KPI (national_kpi_service.py - Full Menu System)
-7 → Pending DN (dn_analysis.py)
-8 → Top Performers (dn_analysis.py)
-9 → AI Query (groq_service.py)
-
 CRITICAL FIXES - APPLIED:
-1. ✅ Menu "3" routes to city_service.get_city_menu()
-2. ✅ Menu "4" routes to warehouse_service.get_main_menu()
-3. ✅ Menu "5" routes to product_service.get_main_menu()
-4. ✅ Menu "6" routes to national_kpi_service.get_main_menu()
-5. ✅ Menu numbers checked BEFORE entity extraction
-6. ✅ Entity extraction for all domain types
-7. ✅ ALWAYS returns string responses
-8. ✅ Bootstrap integration for AI resources
-9. ✅ National KPI service fully integrated
+1. ✅ CITY names checked BEFORE dealer names (fixes "Lahore City" issue)
+2. ✅ Enhanced city extraction with "City" suffix support
+3. ✅ "Lahore City" → correctly routes to City Analytics
+4. ✅ Menu "3" routes to city_service.get_city_menu()
+5. ✅ Menu "4" routes to warehouse_service.get_main_menu()
+6. ✅ Menu "5" routes to product_service.get_main_menu()
+7. ✅ Menu "6" routes to national_kpi_service.get_main_menu()
+8. ✅ ALWAYS returns string responses
+9. ✅ Bootstrap integration for AI resources
+10. ✅ Enhanced entity extraction with priority ordering
 """
 
 from __future__ import annotations
@@ -308,7 +297,7 @@ INTENT_TO_MENU = {
     "dealer_dashboard": "2", "dealer_revenue": "2", "dealer_pending": "2", 
     "top_dealers": "2", "dealer_comparison": "2",
     
-    # City Intents
+    # City Intents - HIGHEST PRIORITY
     "city_dashboard": "3", "city_revenue": "3", "city_pending": "3", 
     "top_cities": "3", "city_comparison": "3", "city_menu": "3",
     
@@ -350,7 +339,7 @@ ROUTE_UTTERANCES: Dict[str, List[str]] = {
     "top_dealers": ["top dealers", "best dealers", "dealer ranking"],
     "dealer_comparison": ["compare dealers", "dealer comparison", "dealer versus dealer"],
     
-    # City Routes
+    # City Routes - HIGHEST PRIORITY
     "city_dashboard": ["city dashboard", "city performance", "show city", "city analytics"],
     "city_revenue": ["city revenue", "city sales", "revenue by city"],
     "city_pending": ["city pending", "pending deliveries by city"],
@@ -392,12 +381,36 @@ ROUTE_UTTERANCES: Dict[str, List[str]] = {
     "menu": ["menu", "main menu", "options", "services", "show menu"],
 }
 
+# =====================================================================================================================
+# ENHANCED CITY NAMES WITH VARIATIONS
+# =====================================================================================================================
+
 CITY_NAMES = (
     "abbottabad", "lahore", "karachi", "rawalpindi", "quetta", "multan",
     "peshawar", "gilgit", "hyderabad", "islamabad", "sialkot", "gujranwala",
     "faisalabad", "bahawalpur", "sukkur", "mansehra", "haripur", "dg khan",
     "dera ghazi khan", "gwadar", "rahim yar khan"
 )
+
+# City variations for better matching
+CITY_VARIATIONS = {
+    "lahore": ["lahore", "lahore city", "lhr"],
+    "karachi": ["karachi", "karachi city", "khi"],
+    "rawalpindi": ["rawalpindi", "rawalpindi city", "rwp"],
+    "islamabad": ["islamabad", "islamabad city", "isb"],
+    "multan": ["multan", "multan city"],
+    "peshawar": ["peshawar", "peshawar city"],
+    "quetta": ["quetta", "quetta city"],
+    "faisalabad": ["faisalabad", "faisalabad city", "fsd"],
+    "hyderabad": ["hyderabad", "hyderabad city", "hyd"],
+    "sialkot": ["sialkot", "sialkot city", "skt"],
+    "gujranwala": ["gujranwala", "gujranwala city", "guj"],
+    "abbottabad": ["abbottabad", "abbottabad city"],
+    "gilgit": ["gilgit", "gilgit city"],
+    "bahawalpur": ["bahawalpur", "bahawalpur city", "bwp"],
+    "sukkur": ["sukkur", "sukkur city", "skr"],
+    "dg khan": ["dg khan", "dera ghazi khan", "dg khan city"],
+}
 
 WAREHOUSE_NAMES = (
     "lahore", "karachi", "rawalpindi", "multan", "peshawar",
@@ -502,11 +515,58 @@ def _extract_whatsapp_message(result: Any) -> str:
 
 
 # =====================================================================================================================
-# ENHANCED ENTITY EXTRACTION
+# ENHANCED ENTITY EXTRACTION - CITY FIRST
 # =====================================================================================================================
 
+def _extract_city_name(text: str) -> Optional[str]:
+    """
+    Enhanced city name extraction with "City" suffix support.
+    Priority: City names take precedence over dealer detection.
+    """
+    lowered = text.casefold()
+    
+    # Check if text ends with "City" and extract the city name
+    # e.g., "Lahore City" → "Lahore"
+    city_match = re.match(r'^([a-zA-Z\s]+?)\s+city$', text, re.IGNORECASE)
+    if city_match:
+        potential_city = city_match.group(1).strip().lower()
+        # Check if it's a known city
+        if potential_city in [c.lower() for c in CITY_NAMES]:
+            return potential_city.title()
+        # Check in variations
+        for city, variations in CITY_VARIATIONS.items():
+            if potential_city in variations:
+                return city.title()
+    
+    # Check for exact matches with "City" suffix
+    for city in CITY_NAMES:
+        if city in lowered:
+            return city.title()
+        # Check for "City" appended
+        if f"{city} city" in lowered:
+            return city.title()
+    
+    # Check aliases and variations
+    for city, variations in CITY_VARIATIONS.items():
+        for variation in variations:
+            if variation in lowered:
+                return city.title()
+    
+    # Check for city in context
+    match = re.search(r'(?:city|town|location|in)\s+([\w&.\'\- ]{2,})', text, re.IGNORECASE)
+    if match:
+        potential_city = match.group(1).strip().lower()
+        if potential_city in [c.lower() for c in CITY_NAMES]:
+            return potential_city.title()
+        for city, variations in CITY_VARIATIONS.items():
+            if potential_city in variations or potential_city == city:
+                return city.title()
+    
+    return None
+
+
 def _extract_dealer_name(text: str) -> Optional[str]:
-    """Enhanced dealer name extraction."""
+    """Enhanced dealer name extraction - ONLY called after city check fails."""
     for suffix in DEALER_SUFFIXES:
         pattern = rf'([\w&.\'\- ]{{2,}}?\s*{suffix}\s*[\w&.\'\- ]*)'
         match = re.search(pattern, text, re.IGNORECASE)
@@ -532,21 +592,6 @@ def _extract_dealer_name(text: str) -> Optional[str]:
     match = re.search(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)', text)
     if match:
         return match.group(1).strip()
-    
-    return None
-
-
-def _extract_city_name(text: str) -> Optional[str]:
-    """Enhanced city name extraction."""
-    lowered = text.casefold()
-    
-    for city in CITY_NAMES:
-        if city in lowered:
-            return city.title()
-    
-    match = re.search(r'(?:city|town|location)\s+([\w&.\'\- ]{2,})', text, re.IGNORECASE)
-    if match:
-        return match.group(1).strip().title()
     
     return None
 
@@ -598,7 +643,7 @@ class MenuSessionState:
 
 
 # =====================================================================================================================
-# MAIN AI PROVIDER SERVICE - COMPLETE ROUTING
+# MAIN AI PROVIDER SERVICE - COMPLETE ROUTING WITH CITY-FIRST
 # =====================================================================================================================
 
 class AIProviderService:
@@ -641,11 +686,11 @@ class AIProviderService:
             except Exception as e:
                 logger.warning(f"⚠️ Failed to connect to Bootstrap Service: {e}")
         
-        logger.info("AIProviderService initialized with COMPLETE routing")
+        logger.info("AIProviderService initialized with COMPLETE routing (CITY-FIRST)")
         logger.info("  Menu 0 → Main Menu (ai_provider_service.py)")
         logger.info("  Menu 1 → DN Analysis (dn_analysis.py)")
         logger.info("  Menu 2 → Dealer Analytics (dealer_analytics_service.py)")
-        logger.info("  Menu 3 → City Analytics (city_service.py - FULL MENU)")
+        logger.info("  Menu 3 → City Analytics (city_service.py - FULL MENU) [CITY-FIRST]")
         logger.info("  Menu 4 → Warehouse Analytics (warehouse_service.py - FULL MENU)")
         logger.info("  Menu 5 → Product Analytics (product_service.py - FULL MENU)")
         logger.info("  Menu 6 → National KPI (national_kpi_service.py - FULL MENU)")
@@ -708,27 +753,50 @@ class AIProviderService:
     def _extract_entities(text: str) -> Dict[str, Any]:
         entities: Dict[str, Any] = {}
         
+        # 1. Extract DN FIRST (highest priority)
         dn = AIProviderService._extract_dn(text)
         if dn:
             entities.update({"dn": dn, "dn_number": dn, "id": dn})
+            # If DN found, don't look for other entities to avoid confusion
+            return entities
 
+        # 2. Extract City SECOND (priority over dealer)
         city = _extract_city_name(text)
         if city:
             entities.update({"city": city, "city_name": city})
+            # If city found, don't try to extract dealer
+            # This fixes "Lahore City" being detected as dealer
+            # But still check for other entities
+            warehouse = _extract_warehouse_name(text)
+            if warehouse:
+                entities["warehouse"] = warehouse
+            
+            product = re.search(r"(?:product|model|material|item)\s+([\w&.'\- ]{2,})", text, re.IGNORECASE)
+            if product:
+                entities["product"] = product.group(1).strip()
+            
+            # Check for national KPI keywords
+            if any(keyword in text.lower() for keyword in ["national", "overall", "pakistan", "executive", "kpi", "dashboard"]):
+                entities["national_kpi"] = True
+            
+            return entities
 
+        # 3. Extract Dealer THIRD (only if no city found)
         dealer = _extract_dealer_name(text)
         if dealer:
             entities.update({"dealer": dealer, "dealer_name": dealer})
 
+        # 4. Extract Warehouse
         warehouse = _extract_warehouse_name(text)
         if warehouse:
             entities["warehouse"] = warehouse
 
+        # 5. Extract Product
         product = re.search(r"(?:product|model|material|item)\s+([\w&.'\- ]{2,})", text, re.IGNORECASE)
         if product:
             entities["product"] = product.group(1).strip()
         
-        # Check for national KPI keywords
+        # 6. Check for national KPI keywords
         if any(keyword in text.lower() for keyword in ["national", "overall", "pakistan", "executive", "kpi", "dashboard"]):
             entities["national_kpi"] = True
         
@@ -767,6 +835,8 @@ class AIProviderService:
     def _rule_intent(message: str) -> Optional[str]:
         text = message.casefold()
         rules = (
+            # City-first rules
+            (r"\b(?:city|town)\s+(?:dashboard|analytics|performance)\b", "city_dashboard"),
             (r"\b(?:national|overall|pakistan)\s+(?:kpi|dashboard|performance|health|score)\b", "national_kpi"),
             (r"\b(?:executive|management)\s+summary\b", "executive_summary"),
             (r"\b(?:warehouse|depot)\s+(?:menu|options)\b", "warehouse_menu"),
@@ -777,7 +847,6 @@ class AIProviderService:
             (r"\b(?:top|best)\s+performers?\b|\bleaderboard\b", "top_performers"),
             (r"\b(?:dn|delivery note)\s+(?:service|services|dashboard|status|details?)\b", "dn_lookup"),
             (r"\bdealer\s+(?:service|services|dashboard|analytics|performance)\b", "dealer_dashboard"),
-            (r"\bcit(?:y|ies)\s+(?:service|services|dashboard|analytics|performance)\b", "city_dashboard"),
             (r"\bwarehouse\s+(?:service|services|dashboard|analytics|performance)\b", "warehouse_dashboard"),
             (r"\bproduct\s+(?:service|services|dashboard|analytics|performance)\b", "product_dashboard"),
             (r"\b(?:city menu|show city menu|city options)\b", "city_menu"),
@@ -1010,29 +1079,20 @@ class AIProviderService:
             self._cache[cache_key] = (time.monotonic(), decision)
             return decision
 
-        # 8. Entity-based routing (NATURAL LANGUAGE)
-        if "national_kpi" in entities or any(kw in normalized.lower() for kw in ["national", "overall", "pakistan", "executive"]):
-            state.is_active = True
-            state.menu_type = "national"
-            decision = RoutingDecision(
-                intent="national_dashboard",
-                confidence=0.9,
-                service_key="national_kpi_menu",
-                service_file="national_kpi_service.py",
-                method="process_whatsapp_query",
-                entity=entities,
-                requires_ai=False,
-                reason="National KPI entity detected",
-                original_message=message,
-                menu_option="6",
-            )
-        elif "dealer" in entities or "dealer_name" in entities:
-            decision = self._decision_for_menu("2", message, entities, "dealer_dashboard", reason="Dealer entity detected")
-        elif "city" in entities or "city_name" in entities:
+        # 8. Entity-based routing (NATURAL LANGUAGE) - CITY FIRST
+        # Check for CITY FIRST (highest priority entity-based routing)
+        if "city" in entities or "city_name" in entities:
             city_name = entities.get("city_name") or entities.get("city")
             if city_name and city_name.lower() in [c.lower() for c in CITY_NAMES]:
-                decision = self._decision_for_menu("3", message, entities, "city_dashboard", reason="Valid city name detected")
+                decision = self._decision_for_menu(
+                    "3", 
+                    message, 
+                    entities, 
+                    "city_dashboard", 
+                    reason=f"City name detected: {city_name}"
+                )
             else:
+                # If it's just "City" without a valid name, show menu
                 state.is_active = True
                 state.menu_type = "city"
                 decision = RoutingDecision(
@@ -1047,6 +1107,21 @@ class AIProviderService:
                     original_message=message,
                     menu_option="3",
                 )
+        elif "national_kpi" in entities or any(kw in normalized.lower() for kw in ["national", "overall", "pakistan", "executive"]):
+            state.is_active = True
+            state.menu_type = "national"
+            decision = RoutingDecision(
+                intent="national_dashboard",
+                confidence=0.9,
+                service_key="national_kpi_menu",
+                service_file="national_kpi_service.py",
+                method="process_whatsapp_query",
+                entity=entities,
+                requires_ai=False,
+                reason="National KPI entity detected",
+                original_message=message,
+                menu_option="6",
+            )
         elif "warehouse" in entities:
             warehouse_name = entities.get("warehouse")
             if warehouse_name and warehouse_name.lower() in [w.lower() for w in WAREHOUSE_NAMES]:
@@ -1068,6 +1143,8 @@ class AIProviderService:
                 )
         elif "product" in entities:
             decision = self._decision_for_menu("5", message, entities, "product_dashboard", reason="Product entity detected")
+        elif "dealer" in entities or "dealer_name" in entities:
+            decision = self._decision_for_menu("2", message, entities, "dealer_dashboard", reason="Dealer entity detected")
         else:
             # 9. Semantic routing fallback
             intent = self._rule_intent(normalized)
@@ -1380,7 +1457,8 @@ class AIProviderService:
             "9. Business Score",
             "10. Distance Info",
             "11. Growth Analytics",
-            "12. City Summary",
+            "12. Warehouse Distribution",
+            "13. City Summary",
             "99. Back to Main",
             "",
             "Reply with a number or city name:"
