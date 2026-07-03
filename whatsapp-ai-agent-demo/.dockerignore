@@ -1,13 +1,11 @@
 .git
-.gitignore
+.github
+.vscode
+.idea
 
 __pycache__/
 *.pyc
 *.pyo
-*.pyd
-
-.pytest_cache/
-.mypy_cache/
 
 .venv/
 venv/
@@ -15,17 +13,13 @@ venv/
 .env
 .env.*
 
-.vscode/
-.idea/
-
 tests/
 docs/
-notebooks/
 
 logs/
 uploads/
-temp/
 tmp/
+temp/
 
 *.xlsx
 *.xls
@@ -33,7 +27,7 @@ tmp/
 *.pdf
 
 node_modules/
-dist/
-build/
 
 .cache/
+
+.gitignore
