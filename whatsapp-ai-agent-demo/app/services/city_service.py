@@ -1,21 +1,15 @@
 """
 File: app/services/city_service.py
-Version: 5.2 - ENTERPRISE CITY DOMAIN AI EXPERT WITH FULL MENU
+Version: 5.3 - ENTERPRISE CITY DOMAIN AI EXPERT WITH FULL MENU
 Purpose: Answer ANY city-related business question through a single entry point
          PostgreSQL is the ONLY source of truth.
          Full menu system with 15+ options, sub-menus, and AI-powered queries
 
-NEW FEATURES:
-- ✅ Complete Menu System (press 3 from main menu)
-- ✅ 15+ City Analytics Options with sub-menus
-- ✅ City Selection Prompts
-- ✅ Comparison Flow (2 cities)
-- ✅ Ranking Display with Medals
-- ✅ Quick Commands Support
-- ✅ Context Memory
-- ✅ Dynamic Menu Rendering
-- ✅ WhatsApp-Optimized Formatting
-- ✅ AI-Powered Natural Language Queries
+FIXES:
+- ✅ Added process_city_menu_input method for sub-menu navigation
+- ✅ Fixed CityAnalyticsService attribute error
+- ✅ Enhanced menu state management
+- ✅ Improved error handling
 
 Status: PRODUCTION READY
 """
@@ -1460,7 +1454,7 @@ class CityAnalyticsService:
     
     def __init__(self) -> None:
         self._service_name = "city_analytics"
-        self._version = "5.2.0-menu"
+        self._version = "5.3.0-menu"
         self._startup_time = datetime.utcnow().isoformat()
         
         # Initialize engines
@@ -1490,6 +1484,18 @@ class CityAnalyticsService:
     def get_main_menu(self) -> str:
         """Get the main city menu"""
         return self._menu_renderer.render_main_menu()
+    
+    def get_city_menu(self) -> str:
+        """Get the city menu (alias for get_main_menu)"""
+        return self.get_main_menu()
+    
+    def process_city_menu_input(self, session_id: str, user_input: str) -> Dict[str, Any]:
+        """
+        Process city menu input and return response.
+        This is the method that ai_provider_service.py calls for menu navigation.
+        """
+        # Process the menu input using the existing process_menu_input method
+        return self.process_menu_input(session_id, user_input)
     
     def process_menu_input(self, session_id: str, user_input: str) -> Dict[str, Any]:
         """
@@ -2328,6 +2334,7 @@ class CityAnalyticsService:
             return response
         
         return response
+
 
 # ============================================================
 # BLOCK 12: SERVICE SINGLETON
