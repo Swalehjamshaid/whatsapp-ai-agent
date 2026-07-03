@@ -1,46 +1,41 @@
 """
 File: app/services/dn_analysis.py
-Version: 24.0 - AI-POWERED DN SERVICE WITH CONTENT RECOGNITION
+Version: 25.0 - COMPLETE INDEPENDENT DN SERVICE
+TAKES FULL CONTROL AFTER PRESSING "1"
 
-FEATURES:
-- ✅ AI Content Recognition using Groq/OpenAI/Anthropic
-- ✅ Semantic Search using Semantic Router
-- ✅ Entity Extraction using spaCy
-- ✅ Fuzzy Matching using RapidFuzz
-- ✅ Smart Intent Detection
-- ✅ Natural Language Understanding
-- ✅ Reranking using FlashRank
+WHAT THIS FILE DOES:
+- ✅ When you press "1", you ENTER this file
+- ✅ ALL communication stays in this file
+- ✅ Handles ALL DN commands naturally
+- ✅ Uses AI for content recognition
+- ✅ ONLY "99" exits back to main menu
+- ✅ Complete independence from router
 
-LIBRARIES SUPPORTED:
-- openai==1.99.9
-- groq==0.31.0
-- anthropic>=0.61.0
-- litellm==1.74.9
-- pydantic-ai==0.8.1
-- instructor==1.10.0
-- spacy==3.8.7
-- semantic-router==0.1.11
-- flashrank==0.2.10
-- rapidfuzz==3.13.0
-- nltk==3.9.1
-- textblob==0.19.0
-- tiktoken==0.9.0
-
-Stays in DN menu until "99"
-Answers ALL DN questions intelligently
+COMMANDS SUPPORTED:
+- Any 8-12 digit number → DN Dashboard
+- "pending" → Pending DNs list
+- "status [DN]" → DN status
+- "search [keyword]" → Search DNs
+- "revenue [DN]" → Revenue info
+- "units [DN]" → Units info
+- "compare DN1 DN2" → Compare DNs
+- "trend" → DN trends
+- "forecast" → DN forecast
+- "insights" → DN insights
+- "recommendations" → Improvement ideas
+- "menu" → Show DN menu
+- "99" → EXIT to main menu
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import re
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime, date
-from typing import Any, Optional, Dict, List, Tuple, Union, Callable
-from functools import lru_cache
+from datetime import datetime, date, timedelta
+from typing import Any, Optional, Dict, List, Tuple, Union
 import hashlib
 
 logger = logging.getLogger(__name__)
@@ -49,146 +44,52 @@ logger = logging.getLogger(__name__)
 # AI LIBRARIES - Graceful Loading
 # ============================================================
 
-# GROQ - Primary AI Provider
+# Groq - Primary AI Provider
 try:
     from groq import Groq
     GROQ_AVAILABLE = True
-    logger.info("✅ Groq loaded")
 except ImportError:
     GROQ_AVAILABLE = False
-    logger.warning("⚠️ Groq not available")
 
-# OpenAI - Fallback AI Provider
+# OpenAI - Fallback
 try:
     from openai import OpenAI
     OPENAI_AVAILABLE = True
-    logger.info("✅ OpenAI loaded")
 except ImportError:
     OPENAI_AVAILABLE = False
-    logger.warning("⚠️ OpenAI not available")
 
-# Anthropic - Alternative AI Provider
+# Semantic Router - Intent Detection
 try:
-    from anthropic import Anthropic
-    ANTHROPIC_AVAILABLE = True
-    logger.info("✅ Anthropic loaded")
+    from semantic_router import Route, Router
+    from semantic_router.encoders import HuggingFaceEncoder
+    SEMANTIC_ROUTER_AVAILABLE = True
 except ImportError:
-    ANTHROPIC_AVAILABLE = False
-    logger.warning("⚠️ Anthropic not available")
+    SEMANTIC_ROUTER_AVAILABLE = False
 
-# LiteLLM - Unified AI Interface
+# RapidFuzz - Fuzzy Matching
 try:
-    import litellm
-    LITELLM_AVAILABLE = True
-    logger.info("✅ LiteLLM loaded")
+    from rapidfuzz import fuzz, process
+    RAPIDFUZZ_AVAILABLE = True
 except ImportError:
-    LITELLM_AVAILABLE = False
-    logger.warning("⚠️ LiteLLM not available")
+    RAPIDFUZZ_AVAILABLE = False
 
-# Pydantic AI - Structured Outputs
-try:
-    from pydantic_ai import Agent
-    from pydantic_ai.models import GroqModel, OpenAIModel
-    PYDANTIC_AI_AVAILABLE = True
-    logger.info("✅ Pydantic AI loaded")
-except ImportError:
-    PYDANTIC_AI_AVAILABLE = False
-    logger.warning("⚠️ Pydantic AI not available")
-
-# Instructor - Structured Extraction
-try:
-    import instructor
-    INSTRUCTOR_AVAILABLE = True
-    logger.info("✅ Instructor loaded")
-except ImportError:
-    INSTRUCTOR_AVAILABLE = False
-    logger.warning("⚠️ Instructor not available")
-
-# spaCy - NER and NLP
+# spaCy - NER
 try:
     import spacy
     SPACY_AVAILABLE = True
     nlp = None
     try:
         nlp = spacy.load("en_core_web_sm")
-        logger.info("✅ spaCy loaded")
-    except OSError:
+    except:
         try:
             import subprocess
             subprocess.run(["python", "-m", "spacy", "download", "en_core_web_sm"])
             nlp = spacy.load("en_core_web_sm")
-            logger.info("✅ spaCy downloaded and loaded")
-        except Exception:
-            logger.warning("⚠️ spaCy model not available")
+        except:
+            pass
 except ImportError:
     SPACY_AVAILABLE = False
     nlp = None
-    logger.warning("⚠️ spaCy not available")
-
-# Semantic Router - Intelligent Routing
-try:
-    from semantic_router import Route, Router
-    from semantic_router.encoders import HuggingFaceEncoder
-    SEMANTIC_ROUTER_AVAILABLE = True
-    logger.info("✅ Semantic Router loaded")
-except ImportError:
-    SEMANTIC_ROUTER_AVAILABLE = False
-    logger.warning("⚠️ Semantic Router not available")
-
-# FlashRank - Result Reranking
-try:
-    from flashrank import Ranker
-    FLASHRANK_AVAILABLE = True
-    ranker = Ranker()
-    logger.info("✅ FlashRank loaded")
-except ImportError:
-    FLASHRANK_AVAILABLE = False
-    ranker = None
-    logger.warning("⚠️ FlashRank not available")
-
-# RapidFuzz - Fuzzy Matching
-try:
-    from rapidfuzz import fuzz, process
-    RAPIDFUZZ_AVAILABLE = True
-    logger.info("✅ RapidFuzz loaded")
-except ImportError:
-    RAPIDFUZZ_AVAILABLE = False
-    logger.warning("⚠️ RapidFuzz not available")
-
-# NLTK - Text Processing
-try:
-    import nltk
-    NLTK_AVAILABLE = True
-    try:
-        nltk.data.find('tokenizers/punkt')
-    except LookupError:
-        nltk.download('punkt')
-    try:
-        nltk.data.find('corpora/stopwords')
-    except LookupError:
-        nltk.download('stopwords')
-    logger.info("✅ NLTK loaded")
-except ImportError:
-    NLTK_AVAILABLE = False
-    logger.warning("⚠️ NLTK not available")
-
-# TextBlob - Sentiment/Text Processing
-try:
-    from textblob import TextBlob
-    TEXTBLOB_AVAILABLE = True
-    logger.info("✅ TextBlob loaded")
-except ImportError:
-    TEXTBLOB_AVAILABLE = False
-    logger.warning("⚠️ TextBlob not available")
-
-# Tiktoken - Token Counting
-try:
-    import tiktoken
-    TIKTOKEN_AVAILABLE = True
-    logger.info("✅ Tiktoken loaded")
-except ImportError:
-    TIKTOKEN_AVAILABLE = False
-    logger.warning("⚠️ Tiktoken not available")
 
 # ============================================================
 # DATABASE IMPORTS
@@ -209,9 +110,10 @@ except ImportError:
 # ============================================================
 
 CACHE_TTL = int(os.getenv("DN_ANALYTICS_CACHE_TTL", "300"))
-AI_PROVIDER = os.getenv("AI_PROVIDER", "groq")  # groq, openai, anthropic
+AI_PROVIDER = os.getenv("AI_PROVIDER", "groq")
 AI_MODEL = os.getenv("AI_MODEL", "llama3-70b-8192")
 USE_AI_ENHANCEMENT = os.getenv("USE_AI_ENHANCEMENT", "true").lower() == "true"
+DN_DELAY_THRESHOLD_DAYS = int(os.getenv("DN_DELAY_THRESHOLD_DAYS", "7"))
 
 # ============================================================
 # DATACLASSES
@@ -219,22 +121,14 @@ USE_AI_ENHANCEMENT = os.getenv("USE_AI_ENHANCEMENT", "true").lower() == "true"
 
 @dataclass
 class DNContext:
-    """DN session context with AI history"""
+    """DN session context - persists while in DN service"""
     current_dn: Optional[str] = None
-    in_menu: bool = False
+    in_dn_service: bool = False
     conversation_history: List[Dict[str, str]] = field(default_factory=list)
     last_intent: Optional[str] = None
-    last_entities: Dict[str, Any] = field(default_factory=dict)
+    last_response: Optional[str] = None
     search_results: Optional[List[Dict[str, Any]]] = None
-    
-@dataclass
-class DNIntent:
-    """DN intent detection result"""
-    intent: str  # dashboard, status, pending, search, compare, trend, forecast, insights, recommendations
-    confidence: float
-    entities: Dict[str, Any]
-    query: str
-    explanation: str
+    session_start: datetime = field(default_factory=datetime.now)
 
 # ============================================================
 # UTILITY FUNCTIONS
@@ -278,29 +172,43 @@ def _safe_int(value: Any) -> int:
 # AI CONTENT RECOGNITION ENGINE
 # ============================================================
 
-class AIEngine:
-    """
-    AI Content Recognition Engine
-    Uses multiple AI providers for understanding DN queries
-    """
+class DNContentRecognizer:
+    """AI-powered content recognition for DN queries"""
+    
+    _instance = None
+    _lock = threading.Lock()
+    
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
+        return cls._instance
     
     def __init__(self):
+        if hasattr(self, "_initialized"):
+            return
+        self._initialized = True
+        
         self._client = None
         self._provider = AI_PROVIDER
+        self._router = None
         
         # Initialize AI client
         self._init_client()
         
-        # Semantic Router for quick intent detection
-        self._router = self._init_router()
+        # Initialize semantic router
+        self._init_router()
         
-        # Cache for AI responses
+        # Cache for responses
         self._cache: Dict[str, str] = {}
         self._cache_lock = threading.RLock()
+        
+        logger.info(f"🧠 DNContentRecognizer initialized (Provider: {AI_PROVIDER})")
     
     def _init_client(self):
         """Initialize AI client"""
-        if self._provider == "groq" and GROQ_AVAILABLE:
+        if AI_PROVIDER == "groq" and GROQ_AVAILABLE:
             try:
                 self._client = Groq()
                 logger.info("✅ Groq client initialized")
@@ -308,318 +216,140 @@ class AIEngine:
             except Exception as e:
                 logger.warning(f"Groq init failed: {e}")
         
-        if self._provider == "openai" and OPENAI_AVAILABLE:
+        if AI_PROVIDER == "openai" and OPENAI_AVAILABLE:
             try:
                 self._client = OpenAI()
                 logger.info("✅ OpenAI client initialized")
+                self._provider = "openai"
                 return
             except Exception as e:
                 logger.warning(f"OpenAI init failed: {e}")
         
-        if ANTHROPIC_AVAILABLE:
-            try:
-                self._client = Anthropic()
-                logger.info("✅ Anthropic client initialized")
-                self._provider = "anthropic"
-                return
-            except Exception as e:
-                logger.warning(f"Anthropic init failed: {e}")
-        
-        logger.warning("⚠️ No AI client available - using fallback mode")
+        logger.warning("⚠️ No AI client available")
         self._client = None
     
     def _init_router(self):
-        """Initialize Semantic Router"""
+        """Initialize semantic router"""
         if not SEMANTIC_ROUTER_AVAILABLE:
-            return None
+            return
         
         try:
             routes = [
                 Route(name="dashboard", utterances=[
-                    "show dn", "dn dashboard", "dn details", "dn info",
-                    "what is dn", "tell me about dn"
+                    "show dn", "dn dashboard", "dn details", "dn info"
                 ]),
                 Route(name="status", utterances=[
-                    "dn status", "status of dn", "where is dn",
-                    "is dn delivered", "dn progress", "dn tracking"
+                    "dn status", "status of dn", "where is dn", "track dn"
                 ]),
                 Route(name="pending", utterances=[
-                    "pending dns", "pending deliveries", "overdue dns",
-                    "undelivered dns", "backlog dns"
+                    "pending dns", "pending deliveries", "overdue dns"
                 ]),
                 Route(name="search", utterances=[
-                    "search dn", "find dn", "lookup dn",
-                    "dn with customer", "dn by city", "dn by warehouse"
+                    "search dn", "find dn", "lookup dn", "dn with customer"
                 ]),
                 Route(name="revenue", utterances=[
-                    "dn revenue", "revenue from dn", "dn amount",
-                    "how much is dn", "value of dn"
+                    "dn revenue", "revenue from dn", "dn amount", "value of dn"
                 ]),
                 Route(name="units", utterances=[
-                    "dn units", "dn quantity", "how many units",
-                    "dn qty", "dn volume"
+                    "dn units", "dn quantity", "how many units", "dn qty"
                 ]),
                 Route(name="compare", utterances=[
-                    "compare dns", "dn vs dn", "comparison",
-                    "which dn is better"
+                    "compare dns", "dn vs dn", "comparison"
                 ]),
                 Route(name="trend", utterances=[
-                    "dn trends", "dn pattern", "dn over time",
-                    "weekly dns", "monthly dns"
-                ]),
-                Route(name="insights", utterances=[
-                    "dn insights", "dn analysis", "key findings",
-                    "what does dn data show"
+                    "dn trends", "dn pattern", "dn over time"
                 ]),
                 Route(name="forecast", utterances=[
-                    "dn forecast", "predict dn", "future dns",
-                    "expected dns"
+                    "dn forecast", "predict dn", "future dns"
+                ]),
+                Route(name="insights", utterances=[
+                    "dn insights", "dn analysis", "key findings"
                 ]),
                 Route(name="recommendations", utterances=[
-                    "dn recommendations", "improve dns",
-                    "suggestions for dns"
+                    "dn recommendations", "improve dns", "suggestions"
                 ]),
             ]
             encoder = HuggingFaceEncoder()
-            router = Router(routes=routes, encoder=encoder)
+            self._router = Router(routes=routes, encoder=encoder)
             logger.info("✅ Semantic Router initialized")
-            return router
         except Exception as e:
             logger.warning(f"Semantic Router init failed: {e}")
-            return None
     
-    def _get_cache_key(self, text: str) -> str:
-        """Generate cache key for AI response"""
-        return hashlib.md5(text.encode()).hexdigest()
-    
-    def recognize_intent(self, query: str) -> DNIntent:
-        """
-        Recognize intent using AI + Semantic Router + NLP
-        """
-        # Check cache first
-        cache_key = self._get_cache_key(query)
-        with self._cache_lock:
-            if cache_key in self._cache:
-                try:
-                    return self._parse_intent_response(self._cache[cache_key])
-                except:
-                    pass
+    def recognize(self, query: str) -> Dict[str, Any]:
+        """Recognize intent and extract entities"""
+        result = {
+            "intent": "unknown",
+            "confidence": 0.0,
+            "entities": {},
+            "dn": None,
+            "explanation": ""
+        }
         
-        # STEP 1: Semantic Router (fast)
-        intent = self._semantic_route(query)
-        
-        # STEP 2: Extract entities
-        entities = self._extract_entities(query)
-        
-        # STEP 3: AI Enhancement (if available)
-        if self._client and USE_AI_ENHANCEMENT:
-            ai_intent = self._ai_recognize_intent(query)
-            if ai_intent and ai_intent.confidence > intent.confidence:
-                intent = ai_intent
-        
-        # STEP 4: Keyword fallback
-        if intent.confidence < 0.5:
-            intent = self._keyword_intent(query)
-        
-        # Cache the result
-        with self._cache_lock:
-            self._cache[cache_key] = f"{intent.intent}:{intent.confidence}:{intent.explanation}"
-        
-        return intent
-    
-    def _semantic_route(self, query: str) -> DNIntent:
-        """Use Semantic Router for fast intent detection"""
-        if not self._router:
-            return DNIntent(intent="unknown", confidence=0.0, entities={}, query=query, explanation="")
-        
-        try:
-            result = self._router.route(query)
-            if result and hasattr(result, 'name'):
-                return DNIntent(
-                    intent=result.name,
-                    confidence=0.8,
-                    entities={},
-                    query=query,
-                    explanation=f"Semantic routing detected: {result.name}"
-                )
-        except Exception:
-            pass
-        
-        return DNIntent(intent="unknown", confidence=0.0, entities={}, query=query, explanation="")
-    
-    def _ai_recognize_intent(self, query: str) -> Optional[DNIntent]:
-        """Use AI to recognize intent"""
-        if not self._client:
-            return None
-        
-        prompt = f"""Analyze this logistics query and extract:
-1. Intent (dashboard, status, pending, search, revenue, units, compare, trend, forecast, insights, recommendations)
-2. DN number (if any)
-3. Entity (customer, city, warehouse, dealer, date, month)
-4. Confidence (0-1)
-
-Query: {query}
-
-Return JSON only:
-{{"intent": "", "dn": "", "entity": "", "entity_type": "", "confidence": 0.0}}
-"""
-        
-        try:
-            if self._provider == "groq":
-                response = self._client.chat.completions.create(
-                    model=AI_MODEL,
-                    messages=[
-                        {"role": "system", "content": "You are a logistics intent recognition system. Return ONLY JSON."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.1,
-                    max_tokens=200
-                )
-                content = response.choices[0].message.content
-            
-            elif self._provider == "openai":
-                response = self._client.chat.completions.create(
-                    model=AI_MODEL,
-                    messages=[
-                        {"role": "system", "content": "You are a logistics intent recognition system. Return ONLY JSON."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.1,
-                    max_tokens=200
-                )
-                content = response.choices[0].message.content
-            
-            elif self._provider == "anthropic":
-                response = self._client.messages.create(
-                    model="claude-3-haiku-20240307",
-                    max_tokens=200,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                content = response.content[0].text
-            
-            else:
-                return None
-            
-            # Parse JSON response
-            import json
-            data = json.loads(content)
-            
-            entities = {}
-            if data.get("dn"):
-                entities["dn"] = data["dn"]
-            if data.get("entity") and data.get("entity_type"):
-                entities[data["entity_type"]] = data["entity"]
-            
-            return DNIntent(
-                intent=data.get("intent", "unknown"),
-                confidence=float(data.get("confidence", 0.7)),
-                entities=entities,
-                query=query,
-                explanation=f"AI detected: {data.get('intent', 'unknown')}"
-            )
-            
-        except Exception as e:
-            logger.warning(f"AI intent recognition failed: {e}")
-            return None
-    
-    def _keyword_intent(self, query: str) -> DNIntent:
-        """Keyword-based fallback intent detection"""
-        query_lower = query.lower()
-        entities = {}
-        
-        # Extract DN
+        # Extract DN number
         dn = _extract_dn(query)
         if dn:
-            entities["dn"] = dn
+            result["dn"] = dn
+            result["entities"]["dn"] = dn
         
-        # Intent detection
-        if "status" in query_lower or "track" in query_lower or "where" in query_lower:
-            return DNIntent(intent="status", confidence=0.6, entities=entities, query=query, explanation="Keyword: status")
-        elif "pending" in query_lower or "overdue" in query_lower or "backlog" in query_lower:
-            return DNIntent(intent="pending", confidence=0.6, entities=entities, query=query, explanation="Keyword: pending")
-        elif "search" in query_lower or "find" in query_lower or "lookup" in query_lower:
-            return DNIntent(intent="search", confidence=0.6, entities=entities, query=query, explanation="Keyword: search")
-        elif "revenue" in query_lower or "amount" in query_lower or "value" in query_lower:
-            return DNIntent(intent="revenue", confidence=0.6, entities=entities, query=query, explanation="Keyword: revenue")
-        elif "units" in query_lower or "quantity" in query_lower or "qty" in query_lower:
-            return DNIntent(intent="units", confidence=0.6, entities=entities, query=query, explanation="Keyword: units")
-        elif "compare" in query_lower or "vs" in query_lower:
-            return DNIntent(intent="compare", confidence=0.6, entities=entities, query=query, explanation="Keyword: compare")
-        elif "trend" in query_lower or "pattern" in query_lower:
-            return DNIntent(intent="trend", confidence=0.6, entities=entities, query=query, explanation="Keyword: trend")
-        elif "forecast" in query_lower or "predict" in query_lower:
-            return DNIntent(intent="forecast", confidence=0.6, entities=entities, query=query, explanation="Keyword: forecast")
-        elif "insight" in query_lower or "analysis" in query_lower:
-            return DNIntent(intent="insights", confidence=0.6, entities=entities, query=query, explanation="Keyword: insights")
-        elif "recommend" in query_lower or "suggest" in query_lower:
-            return DNIntent(intent="recommendations", confidence=0.6, entities=entities, query=query, explanation="Keyword: recommendations")
-        elif dn:
-            return DNIntent(intent="dashboard", confidence=0.8, entities=entities, query=query, explanation="DN detected")
-        
-        return DNIntent(intent="unknown", confidence=0.0, entities=entities, query=query, explanation="")
-    
-    def _extract_entities(self, query: str) -> Dict[str, Any]:
-        """Extract entities using spaCy and other NLP"""
-        entities = {}
-        
-        # Extract DN
-        dn = _extract_dn(query)
-        if dn:
-            entities["dn"] = dn
-        
-        # Use spaCy for NER
-        if SPACY_AVAILABLE and nlp:
+        # Use semantic router
+        if self._router:
             try:
-                doc = nlp(query)
-                for ent in doc.ents:
-                    if ent.label_ in ["GPE", "LOC"]:
-                        entities["location"] = ent.text
-                    elif ent.label_ == "ORG":
-                        entities["organization"] = ent.text
-                    elif ent.label_ == "PERSON":
-                        entities["person"] = ent.text
-                    elif ent.label_ == "DATE":
-                        entities["date"] = ent.text
+                route_result = self._router.route(query)
+                if route_result and hasattr(route_result, 'name'):
+                    result["intent"] = route_result.name
+                    result["confidence"] = 0.8
+                    result["explanation"] = f"Semantic routing: {route_result.name}"
+                    return result
             except Exception:
                 pass
         
-        # Extract using regex
-        # City detection
-        cities = ["lahore", "karachi", "rawalpindi", "islamabad", "multan", "peshawar", 
-                  "quetta", "hyderabad", "faisalabad", "sialkot", "gujranwala"]
-        for city in cities:
-            if city in query.lower():
-                entities["city"] = city
-                break
+        # Use keyword detection
+        query_lower = query.lower()
         
-        # Warehouse detection
-        warehouses = ["lahore", "karachi", "rawalpindi", "multan", "peshawar", "islamabad"]
-        for wh in warehouses:
-            if f"warehouse {wh}" in query.lower() or f"wh {wh}" in query.lower():
-                entities["warehouse"] = wh
-                break
+        if "status" in query_lower or "track" in query_lower or "where" in query_lower:
+            result["intent"] = "status"
+            result["confidence"] = 0.7
+        elif "pending" in query_lower or "overdue" in query_lower:
+            result["intent"] = "pending"
+            result["confidence"] = 0.7
+        elif "search" in query_lower or "find" in query_lower or "lookup" in query_lower:
+            result["intent"] = "search"
+            result["confidence"] = 0.7
+        elif "revenue" in query_lower or "amount" in query_lower or "value" in query_lower:
+            result["intent"] = "revenue"
+            result["confidence"] = 0.7
+        elif "units" in query_lower or "quantity" in query_lower or "qty" in query_lower:
+            result["intent"] = "units"
+            result["confidence"] = 0.7
+        elif "compare" in query_lower or "vs" in query_lower:
+            result["intent"] = "compare"
+            result["confidence"] = 0.7
+        elif "trend" in query_lower or "pattern" in query_lower:
+            result["intent"] = "trend"
+            result["confidence"] = 0.7
+        elif "forecast" in query_lower or "predict" in query_lower:
+            result["intent"] = "forecast"
+            result["confidence"] = 0.7
+        elif "insight" in query_lower or "analysis" in query_lower:
+            result["intent"] = "insights"
+            result["confidence"] = 0.7
+        elif "recommend" in query_lower or "suggest" in query_lower or "improve" in query_lower:
+            result["intent"] = "recommendations"
+            result["confidence"] = 0.7
+        elif dn:
+            result["intent"] = "dashboard"
+            result["confidence"] = 0.9
+            result["explanation"] = "DN number detected"
         
-        return entities
-    
-    def _parse_intent_response(self, cached: str) -> DNIntent:
-        """Parse cached intent response"""
-        parts = cached.split(":")
-        return DNIntent(
-            intent=parts[0] if len(parts) > 0 else "unknown",
-            confidence=float(parts[1]) if len(parts) > 1 else 0.0,
-            entities={},
-            query="",
-            explanation=parts[2] if len(parts) > 2 else ""
-        )
+        return result
     
     def generate_response(self, query: str, data: Dict[str, Any]) -> str:
-        """
-        Generate AI-enhanced response based on data
-        """
+        """Generate AI-enhanced response"""
         if not self._client or not USE_AI_ENHANCEMENT:
-            return self._generate_fallback_response(query, data)
+            return None
         
-        prompt = f"""You are a logistics DN assistant. Based on this DN data, answer the user's question.
+        try:
+            prompt = f"""You are a logistics DN assistant. Answer the user's question based on this data.
 
 User Question: {query}
 
@@ -627,21 +357,21 @@ DN Data:
 - DN Number: {data.get('dn_no', 'N/A')}
 - Division: {data.get('division', 'N/A')}
 - Order Type: {data.get('order_type', 'N/A')}
-- Customer Code: {data.get('customer_code', 'N/A')}
+- Customer: {data.get('customer_name', data.get('customer_code', 'N/A'))}
 - Dealer: {data.get('dealer', 'N/A')}
 - Status: {data.get('delivery_status', 'Pending')}
-- PGI Status: {data.get('pgi_status', 'Pending')}
-- POD Status: {data.get('pod_status', 'Pending')}
-- Pending: {data.get('pending_flag', True)}
-- Created Date: {_format_date(data.get('dn_create_date'))}
+- PGI: {data.get('pgi_status', 'Pending')}
+- POD: {data.get('pod_status', 'Pending')}
+- Pending: {'Yes' if data.get('pending_flag') else 'No'}
+- Created: {_format_date(data.get('dn_create_date'))}
 - Revenue: PKR {data.get('dn_amount', 0):,.2f}
 - Units: {data.get('dn_qty', 0):,}
+- Warehouse: {data.get('warehouse', 'N/A')}
+- City: {data.get('ship_to_city', 'N/A')}
 
-Provide a clear, concise answer. Use bullet points and emojis for WhatsApp.
-Keep it under 500 characters.
+Provide a clear, helpful answer. Use emojis. Keep it concise for WhatsApp.
 """
-        
-        try:
+            
             if self._provider == "groq":
                 response = self._client.chat.completions.create(
                     model=AI_MODEL,
@@ -665,50 +395,22 @@ Keep it under 500 characters.
                     max_tokens=300
                 )
                 return response.choices[0].message.content
-            
-            elif self._provider == "anthropic":
-                response = self._client.messages.create(
-                    model="claude-3-haiku-20240307",
-                    max_tokens=300,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                return response.content[0].text
-            
+                
         except Exception as e:
-            logger.error(f"AI response generation failed: {e}")
+            logger.error(f"AI generation failed: {e}")
         
-        return self._generate_fallback_response(query, data)
-    
-    def _generate_fallback_response(self, query: str, data: Dict[str, Any]) -> str:
-        """Generate fallback response without AI"""
-        dn_no = data.get('dn_no', 'N/A')
-        
-        return "\n".join([
-            f"📦 *DN {dn_no}*",
-            "",
-            f"Status: {data.get('delivery_status', 'Pending')}",
-            f"Customer: {data.get('customer_name', data.get('customer_code', 'N/A'))}",
-            f"Division: {data.get('division', 'N/A')}",
-            f"Revenue: PKR {data.get('dn_amount', 0):,.2f}",
-            f"Units: {data.get('dn_qty', 0):,}",
-            "",
-            "💡 *Need more details?*",
-            "• Type 'menu' for options",
-            "• Type '99' to return",
-            "",
-            "0. Main Menu",
-            "99. Back"
-        ])
+        return None
 
 # ============================================================
-# MENU RENDERER WITH AI ENHANCEMENT
+# DN MENU RENDERER
 # ============================================================
 
 class DNMenuRenderer:
-    """DN Menu Renderer with AI-enhanced options"""
+    """DN Menu Renderer - WhatsApp Format"""
     
     @staticmethod
     def render_main_menu() -> str:
+        """Main DN menu - shown when you press "1" or type "menu" """
         return "\n".join([
             "📦 *DN ANALYTICS MENU*",
             "",
@@ -720,8 +422,8 @@ class DNMenuRenderer:
             "5. AI Query",
             "99. Back to Main",
             "",
-            "📌 *AI-Powered Commands:*",
-            "• Type DN number for full dashboard",
+            "📌 *Commands (Stay in DN Service):*",
+            "• Type DN number for dashboard",
             "• 'status [DN]' - DN status",
             "• 'pending' - Show pending DNs",
             "• 'search [keyword]' - Search DNs",
@@ -737,8 +439,8 @@ class DNMenuRenderer:
         ])
     
     @staticmethod
-    def render_ai_enhanced_dashboard(data: Dict[str, Any]) -> str:
-        """Render AI-enhanced dashboard with all 10 key questions"""
+    def render_dn_dashboard(data: Dict[str, Any]) -> str:
+        """Full DN dashboard with all 10 key questions"""
         dn_no = data.get('dn_no', 'N/A')
         
         return "\n".join([
@@ -749,7 +451,7 @@ class DNMenuRenderer:
             "1️⃣ *Status:*",
             f"   {data.get('delivery_status', 'Pending')}",
             "",
-            "2️⃣ *Creation:*",
+            "2️⃣ *Creation Date:*",
             f"   {_format_date(data.get('dn_create_date'))}",
             "",
             "3️⃣ *Customer:*",
@@ -779,17 +481,85 @@ class DNMenuRenderer:
             "━━━━━━━━━━━━━━━━━━",
             "",
             "0. Main Menu",
-            "99. Back to Main"
+            "99. Back to Main",
+            "",
+            "📌 *Still in DN Service - Type 'menu' for options*"
+        ])
+    
+    @staticmethod
+    def render_pending_list(items: List[Dict[str, Any]]) -> str:
+        """Render pending DNs list"""
+        if not items:
+            return "📋 *Pending DNs*\n\n✅ No pending DNs found.\n\n0. Main Menu\n99. Back"
+        
+        lines = ["📋 *Pending DNs*", ""]
+        lines.append(f"Total: {len(items)}")
+        lines.append("")
+        
+        for i, item in enumerate(items[:10], 1):
+            dn_no = item.get('dn_no', 'N/A')
+            customer = item.get('customer_name', item.get('customer_code', 'N/A'))
+            status = item.get('delivery_status', 'Pending')
+            lines.append(f"{i}. *DN {dn_no}*")
+            lines.append(f"   Customer: {customer}")
+            lines.append(f"   Status: {status}")
+            lines.append("")
+        
+        if len(items) > 10:
+            lines.append(f"... and {len(items) - 10} more")
+        
+        lines.extend(["", "0. Main Menu", "99. Back"])
+        return "\n".join(lines)
+    
+    @staticmethod
+    def render_search_results(query: str, items: List[Dict[str, Any]]) -> str:
+        """Render search results"""
+        if not items:
+            return f"🔍 No results found for '{query}'\n\n0. Main Menu\n99. Back"
+        
+        lines = [f"🔍 *Search Results for '{query}'*", ""]
+        lines.append(f"Found: {len(items)} DNs")
+        lines.append("")
+        
+        for i, item in enumerate(items[:10], 1):
+            dn_no = item.get('dn_no', 'N/A')
+            customer = item.get('customer_name', item.get('customer_code', 'N/A'))
+            lines.append(f"{i}. *DN {dn_no}* - {customer}")
+        
+        if len(items) > 10:
+            lines.append(f"... and {len(items) - 10} more")
+        
+        lines.extend(["", "0. Main Menu", "99. Back"])
+        return "\n".join(lines)
+    
+    @staticmethod
+    def render_dn_status(data: Dict[str, Any]) -> str:
+        """Render DN status"""
+        dn_no = data.get('dn_no', 'N/A')
+        return "\n".join([
+            f"📊 *DN {dn_no} - Status*",
+            "",
+            f"Status: {data.get('delivery_status', 'Pending')}",
+            f"PGI: {data.get('pgi_status', 'Pending')}",
+            f"POD: {data.get('pod_status', 'Pending')}",
+            f"Pending: {'✅ Yes' if data.get('pending_flag') else '❌ No'}",
+            "",
+            f"Created: {_format_date(data.get('dn_create_date'))}",
+            f"Customer: {data.get('customer_name', data.get('customer_code', 'N/A'))}",
+            "",
+            "0. Main Menu",
+            "99. Back"
         ])
 
 # ============================================================
-# MAIN DN SERVICE WITH AI
+# MAIN DN SERVICE - TAKES FULL CONTROL
 # ============================================================
 
 class DNAnalysisService:
     """
-    AI-Powered DN Analysis Service
-    Uses content recognition to answer ANY DN question
+    COMPLETE INDEPENDENT DN SERVICE
+    TAKES FULL CONTROL AFTER PRESSING "1"
+    ALL COMMUNICATION STAYS IN THIS FILE UNTIL "99"
     """
     
     _instance: Optional["DNAnalysisService"] = None
@@ -807,22 +577,29 @@ class DNAnalysisService:
             return
         
         self._initialized = True
+        self._service_name = "dn_analysis"
+        self._version = "25.0"
+        
+        # Initialize components
+        self._content_recognizer = DNContentRecognizer()
+        self._menu_renderer = DNMenuRenderer()
+        
+        # Context memory - persists while in DN service
         self._contexts: Dict[str, DNContext] = {}
         self._context_lock = threading.RLock()
-        self._menu_renderer = DNMenuRenderer()
-        self._ai_engine = AIEngine()
         
         logger.info("=" * 60)
-        logger.info("🚀 DNAnalysisService initialized (v24.0 - AI POWERED)")
-        logger.info(f"   📦 AI Provider: {AI_PROVIDER}")
-        logger.info(f"   🤖 AI Model: {AI_MODEL}")
+        logger.info("🚀 DNAnalysisService v25.0 initialized")
+        logger.info("   📦 TAKES FULL CONTROL AFTER PRESSING '1'")
+        logger.info("   🔒 ALL communication stays in this file")
+        logger.info(f"   🧠 AI: {AI_PROVIDER if GROQ_AVAILABLE or OPENAI_AVAILABLE else 'Disabled'}")
         logger.info(f"   🗄️  Database: {'Connected' if DB_AVAILABLE else 'Fallback'}")
-        logger.info(f"   🧠 Semantic Router: {'✅' if SEMANTIC_ROUTER_AVAILABLE else '❌'}")
-        logger.info(f"   🔍 spaCy NER: {'✅' if SPACY_AVAILABLE else '❌'}")
+        logger.info("   🔑 ONLY '99' exits to main menu")
         logger.info("=" * 60)
     
     @staticmethod
     def _get_session() -> Optional[Session]:
+        """Get database session"""
         if not DB_AVAILABLE:
             return None
         try:
@@ -832,126 +609,130 @@ class DNAnalysisService:
             return None
     
     def _get_context(self, session_id: str) -> DNContext:
+        """Get or create context for session"""
         with self._context_lock:
             if session_id not in self._contexts:
                 self._contexts[session_id] = DNContext()
+                self._contexts[session_id].in_dn_service = True
             return self._contexts[session_id]
     
     def get_main_menu(self) -> str:
+        """Get the main DN menu"""
         return self._menu_renderer.render_main_menu()
     
     # ============================================================
-    # MAIN PROCESSING - AI POWERED
+    # MAIN PROCESSING - ENTRY POINT
     # ============================================================
     
     def process_whatsapp_query(self, message: str, sender: str = "default") -> str:
         """
-        Main entry point - AI-powered DN query processing
+        MAIN ENTRY POINT - Handles ALL DN queries
+        TAKES FULL CONTROL - ALL communication stays here
+        ONLY "99" exits back to main menu
         """
         if not message or not message.strip():
             return self.get_main_menu()
         
         message_clean = message.strip()
-        logger.info(f"🤖 DN Processing: '{message_clean}' from {sender}")
+        logger.info(f"📦 DN Service (FULL CONTROL): '{message_clean}' from {sender}")
         
+        # Get or create context - mark as in DN service
         context = self._get_context(sender)
-        context.in_menu = True
+        context.in_dn_service = True
         
         # ============================================================
-        # STEP 1: Check for "99" - Exit to main menu
+        # STEP 1: Check for "99" - EXIT to main menu (ONLY EXIT!)
         # ============================================================
         if message_clean == "99":
-            context.in_menu = False
+            context.in_dn_service = False
             context.current_dn = None
-            return "99"
+            logger.info(f"🔄 User {sender} EXITING DN service (99)")
+            return "99"  # Signal to router to exit
         
         # ============================================================
-        # STEP 2: Check for menu commands
+        # STEP 2: Check for "menu" or "0" - Show DN menu
         # ============================================================
         if message_clean.lower() in ["menu", "help", "options", "0"]:
             return self.get_main_menu()
         
         # ============================================================
-        # STEP 3: Check menu options (1-5)
+        # STEP 3: Check for menu options (1-5)
         # ============================================================
         if message_clean in ["1", "2", "3", "4", "5"]:
             return self._handle_menu_option(sender, message_clean)
         
         # ============================================================
-        # STEP 4: AI Intent Recognition
+        # STEP 4: Check for DN number (8-12 digits) - AUTO-DETECT
         # ============================================================
-        intent = self._ai_engine.recognize_intent(message_clean)
-        logger.info(f"🎯 Intent: {intent.intent} (confidence: {intent.confidence:.2f})")
+        dn = _extract_dn(message_clean)
+        if dn and _is_valid_dn(dn):
+            context.current_dn = dn
+            return self._get_dn_dashboard(sender, dn, message_clean)
         
         # ============================================================
-        # STEP 5: Route based on intent
+        # STEP 5: AI Content Recognition for Natural Language
         # ============================================================
+        recognized = self._content_recognizer.recognize(message_clean)
+        logger.info(f"🎯 Recognized: {recognized['intent']} (confidence: {recognized['confidence']})")
         
-        # DN number detected - show dashboard
-        if intent.entities.get("dn") or _extract_dn(message_clean):
-            dn = intent.entities.get("dn") or _extract_dn(message_clean)
-            if dn:
-                context.current_dn = dn
-                return self._get_ai_enhanced_dashboard(sender, dn, message_clean)
+        # Route based on recognized intent
+        intent = recognized.get("intent", "unknown")
+        entities = recognized.get("entities", {})
         
-        # Status intent
-        if intent.intent == "status":
-            dn = intent.entities.get("dn") or _extract_dn(message_clean)
+        # Check if a DN was recognized
+        if recognized.get("dn"):
+            context.current_dn = recognized["dn"]
+            return self._get_dn_dashboard(sender, recognized["dn"], message_clean)
+        
+        # Route to specific handlers
+        if intent == "status":
+            dn = _extract_dn(message_clean)
             if dn:
                 return self._get_dn_status(sender, dn)
-            return self._get_dashboard_prompt("status")
+            return "📊 Please provide a DN number. Example: 'status 6243700919'\n\n0. Main Menu\n99. Back"
         
-        # Pending intent
-        if intent.intent == "pending":
+        if intent == "pending":
             return self._get_pending_dns(sender)
         
-        # Search intent
-        if intent.intent == "search":
+        if intent == "search":
             query = message_clean
             for word in ["search", "find", "lookup"]:
                 query = query.replace(word, "").strip()
             if query:
                 return self._search_dns(sender, query)
-            return self._get_dashboard_prompt("search")
+            return "🔍 Please specify what to search. Example: 'search Lahore'\n\n0. Main Menu\n99. Back"
         
-        # Revenue intent
-        if intent.intent == "revenue":
-            dn = intent.entities.get("dn") or _extract_dn(message_clean)
+        if intent == "revenue":
+            dn = _extract_dn(message_clean)
             if dn:
                 return self._get_dn_metric(sender, dn, "revenue")
-            return self._get_dashboard_prompt("revenue")
+            return "💰 Please provide a DN number. Example: 'revenue 6243700919'\n\n0. Main Menu\n99. Back"
         
-        # Units intent
-        if intent.intent == "units":
-            dn = intent.entities.get("dn") or _extract_dn(message_clean)
+        if intent == "units":
+            dn = _extract_dn(message_clean)
             if dn:
                 return self._get_dn_metric(sender, dn, "units")
-            return self._get_dashboard_prompt("units")
+            return "📦 Please provide a DN number. Example: 'units 6243700919'\n\n0. Main Menu\n99. Back"
         
-        # Compare intent
-        if intent.intent == "compare":
+        if intent == "compare":
             return self._handle_comparison(sender, message_clean)
         
-        # Trend intent
-        if intent.intent == "trend":
+        if intent == "trend":
             return self._get_trends(sender)
         
-        # Forecast intent
-        if intent.intent == "forecast":
+        if intent == "forecast":
             return self._get_forecast(sender)
         
-        # Insights intent
-        if intent.intent == "insights":
+        if intent == "insights":
             return self._get_insights(sender)
         
-        # Recommendations intent
-        if intent.intent == "recommendations":
+        if intent == "recommendations":
             return self._get_recommendations(sender)
         
         # ============================================================
-        # STEP 6: Unknown - AI fallback
+        # STEP 6: Unknown - Show help (STAYS IN DN SERVICE)
         # ============================================================
-        return self._handle_ai_fallback(sender, message_clean)
+        return self._show_help()
     
     # ============================================================
     # MENU OPTIONS
@@ -960,7 +741,7 @@ class DNAnalysisService:
     def _handle_menu_option(self, sender: str, option: str) -> str:
         """Handle menu options 1-5"""
         if option == "1":
-            return "🔍 *Enter DN number:*\n\nType an 8-12 digit DN number for AI-enhanced dashboard.\n\n0. Main Menu\n99. Back"
+            return "🔍 *Enter DN number:*\n\nType an 8-12 digit DN number for full dashboard.\n\n0. Main Menu\n99. Back"
         elif option == "2":
             return "📊 *Enter DN number for status:*\n\nType an 8-12 digit DN number.\n\n0. Main Menu\n99. Back"
         elif option == "3":
@@ -968,25 +749,40 @@ class DNAnalysisService:
         elif option == "4":
             return "🔍 *Search DNs:*\n\nType 'search [keyword]' to find DNs.\n\nExample: search Lahore\n\n0. Main Menu\n99. Back"
         elif option == "5":
-            return "🤖 *AI Query:*\n\nAsk any DN-related question naturally.\n\nExamples:\n• What is the status of DN 6243700919?\n• Show pending DNs\n• Revenue of DN 6243700919\n• Compare DN 6243700919 and DN 6243714234\n\n0. Main Menu\n99. Back"
+            return "🤖 *AI Query:*\n\nAsk any DN-related question naturally.\n\nExamples:\n• What is the status of DN 6243700919?\n• Show pending DNs\n• Revenue of DN 6243700919\n\n0. Main Menu\n99. Back"
         return self.get_main_menu()
     
-    def _get_dashboard_prompt(self, action: str) -> str:
-        """Get prompt for dashboard action"""
-        prompts = {
-            "status": "📊 *Enter DN number for status:*\n\nType an 8-12 digit DN number.\n\n0. Main Menu\n99. Back",
-            "search": "🔍 *Search DNs:*\n\nType 'search [keyword]' to find DNs.\n\n0. Main Menu\n99. Back",
-            "revenue": "💰 *Enter DN number for revenue:*\n\nType an 8-12 digit DN number.\n\n0. Main Menu\n99. Back",
-            "units": "📦 *Enter DN number for units:*\n\nType an 8-12 digit DN number.\n\n0. Main Menu\n99. Back",
-        }
-        return prompts.get(action, self.get_main_menu())
+    def _show_help(self) -> str:
+        """Show help - STAYS IN DN SERVICE"""
+        return "\n".join([
+            "❌ I didn't understand that.",
+            "",
+            "💡 *DN Service Commands (Stay in DN):*",
+            "• Type a DN number (8-12 digits) for dashboard",
+            "• 'status [DN]' - DN status",
+            "• 'pending' - Show pending DNs",
+            "• 'search [keyword]' - Search DNs",
+            "• 'revenue [DN]' - Check revenue",
+            "• 'units [DN]' - Check units",
+            "• 'compare DN1 DN2' - Compare DNs",
+            "• 'trend' - DN trends",
+            "• 'forecast' - DN forecast",
+            "• 'insights' - DN insights",
+            "• 'recommendations' - Improvement ideas",
+            "• 'menu' - Show DN menu",
+            "",
+            "📌 *To Exit:* Type '99'",
+            "",
+            "0. Main Menu",
+            "99. Back"
+        ])
     
     # ============================================================
-    # DN OPERATIONS - POSTGRESQL
+    # DN OPERATIONS - ALL DATA FROM POSTGRESQL
     # ============================================================
     
-    def _get_ai_enhanced_dashboard(self, sender: str, dn_no: str, query: str) -> str:
-        """Get AI-enhanced DN dashboard"""
+    def _get_dn_dashboard(self, sender: str, dn_no: str, query: str = "") -> str:
+        """Get DN dashboard - Answers ALL 10 questions"""
         session = self._get_session()
         if not session:
             return self._get_fallback_dashboard(dn_no)
@@ -1010,6 +806,7 @@ class DNAnalysisService:
                 DeliveryReport.warehouse,
                 DeliveryReport.good_issue_date,
                 DeliveryReport.pod_date,
+                DeliveryReport.ship_to_city,
             ).filter(
                 DeliveryReport.dn_no == dn_no
             ).first()
@@ -1036,18 +833,19 @@ class DNAnalysisService:
                 'warehouse': _text(result.warehouse),
                 'good_issue_date': result.good_issue_date,
                 'pod_date': result.pod_date,
+                'ship_to_city': _text(result.ship_to_city),
                 'sla_compliant': '✅ Compliant' if result.pod_date else '⏳ Pending',
             }
             
             session.close()
             
-            # If AI is available, generate enhanced response
-            if self._ai_engine._client and USE_AI_ENHANCEMENT:
-                ai_response = self._ai_engine.generate_response(query, data)
+            # Try AI enhancement
+            if query and self._content_recognizer._client and USE_AI_ENHANCEMENT:
+                ai_response = self._content_recognizer.generate_response(query, data)
                 if ai_response:
                     return ai_response + "\n\n0. Main Menu\n99. Back"
             
-            return self._menu_renderer.render_ai_enhanced_dashboard(data)
+            return self._menu_renderer.render_dn_dashboard(data)
             
         except Exception as e:
             logger.error(f"Dashboard error: {e}")
@@ -1056,6 +854,7 @@ class DNAnalysisService:
             return self._get_fallback_dashboard(dn_no)
     
     def _get_fallback_dashboard(self, dn_no: str) -> str:
+        """Fallback when database is unavailable"""
         return "\n".join([
             f"📦 *DN Dashboard - {dn_no}*",
             "",
@@ -1093,22 +892,19 @@ class DNAnalysisService:
                 session.close()
                 return f"⚠️ DN '{dn_no}' not found.\n\n0. Main Menu\n99. Back"
             
-            session.close()
+            data = {
+                'dn_no': _text(result.dn_no),
+                'delivery_status': _text(result.delivery_status, 'Pending'),
+                'pgi_status': _text(result.pgi_status, 'Pending'),
+                'pod_status': _text(result.pod_status, 'Pending'),
+                'pending_flag': bool(result.pending_flag) if result.pending_flag is not None else True,
+                'dn_create_date': result.dn_create_date,
+                'customer_name': _text(result.customer_name),
+                'customer_code': _text(result.customer_code),
+            }
             
-            return "\n".join([
-                f"📊 *DN {dn_no} - Status*",
-                "",
-                f"Status: {_text(result.delivery_status, 'Pending')}",
-                f"PGI: {_text(result.pgi_status, 'Pending')}",
-                f"POD: {_text(result.pod_status, 'Pending')}",
-                f"Pending: {'✅ Yes' if result.pending_flag else '❌ No'}",
-                "",
-                f"Created: {_format_date(result.dn_create_date)}",
-                f"Customer: {_text(result.customer_name, result.customer_code)}",
-                "",
-                "0. Main Menu",
-                "99. Back"
-            ])
+            session.close()
+            return self._menu_renderer.render_dn_status(data)
             
         except Exception as e:
             logger.error(f"Status error: {e}")
@@ -1117,7 +913,7 @@ class DNAnalysisService:
             return f"⚠️ Error fetching status for DN {dn_no}\n\n0. Main Menu\n99. Back"
     
     def _get_dn_metric(self, sender: str, dn_no: str, metric: str) -> str:
-        """Get specific DN metric (revenue or units)"""
+        """Get specific DN metric"""
         session = self._get_session()
         if not session:
             return f"⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
@@ -1170,29 +966,18 @@ class DNAnalysisService:
                 desc(DeliveryReport.dn_create_date)
             ).limit(20).all()
             
+            items = []
+            for row in results:
+                items.append({
+                    'dn_no': _text(row.dn_no),
+                    'customer_code': _text(row.customer_code),
+                    'customer_name': _text(row.customer_name),
+                    'delivery_status': _text(row.delivery_status, 'Pending'),
+                    'division': _text(row.division),
+                })
+            
             session.close()
-            
-            if not results:
-                return "📋 *Pending DNs*\n\n✅ No pending DNs found.\n\n0. Main Menu\n99. Back"
-            
-            lines = ["📋 *Pending DNs*", ""]
-            lines.append(f"Total: {len(results)}")
-            lines.append("")
-            
-            for i, row in enumerate(results[:10], 1):
-                dn_no = _text(row.dn_no)
-                customer = _text(row.customer_name, row.customer_code)
-                status = _text(row.delivery_status, 'Pending')
-                lines.append(f"{i}. *DN {dn_no}*")
-                lines.append(f"   Customer: {customer}")
-                lines.append(f"   Status: {status}")
-                lines.append("")
-            
-            if len(results) > 10:
-                lines.append(f"... and {len(results) - 10} more")
-            
-            lines.extend(["0. Main Menu", "99. Back"])
-            return "\n".join(lines)
+            return self._menu_renderer.render_pending_list(items)
             
         except Exception as e:
             logger.error(f"Pending error: {e}")
@@ -1224,25 +1009,17 @@ class DNAnalysisService:
                 desc(DeliveryReport.dn_create_date)
             ).limit(20).all()
             
+            items = []
+            for row in results:
+                items.append({
+                    'dn_no': _text(row.dn_no),
+                    'customer_code': _text(row.customer_code),
+                    'customer_name': _text(row.customer_name),
+                    'division': _text(row.division),
+                })
+            
             session.close()
-            
-            if not results:
-                return f"🔍 No results found for '{query}'\n\n0. Main Menu\n99. Back"
-            
-            lines = [f"🔍 *Search Results for '{query}'*", ""]
-            lines.append(f"Found: {len(results)} DNs")
-            lines.append("")
-            
-            for i, row in enumerate(results[:10], 1):
-                dn_no = _text(row.dn_no)
-                customer = _text(row.customer_name, row.customer_code)
-                lines.append(f"{i}. *DN {dn_no}* - {customer}")
-            
-            if len(results) > 10:
-                lines.append(f"... and {len(results) - 10} more")
-            
-            lines.extend(["0. Main Menu", "99. Back"])
-            return "\n".join(lines)
+            return self._menu_renderer.render_search_results(query, items)
             
         except Exception as e:
             logger.error(f"Search error: {e}")
@@ -1252,10 +1029,9 @@ class DNAnalysisService:
     
     def _handle_comparison(self, sender: str, query: str) -> str:
         """Handle DN comparison"""
-        # Extract two DN numbers
         dns = re.findall(r'\b(\d{8,12})\b', query)
         if len(dns) < 2:
-            return "🔄 *Compare DNs*\n\nPlease provide two DN numbers to compare.\n\nExample: compare 6243700919 6243714234\n\n0. Main Menu\n99. Back"
+            return "🔄 *Compare DNs*\n\nPlease provide two DN numbers.\n\nExample: compare 6243700919 6243714234\n\n0. Main Menu\n99. Back"
         
         dn1, dn2 = dns[0], dns[1]
         
@@ -1289,17 +1065,20 @@ class DNAnalysisService:
             if not result1 or not result2:
                 return "⚠️ One or both DNs not found.\n\n0. Main Menu\n99. Back"
             
+            revenue1 = _safe_float(result1.dn_amount)
+            revenue2 = _safe_float(result2.dn_amount)
+            
             return "\n".join([
                 f"🔄 *Comparison: DN {dn1} vs DN {dn2}*",
                 "",
                 "📊 *Metrics*",
                 f"Division: {_text(result1.division)} vs {_text(result2.division)}",
                 f"Status: {_text(result1.delivery_status, 'Pending')} vs {_text(result2.delivery_status, 'Pending')}",
-                f"Revenue: PKR {_safe_float(result1.dn_amount):,.2f} vs PKR {_safe_float(result2.dn_amount):,.2f}",
+                f"Revenue: PKR {revenue1:,.2f} vs PKR {revenue2:,.2f}",
                 f"Units: {_safe_int(result1.dn_qty)} vs {_safe_int(result2.dn_qty)}",
                 "",
-                "💡 *Winner:*",
-                f"{dn1} has higher revenue" if _safe_float(result1.dn_amount) > _safe_float(result2.dn_amount) else f"{dn2} has higher revenue",
+                "🏆 *Winner:*",
+                f"{dn1} has higher revenue" if revenue1 > revenue2 else f"{dn2} has higher revenue",
                 "",
                 "0. Main Menu",
                 "99. Back"
@@ -1318,19 +1097,18 @@ class DNAnalysisService:
             return "⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
         
         try:
-            from sqlalchemy import func, extract
+            from sqlalchemy import extract
             
-            # Get weekly trends
             results = session.query(
-                func.extract('week', DeliveryReport.dn_create_date).label('week'),
+                extract('week', DeliveryReport.dn_create_date).label('week'),
                 func.count(DeliveryReport.dn_no).label('count'),
                 func.sum(DeliveryReport.dn_amount).label('revenue'),
             ).filter(
                 DeliveryReport.dn_create_date.isnot(None)
             ).group_by(
-                func.extract('week', DeliveryReport.dn_create_date)
+                extract('week', DeliveryReport.dn_create_date)
             ).order_by(
-                func.extract('week', DeliveryReport.dn_create_date).desc()
+                desc(extract('week', DeliveryReport.dn_create_date))
             ).limit(4).all()
             
             session.close()
@@ -1364,9 +1142,8 @@ class DNAnalysisService:
             return "⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
         
         try:
-            from sqlalchemy import func
+            from datetime import timedelta
             
-            # Get average daily DNs
             results = session.query(
                 func.count(DeliveryReport.dn_no).label('total'),
                 func.count(func.distinct(func.date(DeliveryReport.dn_create_date))).label('days'),
@@ -1414,7 +1191,7 @@ class DNAnalysisService:
             return "⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
         
         try:
-            from sqlalchemy import func
+            from sqlalchemy import case
             
             results = session.query(
                 func.count(DeliveryReport.dn_no).label('total'),
@@ -1464,9 +1241,8 @@ class DNAnalysisService:
             return "⚠️ Database unavailable.\n\n0. Main Menu\n99. Back"
         
         try:
-            from sqlalchemy import func
+            from datetime import timedelta
             
-            # Get pending count
             pending_count = session.query(
                 func.count(DeliveryReport.dn_no)
             ).filter(
@@ -1476,8 +1252,6 @@ class DNAnalysisService:
                 )
             ).scalar() or 0
             
-            # Get delayed count
-            from datetime import timedelta
             threshold = datetime.now().date() - timedelta(days=DN_DELAY_THRESHOLD_DAYS)
             
             delayed_count = session.query(
@@ -1504,6 +1278,9 @@ class DNAnalysisService:
                 recommendations.append("✅ Current DN performance is good")
                 recommendations.append("📊 Continue monitoring key metrics")
             
+            if not recommendations:
+                recommendations.append("✅ Maintain current performance")
+            
             lines = ["🎯 *DN Recommendations*", ""]
             for rec in recommendations:
                 lines.append(f"• {rec}")
@@ -1518,30 +1295,21 @@ class DNAnalysisService:
             return "⚠️ Error generating recommendations.\n\n0. Main Menu\n99. Back"
     
     # ============================================================
-    # AI FALLBACK
+    # HEALTH CHECK
     # ============================================================
     
-    def _handle_ai_fallback(self, sender: str, query: str) -> str:
-        """Handle fallback using AI"""
-        return "\n".join([
-            "🤖 *AI Assistant*",
-            "",
-            "I understand you're asking about DNs.",
-            "",
-            "💡 *Try these commands:*",
-            "• 'status 6243700919' - DN status",
-            "• 'pending' - Show pending DNs",
-            "• 'search Lahore' - Search DNs",
-            "• 'trend' - View DN trends",
-            "• 'forecast' - DN forecast",
-            "• 'insights' - DN insights",
-            "• 'recommendations' - Improvement ideas",
-            "",
-            "📌 *Or type a DN number for full dashboard*",
-            "",
-            "0. Main Menu",
-            "99. Back"
-        ])
+    def health_check(self) -> Dict[str, Any]:
+        """Health check for service"""
+        return {
+            "service": self._service_name,
+            "version": self._version,
+            "status": "healthy",
+            "database": "connected" if DB_AVAILABLE else "disconnected",
+            "ai": "enabled" if (GROQ_AVAILABLE or OPENAI_AVAILABLE) else "disabled",
+            "takes_full_control": True,
+            "exit_command": "99",
+            "timestamp": datetime.now().isoformat()
+        }
 
 # ============================================================
 # SERVICE SINGLETON
@@ -1551,6 +1319,7 @@ _service: Optional[DNAnalysisService] = None
 _service_lock = threading.Lock()
 
 def get_dn_analysis_service() -> DNAnalysisService:
+    """Get singleton instance"""
     global _service
     if _service is None:
         with _service_lock:
@@ -1559,9 +1328,11 @@ def get_dn_analysis_service() -> DNAnalysisService:
     return _service
 
 def process_dn_menu(session_id: str, user_input: str) -> Dict[str, Any]:
+    """Process DN menu input for WhatsApp integration"""
     service = get_dn_analysis_service()
     result = service.process_whatsapp_query(user_input, session_id)
     
+    # Check if we need to exit to main menu
     if result == "99":
         return {
             "response": "99",
@@ -1580,6 +1351,7 @@ def process_dn_menu(session_id: str, user_input: str) -> Dict[str, Any]:
     }
 
 def get_dn_main_menu() -> str:
+    """Get the main DN menu for WhatsApp"""
     service = get_dn_analysis_service()
     return service.get_main_menu()
 
@@ -1589,6 +1361,7 @@ def get_dn_main_menu() -> str:
 
 __all__ = [
     "DNAnalysisService",
+    "DNContext",
     "get_dn_analysis_service",
     "process_dn_menu",
     "get_dn_main_menu",
