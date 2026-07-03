@@ -923,87 +923,60 @@ class AIProviderService:
         # 100% FIXED - Multiple import paths
         # ============================================================
         
-        logger.info("=" * 60)
-        logger.info("📦 BLOCK 11A: Loading DN Service (100% FIXED)")
-        logger.info("=" * 60)
+        # ============================================================
+# BLOCK 11A: DN SERVICE - MENU 1, 7, 8 - DIRECT IMPORT
+# ============================================================
+
+logger.info("=" * 60)
+logger.info("📦 BLOCK 11A: Loading DN Service (DIRECT IMPORT)")
+logger.info("=" * 60)
+
+dn_service = None
+
+try:
+    # Direct import - most reliable
+    logger.info("🔍 Attempting direct import from app.services.dn_analysis...")
+    from app.services.dn_analysis import DNAnalysisService
+    
+    logger.info("✅ DNAnalysisService imported successfully")
+    dn_service = DNAnalysisService()
+    logger.info("✅ DNAnalysisService instantiated successfully")
+    
+except ImportError as e:
+    logger.error(f"❌ Import failed: {e}")
+    
+    # Try alternative path
+    try:
+        logger.info("🔍 Trying alternative import path...")
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+        from services.dn_analysis import DNAnalysisService
         
-        # Check if dn_analysis.py exists
-        dn_file_path = os.path.join(os.path.dirname(__file__), "dn_analysis.py")
-        if os.path.exists(dn_file_path):
-            logger.info(f"✅ dn_analysis.py found at: {dn_file_path}")
-        else:
-            logger.error(f"❌ dn_analysis.py NOT found at: {dn_file_path}")
-            # Try alternative path
-            alt_path = os.path.join(os.path.dirname(__file__), "..", "services", "dn_analysis.py")
-            if os.path.exists(alt_path):
-                logger.info(f"✅ dn_analysis.py found at alternate path: {alt_path}")
-            else:
-                logger.error(f"❌ dn_analysis.py NOT found at alternate path: {alt_path}")
-                self.service_registry["dn"] = self._create_dn_fallback()
-                self.service_errors["dn"] = "File not found"
-                return
-        
-        # Try importing with multiple paths
-        import_attempts = [
-            ("app.services.dn_analysis", "DNAnalysisService"),
-            ("services.dn_analysis", "DNAnalysisService"),
-            (".dn_analysis", "DNAnalysisService"),
-        ]
-        
+        logger.info("✅ DNAnalysisService imported from services.dn_analysis")
+        dn_service = DNAnalysisService()
+        logger.info("✅ DNAnalysisService instantiated successfully")
+    except ImportError as e2:
+        logger.error(f"❌ Alternative import also failed: {e2}")
         dn_service = None
-        import_error = None
-        
-        for module_path, class_name in import_attempts:
-            try:
-                logger.info(f"🔍 Attempting import from: {module_path}")
-                module = __import__(module_path, fromlist=[class_name])
-                dn_class = getattr(module, class_name)
-                logger.info(f"✅ Found class: {class_name} in {module_path}")
-                
-                # Try to instantiate
-                dn_service = dn_class()
-                logger.info(f"✅ Successfully instantiated DN service from {module_path}")
-                break
-                
-            except ImportError as e:
-                logger.warning(f"⚠️ Import failed from {module_path}: {e}")
-                import_error = e
-                continue
-            except Exception as e:
-                logger.warning(f"⚠️ Error with {module_path}: {e}")
-                import_error = e
-                continue
-        
-        if dn_service is None:
-            logger.error(f"❌ All import attempts failed: {import_error}")
-            self.service_registry["dn"] = self._create_dn_fallback()
-            self.service_errors["dn"] = str(import_error)
-            return
-        
-        # Verify the service has required methods
-        self.service_registry["dn"] = dn_service
-        
-        required_methods = [
-            "get_main_menu", 
-            "process_whatsapp_query", 
-            "process_menu_input",
-            "get_dn_dashboard",
-            "get_pending_dns",
-            "get_top_performers"
-        ]
-        
-        missing_methods = []
-        for method in required_methods:
-            if hasattr(dn_service, method):
-                logger.info(f"   ✅ DN service has method: {method}")
-            else:
-                logger.warning(f"   ⚠️ DN service missing method: {method}")
-                missing_methods.append(method)
-        
-        if missing_methods:
-            logger.warning(f"⚠️ DN service missing {len(missing_methods)} methods: {missing_methods}")
-        
-        logger.info("✅ Registered DN service (Menu 1, 7, 8) - 100% WORKING")
+
+if dn_service is None:
+    logger.error("❌ DN Service could not be loaded")
+    self.service_registry["dn"] = self._create_dn_fallback()
+    self.service_errors["dn"] = "Import failed"
+    return
+
+# Register the service
+self.service_registry["dn"] = dn_service
+
+# Verify required methods
+for method in ["get_main_menu", "process_whatsapp_query", "process_menu_input", 
+               "get_dn_dashboard", "get_pending_dns", "get_top_performers"]:
+    if hasattr(dn_service, method):
+        logger.info(f"   ✅ DN service has method: {method}")
+    else:
+        logger.warning(f"   ⚠️ DN service missing method: {method}")
+
+logger.info("✅ Registered DN service (Menu 1, 7, 8) - 100% WORKING")
         
         # ============================================================
         # BLOCK 11B: DEALER SERVICE - MENU 2
